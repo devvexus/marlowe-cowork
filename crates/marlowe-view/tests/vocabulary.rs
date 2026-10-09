@@ -165,17 +165,6 @@ fn every_notice_variant_passes_the_persona_probes() {
         Notice::ApprovalResolved { disposition: Disposition::OpenedForEditing },
         Notice::Undone { turns: 1 },
         Notice::Undone { turns: 4 },
-        // M3-DESIGN section 3.2. The persona probe matters here more than anywhere else in the
-        // list: this is the one line Marlowe says about a channel he is not on, and section 3.3
-        // asks for it *"once, without alarm"*.
-        Notice::EscalationRaised {
-            severity: marlowe_contract::EscalationSeverity::Critical,
-            by: Echo::new("top-agent brave-storm"),
-        },
-        Notice::EscalationRaised {
-            severity: marlowe_contract::EscalationSeverity::Advisory,
-            by: Echo::new("top-agent quiet-field"),
-        },
     ];
 
     // §C4's shape. Each probe is a phrase that would mean the persona had eroded.

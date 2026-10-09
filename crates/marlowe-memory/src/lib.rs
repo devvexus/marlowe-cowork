@@ -36,7 +36,7 @@ pub use claim::{
 };
 pub use entry::{memory_id, MemoryEntry, MemoryId, MATURATION_WINDOW_MS};
 pub use error::MemoryError;
-pub use gate::{FrozenGate, GateError, FIT_ONLY_VERSION, GATE_VERSION, THRESHOLD};
+pub use gate::{FrozenGate, GateError, GATE_VERSION, THRESHOLD};
 pub use ingest::{ingest, IngestOutcome};
 pub use operating_point::{Abstention, Coverage, OperatingPoint, OperatingPointError};
 pub use store::{BeliefStore, DERIVATION_VERSION};

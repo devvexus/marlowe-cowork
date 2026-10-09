@@ -3,13 +3,11 @@ name = "marlowe-surface"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "The TUI and the classic CLI. Rendering and input only — no policy, no state the daemon lacks."
+description = "Terminal rendering foundation: palette, regions, markdown, meter. Rendering and input only — no policy, no state the daemon lacks."
 
 [dependencies]
-# **`marlowe-view` and no producer.** This is the M2 C2d acceptance, and it is enforced by the
-# compiler rather than by review: with `marlowe-stub` confined to dev-dependencies below, nothing
-# in `src/` can name a producer, so a surface cannot author session state even by accident.
-# ARCHITECTURE §2.14 stops being a claim in a module header and becomes a property of this file.
+# **`marlowe-view` and no producer.** Nothing in this crate can name a producer, so a surface
+# cannot author session state even by accident. ARCHITECTURE §2.14 is a property of this file.
 marlowe-view.workspace = true
 # **The display sanitiser, and nothing else from this crate.** `marlowe-contract` is the deepest
 # crate in the workspace and holds no producer, so this does not weaken the note above: a surface
@@ -17,8 +15,3 @@ marlowe-view.workspace = true
 marlowe-contract.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
-
-[dev-dependencies]
-# The scripted producer, for the headless interaction suite only. A dev-dependency is invisible to
-# `src/`, which is the whole point — see the note above.
-marlowe-stub.workspace = true

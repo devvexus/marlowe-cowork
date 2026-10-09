@@ -1,6 +1,44 @@
 # The persona artifact
 
-**`v2.md` is the shipped persona** (M2 C2f). `v1.md` is retained as the superseded version — it was
+## v3 — MarloweCowork (current)
+
+**`v3.md` is the shipped persona.** It keeps all of v2 — anti-sycophancy, answer-first, no emoji,
+never invents familiarity, the five register drops — and adds:
+
+- **`<address>`** — formal address ("sir") for greetings, briefings, alerts and unprompted news;
+  the user's name rarely mid-conversation; never a tic. The *form* of address comes from the user's
+  profile block at runtime. The artifact still never names its operator.
+- **`<rigour>`** — graduate-research standards for claims: established vs suggested vs guessed,
+  numbers with sources and uncertainty, falsifiable over impressive, look for the bug in a result
+  that is too good.
+- **Anticipation and dry wit** in `<cognition>` / `<voice>` — one understated line when stakes are
+  low, never a routine. `<what_you_are_not>` gains "not a butler in costume".
+- **`<memory>`** — rewritten for automatic capture: deliberate records keep the reason with the
+  decision; contradiction asides ("You chose X on 3 September because Y. Still want this?");
+  provenance answers on request.
+- **`<untrusted_content>` / `<consent>`** — restated for the cowork model: after untrusted reads,
+  consequences outside the workspace go to the user; the harness gates, the model does not argue.
+
+### Capability blocks: the prompt never leads the harness
+
+v2's hardest lesson (below) was that a prompt describing a capability the harness lacks makes the
+model fabricate it. So v3 is a **stable core** that describes no feature-specific tools, and
+`blocks/` holds capability sections the harness appends **only when that capability is live**:
+
+| Block | Injected when |
+|---|---|
+| `blocks/briefing.md` | opening a session with a Wake briefing in context (M3) |
+| `blocks/crew.md` | the `dispatch` tool is exposed (M4) |
+| `blocks/voice.md` | the reply will be spoken (M3 WinRT / M6 Kokoro) |
+
+The core plus any blocks form the stable tier; a block toggling changes the prefix and must
+invalidate the prompt cache, the same rule as a version bump.
+
+---
+
+## v2 — history
+
+**`v2.md` was the shipped persona of Marlowe_Harness** (M2 C2f). `v1.md` is retained as the superseded version — it was
 pinned from Addendum C §C10 verbatim. The artifact is loaded with `include_str!` and placed in the
 stable tier of the system prompt (§C6).
 

@@ -1,118 +1,137 @@
-//! Shared rig for the §B13 suite.
+//! Shared rig for the surface suite.
 //!
-//! Every test here renders into a `TestBackend` buffer at a chosen size and a chosen `now_ms`.
-//! That is possible only because the surface reads no clock — see `frame_clock.rs`. It is what
-//! turns "zero flicker" from an opinion into a cell count.
+//! Every test here renders into a `TestBackend` buffer at a chosen size. That is possible only
+//! because the surface reads no clock and holds no producer: a render is a pure function of its
+//! arguments, which is what turns "zero flicker" from an opinion into a cell count.
+//!
+//! There is deliberately no application in this crate any more, so a [`Pane`] stands in for the
+//! conversation: a list of [`marlowe_view::Entry`] laid out through the same `markdown::render_prose`
+//! the product uses, and drawn into a `Buffer`. It has no borders, no scrollbar and no regions --
+//! those belong to whichever layout is built on this crate -- so assertions here are about the
+//! text and its styling, not about where a layout puts it.
 
 // Each test binary compiles this module and uses a different subset of it.
 #![allow(dead_code)]
 
-use marlowe_stub::Session;
-use marlowe_surface::app::{Action, App, Key};
-use marlowe_surface::render;
+use marlowe_surface::chrome::Ink;
+use marlowe_surface::markdown;
 use marlowe_surface::Theme;
-use marlowe_view::Produce;
+use marlowe_view::notice::Speech;
+use marlowe_view::run::{CheckpointView, OrphanPolicyLabel, RunState, RunView};
+use marlowe_view::Entry;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Paragraph, Widget};
 use ratatui::Terminal;
 
-/// §B13 verifies flicker across this range. The low end is §B11's minimum; the high end is a
-/// 4K-ish terminal at a small font.
+/// The sizes the flicker rows are verified across. The low end is the minimum the product
+/// supports; the high end is a 4K-ish terminal at a small font.
 pub const SIZES: [(u16, u16); 5] = [(120, 30), (140, 40), (160, 45), (200, 50), (240, 60)];
-
-/// A producer and a surface, wired the way a real driver wires them.
-///
-/// **C2d made this necessary and that is the point.** M1's tests held one object: `App` owned a
-/// `Session` and a keystroke mutated it in place, so a test could assert on `app.session` straight
-/// after a key. There is now a boundary in between — the surface emits an [`marlowe_view::Intent`],
-/// the producer applies it, and a new view comes back — and a test that wants to observe the
-/// result has to cross the same boundary the product does.
-///
-/// A test that could still reach through would be a test that proved nothing about the split.
-pub struct Rig {
-    pub producer: Session,
-    pub app: App,
-}
-
-impl Rig {
-    pub fn new() -> Self {
-        let producer = Session::new();
-        let app = App::new(producer.view().clone()).expect("the shipped key set has no conflicts");
-        Self { producer, app }
-    }
-
-    /// Publish the producer's current view to the surface.
-    pub fn sync(&mut self) {
-        self.app.update(self.producer.view().clone());
-    }
-
-    /// Advance the producer and republish.
-    pub fn tick(&mut self, now_ms: u64) {
-        self.producer.tick(now_ms);
-        self.sync();
-    }
-
-    /// One keystroke, through the whole loop: dispatch, drain the requests, apply them, republish.
-    pub fn key(&mut self, key: Key, now_ms: u64) -> Action {
-        let action = self.app.on_key(key);
-        self.settle(now_ms);
-        action
-    }
-
-    /// Apply whatever the surface asked for, then republish. Refusals are surfaced, never dropped
-    /// — a rig that swallowed an `IntentError` would hide the one failure mode `Produce::apply`
-    /// exists to make visible.
-    pub fn settle(&mut self, now_ms: u64) {
-        for intent in self.app.drain_intents() {
-            self.producer
-                .apply(intent.clone())
-                .unwrap_or_else(|e| panic!("the producer refused {intent:?}: {e}"));
-        }
-        self.producer.tick(now_ms);
-        self.sync();
-    }
-
-    /// Drive the band to a state, the way `/state` does.
-    pub fn force_state(&mut self, state: marlowe_view::StatusState, now_ms: u64) {
-        self.producer.force_state(state, now_ms);
-        self.producer.tick(now_ms);
-        self.sync();
-    }
-
-    pub fn tab(&mut self, tab: marlowe_view::Tab) {
-        self.app.tab = tab;
-    }
-}
-
-/// A surface over a fresh scripted view, for tests that only render.
-pub fn app() -> App {
-    App::new(Session::new().view().clone()).expect("the shipped key set has no conflicts")
-}
-
-pub fn rig() -> Rig {
-    Rig::new()
-}
 
 pub fn theme() -> Theme {
     Theme::default_truecolor()
 }
 
+/// A conversation reduced to its entries.
+pub struct Pane {
+    pub entries: Vec<Entry>,
+}
+
+impl Pane {
+    pub fn new(entries: Vec<Entry>) -> Self {
+        Self { entries }
+    }
+
+    /// One model reply and nothing else.
+    pub fn saying(text: &str) -> Self {
+        Self::new(vec![Entry::Said(Speech::Model(text.to_string()))])
+    }
+
+    /// One user message and nothing else -- the **flat** path, which has no sanitiser in front of
+    /// it, so what happens to a character there is a statement about ratatui.
+    pub fn user(text: &str) -> Self {
+        Self::new(vec![Entry::User(text.to_string())])
+    }
+}
+
+/// The product's former flat-path wrap, copied verbatim: it splits on `split_whitespace()`, which
+/// drops U+2028 before ratatui sees it. Kept identical so flat-path behaviour is unchanged.
+fn wrap(text: &str, w: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for para in text.split('\n') {
+        let mut line = String::new();
+        for word in para.split_whitespace() {
+            let extra = if line.is_empty() { 0 } else { 1 };
+            if line.chars().count() + extra + word.chars().count() > w && !line.is_empty() {
+                out.push(std::mem::take(&mut line));
+            }
+            // A word longer than the pane is broken rather than left to overflow.
+            let mut rest = word;
+            while w > 0 && rest.chars().count() > w {
+                let cut = rest.char_indices().nth(w).map_or(rest.len(), |(i, _)| i);
+                if !line.is_empty() {
+                    out.push(std::mem::take(&mut line));
+                }
+                out.push(rest[..cut].to_string());
+                rest = &rest[cut..];
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(rest);
+        }
+        out.push(line);
+    }
+    out
+}
+
+/// The pane's lines, wrapped to `width`: model prose through the markdown renderer in Marlowe's
+/// voice, user text flat in the terminal's own foreground. Each entry is followed by a blank line.
+pub fn lines(pane: &Pane, theme: &Theme, width: u16) -> Vec<Line<'static>> {
+    let w = width.max(20) as usize;
+    let mut out: Vec<Line<'static>> = Vec::new();
+    for entry in &pane.entries {
+        match entry {
+            Entry::User(text) => {
+                for l in wrap(text, w) {
+                    out.push(Line::from(Span::styled(l, Style::default())));
+                }
+                out.push(Line::from(""));
+            }
+            Entry::Said(Speech::Model(t)) => {
+                out.extend(markdown::render_prose(t, w, theme, Ink::Speech.style(theme)));
+                out.push(Line::from(""));
+            }
+            other => panic!("the test pane does not draw {other:?}"),
+        }
+    }
+    out
+}
+
+/// Draw the pane into `area`, leaving a two-column gutter on the right as the product's scroll
+/// area does.
+pub fn draw(pane: &Pane, theme: &Theme, area: Rect, buf: &mut Buffer) {
+    let text_area = Rect { width: area.width.saturating_sub(2), ..area };
+    Paragraph::new(lines(pane, theme, text_area.width)).render(text_area, buf);
+}
+
 /// Render one frame and hand back the buffer.
-pub fn frame(app: &App, w: u16, h: u16) -> Buffer {
+pub fn frame(pane: &Pane, w: u16, h: u16) -> Buffer {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-    term.draw(|f| render::draw(app, &theme(), f.area(), f.buffer_mut()))
-        .unwrap();
+    term.draw(|f| draw(pane, &theme(), f.area(), f.buffer_mut())).unwrap();
     term.backend().buffer().clone()
 }
 
-/// Render into a persistent terminal so the *next* draw is a real differential update.
+/// A persistent terminal, so the *next* draw is a real differential update.
 pub fn terminal(w: u16, h: u16) -> Terminal<TestBackend> {
     Terminal::new(TestBackend::new(w, h)).unwrap()
 }
 
-pub fn draw_into(term: &mut Terminal<TestBackend>, app: &App) -> Buffer {
-    term.draw(|f| render::draw(app, &theme(), f.area(), f.buffer_mut()))
-        .unwrap();
+pub fn draw_into(term: &mut Terminal<TestBackend>, pane: &Pane) -> Buffer {
+    term.draw(|f| draw(pane, &theme(), f.area(), f.buffer_mut())).unwrap();
     term.backend().buffer().clone()
 }
 
@@ -130,35 +149,31 @@ pub fn diff_cells(a: &Buffer, b: &Buffer) -> Vec<(u16, u16)> {
     out
 }
 
-/// Every non-blank string in a buffer row, for tests that assert on what is drawn where.
+/// Every symbol in a buffer row, for tests that assert on what is drawn where.
 pub fn row_text(buf: &Buffer, y: u16) -> String {
     (0..buf.area.width)
-        .map(|x| {
-            buf.cell((x, y))
-                .map(|c| c.symbol())
-                .unwrap_or(" ")
-                .to_string()
-        })
+        .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" ").to_string())
         .collect()
 }
 
 pub fn buffer_text(buf: &Buffer) -> String {
-    (0..buf.area.height)
-        .map(|y| row_text(buf, y))
+    (0..buf.area.height).map(|y| row_text(buf, y)).collect::<Vec<_>>().join("\n")
+}
+
+/// The text inside one rect, and **only** that rect. Search the region, not the whole buffer: a
+/// whole-buffer `contains` can match chrome instead of prose and go green for the wrong reason.
+pub fn region_text(buf: &Buffer, r: Rect) -> String {
+    (r.y..r.bottom())
+        .map(|y| {
+            (r.x..r.right())
+                .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" ").to_string())
+                .collect::<String>()
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-// ─── run windows (`M3-DESIGN.md` §6) ──────────────────────────────────────────────────────────
-
-use marlowe_surface::window::{self, WindowApp};
-use marlowe_view::run::{CheckpointView, OrphanPolicyLabel, RunState, RunView};
-
-/// §6.4 borrows §B13's flicker rows, and a window is a different size class from the main frame:
-/// its floor is 80x24, not 120x30. The high end is the same 4K-ish terminal.
-pub const WINDOW_SIZES: [(u16, u16); 5] = [(80, 24), (100, 30), (120, 30), (160, 45), (200, 50)];
-
-/// A run that is running, with a ceiling and no children. **No `Default` anywhere near this** —
+/// A run that is running, with a ceiling and no children. **No `Default` anywhere near this** --
 /// [`RunView`] deliberately has none, so every test states the run it is talking about.
 pub fn run_view() -> RunView {
     RunView {
@@ -183,38 +198,4 @@ pub fn run_view() -> RunView {
         scope_memory: Vec::new(),
         meetings: Vec::new(),
     }
-}
-
-pub fn window() -> WindowApp {
-    WindowApp::new(run_view())
-}
-
-pub fn window_frame(app: &WindowApp, w: u16, h: u16) -> Buffer {
-    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-    term.draw(|f| window::draw(app, &theme(), f.area(), f.buffer_mut()))
-        .unwrap();
-    term.backend().buffer().clone()
-}
-
-pub fn draw_window_into(term: &mut Terminal<TestBackend>, app: &WindowApp) -> Buffer {
-    term.draw(|f| window::draw(app, &theme(), f.area(), f.buffer_mut()))
-        .unwrap();
-    term.backend().buffer().clone()
-}
-
-/// The text inside one region's rect, and **only** that region.
-///
-/// **Search the region, not the whole buffer.** Two tests in M2 matched chrome instead of prose and
-/// went green on a frame that did not contain what they were named for; a window has eight bordered
-/// panels and a footer, so a whole-buffer `contains` here would be worth even less.
-pub fn region_text(buf: &Buffer, r: ratatui::layout::Rect) -> String {
-    (r.y..r.bottom())
-        .map(|y| {
-            (r.x..r.right())
-                .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" ").to_string())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("
-")
 }

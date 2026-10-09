@@ -24,7 +24,7 @@ use crate::entry::MemoryEntry;
 use crate::gate::{features, FrozenGate};
 use crate::operating_point::{Abstention, Coverage, OperatingPoint};
 use crate::probe::{Stage, StageProbe};
-use crate::rerank::{CrossEncoder, RRF_K};
+use crate::rerank::CrossEncoder;
 use crate::store::BeliefStore;
 
 /// The gate stamp for a build with no gate â€” Session A's state, retained for the feature-dump
@@ -173,8 +173,8 @@ fn surviving_sessions(
 
 /// How a run scores its candidates.
 ///
-/// Two modes and no third. The absence of a "gate is optional" variant is the point: there is
-/// no path where a calibrated stamp can be produced without a calibrated gate.
+/// One mode. The absence of a "gate is optional" variant is the point: there is no path where a
+/// calibrated stamp can be produced without a calibrated gate.
 pub enum Scoring<'a> {
     /// The shipping path.
     ///
@@ -196,10 +196,6 @@ pub enum Scoring<'a> {
         /// measurement arm without having said so.
         coverage: Coverage,
     },
-    /// Feature-dump mode, used only by `tools/fit_gate.py`. Computes features so they can be
-    /// written to a side file, calibrates nothing, and gates nothing â€” so it selects exactly
-    /// as Session A did (recency, then the budget) and stamps `uncalibrated-fit-only`.
-    FitDump,
 }
 
 /// Whether a run reranks, and with what budget.
@@ -224,24 +220,6 @@ pub enum Rerank<'a> {
         ///
         /// Carried on the variant rather than read from a global so a run cannot report one
         /// configuration and execute another; the retrieval profile records the value per query.
-        batched: bool,
-    },
-    /// The GPU cascade â€” depth 30, narrowed to 10 by the shipped graph, fused with a second
-    /// opinion over the narrowed set.
-    ///
-    /// Held-out (`runs/session-m0c-m/cascade-heldout-read.json`, pre-registered):
-    /// **R@1 0.6987 / R@3 0.8865** against the shipped path's **0.6725 / 0.8515**.
-    ///
-    /// `encoder` is the SHIPPED graph and must stay the shipped graph: the 30 â†’ 10 narrowing was
-    /// measured with it (retention 0.9956), and the operating point's margin stays in its logit
-    /// units. `fuse` is the second opinion, digest-pinned in [`crate::rerank::FUSION_GRAPHS`].
-    ///
-    /// **It cannot run on CPU and must never be offered there**: the same measurement that makes
-    /// it attractive reads p50 1134 ms at the shipped pins against Â§5.7's 300 ms. Selection lives
-    /// in [`RerankPlan::select`], which keys on whether a CUDA session actually constructed.
-    Cascade {
-        encoder: &'a mut CrossEncoder,
-        fuse: &'a mut CrossEncoder,
         batched: bool,
     },
 }
@@ -288,35 +266,6 @@ pub enum RetrievalScope {
 /// ~9 ms per pair measured at 1 thread, ten pairs is ~90 ms against Â§5.7's 300 ms.
 pub const RERANK_BUDGET: usize = 10;
 
-/// The deeper slate the CASCADE draws, and it is **GPU-only by measurement, not by preference**.
-///
-/// M0c Session M2 measured, held-out, n = 229: a 30-wide slate narrowed by the shipped graph to 10
-/// and fused with `ms-marco-MiniLM-L-6-v2-ft-session-j` reads **R@1 0.6987 / R@3 0.8865** against
-/// the shipped **0.6725 / 0.8515** â€” R@3 +0.0350, McNemar 10 gained / 2 lost, **p = 0.0386**. Input
-/// recall goes 0.9039 â†’ 0.9782.
-///
-/// **It cannot run on the 1-vCPU target and that is a measurement, not a guess.** On the shipped
-/// pins (1 intra-thread, batch 1, CPU) the cascade reads **p50 1134 ms / p95 1278 ms** against
-/// Â§5.7's 300 ms budget, versus 182 / 191 ms for the shipped depth-10 path â€” 4.3x over. Every
-/// figure that made the cascade look affordable (38.7 ms p50) was a **CUDA** number from
-/// `runs/session-m0c-m/frontier.json`, and quoting it for a CPU deployment is the exact inversion
-/// of the error `CLAUDE.md` records as *"every rejection figure in this project was a 1-thread CPU
-/// number for a GPU target."*
-///
-/// So the plan is selected by whether a CUDA session actually **constructs** â€” see
-/// [`RerankPlan::select`]. It is chosen once, at load, and **announced**, because a path that
-/// silently differs from the one a number was measured on is the failure this file exists to avoid.
-pub const CASCADE_SLATE: usize = 30;
-
-/// How many candidates the cascade's first stage keeps for the second.
-///
-/// Fixed at 10 to match [`RERANK_BUDGET`] so the final ranker sees the same number of candidates it
-/// does today. **Registered before the held-out read and deliberately not swept beforehand**
-/// (`runs/session-m0c-m/PREREGISTRATION-CASCADE-HELDOUT.json`). Narrowing 30 â†’ 10 retains gold at
-/// **0.9956**, which is why the cascade wins: the cross-encoder is excellent at narrowing and only
-/// mediocre at the final pick.
-pub const CASCADE_NARROW: usize = 10;
-
 /// How many memories the operating point admits once it decides to inject.
 ///
 /// **Was 1.** Changed under direction in M0c Session M2. Held-out on the shipped ranking the gold
@@ -327,80 +276,6 @@ pub const CASCADE_NARROW: usize = 10;
 /// **`docs/design/PRECISION-COVERAGE.md` is a top-1 artifact and does not describe this.** See the
 /// K1 block in `select_for_injection` for the full debt.
 pub const ADMIT_TOP_K: usize = 3;
-
-/// Which rerank shape this process will run, decided ONCE at load and announced.
-///
-/// # âš  NOT WIRED. NOTHING READS THIS YET. THE CASCADE DOES NOT SHIP.
-///
-/// `RerankPlan::select` has **no call site in the product**. `retrieve` still draws
-/// [`RERANK_BUDGET`] unconditionally and still loads one graph. This type, [`CASCADE_SLATE`] and
-/// [`CASCADE_NARROW`] are scaffolding for a change that is **not finished**, and they are marked
-/// here because `CLAUDE.md` logs *"a declared control that nothing reads"* as the sixteenth
-/// instance of this project's standing failure family â€” `web`'s `inline_threshold_bytes: 0`, with a
-/// green test asserting the declaration while every byte reached attention.
-///
-/// **Do not write a test asserting these constants' values.** That is the exact shape of the
-/// failure. The test that would mean something asserts the slate the executor actually drew.
-///
-/// Four things block the wiring, all real:
-///   1. `rerank.rs` pins a single [`crate::rerank::MODEL_SHA256`]; a second graph fails the digest
-///      check by construction, which is the guard working, not an obstacle to route around.
-///   2. `Rerank::CrossEncoder` holds one `&mut CrossEncoder`.
-///   3. `MAX_BATCH` is 10. Depth 30 must run **sequentially** â€” ADR-015's batch invariance was
-///      measured at sizes 1..10 and is **never inherited**, so a 30-row forward is an unmeasured
-///      scorer until someone measures it.
-///   4. `ms-marco-MiniLM-L-6-v2-ft-session-j` has no `cross-encoder-reference` fixture. The
-///      standing check is per-graph.
-///
-/// The two shapes have **different published numbers**, and that is the whole reason this is a
-/// named type rather than an `if` at the call site: a session reading `R@1 0.6987` must be able to
-/// tell which path produced it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RerankPlan {
-    /// Shipped, CPU-affordable. Depth 10, one graph. Held-out **R@1 0.6725 / R@3 0.8515**.
-    Shipped,
-    /// Depth 30 â†’ narrow 10 â†’ fuse two graphs. Held-out **R@1 0.6987 / R@3 0.8865**.
-    /// **Requires a constructed CUDA session.**
-    Cascade,
-}
-
-impl RerankPlan {
-    /// Pick the plan from whether CUDA genuinely loads.
-    ///
-    /// **The probe must be a CONSTRUCTION, never an availability list.** `ort`'s
-    /// `error_on_failure()` turns a registration failure into a hard error instead of a silent
-    /// fallback, which is what makes "it constructed" mean something. Session G's spike found CUDA
-    /// *listed* as available while failing to create on a missing `cublasLt64_12.dll`, after which
-    /// ORT registered CPU and scored happily â€” a "GPU" figure within 1% of the CPU one. That is
-    /// instance #1 in `CLAUDE.md`'s pipe-verified ledger: **a description of a mechanism is not a
-    /// measurement of its output.**
-    ///
-    /// **What this still does NOT cover, stated rather than implied.** `ort` 2.0.0-rc.10 exposes no
-    /// node placement, and Session L measured **13.6% of nodes running on CPU** under a
-    /// successfully registered CUDA session (all shape/index ops, no matmuls). So this answers
-    /// "did a CUDA session construct", not "did every node run on the GPU". The second question
-    /// lives in `tools/session_l_gpu_recovery.py` and is not assertable from here.
-    pub fn select(cuda_constructed: bool) -> Self {
-        if cuda_constructed { Self::Cascade } else { Self::Shipped }
-    }
-
-    /// The slate depth this plan draws.
-    pub fn slate(self) -> usize {
-        match self {
-            Self::Shipped => RERANK_BUDGET,
-            Self::Cascade => CASCADE_SLATE,
-        }
-    }
-
-    /// What `--status` and the `--dev` surface print. A plan nobody can see is a plan nobody can
-    /// check against the number they are quoting.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Shipped => "shipped Â· depth 10 Â· CPU Â· held-out R@1 0.6725 / R@3 0.8515",
-            Self::Cascade => "cascade Â· depth 30 â†’ 10 Â· CUDA Â· held-out R@1 0.6987 / R@3 0.8865",
-        }
-    }
-}
 
 /// One candidate after scoring. The dump writes these; the selection ranks them.
 pub struct ScoredCandidate<'a> {
@@ -433,24 +308,7 @@ pub struct ScoredCandidate<'a> {
     /// outside the reranking budget. It never means "scored zero": a cross-encoder logit is signed
     /// and near-zero is a real, middling score, so a `0.0` sentinel would be indistinguishable from
     /// a genuine reading.
-    ///
-    /// **Under the cascade this stays the SHIPPED graph's logit and is not overwritten with a
-    /// fusion score.** K1's operating point is calibrated in this graph's logit units; writing an
-    /// RRF score (~0.03) into the field the cut point is compared against would silently compare
-    /// two different quantities and the abstention rule would read as noise. The fusion's opinion
-    /// lives in [`Self::fusion_rank`] instead.
     pub rerank_score: Option<f32>,
-    /// The candidate's 0-based position under the GPU cascade's rank fusion, if it ran.
-    ///
-    /// `None` means the cascade did not run, or this candidate was outside the narrowed set. It is
-    /// the ranking key's **highest-priority level when present**, ahead of `rerank_score`, because
-    /// the fusion is what was measured at held-out R@3 0.8908 â€” the shipped logit alone reads
-    /// 0.8865.
-    ///
-    /// **A rank, not a score, deliberately.** RRF is defined over ranks; keeping the rank means the
-    /// dump records what the fusion actually decided rather than a float whose scale is an artifact
-    /// of `RRF_K` and the number of members.
-    pub fusion_rank: Option<u32>,
 }
 
 pub struct Selection<'a> {
@@ -536,9 +394,8 @@ fn dense_for(
 
 /// The slate: the top `budget` pruning survivors under the EXISTING ranking key.
 ///
-/// `(winning cue z desc, margin desc, id asc)` â€” the same key Session H left in place, so a
-/// cascade slate is the shipped slate's first [`CASCADE_SLATE`] entries and nothing about the
-/// draw is new to justify.
+/// `(winning cue z desc, margin desc, id asc)` â€” the same key Session H left in place, so
+/// nothing about the draw is new to justify.
 fn draw_slate<'a>(scored: &[ScoredCandidate<'a>], budget: usize) -> Vec<usize> {
     let mut slate: Vec<usize> = (0..scored.len()).filter(|i| scored[*i].survived_pruning).collect();
     slate.sort_by(|a, b| {
@@ -555,63 +412,42 @@ fn draw_slate<'a>(scored: &[ScoredCandidate<'a>], budget: usize) -> Vec<usize> {
 /// Score one slate against the query, writing [`ScoredCandidate::rerank_score`] in place.
 ///
 /// **Batched scoring never exceeds [`crate::rerank::MAX_BATCH`].** The invariance sweep covers
-/// sizes 1..10 and nothing above; a depth-30 cascade therefore runs as chunks of at most 10 rows
-/// rather than one 30-wide forward nobody has measured. Chunking keeps every forward inside the
-/// measured envelope instead of extrapolating past it.
+/// sizes 1..10 and nothing above, so a slate is scored as chunks of at most 10 rows. Chunking
+/// keeps every forward inside the measured envelope instead of extrapolating past it.
 ///
 /// Errors are loud per pair or per chunk and leave that candidate's score unset â€” the same
 /// semantics the single-graph path has always had. A reranker that silently scored nothing would
 /// leave the stage looking present in the report and absent in the ranking.
-///
-/// **`write_back` guards [`ScoredCandidate::rerank_score`'s] contract**, not convenience. The
-/// field is documented â€” and read â€” as THE SHIPPED GRAPH's logit everywhere it appears: the dump,
-/// the offline reconstructions, and the operating point's margin are all calibrated in those
-/// units. The cascade's second stage must therefore return its logits WITHOUT touching the
-/// field; a fuse-stage write-back left ten rows per query carrying a second graph's reading under
-/// the first graph's name, which is the two-sides-silently-disagree pattern with the artifact as
-/// the victim.
-///
-/// Returns `None` when nothing was scored (empty slate), else a parallel vec where entry `i`
-/// carries `Some(logit)` or `None` for a failed pair â€” consumed by the cascade's second stage.
 fn score_slate(
     encoder: &mut CrossEncoder,
     query_text: &str,
     scored: &mut [ScoredCandidate<'_>],
     slate: &[usize],
     batched: bool,
-    write_back: bool,
-) -> Option<Vec<Option<f32>>> {
+) {
     if slate.is_empty() {
-        return None;
+        return;
     }
     if !batched {
-        let mut out = vec![None; slate.len()];
-        for (slot, index) in out.iter_mut().zip(slate) {
+        for index in slate {
             match encoder.score(query_text, &scored[*index].entry.text) {
                 Ok(logit) => {
-                    if write_back {
-                        scored[*index].rerank_score = Some(logit);
-                    }
-                    *slot = Some(logit);
+                    scored[*index].rerank_score = Some(logit);
                 }
                 Err(e) => {
                     eprintln!("marlowe: cross-encoder failed on {}: {e}", scored[*index].entry.id)
                 }
             }
         }
-        return Some(out);
+        return;
     }
-    let mut out = Vec::with_capacity(slate.len());
     for chunk in slate.chunks(crate::rerank::MAX_BATCH) {
         let documents: Vec<&str> =
             chunk.iter().map(|i| scored[*i].entry.text.as_str()).collect();
         match encoder.score_batch(query_text, &documents) {
             Ok(logits) => {
                 for (index, logit) in chunk.iter().zip(logits) {
-                    if write_back {
-                        scored[*index].rerank_score = Some(logit);
-                    }
-                    out.push(Some(logit));
+                    scored[*index].rerank_score = Some(logit);
                 }
             }
             Err(e) => {
@@ -620,70 +456,16 @@ fn score_slate(
                     documents.len(),
                     query_text
                 );
-                out.extend(std::iter::repeat(None).take(documents.len()));
             }
         }
     }
-    Some(out)
-}
-
-/// [`score_slate`] for an ARBITRARY ordering (the cascade's narrowed set, which is not a prefix of
-/// anything). Scores in the order given and returns logits in that same order.
-///
-/// **Never writes back** â€” see `write_back` above; this wrapper exists so the call sites state
-/// the contract by name rather than by a bare `false`.
-fn score_slate_ordered(
-    encoder: &mut CrossEncoder,
-    query_text: &str,
-    scored: &mut [ScoredCandidate<'_>],
-    order: &[usize],
-    batched: bool,
-) -> Option<Vec<Option<f32>>> {
-    score_slate(encoder, query_text, scored, order, batched, false)
-}
-
-/// The cascade's stage-2 fusion, **a pure function of ranks** so it is testable without a graph.
-///
-/// Replicates `tools/cascade_heldout_read.py` exactly:
-///
-/// * `narrow` arrives in PRIMARY-logit order, so candidate `narrow[p]` holds primary rank `p`.
-/// * secondary rank: positions sorted by (secondary logit desc, candidate index asc) â€” the tool's
-///   `sorted(narrow, key=(-s6[i], i))`, whose tie-break is the pool index, which here is the
-///   candidate's position in `scored` (id ascending).
-/// * fusion score: `1/(RRF_K + primary_rank) + 1/(RRF_K + secondary_rank)` â€” Cormack et al.'s
-///   published default, fixed before any number existed.
-/// * output: `(candidate index, fusion rank)` pairs, fusion-descending, ties by candidate index.
-///
-/// A tie anywhere falls through to an explicit integer comparison. Nothing here reads a clock, a
-/// hash iterator or a float hash â€” the ranking is byte-reproducible, which `repro`'s byte-for-byte
-/// comparison depends on.
-fn cascade_fusion_order(narrow: &[usize], secondary: &[f32]) -> Vec<(usize, u32)> {
-    debug_assert_eq!(narrow.len(), secondary.len());
-    // Secondary ranks, by position in `narrow`.
-    let mut by_secondary: Vec<usize> = (0..narrow.len()).collect();
-    by_secondary.sort_by(|&a, &b| {
-        secondary[b].total_cmp(&secondary[a]).then_with(|| narrow[a].cmp(&narrow[b]))
-    });
-    let mut secondary_rank = vec![0usize; narrow.len()];
-    for (rank, &position) in by_secondary.iter().enumerate() {
-        secondary_rank[position] = rank;
-    }
-
-    let fusion = |p: usize| {
-        1.0 / (RRF_K + p as f32) + 1.0 / (RRF_K + secondary_rank[p] as f32)
-    };
-    let mut order: Vec<usize> = (0..narrow.len()).collect();
-    order.sort_by(|&a, &b| {
-        fusion(b).total_cmp(&fusion(a)).then_with(|| narrow[a].cmp(&narrow[b]))
-    });
-    order.into_iter().enumerate().map(|(rank, p)| (narrow[p], rank as u32)).collect()
 }
 
 /// Select what to inject.
 ///
 /// Ranking under [`Scoring::Gated`] is `(score desc, margin desc, id asc)` â€” the winning cue's
-/// **continuous, query-local** z and then its margin. Under [`Scoring::FitDump`] it is Session A's
-/// `(created_at desc, id asc)`. Both are **totally deterministic**, and that is not a nicety:
+/// **continuous, query-local** z and then its margin. It is **totally deterministic**, and that
+/// is not a nicety:
 /// `marlowe-eval repro` compares two runs byte for byte and the injected set is in the hash. The
 /// final tiebreak is always `id` because two entries with equal scores would otherwise be ordered
 /// by whatever the collection did.
@@ -785,32 +567,12 @@ pub fn select_for_injection_probed<'a, P: StageProbe>(
                     session_key: 0,
                     survived_pruning: true,
                     rerank_score: None,
-                    fusion_rank: None,
                 }
             }
-            // No gate ran. Zero is the honest report of "nothing scored this", and
-            // `gate.version` names the absence so the zero cannot be read as a low score.
-            Scoring::FitDump => ScoredCandidate {
-                entry,
-                features: f,
-                score: 0.0,
-                margin: 0.0,
-                calibrated_precision: 0.0,
-                winning_cue: "none",
-                passes: true,
-                session_key: 0,
-                survived_pruning: true,
-                rerank_score: None,
-                fusion_rank: None,
-            },
         })
         .collect();
 
     // ---- session pruning and reranking ------------------------------------------------------
-    //
-    // **Gated path only.** `Scoring::FitDump` is the population `tools/fit_gate.py` calibrates on,
-    // and pruning it would refit the gate on a different population as a side effect of a ranking
-    // change â€” a gate refit nobody registered.
     //
     // **After `features::extract_all`, deliberately, and this is the most consequential ordering
     // decision in the session.** The frozen gate's isotonic curves were fit on margin
@@ -823,7 +585,7 @@ pub fn select_for_injection_probed<'a, P: StageProbe>(
     // lever and needs its own registration.
     probe.enter(Stage::Prune);
     let mut pruning_applied = false;
-    if matches!(scoring, Scoring::Gated { .. }) {
+    {
         let keys = session_keys(&scoped, SESSION_GAP_MS);
         for (candidate, key) in scored.iter_mut().zip(keys.iter()) {
             candidate.session_key = *key;
@@ -844,47 +606,7 @@ pub fn select_for_injection_probed<'a, P: StageProbe>(
             // with the key the reranker then replaces is what makes this a rerank stage rather than a
             // new cue â€” and it is what Q2's registered "fixed budget of 10 reranked pairs" costs.
             let slate = draw_slate(&scored, *budget);
-            score_slate(encoder, query_text, &mut scored, &slate, *batched, true);
-        }
-        Rerank::Cascade { encoder, fuse, batched } => {
-            let slate = draw_slate(&scored, CASCADE_SLATE);
-
-            // â”€â”€ stage 1: the shipped graph narrows 30 â†’ 10. Retention measured 0.9956. â”€â”€
-            score_slate(encoder, query_text, &mut scored, &slate, *batched, true);
-            let mut narrowed: Vec<usize> = slate
-                .iter()
-                .copied()
-                .filter(|i| scored[*i].rerank_score.is_some())
-                .collect();
-            // Logit descending, then SCORED INDEX ascending on ties â€” which is id ascending,
-            // because `scored` iterates the store's BTreeMap. This replicates the offline tool's
-            // `sorted(zip(sc, slate), key=(-score, pool_index))` exactly; a tie-break here is the
-            // kind of thing that would silently flip a case and fail gate G2, so it is spelled out.
-            narrowed.sort_by(|&a, &b| {
-                let (xa, xb) = (
-                    scored[a].rerank_score.unwrap_or(f32::NEG_INFINITY),
-                    scored[b].rerank_score.unwrap_or(f32::NEG_INFINITY),
-                );
-                xb.total_cmp(&xa).then_with(|| a.cmp(&b))
-            });
-            narrowed.truncate(CASCADE_NARROW);
-
-            // â”€â”€ stage 2: the second opinion scores the narrowed set â”€â”€
-            let fuse_scores = score_slate_ordered(fuse, query_text, &mut scored, &narrowed, *batched);
-
-            // â”€â”€ the fusion, as a pure function â”€â”€
-            // `rerank_score` keeps the PRIMARY graph's logit everywhere (see its doc): K1's cut
-            // point is calibrated in those units and nothing overwrites it.
-            if let Some(secondary) = fuse_scores {
-                let secondary: Vec<f32> = narrowed
-                    .iter()
-                    .zip(secondary)
-                    .map(|(i, s)| s.unwrap_or(*scored[*i].rerank_score.as_ref().unwrap_or(&f32::NEG_INFINITY)))
-                    .collect();
-                for (index, rank) in cascade_fusion_order(&narrowed, &secondary) {
-                    scored[index].fusion_rank = Some(rank);
-                }
-            }
+            score_slate(encoder, query_text, &mut scored, &slate, *batched);
         }
     }
 
@@ -936,22 +658,6 @@ pub fn select_for_injection_probed<'a, P: StageProbe>(
                 let (x, y) = (&scored[*a], &scored[*b]);
                 y.survived_pruning
                     .cmp(&x.survived_pruning)
-                    // **The cascade's fusion rank outranks the single graph's logit when it exists.**
-                    // Held-out: the fusion reads R@3 0.8908, the shipped logit alone 0.8865. Absent
-                    // (no GPU, so no cascade) every candidate is `None` and this level is inert â€”
-                    // the CPU path's ordering is bit-identical to what it was before this level
-                    // existed, which is what makes the GPU gate a pure addition.
-                    //
-                    // `None` must sort AFTER any `Some` for the same reason it does for
-                    // `rerank_score` below: a candidate outside the narrowed set has no fusion
-                    // opinion, and absence must never beat a real one. `Option`'s own ordering puts
-                    // `None` first, so it is written out rather than derived.
-                    .then_with(|| match (x.fusion_rank, y.fusion_rank) {
-                        (Some(p), Some(q)) => p.cmp(&q), // ascending: rank 0 is best
-                        (Some(_), None) => std::cmp::Ordering::Less,
-                        (None, Some(_)) => std::cmp::Ordering::Greater,
-                        (None, None) => std::cmp::Ordering::Equal,
-                    })
                     // `None` sorts AFTER any `Some`, so an unreranked candidate never outranks a
                     // reranked one on the absence of a score. `Option`'s own ordering puts `None`
                     // first, which is the opposite, so it is written out rather than derived.
@@ -963,15 +669,6 @@ pub fn select_for_injection_probed<'a, P: StageProbe>(
                     })
                     .then_with(|| y.score.total_cmp(&x.score))
                     .then_with(|| y.margin.total_cmp(&x.margin))
-                    .then_with(|| x.entry.id.cmp(&y.entry.id))
-            });
-        }
-        Scoring::FitDump => {
-            order.sort_by(|a, b| {
-                let (x, y) = (&scored[*a], &scored[*b]);
-                y.entry
-                    .created_at
-                    .cmp(&x.entry.created_at)
                     .then_with(|| x.entry.id.cmp(&y.entry.id))
             });
         }
@@ -1014,45 +711,34 @@ pub fn select_for_injection_probed<'a, P: StageProbe>(
     // everything and nothing has ever been injected. ANDing the two would leave injection dead and
     // the change undetectable. ADR-019 replaced the single-point criterion with a published curve
     // and a declared point exactly because the gate cannot express a confident subset.
-    let (cut, gate_ordered) = match scoring {
-        Scoring::Gated { operating_point, coverage, .. } => (Some((*operating_point, *coverage)), true),
-        Scoring::FitDump => (None, false),
+    let (op, coverage) = match scoring {
+        Scoring::Gated { operating_point, coverage, .. } => (*operating_point, *coverage),
     };
 
-    let mut rerank_margin: Option<f32> = None;
-    let mut abstention: Option<Abstention> = None;
     // The two logits the decision reads. Extracted here; judged by
     // `operating_point::decide`, which is a pure function so the rule can be tested without a
     // 60 MB ONNX graph. See its doc for why that matters.
     let rank_one = order.first().and_then(|i| scored[*i].rerank_score);
     let rank_two = order.get(1).and_then(|i| scored[*i].rerank_score);
 
-    // Under `FitDump` the old behaviour is preserved exactly: no cut point, fill the budget by
-    // recency. `tools/fit_gate.py` reads the dump rather than the injected set, and a fit run that
-    // changed shape here would calibrate against a candidate set no scoring run ever has.
-    let admitted: Vec<usize> = if let Some((op, coverage)) = cut {
-        let verdict = crate::operating_point::decide(
-            order.len(),
-            !matches!(rerank, Rerank::Off),
-            rank_one,
-            rank_two,
-            op,
-            coverage,
-        );
-        rerank_margin = verdict.margin;
-        abstention = verdict.abstention;
-        if verdict.admit_rank_one {
-            // The gate's verdict is still a RANK-ONE decision â€” `decide` reads the rank-1 and
-            // rank-2 logits and nothing else. What changed is how many memories that verdict
-            // admits, not what it is computed from.
-            order.iter().take(ADMIT_TOP_K).copied().collect()
-        } else {
-            Vec::new()
-        }
+    let verdict = crate::operating_point::decide(
+        order.len(),
+        !matches!(rerank, Rerank::Off),
+        rank_one,
+        rank_two,
+        op,
+        coverage,
+    );
+    let rerank_margin: Option<f32> = verdict.margin;
+    let abstention: Option<Abstention> = verdict.abstention;
+    let admitted: Vec<usize> = if verdict.admit_rank_one {
+        // The gate's verdict is still a RANK-ONE decision â€” `decide` reads the rank-1 and
+        // rank-2 logits and nothing else. What changed is how many memories that verdict
+        // admits, not what it is computed from.
+        order.iter().take(ADMIT_TOP_K).copied().collect()
     } else {
-        order
+        Vec::new()
     };
-    let _ = gate_ordered;
 
     let mut injected = Vec::new();
     let mut tokens = 0u32;
@@ -1221,25 +907,29 @@ mod tests {
         .unwrap()
     }
 
-    fn dump() -> Scoring<'static> {
-        Scoring::FitDump
-    }
-
     #[test]
     fn nothing_is_injected_before_maturation() {
+        let gate = test_gate();
+        let point = op();
+        let scoring = Scoring::Gated { gate: &gate, operating_point: &point, coverage: Coverage::Declared };
         let beliefs = store();
-        let sel = select_for_injection(&beliefs, "s-1", "ingest", 2_000, 7000, &dump(), &VectorStore::default(), None, &mut Rerank::Off, RetrievalScope::ThisSession);
+        let sel = select_for_injection(&beliefs, "s-1", "ingest", 2_000, 7000, &scoring, &VectorStore::default(), None, &mut Rerank::Off, RetrievalScope::ThisSession);
         assert!(sel.injected.is_empty());
         assert_eq!(sel.considered, 0, "and nothing was even a candidate");
     }
 
     #[test]
     fn only_the_requested_session_is_scoped() {
+        // Asserted on `scored`, the population every offline number is computed over. With
+        // `Rerank::Off` the declared operating point abstains, so `injected` is empty here.
         let now = 3_000 + MATURATION_WINDOW_MS;
+        let gate = test_gate();
+        let point = op();
+        let scoring = Scoring::Gated { gate: &gate, operating_point: &point, coverage: Coverage::Declared };
         let beliefs = store();
-        let sel = select_for_injection(&beliefs, "s-1", "ingest", now, 7000, &dump(), &VectorStore::default(), None, &mut Rerank::Off, RetrievalScope::ThisSession);
-        assert_eq!(sel.injected.len(), 2);
-        assert!(sel.injected.iter().all(|i| i.memory_id != "m-c"));
+        let sel = select_for_injection(&beliefs, "s-1", "ingest", now, 7000, &scoring, &VectorStore::default(), None, &mut Rerank::Off, RetrievalScope::ThisSession);
+        assert_eq!(sel.scored.len(), 2);
+        assert!(sel.scored.iter().all(|c| c.entry.id != "m-c"));
         assert_eq!(sel.considered, 3, "considered counts the whole candidate set");
         assert_eq!(sel.scoped, 2);
     }
@@ -1412,7 +1102,10 @@ mod tests {
     fn the_dump_order_is_stable() {
         let now = 3_000 + MATURATION_WINDOW_MS;
         let beliefs = store();
-        let sel = select_for_injection(&beliefs, "s-1", "ingest", now, 7000, &dump(), &VectorStore::default(), None, &mut Rerank::Off, RetrievalScope::ThisSession);
+        let gate = test_gate();
+        let point = op();
+        let scoring = Scoring::Gated { gate: &gate, operating_point: &point, coverage: Coverage::Declared };
+        let sel = select_for_injection(&beliefs, "s-1", "ingest", now, 7000, &scoring, &VectorStore::default(), None, &mut Rerank::Off, RetrievalScope::ThisSession);
         let ids: Vec<&str> = sel.scored.iter().map(|c| c.entry.id.as_str()).collect();
         assert_eq!(ids, vec!["m-a", "m-b"], "sorted by id, so two runs write the same bytes");
     }
@@ -1589,151 +1282,5 @@ mod tests {
             Some(Abstention::NoReranker),
             "the operating point decides before the budget does"
         );
-    }
-
-    // â”€â”€ the cascade's stage-2 fusion â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    //
-    // These assert the ARITHMETIC of `cascade_fusion_order` against hand-computed RRF values, and
-    // the tie-breaks against the offline tool's sort keys. A mutation to any comparison in that
-    // function moves at least one assertion here; a mutation that survives them would have to
-    // preserve every rank, every tie order and the exact-tie case simultaneously.
-
-    #[test]
-    fn rrf_fusion_orders_by_reciprocal_rank_sum() {
-        // narrow arrives in PRIMARY-rank order: 10 is primary rank 0, 20 rank 1, 30 rank 2.
-        // Secondary logits order them 30, 10, 20 â†’ secondary ranks 10â†’1, 20â†’2, 30â†’0.
-        //
-        //   fusion(10) = 1/(60+0) + 1/(60+1) = 0.0330601
-        //   fusion(30) = 1/(60+2) + 1/(60+0) = 0.0327957
-        //   fusion(20) = 1/(60+1) + 1/(60+2) = 0.0325224
-        let narrow = vec![10usize, 20, 30];
-        let secondary = [0.4f32, 0.2, 0.9];
-        assert_eq!(
-            cascade_fusion_order(&narrow, &secondary),
-            vec![(10usize, 0u32), (30, 1), (20, 2)],
-            "the fused order is by reciprocal-rank sum, not by either graph alone"
-        );
-    }
-
-    #[test]
-    fn an_adjacent_rank_swap_is_an_EXACT_tie_and_breaks_by_candidate_index() {
-        // Swapping two adjacent items under two-way RRF always produces identical sums:
-        //   fusion(a) = 1/60 + 1/61 = fusion(b) = 1/61 + 1/60.
-        // The offline tool breaks this tie by POOL INDEX ascending (`key=(-fusion, i)`), and so
-        // must we â€” this is exactly where a silent tie-break divergence would flip a case and
-        // fail gate G2 without any logit changing.
-        let narrow = vec![7usize, 3];
-        let secondary = [0.5f32, 0.9]; // secondary ranks: 3â†’0, 7â†’1 â€” a perfect adjacent swap
-        assert_eq!(
-            cascade_fusion_order(&narrow, &secondary),
-            vec![(3usize, 0u32), (7, 1)],
-            "exact RRF ties resolve to the LOWER candidate index, matching cascade_heldout_read.py"
-        );
-    }
-
-    #[test]
-    fn equal_secondary_logits_get_secondary_ranks_by_index_then_still_fuse() {
-        // All-equal secondary logits are not a degenerate input â€” a slate can carry duplicate
-        // texts. Secondary ranks fall back to candidate index ascending (the tool's
-        // `sorted(narrow, key=(-s6[i], i))`), and the fused sums then tie again, resolving once
-        // more by index. The result must be the plain index order with no panic and no inversion.
-        let narrow = vec![8usize, 2];
-        let secondary = [0.3f32, 0.3];
-        assert_eq!(
-            cascade_fusion_order(&narrow, &secondary),
-            vec![(2usize, 0u32), (8, 1)],
-            "duplicate logits never produce an arbitrary order"
-        );
-    }
-
-    #[test]
-    fn a_single_candidate_passes_through_with_rank_zero() {
-        let narrow = vec![42usize];
-        assert_eq!(cascade_fusion_order(&narrow, &[-1.5f32]), vec![(42usize, 0u32)]);
-    }
-
-    // ── the cascade's field contract, against the real graphs ────────────────────────────────
-    //
-    // **`rerank_score` is THE SHIPPED GRAPH's logit everywhere it appears.** The fuse stage once
-    // overwrote it for the narrowed ten — narrowing had already run, so every R@k gate still
-    // passed EXACTLY while the dump carried a second graph's reading under the first graph's
-    // name and the operating point would have compared L-6 logits to an L-2 threshold. The case-
-    // level anomaly hunt caught it; THIS test is what keeps it caught: reintroduce the
-    // write-back and the bit-equality below fails.
-
-    fn models_root() -> Option<std::path::PathBuf> {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../models");
-        let shipped = root.join("ms-marco-MiniLM-L-2-v2-ft-session-j/model.onnx");
-        let fuse = root.join("ms-marco-MiniLM-L-6-v2-ft-session-j/model.onnx");
-        if shipped.exists() && fuse.exists() {
-            Some(root)
-        } else {
-            eprintln!("SKIP: models/ is absent or missing a cascade graph (gitignored).");
-            None
-        }
-    }
-
-    #[test]
-    #[allow(non_snake_case)]
-    fn under_the_cascade_rerank_score_stays_the_SHIPPED_graphs_logit() {
-        use crate::cue::dense::vectors::VectorStore;
-
-        let Some(root) = models_root() else { return };
-        let mut primary = CrossEncoder::load(
-            &root.join("ms-marco-MiniLM-L-2-v2-ft-session-j"),
-        )
-        .expect("shipped graph loads");
-        let mut fuse = CrossEncoder::load_fusion_member(
-            &root,
-            crate::rerank::CASCADE_FUSE_GRAPH,
-            crate::rerank::RerankProvider::Cpu,
-        )
-        .expect("fuse graph loads");
-
-        // One session, 34 maturated candidates: enough to fill the 30-slate with truncation and
-        // exercise the 30→10 narrowing on distinct texts.
-        let mut s = BeliefStore::default();
-        for i in 0..34 {
-            let text = format!(
-                "candidate {i}: the ingest pipeline failed on node {i} after {i} hours and \
-                 the team pinned client version {i}.{i} to stop the timeout"
-            );
-            s.insert(entry(&format!("m-{i:03}"), "s-1", &text, 1_000 + i));
-        }
-        let now = 1_000_000 + MATURATION_WINDOW_MS;
-        let gate = test_gate();
-        let sel = select_for_injection(
-            &s,
-            "s-1",
-            "why did the ingest pipeline fail and what fixed the timeout",
-            now,
-            10_000,
-            &Scoring::Gated { gate: &gate, operating_point: &op(), coverage: Coverage::Full },
-            &VectorStore::default(),
-            None,
-            &mut Rerank::Cascade { encoder: &mut primary, fuse: &mut fuse, batched: false },
-            RetrievalScope::ThisSession,
-        );
-
-        let fused: Vec<&ScoredCandidate<'_>> =
-            sel.scored.iter().filter(|c| c.fusion_rank.is_some()).collect();
-        assert_eq!(fused.len(), CASCADE_NARROW, "exactly the narrowed ten carry fusion ranks");
-        assert_eq!(sel.reranked as usize, CASCADE_SLATE, "the full slate was scored");
-
-        for c in &fused {
-            let expected = primary
-                .score(
-                    "why did the ingest pipeline fail and what fixed the timeout",
-                    &c.entry.text,
-                )
-                .expect("standalone scoring succeeds");
-            assert_eq!(
-                c.rerank_score.expect("a fused candidate was reranked").to_bits(),
-                expected.to_bits(),
-                "{}: rerank_score must be the SHIPPED graph's logit, bit-equal to a standalone \
-                 score — a fuse-stage write-back corrupts the dump and the operating point",
-                c.entry.id
-            );
-        }
     }
 }

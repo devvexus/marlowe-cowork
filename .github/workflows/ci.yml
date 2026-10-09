@@ -1,96 +1,16 @@
-# Marlowe CI — the only workflow file, deliberately.
+# MarloweCowork CI.
 #
-# ============================================================================================
-# WHY THIS EXISTS, AND WHY IT IS A SECURITY ITEM RATHER THAN A CHORE
-# ============================================================================================
-#
-# Until this file landed there was no CI configuration of any kind in the repository, and
-# ROADMAP.md's acceptance table said so in those words: *"Budget tests from HP10 pass in CI —
-# UNMET, there is no CI."* The consequence was not that tests were unrun; it was that **the
-# things this project calls STANDING REQUIREMENTS were enforced by memory**:
-#
-#   * ADR-027 makes the path-traversal suite a standing two-platform requirement — *"any change
-#     under `scope/` re-runs both"*. It was run on both platforms exactly once, by hand, on
-#     2026-08-08 at the close of M2 Session B. Nothing re-ran it for nine days. That is the wall
-#     with no kernel behind it (ADR-002), and the enforcement was a recollection.
-#   * Every "tested explicitly" row in every milestone table meant "tested once, on the machine
-#     of whoever wrote it".
-#   * Two sessions reported the workspace suite green while it was RED, because they ran
-#     per-crate. The guards in `crates/marlowe/tests/` — the determinism guard among them —
-#     **only run under `--workspace`**, so a per-crate sweep cannot see them. That is why the
-#     matrix job below runs `--workspace` and why the determinism guard is *also* named
-#     explicitly: two ways for one guard to be missed, closed twice.
-#
-# ============================================================================================
-# WHAT THIS WORKFLOW DOES NOT COVER — read this before reading a green badge as more than it is
-# ============================================================================================
-#
-# A green run here is evidence about the code, the boundary hook and the harness. It is NOT
-# evidence about anything below. Each line names why, so nobody has to rediscover it:
-#
-#  1. **Everything that needs the embedder, the reranker or the cross-encoder.** `models/` is
-#     gitignored and never vendored (~90 MB, pinned by sha256 in `tools/fetch_model.py`). On a
-#     fresh clone those tests print `SKIP: run python tools/fetch_model.py` and pass. Affected:
-#     `embedding_reference.rs`, `cross_encoder_reference.rs`, `embedder_provider.rs`,
-#     `rerank_provider.rs`, `session_footprint.rs`, `cuda_libs_hint.rs`, and the embedder half of
-#     `ingest.rs`. The `models-absent` step below PRINTS the skip lines so the gap is visible in
-#     the log rather than inferred from silence.
-#  2. **Everything that needs the corpus.** `data/` is gitignored (LongMemEval-S is ~277 MB).
-#     So `tools/score_longmemeval.py`, the frozen-gate fit, R@1/precision-coverage and every
-#     retrieval-quality number are out of scope here. The eval job runs the harness's own 72
-#     unit tests, which need no corpus and no models — it is NOT a scoring run.
-#  3. **GPU and CUDA.** The runners have no NVIDIA device. Every CUDA reading — ADR-044's
-#     provider resolution, ADR-015's batch/padding invariance on CUDA, VRAM probing — is
-#     UNMEASURED here and its tests skip by design. The `ort` "cuda" feature is still compiled
-#     (see 4) but no CUDA node ever executes.
-#  4. **The `cuda` ort feature is built, not exercised, and is NOT to be dropped to speed this
-#     up.** `Cargo.toml` records why: the feature changes the ONNX Runtime binary for the WHOLE
-#     workspace, CPU included, so building CI without it would compile a different numeric
-#     scorer than the one that ships. It costs a ~170 MB provider download on a cold cache.
-#  5. **K6 — install to first useful output under five minutes in a clean container.** A
-#     milestone kill criterion, unmeasured, and this workflow is not a container install.
-#  6. **The by-eye accent check** and every other perceptual claim about the TUI. `NO_COLOR`,
-#     truecolor tiering and the flicker budget were all wrong once while a headless buffer diff
-#     read green — M1's standing lesson. A framebuffer assertion is not a screen.
-#  7. **The live end-to-end run.** CLAUDE.md budgets one real run per milestone *as
-#     verification*: the `done`-is-loop-control seam was invisible to every unit test. CI cannot
-#     replace it — there is no language model here.
-#  8. **The persona and prompt bytes.** `persona_emission.rs` asserts on a body built inside the
-#     test process; it passed while the deployed daemon served a pre-persona binary. Only
-#     `--dev`'s outbound-request dump from the RUNNING process settles that, and it is not run
-#     here.
-#  9. **The §13 hook firing on a real edit.** `--self-check` proves the guarded paths still
-#     exist and `boundary_hook.rs` proves the matcher fires on a piped path. Neither is an
-#     observed permission prompt — CLAUDE.md downgrades all of these to PIPE-VERIFIED, and CI
-#     does not upgrade them.
-# 10. **Wall-clock numbers.** Shared, unpinned, noisy-neighbour runners. Any latency claim
-#     re-measured here would be a measurement of a different system — the exact carry-forward
-#     failure CLAUDE.md logs four instances of. This workflow deliberately publishes no timings.
+# Not run on every push: manual dispatch plus a weekly run. A green badge here says nothing about
+# model-dependent tests (models/ is git-ignored, those tests print SKIP), retrieval quality
+# (data/ is git-ignored), GPU paths, or anything perceptual in the TUI.
 
 name: CI
 
-# **Not on every push, and the trade is stated rather than silent.**
-#
-# This fired on every push to main/master and on every pull request. The human's objection is
-# reasonable — a suite this size running constantly is noise, and a check people learn to ignore has
-# already stopped being a check.
-#
-# But the reason this file exists is that ADR-027 calls the path-traversal suite a STANDING
-# two-platform requirement and it was run by hand exactly once, on 2026-08-08. Reducing this to
-# `workflow_dispatch` alone would put it straight back to "runs when somebody remembers", which is
-# the condition it was written to fix.
-#
-# So: manual whenever you want it, AND a weekly run so drift cannot accumulate unobserved. A week is
-# short enough that a break is attributable to a handful of commits and long enough to be silent.
-# **If the weekly run is ever disabled, the two-platform requirement is a recollection again — say so
-# in ROADMAP.md rather than leaving the row reading as enforced.**
 on:
   workflow_dispatch:
   schedule:
-    # Mondays 04:00 UTC. Cron only fires on the default branch.
     - cron: '0 4 * * 1'
 
-# One run per ref. A superseded push should not keep a runner busy.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -100,39 +20,22 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Incremental artifacts are large, per-machine and never reused across runners. Off makes the
-  # cache smaller and the build no slower here.
   CARGO_INCREMENTAL: "0"
   RUST_BACKTRACE: "1"
 
 jobs:
-  # ==========================================================================================
-  # The scoreboard's own unit tests. Neither models nor corpus; ~2 seconds.
-  # `eval/` is never modified to accommodate an implementation, so it gets its own job and its
-  # own failure — an eval break must never be reported as a Rust break.
-  # ==========================================================================================
   eval:
-    name: eval harness (72 tests)
+    name: eval harness unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: pytest
         working-directory: eval
         run: python -m pytest -q
 
-  # ==========================================================================================
-  # The workspace suite, on BOTH platforms, because the halves do not overlap.
-  #
-  # ADR-027, verbatim: *"Windows alone leaves the symlink class unrunnable; Linux alone never
-  # exercises the pinning. A single-platform green is a half-measured wall, and the halves do
-  # not overlap."* That is why this is a matrix and not a single runner, and why
-  # `fail-fast: false` — one platform's failure must not hide the other platform's result.
-  # ==========================================================================================
   workspace:
     name: cargo test --workspace (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -140,43 +43,15 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-
-    # Every step runs under bash, on Windows too (Git for Windows ships it). One dialect for one
-    # workflow: a PowerShell half and a bash half is two scripts that drift, and this project has
-    # already lost a session to a `\` that did not survive `echo`.
     defaults:
       run:
         shell: bash
-
     steps:
       - uses: actions/checkout@v4
-
-      # `marlowe-permission/tests/boundary_hook.rs` SHELLS OUT to `python` (falling back to
-      # `python3`) to run the §13 hook's `--self-check`. Without an interpreter that test fails
-      # with "python is needed", which is a CI-environment failure wearing a boundary failure's
-      # clothes.
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
       - name: Toolchain
         run: |
-          set -euo pipefail
           rustup default stable
           rustc --version
-          cargo --version
-          python --version
-
-      # Cache registry, git checkouts and target/.
-      #
-      # `target/` is cached deliberately, not just `~/.cargo`: `ort-sys` downloads a
-      # digest-pinned ONNX Runtime (with the CUDA provider, ~170 MB) into the build directory,
-      # and re-downloading it on every run is most of the cold cost. Keyed on `Cargo.lock` so a
-      # dependency change gets a fresh build rather than a subtly stale one; `restore-keys`
-      # gives a warm start when only workspace sources moved.
-      #
-      # A CI that takes 40 minutes gets disabled. Cold is slow (ORT download + full compile);
-      # warm should be minutes.
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -188,39 +63,16 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
-
-      # ------------------------------------------------------------------------------------
-      # 1. THE WHOLE WORKSPACE. `--workspace` is load-bearing, not a convenience: the guards in
-      #    `crates/marlowe/tests/` are invisible to a per-crate run, and two sessions have
-      #    already reported green off a per-crate sweep while the workspace was red.
-      #    `--no-fail-fast` so one crate's failure does not hide the rest.
-      # ------------------------------------------------------------------------------------
       - name: cargo test --workspace --no-fail-fast
         run: cargo test --workspace --no-fail-fast
 
-      # ------------------------------------------------------------------------------------
-      # 2. THE TRAVERSAL SUITE, ASSERTED RATHER THAN MERELY PASSED.
-      #
-      #    A suite of refusals passes by refusing everything, and a suite that silently skips
-      #    every class also passes. Worse: `cargo test --exact <name>` exits 0 when the filter
-      #    matches NOTHING, so a renamed test turns this step green and vacuous — the single
-      #    most common failure family in this repository.
-      #
-      #    So this step does not trust the exit code. It reads the manifest the suite prints and
-      #    compares the number of classes that RAN against the number the suite DECLARES, read
-      #    out of the test source itself.
-      #
-      #    **The declared count is computed, never written down here, and that is the point.**
-      #    ADR-027 and ROADMAP.md both record "11/11 classes RAN" from Session B's close. The
-      #    suite has had TWELVE classes since `e8e6dd0` the same afternoon — `positive control:
-      #    create in scope` was added and the recorded number was never updated. A workflow with
-      #    `11` hardcoded in it would have gone stale on day one and kept passing. A number in a
-      #    document rots; a number derived from the thing it describes cannot.
-      # ------------------------------------------------------------------------------------
-      - name: Traversal suite — Linux (MARLOWE_TRAVERSAL_STRICT=1, every class must run)
-        if: runner.os == 'Linux' && !cancelled()
+      # Path-scope escapes are the wall around every file tool, so the traversal suite must not
+      # pass by silently skipping classes. Linux runs every class (including symlink escape);
+      # Windows may skip only the symlink class, which needs privileges runners lack.
+      - name: Traversal suite — every declared class accounted for
+        if: ${{ !cancelled() }}
         env:
-          MARLOWE_TRAVERSAL_STRICT: "1"
+          MARLOWE_TRAVERSAL_STRICT: ${{ runner.os == 'Linux' && '1' || '' }}
         run: |
           set -euo pipefail
           cargo test -p marlowe-permission --test traversal -- \
@@ -229,103 +81,19 @@ jobs:
           ran=$(grep -c '^  RAN ' traversal.log || true)
           unrunnable=$(grep -c '^  UNRUNNABLE ' traversal.log || true)
           echo "declared=$declared ran=$ran unrunnable=$unrunnable"
-          # Vacuity control. Zero RAN lines means the manifest never printed — a renamed test, a
-          # filter that matched nothing, a `--nocapture` that stopped applying. The suite would
-          # have exited 0 in every one of those cases.
-          if [ "$ran" -eq 0 ]; then
-            echo "::error::the traversal manifest printed NOTHING. The suite did not run; the exit code is meaningless."
-            exit 1
+          if [ "$ran" -eq 0 ]; then echo "::error::the traversal suite did not run"; exit 1; fi
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            [ "$ran" -eq "$declared" ] || { echo "::error::$ran of $declared classes ran on Linux"; exit 1; }
+          else
+            [ $((ran + unrunnable)) -eq "$declared" ] || { echo "::error::manifest incomplete"; exit 1; }
+            if [ "$unrunnable" -gt 1 ] || { [ "$unrunnable" -eq 1 ] && ! grep -q '^  UNRUNNABLE  symlink escape' traversal.log; }; then
+              echo "::error::only 'symlink escape' may be unrunnable on Windows"; grep '^  UNRUNNABLE ' traversal.log; exit 1
+            fi
           fi
-          if [ "$unrunnable" -ne 0 ]; then
-            echo "::error::$unrunnable traversal class(es) could not run on Linux. Strict mode should already have failed."
-            exit 1
-          fi
-          if [ "$ran" -ne "$declared" ]; then
-            echo "::error::$ran of $declared declared traversal classes ran. The POSIX openat/O_NOFOLLOW walk is only as verified as the classes that executed."
-            exit 1
-          fi
-          echo "Linux: $ran/$declared traversal classes RAN, 0 unrunnable."
 
-      # Windows deliberately does NOT set MARLOWE_TRAVERSAL_STRICT. ADR-027's table records the
-      # suite as *failing* under strict on Windows, and it is right to: creating a symlink needs
-      # Developer Mode or elevation and returns os error 1314 without it. Setting strict here
-      # would make CI red for an environment property rather than a code fault.
-      #
-      # The assertion is therefore the tighter one: EXACTLY the symlink class may be unrunnable.
-      # A second class going dark — the junction escape, a positive control — is a real
-      # regression and is caught. "Windows is allowed to skip things" would not catch it.
-      - name: Traversal suite — Windows (only the symlink class may be unrunnable)
-        if: runner.os == 'Windows' && !cancelled()
-        run: |
-          set -euo pipefail
-          cargo test -p marlowe-permission --test traversal -- \
-            --exact every_traversal_class_is_accounted_for --nocapture 2>&1 | tee traversal.log
-          declared=$(grep -c 'manifest.push' crates/marlowe-permission/tests/traversal.rs)
-          ran=$(grep -c '^  RAN ' traversal.log || true)
-          unrunnable=$(grep -c '^  UNRUNNABLE ' traversal.log || true)
-          echo "declared=$declared ran=$ran unrunnable=$unrunnable"
-          if [ "$ran" -eq 0 ]; then
-            echo "::error::the traversal manifest printed NOTHING. The suite did not run; the exit code is meaningless."
-            exit 1
-          fi
-          if [ $((ran + unrunnable)) -ne "$declared" ]; then
-            echo "::error::the manifest accounted for $((ran + unrunnable)) of $declared declared classes."
-            exit 1
-          fi
-          # Zero unrunnable is fine and better (an elevated runner). More than one, or one that
-          # is not the symlink class, is not.
-          if [ "$unrunnable" -gt 1 ]; then
-            echo "::error::$unrunnable classes unrunnable on Windows; only 'symlink escape' is expected."
-            exit 1
-          fi
-          if [ "$unrunnable" -eq 1 ] && ! grep -q '^  UNRUNNABLE  symlink escape' traversal.log; then
-            echo "::error::a class other than 'symlink escape' is unrunnable on Windows:"
-            grep '^  UNRUNNABLE ' traversal.log
-            exit 1
-          fi
-          echo "Windows: $ran/$declared traversal classes RAN; symlink escape is UNRUNNABLE here BY DESIGN and is certified on the Linux leg, not this one."
-
-      # ------------------------------------------------------------------------------------
-      # 3. THE §13 BOUNDARY HOOK'S SELF-CHECK.
-      #
-      #    It fails when a guarded path no longer exists. That is not hypothetical: M2 Session B
-      #    split `scope.rs` into `scope/{mod,request,glob,walk}.rs`, the hook's entry matched
-      #    nothing, and path scoping was silently unguarded with no error and no failing test.
-      #
-      #    `boundary_hook.rs` already runs it inside `--workspace` above. Naming it again is not
-      #    redundancy for its own sake: it is a distinct failure LABEL. "a §13 guarded path has
-      #    moved" and "some Rust test failed" are different findings, and the first must not
-      #    arrive wearing the second's name.
-      # ------------------------------------------------------------------------------------
-      - name: §13 boundary hook — guarded paths still exist
-        if: ${{ !cancelled() }}
-        run: |
-          set -euo pipefail
-          python .claude/hooks/protect-boundaries.py --self-check .
-          cargo test -p marlowe-permission --test boundary_hook
-
-      # ------------------------------------------------------------------------------------
-      # 4. THE DETERMINISM GUARD. This is THE test the per-crate runs could not see: it lives in
-      #    `crates/marlowe/tests/`, which is only reached by `--workspace`. It greps crate
-      #    sources for `HashMap`, for clock reads outside the latency fence, and for memory ids
-      #    built from timestamps — failures that are otherwise invisible until `repro` reports an
-      #    unexplained hash mismatch.
-      # ------------------------------------------------------------------------------------
-      - name: Determinism guard (crates/marlowe/tests — invisible to per-crate runs)
-        if: ${{ !cancelled() }}
-        run: cargo test -p marlowe --test determinism_guard
-
-      # ------------------------------------------------------------------------------------
-      # 5. THE SKIPS, PRINTED. A test that skips because `models/` is absent is a test that
-      #    passed while measuring nothing, and coverage 1 above is only honest if the log says
-      #    which ones. This step never fails — it is a visibility step, and its output is the
-      #    audit trail for "what did this green badge NOT check".
-      # ------------------------------------------------------------------------------------
-      - name: What skipped for want of models/ (never fails; visibility only)
+      - name: Model-dependent tests that skipped (visibility only)
         if: ${{ !cancelled() }}
         run: |
           set -uo pipefail
-          echo "models/ present? $( [ -d models ] && echo yes || echo 'no — the tests below are UNMEASURED here')"
-          echo "data/   present? $( [ -d data ]   && echo yes || echo 'no — no corpus, no quality number is computable here')"
+          echo "models/ present? $( [ -d models ] && echo yes || echo no )"
           cargo test -p marlowe-memory --no-fail-fast -- --nocapture 2>&1 | grep -E '^SKIP:' | sort -u || true
-          echo "(end of skip manifest)"

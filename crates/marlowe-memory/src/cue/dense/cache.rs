@@ -67,7 +67,7 @@ pub struct CacheIdentity {
     ///
     /// **Added 2026-08-17, when the embedder stopped being CPU by omission, and it is exactly the
     /// field this module's header is about.** ADR-015's rule is that a different execution provider
-    /// is a different scorer; a CUDA vector and a CPU vector for the same text are not required to
+    /// is a different scorer; vectors from two providers for the same text are not required to
     /// be bit-identical and are not. Without this field they share a key, so a warm cache written
     /// on one provider is served to a run on the other — a vector that is unit-length, scores,
     /// ranks, and is wrong for the configuration claiming it.
@@ -319,9 +319,9 @@ mod tests {
         let mut model_changed = base.clone();
         model_changed.model_sha256 = "other".into();
         // ADR-015: a different execution provider is a different scorer, so it is a different
-        // namespace. Without this row a CUDA-computed vector is served to a CPU run.
+        // namespace. Without this row another provider's vector would be served to a CPU run.
         let mut provider_changed = base.clone();
-        provider_changed.provider = "CUDAExecutionProvider";
+        provider_changed.provider = "OtherExecutionProvider";
 
         let namespaces = [
             base.namespace(),

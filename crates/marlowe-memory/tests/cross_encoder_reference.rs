@@ -81,10 +81,9 @@ const REFERENCES: &[Reference] = &[
         fixture: "cross-encoder-reference-ft-session-j.json",
         shipped: true,
     },
-    // The cascade's fuse stage (`rerank::CASCADE_FUSE_GRAPH`). Its tokenizer is the same pinned
-    // file as the shipped graph's, so the pair-encoder half exercises it too; the graph half runs
-    // through `load_fusion_member`, whose digest pin lives in FUSION_GRAPHS. Per-graph rule: this
-    // row's checks are taken on THIS graph, never inherited from the shipped one.
+    // The L-6 sibling of the shipped fine-tune. Its tokenizer is the same pinned file as the
+    // shipped graph's, so only the pair-encoder half exercises it; its graph is not loadable
+    // through `CrossEncoder`.
     Reference {
         dir: "ms-marco-MiniLM-L-6-v2-ft-session-j",
         graph_file: MODEL_FILE,
@@ -271,12 +270,8 @@ fn the_rust_graph_reproduces_the_reference_logits() {
     }
     let fx = fixture(r);
     let mut encoder = CrossEncoder::load(&model_dir(r)).expect("the pinned cross-encoder loads");
-    // **The row labelled `cpu` must BE cpu.** ADR-045 flipped the CLI default to `auto`, and
-    // `CrossEncoder::load` is deliberately left fixed-CPU so this file keeps measuring the scorer
-    // the reference was generated against. Asserted rather than commented: on a machine with a
-    // card, a `load` that quietly resolved to CUDA would compare a different scorer to
-    // HuggingFace's output and report the gap as a Rust defect. Same assertion
-    // `embedding_reference.rs` carries for the same reason (ADR-044 SS7).
+    // **The row labelled `cpu` must BE cpu**, so this file keeps measuring the scorer the
+    // reference was generated against. Same assertion `embedding_reference.rs` carries.
     assert_eq!(
         encoder.provider(),
         marlowe_memory::rerank::RerankProvider::Cpu,
@@ -293,99 +288,6 @@ fn the_rust_graph_reproduces_the_reference_logits() {
             (got - expected).abs() <= LOGIT_TOLERANCE,
             "{name:?}: Rust {got} vs reference {expected}, difference {} exceeds {LOGIT_TOLERANCE}",
             (got - expected).abs()
-        );
-    }
-}
-
-/// The cascade's fuse graph, against ITS OWN fixture, through the constructor the product calls.
-///
-/// [`CrossEncoder::load`] refuses this graph by digest — the pin working. The fuse stage loads it
-/// through `load_fusion_member`, whose digest lives in [`marlowe_memory::rerank::FUSION_GRAPHS`],
-/// so that is the path under test here. Per-graph rule: this fixture was generated from
-/// HuggingFace on THIS graph and nothing about it is inherited from the shipped row.
-#[test]
-fn the_cascade_fuse_graph_reproduces_its_own_reference_logits() {
-    use marlowe_memory::rerank::{CASCADE_FUSE_GRAPH, FUSION_GRAPHS};
-    let dir = repo_root().join("models").join(CASCADE_FUSE_GRAPH);
-    if !dir.join(MODEL_FILE).exists() {
-        eprintln!("SKIP: {} is absent.", dir.join(MODEL_FILE).display());
-        return;
-    }
-    let r = REFERENCES
-        .iter()
-        .find(|r| r.dir == CASCADE_FUSE_GRAPH)
-        .expect("the fuse graph has a REFERENCES row");
-    let fx = fixture(r);
-    let mut encoder = CrossEncoder::load_fusion_member(
-        &repo_root().join("models"),
-        CASCADE_FUSE_GRAPH,
-        marlowe_memory::rerank::RerankProvider::Cpu,
-    )
-    .expect("the digest-pinned fuse graph loads through load_fusion_member");
-    assert_eq!(
-        encoder.provider(),
-        marlowe_memory::rerank::RerankProvider::Cpu,
-        "the fixture row labelled cpu compares against CPU"
-    );
-    // A guard on the TABLE as well as the graph: the name must be in FUSION_GRAPHS with the same
-    // digest the loader enforced, or the fixture would be checking a graph the cascade never runs.
-    assert!(
-        FUSION_GRAPHS.iter().any(|(n, _)| *n == CASCADE_FUSE_GRAPH),
-        "CASCADE_FUSE_GRAPH must be a pinned member of FUSION_GRAPHS"
-    );
-
-    for case in fx["cases"].as_array().expect("cases") {
-        let name = case["name"].as_str().unwrap();
-        let expected = case["logit"].as_f64().unwrap() as f32;
-        let got = encoder
-            .score(case["query"].as_str().unwrap(), case["document"].as_str().unwrap())
-            .expect("scoring succeeds");
-        assert!(
-            (got - expected).abs() <= LOGIT_TOLERANCE,
-            "{name:?}: Rust {got} vs L-6 reference {expected}, difference {} exceeds \
-             {LOGIT_TOLERANCE}",
-            (got - expected).abs()
-        );
-    }
-}
-
-/// Per-graph batch invariance on the FUSE graph, never inherited from the shipped one.
-///
-/// The cascade scores its narrowed slate through this graph; if a future re-pin breaks batch
-/// invariance HERE, the shipped graph's 0.000000000 artifact must not keep the build green.
-#[test]
-fn batched_and_single_scoring_are_bit_identical_on_the_cascade_fuse_graph() {
-    use marlowe_memory::rerank::{CASCADE_FUSE_GRAPH, RerankProvider};
-    let dir = repo_root().join("models").join(CASCADE_FUSE_GRAPH);
-    if !dir.join(MODEL_FILE).exists() {
-        eprintln!("SKIP: {} is absent.", dir.join(MODEL_FILE).display());
-        return;
-    }
-    let mut encoder = CrossEncoder::load_fusion_member(
-        &repo_root().join("models"),
-        CASCADE_FUSE_GRAPH,
-        RerankProvider::Cpu,
-    )
-    .expect("loads");
-    let query = "which database did the analytics warehouse move to";
-    let documents = [
-        "Postgres.",
-        "I moved the analytics warehouse off Postgres in April after the ingest job timed out, \
-         and the migration took three weekends of careful cutover work with a read replica.",
-        "we had pasta for dinner",
-        "The warehouse now runs on ClickHouse; the ingest job that used to time out nightly \
-         finishes in under four minutes, which is the whole reason the move was worth doing.",
-        "unrelated chatter about the weather",
-    ];
-    let batched = encoder.score_batch(query, &documents).expect("batch scores");
-    for (i, document) in documents.iter().enumerate() {
-        let single = encoder.score(query, document).expect("scores");
-        let b = batched[i];
-        assert_eq!(
-            b.to_bits(),
-            single.to_bits(),
-            "fuse-graph pair {i}: batched {b} vs single {single} -- bit-identity is the \
-             bar on every scored-path graph"
         );
     }
 }
@@ -513,110 +415,5 @@ fn the_superseded_int8_directory_is_refused_by_name() {
     assert!(
         text.contains("Session J fine-tune") && text.contains("ADR-018"),
         "the refusal must say what happened, not just that a file is missing. Got: {text}"
-    );
-}
-
-/// Absolute tripwire on a **CUDA** logit, and it is deliberately NOT a tolerance.
-///
-/// It is one order of magnitude above the largest cross-provider disagreement this stage has ever
-/// published — ADR-029 measured median **0.000237**, p95 **0.000824**, max **0.002182** over 2,290
-/// held-out pairs — so *drift* fails while the known gap does not. Derived from a prior
-/// measurement on this stage rather than rounded up from today's observation, which would be
-/// fitting the threshold to the number it is supposed to judge.
-///
-/// **`LOGIT_TOLERANCE` is untouched at 1e-3 and still guards the shipped CPU path.** Nothing here
-/// widens anything, and the fixture is NOT regenerated: it is HuggingFace/ONNX-Runtime-Python
-/// output and it is the authority in that direction. Regenerating it on CUDA would delete the only
-/// instrument that can detect the gap this test exists to report.
-const CUDA_LOGIT_TRIPWIRE: f32 = 1e-2;
-
-/// **The reference, re-taken on CUDA. ADR-015: per graph AND per configuration, never inherited.**
-///
-/// This asserts two different things for two different reasons.
-///
-/// 1. **The ORDER of the fixture cases is identical.** That is the property ADR-029 amended the
-///    byte-identity gate to, and it is what the ranker actually reads. It is asserted.
-/// 2. **The per-case delta against the CPU reference is REPORTED**, and only a tripwire is
-///    asserted on it. A component tolerance detects that something moved; it cannot say whether
-///    what moved mattered. ADR-044 took this position on the embedder and it is taken again here.
-///
-/// A case exceeding `LOGIT_TOLERANCE` on CUDA is therefore recorded as a result rather than
-/// treated as a failure — and the count is printed, so "it passed" cannot be read as "they agree".
-#[test]
-fn the_rust_graph_reproduces_the_reference_on_cuda_too() {
-    use marlowe_memory::cue::dense::vram::{Probe, Reserve};
-    use marlowe_memory::rerank::{RerankChoice, RerankProvider, SHIPPED_THREADS};
-
-    let r = shipped();
-    let dir = model_dir(r);
-    if !dir.join(MODEL_FILE).exists() {
-        eprintln!("SKIP: {} is absent.", dir.join(MODEL_FILE).display());
-        return;
-    }
-    let mut encoder = match CrossEncoder::load_auto(
-        &dir,
-        SHIPPED_THREADS,
-        RerankChoice::Cuda,
-        Probe::Device,
-        Reserve::None,
-    ) {
-        Ok(e) => e,
-        // Reported, never silent. A CUDA test that no-ops on a CPU-only machine is green and
-        // vacuous; this says which branch it took.
-        Err(e) => {
-            eprintln!("NO CUDA RERANK ON THIS MACHINE: {e}");
-            return;
-        }
-    };
-    assert_eq!(encoder.provider(), RerankProvider::Cuda, "the CUDA arm must be CUDA");
-
-    let fx = fixture(r);
-    let cases = fx["cases"].as_array().expect("cases");
-    let mut deltas: Vec<(String, f32, f32, f32)> = Vec::new();
-    for case in cases {
-        let name = case["name"].as_str().unwrap().to_string();
-        let expected = case["logit"].as_f64().unwrap() as f32;
-        let got = encoder
-            .score(case["query"].as_str().unwrap(), case["document"].as_str().unwrap())
-            .expect("scoring succeeds");
-        deltas.push((name, expected, got, (got - expected).abs()));
-    }
-
-    let over = deltas.iter().filter(|d| d.3 > LOGIT_TOLERANCE).count();
-    let max = deltas.iter().map(|d| d.3).fold(0f32, f32::max);
-    let mut sorted: Vec<f32> = deltas.iter().map(|d| d.3).collect();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let median = sorted[sorted.len() / 2];
-    eprintln!(
-        "CUDA vs the CPU reference fixture, {} cases: median {median:.9}, max {max:.9}, \
-         {over} over LOGIT_TOLERANCE {LOGIT_TOLERANCE:.0e}",
-        deltas.len()
-    );
-    for (name, expected, got, d) in &deltas {
-        eprintln!("  {d:.9}  {name:?}  reference {expected}  cuda {got}");
-    }
-
-    // **The property.** Ranking the fixture's cases by score must be identical on both providers.
-    let order = |pick: &dyn Fn(&(String, f32, f32, f32)) -> f32| {
-        let mut idx: Vec<usize> = (0..deltas.len()).collect();
-        idx.sort_by(|&a, &b| {
-            pick(&deltas[b]).partial_cmp(&pick(&deltas[a])).unwrap().then(a.cmp(&b))
-        });
-        idx
-    };
-    assert_eq!(
-        order(&|d| d.1),
-        order(&|d| d.2),
-        "CUDA reordered the reference cases against the CPU reference -- this is the property, and \
-         it is what ADR-029 amended byte-identity TO"
-    );
-
-    // The tripwire, which is about DRIFT and not about agreement.
-    assert!(
-        max <= CUDA_LOGIT_TRIPWIRE,
-        "max CUDA-vs-reference delta {max:.9} exceeds the {CUDA_LOGIT_TRIPWIRE:.0e} tripwire. \
-         That is an order of magnitude past anything this stage has published cross-provider \
-         (ADR-029 max 0.002182), so something moved that is not float noise. DO NOT widen this \
-         and DO NOT regenerate the fixture -- measure the ranking"
     );
 }

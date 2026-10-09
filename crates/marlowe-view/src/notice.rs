@@ -112,27 +112,6 @@ pub enum Notice {
     /// message claiming the run had already changed course would be a claim the surface cannot
     /// support.
     SteerSent { run: Echo },
-    /// M3-DESIGN section 3.2: **a notification, and nothing else.**
-    ///
-    /// > *"He cannot read it, cannot query it, cannot summarise it. A window opens: the user and
-    /// > the top-agent, directly. Marlowe is not in the room."*
-    ///
-    /// The containment is in the FIELDS. There is no body, no sentence, no option list and no
-    /// category -- not because a producer was asked not to send them, but because there is nowhere
-    /// to put them. `EscalationDesk::secretary_notice` returns this type and nothing else, and no
-    /// method on the desk hands text to a loop, so *"cannot read it"* is a fact about a signature
-    /// rather than about a registry entry a future `recall` variant or a debugging path could
-    /// reach.
-    ///
-    /// `by` is composed by the producer as a harness word plus `marlowe_loop::run::sayable` --
-    /// **zero model bytes reach it**. A model-chosen display name here could read `Marlowe`,
-    /// `SYSTEM`, or the name of an adjacent run.
-    ///
-    /// Section 2.1 is why this matters more than it looks: Marlowe is a permanent run, ADR-023's
-    /// floor is monotonic, and a Marlowe who ingests one finding can never compose a target again.
-    /// The containment here is a ROUTING fact rather than a floor fact, which is what makes it
-    /// hold whether or not the latch's scope is per-run or per-session.
-    EscalationRaised { severity: marlowe_contract::EscalationSeverity, by: Echo },
 }
 
 /// Which terminal opened a window. A closed set, because the harness only knows how to drive the
@@ -325,13 +304,6 @@ impl Notice {
             },
             Notice::SteerSent { run } => {
                 vec![format!("Sent to {run}. It applies at the run's next step.")]
-            }
-            // Section 3.2's sentence, and it says everything Marlowe is allowed to know. The
-            // severity is a harness word from a closed enum; `by` is a harness-derived run name.
-            // Nothing here is composed from the escalation's content, because this type was never
-            // given any.
-            Notice::EscalationRaised { severity, by } => {
-                vec![format!("A {} escalation has been raised by {by}.", severity.word())]
             }
         }
     }

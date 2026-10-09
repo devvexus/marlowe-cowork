@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::manifest::ToolId;
 
+/// **2026-10: raised fourteen → sixty-four for the conductor, which exposes builtin + MCP + skill
+/// tools to frontier models; the history below is the old small-model rationale.**
+///
 /// ARCHITECTURE §5, **amended 2026-08-27: twelve → thirteen (ADR-058), thirteen → fourteen
 /// (ADR-059, `glob`)**.
 ///
@@ -32,7 +35,7 @@ use crate::manifest::ToolId;
 /// the budget has always meant.** It carries no spare, and that is deliberate — the next builtin
 /// has to raise this again, in the open, with a reason. A cap that quietly absorbed each new tool
 /// would be the permissive default this project keeps deleting.
-pub const MAX_EXPOSED_TOOLS: usize = 14;
+pub const MAX_EXPOSED_TOOLS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExposureError {

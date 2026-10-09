@@ -162,8 +162,14 @@ pub fn entry_text(e: &Entry) -> Option<String> {
 /// transcript useful is knowing who said what. Tool calls become fenced blocks: they are output,
 /// and markdown that renders a diff summary as prose is markdown nobody can read.
 pub fn transcript_markdown(view: &SessionView) -> String {
+    entries_markdown(&view.transcript)
+}
+
+/// [`transcript_markdown`] over the entries alone, so a caller (or a test) that holds a transcript
+/// but not a whole [`SessionView`] gets the same text.
+pub fn entries_markdown(entries: &[Entry]) -> String {
     let mut out = String::new();
-    for e in &view.transcript {
+    for e in entries {
         match e {
             Entry::User(t) => {
                 out.push_str(&format!("**You:** {t}\n\n"));
@@ -260,8 +266,13 @@ mod tests {
     fn copied_text_carries_no_frame() {
         // The measured failure of native selection, asserted against: no border glyphs, no
         // scrollbar column, nothing from a region that merely shared a row.
-        let s = marlowe_stub::Session::new();
-        let md = transcript_markdown(s.view());
+        let entries = vec![
+            Entry::User("what does the retriever do?".into()),
+            Entry::Said(marlowe_view::Speech::Model("It ranks candidates.".into())),
+            Entry::Tools(vec![ToolCall::ok(1, "read", "a.rs", vec![])]),
+            Entry::Compacted { turns: 3 },
+        ];
+        let md = entries_markdown(&entries);
         for glyph in ['│', '─', '┌', '┐', '└', '┘', '║', '█'] {
             assert!(
                 !md.contains(glyph),

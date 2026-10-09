@@ -4,8 +4,8 @@
 //! that unconstructable otherwise. This overlay is bordered and does not: its keys are stated in
 //! its body, because it is modal and there is nothing to *jump focus to*.
 //!
-//! It lives in its own file so `tests/b13_region_contract.rs` can allowlist **this file** rather
-//! than `render.rs`. Exempting the whole drawing module would blind the grep to the one place a
+//! It lives in its own file so a region-contract grep can allowlist **this file** rather
+//! than the whole drawing module. Exempting the whole drawing module would blind the grep to the one place a
 //! stray decorative border would actually appear — the same argument `determinism_guard.rs` makes
 //! for refusing directory-level exemptions.
 
@@ -15,7 +15,6 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget};
 
-use crate::app::App;
 use crate::chrome::Ink;
 use crate::theme::Theme;
 
@@ -44,11 +43,12 @@ fn inner(r: Rect) -> Rect {
 /// recessive tone is violet-tinted, and it is invisible to every check that reads the palette.
 /// `tests/palette_subset.rs` walks a buffer with each overlay up and refuses a colour it cannot
 /// name — which is how this one was found.
-pub fn draw_approval(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer) {
-    let Some(radius) = &app.view().approval else {
-        return;
-    };
-
+pub fn draw_approval(
+    radius: &marlowe_view::approval::BlastRadius,
+    theme: &Theme,
+    area: Rect,
+    buf: &mut Buffer,
+) {
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             if let Some(cell) = buf.cell_mut((x, y)) {
@@ -124,11 +124,16 @@ pub fn draw_approval(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer) {
 ///
 /// **There is no dismiss key.** The daemon is blocked on the answer, so a window that could be
 /// closed without sending one would hang the turn with nothing explaining why.
-pub fn draw_pending_approval(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer) {
-    let Some(p) = &app.view().pending_approval else {
-        return;
-    };
-
+///
+/// `decline_reason` is the text typed so far when the user has chosen "other"; `None` while the
+/// three-key question is showing.
+pub fn draw_pending_approval(
+    p: &marlowe_view::approval::PendingApproval,
+    decline_reason: Option<&str>,
+    theme: &Theme,
+    area: Rect,
+    buf: &mut Buffer,
+) {
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             if let Some(cell) = buf.cell_mut((x, y)) {
@@ -156,7 +161,7 @@ pub fn draw_pending_approval(app: &App, theme: &Theme, area: Rect, buf: &mut Buf
         Line::from(""),
     ];
 
-    match &app.decline_reason {
+    match decline_reason {
         // Typing a reason. The cursor is a block so it is obvious the window is taking input
         // rather than waiting on one of the three keys.
         Some(text) => {
@@ -226,14 +231,12 @@ pub fn draw_pending_approval(app: &App, theme: &Theme, area: Rect, buf: &mut Buf
 /// assigns. There is no arm here that interpolates model text, which is the property §3.4 asks for
 /// where it matters most.
 pub fn draw_window_cancel(
-    app: &crate::window::WindowApp,
+    v: &marlowe_view::run::RunView,
     theme: &Theme,
     area: Rect,
     buf: &mut Buffer,
 ) {
     use marlowe_view::run::{elapsed, micros_usd};
-
-    let v = app.view();
 
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {

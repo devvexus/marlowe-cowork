@@ -19,41 +19,24 @@
 
 mod common;
 
-use marlowe_surface::app::App;
-use marlowe_surface::render;
-use marlowe_view::notice::Speech;
-use marlowe_view::Entry;
+use common::Pane;
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
 
-/// A surface whose conversation holds **one model reply and nothing else**.
-///
-/// The stub's opening transcript carries real §B6 tool lines, and those legitimately contain `⋯`.
-/// Asserting "no tool marker on screen" against it would be asserting about whatever happened to be
-/// scrolled into view, and it would fail for the right reason on the wrong evidence. With the
-/// transcript cleared, a chrome glyph in the pane can only have come from the model — which is the
-/// question this file asks. That the harness itself still draws every one of those glyphs is
-/// `every_reserved_glyph_is_one_the_harness_actually_draws`, below.
-fn app_saying(text: &str) -> App {
-    let producer = marlowe_stub::Session::new();
-    let mut view = producer.view().clone();
-    view.transcript.clear();
-    view.transcript
-        .push(Entry::Said(Speech::Model(text.to_string())));
-    App::new(view).expect("the shipped key set has no conflicts")
+/// A pane holding **one model reply and nothing else**, so a chrome glyph on screen can only have
+/// come from the model -- which is the question this file asks.
+fn app_saying(text: &str) -> Pane {
+    Pane::saying(text)
 }
 
-/// Everything drawn inside the conversation's scroll area, **excluding the scrollbar column**.
+/// Everything drawn in the pane, **excluding the right-hand gutter** where a scrollbar would sit.
 ///
-/// The scrollbar is harness chrome that legitimately lives inside the scroll rect, so a test that
-/// swept the whole rect would fail on the harness's own glyphs and get "fixed" by loosening the
-/// assertion. Naming the exclusion once keeps the rest of the sweep strict.
+/// The scrollbar is harness chrome that legitimately lives in that column, so a test that swept it
+/// would fail on the harness's own glyphs and get "fixed" by loosening the assertion. Naming the
+/// exclusion once keeps the rest of the sweep strict.
 fn transcript_cells(buf: &Buffer, w: u16, h: u16) -> String {
-    let c = render::layout(Rect::new(0, 0, w, h));
-    let r = c.conversation_scroll;
-    (r.y..r.bottom())
+    (0..h)
         .map(|y| {
-            (r.x..r.right() - 1)
+            (0..w.saturating_sub(2))
                 .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
                 .collect::<String>()
         })
@@ -159,147 +142,3 @@ fn a_reply_cannot_draw_a_disclosure_affordance() {
     assert!(screen.contains("<U+25B8>") && screen.contains("<U+21B5>"), "{screen}");
 }
 
-/// **The other half of the reservation, and the half that rots silently.**
-///
-/// Reserving a glyph the harness has stopped drawing guards nothing, and nothing would report it —
-/// the forgery tests above would still pass, because the thing being forged no longer exists. This
-/// is the fourteenth-instance shape (*a guard is a claim, and a claim needs something checking its
-/// subject is still there*) applied to a glyph rather than to a file path.
-#[test]
-fn every_reserved_glyph_is_one_the_harness_actually_draws() {
-    // Every kind of chrome: tool lines from the stub's opening transcript, a collapsed reasoning
-    // block, a model reply with a block quote, borders from every region, and a transcript long
-    // enough to need a scrollbar.
-    let producer = marlowe_stub::Session::new();
-    let mut view = producer.view().clone();
-    // Filler first, so the pane overflows and a scrollbar exists at all; then the two entries whose
-    // glyphs only appear at the bottom.
-    for n in 0..40 {
-        view.transcript
-            .push(Entry::Said(Speech::Model(format!("filler line {n}"))));
-    }
-    view.transcript.push(Entry::Reasoning {
-        text: "weighing the options".into(),
-        tokens: 4,
-        done: true,
-    });
-    view.transcript.push(Entry::Said(Speech::Model(
-        "> a quotation, which draws the quote rule".into(),
-    )));
-    let mut app = App::new(view).expect("the shipped key set has no conflicts");
-    // Two frames, top and bottom. The claim is *the harness draws this glyph*, not *in one frame* —
-    // the stub's tool lines are at the top of the transcript and the reasoning block is at the
-    // bottom, and no single viewport holds both.
-    let bottom = common::buffer_text(&common::frame(&app, 140, 40));
-    app.scroll = Some(0);
-    let top = common::buffer_text(&common::frame(&app, 140, 40));
-    let screen = format!("{top}\n{bottom}");
-
-    for c in marlowe_surface::chrome::MARKERS {
-        assert!(
-            screen.contains(c),
-            "U+{:04X} ({c:?}) is reserved from model prose and the harness does not draw it \
-             anywhere in this frame. Either it moved — in which case the reservation is guarding \
-             a glyph nobody uses — or it was deleted, in which case delete the entry. A guard is a \
-             claim about something existing.\n{screen}",
-            c as u32
-        );
-    }
-    println!(
-        "reserved glyphs: {} declared, {} of them drawn by the harness in one frame",
-        marlowe_surface::chrome::MARKERS.len(),
-        marlowe_surface::chrome::MARKERS.len()
-    );
-}
-
-/// Content is clipped to its region by the layout, and this asserts it rather than assuming it.
-/// The status band, the approval overlay and the message field all sit outside the conversation;
-/// a reply that could write into them would be forging the parts of the screen that carry the
-/// harness's own claims about what is happening.
-#[test]
-fn a_reply_writes_nowhere_but_the_conversation() {
-    for (w, h) in common::SIZES {
-        let quiet = app_saying("a short reply");
-        let loud = app_saying(
-            &"# Heading\n\nA very long paragraph that will wrap many times over. ".repeat(40),
-        );
-        let before = common::frame(&quiet, w, h);
-        let after = common::frame(&loud, w, h);
-        let c = render::layout(Rect::new(0, 0, w, h));
-        let strays: Vec<_> = common::diff_cells(&before, &after)
-            .into_iter()
-            .filter(|(x, y)| {
-                !(*x >= c.conversation.x
-                    && *x < c.conversation.right()
-                    && *y >= c.conversation.y
-                    && *y < c.conversation.bottom())
-            })
-            .collect();
-        assert!(
-            strays.is_empty(),
-            "{w}x{h}: a model reply changed {} cells outside the conversation, first at {:?}",
-            strays.len(),
-            strays.first()
-        );
-    }
-    println!("model prose reaching outside the conversation region: 0 cells across 5 sizes");
-}
-
-/// **A tool target is model-composed and reaches the grid inside a §B6 line.**
-///
-/// CLAUDE.md's own example is a `target` containing a newline forging a second tool line. The TUI
-/// was covered incidentally, by ratatui's filtering — and ADR-047 measured that filtering and found
-/// the **tag block passes through it**: U+E0000–U+E007F is an invisible ASCII alphabet, and the
-/// place it would matter most is the one line that tells the user what the agent just did.
-#[test]
-fn a_tool_target_carries_no_invisible_text() {
-    use marlowe_view::turn::Metric;
-    use marlowe_view::ToolCall;
-
-    let producer = marlowe_stub::Session::new();
-    let mut view = producer.view().clone();
-    view.transcript.clear();
-    // TAG LATIN SMALL R and M — the invisible alphabet. Two is enough: each expands to eight
-    // visible columns once marked, and the assertion below needs the trailing word still to fit.
-    let hidden = "\u{E0072}\u{E006D}";
-    view.transcript.push(Entry::Tools(vec![ToolCall::ok(
-        1,
-        "read",
-        &format!("BEFORE{hidden}AFTER"),
-        vec![Metric::Count { n: 48, unit: "lines" }],
-    )]));
-    let app = App::new(view).expect("the shipped key set has no conflicts");
-    let screen = transcript_cells(&common::frame(&app, 140, 40), 140, 40);
-
-    assert!(
-        screen.contains("BEFORE") && screen.contains("AFTER"),
-        "the tool line never rendered:\n{screen}"
-    );
-    for c in hidden.chars() {
-        assert!(
-            !screen.contains(c),
-            "U+{:05X} reached a §B6 tool line. It occupies no columns and carries bytes, inside \
-             the one line that states what the agent did:\n{screen}",
-            c as u32
-        );
-    }
-    assert!(screen.contains("<U+E0072>"), "refused, but invisibly:\n{screen}");
-}
-
-/// The harness's own prose is **not** put through the reservation, and it must not be — a `/help`
-/// listing that lost its glyphs would be the cure being worse than the disease.
-///
-/// This is the control on the whole mechanism's *scope*: it fires if somebody later routes notices
-/// through `prepare_model_text` for symmetry.
-#[test]
-fn harness_notices_are_not_subject_to_the_reservation() {
-    let mut r = common::rig();
-    r.app.input = "/help".into();
-    r.app.submit();
-    r.settle(0);
-    let screen = common::buffer_text(&common::frame(&r.app, 160, 45));
-    assert!(
-        !screen.contains("<U+"),
-        "a harness notice was put through the model-prose reservation:\n{screen}"
-    );
-}

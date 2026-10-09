@@ -9,6 +9,3 @@ description = "CONTRACTS.md section 4 as Rust types. The JSON is normative; thes
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-# ADR-065 §2.6: `EscalationId` is a v5 name UUID so the desk can rebuild the pending set from
-# the journal after a restart. A v4 would be undrawable from the event that recorded the raise.
-uuid.workspace = true

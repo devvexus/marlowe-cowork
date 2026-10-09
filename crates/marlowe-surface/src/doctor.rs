@@ -13,7 +13,9 @@
 //! background, and a contrast ratio cannot replace that — but it can make sure the eye check
 //! arrives with a number attached instead of as an unaided opinion.
 
-use marlowe_view::{SessionView, LEVELS, SAMPLES};
+use marlowe_view::{LEVELS, SAMPLES};
+
+use crate::keys::{KeyConflict, KeyRegistry};
 
 use crate::theme::{self, ColorDepth, Theme, ACCENT_RGB};
 
@@ -23,9 +25,17 @@ pub const REFERENCE_DARK: (u8, u8, u8) = (0x0f, 0x0e, 0x14);
 /// A light terminal background. White is the worst case, which is the case worth measuring.
 pub const REFERENCE_LIGHT: (u8, u8, u8) = (0xff, 0xff, 0xff);
 
+/// §B11's minimum. A narrow variant was designed and rejected: it cost the borders, which cost the
+/// region contract, which is the entire design.
+pub const MIN_COLS: u16 = 120;
+pub const MIN_ROWS: u16 = 30;
+
 /// The report, one line per row. Rendered by both surfaces, because `doctor` is in the one command
 /// registry and §B11 gives it parity.
-pub fn report(view: &SessionView) -> Vec<String> {
+///
+/// `keys` is the result of building the caller's key registry; the report states whether it
+/// built, because a conflict is a refusal to start rather than something to find out later.
+pub fn report(keys: &Result<KeyRegistry, KeyConflict>) -> Vec<String> {
     let mut out = Vec::new();
 
     let (depth, why) = ColorDepth::detect(|k| std::env::var(k).ok());
@@ -34,11 +44,11 @@ pub fn report(view: &SessionView) -> Vec<String> {
     out.push("terminal".into());
     match crossterm::terminal::size() {
         Ok((w, h)) => {
-            let ok = w >= crate::app::MIN_COLS && h >= crate::app::MIN_ROWS;
+            let ok = w >= MIN_COLS && h >= MIN_ROWS;
             out.push(format!(
                 "  size            {w}x{h}   required {}x{}   {}",
-                crate::app::MIN_COLS,
-                crate::app::MIN_ROWS,
+                MIN_COLS,
+                MIN_ROWS,
                 if ok { "ok" } else { "TOO SMALL — the TUI will refuse and offer --classic" }
             ));
         }
@@ -106,7 +116,7 @@ pub fn report(view: &SessionView) -> Vec<String> {
 
     out.push(String::new());
     out.push("keys".into());
-    match crate::keys::KeyRegistry::build(view) {
+    match keys {
         Ok(reg) => out.push(format!(
             "  {} bindings, no conflicts",
             reg.all_keys().len()
@@ -157,7 +167,8 @@ mod tests {
 
     #[test]
     fn the_report_states_both_backgrounds_and_the_braille_row() {
-        let out = report(marlowe_stub::Session::new().view()).join("\n");
+        let keys = KeyRegistry::build(|_| Vec::new());
+        let out = report(&keys).join("\n");
         assert!(out.contains("on dark"));
         assert!(out.contains("on light"));
         assert!(out.contains('\u{28FF}'), "the full braille cell must be printed for the eye check");

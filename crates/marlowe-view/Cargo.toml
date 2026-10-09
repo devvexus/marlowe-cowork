@@ -6,11 +6,3 @@ license.workspace = true
 description = "The view models a producer publishes and a surface renders. Shapes only — nothing here can produce a value."
 
 [dependencies]
-# **The one edge this crate has, and it is a recorded decision rather than a precedent.**
-# `DECISIONS.md`, 2026-08-31: the escalation overlay's option labels, severity and category are
-# `marlowe-contract`'s types, and the alternative was a second `is_renderable` inside the shapes
-# crate. Two answers to "which characters may reach a terminal", on the surface where
-# SECURITY-AUDIT B1 and B2 both live, is the worse trade. `marlowe-contract` is the deepest crate
-# in the workspace and holds no producer, so "Shapes only -- nothing here can produce a value"
-# still holds of everything reachable from here.
-marlowe-contract.workspace = true

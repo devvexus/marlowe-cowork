@@ -82,13 +82,6 @@ pub const GATE_VERSION: &str = "frozen-v5";
 /// v4 changes the names too, but the check stays — the refusal set grows and never shrinks.
 pub const FUSION: &str = "per-query-margin-calibration-continuous-z-ranking";
 
-/// The stamp the feature-dump mode puts on `§4.2 gate.version`.
-///
-/// Same discipline as Session A's `ungated-v0`: a mode that computed features but calibrated
-/// nothing must not be stampable as one that gated. A report reading `gate.version` has to be
-/// able to tell which of the three states produced it.
-pub const FIT_ONLY_VERSION: &str = "uncalibrated-fit-only";
-
 /// K1's operating point, in calibrated-precision units.
 ///
 /// **Frozen.** ROADMAP M10 is the only milestone that may move an operating point, and only by
@@ -1212,10 +1205,8 @@ mod tests {
 
     #[test]
     fn the_two_stamps_are_distinguishable() {
-        // A report reading `gate.version` must be able to tell a calibrated run from a
-        // feature-dump run from Session A's ungated run. Three states, three strings.
-        assert_ne!(GATE_VERSION, FIT_ONLY_VERSION);
+        // A report reading `gate.version` must be able to tell a calibrated run from Session A's
+        // ungated run.
         assert_ne!(GATE_VERSION, crate::retrieve::UNGATED_VERSION);
-        assert_ne!(FIT_ONLY_VERSION, crate::retrieve::UNGATED_VERSION);
     }
 }

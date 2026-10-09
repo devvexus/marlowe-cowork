@@ -43,12 +43,9 @@
 //! turn out of the top ranks — the precision risk, predicted in advance and then observed.
 
 pub mod cache;
-pub mod cuda_libs;
 pub mod embedder;
-pub mod hostmem;
 pub mod vectors;
 pub mod tokenizer;
-pub mod vram;
 
 /// Maximum sequence length, including `[CLS]` and `[SEP]`.
 ///
@@ -70,7 +67,7 @@ pub mod vram;
 ///
 /// # Why 1024, and it was chosen from the distribution rather than from a score
 ///
-/// `cargo run -p marlowe-memory --release --example token_lengths` over all 246,750 turns:
+/// Measured with the (since removed) `token_lengths` example over all 246,750 turns:
 /// **p50 96, p90 594, p95 667, p99 796, p99.9 1615, max 16666.** The distribution has a hard
 /// shoulder just under 800, so the candidates are not close:
 ///

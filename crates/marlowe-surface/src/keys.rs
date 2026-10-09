@@ -72,7 +72,12 @@ pub struct KeyRegistry {
 impl KeyRegistry {
     /// Build and validate. **Every pane, not just the visible one** — a collision in the Trust
     /// pane must be a startup error on a session that never opens Trust, or it ships.
-    pub fn build(view: &marlowe_view::SessionView) -> Result<Self, KeyConflict> {
+    ///
+    /// `items_for` supplies the items of each pane; the registry does not know where they come
+    /// from, so the layout that owns the panes stays the caller's.
+    pub fn build(
+        items_for: impl Fn(marlowe_view::Tab) -> Vec<marlowe_view::Item>,
+    ) -> Result<Self, KeyConflict> {
         let mut reg = KeyRegistry::default();
 
         let region_keys: [(char, RegionId, &str); 8] = [
@@ -110,7 +115,8 @@ impl KeyRegistry {
 
         for tab in marlowe_view::Tab::ALL {
             let mut pane: BTreeMap<char, usize> = BTreeMap::new();
-            for (i, item) in crate::inspector::items_for(view, tab).iter().enumerate() {
+            let tab_items = items_for(tab);
+            for (i, item) in tab_items.iter().enumerate() {
                 // **An item with no letter claims none.** The pane's pool is finite; see
                 // `Item::key` for why running out beats handing two items the same key.
                 let Some(item_key) = item.key else { continue };
@@ -122,7 +128,7 @@ impl KeyRegistry {
                     });
                 }
                 if let Some(prev) = pane.get(&item_key) {
-                    let prev_label = crate::inspector::items_for(view, tab)[*prev].label.clone();
+                    let prev_label = tab_items[*prev].label.clone();
                     return Err(KeyConflict {
                         key: item_key,
                         first: format!("the {} item '{prev_label}'", tab.title()),
@@ -184,16 +190,25 @@ impl KeyRegistry {
 mod tests {
     use super::*;
 
+    fn item(label: &str, key: char) -> marlowe_view::Item {
+        marlowe_view::Item::new(label, key, marlowe_view::Tone::Normal, &[])
+    }
+
+    fn registry_with(runs: Vec<marlowe_view::Item>) -> Result<KeyRegistry, KeyConflict> {
+        KeyRegistry::build(|tab| match tab {
+            marlowe_view::Tab::Runs => runs.clone(),
+            _ => Vec::new(),
+        })
+    }
+
     #[test]
-    fn the_shipped_key_set_has_no_conflicts() {
-        // If this fails the binary refuses to start, which is the intent — but it should fail here
-        // first, with both claimants named.
-        KeyRegistry::build(marlowe_stub::Session::new().view()).expect("shipped key set");
+    fn an_empty_item_set_has_no_conflicts() {
+        registry_with(Vec::new()).expect("region and tab keys do not collide");
     }
 
     #[test]
     fn item_keys_are_pane_scoped_and_globals_win_everywhere() {
-        let reg = KeyRegistry::build(marlowe_stub::Session::new().view()).unwrap();
+        let reg = registry_with(vec![item("Steer", 'g')]).unwrap();
         assert_eq!(
             reg.resolve('c', TabId::Runs),
             Some(Binding::Focus(RegionId::Conversation))
@@ -202,12 +217,17 @@ mod tests {
             reg.resolve('2', TabId::Runs),
             Some(Binding::Tab(TabId::Schedule))
         );
-        // 'g' is the Steer field, and it exists only while the Runs pane is displayed.
         assert!(matches!(
             reg.resolve('g', TabId::Runs),
             Some(Binding::Focus(RegionId::Item(TabId::Runs, _)))
         ));
         assert_eq!(reg.resolve('g', TabId::Schedule), None);
+    }
+
+    #[test]
+    fn an_item_key_that_shadows_a_region_key_is_refused() {
+        let err = registry_with(vec![item("Tomorrow", 'w')]).unwrap_err();
+        assert_eq!(err.key, 'w');
     }
 
     #[test]

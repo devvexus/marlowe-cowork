@@ -276,10 +276,11 @@ mod tests {
     #[test]
     fn registration_is_unlimited_and_exposure_is_not() {
         let mut r = ToolRegistry::new();
-        for i in 0..40 {
+        let n = crate::exposure::MAX_EXPOSED_TOOLS + 10;
+        for i in 0..n {
             r.register(reg(&format!("t{i}"), Transport::Builtin)).unwrap();
         }
-        assert_eq!(r.len(), 40, "registration carries no cap");
+        assert_eq!(r.len(), n, "registration carries no cap");
 
         // **Derived, not typed.** These were `13` and `12`, meaning "one past the budget" and
         // "exactly at it". ADR-058 moved the cap to thirteen and the literals silently became

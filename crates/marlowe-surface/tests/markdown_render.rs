@@ -1,6 +1,5 @@
 //! **§B13's rows, re-run against markdown-rich replies, plus §B10's `Y`.**
 //!
-//! `b13_rendering.rs` proves those rows over the stub's scripted transcript, which is plain prose.
 //! ADR-047 put a parser between the model's bytes and the grid, so every one of them has to be
 //! re-asked with the parser in the path. **A measurement is scoped to the system it was taken on**
 //! — CLAUDE.md's rule about carrying a number across a boundary — and a renderer is a boundary.
@@ -9,7 +8,6 @@
 //! |---|---|
 //! | background fills | zero cells with a `bg`, **and zero with `REVERSED`** |
 //! | distinct colours | every emitted foreground is in `Theme::declared_colours` |
-//! | chrome inside a scroll area | markdown writes nothing outside `conversation_scroll` |
 //! | repaint flicker, 120×30 → 240×60 | frame N+1 is a cell-for-cell re-render of frame N |
 //! | resize reflows cleanly | away and back returns the identical buffer |
 //!
@@ -18,11 +16,7 @@
 
 mod common;
 
-use marlowe_surface::app::App;
-use marlowe_surface::render;
-use marlowe_view::notice::Speech;
-use marlowe_view::Entry;
-use ratatui::layout::Rect;
+use common::Pane;
 use ratatui::style::{Color, Modifier};
 
 /// A reply exercising every construct the renderer knows, so the sweeps below are not walking a
@@ -61,24 +55,20 @@ $\\hat{x}$ is left as written. See [the note](https://example.invalid/precision)
 That is the whole mechanism.
 ";
 
-fn app_saying(text: &str) -> App {
-    let producer = marlowe_stub::Session::new();
-    let mut view = producer.view().clone();
-    view.transcript
-        .push(Entry::Said(Speech::Model(text.to_string())));
-    App::new(view).expect("the shipped key set has no conflicts")
+fn app_saying(text: &str) -> Pane {
+    Pane::saying(text)
 }
 
 /// Render one model reply and return the drawn grid as text.
 ///
-/// Through `App` and a real `Buffer`, not through `markdown::render_prose` — the property is what
+/// Through a real `Buffer`, not through `markdown::render_prose` alone — the property is what
 /// reaches the screen, and a helper that called the parser directly would assert on an
 /// intermediate the user never sees.
 fn plain(md: &str) -> String {
     common::buffer_text(&common::frame(&app_saying(md), 120, 40))
 }
 
-fn rich() -> App {
+fn rich() -> Pane {
     app_saying(RICH)
 }
 
@@ -227,59 +217,6 @@ fn a_second_render_of_the_same_state_changes_not_one_cell() {
     println!("markdown re-render: 0 cells differ, 120x30 through 240x60");
 }
 
-/// §B12: *"This is why focus is a border and not a fill"* — re-asked with markdown in the pane.
-///
-/// `b13_rendering.rs` proves this over the stub's plain transcript. A renderer that styled by
-/// region rather than by content — a code fence filling its rows, a heading painting a bar — would
-/// pass that version and fail this one, because the cells it repaints are the ones markdown put
-/// there.
-#[test]
-fn a_focus_change_repaints_no_markdown_cell() {
-    for (w, h) in common::SIZES {
-        // Only the reply, so the vacuity control below is a statement about markdown rather than
-        // about whatever the stub's own transcript happened to scroll into view.
-        let producer = marlowe_stub::Session::new();
-        let mut view = producer.view().clone();
-        view.transcript.clear();
-        view.transcript
-            .push(Entry::Said(Speech::Model(RICH.to_string())));
-        let mut app = App::new(view).expect("the shipped key set has no conflicts");
-        app.scroll = Some(0);
-        app.on_key(marlowe_surface::app::Key::Esc);
-        let mut term = common::terminal(w, h);
-        let before = common::draw_into(&mut term, &app);
-
-        app.on_key(marlowe_surface::app::Key::Char('m')); // conversation -> Model
-        let after = common::draw_into(&mut term, &app);
-
-        let c = render::layout(Rect::new(0, 0, w, h));
-        let r = c.conversation_scroll;
-        let hits: Vec<_> = common::diff_cells(&before, &after)
-            .into_iter()
-            .filter(|(x, y)| *x >= r.x && *x < r.right() && *y >= r.y && *y < r.bottom())
-            .collect();
-        assert!(
-            hits.is_empty(),
-            "{w}x{h}: moving focus to Model repainted {} cells inside the markdown transcript, \
-             first at {:?}. Focus is a border and a title, not a fill — and rendered markdown is \
-             not part of the focus signal",
-            hits.len(),
-            hits.first()
-        );
-        // Non-vacuity: the pane must have had markdown in it, and the focus change must have
-        // repainted *something* — otherwise this passes on a frame where nothing happened.
-        assert!(
-            common::buffer_text(&before).contains("Retrieval, end to end"),
-            "{w}x{h}: no markdown was on screen"
-        );
-        assert!(
-            !common::diff_cells(&before, &after).is_empty(),
-            "{w}x{h}: the focus change repainted nothing at all"
-        );
-    }
-    println!("focus change with markdown on screen: 0 transcript cells repainted, 5 sizes");
-}
-
 /// §B12: *"Resize reflows cleanly."* Away and back must return the identical buffer — a parser
 /// holding state across widths would not.
 #[test]
@@ -296,57 +233,6 @@ fn a_resize_round_trip_with_markdown_returns_the_identical_frame() {
     println!("markdown resize round trip 140x40 -> 240x60 -> 120x30 -> 140x40: 0 cells differ");
 }
 
-/// §B3: *"Chrome that scrolls is a bug."* The renderer wraps, so the renderer decides how many
-/// lines a reply occupies; if it wrote past the scroll area it would paint over the pager, which
-/// carries the turn count, the compaction count and the lineage depth and lives nowhere else.
-#[test]
-fn markdown_never_paints_over_the_pager_or_the_border() {
-    for (w, h) in common::SIZES {
-        let app = app_saying(&format!("{RICH}\n\n{RICH}"));
-        let buf = common::frame(&app, w, h);
-        let c = render::layout(Rect::new(0, 0, w, h));
-        let pager = common::row_text(&buf, c.pager.y);
-        assert!(
-            pager.contains("turn ") && pager.contains("compacted") && pager.contains("lineage"),
-            "{w}x{h}: the pager row reads {pager:?} — a long reply painted over it"
-        );
-        // And the region's own bottom border is intact.
-        let border = common::row_text(&buf, c.conversation.bottom() - 1);
-        assert!(border.contains("(c)"), "{w}x{h}: the conversation's hotkey is gone: {border:?}");
-    }
-    println!("pager and hotkey survive a two-screen markdown reply at 5 sizes");
-}
-
-/// The scrollbar is sized from the renderer's own line count, so the count has to be the one that
-/// was drawn. A markdown reply produces a different number of lines than its source has, and
-/// `App::scroll_max` is the only place those two answers could diverge.
-#[test]
-fn the_scroll_extent_agrees_with_what_markdown_actually_drew() {
-    let app = app_saying(&RICH.repeat(3));
-    let theme = common::theme();
-    for (w, h) in common::SIZES {
-        let buf = common::frame(&app, w, h);
-        let c = render::layout(Rect::new(0, 0, w, h));
-        let text_w = c.conversation_scroll.width - 2;
-        let lines = render::transcript_lines(&app, &theme, text_w);
-        let expected = lines
-            .len()
-            .saturating_sub(c.conversation_scroll.height as usize);
-        assert_eq!(
-            app.scroll_max.get() as usize,
-            expected,
-            "{w}x{h}: the scrollbar was sized from {} lines and the renderer drew {}",
-            app.scroll_max.get() as usize + c.conversation_scroll.height as usize,
-            lines.len()
-        );
-        // Non-vacuity: the reply must actually overflow, or `expected` is 0 and the assertion holds
-        // for a transcript that never needed a scrollbar.
-        assert!(expected > 0, "{w}x{h}: the transcript fits, so this proves nothing");
-        assert!(!common::buffer_text(&buf).is_empty());
-    }
-    println!("scroll extent matches the drawn line count at 5 sizes");
-}
-
 /// §B10: **`Y` copies the whole transcript as markdown**, and markdown is already the interchange
 /// format. Rendering it must not change what comes out.
 ///
@@ -355,7 +241,7 @@ fn the_scroll_extent_agrees_with_what_markdown_actually_drew() {
 /// on a build where the feature does nothing.
 #[test]
 fn y_still_copies_the_source_markdown_and_not_the_rendered_form() {
-    let mut app = rich();
+    let app = rich();
     let screen = common::buffer_text(&common::frame(&app, 160, 45));
     assert!(
         !screen.contains("**build-time artifact**"),
@@ -363,8 +249,7 @@ fn y_still_copies_the_source_markdown_and_not_the_rendered_form() {
     );
     assert!(screen.contains("build-time artifact"), "the reply never rendered:\n{screen}");
 
-    app.copy_transcript();
-    let copied = app.pending_copy.clone().expect("Y puts a payload on the clipboard");
+    let copied = marlowe_surface::clipboard::entries_markdown(&app.entries);
 
     for fragment in [
         "**build-time artifact**",
@@ -381,9 +266,8 @@ fn y_still_copies_the_source_markdown_and_not_the_rendered_form() {
              {fragment:?} from:\n{copied}"
         );
     }
-    // And nothing from the rendered form leaked in. `·` alone is not on this list: the stub's own
-    // tool-call text uses it as a separator, so it is in the payload for a legitimate reason — the
-    // rendered horizontal RULE is a run of them, and that is what would signal a leak.
+    // And nothing from the rendered form leaked in. The rendered horizontal RULE is a run of `·`,
+    // and that is what would signal a leak.
     for fragment in ["•", "▏", "····"] {
         assert!(
             !copied.contains(fragment),
@@ -534,17 +418,8 @@ fn an_accent_with_a_precomposed_form_renders_and_one_without_still_refuses() {
 /// learned the palette that something needs attention. The weight ladder carries it instead.
 #[test]
 fn rendered_maths_is_lighter_than_the_prose_around_it() {
-    // **The transcript is CLEARED first.** `app_saying` appends to the stub's own transcript, and
-    // a short reply added to the end renders below the visible pane -- the assertion then fails
-    // for a reason that has nothing to do with styling. Found by asserting the glyph reached the
-    // grid before asserting anything about its colour.
-    let producer = marlowe_stub::Session::new();
-    let mut view = producer.view().clone();
-    view.transcript.clear();
-    view.transcript.push(Entry::Said(Speech::Model(
-        r"the value is $\alpha$ exactly".to_string(),
-    )));
-    let app = App::new(view).unwrap();
+    // Found by asserting the glyph reached the grid before asserting anything about its colour.
+    let app = Pane::saying(r"the value is $\alpha$ exactly");
     let buf = common::frame(&app, 120, 40);
 
     // **Both samples come from the SAME ROW**, and that is the point of the test rather than a
@@ -571,62 +446,13 @@ fn rendered_maths_is_lighter_than_the_prose_around_it() {
     );
 }
 
-/// **Reasoning renders markdown when expanded, and the equation is lighter than the reasoning.**
-///
-/// Reasoning is where a model puts its working, and its working is where the equations are.
-/// Rendering it flat left the one place a derivation actually lives as the one place it stayed raw.
-#[test]
-fn expanded_reasoning_renders_maths_and_it_is_lighter_than_the_reasoning() {
-    let producer = marlowe_stub::Session::new();
-    let mut view = producer.view().clone();
-    view.transcript.clear();
-    view.transcript.push(marlowe_view::Entry::Reasoning {
-        text: r"so the update is $\alpha \times \beta$ here".to_string(),
-        tokens: 11,
-        done: true,
-    });
-    let mut app = App::new(view).unwrap();
-    app.reasoning_expanded = true;
-    let buf = common::frame(&app, 120, 40);
-    let text = common::buffer_text(&buf);
-
-    assert!(text.contains("α × β"), "reasoning did not render its maths:\n{text}");
-    assert!(!text.contains(r"\alpha"), "the source survived:\n{text}");
-}
-
-/// **The control, and it is the cost argument.** Collapsed, a reasoning block is a carried COUNT,
-/// so the parser never runs on the path that draws almost every frame. Reasoning is the
-/// highest-volume text in the product and K4 budgets 150 ms to first frame.
-#[test]
-fn collapsed_reasoning_parses_nothing_and_reports_a_count() {
-    let producer = marlowe_stub::Session::new();
-    let mut view = producer.view().clone();
-    view.transcript.clear();
-    view.transcript.push(marlowe_view::Entry::Reasoning {
-        text: r"so the update is $\alpha \times \beta$ here".to_string(),
-        tokens: 11,
-        done: true,
-    });
-    let app = App::new(view).unwrap();
-    let text = common::buffer_text(&common::frame(&app, 120, 40));
-
-    assert!(text.contains("thought 11 tokens"), "the head line must report a count:\n{text}");
-    assert!(!text.contains("α × β"), "collapsed reasoning rendered its body:\n{text}");
-}
-
 /// **Display maths gets the same weight as inline maths.**
 ///
 /// It took the surrounding prose style, so `$x$` stood out and `$$x$$` did not -- backwards, since
 /// the display form is the one the author decided was important enough to put on its own line.
 #[test]
 fn display_maths_stands_out_the_same_way_inline_maths_does() {
-    let build = |md: &str| {
-        let producer = marlowe_stub::Session::new();
-        let mut view = producer.view().clone();
-        view.transcript.clear();
-        view.transcript.push(Entry::Said(Speech::Model(md.to_string())));
-        common::frame(&App::new(view).unwrap(), 120, 40)
-    };
+    let build = |md: &str| common::frame(&Pane::saying(md), 120, 40);
     let fg = |buf: &ratatui::buffer::Buffer, sym: &str| {
         (0..buf.area.height)
             .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
@@ -654,11 +480,7 @@ fn an_unclosed_equation_renders_while_it_is_still_arriving() {
     let full = r"$$y = \sigma(Wx + b)$$";
     let prefix = |n: usize| -> String {
         let src: String = full.chars().take(n).collect();
-        let producer = marlowe_stub::Session::new();
-        let mut view = producer.view().clone();
-        view.transcript.clear();
-        view.transcript.push(Entry::Said(Speech::Model(src)));
-        common::buffer_text(&common::frame(&App::new(view).unwrap(), 120, 40))
+        common::buffer_text(&common::frame(&Pane::saying(&src), 120, 40))
     };
 
     // Partway through, with every token so far complete: typeset, not source.
@@ -687,12 +509,7 @@ fn no_frame_of_a_streaming_equation_shows_raw_latex() {
         let n = full.chars().count();
         for k in 3..=n {
             let src: String = full.chars().take(k).collect();
-            let producer = marlowe_stub::Session::new();
-            let mut view = producer.view().clone();
-            view.transcript.clear();
-            view.transcript.push(Entry::Said(Speech::Model(src.clone())));
-            let out =
-                common::buffer_text(&common::frame(&App::new(view).unwrap(), 120, 40));
+            let out = common::buffer_text(&common::frame(&Pane::saying(&src), 120, 40));
             assert!(
                 !out.contains(r"\sigma") && !out.contains(r"rac") && !out.contains(r"\hat"),
                 "frame {k} of {full:?} fell back to raw source:
@@ -710,11 +527,7 @@ fn no_frame_of_a_streaming_equation_shows_raw_latex() {
 /// to prevent.
 #[test]
 fn a_closed_expression_that_cannot_render_is_not_silently_truncated() {
-    let producer = marlowe_stub::Session::new();
-    let mut view = producer.view().clone();
-    view.transcript.clear();
-    view.transcript.push(Entry::Said(Speech::Model(r"$x = \hat{x} + 1$".to_string())));
-    let out = common::buffer_text(&common::frame(&App::new(view).unwrap(), 120, 40));
+    let out = common::buffer_text(&common::frame(&Pane::saying(r"$x = \hat{x} + 1$"), 120, 40));
     assert!(out.contains(r"\hat{x}"), "a real refusal was truncated to its valid prefix:
 {out}");
 }
@@ -725,11 +538,7 @@ fn a_closed_expression_that_cannot_render_is_not_silently_truncated() {
 #[test]
 fn an_unclosed_dollar_in_prose_is_still_not_maths() {
     for s in ["it costs $5 and", "the price is $12 for", "spend $"] {
-        let producer = marlowe_stub::Session::new();
-        let mut view = producer.view().clone();
-        view.transcript.clear();
-        view.transcript.push(Entry::Said(Speech::Model(s.to_string())));
-        let out = common::buffer_text(&common::frame(&App::new(view).unwrap(), 120, 40));
+        let out = common::buffer_text(&common::frame(&Pane::saying(s), 120, 40));
         assert!(out.contains(s), "prose was eaten as maths: {s:?} -> {out}");
     }
 }

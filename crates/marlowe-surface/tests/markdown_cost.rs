@@ -27,8 +27,7 @@
 
 mod common;
 
-use marlowe_surface::app::App;
-use marlowe_surface::render;
+use common::Pane;
 use marlowe_view::notice::Speech;
 use marlowe_view::Entry;
 use std::time::Instant;
@@ -94,29 +93,27 @@ const fn typical_ceiling_ms() -> u128 {
 /// the typical one, and the typical one is printed alongside it.
 const HEAVY_BYTES: usize = 400 * 1024;
 
-fn transcript_of(bytes: usize, model: bool) -> App {
-    let producer = marlowe_stub::Session::new();
-    let mut view = producer.view().clone();
-    view.transcript.clear();
+fn transcript_of(bytes: usize, model: bool) -> Pane {
+    let mut entries = Vec::new();
     let mut n = 0;
     while n < bytes {
         n += CHUNK.len();
-        view.transcript.push(if model {
+        entries.push(if model {
             Entry::Said(Speech::Model(CHUNK.to_string()))
         } else {
             Entry::User(CHUNK.to_string())
         });
     }
-    App::new(view).expect("the shipped key set has no conflicts")
+    Pane::new(entries)
 }
 
-fn time_layout(app: &App, width: u16, reps: u32) -> (u128, usize) {
+fn time_layout(app: &Pane, width: u16, reps: u32) -> (u128, usize) {
     let theme = common::theme();
     // One untimed pass, so the measurement is of the work and not of the first touch of a page.
-    let lines = render::transcript_lines(app, &theme, width).len();
+    let lines = common::lines(app, &theme, width).len();
     let start = Instant::now();
     for _ in 0..reps {
-        std::hint::black_box(render::transcript_lines(app, &theme, width));
+        std::hint::black_box(common::lines(app, &theme, width));
     }
     (start.elapsed().as_micros() / reps as u128, lines)
 }
@@ -187,9 +184,7 @@ fn a_typical_transcript_lays_out_in_under_a_millisecond() {
 /// quadratic-or-worse on a line of stars.
 #[test]
 fn a_pathological_reply_costs_no_more_than_a_long_one() {
-    let producer = marlowe_stub::Session::new();
-    let mut view = producer.view().clone();
-    view.transcript.clear();
+    let mut entries = Vec::new();
     for hostile in [
         "*".repeat(20_000),
         "`".repeat(20_000),
@@ -199,9 +194,9 @@ fn a_pathological_reply_costs_no_more_than_a_long_one() {
         "$".repeat(20_000),
         r"\frac{".repeat(5_000),
     ] {
-        view.transcript.push(Entry::Said(Speech::Model(hostile)));
+        entries.push(Entry::Said(Speech::Model(hostile)));
     }
-    let app = App::new(view).expect("the shipped key set has no conflicts");
+    let app = Pane::new(entries);
     let (us, lines) = time_layout(&app, 66, 1);
     println!(
         "140 KB of pathological markup: {:.1} ms -> {lines} lines (ceiling {} ms)",

@@ -196,10 +196,7 @@ fn a_crlf_checkout_does_not_shift_every_token_id() {
 
 // ----------------------------------------------------------------- the embedding itself
 
-use marlowe_memory::cue::dense::embedder::{
-    EmbedProvider, Embedder, ProviderChoice, MODEL_FILE,
-};
-use marlowe_memory::cue::dense::vram::Probe;
+use marlowe_memory::cue::dense::embedder::{EmbedProvider, Embedder, MODEL_FILE};
 use marlowe_memory::cue::dense::{cosine, DIMENSIONS};
 
 /// **Cross-implementation, so it carries a tolerance — and the tolerance is measured, not
@@ -219,10 +216,6 @@ const MAX_ABS_DIFF: f32 = 1e-4;
 const MIN_COSINE: f32 = 0.9999;
 
 /// The reference comparison itself, with the loaded embedder passed in.
-///
-/// Extracted so that **the CUDA reading is the same measurement and not a paraphrase of it**.
-/// ADR-015 requires a per-provider baseline; a second hand-written loop would be a second
-/// definition of "agrees with HuggingFace", and the two would drift.
 fn check_against_the_reference(embedder: &mut Embedder, label: &str) -> Vec<f32> {
     let data = fixture("embedding-reference.json");
     assert_eq!(data["dimensions"].as_u64().unwrap() as usize, DIMENSIONS);
@@ -299,12 +292,7 @@ fn the_embedder_reproduces_the_reference_within_a_measured_tolerance() {
         Ok(e) => e,
         Err(e) => panic!("the pinned model must load: {e}"),
     };
-    // **The label is a claim, so it is enforced here rather than trusted.** ADR-044 made the
-    // PRODUCT's default `auto`; `Embedder::load` stayed CPU precisely so this row means what it
-    // says. If someone flips `load` to `Auto`, this reading would quietly become CUDA's on any
-    // machine with a card -- and CUDA misses `MAX_ABS_DIFF` by design (see the test below), so
-    // the failure would arrive as a mysterious tolerance break rather than as the relabelling it
-    // is. The assertion turns that into one line naming the cause.
+    // **The label is a claim, so it is enforced here rather than trusted.**
     assert_eq!(
         embedder.provider(),
         EmbedProvider::Cpu,
@@ -318,88 +306,6 @@ fn the_embedder_reproduces_the_reference_within_a_measured_tolerance() {
         "[cpu] max abs diff {worst:.3e} exceeds {MAX_ABS_DIFF:.0e}. The fixture is the authority; \
          do NOT regenerate it to make this pass. Check the pooling, the mask, and the \
          normalization in that order"
-    );
-}
-
-/// **ADR-015: the CPU reading above is not evidence about this one.** A different execution
-/// provider is a different scorer, so the fixture — HuggingFace / sentence-transformers output,
-/// and the authority in this direction — is re-checked against CUDA rather than assumed to still
-/// hold. The tolerance is the same because the question is the same: *does this build agree with
-/// HuggingFace?*
-///
-/// **The fixture is NEVER regenerated to make this pass.** If CUDA disagrees with HuggingFace, the
-/// finding is that CUDA is a different scorer by more than the tolerance allows — which is exactly
-/// what ADR-015 exists to detect, and it would be a result rather than a fixture problem.
-///
-/// Skips loudly where CUDA cannot construct. See `cue::dense::cuda_libs` for why it may fail to
-/// construct on a machine that has the libraries.
-#[test]
-fn the_embedder_reproduces_the_reference_on_cuda_too() {
-    let dir = model_dir();
-    if !dir.join(MODEL_FILE).exists() {
-        eprintln!("SKIP: run `python tools/fetch_model.py`");
-        return;
-    }
-    let mut embedder = match Embedder::load_with_provider(
-        &dir,
-        1,
-        None,
-        ProviderChoice::Cuda,
-        Probe::Device, marlowe_memory::cue::dense::vram::Reserve::None,) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!(
-                "SKIP: CUDA does not construct here, so the reference is UNVERIFIED on CUDA and \
-                 the CPU reading above must not be cited for it: {e}"
-            );
-            return;
-        }
-    };
-    assert_eq!(
-        embedder.provider(),
-        EmbedProvider::Cuda,
-        "this test must measure CUDA; a CPU embedder here would re-measure the row above"
-    );
-    let diffs = check_against_the_reference(&mut embedder, "cuda");
-    let worst = diffs.iter().fold(0.0f32, |a, b| a.max(*b));
-
-    // **MEASURED 2026-08-17 AND IT DOES NOT MEET THE CPU TOLERANCE: worst 1.063e-4 against
-    // MAX_ABS_DIFF = 1e-4.** Recorded here rather than papered over, because it is the exact result
-    // ADR-015 exists to produce -- *a different execution provider is a different scorer*, and the
-    // CPU figure of 1.043e-7 was never evidence about this one.
-    //
-    // **Nothing was widened to make this green.** `MAX_ABS_DIFF` is untouched and still guards the
-    // shipped CPU path; the fixture is untouched and is still HuggingFace's output. What this test
-    // asserts instead is the pair of properties that are actually true of CUDA and that retrieval
-    // depends on: **cosine agreement** (asserted in the helper, unrelaxed at 0.9999 and measured
-    // at 0.99999970) and a **provisional** component bound named separately below.
-    //
-    // `CUDA_MAX_ABS_DIFF` IS NOT A TOLERANCE. It is a tripwire around a measurement, set one order
-    // of magnitude above what was observed so that a *drift* fails while today's known gap does
-    // not. A real tolerance is derived from the gap between two faithful implementations, as
-    // `MAX_ABS_DIFF`'s doc comment shows for CPU; nobody has done that work for CUDA, and doing it
-    // by rounding up the first number ever measured would be fitting the threshold to the
-    // observation.
-    //
-    // **THIS WAS THE BLOCKER FOR DEFAULTING THE EMBEDDER TO GPU. IT WAS CLEARED BY MEASUREMENT,
-    // NOT BY WIDENING ANYTHING -- ADR-044, 2026-08-17.** ADR-029 met the same wall on the
-    // cross-encoder and amended the requirement to *ranking equivalence* after measuring it (0/229
-    // slates reordered). The equivalent measurement here has now been taken: on the fit split the
-    // CPU and CUDA arms pick the same session on **242 of 242** queries, net 0, McNemar p = 1.0,
-    // while **99.84%** of the 117,890 candidate rows moved their `dense_cosine` -- the control that
-    // stops "identical" from meaning "the run never happened". `runs/session-e-cuda/`.
-    //
-    // **Nothing in this file changed as a result, and that is the point.** The tolerance is a proxy
-    // for "did the scorer move"; the decision is the property. The proxy still reads FAIL for CUDA
-    // and is left reading FAIL. This test continues to record agreement in direction and
-    // disagreement in components, and continues to claim nothing about R@1 -- the R@1 claim lives
-    // in ADR-044 with the run that produced it.
-    const CUDA_MAX_ABS_DIFF: f32 = 1e-3;
-    assert!(
-        worst <= CUDA_MAX_ABS_DIFF,
-        "[cuda] max abs diff {worst:.3e} exceeds the provisional tripwire \
-         {CUDA_MAX_ABS_DIFF:.0e}. This is a DRIFT from the 1.063e-4 measured on 2026-08-17, not \
-         the known CPU/CUDA gap. Do NOT raise this constant and do NOT regenerate the fixture"
     );
 }
 

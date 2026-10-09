@@ -41,17 +41,12 @@
 #![forbid(unsafe_code)]
 
 pub mod common;
-pub mod escalation;
 pub mod frame;
 pub mod text;
 pub mod wire;
 
 pub use common::{
     AbstentionReason, Channel, Clock, Fidelity, PayloadKind, Speaker, TrustClass,
-};
-pub use escalation::{
-    ArtifactHandle, EscalationCategory, EscalationId, EscalationSeverity, NotAHandle, OptionLabel,
-    TextRejected, ValidatedSentence,
 };
 pub use text::{is_renderable, sanitize, sanitize_line, sanitize_prose, Shape};
 pub use frame::{ErrorKind, FrameError, Op, RequestFrame, ResponseFrame};

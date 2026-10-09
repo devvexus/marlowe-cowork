@@ -41,14 +41,11 @@
 //!
 //! It records **which component is doing the defending**, so the day a ratatui upgrade changes that
 //! behaviour something fails with a name attached instead of an escape sequence quietly reaching a
-//! terminal. The classic CLI's own guards are unit tests at their enforcement sites — `cli.rs`'s
-//! `display_sanitiser` module and `marlowe/src/agent.rs`'s. Those are guards. This is not.
+//! terminal. Guards live as unit tests at their enforcement sites. This is not one.
 
 mod common;
 
-use marlowe_surface::app::App;
-use marlowe_view::notice::Speech;
-use marlowe_view::Entry;
+use common::Pane;
 
 /// One of each family, chosen because each defeats a *different* defence.
 const HOSTILE: [(char, &str); 5] = [
@@ -61,20 +58,12 @@ const HOSTILE: [(char, &str); 5] = [
 
 /// The **flat** render path: `Entry::User` goes to the grid without a sanitiser in front of it, so
 /// what happens to a character here is a statement about ratatui.
-fn app_with_user_text(text: String) -> App {
-    let producer = marlowe_stub::Session::new();
-    let mut view = producer.view().clone();
-    view.transcript.clear();
-    view.transcript.push(Entry::User(text));
-    App::new(view).unwrap()
+fn app_with_user_text(text: String) -> Pane {
+    Pane::user(&text)
 }
 
-fn app_saying(text: String) -> App {
-    let producer = marlowe_stub::Session::new();
-    let mut view = producer.view().clone();
-    view.transcript.clear();
-    view.transcript.push(Entry::Said(Speech::Model(text)));
-    App::new(view).unwrap()
+fn app_saying(text: String) -> Pane {
+    Pane::saying(&text)
 }
 
 #[test]

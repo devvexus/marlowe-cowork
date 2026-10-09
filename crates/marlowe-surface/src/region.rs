@@ -46,7 +46,7 @@ pub enum RegionId {
     // constructor of a bordered `Block` in this crate — is what draws them, and so
     // `b13_region_contract.rs`'s grep keeps covering them.
     //
-    // They never appear in a `RegionTree::build` tree and the window's regions never appear in a
+    // They never appear in a `RegionTree::from_regions` main-pane tree and the window's regions never appear in a
     // main-pane tree, so the two key sets are independent: `RunSteer` may share `i` with
     // [`RegionId::Message`] because no frame ever shows both, and both mean "type here".
     /// Id, status, elapsed, spend against ceiling.
@@ -227,7 +227,7 @@ impl Region {
 
 /// Every region on screen, in **reading order** — which is also `Tab` order (§B10).
 ///
-/// Built fresh from the session on every frame, because the inspector's items change with the tab.
+/// Built fresh on every frame, because the inspector's items change with the tab.
 /// That is not a cost worth optimising: it is what guarantees the tree and the screen cannot
 /// disagree, and a stale tree is exactly how the "100% have a hotkey" assertion would go green
 /// while a real region shipped without one.
@@ -237,24 +237,12 @@ pub struct RegionTree {
 }
 
 impl RegionTree {
-    pub fn build(view: &marlowe_view::SessionView, showing: marlowe_view::Tab) -> Self {
-        let tab: TabId = showing.into();
-        let mut regions = vec![
-            Region::new(RegionId::Model, "Model", 'm'),
-            Region::new(RegionId::Profile, "Profile", 'p'),
-            Region::new(RegionId::Session, "Session", 's'),
-            Region::new(RegionId::Workspace, "Workspace", 'w'),
-            Region::new(RegionId::Autonomy, "Autonomy", 'a'),
-            Region::new(RegionId::Status, "Status", 'v'),
-            Region::new(RegionId::Conversation, "Conversation", 'c'),
-        ];
-        for (i, item) in crate::inspector::items(view, showing).iter().enumerate() {
-            regions.push(match item.key {
-                Some(k) => Region::new(RegionId::Item(tab, i), &item.label, k),
-                None => Region::unkeyed(RegionId::Item(tab, i), &item.label),
-            });
-        }
-        regions.push(Region::new(RegionId::Message, "Message", 'i'));
+    /// A tree from regions the caller has already built, in reading order. The layout that knows
+    /// which regions exist is the caller's; this type only owns the ordering and focus stepping.
+    ///
+    /// Panics on an empty list: a tree with no region has no first focus to give.
+    pub fn from_regions(regions: Vec<Region>) -> Self {
+        assert!(!regions.is_empty(), "a RegionTree needs at least one region");
         Self { regions }
     }
 

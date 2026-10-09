@@ -5,36 +5,35 @@
 //! run.*
 //!
 //! That is enforced by the dependency graph rather than by discipline: this crate depends on
-//! `marlowe-stub` (which stands in for the daemon) and not the reverse, so it has no way to
-//! produce a session value, a status state, or an inspector row. It renders what it is handed.
+//! `marlowe-view` (shapes only) and no producer, so it has no way to produce a session value or
+//! a status state. It renders what it is handed.
+//!
+//! # What is here
+//!
+//! The reusable rendering foundation: the palette ([`theme`]), the region contract ([`region`]),
+//! markdown and maths ([`markdown`], [`latex`]), the meter ([`meter`], [`amplitude`],
+//! [`frame_clock`]), chrome glyphs ([`chrome`]), keys, clipboard, overlays and `doctor`. The
+//! application that arranges them is not part of this crate.
 //!
 //! # What §B13 asks for, and where each answer lives
 //!
 //! | acceptance row | where |
 //! |---|---|
 //! | every bordered region has a label and a hotkey | [`region::Region`] — unconstructable without both |
-//! | regions reachable by keyboard alone | [`app`] — no drawing, so every path is testable headless |
 //! | zero background fills | [`theme`] — no API returns a `bg` |
-//! | zero chrome inside a scroll area | [`render::Chrome`] — scroll rects are explicit |
 //! | ≤ 1 accent + 3 state + 3 weights | [`theme::Theme`] — seven colours and no eighth |
-//! | zero memory regions | `tests/no_memory_surface.rs` |
-//! | honest refusal below 120×30 | [`render::draw`] |
-//! | classic CLI parity | [`commands`] — one registry, one dispatcher, both surfaces |
 //! | rendered markdown cannot forge chrome | [`chrome`] — one definition of what chrome looks like |
 //!
 //! The tests are in `tests/`; this table is the map, not the enforcement.
 
 #![forbid(unsafe_code)]
 
-pub mod app;
+pub mod amplitude;
 /// The glyphs harness chrome draws, and the reservation that keeps them out of model prose.
 pub mod chrome;
-pub mod cli;
 pub mod clipboard;
-pub mod commands;
 pub mod doctor;
-pub mod escalation;
-pub mod inspector;
+pub mod frame_clock;
 pub mod keys;
 /// Inline maths — legible where it can be, visibly source where it cannot. ADR-047.
 pub mod latex;
@@ -43,11 +42,8 @@ pub mod markdown;
 pub mod meter;
 pub mod overlay;
 pub mod region;
-pub mod render;
 pub mod theme;
-/// A real terminal window per run. `M3-DESIGN.md` §6.
-pub mod window;
 
-pub use app::{Action, App, Key, MIN_COLS, MIN_ROWS};
+pub use doctor::{MIN_COLS, MIN_ROWS};
 pub use region::{FocusLevel, Region, RegionId, RegionTree, TabId};
 pub use theme::{ColorDepth, Theme, ThemeError};

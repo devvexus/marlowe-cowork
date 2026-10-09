@@ -27,7 +27,6 @@
 #![forbid(unsafe_code)]
 
 pub mod approval;
-pub mod escalation;
 pub mod meter;
 pub mod notice;
 pub mod model;
@@ -37,10 +36,6 @@ pub mod run;
 pub mod turn;
 pub mod view;
 
-pub use escalation::{
-    AgentOption, ArtifactPath, Choice, EscalationView, HostLabel, IrreversibleAct, SourceEvidence,
-    SourceTrace, Survivor, TerminationCost, TooManyOptions, TERMINATE_CANARY, TERMINATE_LABEL,
-};
 pub use meter::{Frame, MeterSource, BASELINE, LEVELS, SAMPLES};
 pub use produce::{ClockRead, Produce};
 pub use provider::{HYBRID, OLLAMA, OPENROUTER, PROVIDERS};

@@ -1,36 +1,26 @@
 [workspace]
 resolver = "2"
 members = [
+    # Foundation crates inherited from Marlowe_Harness, compiling on their own as of M0.
     "crates/marlowe-contract",
     "crates/marlowe-journal",
     "crates/marlowe-memory",
-    "crates/marlowe-view",
-    "crates/marlowe-stub",
-    "crates/marlowe-surface",
+    "crates/marlowe-net",
+    "crates/marlowe-extract",
     "crates/marlowe-tools",
     "crates/marlowe-permission",
-    "crates/marlowe-loop",
-    "crates/marlowe-exec",
-    # ADR-031. The whole of the TLS supply-chain surface, in one crate that depends on nothing of
-    # Marlowe's — so `marlowe-provider` can keep proving the default path reaches no network.
-    "crates/marlowe-net",
-    # The extraction half of the `web` path. ADR-031's header promised this module and it was
-    # never written: until now `web` handed raw `from_utf8_lossy` bytes to the model. Depends on
-    # nothing of Marlowe's, exactly as `marlowe-net` does not — fetching and parsing stay split.
-    "crates/marlowe-extract",
-    "crates/marlowe-provider",
-    # ADR-046. The HOSTED provider adapter, in its own crate so that `cargo tree -p
-    # marlowe-provider` still shows no TLS and ADR-031 §2.3 survives verbatim. It depends on
-    # `marlowe-provider` rather than living in it.
-    "crates/marlowe-openrouter",
-    # ADR-052. MCP over a child process's stdio. Its own crate so that
-    # `cargo tree -p marlowe-mcp` shows no TLS and no socket -- layer 4 (egress) is
-    # approved and NOT shipped, so an HTTP transport needs its own argument first.
     "crates/marlowe-mcp",
-    "crates/marlowe-daemon",
+    "crates/marlowe-view",
+    "crates/marlowe-surface",
+]
+# Parked until M1 ports them onto the `marlowe-model` seam: they still depend on the old
+# `marlowe-loop`, which now lives under legacy/ as reference only.
+exclude = [
+    "crates/marlowe-provider",
+    "crates/marlowe-openrouter",
+    "crates/marlowe-exec",
     "crates/marlowe",
-    # TEMPORARY: the engine spike. Removed once ADR-004 names a runtime.
-    "crates/marlowe-embed-spike",
+    "legacy",
 ]
 
 [workspace.package]
@@ -42,79 +32,41 @@ license = "MIT"
 marlowe-contract = { path = "crates/marlowe-contract" }
 marlowe-journal = { path = "crates/marlowe-journal" }
 marlowe-memory = { path = "crates/marlowe-memory" }
-# M2 C2d. The view models, shared by every producer and every surface, depending on nothing.
-# `marlowe-surface` depends on this and NOT on a producer — that is what makes ARCHITECTURE
-# §2.14 a compile-time property instead of a claim in a header.
 marlowe-view = { path = "crates/marlowe-view" }
-marlowe-stub = { path = "crates/marlowe-stub" }
 marlowe-surface = { path = "crates/marlowe-surface" }
-# M2. The layering is one-way and load-bearing: tools -> permission -> loop. The permission
-# layer reads manifests, so it depends on the registry; the loop calls the permission layer
-# before execution, so it depends on both. Nothing depends on the loop except a surface.
 marlowe-tools = { path = "crates/marlowe-tools" }
 marlowe-permission = { path = "crates/marlowe-permission" }
-marlowe-loop = { path = "crates/marlowe-loop" }
-marlowe-exec = { path = "crates/marlowe-exec" }
 marlowe-net = { path = "crates/marlowe-net" }
 marlowe-extract = { path = "crates/marlowe-extract" }
-marlowe-provider = { path = "crates/marlowe-provider" }
-marlowe-openrouter = { path = "crates/marlowe-openrouter" }
 marlowe-mcp = { path = "crates/marlowe-mcp" }
-marlowe-daemon = { path = "crates/marlowe-daemon" }
 
-# ADR-001 and Addendum B §B15. The widget mapping is close to one-to-one, which is why the
-# design is buildable rather than aspirational: Block::bordered().title() is the region
-# contract, .title_bottom() is the hotkey, and .border_style() is focus — one style swap and
-# no cell repaint, which is what §B12's flicker target and K4 depend on.
+# Terminal. crossterm, not termion: Windows is the primary platform.
 ratatui = "0.30"
-# `crossterm`, NOT `termion`. §B15 is explicit and the reason is ADR-002: development is on
-# native Windows, and crossterm is the backend that works there. termion is POSIX-only, so
-# choosing it would make the primary development platform the unsupported one.
 crossterm = "0.29"
 
-# ADR-059. `grep`'s engine. **`regex`, NOT `fancy-regex`** — which is also in the lockfile and is a
-# BACKTRACKING engine (that is why it has lookaround). `regex` is finite-automata based with a
-# documented worst case linear in the haystack, so catastrophic backtracking cannot occur: it is a
-# property of the crate, not of a timeout we would have to write and test. The two ways a pattern
-# can still cost anything are bounded structurally — `RegexBuilder::size_limit` refuses a pattern
-# that would explode at COMPILE time (and the model sees the error and can fix it), and the walk's
-# own file cap bounds the bytes scanned.
-#
-# **It is new compiled code in the shipped binary even though it is already in `Cargo.lock`.**
-# `cargo tree -p marlowe -i regex` printed "nothing to print" before this line: the existing
-# lockfile entries come from `marlowe-embed-spike` (marked TEMPORARY) and from an unbuilt ratatui
-# backend. Zero new registry sources, but not zero new code — said plainly rather than claimed away.
+# Finite-automata regex: linear worst case, no catastrophic backtracking.
 regex = "1"
 
 serde = { version = "1", features = ["derive"] }
-# NOT `preserve_order`. That feature backs serde_json's Map with an IndexMap, making key
-# order depend on construction order; the default is a BTreeMap, so keys serialize sorted.
-# Signatures are taken over serialized payload bytes and the reproduction hash is taken over
-# the whole report, so "sorted, always" is the property both need.
+# No `preserve_order`: keys serialize sorted, which journal signatures depend on.
 serde_json = "1"
 blake3 = "1"
 hmac = "0.12"
 sha2 = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 thiserror = "2"
-# WordPiece needs NFD and Unicode general categories. Pure Rust, table-driven, no C.
-# These ARE a versioned behavioural dependency; what makes them safe is
-# tests/embedding_reference.rs, which would fail by name on a table change rather than
-# letting it surface as two different repro hashes.
 unicode-normalization = "0.1"
 unicode-general-category = "1"
-# ADR-004's runtime, chosen by measurement in docs/design/spike-2026-08-04-embedder.md.
-# EXACT version, not a caret range: ort-sys pins ONNX Runtime 1.22.0 by sha256 per target
-# and links it statically, so this line is the top of a digest-pinned chain down to the
-# machine code that computes an embedding. A caret range would break that.
-# **The `cuda` feature changes the ONNX Runtime binary for the WHOLE workspace, CPU included.**
-# M0c Session L added it, and the first thing it did was re-run the CPU path and check byte-identity
-# against runs/session-k's dump -- because a numerics shift from the version/build bump alone would
-# confound every later CPU-vs-GPU comparison, and nobody would have attributed it. See
-# runs/session-l/RESULT.md.
-ort = { version = "=2.0.0-rc.10", features = ["download-binaries", "cuda"] }
+# ONNX Runtime for the embedder and cross-encoder. EXACT version: ort-sys pins the runtime by
+# sha256 per target and links it statically. CPU only — the old `cuda` feature is gone, which is
+# what lets aarch64-pc-windows-msvc build (rc.10 ships a static ARM64-Windows runtime).
+ort = { version = "=2.0.0-rc.10", features = ["download-binaries"] }
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 getrandom = "0.2"
 
+# The daemon is std threads + channels, not an async runtime: everything inherited blocks.
+crossbeam-channel = "0.5"
+
 [profile.release]
 debug = 1
+lto = "thin"
