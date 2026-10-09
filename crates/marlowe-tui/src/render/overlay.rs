@@ -81,7 +81,15 @@ pub fn approval(area: Rect, state: &State, a: &Approval, theme: &Theme, buf: &mu
             lines.push(Line::from(Span::styled(format!("  ↓ {below} more lines"), dimmer)));
         }
     }
-    if state.session.as_ref() != Some(&a.session) {
+    if let Some(run) = &a.run {
+        // A crew run asks: say which, so the request is read against its goal.
+        let who = match state.crew.get(run) {
+            Some(r) => format!("from the crew · {} · {}", text::clean(&r.role), text::clean(&r.title)),
+            None => format!("from crew run {}", run.short()),
+        };
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(text::truncate(&who, tw), ink(Ink::Accent, theme))));
+    } else if state.session.as_ref() != Some(&a.session) {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled("from another session", dimmer)));
     }

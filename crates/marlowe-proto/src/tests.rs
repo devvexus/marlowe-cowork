@@ -98,7 +98,7 @@ fn every_event_round_trips_inside_an_envelope() {
         Event::ToolStarted { session: sid(), turn: 1, call_id: "c".into(), tool: "read".into(), summary: "src/main.rs".into() },
         Event::ToolFinished { session: sid(), turn: 1, call_id: "c".into(), ok: true, summary: "41 lines".into() },
         Event::TurnFinished { session: sid(), turn: 1, usage: Usage { input: 3, ..Default::default() }, stop: TurnStop::Done },
-        Event::ApprovalRequested { approval: ApprovalId(1), session: sid(), tool: "bash".into(), summary: "cargo test".into(), detail: "{}".into() },
+        Event::ApprovalRequested { approval: ApprovalId(1), session: sid(), tool: "bash".into(), summary: "cargo test".into(), detail: "{}".into(), run: None },
         Event::ApprovalResolved { approval: ApprovalId(1), decision: ApprovalDecision::Deny },
         Event::LibraryState {
             models: vec![LibraryModel { model: mref(), info: info.clone(), added_ms: 7 }],

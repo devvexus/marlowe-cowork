@@ -4,9 +4,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use marlowe_agent::{ToolHost, UserInfo};
-use marlowe_brains::{api_key, CredentialStore, KeyringStore, ProviderConfig, ProviderFactory};
+use marlowe_brains::{api_key, CredentialStore, KeyringStore, MemoryStore, ProviderConfig, ProviderFactory};
+use marlowe_crew::{CrewConfig, CrewSetup, CrewToolFactory, Sandbox, SandboxKind};
 use marlowe_daemon::{DaemonDeps, SentinelLink, ToolHostFactory, VoiceLink};
-use marlowe_exec::{SearchBackend, SearchResponse, SearchResult};
+use marlowe_exec::{Leftovers, ResearchConfig, SearchBackend, SearchResponse, SearchResult};
 use marlowe_model::{
     CancelToken, ChatRequest, Effort, Message, Provider, ProviderError, ProviderKind, ToolSpec,
 };
@@ -39,7 +40,20 @@ pub fn provider_factory(credentials: Arc<dyn CredentialStore>) -> ProviderFactor
     if let Ok(url) = std::env::var("MARLOWE_OLLAMA_ADDR") {
         f.set_base_url(ProviderKind::Ollama, url);
     }
+    #[cfg(debug_assertions)]
+    crate::scripted::install(&mut f);
     f
+}
+
+/// Debug builds with `MARLOWE_SCRIPTED_PROVIDER` set: no real model or search call is possible.
+#[cfg(debug_assertions)]
+fn scripted() -> bool {
+    crate::scripted::active()
+}
+
+#[cfg(not(debug_assertions))]
+fn scripted() -> bool {
+    false
 }
 
 /// Web search through OpenRouter's server tool; errors when no key exists.
@@ -92,16 +106,63 @@ fn cited_links(text: &str) -> Vec<SearchResult> {
     out
 }
 
+fn search_backend(credentials: &Arc<dyn CredentialStore>) -> Arc<dyn SearchBackend> {
+    if scripted() {
+        return Arc::new(|_: &str, _: &CancelToken| Err::<SearchResponse, String>("web_search is off under the scripted provider".into()));
+    }
+    let creds = credentials.clone();
+    Arc::new(move |q: &str, cancel: &CancelToken| web_search(creds.as_ref(), q, cancel))
+}
+
+/// arXiv and paper settings: the on-disk cache under `<home>\cache`, the global rate limit.
+fn research(home: &Path) -> ResearchConfig {
+    ResearchConfig::default().with_cache_dir(home.join("cache"))
+}
+
 /// Tool host factory: builtin tools rooted at the session workspace. With no workspace every
 /// write asks.
-pub fn tool_factory(credentials: Arc<dyn CredentialStore>) -> ToolHostFactory {
+pub fn tool_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> ToolHostFactory {
+    let home = home.to_path_buf();
     Arc::new(move |workspace: Option<&Path>| {
-        let creds = credentials.clone();
-        let search: Arc<dyn SearchBackend> =
-            Arc::new(move |q: &str, cancel: &CancelToken| web_search(creds.as_ref(), q, cancel));
-        let tools = marlowe_exec::BuiltinTools::new(workspace.map(Path::to_path_buf)).with_search(search);
+        let tools = marlowe_exec::BuiltinTools::new(workspace.map(Path::to_path_buf))
+            .with_search(search_backend(&credentials))
+            .with_research(research(&home));
         Arc::new(tools) as Arc<dyn ToolHost>
     })
+}
+
+/// A crew run's inner tool host: rooted in its sandbox (reads stay free anywhere, so the original
+/// workspace is readable), shells started in the sandbox with the no-push git environment, and
+/// every process the run leaves behind killed with the host. `CrewTools` cuts it to the role's
+/// allowlist and applies the sandbox's shell policy on top.
+///
+/// The sandbox lives under the profile in app data, which the broad-root rule refuses, so it is
+/// trusted explicitly: writes inside are free and reads inside (or in the original workspace) do
+/// not taint the run.
+pub fn crew_tool_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> CrewToolFactory {
+    let home = home.to_path_buf();
+    Arc::new(move |sandbox: &Sandbox, workspace: Option<&Path>| {
+        let tools = crew_host(sandbox, workspace)
+            .with_search(search_backend(&credentials))
+            .with_research(research(&home))
+            .with_child_env(sandbox.child_env())
+            .with_shell_dir(sandbox.root.clone())
+            .with_leftovers(Leftovers::KillWithHost);
+        Arc::new(tools) as Arc<dyn ToolHost>
+    })
+}
+
+/// The built-ins for a crew sandbox. A `None` sandbox has no writable root: its directory is a
+/// cwd only.
+fn crew_host(sandbox: &Sandbox, workspace: Option<&Path>) -> marlowe_exec::BuiltinTools {
+    let tools = match sandbox.kind {
+        SandboxKind::None => marlowe_exec::BuiltinTools::new(None),
+        _ => marlowe_exec::BuiltinTools::new_sandbox(sandbox.root.clone()),
+    };
+    match workspace {
+        Some(ws) => tools.with_read_root(ws.to_path_buf()),
+        None => tools,
+    }
 }
 
 /// Name and address form for the system prompt: `<home>\user.json` when it exists (written by
@@ -114,14 +175,18 @@ pub fn user_info(home: &Path) -> UserInfo {
 }
 
 pub fn daemon_deps(home: &Path) -> DaemonDeps {
-    let credentials: Arc<dyn CredentialStore> = Arc::new(KeyringStore::new());
+    // A scripted run never reads Credential Manager.
+    let credentials: Arc<dyn CredentialStore> =
+        if scripted() { Arc::new(MemoryStore::new()) } else { Arc::new(KeyringStore::new()) };
     DaemonDeps {
         providers: provider_factory(credentials.clone()),
-        tools: tool_factory(credentials),
+        tools: tool_factory(credentials.clone(), home),
         user: user_info(home),
         mind: open_mind(home),
         sentinel: start_sentinel(home),
         voice: start_voice(home),
+        // The daemon starts the supervisor with its models, approvals, memory and GPU state.
+        crew: Some(CrewSetup { tools: crew_tool_factory(credentials, home), config: CrewConfig::default() }),
     }
 }
 
@@ -174,7 +239,43 @@ pub fn open_mind(home: &Path) -> Option<marlowe_mind::Mind> {
 
 #[cfg(test)]
 mod tests {
-    use super::cited_links;
+    use super::{cited_links, crew_host};
+    use marlowe_agent::ToolHost;
+    use marlowe_crew::{Sandbox, SandboxKind};
+
+    /// The production layout: the sandbox under `%LOCALAPPDATA%\MarloweCowork`. Nothing is created
+    /// on disk; the paths are only resolved.
+    #[test]
+    fn a_sandbox_under_app_data_frees_its_writes_and_its_reads_do_not_taint() {
+        let Some(app) = std::env::var_os("LOCALAPPDATA") else { return };
+        let home = std::path::Path::new(&app).join("marlowe-wire-test-not-created");
+        let root = home.join("worktrees").join("r1");
+        assert!(marlowe_exec::paths::is_broad_root(&root), "app data is broad for an ordinary root");
+        let sb = Sandbox {
+            kind: SandboxKind::Worktree,
+            root: root.clone(),
+            origin: None,
+            branch: Some("crew/r1".into()),
+            base: None,
+            repo_digest: None,
+        };
+        let host = crew_host(&sb, None);
+        let call = |name: &str, path: &std::path::Path| marlowe_model::ToolCall {
+            id: "c".into(),
+            name: name.into(),
+            args: serde_json::json!({"path": path.display().to_string(), "content": "x"}),
+        };
+        assert!(!host.taints(&call("read", &root.join("src").join("lib.rs"))), "a read in the sandbox");
+        assert!(!host.taints(&call("grep", &root)), "a grep over the sandbox");
+        assert_eq!(host.consequence(&call("write", &root.join("a.txt"))), marlowe_agent::Consequence::Free);
+        assert!(host.taints(&call("read", &home.join("elsewhere.txt"))), "a read outside still taints");
+
+        // The user's workspace (outside app data) is readable without taint too.
+        let ws = std::env::temp_dir().join("marlowe-wire-test-ws");
+        let host = crew_host(&sb, Some(&ws));
+        assert!(!host.taints(&call("read", &ws.join("notes.md"))));
+        assert!(matches!(host.consequence(&call("write", &ws.join("notes.md"))), marlowe_agent::Consequence::Ask { .. }));
+    }
 
     #[test]
     fn cited_links_are_parsed_in_order_and_deduplicated() {

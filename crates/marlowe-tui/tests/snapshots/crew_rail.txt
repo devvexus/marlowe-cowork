@@ -1,0 +1,40 @@
+╭─ MARLOWE ───────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
+│                                                                                                       │  CREW                1 needs you │
+│                                                                                                       │  ◐ engineer · fix the gate thre… │
+│                                                                                                       │    tests pass (412) — merge cre… │
+│                                                                                                       │  ● researcher · LoRA rank ablat… │
+│                                                                                                       │    step 6 · $0.0213 · scout 2/4… │
+│                                                                                                       │  ○ scout · find the wnr3 checkp… │
+│                                                                                                       │    queued                        │
+│                                                                                                       │  +2 more · ^r                    │
+│                                                                                                       │                                  │
+│                                                                                                       │  WATCH                           │
+│                                                                                                       │  nothing watched                 │
+│                                              ⣿  MARLOWE                                               │                                  │
+│                                                                                                       │  THREADS                         │
+│                                                                                                       │  no open threads                 │
+│                                             Good evening.                                             │                                  │
+│                                                                                                       │  TODAY                           │
+│                    ask anything  ·  ^o past sessions  ·  ^l library  ·  ^k palette                    │  Friday 9 October                │
+│                                                                                                       │  quiet 23:00–07:00               │
+│                                                                                                       │  no routines                     │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › message Marlowe…                                                                                                                       │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────── ↵ send  ⇧↵ newline  ^k palette ─╯

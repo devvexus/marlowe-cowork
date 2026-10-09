@@ -45,6 +45,7 @@ pub(crate) fn run_calls(
         turn,
         workspace: convo.workspace.clone(),
         cancel: cancel.clone(),
+        tainted: convo.exposure.tainted,
     };
     for c in calls {
         sink(AgentEvent::ToolStarted { call_id: c.id.clone(), tool: c.name.clone(), summary: host.describe(c) });

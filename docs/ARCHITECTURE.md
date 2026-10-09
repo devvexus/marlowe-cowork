@@ -90,14 +90,20 @@ Providers translate wire formats only; they never interpret tool names.
 
 ## Crew and sandbox model
 
-`marlowe-crew` holds the run table, role cards, `dispatch`, durable delta checkpoints, auto-resume, the worktree sandbox, and the Deep Research and Build playbooks.
+An agent is a role card (`roles/*.md`, overridden by `<home>\roles\*.md`: slot, effort, tool allowlist, budget, sandbox kind, instructions), and that is all. Depth 1: crew runs never get `dispatch`.
 
-- `dispatch` returns a run id immediately; the run executes on its own thread, depth 1 in v1. Results land in the conductor's inbox.
-- Runs checkpoint small delta events into sqlite and resume after a daemon restart.
-- Each run gets a git worktree. Its push URL is disabled and credential helpers are stripped; only the daemon merges or pushes. After an untrusted read, shell calls need approval.
-- Every spawned process is in a Job Object (kill-on-close, no orphans) with a scrubbed environment.
-- Autonomy is free inside the sandbox. Merge, push, deletes outside the workspace, new network hosts and budget overrun require approval.
-- Agent = role card (editable markdown) + model/effort slot + tool allowlist + budget and sandbox.
+- **Dispatch.** The conductor's `dispatch` tool (exposed with `persona/blocks/crew.md` only while the supervisor runs) returns `{run_id, role, playbook, estimate}` at once. After untrusted content it asks, and the run starts tainted. The `Supervisor` queues the run and runs it on its own thread behind `catch_unwind`. Limits are 2 runs per cloud provider and 1 per local one.
+  - Every step resolves its own slot. A busy GPU (a watched run alive, or load on a GPU that Ollama is not using) moves a local step to a cloud slot or holds it at "waiting for the GPU". At most one local model stream runs at a time across all runs.
+  - Each model call is admitted against the run budget, counting calls still in flight, so parallel scouts cannot spend past it before the approval. A user's cancel outranks pause and shutdown.
+- **Durable runs.** `crew_runs` and `crew_run_steps` live in `cowork.db`, with one checkpoint row per finished playbook step (its messages and output). At boot, queued and running runs are requeued and skip completed step keys. A step that was cut off mid-way reruns from its start.
+- **Playbooks** are deterministic Rust (`playbook/`); every step is one agent turn with a role. `deep_research` runs plan, parallel scouts, a verify pass that drops refuted claims, then synthesis into `report.md`, and writes a Result memory. `build` runs plan, implement, a test loop, then review, and ends with a `DiffSummary` in NeedsYou. Other roles get a single step.
+- **Sandbox.** A git workspace gets `git worktree add <home>\worktrees\<id> -b crew/<id>`; anything else gets `<home>\scratch\<id>`. File-tool writes are free inside and ask outside. Reads are allowed anywhere, and reads inside the sandbox or the original workspace do not taint. The sandbox is trusted explicitly (`BuiltinTools::new_sandbox`), since the profile sits under app data.
+  - Children run in `marlowe-os` kill-on-close Job Objects with API keys scrubbed. `GIT_CONFIG_*` clears and replaces every remote's `pushurl` with an invalid URL (git ≥ 2.46), adds an empty-prefix `pushInsteadOf`, and empties `credential.helper`.
+  - Crew shells are not OS-confined. The cwd is pinned to the sandbox, but a child can write wherever the user can. A child that clears its environment, or runs from a script, reaches the user's remotes and credential helper. **The push block is best-effort.** Real confinement (AppContainer or a restricted token) is not built.
+  - The shell policy (`shell_policy.rs`) is a lexical tripwire that over-asks. Approval is needed for `git push`, for git writes outside the worktree, and for changes to what a worktree shares with the checkout: config, `update-ref`, branch delete/rename/force, `tag -d`, `stash drop|clear`, `remote` and `worktree` changes.
+  - It also covers deletes, copies, moves and redirects outside the sandbox; commands that mention git's environment; python code and interpreter scripts that mention `git … push`; and any shell command after an untrusted read. A budget overrun asks too.
+  - A worktree shares `.git/config` and hooks with the checkout. The sandbox stores a sha256 of the repo config (minus `branch.*` and `user.*`) and the hooks at creation. Diff and merge refuse once that digest changes. The daemon's own git calls run with `core.hooksPath=/dev/null`, `core.fsmonitor=false`, `--no-ext-diff --no-textconv` and the no-push environment.
+- **Results.** A finished run's `Dispatch` is relayed into its parent session: as a relay turn when the session is idle, at the next step when it is busy and the result is untrusted-free, otherwise after the current turn. A run that read untrusted content relays tainted. `Run.relay_due` stays set until the relay is in the session's saved history, and the daemon relays every run still due at boot. Only the daemon merges (fast-forward, else a merge commit), and only after `crew_merge` is approved. It never pushes. For a research run, "merge" copies the report to `<workspace>\research\<slug>.md`.
 
 ## Sentinel and the Wake (M3)
 
@@ -131,7 +137,7 @@ Critical path: seam, run thread + cancel, bus, TUI, memory, dispatch, Sentinel, 
 - Every milestone: `cargo check --workspace` and `cargo test --workspace`. Kept crates keep their tests (journal; memory claim/ingest/embedding_reference/cross_encoder_reference; provider no_tls; markdown/palette).
 - Memory: run `eval/` LongMemEval through `--eval-adapter` for exact reproduction.
 - End to end: fresh profile, "no models", add Ollama `marlowe-dusk` and an OpenRouter model, run the probe; chat; `taskkill /F` the daemon and check the session survives and an in-flight crew run resumes; ask "what did I tell you about X" and check provenance; run `import-legacy`.
-- Crew: Deep Research yields a cited report and a memory write; Build yields a diff, a merge approval, and blocks a crew `git push`.
+- Crew: Deep Research yields a cited report and a memory write; Build yields a diff, a merge approval, and asks before a crew `git push` it can see (the block is best-effort; see Crew and sandbox model).
 - Sentinel: append to a fake `trainer_state.json` and check NaN, plateau and finished notices; fast-forward the clock and check the brief.
 - Voice: spoken greeting plays (WinRT, then Kokoro); push-to-talk round-trips.
 - ARM64: `cargo check --target aarch64-pc-windows-msvc` early in M7, then a release build.

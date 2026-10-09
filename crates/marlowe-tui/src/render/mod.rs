@@ -4,6 +4,7 @@
 
 mod boot;
 mod conversation;
+mod crew;
 mod library;
 mod memory;
 mod overlay;
@@ -124,14 +125,17 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
         View::Library => library::draw(g.main, state, theme, buf),
         View::Memory => memory::draw(g.main, state, theme, buf),
         View::Watch => watch::draw(g.main, state, theme, buf),
+        View::Crew => crew::draw(g.main, state, theme, buf),
     }
     let cursor = g.composer.and_then(|r| draw_composer(r, state, theme, buf));
 
     let mut onboard_cursor = None;
+    let mut dispatch_cursor = None;
     match &state.overlay {
         Some(Overlay::Palette { query, sel }) => overlay::palette(area, query, *sel, theme, buf),
         Some(Overlay::ImportOffer { sel }) => overlay::import_offer(area, state, *sel, theme, buf),
         Some(Overlay::Onboard) => onboard_cursor = overlay::onboard(area, state, theme, buf),
+        Some(Overlay::Dispatch) => dispatch_cursor = crew::dispatch(area, state, theme, buf),
         Some(Overlay::Sessions { sel }) => overlay::sessions(area, state, *sel, theme, buf),
         Some(Overlay::ModelPicker { sel }) => {
             if let Some(r) = g.picker {
@@ -147,7 +151,7 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
         overlay::approval(area, state, a, theme, buf);
         return;
     }
-    if let Some(c) = onboard_cursor {
+    if let Some(c) = onboard_cursor.or(dispatch_cursor) {
         frame.set_cursor_position(c);
     }
     if state.overlay.is_none() && state.view == View::Conversation {
@@ -167,6 +171,11 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
     }
     if state.view == View::Watch && state.overlay.is_none() {
         if let Some(c) = watch::cursor(g.main, state) {
+            frame.set_cursor_position(c);
+        }
+    }
+    if state.view == View::Crew && state.overlay.is_none() {
+        if let Some(c) = crew::cursor(g.main, state) {
             frame.set_cursor_position(c);
         }
     }
@@ -298,6 +307,7 @@ fn draw_main_frame(g: &Geometry, state: &State, theme: &Theme, buf: &mut Buffer)
         View::Library => Some("library".to_string()),
         View::Memory => Some("memory".to_string()),
         View::Watch => Some("watch".to_string()),
+        View::Crew => Some(crew::subtitle(state)),
         View::Conversation => state.title.as_deref().map(text::clean),
     };
     if let Some(sub) = sub {

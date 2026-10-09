@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod auth;
+mod crew;
 mod event;
 mod frame;
 mod ids;
@@ -17,6 +18,10 @@ mod request;
 mod user;
 mod watch;
 
+pub use crew::{
+    Citation, Confidence, CrewBudget, CrewRunInfo, CrewRunStatus, CrewSpent, CrewStep, DiffSummary, Dispatch, Playbook,
+    PlaybookParseError, RoleInfo, RunId, SandboxInfo, SandboxKind,
+};
 pub use event::{
     Envelope, Event, LibraryModel, ProviderStatus, SessionSummary, SlotAssignment, StatusReport,
     StoredTurn, TurnStop,
@@ -37,3 +42,5 @@ pub const PROTO_VERSION: u32 = 1;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_crew;

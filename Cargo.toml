@@ -29,6 +29,9 @@ members = [
     # M3: the Wake — watchers, notices, the brief, and spoken voice.
     "crates/marlowe-sentinel",
     "crates/marlowe-voice",
+    # M4: the Crew — durable sandboxed runs, playbooks, and the Job Object wrapper.
+    "crates/marlowe-os",
+    "crates/marlowe-crew",
 ]
 # Reference sources only; never built.
 exclude = ["legacy"]
@@ -61,6 +64,8 @@ marlowe-exec = { path = "crates/marlowe-exec" }
 marlowe-mind = { path = "crates/marlowe-mind" }
 marlowe-sentinel = { path = "crates/marlowe-sentinel" }
 marlowe-voice = { path = "crates/marlowe-voice" }
+marlowe-os = { path = "crates/marlowe-os" }
+marlowe-crew = { path = "crates/marlowe-crew" }
 
 # Terminal. crossterm, not termion: Windows is the primary platform.
 ratatui = "0.30"
@@ -107,6 +112,15 @@ windows = { version = "=0.62.2", features = [
     "Media_SpeechSynthesis",
     "Storage_Streams",
     "Win32_Foundation",
+    "Win32_System_Threading",
+] }
+
+# M4. Job Objects for marlowe-os (kill-on-close process trees). Same family as `windows` above.
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }
 

@@ -18,6 +18,8 @@ pub struct ToolCtx {
     pub workspace: Option<PathBuf>,
     /// Fires when the turn is interrupted; long-running tools must honour it.
     pub cancel: CancelToken,
+    /// Untrusted content had entered the conversation when this batch of calls started.
+    pub tainted: bool,
 }
 
 /// What a tool call produced.

@@ -13,6 +13,7 @@ marlowe-brains.workspace = true
 marlowe-mind.workspace = true
 marlowe-sentinel.workspace = true
 marlowe-voice.workspace = true
+marlowe-crew.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

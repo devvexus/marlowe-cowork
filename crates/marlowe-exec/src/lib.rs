@@ -1,5 +1,5 @@
 //! The built-in tools behind [`marlowe_agent::ToolHost`]: read, write, edit, glob, grep, bash,
-//! powershell, python, web_fetch and (with an injected backend) web_search.
+//! powershell, python, web_fetch, arxiv, paper and (with an injected backend) web_search.
 //!
 //! The host is built per session with that session's workspace root. Relative paths resolve
 //! against the root; reads are free anywhere, writes are free only inside the root, and a root
@@ -7,12 +7,14 @@
 //! nothing. Shell tools always ask. Once untrusted content is in the conversation (a fetched
 //! page, search results, a file from outside the root), web_search and web_fetch to a host not
 //! yet approved this session ask too. Every child process has the credential variables from
-//! [`marlowe_brains::scrubbed_env`] removed from its environment.
+//! [`marlowe_brains::scrubbed_env`] removed from its environment and runs in its own
+//! kill-on-close Job Object, so a timeout or interrupt kills the whole tree.
 
 #![forbid(unsafe_code)]
 
 mod fs_tools;
 pub mod paths;
+pub mod research;
 pub mod shell;
 mod specs;
 pub mod text;
@@ -25,7 +27,8 @@ use marlowe_agent::{Consequence, Exposure, ToolCallReq, ToolCtx, ToolHost, ToolO
 use marlowe_model::ToolSpec;
 use serde_json::Value;
 
-pub use shell::{run_bounded, Interpreter, ShellLimits, ShellRun};
+pub use shell::{run_bounded, run_script, Interpreter, Leftovers, ShellLimits, ShellRun, SpawnOpts};
+pub use research::{ArxivEntry, ArxivFeed, HttpGet, HttpResponse, RateLimiter, ResearchConfig};
 pub use web::{SearchBackend, SearchResponse, SearchResult};
 
 /// Window assumed when the host is not told the model's; "large file" is measured against it.
@@ -35,12 +38,21 @@ pub struct BuiltinTools {
     root: Option<PathBuf>,
     /// Writes inside `root` are free; false when there is no root or it is too broad.
     free_writes: bool,
+    /// More folders whose files are the user's own: reading them does not taint.
+    read_roots: Vec<PathBuf>,
     context_tokens: u32,
     /// Serialises write/edit read-modify-write cycles within a parallel batch.
     writes: Mutex<()>,
     search: Option<Arc<dyn SearchBackend>>,
+    research: ResearchConfig,
     limits: ShellLimits,
     scrub: Vec<String>,
+    /// Set on every child after the scrub (the crew's no-push `GIT_CONFIG_*` entries).
+    child_env: Vec<(String, String)>,
+    /// Pins shell children to this directory tree (a crew sandbox); `cwd` must stay inside it.
+    shell_dir: Option<PathBuf>,
+    leftovers: shell::Leftovers,
+    held: shell::HeldJobs,
 }
 
 impl BuiltinTools {
@@ -51,12 +63,35 @@ impl BuiltinTools {
         Self {
             root: workspace,
             free_writes,
+            read_roots: Vec::new(),
             context_tokens: DEFAULT_CONTEXT_TOKENS,
             writes: Mutex::new(()),
             search: None,
+            research: ResearchConfig::default(),
             limits: ShellLimits::production(),
             scrub: marlowe_brains::scrubbed_env().iter().map(|s| s.to_string()).collect(),
+            child_env: Vec::new(),
+            shell_dir: None,
+            leftovers: shell::Leftovers::Release,
+            held: shell::HeldJobs::default(),
         }
+    }
+
+    /// A host rooted at a crew sandbox the caller created for this purpose (under the profile's
+    /// `worktrees` or `scratch` folder). Writes inside it are free and reads inside it do not
+    /// taint, even though the profile lives under app data, which [`paths::is_broad_root`] refuses.
+    pub fn new_sandbox(root: PathBuf) -> Self {
+        let mut tools = Self::new(Some(root));
+        tools.free_writes = true;
+        tools
+    }
+
+    /// Reads inside `dir` (the user's own workspace) do not taint. A broad `dir` is ignored.
+    pub fn with_read_root(mut self, dir: PathBuf) -> Self {
+        if !paths::is_broad_root(&dir) {
+            self.read_roots.push(dir);
+        }
+        self
     }
 
     /// The model's context window in tokens.
@@ -73,10 +108,46 @@ impl BuiltinTools {
         self
     }
 
+    /// Cache directory, rate limiter and HTTP port for `arxiv` and `paper`.
+    pub fn with_research(mut self, cfg: ResearchConfig) -> Self {
+        self.research = cfg;
+        self
+    }
+
     /// Overrides shell bounds (tests use short ones).
     pub fn with_shell_limits(mut self, limits: ShellLimits) -> Self {
         self.limits = limits;
         self
+    }
+
+    /// Variables set on every child process, after the credential scrub.
+    pub fn with_child_env(mut self, env: impl IntoIterator<Item = (String, String)>) -> Self {
+        self.child_env.extend(env);
+        self
+    }
+
+    /// Shell children start in `dir` instead of the workspace root, and a `cwd` argument must
+    /// resolve inside it.
+    pub fn with_shell_dir(mut self, dir: PathBuf) -> Self {
+        self.shell_dir = Some(dir);
+        self
+    }
+
+    /// What happens to background processes a finished command left running (default: they
+    /// run on). [`shell::Leftovers::KillWithHost`] kills them when this host is dropped.
+    pub fn with_leftovers(mut self, mode: shell::Leftovers) -> Self {
+        self.leftovers = mode;
+        self
+    }
+
+    /// Kills background processes held under [`shell::Leftovers::KillWithHost`].
+    pub fn kill_leftovers(&self) {
+        self.held.kill_all();
+    }
+
+    /// Background processes still held under [`shell::Leftovers::KillWithHost`].
+    pub fn leftover_processes(&self) -> u32 {
+        self.held.active()
     }
 
     pub fn workspace(&self) -> Option<&Path> {
@@ -94,7 +165,8 @@ impl BuiltinTools {
     }
 
     fn run_shell(&self, kind: Interpreter, args: &Value, ctx: &ToolCtx) -> ToolOutcome {
-        let root = self.root_for(ctx);
+        // Where relative script paths and `cwd` resolve: the pinned shell dir, else the root.
+        let root = self.shell_dir.clone().or_else(|| self.root_for(ctx));
         let built = match kind {
             Interpreter::Bash | Interpreter::PowerShell => {
                 let Some(script) = str_arg(args, "command").filter(|c| !c.trim().is_empty()) else {
@@ -136,15 +208,26 @@ impl BuiltinTools {
         if !dir.is_dir() {
             return ToolOutcome::error(format!("cwd {} is not a directory", dir.display()));
         }
+        if let Some(pin) = self.shell_dir.as_deref().filter(|p| !paths::inside(p, &dir)) {
+            return ToolOutcome::error(format!(
+                "cwd {} is outside the sandbox {}; commands run inside it",
+                dir.display(),
+                pin.display()
+            ));
+        }
         cmd.current_dir(&dir);
         self.scrub(&mut cmd);
+        cmd.envs(self.child_env.iter().map(|(k, v)| (k, v)));
         let mut limits = self.limits;
         if let Some(ms) = int_arg(args, "timeout_ms").filter(|m| *m > 0) {
             limits = limits.with_timeout(ms as u64);
         }
         match run_bounded(cmd, limits, Some(&ctx.cancel)) {
             Err(e) => ToolOutcome::error(format!("could not start {}: {e}", kind.tool_name())),
-            Ok(run) => shell_outcome(run, limits),
+            Ok(mut run) => {
+                self.held.settle(&mut run, self.leftovers);
+                shell_outcome(run, limits)
+            }
         }
     }
 
@@ -154,6 +237,15 @@ impl BuiltinTools {
             Some(root) if self.free_writes => paths::inside(root, &paths::resolve(Some(root), raw)),
             _ => false,
         }
+    }
+
+    /// Whether reading `raw` stays within the user's own files: the write root or a read root.
+    fn trusted_read(&self, raw: &str) -> bool {
+        if self.inside_root(raw) {
+            return true;
+        }
+        let abs = paths::resolve(self.root.as_deref(), raw);
+        self.read_roots.iter().any(|r| paths::inside(r, &abs))
     }
 }
 
@@ -193,6 +285,11 @@ fn shell_outcome(run: ShellRun, limits: ShellLimits) -> ToolOutcome {
 
 pub(crate) fn str_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(Value::as_str)
+}
+
+/// The `paper` tool's input, under any of its accepted names.
+fn research_input(args: &Value) -> &str {
+    str_arg(args, "url_or_arxiv_id").or_else(|| str_arg(args, "url")).or_else(|| str_arg(args, "id")).unwrap_or("")
 }
 
 pub(crate) fn int_arg(args: &Value, key: &str) -> Option<i64> {
@@ -251,6 +348,8 @@ impl ToolHost for BuiltinTools {
             "powershell" => self.run_shell(Interpreter::PowerShell, args, ctx),
             "python" => self.run_shell(Interpreter::Python, args, ctx),
             "web_fetch" => web::web_fetch(args, &ctx.cancel),
+            "arxiv" => research::arxiv(&self.research, args, &ctx.cancel),
+            "paper" => research::paper(&self.research, args, &ctx.cancel),
             "web_search" => match &self.search {
                 Some(b) => web::web_search(b.as_ref(), args, &ctx.cancel),
                 None => ToolOutcome::error("web_search is not available in this build"),
@@ -297,6 +396,22 @@ impl ToolHost for BuiltinTools {
                         };
                     }
                 }
+                "paper" => {
+                    let input = research_input(args);
+                    if let Some(host) = research::paper_host(input).filter(|h| !exposure.approved_hosts.contains(h)) {
+                        return Consequence::Ask {
+                            summary: format!("paper {host}: a new host, after untrusted content"),
+                        };
+                    }
+                }
+                "arxiv" => {
+                    return Consequence::Ask {
+                        summary: format!(
+                            "arxiv: {} (after untrusted content)",
+                            first_line(str_arg(args, "query").unwrap_or(""), 100)
+                        ),
+                    }
+                }
                 "web_search" => {
                     return Consequence::Ask {
                         summary: format!(
@@ -313,13 +428,16 @@ impl ToolHost for BuiltinTools {
 
     fn taints(&self, call: &ToolCallReq) -> bool {
         match call.name.as_str() {
-            "web_fetch" | "web_search" => true,
-            "read" | "glob" | "grep" => !self.inside_root(str_arg(&call.args, "path").unwrap_or(".")),
+            "web_fetch" | "web_search" | "arxiv" | "paper" => true,
+            "read" | "glob" | "grep" => !self.trusted_read(str_arg(&call.args, "path").unwrap_or(".")),
             _ => false,
         }
     }
 
     fn egress_host(&self, call: &ToolCallReq) -> Option<String> {
+        if call.name == "paper" {
+            return research::paper_host(research_input(&call.args));
+        }
         if call.name != "web_fetch" {
             return None;
         }
@@ -336,7 +454,8 @@ impl ToolHost for BuiltinTools {
             "bash" | "powershell" => "command",
             "python" => "code",
             "web_fetch" => "url",
-            "web_search" => "query",
+            "web_search" | "arxiv" => "query",
+            "paper" => "url_or_arxiv_id",
             _ => "",
         };
         let detail = str_arg(args, key)

@@ -3,7 +3,13 @@
 //! An idle session starts a turn on `Ask`. While a turn runs, further asks go to the steer inbox
 //! (the loop folds them in at a step boundary); whatever is still unread when the turn ends runs
 //! as the next turn. `Interrupt` cancels the turn and drops what was queued behind it.
+//!
+//! Crew results arrive as relays ([`SessionHandle::relay`]): an idle session runs a short relay
+//! turn; a busy one gets the result as a steer at its next step (an untainted result) or as a
+//! relay turn right after the current one (a tainted result, so the exposure is raised before the
+//! conductor acts on it). A relay is never ingested into memory at user trust.
 
+use std::collections::VecDeque;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -25,8 +31,36 @@ use crate::{lock, now_ms};
 const MEMORY_TIER_DIVISOR: u32 = 8;
 
 pub(crate) enum RunnerCmd {
-    Turn(String),
+    Turn(TurnInput),
     Stop,
+}
+
+/// What one turn starts from: the user's words, or a crew result to relay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TurnInput {
+    pub text: String,
+    /// A crew relay: not the user's words, so memory does not ingest it at user trust.
+    pub relay: bool,
+    /// The relayed result carries untrusted content; the conversation is tainted before the turn.
+    pub tainted: bool,
+}
+
+impl TurnInput {
+    pub fn user(text: String) -> Self {
+        Self { text, relay: false, tainted: false }
+    }
+
+    pub fn relay(text: String, tainted: bool) -> Self {
+        Self { text, relay: true, tainted }
+    }
+}
+
+/// Every relay's text starts with this, so a relay steer left unread when a turn ends is told
+/// apart from the user's own steers.
+pub(crate) const RELAY_PREFIX: &str = "[crew · run ";
+
+fn is_relay(text: &str) -> bool {
+    text.starts_with(RELAY_PREFIX)
 }
 
 struct RunState {
@@ -35,6 +69,8 @@ struct RunState {
     cancel: CancelToken,
     /// Asks too long to be a steer; run after the current turn.
     queued: Vec<String>,
+    /// Crew results waiting for the current turn to end; each runs as a relay turn.
+    relays: Vec<TurnInput>,
     /// Set when the runner has exited or is about to; asks must reload the session.
     closed: bool,
 }
@@ -70,7 +106,8 @@ impl SessionHandle {
     pub fn new(id: SessionId, title: String, workspace: Option<String>) -> (Self, Receiver<RunnerCmd>) {
         let (cmd_tx, cmd_rx) = unbounded();
         let (inbox_tx, inbox_rx) = unbounded();
-        let state = RunState { busy: false, cancel: CancelToken::new(), queued: Vec::new(), closed: false };
+        let state =
+            RunState { busy: false, cancel: CancelToken::new(), queued: Vec::new(), relays: Vec::new(), closed: false };
         let h = Self { id, workspace, title: Mutex::new(title), state: Mutex::new(state), cmd_tx, inbox_tx, inbox_rx };
         (h, cmd_rx)
     }
@@ -98,7 +135,7 @@ impl SessionHandle {
         if !st.busy {
             st.busy = true;
             st.cancel = CancelToken::new();
-            return self.cmd_tx.send(RunnerCmd::Turn(text)).map_err(|_| Enqueue::Closed);
+            return self.cmd_tx.send(RunnerCmd::Turn(TurnInput::user(text))).map_err(|_| Enqueue::Closed);
         }
         if !st.queued.is_empty() {
             st.queued.push(text);
@@ -112,6 +149,27 @@ impl SessionHandle {
             }
             Err(e) => Err(Enqueue::Refused(e.to_string())),
         }
+    }
+
+    /// Delivers a crew result (`text` starts with [`RELAY_PREFIX`]). Idle: a relay turn starts.
+    /// Busy: an untainted result steers the running turn at its next step; a tainted one (or one
+    /// behind queued asks) runs as a relay turn after it.
+    pub fn relay(&self, text: String, tainted: bool) -> Result<(), Enqueue> {
+        let mut st = lock(&self.state);
+        if st.closed {
+            return Err(Enqueue::Closed);
+        }
+        if !st.busy {
+            st.busy = true;
+            st.cancel = CancelToken::new();
+            return self.cmd_tx.send(RunnerCmd::Turn(TurnInput::relay(text, tainted))).map_err(|_| Enqueue::Closed);
+        }
+        if !tainted && st.queued.is_empty() {
+            // Built directly: a relay is not user text and is not held to the steer length cap.
+            return self.inbox_tx.send(Steer { text }).map_err(|_| Enqueue::Closed);
+        }
+        st.relays.push(TurnInput::relay(text, tainted));
+        Ok(())
     }
 
     /// Closes the handle if no turn is running or queued; true when it closed.
@@ -130,14 +188,19 @@ impl SessionHandle {
         st.busy = false;
     }
 
-    /// Cancels the running turn and drops anything queued behind it.
+    /// Cancels the running turn and drops the user's asks queued behind it. Crew results are
+    /// kept: they relay once the interrupted turn has ended.
     pub fn interrupt(&self) {
         let mut st = lock(&self.state);
         if st.busy {
             st.cancel.cancel();
         }
         st.queued.clear();
-        while self.inbox_rx.try_recv().is_ok() {}
+        while let Ok(s) = self.inbox_rx.try_recv() {
+            if is_relay(&s.text) {
+                st.relays.push(TurnInput::relay(s.text, false));
+            }
+        }
     }
 
     /// Cancels the running turn and ends the runner after it.
@@ -187,6 +250,8 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
         }
         None => tools,
     };
+    // The conductor alone gets `dispatch` (crew hosts never carry it: depth 1).
+    let tools = crate::crew::with_dispatch(core, tools);
     // Turns run by this runner; an evicted runner that ran any writes an episode.
     let mut turns_run = 0u32;
     let mut evicted = false;
@@ -194,8 +259,8 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
     // (set by `Core::session`) plus anything its history shows.
     convo.recompute_exposure(tools.as_ref());
     loop {
-        let text = match cmd_rx.recv_timeout(core.cfg.session_idle) {
-            Ok(RunnerCmd::Turn(text)) => text,
+        let first = match cmd_rx.recv_timeout(core.cfg.session_idle) {
+            Ok(RunnerCmd::Turn(input)) => input,
             Ok(RunnerCmd::Stop) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) if core.evict_if_idle(handle) => {
                 evicted = true;
@@ -203,23 +268,31 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
             }
             Err(RecvTimeoutError::Timeout) => continue,
         };
-        let mut next = Some(text);
-        while let Some(text) = next.take() {
+        let mut next = VecDeque::from([first]);
+        while let Some(input) = next.pop_front() {
             if core.is_shutting_down() {
+                lock(&handle.state).busy = false;
                 break;
             }
             let cancel = lock(&handle.state).cancel.clone();
-            run_one(core, handle, &mut convo, &tools, &text, &cancel);
+            run_one(core, handle, &mut convo, &tools, &input, &cancel);
             turns_run += 1;
             // Decide under the lock so an ask arriving now either lands in `left` or starts a
             // fresh turn through the command channel.
             let mut st = lock(&handle.state);
-            let mut left: Vec<String> = handle.inbox_rx.try_iter().map(|s| s.text).collect();
+            let (relayed, mut left): (Vec<String>, Vec<String>) =
+                handle.inbox_rx.try_iter().map(|s| s.text).partition(|t| is_relay(t));
             left.append(&mut st.queued);
-            if !left.is_empty() && !core.is_shutting_down() {
+            let mut relays: Vec<TurnInput> = relayed.into_iter().map(|t| TurnInput::relay(t, false)).collect();
+            relays.append(&mut st.relays);
+            if !left.is_empty() {
+                next.push_back(TurnInput::user(left.join("\n\n")));
+            }
+            next.extend(relays);
+            if !next.is_empty() && !core.is_shutting_down() {
                 st.cancel = CancelToken::new();
-                next = Some(left.join("\n\n"));
             } else {
+                next.clear();
                 st.busy = false;
             }
         }
@@ -251,7 +324,11 @@ fn publisher(core: &Arc<Core>) -> RecallSink {
     })
 }
 
-fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, tools: &Arc<dyn ToolHost>, text: &str, cancel: &CancelToken) {
+fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, tools: &Arc<dyn ToolHost>, input: &TurnInput, cancel: &CancelToken) {
+    let text = input.text.as_str();
+    if input.tainted {
+        convo.exposure.tainted = true;
+    }
     let session = convo.session.clone();
     let turn = convo.next_turn;
     let parts = guard(|| core.brains.agent_parts(&Slot::Conductor)).and_then(|r| r.map_err(|e| e.to_string()));
@@ -269,6 +346,10 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
     if core.mind.is_some() {
         system = system.block(PersonaBlock::Memory);
     }
+    // The crew block describes `dispatch`, so only when the supervisor is running.
+    if core.crew.get().is_some() {
+        system = system.block(PersonaBlock::Crew);
+    }
     let mut env = Environment::current(workspace.clone(), info.display.clone());
     env.repo = workspace.as_deref().and_then(|w| repo_context(core, w));
     let system = system.user(core.user()).environment(env);
@@ -277,7 +358,8 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
     agent.memory = match &core.mind {
         Some(mind) => {
             let budget = agent.context.effective_window() / MEMORY_TIER_DIVISOR;
-            Arc::new(MindMemory::new(mind.clone(), workspace, turn, budget, publisher(core)))
+            let memory = MindMemory::new(mind.clone(), workspace, turn, budget, publisher(core));
+            Arc::new(if input.relay { memory.relay() } else { memory })
         }
         None => Arc::new(NoMemory),
     };
@@ -286,7 +368,14 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
     core.bus.publish(Event::TurnStarted { session: session.clone(), turn, model, user: text.to_string() });
     let before_len = convo.messages.len();
     let before_summary = convo.summary.clone();
+    // Crew results folded in as steers during this turn; delivered once the turn is saved.
+    let mut steered: Vec<String> = Vec::new();
     let mut sink = |ev: AgentEvent| {
+        if let AgentEvent::SteerApplied { text } = &ev {
+            if is_relay(text) {
+                steered.push(text.clone());
+            }
+        }
         if let Some(e) = to_event(&session, turn, ev) {
             core.bus.publish(e);
         }
@@ -307,8 +396,17 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
         convo.push(m.clone());
         fresh.push(m);
     }
-    if let Err(e) = core.store.append(&session, fresh, convo.next_turn, convo.exposure.tainted, now_ms()) {
-        core.bus.publish(Event::Error { session: Some(session.clone()), message: format!("turn not saved: {e}") });
+    match core.store.append(&session, fresh, convo.next_turn, convo.exposure.tainted, now_ms()) {
+        // The crew results this turn carried are in the session's history now: a restart must
+        // not relay them again.
+        Ok(_) => {
+            for relay in input.relay.then_some(&input.text).into_iter().chain(&steered) {
+                crate::crew::delivered(core, relay);
+            }
+        }
+        Err(e) => {
+            core.bus.publish(Event::Error { session: Some(session.clone()), message: format!("turn not saved: {e}") });
+        }
     }
     if let Some(message) = outcome.error.clone().or_else(|| (outcome.stop == TurnStop::Error).then(|| "the turn failed".into())) {
         core.bus.publish(Event::Error { session: Some(session.clone()), message });
@@ -372,6 +470,7 @@ impl ApprovalGate for Gate {
             tool: req.tool,
             summary: req.summary,
             detail: req.detail,
+            run: None,
         });
         let decision = rx.recv_timeout(self.core.cfg.approval_timeout).unwrap_or(ApprovalDecision::Deny);
         self.core.approvals.remove(id);
@@ -411,7 +510,7 @@ mod tests {
     fn a_busy_session_queues_and_interrupt_clears() {
         let (h, rx) = SessionHandle::new(SessionId("s".into()), String::new(), None);
         h.enqueue("one".into()).unwrap();
-        assert!(matches!(rx.try_recv(), Ok(RunnerCmd::Turn(t)) if t == "one"));
+        assert!(matches!(rx.try_recv(), Ok(RunnerCmd::Turn(t)) if t == TurnInput::user("one".into())));
         assert!(h.is_busy());
         h.enqueue("two".into()).unwrap();
         h.enqueue("x".repeat(marlowe_agent::MAX_STEER_CHARS + 1)).unwrap();
@@ -422,6 +521,22 @@ mod tests {
         h.interrupt();
         assert!(cancel.is_cancelled());
         assert!(h.inbox_rx.is_empty() && lock(&h.state).queued.is_empty());
+    }
+
+    #[test]
+    fn relays_start_a_turn_steer_or_wait_by_taint() {
+        let relay = |s: &str| format!("{RELAY_PREFIX}{s}");
+        let (h, rx) = SessionHandle::new(SessionId("s".into()), String::new(), None);
+        h.relay(relay("a"), false).unwrap();
+        assert!(matches!(rx.try_recv(), Ok(RunnerCmd::Turn(t)) if t == TurnInput::relay(relay("a"), false)), "idle: a relay turn");
+        h.relay(relay("b"), false).unwrap();
+        assert_eq!(h.inbox_rx.len(), 1, "busy and untainted: a steer at the next step");
+        h.relay(relay("c"), true).unwrap();
+        assert_eq!(lock(&h.state).relays, vec![TurnInput::relay(relay("c"), true)], "tainted: after the turn");
+        h.interrupt();
+        assert!(h.inbox_rx.is_empty());
+        assert_eq!(lock(&h.state).relays.len(), 2, "an interrupt keeps crew results");
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

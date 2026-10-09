@@ -12,6 +12,7 @@ use marlowe_proto::DaemonInfo;
 
 pub mod client;
 pub mod composer;
+pub mod crew;
 mod input;
 pub mod library;
 pub mod memory;

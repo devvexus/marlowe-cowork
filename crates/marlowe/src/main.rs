@@ -5,12 +5,15 @@
 
 mod client;
 mod commands;
+mod crew_cmd;
 mod daemon_ctl;
 mod doctor;
 mod eval;
 mod launcher;
 mod me_cmd;
 mod memory_cmd;
+#[cfg(debug_assertions)]
+mod scripted;
 mod watch_cmd;
 mod wire;
 
@@ -33,6 +36,10 @@ marlowe watch [list | add <dir> | remove <dir> | candidates]
                                           or in the TUI (candidates are offers, never added)
 marlowe brief                             the brief now: what changed since you were last here
 marlowe say <text>                        speak through the daemon's voice
+marlowe crew [list [N] | show <run> | roles | dispatch <role> <goal> [--playbook P]
+              [--workspace DIR] [--session ID] | steer <run> <text> | cancel <run>
+              | pause <run> | resume <run> | merge <run> [--yes] | discard <run> [--yes]]
+                                          crew runs; merge and discard ask for approval
 marlowe me [--name N] [--address sir|name|none]
                                           what Marlowe calls you (prints it with no flags)
 marlowe status | shutdown | doctor
@@ -69,6 +76,7 @@ fn dispatch(home: &std::path::Path, args: &[String]) -> Result<i32, String> {
         Some("brief") => watch_cmd::brief(home),
         Some("say") => watch_cmd::say(home, rest),
         Some("me") => me_cmd::run(home, rest),
+        Some("crew") => crew_cmd::run(home, rest),
         Some("status") => commands::status(home),
         Some("shutdown") => commands::shutdown(home),
         Some("doctor") => Ok(doctor::run(home)),

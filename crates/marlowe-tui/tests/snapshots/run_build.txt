@@ -1,0 +1,40 @@
+╭─ MARLOWE · run · fix the gate threshold off-by-one ─────────────────────── ⣀⣀⣀⣀⣀⣀ idle · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
+│                                                                                                                                          │
+│  ◐ engineer · fix the gate threshold off-by-one                                                                               needs you  │
+│  step 14 of 40 · $0.18 of $0.50 · 88k tokens of 400k · 1m ago                                                                            │
+│  build · worktree crew/ee55ff66 of C:/work/valiance · run ee55ff66                                                                       │
+│  goal  fix the gate threshold off-by-one                                                                                                 │
+│  tests pass (412) — merge crew/ee55ff66 into main?                                                                                       │
+│                                                                                                                                          │
+│  DIFF                                                                                                                                    │
+│  crew/ee55ff66 · 2 files · +31 −4                                                                                                        │
+│    src/gate/threshold.rs                                                                                                                 │
+│    tests/gate.rs                                                                                                                         │
+│                                                                                                                                          │
+│  m merge crew/ee55ff66 into C:/work/valiance, after your approval; nothing is pushed  ·  d discard                                       │
+│                                                                                                                                          │
+│  SUMMARY                                                                                                                                 │
+│  Fixed the off-by-one in gate::threshold: the sweep now includes its upper bound. Added a regression test; the full suite passes.        │
+│                                                                                                                                          │
+│  TRANSCRIPT                                                                                                                              │
+│    1 engineer · plan                                                                                                                     │
+│     ▏ Off-by-one in the sweep bound.                                                                                                     │
+│   11 engineer · test · cargo test (pass, 412)                                                                                            │
+│   13 reviewer · review · no blocking issues                                                                                              │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+╰─────────────────────────────────────────────────────────────────────────────────────── m merge  ·  d discard  ·  ↑↓ scroll  ·  esc runs ─╯

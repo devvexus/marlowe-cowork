@@ -119,6 +119,24 @@ pub fn all(with_search: bool) -> Vec<ToolSpec> {
             }),
             &["url"],
         ),
+        spec(
+            "arxiv",
+            "Search arXiv. Plain keywords, or field queries (`ti:`, `au:`, `abs:`, `cat:`), or an              arXiv id. Returns titles, authors, dates, ids and abstracts. Results are the authors'              claims, not findings; read the paper with `paper`.",
+            json!({
+                "query": {"type": "string"},
+                "max": {"type": "integer", "description": "Results to return (default 8, at most 25)."}
+            }),
+            &["query"],
+        ),
+        spec(
+            "paper",
+            "Read a paper from an https URL (PDF or HTML) or an arXiv id (2301.01234). Returns              title, authors when known, section names and the text; long papers come back in              windows, continue with `offset`.",
+            json!({
+                "url_or_arxiv_id": {"type": "string"},
+                "offset": {"type": "integer", "description": "Character offset to continue from."}
+            }),
+            &["url_or_arxiv_id"],
+        ),
     ];
     if with_search {
         v.push(spec(

@@ -81,7 +81,9 @@ pub fn ask(home: &Path, a: AskArgs) -> CmdResult {
             Event::Error { session, message } if session.is_none() || session.as_ref() == mine.as_ref() => {
                 return Err(message.clone());
             }
-            Event::ApprovalRequested { approval, session, tool, summary, detail }
+            // Only this turn's approvals: a crew run's (`run` set) is answered in the TUI or with
+            // `marlowe crew`, never by `--yes` or a closed stdin here.
+            Event::ApprovalRequested { approval, session, tool, summary, detail, run: None }
                 if Some(session) == mine.as_ref() =>
             {
                 let decision = if a.yes { ApprovalDecision::Allow } else { prompt(tool, summary, detail) };

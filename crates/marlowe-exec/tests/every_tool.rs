@@ -9,8 +9,9 @@ use marlowe_agent::{Consequence, Exposure, ToolHost};
 use marlowe_exec::{BuiltinTools, SearchResponse, SearchResult};
 use serde_json::json;
 
-const NAMES: [&str; 9] =
-    ["read", "write", "edit", "glob", "grep", "bash", "powershell", "python", "web_fetch"];
+const NAMES: [&str; 11] = [
+    "read", "write", "edit", "glob", "grep", "bash", "powershell", "python", "web_fetch", "arxiv", "paper",
+];
 
 #[test]
 fn the_declared_tools_are_exactly_the_implemented_ones() {

@@ -3,6 +3,7 @@
 use marlowe_model::{Effort, ModelInfo, ModelRef, Part, ProviderKind, Role, Usage};
 use serde::{Deserialize, Serialize};
 
+use crate::crew::{CrewRunInfo, CrewStep, Dispatch, RoleInfo, RunId};
 use crate::ids::{ApprovalId, SessionId};
 use crate::memory::{ImportReport, MemoryChange, MemoryHit, MemoryStatsReport};
 use crate::request::{ApprovalDecision, Slot};
@@ -133,6 +134,9 @@ pub enum Event {
         tool: String,
         summary: String,
         detail: String,
+        /// Set when a crew run asks; `session` is then the run's parent session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run: Option<RunId>,
     },
     ApprovalResolved { approval: ApprovalId, decision: ApprovalDecision },
     LibraryState {
@@ -214,6 +218,25 @@ pub enum Event {
         #[serde(default)]
         set: bool,
     },
+    /// A crew run was created or changed state, step, spend or action (broadcast).
+    RunUpdated(CrewRunInfo),
+    /// A run's step streamed something (broadcast). `text_delta` is assistant text; `action` is
+    /// the one-line current action.
+    RunStep {
+        run: RunId,
+        step: u32,
+        action: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text_delta: Option<String>,
+    },
+    /// A run finished with a result (broadcast). Failed and cancelled runs only send `RunUpdated`.
+    RunFinished { run: RunId, dispatch: Dispatch },
+    /// Reply to `ListRuns`.
+    Runs { list: Vec<CrewRunInfo> },
+    /// Reply to `WatchRun`: the run as it stands and its stored steps.
+    RunTranscript { run: CrewRunInfo, steps: Vec<CrewStep> },
+    /// Reply to `ListRoles`.
+    Roles { list: Vec<RoleInfo> },
 }
 
 impl Event {

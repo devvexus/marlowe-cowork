@@ -369,6 +369,7 @@ fn approval_takes_the_keys_over_the_offer() {
             tool: "bash".into(),
             summary: "run".into(),
             detail: "ls".into(),
+            run: None,
         },
     );
     s.on_key(key(KeyCode::Char('y')));

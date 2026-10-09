@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <link href="http://arxiv.org/api/query?search_query%3Dall%3Aelectron" rel="self" type="application/atom+xml"/>
+  <title type="html">ArXiv Query: search_query=all:electron</title>
+  <id>http://arxiv.org/api/cHxbiOdZaP56ODnBPIenZhzg5f8</id>
+  <updated>2026-01-05T00:00:00-05:00</updated>
+  <opensearch:totalResults xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">1234</opensearch:totalResults>
+  <opensearch:startIndex xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">0</opensearch:startIndex>
+  <opensearch:itemsPerPage xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">2</opensearch:itemsPerPage>
+  <entry>
+    <id>http://arxiv.org/abs/2301.01234v2</id>
+    <updated>2023-02-01T10:00:00Z</updated>
+    <published>2023-01-03T18:59:59Z</published>
+    <title>Attention &amp; Memory in
+  Small Models</title>
+    <summary>  We study how attention
+ and memory trade off. Results hold for &lt;10M parameter models.
+</summary>
+    <author><name>Ada Lovelace</name></author>
+    <author><name>Alan Turing</name></author>
+    <arxiv:comment xmlns:arxiv="http://arxiv.org/schemas/atom">12 pages</arxiv:comment>
+    <link href="http://arxiv.org/abs/2301.01234v2" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2301.01234v2" rel="related" type="application/pdf"/>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/cs/0601001v1</id>
+    <published>2006-01-01T00:00:00Z</published>
+    <title>An Old-Style Paper</title>
+    <summary>Short.</summary>
+    <author><name>A One</name></author>
+    <author><name>B Two</name></author>
+    <author><name>C Three</name></author>
+    <author><name>D Four</name></author>
+    <author><name>E Five</name></author>
+    <link href="http://arxiv.org/abs/cs/0601001v1" rel="alternate" type="text/html"/>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+</feed>

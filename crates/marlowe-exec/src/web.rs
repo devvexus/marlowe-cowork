@@ -107,36 +107,40 @@ pub(crate) fn wait_for<T>(rx: &Receiver<T>, cancel: &CancelToken, deadline: Inst
     }
 }
 
-pub(crate) fn web_fetch(args: &Value, cancel: &CancelToken) -> ToolOutcome {
-    let Some(url) = str_arg(args, "url") else {
-        return ToolOutcome::error("`url` is required: a full https:// URL");
-    };
-    let offset = int_arg(args, "offset").unwrap_or(0).max(0) as usize;
-    let url = url.trim().to_string();
+/// Fetches `url` on a worker thread (redirects followed), giving up on cancel or the deadline.
+/// Returns the final URL and the response, or the outcome to hand back to the model.
+pub(crate) fn fetch_blocking(url: String, cancel: &CancelToken) -> Result<(String, marlowe_net::Fetched), ToolOutcome> {
     let (tx, rx) = sync_channel(1);
     let worker = std::thread::Builder::new().name("marlowe-web-fetch".into()).spawn(move || {
         let _ = tx.send(fetch_chain(url));
     });
     if let Err(e) = worker {
-        return ToolOutcome::error(format!("could not start the fetch: {e}"));
+        return Err(ToolOutcome::error(format!("could not start the fetch: {e}")));
     }
-    let (current, res) = match wait_for(&rx, cancel, Instant::now() + FETCH_DEADLINE) {
-        Ok(Ok(done)) => done,
-        Ok(Err(refused)) => return refused,
-        Err(Stopped::Cancelled) => {
-            return ToolOutcome {
-                content: "web_fetch stopped: the turn was interrupted.".into(),
-                is_error: true,
-                summary: "interrupted".into(),
-            }
-        }
-        Err(Stopped::Deadline) => {
-            return ToolOutcome::error(format!(
-                "web_fetch gave up after {} s without a complete response.",
-                FETCH_DEADLINE.as_secs()
-            ))
-        }
-        Err(Stopped::WorkerLost) => return ToolOutcome::error("the fetch failed unexpectedly"),
+    match wait_for(&rx, cancel, Instant::now() + FETCH_DEADLINE) {
+        Ok(Ok(done)) => Ok(done),
+        Ok(Err(refused)) => Err(refused),
+        Err(Stopped::Cancelled) => Err(ToolOutcome {
+            content: "web_fetch stopped: the turn was interrupted.".into(),
+            is_error: true,
+            summary: "interrupted".into(),
+        }),
+        Err(Stopped::Deadline) => Err(ToolOutcome::error(format!(
+            "web_fetch gave up after {} s without a complete response.",
+            FETCH_DEADLINE.as_secs()
+        ))),
+        Err(Stopped::WorkerLost) => Err(ToolOutcome::error("the fetch failed unexpectedly")),
+    }
+}
+
+pub(crate) fn web_fetch(args: &Value, cancel: &CancelToken) -> ToolOutcome {
+    let Some(url) = str_arg(args, "url") else {
+        return ToolOutcome::error("`url` is required: a full https:// URL");
+    };
+    let offset = int_arg(args, "offset").unwrap_or(0).max(0) as usize;
+    let (current, res) = match fetch_blocking(url.trim().to_string(), cancel) {
+        Ok(done) => done,
+        Err(o) => return o,
     };
     let status = res.status;
     let doc = match marlowe_extract::extract(

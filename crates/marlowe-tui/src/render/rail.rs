@@ -20,7 +20,7 @@ const RAIL_NOTICES: usize = 3;
 pub fn draw(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     let x = r.x + 2;
     let w = r.width.saturating_sub(3);
-    let crew = vec![dimmer("no runs", theme)];
+    let (crew, crew_count) = super::crew::rail_lines(state, w as usize, theme);
     let threads = vec![dimmer("no open threads", theme)];
     let today = today_lines(state, w as usize, theme);
     // WATCH takes what the other three leave.
@@ -30,7 +30,7 @@ pub fn draw(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
 
     let mut y = r.y;
     for (title, right, body) in
-        [("CREW", None, crew), ("WATCH", count, watch), ("THREADS", None, threads), ("TODAY", None, today)]
+        [("CREW", crew_count, crew), ("WATCH", count, watch), ("THREADS", None, threads), ("TODAY", None, today)]
     {
         if y + 2 > r.bottom() {
             break;

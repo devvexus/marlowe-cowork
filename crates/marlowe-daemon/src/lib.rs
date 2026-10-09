@@ -16,6 +16,8 @@ pub mod brief;
 mod brief_ops;
 mod bus;
 mod client;
+mod crew;
+mod crew_ops;
 mod daemon;
 mod library;
 mod mind;
@@ -56,6 +58,11 @@ pub struct DaemonDeps {
     pub sentinel: Option<SentinelLink>,
     /// Spoken voice. `None`: silent (tests); voice requests answer with an error.
     pub voice: Option<VoiceLink>,
+    /// The crew's tool factory and tunables. `None`: no crew; `dispatch` is not exposed, the
+    /// crew persona block is not appended, and crew requests (but `ListRoles`) answer with an
+    /// error. The daemon starts the supervisor itself with its models, run approvals, memory and
+    /// the Sentinel's GPU state.
+    pub crew: Option<marlowe_crew::CrewSetup>,
 }
 
 /// A started [`Sentinel`] and the receiving end of the sink it was started with. The daemon

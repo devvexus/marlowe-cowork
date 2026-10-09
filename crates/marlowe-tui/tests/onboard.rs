@@ -276,6 +276,7 @@ fn approvals_take_the_keys_over_onboarding() {
             tool: "bash".into(),
             summary: "cargo test".into(),
             detail: "{}".into(),
+            run: None,
         },
     );
     type_str(&mut s, "x");

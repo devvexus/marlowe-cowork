@@ -172,6 +172,7 @@ fn deps_with(provider: Arc<Scripted>, mind: Option<Mind>) -> DaemonDeps {
         mind,
         sentinel: None,
         voice: None,
+        crew: None,
     }
 }
 

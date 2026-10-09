@@ -1,13 +1,15 @@
-//! Child processes: bash, powershell, python. Bounded in time and memory, killed as a tree.
+//! Child processes: bash, powershell, python. Bounded in time and memory; each runs in its own
+//! kill-on-close Job Object (marlowe-os), so a tree kill reaches every grandchild.
 
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use marlowe_model::CancelToken;
+use marlowe_os::{JobChild, JobObject};
 
 /// Default wall-clock limit for a shell call.
 pub const SHELL_TIMEOUT_MS: u64 = 120_000;
@@ -55,6 +57,9 @@ pub struct ShellRun {
     pub flooded: bool,
     /// Killed because the turn was interrupted.
     pub cancelled: bool,
+    /// The job still holding processes the command left running (background `&` children).
+    /// Dropping it kills them; see [`Leftovers`].
+    pub leftover: Option<JobObject>,
 }
 
 /// Which interpreter a call uses.
@@ -184,32 +189,191 @@ fn git_bash() -> Option<PathBuf> {
         .clone()
 }
 
-/// Spawn `cmd`, read both pipes under a cap, wait under a deadline, and kill the whole process
-/// tree on timeout, flood or cancel. stdin is null.
-pub fn run_bounded(
-    mut cmd: Command,
+/// Per-call spawn settings: where the child starts and what its environment gains or loses.
+#[derive(Debug, Clone, Default)]
+pub struct SpawnOpts {
+    /// Working directory; `None` keeps the command's own (or the process cwd).
+    pub cwd: Option<PathBuf>,
+    /// Variables set on the child (the crew's `GIT_CONFIG_*` no-push entries).
+    pub env: Vec<(String, String)>,
+    /// Variables removed from the child, before `env` is applied.
+    pub env_remove: Vec<String>,
+}
+
+impl SpawnOpts {
+    /// Removes the credential variables of [`marlowe_brains::scrubbed_env`].
+    pub fn scrubbed() -> Self {
+        Self {
+            env_remove: marlowe_brains::scrubbed_env().iter().map(|s| s.to_string()).collect(),
+            ..Self::default()
+        }
+    }
+
+    pub fn with_cwd(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.cwd = Some(dir.into());
+        self
+    }
+
+    pub fn with_env(mut self, env: impl IntoIterator<Item = (String, String)>) -> Self {
+        self.env.extend(env);
+        self
+    }
+
+    pub fn apply(&self, cmd: &mut Command) {
+        for name in &self.env_remove {
+            cmd.env_remove(name);
+        }
+        cmd.envs(self.env.iter().map(|(k, v)| (k, v)));
+        if let Some(dir) = &self.cwd {
+            cmd.current_dir(dir);
+        }
+    }
+}
+
+/// Runs `script` with `kind` (python: `script` is code) under `opts`, bounded like a tool call.
+/// For callers outside a tool host, e.g. a crew playbook's test command.
+pub fn run_script(
+    kind: Interpreter,
+    script: &str,
+    opts: &SpawnOpts,
     limits: ShellLimits,
     cancel: Option<&CancelToken>,
 ) -> std::io::Result<ShellRun> {
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut cmd = match kind {
+        Interpreter::Bash => bash_command(script)?,
+        Interpreter::PowerShell => powershell_command(script),
+        Interpreter::Python => python_command(PythonTarget::Code(script), &[])?,
+    };
+    opts.apply(&mut cmd);
+    run_bounded(cmd, limits, cancel)
+}
+
+/// What happens to processes a command leaves behind when it exits on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Leftovers {
+    /// They run on outside any kill-on-close job: a background server or training run started
+    /// by the conductor outlives the call, as it always has.
+    #[default]
+    Release,
+    /// They stay in their kill-on-close job, held by the host, and die when the host is dropped
+    /// or [`HeldJobs::kill_all`] runs (crew runs: nothing outlives the run).
+    KillWithHost,
+}
+
+/// Jobs whose commands finished but left processes running, kept so they die with the owner.
+#[derive(Debug, Default)]
+pub struct HeldJobs {
+    jobs: Mutex<Vec<JobObject>>,
+}
+
+impl HeldJobs {
+    /// Takes `run`'s leftover job according to `mode`.
+    pub fn settle(&self, run: &mut ShellRun, mode: Leftovers) {
+        let Some(job) = run.leftover.take() else { return };
+        match mode {
+            Leftovers::Release => {
+                let _ = job.release();
+            }
+            Leftovers::KillWithHost => {
+                let mut jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
+                jobs.retain(|j| j.active_processes().map_or(true, |n| n > 0));
+                jobs.push(job);
+            }
+        }
+    }
+
+    /// Processes still running in held jobs.
+    pub fn active(&self) -> u32 {
+        let jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
+        jobs.iter().filter_map(|j| j.active_processes().ok()).sum()
+    }
+
+    /// Kills every held process now.
+    pub fn kill_all(&self) {
+        let mut jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
+        for job in jobs.drain(..) {
+            let _ = job.terminate(1);
+        }
+    }
+}
+
+/// A spawned child: inside its own kill-on-close job when the OS allows, else bare.
+enum Proc {
+    Job(JobChild),
+    Bare(Child),
+}
+
+impl Proc {
+    fn child(&mut self) -> &mut Child {
+        match self {
+            Proc::Job(j) => j.child_mut(),
+            Proc::Bare(c) => c,
+        }
+    }
+
+    /// Kill the child and everything it started.
+    fn kill_tree(&mut self) {
+        match self {
+            Proc::Job(j) => {
+                if j.kill_tree().is_err() {
+                    legacy_kill_tree(j.child_mut());
+                }
+            }
+            Proc::Bare(c) => legacy_kill_tree(c),
+        }
+    }
+
+    /// The job, when it still holds processes the command left running.
+    fn into_leftover(self) -> Option<JobObject> {
+        match self {
+            Proc::Job(j) => {
+                let (_, job) = j.into_parts();
+                job.active_processes().is_ok_and(|n| n > 0).then_some(job)
+            }
+            Proc::Bare(_) => None,
+        }
+    }
+}
+
+/// Spawns inside a kill-on-close job, falling back to a bare child if the job cannot be made.
+fn spawn(cmd: &mut Command) -> std::io::Result<Proc> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        match marlowe_os::spawn_in_job_with_flags(cmd, CREATE_NO_WINDOW) {
+            Ok(j) => return Ok(Proc::Job(j)),
+            Err(marlowe_os::OsError::Io(e)) => return Err(e),
+            Err(_) => {
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+        }
     }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    let mut child = cmd.spawn()?;
+    cmd.spawn().map(Proc::Bare)
+}
+
+/// Spawn `cmd` in a kill-on-close Job Object, read both pipes under a cap, wait under a
+/// deadline, and kill the whole process tree on timeout, flood or cancel. stdin is null. If
+/// the command exits on its own while processes it started still run, their job comes back in
+/// [`ShellRun::leftover`]: dropping it kills them, [`HeldJobs::settle`] decides.
+pub fn run_bounded(
+    mut cmd: Command,
+    limits: ShellLimits,
+    cancel: Option<&CancelToken>,
+) -> std::io::Result<ShellRun> {
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut proc = spawn(&mut cmd)?;
 
     let over_cap = Arc::new(AtomicBool::new(false));
     let (tx, rx) = std::sync::mpsc::channel::<(bool, Vec<u8>)>();
-    if let Some(p) = child.stdout.take() {
+    if let Some(p) = proc.child().stdout.take() {
         spawn_reader(p, true, limits.max_output_bytes, &over_cap, &tx);
     }
-    if let Some(p) = child.stderr.take() {
+    if let Some(p) = proc.child().stderr.take() {
         spawn_reader(p, false, limits.max_output_bytes, &over_cap, &tx);
     }
     drop(tx);
@@ -218,7 +382,7 @@ pub fn run_bounded(
     let deadline = Duration::from_millis(limits.timeout_ms);
     let (mut timed_out, mut flooded, mut cancelled) = (false, false, false);
     let status = loop {
-        if let Some(status) = child.try_wait()? {
+        if let Some(status) = proc.child().try_wait()? {
             break status;
         }
         if over_cap.load(Ordering::Relaxed) {
@@ -231,8 +395,8 @@ pub fn run_bounded(
             std::thread::sleep(POLL);
             continue;
         }
-        kill_tree(&mut child);
-        break child.wait()?;
+        proc.kill_tree();
+        break proc.child().wait()?;
     };
 
     let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -243,12 +407,14 @@ pub fn run_bounded(
             Err(_) => break,
         }
     }
+    let killed = timed_out || flooded || cancelled;
     Ok(ShellRun {
         code: status.code().unwrap_or(-1),
         text: combine(&out, &err),
         timed_out,
         flooded: flooded || over_cap.load(Ordering::Relaxed),
         cancelled,
+        leftover: if killed { None } else { proc.into_leftover() },
     })
 }
 
@@ -286,8 +452,8 @@ fn drain_capped(mut r: impl Read, cap: usize, flag: &AtomicBool) -> Vec<u8> {
     buf
 }
 
-/// Kill the child and everything it started.
-fn kill_tree(child: &mut Child) {
+/// Tree kill without a job: `taskkill /T` (Windows) or the process group (unix).
+fn legacy_kill_tree(child: &mut Child) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

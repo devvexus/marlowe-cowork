@@ -14,6 +14,7 @@ marlowe-daemon.workspace = true
 marlowe-mind.workspace = true
 marlowe-sentinel.workspace = true
 marlowe-voice.workspace = true
+marlowe-crew.workspace = true
 crossbeam-channel.workspace = true
 chrono.workspace = true
 marlowe-tui.workspace = true

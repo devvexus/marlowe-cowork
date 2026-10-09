@@ -60,6 +60,7 @@ pub fn ctx(root: Option<&Path>) -> ToolCtx {
         turn: 1,
         workspace: root.map(Path::to_path_buf),
         cancel: CancelToken::new(),
+        tainted: false,
     }
 }
 

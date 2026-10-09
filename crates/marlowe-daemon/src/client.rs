@@ -155,5 +155,15 @@ fn dispatch(core: &Arc<Core>, client: u64, client_name: &str, req: Request) {
         | Request::Speak { .. }
         | Request::StopSpeaking
         | Request::VoiceSettings { .. }) => crate::watch_ops::dispatch(core, client, client_name, watch),
+        crew @ (Request::Dispatch { .. }
+        | Request::ListRuns { .. }
+        | Request::WatchRun { .. }
+        | Request::Steer { .. }
+        | Request::CancelRun { .. }
+        | Request::PauseRun { .. }
+        | Request::ResumeRun { .. }
+        | Request::MergeRun { .. }
+        | Request::DiscardRun { .. }
+        | Request::ListRoles) => crate::crew_ops::dispatch(core, client, crew),
     }
 }

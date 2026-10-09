@@ -6,6 +6,7 @@ use std::str::FromStr;
 use marlowe_model::{Effort, ModelRef, ProviderKind};
 use serde::{Deserialize, Serialize};
 
+use crate::crew::{CrewBudget, Playbook, RunId};
 use crate::ids::{ApprovalId, SessionId};
 use crate::memory::MemoryScope;
 
@@ -237,4 +238,35 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         address: Option<String>,
     },
+    /// Starts a crew run; answered with `RunUpdated` (status `queued`) right away. `session` is
+    /// the conductor session whose inbox gets the result (`None`: the result is only broadcast).
+    Dispatch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        role: String,
+        goal: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        playbook: Option<Playbook>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget: Option<CrewBudget>,
+    },
+    /// Answered with `Runs`, newest first.
+    ListRuns { limit: u32 },
+    /// Answered with `RunTranscript` to this client; live steps arrive as `RunStep` broadcasts.
+    WatchRun { run: RunId },
+    /// Guidance for a run, picked up at its next step.
+    Steer { run: RunId, text: String },
+    CancelRun { run: RunId },
+    PauseRun { run: RunId },
+    ResumeRun { run: RunId },
+    /// Build: merges `crew/<run-id>` into the original checkout's current branch (never pushes)
+    /// and removes the worktree. Research: copies the report into `<workspace>\research\<slug>.md`. Goes
+    /// through an approval first.
+    MergeRun { run: RunId },
+    /// Removes the run's worktree and branch (or scratch dir) without merging.
+    DiscardRun { run: RunId },
+    /// Answered with `Roles`.
+    ListRoles,
 }

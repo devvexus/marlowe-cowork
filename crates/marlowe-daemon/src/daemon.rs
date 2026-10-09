@@ -6,7 +6,7 @@ use std::io::{BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -87,6 +87,9 @@ pub(crate) struct Core {
     pub sentinel: Option<marlowe_sentinel::Sentinel>,
     /// Spoken voice, when the binary supplied it.
     pub voice: Option<marlowe_voice::Voice>,
+    /// The crew supervisor, once started (set right after the core exists, since its approvals
+    /// and relays need the core).
+    pub crew: OnceLock<crate::crew::CrewLink>,
     /// Which interactive clients are here, for the brief's away rule.
     pub presence: crate::brief::Presence,
     pub approvals: Approvals,
@@ -331,6 +334,7 @@ impl Daemon {
             memory: Default::default(),
             sentinel: deps.sentinel.as_ref().map(|l| l.sentinel.clone()),
             voice: deps.voice.as_ref().map(|l| l.voice.clone()),
+            crew: OnceLock::new(),
             presence: Default::default(),
             approvals: Approvals::default(),
             sessions: Mutex::new(HashMap::new()),
@@ -346,6 +350,17 @@ impl Daemon {
         }
         if let Some(link) = deps.voice {
             core.add_writer(crate::watch_ops::forward_voice(core.clone(), link.events)?);
+        }
+        if let Some(setup) = deps.crew {
+            // A crew that will not start leaves the daemon without one, said in the daemon log.
+            match crate::crew::start(&core, setup) {
+                Ok(forwarder) => {
+                    core.add_writer(forwarder);
+                    // Results a previous daemon finished but never delivered.
+                    crate::crew::relay_due(&core);
+                }
+                Err(e) => eprintln!("marlowe: {e}"),
+            }
         }
         DaemonInfo { port: addr.port(), token, pid: std::process::id() }.write(home)?;
         let acore = core.clone();
@@ -401,6 +416,8 @@ impl Daemon {
         for h in &handles {
             h.stop();
         }
+        // Before approvals are denied: a run waiting on one sees the stop, not a refusal.
+        crate::crew::shutdown(&core);
         core.approvals.deny_all();
         if let Some(v) = &core.voice {
             v.shutdown();

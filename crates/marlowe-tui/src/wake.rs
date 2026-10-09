@@ -10,6 +10,7 @@ use marlowe_proto::{
 };
 
 use crate::composer::Composer;
+use crate::crew::NO_CREW;
 use crate::state::{NoteTone, State};
 
 /// The full boot: assemble, five lines, hold. At most 1.2 s.
@@ -272,11 +273,15 @@ impl State {
 
     /// Requests sent after every Welcome, for the boot lines, the rail and the meter.
     pub(crate) fn wake_probes(&mut self, out: &mut Vec<Request>) {
-        self.wake.expected_errors = vec![NO_MEMORY, NO_SENTINEL, NO_SENTINEL, NO_VOICE];
+        self.wake.expected_errors = vec![NO_MEMORY, NO_SENTINEL, NO_SENTINEL, NO_VOICE, NO_CREW];
         out.push(Request::MemoryStats);
         out.push(Request::WatchList);
         out.push(Request::ListNotices { limit: NOTICE_LIMIT, unseen_only: false });
         out.push(Request::VoiceSettings { enabled: None, voice: None });
+        out.push(Request::ListRuns { limit: crate::crew::RUN_LIMIT });
+        if let Some(v) = &self.crew.open {
+            out.push(Request::WatchRun { run: v.run.clone() });
+        }
     }
 
     /// A "not running" answer to a request just sent is expected, not flashed.
@@ -287,11 +292,12 @@ impl State {
     /// A "not running" error: records the absence. True when it answered a probe and should not
     /// be flashed.
     pub(crate) fn absorb_absent(&mut self, message: &str) -> bool {
-        let kind = [NO_SENTINEL, NO_VOICE, NO_MEMORY].into_iter().find(|k| *k == message);
+        let kind = [NO_SENTINEL, NO_VOICE, NO_MEMORY, NO_CREW].into_iter().find(|k| *k == message);
         let Some(kind) = kind else { return false };
         match kind {
             NO_SENTINEL => self.wake.sentinel = Presence::Absent,
             NO_VOICE => self.wake.voice_presence = Presence::Absent,
+            NO_CREW => self.crew.presence = Presence::Absent,
             _ => self.wake.memory_presence = Presence::Absent,
         }
         match self.wake.expected_errors.iter().position(|k| *k == kind) {

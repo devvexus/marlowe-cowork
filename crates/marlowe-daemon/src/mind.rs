@@ -38,6 +38,9 @@ pub struct MindMemory {
     turn: u32,
     budget_tokens: u32,
     emit: RecallSink,
+    /// A crew relay turn: the "user" text is a crew result, not the user's words, so it is not
+    /// ingested at user trust (the run's own Result memory carries its provenance).
+    relay: bool,
 }
 
 impl MindMemory {
@@ -45,7 +48,13 @@ impl MindMemory {
     /// the profile takes its share first, at most `marlowe_mind::DEFAULT_PROFILE_TOKENS`.
     pub fn new(mind: Mind, workspace: Option<String>, turn: u32, budget_tokens: u32, emit: RecallSink) -> Self {
         let budget_tokens = budget_tokens.min(marlowe_mind::MAX_INJECT_TOKENS);
-        Self { mind, workspace, turn, budget_tokens, emit }
+        Self { mind, workspace, turn, budget_tokens, emit, relay: false }
+    }
+
+    /// For a relay turn: retrieval and the reply as usual, no user-trust ingest of the relay.
+    pub fn relay(mut self) -> Self {
+        self.relay = true;
+        self
     }
 
     fn ingest(&self, session: &SessionId, role: TurnRole, text: &str) {
@@ -81,7 +90,9 @@ impl MemoryHook for MindMemory {
         });
         // Ingested here rather than in `after_turn` (which a failed turn skips), and after the
         // inject so a statement is never recalled back to itself.
-        self.ingest(session, TurnRole::User, query);
+        if !self.relay {
+            self.ingest(session, TurnRole::User, query);
+        }
         if !injection.recalled.is_empty() {
             (self.emit)(Event::Recalled {
                 session: session.clone(),

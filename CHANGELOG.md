@@ -4,6 +4,55 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### M4 Crew
+
+- **Added.** `marlowe-os`, the only crate with `unsafe`:
+  - `JobObject::new_kill_on_close`, `assign`, `terminate`, `active_processes` and `release`.
+  - `spawn_in_job[_with_flags]` starts the child suspended, assigns it, then resumes it, so no grandchild can escape the job.
+- **Changed.** `marlowe-exec` runs every bash, powershell and python child in its own job; a timeout, flood or cancel kills the whole tree.
+  - The conductor's background processes still outlive the call (`Leftovers::Release`). A crew host kills them when it is dropped (`KillWithHost`).
+  - New builders: `with_child_env`, `with_shell_dir` and `with_research`.
+  - `run_script` with `SpawnOpts` for callers outside a tool host.
+- **Added.** `arxiv{query, max}` (export.arxiv.org Atom, 3 s global rate limit, 24 h cache in `<home>\cache\arxiv`) and `paper{url_or_arxiv_id, offset?}` (PDF/HTML through marlowe-extract, 12k-char windows). Both are untrusted content, like `web_fetch`.
+- **Added.** `marlowe-crew`:
+  - Role cards: `roles/{researcher,engineer,reviewer,analyst,scout}.md` are built in, and `<home>\roles\*.md` overrides them by name.
+  - `Supervisor`: queue, provider limits (2 cloud, 1 local), GPU-busy fallback to a cloud slot, a thread per run behind `catch_unwind`, cancel, pause, resume and steer. A budget overrun goes to NeedsYou with an approval to extend.
+  - `RunStore` (`crew_runs`, `crew_run_steps` in `cowork.db`): a run resumes after a restart from its last finished step.
+  - Sandbox: worktree or scratch, a no-push git environment, and the dangerous-shell matcher. Merge and discard are done by the daemon only.
+  - The `deep_research`, `build` and single-step playbooks, and the conductor-only `dispatch` tool with its estimate.
+- **Added.** Proto: `Dispatch`, `ListRuns`, `WatchRun`, `Steer`, `CancelRun`, `PauseRun`, `ResumeRun`, `MergeRun`, `DiscardRun` and `ListRoles` requests; `RunUpdated`, `RunStep`, `RunFinished`, `Runs`, `RunTranscript` and `Roles` events; `ApprovalRequested.run`. All additive, so `PROTO_VERSION` stays 1.
+- **Added.** Daemon:
+  - Starts the supervisor with Brains, Mind, the Sentinel GPU probe and run approvals.
+  - `dispatch` and `persona/blocks/crew.md` are exposed only while the crew runs.
+  - Run events go out on the bus.
+  - A finished or failed run is relayed into its parent session: a relay turn when the session is idle, otherwise at the next step or after the current turn when the result is untrusted. Relay text never enters memory at user trust.
+  - `crew_merge` and `crew_discard` approvals.
+- **Added.** CLI: `marlowe crew [list|show|roles|dispatch|steer|cancel|pause|resume|merge|discard]`.
+- **Added.** TUI:
+  - A live CREW rail (● running · ◐ needs you · ✓ done · ✗ failed · ○ queued).
+  - The Run view (`^r`): streaming transcript, steer box, pause and cancel, a diff summary with merge and discard for build runs, the rendered report for research runs.
+  - The `^d` dispatch prompt, crew toasts, and approvals that name their run.
+- **Added (integration).** Debug builds only: `MARLOWE_SCRIPTED_PROVIDER=<script.json>` replaces both providers with a rule-scripted one, with in-memory credentials and no web search. It is used for the end-to-end check of the real binary. Release builds do not compile it.
+- **Fixed (integration).** Live `RunStep` events numbered text by model call, while the transcript numbers rows by step. With parallel scouts, or a step that made tool calls, the TUI showed one step's text under another's label. Each step now reserves its transcript row on its first event.
+- **Fixed (integration).** `marlowe ask` answered crew-run approvals raised in its session. With `--yes` it would have allowed a crew `git push`; with a closed stdin it raced the TUI and exited 2. It now answers only its own turn's approvals.
+- **Security (review).** The crew push block is **best-effort**. It relies on `GIT_CONFIG_*` variables, which a child process can clear. Crew shells are pinned to the sandbox as their cwd but are not OS-confined, so a child can still write wherever the user can. ARCHITECTURE now says so; OS confinement is not built.
+  - Partial mitigation: the shell policy asks for any command that mentions git's environment. Python code, and scripts passed to bash, sh, python, pwsh or node, ask when they mention `git … push`.
+- **Security (review).** A worktree shares `.git/config` and hooks with the original checkout.
+  - The sandbox records a digest of the repo config (minus `branch.*` and `user.*`) and the hooks. Diff and merge refuse once that digest changes.
+  - The daemon's own git calls run with hooks and fsmonitor off, no external diff or textconv, API keys scrubbed and the no-push environment.
+  - Crew shells ask for `git config` writes, `update-ref`, `symbolic-ref`, branch delete/rename/force, `tag -d`, `gc`, `reflog expire`, `worktree`, `remote` changes, `stash drop|clear` and `checkout -B`.
+- **Security (review).** Git commands aimed outside the worktree (`-C`, `--git-dir`, `--work-tree`, or a `cd` out of it) ask unless they only read. Deletes ask whether or not they are recursive, and so do copies, moves, writers and `>`/`>>` redirects whose target is outside the sandbox.
+- **Security (review).** `dispatch` asks after the conductor has read untrusted content, and the run starts tainted, so its shells ask from the first step. The model cannot set the taint itself.
+- **Fixed (review).** A run that read untrusted content relayed untainted unless its role had web tools. `CrewRunInfo.tainted` now carries the run's own taint into the relay.
+- **Fixed (review).** In production every crew read was marked untrusted, and from then on every shell and python call asked. The sandbox sits under `%LOCALAPPDATA%`, which the broad-root rule refuses. Crew hosts now trust the sandbox explicitly (`BuiltinTools::new_sandbox`), and reads in the original workspace (`with_read_root`) do not taint.
+- **Fixed (review).** Cancel lost to pause. Cancelling a run that was waiting on a budget approval left it Paused, and a resume then ended at once. The user's cancel now outranks pause and shutdown, and the daemon cancels before denying the pending approvals.
+- **Fixed (review).** Parallel scouts could spend up to about twice the remaining budget before the approval. Usd also went unchecked within a turn when the provider reported no cost. Every model call is now admitted against the run's spend plus the calls still in flight.
+- **Fixed (review).** The GPU hold and the local limit applied only to the dispatched role.
+  - Every step now resolves its slot, and holds at "waiting for the GPU" when no cloud slot is configured. At most one local model stream runs at a time across all runs.
+  - The GPU probe no longer counts load on a device that Ollama is using, so a step does not wait on the model the previous step left loaded. A training run is detected by the Sentinel's watched runs.
+- **Fixed (review).** Relays were lost on restart. `Run.relay_due` is now cleared only once the result is in the session's saved history, and the daemon relays every run still due at boot. `RunFinished` is published after the relay is queued.
+- **Fixed (review).** A resumed build reported "green on the first run" and led with the stale implement text. The test loop now resumes after the fix rounds it already completed.
+
 ### M3.1 Brief narrative and first-run onboarding
 
 First-run onboarding:

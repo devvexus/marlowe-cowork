@@ -10,7 +10,9 @@ marlowe-model.workspace = true
 marlowe-brains.workspace = true
 marlowe-net.workspace = true
 marlowe-extract.workspace = true
+marlowe-os.workspace = true
 regex.workspace = true
+sha2.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

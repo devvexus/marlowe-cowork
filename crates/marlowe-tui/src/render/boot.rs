@@ -85,30 +85,37 @@ pub fn draw(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     }
 }
 
-/// New Attention/Alarm notices, stacked at the top right of the conversation pane so the rail
-/// stays readable.
+/// Crew runs that need the user or finished, then new Attention/Alarm notices, stacked at the
+/// top right of the main pane so the rail stays readable. Newest of each on top.
 pub fn toasts(g: &Geometry, state: &State, theme: &Theme, buf: &mut Buffer) {
     let pane = g.conversation;
     let w = TOAST_W.min(pane.width.saturating_sub(4));
     let x = pane.right().saturating_sub(w + 1);
     let mut y = pane.y;
-    let live: Vec<_> = state.wake.live_toasts(state.now_ms).collect();
-    // Newest on top.
-    for t in live.iter().rev() {
-        let n = &t.notice;
-        let detail = text::clean(n.detail.lines().next().unwrap_or("").trim());
+    let crew = state.crew.live_toasts(state.now_ms).collect::<Vec<_>>();
+    let notices = state.wake.live_toasts(state.now_ms).collect::<Vec<_>>();
+    let items = crew
+        .iter()
+        .rev()
+        .map(|t| (t.severity, crew_glyph(t.severity), t.title.as_str(), t.detail.as_str()))
+        .chain(notices.iter().rev().map(|t| {
+            let n = &t.notice;
+            (n.severity, notice_glyph(n.severity), n.title.as_str(), n.detail.as_str())
+        }));
+    for (severity, glyph, title, detail) in items {
+        let detail = text::clean(detail.lines().next().unwrap_or("").trim());
         let h: u16 = if detail.is_empty() { 3 } else { 4 };
         if y + h > pane.bottom() {
             break;
         }
         let r = Rect { x, y, width: w, height: h };
-        let tone = severity_style(n.severity, theme);
+        let tone = severity_style(severity, theme);
         Clear.render(r, buf);
         Block::bordered().border_type(BorderType::Rounded).border_style(tone).render(r, buf);
         let tw = w.saturating_sub(4);
         let title = Line::from(vec![
-            Span::styled(format!("{} ", notice_glyph(n.severity)), tone),
-            Span::styled(text::truncate(&text::clean(&n.title), tw as usize - 2), theme.bright()),
+            Span::styled(format!("{glyph} "), tone),
+            Span::styled(text::truncate(&text::clean(title), (tw as usize).saturating_sub(2)), theme.bright()),
         ]);
         put(buf, x + 2, y + 1, &title, tw);
         if !detail.is_empty() {
@@ -116,6 +123,15 @@ pub fn toasts(g: &Geometry, state: &State, theme: &Theme, buf: &mut Buffer) {
             put(buf, x + 2, y + 2, &d, tw);
         }
         y += h;
+    }
+}
+
+/// A crew toast's glyph: the run status it reports.
+fn crew_glyph(s: Severity) -> &'static str {
+    match s {
+        Severity::Attention => "◐",
+        Severity::Alarm => "✗",
+        _ => "✓",
     }
 }
 

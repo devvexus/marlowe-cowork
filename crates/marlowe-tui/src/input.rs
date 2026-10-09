@@ -66,6 +66,9 @@ impl State {
                     'o' => Some(Command::Sessions),
                     'l' => Some(Command::Library),
                     'g' => Some(Command::Memory),
+                    'r' => Some(Command::Crew),
+                    // ^d is forget in the memory view.
+                    'd' if self.view != View::Memory => Some(Command::Dispatch),
                     // ^w deletes a word while there is text in the composer, as ^c clears it.
                     'w' if !(self.view == View::Conversation && !self.composer.text().is_empty()) => {
                         Some(Command::Watch)
@@ -96,6 +99,7 @@ impl State {
             }
             View::Memory => self.memory_key(k, &mut out),
             View::Watch => self.watch_key(k, &mut out),
+            View::Crew => self.crew_key(k, &mut out),
             View::Conversation => self.conversation_key(k, &mut out),
         }
         out
@@ -113,6 +117,7 @@ impl State {
                 *sel = 0;
             }
             (Some(Overlay::Onboard), _) => self.onboard_paste(text),
+            (Some(Overlay::Dispatch), _) => self.dispatch_paste(text),
             (Some(_), _) => {}
             (None, View::Library) => {
                 for c in text.trim().chars() {
@@ -128,6 +133,11 @@ impl State {
             (None, View::Watch) => {
                 if let crate::wake::WatchMode::Add { input } = &mut self.wake.mode {
                     input.insert_str(text.lines().next().unwrap_or("").trim());
+                }
+            }
+            (None, View::Crew) => {
+                if let Some(v) = self.crew.open.as_mut().filter(|v| v.steering) {
+                    v.steer.insert_str(&text.replace(['\r', '\n'], " "));
                 }
             }
             (None, View::Conversation) => self.composer.insert_str(text),
@@ -225,6 +235,14 @@ impl State {
                     self.open_watch(out);
                 }
             }
+            Command::Crew => {
+                if self.view == View::Crew {
+                    self.view = View::Conversation;
+                } else {
+                    self.open_crew(out);
+                }
+            }
+            Command::Dispatch => self.open_dispatch(out),
             Command::Brief => {
                 self.view = View::Conversation;
                 out.push(Request::Brief);
@@ -308,6 +326,10 @@ impl State {
             self.onboard_key(k, out);
             return;
         }
+        if self.overlay == Some(Overlay::Dispatch) {
+            self.dispatch_key(k, out);
+            return;
+        }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if k.code == KeyCode::Esc || (ctrl && k.code == KeyCode::Char('k')) {
             if matches!(self.overlay, Some(Overlay::ImportOffer { .. })) {
@@ -343,7 +365,7 @@ impl State {
                 }
             }
             Overlay::ImportOffer { sel } => self.offer_key(k, sel, out),
-            Overlay::Onboard => {}
+            Overlay::Onboard | Overlay::Dispatch => {}
             Overlay::Sessions { sel } => {
                 let n = self.sessions.as_ref().map_or(0, Vec::len);
                 match k.code {

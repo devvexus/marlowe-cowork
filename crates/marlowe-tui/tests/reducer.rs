@@ -253,6 +253,7 @@ fn approvals_queue_and_resolve_from_any_client() {
             tool: "bash".into(),
             summary: format!("cmd {id}"),
             detail: String::new(),
+            run: None,
         });
     }
     assert_eq!(s.activity(), Activity::Awaiting);
@@ -273,6 +274,7 @@ fn ask_approval(s: &mut State, id: u64, detail: &str) {
         tool: "bash".into(),
         summary: "bash: echo hi".into(),
         detail: detail.into(),
+        run: None,
     });
 }
 

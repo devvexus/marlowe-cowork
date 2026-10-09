@@ -3,24 +3,24 @@
 │                                                                                                       │  no runs                         │
 │                                                                                                       │                                  │
 │                                                                                                       │  WATCH                           │
-│                                                                                                       │  nothing watched                 │
-│                                       ╭ palette ─────────────────────────────────────────────────╮    │                                  │
-│                                       │ › type a command                                         │    │  THREADS                         │
-│                                       │                                                          │    │  no open threads                 │
-│                                       │ › New session                                         ^n │    │                                  │
-│                                       │   Sessions                                            ^o │    │  TODAY                           │
-│                                       │   Library — models and slots                          ^l │    │  nothing scheduled               │
-│                                       │   Memory — search, correct, forget                    ^g │    │                                  │
+│                                       ╭ palette ─────────────────────────────────────────────────╮    │  nothing watched                 │
+│                                       │ › type a command                                         │    │                                  │
+│                                       │                                                          │    │  THREADS                         │
+│                                       │ › New session                                         ^n │    │  no open threads                 │
+│                                       │   Sessions                                            ^o │    │                                  │
+│                                       │   Library — models and slots                          ^l │    │  TODAY                           │
+│                                       │   Memory — search, correct, forget                    ^g │    │  nothing scheduled               │
 │                                       │   Watch — runs, notices, roots                        ^w │    │                                  │
-│                                     Yo│   Brief me now                                           │    │                                  │
-│                                       │   Turn the voice on or off                               │    │                                  │
-│                          Marlowe think│   Import memories from the old harness                   │    │                                  │
-│                      local ones throug│   Your name and how I greet you                          │    │                                  │
+│                                       │   Crew — runs and results                             ^r │    │                                  │
+│                                     Yo│   Dispatch a crew run                                 ^d │    │                                  │
+│                                       │   Brief me now                                           │    │                                  │
+│                          Marlowe think│   Turn the voice on or off                               │    │                                  │
+│                      local ones throug│   Import memories from the old harness                   │    │                                  │
+│                                       │   Your name and how I greet you                          │    │                                  │
 │                                       │   Show or hide thinking                               ^t │    │                                  │
-│                                       │   Interrupt the running turn                         esc │    │                                  │
-│                                  ↵ ope│   Quit                                                ^q │    │                                  │
+│                                  ↵ ope│   Interrupt the running turn                         esc │    │                                  │
+│                                       │   Quit                                                ^q │    │                                  │
 │                                       ╰──────────────────────────────────────────────────────────╯    │                                  │
-│                                                                                                       │                                  │
 │                                                                                                       │                                  │
 │                                                                                                       │                                  │
 │                                                                                                       │                                  │

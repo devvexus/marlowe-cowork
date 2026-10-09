@@ -1,0 +1,40 @@
+╭─ MARLOWE · run · LoRA rank ablations for 22B gates ─────────────────────── ⣀⣀⣀⣀⣀⣀ idle · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
+│                                                                                                                                          │
+│  ◐ researcher · LoRA rank ablations for 22B gates                                                                             needs you  │
+│  step 6 of 40 · $0.0213 of $0.50 · 41.2k tokens of 400k · 1m ago                                                                         │
+│  deep_research · scratch C:/Users/m/AppData/Local/MarloweCowork/scratch/aa11bb22cc33dd44 · run aa11bb22                                  │
+│  goal  What does the literature say about LoRA rank for gating adapters at 22B?                                                          │
+│  report ready — accept it into research/?                                                                                                │
+│                                                                                                                                          │
+│  REPORT  confidence high · 2 sources                                                                                                     │
+│  LoRA rank for gating adapters                                                                                                           │
+│                                                                                                                                          │
+│  Rank 8 is enough for gates at 22B; rank 64 buys nothing measurable [1].                                                                 │
+│                                                                                                                                          │
+│  Evidence                                                                                                                                │
+│                                                                                                                                          │
+│  • Hu et al. find rank 4–8 matches full fine-tuning [1].                                                                                 │
+│  • One contested result at rank 2 was dropped by the reviewer.                                                                           │
+│                                                                                                                                          │
+│  SOURCES                                                                                                                                 │
+│   1 LoRA: Low-Rank Adaptation of Large Language Models · https://arxiv.org/abs/2106.09685                                                │
+│   2 valiance gate notes · docs/gate.md                                                                                                   │
+│                                                                                                                                          │
+│  m accept: copy the report into C:/work/valiance/research, after your approval  ·  d discard                                             │
+│                                                                                                                                          │
+│  TRANSCRIPT                                                                                                                              │
+│    1 researcher · plan · 3 sub-questions                                                                                                 │
+│    9 researcher · synthesize · report.md                                                                                                 │
+│     ▏ (written)                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+╰─────────────────────────────────────────────────────────────────────────────── m accept report  ·  d discard  ·  ↑↓ scroll  ·  esc runs ─╯

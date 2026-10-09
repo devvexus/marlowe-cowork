@@ -1,0 +1,12 @@
+[package]
+name = "marlowe-os"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Thin OS wrappers: Windows Job Objects so every child process tree dies with its owner. The only crate allowed `unsafe`."
+
+[dependencies]
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true

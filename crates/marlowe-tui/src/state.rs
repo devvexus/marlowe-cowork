@@ -7,11 +7,12 @@ use std::cell::Cell;
 
 use marlowe_model::{Part, Role, Usage};
 use marlowe_proto::{
-    ApprovalDecision, ApprovalId, Envelope, Event, Request, SessionId, SessionSummary, StoredTurn,
+    ApprovalDecision, ApprovalId, Envelope, Event, Request, RunId, SessionId, SessionSummary, StoredTurn,
     TurnStop,
 };
 
 use crate::composer::Composer;
+use crate::crew::Crew;
 use crate::library::Library;
 use crate::memory::{ImportStatus, LegacyOffer, MemoryState};
 use crate::onboard::{Onboard, UserProfile};
@@ -93,6 +94,8 @@ pub struct Approval {
     pub tool: String,
     pub summary: String,
     pub detail: String,
+    /// The crew run asking, when it is one; `session` is then the run's parent.
+    pub run: Option<RunId>,
 }
 
 /// Full-screen views.
@@ -103,6 +106,8 @@ pub enum View {
     Memory,
     /// Watch roots, runs, notices and discovery offers (^w).
     Watch,
+    /// Crew runs: the list, or one run's view (^r).
+    Crew,
 }
 
 /// A palette command.
@@ -113,6 +118,8 @@ pub enum Command {
     Library,
     Memory,
     Watch,
+    Crew,
+    Dispatch,
     Brief,
     ToggleVoice,
     ImportMemories,
@@ -123,12 +130,14 @@ pub enum Command {
 }
 
 impl Command {
-    pub const ALL: [Command; 12] = [
+    pub const ALL: [Command; 14] = [
         Command::NewSession,
         Command::Sessions,
         Command::Library,
         Command::Memory,
         Command::Watch,
+        Command::Crew,
+        Command::Dispatch,
         Command::Brief,
         Command::ToggleVoice,
         Command::ImportMemories,
@@ -145,6 +154,8 @@ impl Command {
             Command::Library => "Library — models and slots",
             Command::Memory => "Memory — search, correct, forget",
             Command::Watch => "Watch — runs, notices, roots",
+            Command::Crew => "Crew — runs and results",
+            Command::Dispatch => "Dispatch a crew run",
             Command::Brief => "Brief me now",
             Command::ToggleVoice => "Turn the voice on or off",
             Command::ImportMemories => "Import memories from the old harness",
@@ -162,6 +173,8 @@ impl Command {
             Command::Library => "^l",
             Command::Memory => "^g",
             Command::Watch => "^w",
+            Command::Crew => "^r",
+            Command::Dispatch => "^d",
             Command::Brief => "",
             Command::ToggleVoice => "",
             Command::ImportMemories => "",
@@ -183,6 +196,8 @@ pub enum Overlay {
     ImportOffer { sel: usize },
     /// First-run onboarding; its state is `State::onboard`.
     Onboard,
+    /// The ^d dispatch prompt; its state is `State::crew.prompt`.
+    Dispatch,
 }
 
 /// A transient one-line message under the composer.
@@ -280,6 +295,8 @@ pub struct State {
     pub onboard: Onboard,
     /// The boot, the Sentinel's runs and notices, toasts, the voice.
     pub wake: Wake,
+    /// Crew runs, the Run view, the dispatch prompt.
+    pub crew: Crew,
 
     pub view: View,
     pub overlay: Option<Overlay>,
@@ -336,6 +353,7 @@ impl State {
             user: None,
             onboard: Onboard::Idle,
             wake: Wake::default(),
+            crew: Crew::default(),
             view: View::Conversation,
             overlay: None,
             composer: Composer::default(),
@@ -606,7 +624,7 @@ impl State {
                 }
                 self.live = None;
             }
-            Event::ApprovalRequested { approval, session, tool, summary, detail } => {
+            Event::ApprovalRequested { approval, session, tool, summary, detail, run } => {
                 if !self.approvals.iter().any(|a| a.id == *approval) {
                     let first = self.approvals.is_empty();
                     self.approvals.push(Approval {
@@ -615,6 +633,7 @@ impl State {
                         tool: tool.clone(),
                         summary: summary.clone(),
                         detail: detail.clone(),
+                        run: run.clone(),
                     });
                     if first {
                         self.front_approval_changed();
@@ -690,6 +709,14 @@ impl State {
                 self.on_user(UserProfile { name: name.clone(), address: address.clone(), set: *set })
             }
             Event::VoiceState(v) => self.on_voice(v),
+            Event::RunUpdated(info) => self.on_run_updated(info),
+            Event::RunStep { run, step, action, text_delta } => {
+                self.on_run_step(run, *step, action, text_delta.as_deref())
+            }
+            Event::RunFinished { run, dispatch } => self.on_run_finished(run, dispatch),
+            Event::Runs { list } => self.on_runs(list),
+            Event::RunTranscript { run, steps } => self.on_run_transcript(run, steps),
+            Event::Roles { list } => self.on_roles(list),
             Event::Error { session: None, message } if self.absorb_absent(message) => {}
             Event::Error { session: None, message } if reply && message.starts_with("replay gap") => {
                 // The daemon skipped the replay: reload what is open instead.
