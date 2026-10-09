@@ -66,9 +66,10 @@ implementations (memory engine, journal, executors, renderers, theme) and replac
 | Crate | Status |
 |---|---|
 | `marlowe-contract`, `-journal`, `-memory`, `-net`, `-extract`, `-tools`, `-permission`, `-mcp`, `-view`, `-surface` | workspace members (M0) |
-| `marlowe-provider`, `-openrouter`, `-exec`, `marlowe` (bin) | parked (`exclude`), ported to the new seam in M1 |
-| `marlowe-model`, `-brains`, `-agent`, `-os`, `-crew`, `-sentinel`, `-voice`, `-daemon` | new, M1–M6 |
-| `legacy/marlowe-loop`, `legacy/marlowe-daemon`, `legacy/marlowe-stub` | reference only |
+| `marlowe-provider` (Ollama), `-openrouter`, `-exec` (BuiltinTools), `marlowe` (bin) | ported onto `marlowe-model` (M1) |
+| `marlowe-model`, `-proto`, `-agent`, `-brains`, `-daemon`, `-tui` | new (M1) |
+| `marlowe-os`, `-crew`, `-sentinel`, `-voice` | new, M2–M6 |
+| `legacy/*` (old loop, daemon, stub, bin, exec) | reference only (`exclude = ["legacy"]`) |
 
 ## Commands
 

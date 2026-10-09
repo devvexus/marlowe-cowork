@@ -1,0 +1,40 @@
+╭─ MARLOWE · library ───────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle · add a model ▾ · C:/work/valiance · 21:40 ─╮
+│                                                                                                                                          │
+│  OPENROUTER  ·  1 of 3 models                                                                                                            │
+│                                                                                                                                          │
+│  ⌕ son                                                                                                                                   │
+│                                                                                                                                          │
+│    model                                         context   price / Mtok      can                                                         │
+│  › anthropic/claude-sonnet-4.5                   200k      $3 / $15          tools · reasoning                                           │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+╰───────────────────────────────────────────────────────────────────────── type to search  ·  ↑↓ select  ·  ↵ add to library  ·  esc back ─╯

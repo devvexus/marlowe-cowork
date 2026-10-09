@@ -1,0 +1,40 @@
+╭─ MARLOWE · library ───────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle · add a model ▾ · C:/work/valiance · 21:40 ─╮
+│                                                                                                                                          │
+│  OPENROUTER  ·  API key                                                                                                                  │
+│                                                                                                                                          │
+│  OpenRouter needs an API key. It is stored in Windows Credential Manager —                                                               │
+│  never written to disk, never logged, and scrubbed from every tool's environment.                                                        │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│    key  •••••••••••••••••••••••••  25 characters                                                                                         │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+╰────────────────────────────────────────────────────────────────────────────────────────── ↵ save and continue  ·  ^u clear  ·  esc back ─╯

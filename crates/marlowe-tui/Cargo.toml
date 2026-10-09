@@ -1,0 +1,20 @@
+[package]
+name = "marlowe-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The terminal client: Conversation + Situation Board, Library, approvals."
+
+[dependencies]
+marlowe-model.workspace = true
+marlowe-proto.workspace = true
+marlowe-surface.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+crossbeam-channel.workspace = true
+thiserror.workspace = true
+serde_json.workspace = true
+# Wall-clock time for the title bar clock (local time zone).
+chrono.workspace = true
+# Display widths for wrapping (already in the lock via ratatui).
+unicode-width = "0.2.2"

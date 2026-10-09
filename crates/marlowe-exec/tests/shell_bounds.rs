@@ -1,167 +1,191 @@
-//! **`bash` is bounded in time and in memory.** Audit findings A1 and A2.
-//!
-//! # Why these tests spawn real children
-//!
-//! A1's finding is that `BASH_TIMEOUT_MS` was *declared and never read* — one grep hit in the whole
-//! repo, the definition. The obvious test for a timeout is `assert_eq!(BASH_TIMEOUT_MS, 120_000)`,
-//! and that assertion is **green on precisely the build the audit was reporting**. It asserts the
-//! value of a field rather than the fate of a process, which is the sixteenth instance in
-//! CLAUDE.md's ledger, named there in those words.
-//!
-//! So every test here starts a process that would not stop on its own, and asserts that it stopped.
-//! The bounds are injected through [`ShellLimits`] so that takes under a second instead of two
-//! minutes.
-//!
-//! # What is NOT claimed
-//!
-//! The **grandchild** is not killed. `child.kill()` ends the shell, not what the shell started:
-//! there is no process group signal on Unix and no Job Object on Windows. `a_grandchild_survives`
-//! asserts that limitation rather than leaving it to be discovered — a resource leak that is
-//! documented and tested is a different thing from one nobody knows about.
+//! Shell tools are bounded in time and memory, honour interrupts, and run where they are told.
 
-use std::process::Command;
+mod common;
 
-use marlowe_exec::{run_bounded, ShellLimits};
+use std::time::{Duration, Instant};
 
-fn fast() -> ShellLimits {
-    ShellLimits { timeout_ms: 400, max_output_bytes: 64 * 1024 }
+use common::*;
+use marlowe_agent::ToolHost;
+use marlowe_exec::{BuiltinTools, ShellLimits};
+use serde_json::json;
+
+fn fast(ws: &Ws) -> BuiltinTools {
+    ws.tools().with_shell_limits(ShellLimits { timeout_ms: 600, max_output_bytes: 64 * 1024 })
 }
 
-/// The shell `spawn_shell` uses — **the same function, not a copy of it.**
-///
-/// This built `Command::new("cmd").arg("/C")` under a doc comment saying it matched
-/// `spawn_shell`. It did, until the interpreter changed to Git Bash, and then it silently tested a
-/// shell the product no longer runs. `marlowe_exec::shell_command` is now the one definition.
-fn shell(script: &str) -> Command {
-    let mut c = marlowe_exec::shell_command().expect("a shell is installed");
-    c.arg(script);
-    c
-}
-
-
-/// A command that never exits on its own, **and spawns nothing**.
-///
-/// # The first version of this used `ping -t`, and it cost a diagnosis
-///
-/// `cmd /C ping -t` makes `PING.EXE` a grandchild. Killing the shell leaves it running — the
-/// documented limitation below — and on Windows a spawned process inherits **every** inheritable
-/// handle, including the test binary's own stdout, which is cargo's pipe, which is the pipe the
-/// shell command reading cargo's output is waiting on. So `cargo test … | tail` hung **after every
-/// test had passed**, and the obvious reading was "the timeout does not work".
-///
-/// It works. Run the same binary without a pipe and it finishes in 0.69 s. The measurement was of
-/// an orphan holding a handle, read as a property of the code under test — the same shape as the
-/// `echo`-escaping incident in CLAUDE.md, in a new place.
-///
-/// `bash -c 'sleep …'` execs in place, so the shell BECOMES the sleep and there is never a
-/// second process to orphan. This was a `cmd`-only `for /L` loop on Windows until the shell
-/// became Git Bash on both.
-fn forever() -> &'static str {
-    // One spelling: it is bash on both platforms now. `sleep` execs in place, so the shell
-    // BECOMES the sleep and there is no grandchild holding an inherited handle.
-    "sleep 600"
-}
-
-/// A command that writes without stopping — again with no grandchild, for the reason above.
-fn floods() -> &'static str {
-    {
-        "yes AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    }
-}
-
-/// **A1.** The call returns, and the child is reaped rather than left running.
 #[test]
 fn a_command_that_never_exits_is_stopped_and_the_call_returns() {
-    let run = run_bounded(shell(forever()), fast()).expect("spawns");
-
-    assert!(run.stopped, "the run must report that the harness stopped it, not that it finished");
-    // `run_bounded` only returns after `child.wait()`, so reaching here at all means the direct
-    // child was killed and reaped. Before the fix this line was unreachable: `Command::output()`
-    // blocked until the child exited, and this one never does.
-    assert!(!run.flooded, "it produced little; this is the time bound, not the size bound");
+    let ws = Ws::new("sb-forever");
+    let t = fast(&ws);
+    let started = Instant::now();
+    let o = call(&t, "bash", json!({"command": "sleep 30"}));
+    assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+    assert!(o.is_error);
+    assert!(o.content.contains("harness stopped this command"), "{}", o.content);
+    assert_eq!(o.summary, "timed out");
 }
 
-/// **A1, stated as the thing that actually broke.** The turn comes back.
-///
-/// The exploit is not that a command runs long — it is that `execute_batch` → `run_group` → the
-/// daemon turn had no interrupt path, so an approved `ping -t` hung the whole process forever. The
-/// assertion is therefore about the *caller* returning, which is what a batch does.
+#[test]
+fn the_per_call_timeout_is_read() {
+    let ws = Ws::new("sb-timeout-arg");
+    let t = ws.tools();
+    let started = Instant::now();
+    let o = call(&t, "bash", json!({"command": "sleep 30", "timeout_ms": 500}));
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(o.summary, "timed out");
+}
+
 #[test]
 fn three_unbounded_commands_in_a_row_all_return() {
+    let ws = Ws::new("sb-three");
+    let t = fast(&ws);
     for _ in 0..3 {
-        let run = run_bounded(shell(forever()), fast()).expect("spawns");
-        assert!(run.stopped);
+        assert_eq!(call(&t, "bash", json!({"command": "sleep 30"})).summary, "timed out");
     }
 }
 
-/// **A2.** Output is capped, the child is killed on breach, and the caller is told.
 #[test]
 fn a_command_that_floods_is_capped_and_says_so() {
-    let limits = ShellLimits { timeout_ms: 30_000, max_output_bytes: 64 * 1024 };
-    let run = run_bounded(shell(floods()), limits).expect("spawns");
-
-    assert!(run.flooded, "the run must report the breach: a silent prefix looks like a whole answer");
-    assert!(
-        run.text.len() <= limits.max_output_bytes + 64 * 1024,
-        "held {} bytes against a {} byte cap",
-        run.text.len(),
-        limits.max_output_bytes
-    );
-    // And it did not simply wait out the clock: the cap is what stopped it.
-    assert!(
-        !run.stopped || run.flooded,
-        "a flood must be reported as a flood, not only as a timeout"
-    );
+    let ws = Ws::new("sb-flood");
+    let t = ws.tools().with_shell_limits(ShellLimits { timeout_ms: 20_000, max_output_bytes: 32 * 1024 });
+    let started = Instant::now();
+    let o = call(&t, "bash", json!({"command": "yes xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}));
+    assert!(started.elapsed() < Duration::from_secs(15), "took {:?}", started.elapsed());
+    assert!(o.is_error);
+    assert!(o.content.contains("produced more than 32768 bytes"), "{}", &o.content[o.content.len().saturating_sub(300)..]);
+    assert!(o.content.len() < 40_000, "result is bounded: {}", o.content.len());
 }
 
-/// The negative control for both. Without it, a `run_bounded` that killed **everything**
-/// immediately would pass every test above.
 #[test]
-fn an_ordinary_command_finishes_normally_and_is_reported_as_finished() {
-    let run = run_bounded(shell("echo hello-from-the-child"), fast()).expect("spawns");
-
-    assert!(!run.stopped, "an ordinary command must not be reported as stopped");
-    assert!(!run.flooded, "nor as flooded");
-    assert_eq!(run.code, 0);
-    assert!(
-        run.text.contains("hello-from-the-child"),
-        "and its output still comes back: {:?}",
-        run.text
-    );
+fn an_ordinary_command_finishes_normally() {
+    let ws = Ws::new("sb-ok");
+    let o = call(&ws.tools(), "bash", json!({"command": "echo hello; echo world"}));
+    assert!(!o.is_error, "{}", o.content);
+    assert_eq!(o.content.lines().collect::<Vec<_>>(), ["hello", "world"]);
+    assert_eq!(o.summary, "2 lines");
+    let o = call(&ws.tools(), "bash", json!({"command": "true"}));
+    assert_eq!(o.content, "(no output)");
 }
 
-/// stderr comes back too, and a non-zero exit is reported as one.
 #[test]
-fn stderr_and_a_failing_exit_code_both_survive_the_bounded_path() {
-    // One spelling: bash on both platforms.
-    let script = "echo to-stderr >&2; exit 3";
-    let run = run_bounded(shell(script), fast()).expect("spawns");
-    assert_eq!(run.code, 3);
-    assert!(run.text.contains("to-stderr"), "stderr was dropped: {:?}", run.text);
+fn stderr_and_a_failing_exit_code_both_survive() {
+    let ws = Ws::new("sb-fail");
+    let o = call(&ws.tools(), "bash", json!({"command": "echo out; echo err 1>&2; exit 3"}));
+    assert!(o.is_error);
+    assert!(o.content.contains("out") && o.content.contains("err"));
+    assert!(o.content.contains("[exit 3]"));
+    assert_eq!(o.summary, "exit 3");
 }
 
-/// **The limitation, asserted rather than assumed.**
-///
-/// `child.kill()` ends the shell. A grandchild it started keeps running, because there is no
-/// process-group kill on Unix here and no Job Object on Windows (which would need a `windows-sys`
-/// dependency this crate does not have). What A1 closed is the **harness** waiting forever; what it
-/// did not close is the orphan.
-///
-/// This test asserts the part that IS fixed — the call returns promptly — over an input designed to
-/// leave an orphan. If a future change adds group teardown, this test still passes and its doc
-/// comment is what needs updating.
-///
-/// **The backgrounded process is deliberately short-lived.** An orphan that outlives the test holds
-/// an inherited stdout handle and wedges whatever is reading cargo's output; see [`forever`]. A few
-/// seconds is long enough to still be running when the harness returns, which is the whole point.
 #[test]
 fn a_command_that_backgrounds_a_child_still_returns_promptly() {
-    // One spelling: bash on both platforms.
-    let script = "sleep 3 & sleep 600";
-    let run = run_bounded(shell(script), fast()).expect("spawns");
-    assert!(
-        run.stopped,
-        "the harness must come back even when the child left something behind — the orphan is a \
-         leak, the hang was a denial of service, and only the second one is closed here"
-    );
+    let ws = Ws::new("sb-bg");
+    let started = Instant::now();
+    let o = call(&fast(&ws), "bash", json!({"command": "sleep 20 >/dev/null 2>&1 & echo started"}));
+    assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+    assert!(o.content.contains("started"), "{}", o.content);
+}
+
+#[test]
+fn the_process_tree_is_killed_with_the_shell() {
+    let ws = Ws::new("sb-tree");
+    let marker = ws.path("alive.txt");
+    let t = fast(&ws);
+    // The grandchild would write the marker after the timeout if it survived.
+    let cmd = format!("(sleep 2; echo up > '{}') & sleep 30", marker.to_string_lossy().replace('\\', "/"));
+    let o = call(&t, "bash", json!({"command": cmd}));
+    assert_eq!(o.summary, "timed out");
+    std::thread::sleep(Duration::from_millis(3_500));
+    assert!(!marker.exists(), "the grandchild outlived the shell");
+}
+
+#[test]
+fn an_interrupt_stops_a_running_command() {
+    let ws = Ws::new("sb-cancel");
+    let t = ws.tools();
+    let c = ctx(Some(&ws.root));
+    let cancel = c.cancel.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(400));
+        cancel.cancel();
+    });
+    let started = Instant::now();
+    let o = t.call(&req("bash", json!({"command": "sleep 30"})), &c);
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(o.summary, "interrupted");
+}
+
+#[test]
+fn bash_starts_in_the_workspace_and_cwd_overrides_it() {
+    let ws = Ws::new("sb-cwd");
+    ws.put("sub/marker.txt", "x");
+    let t = ws.tools();
+    let o = call(&t, "bash", json!({"command": "ls"}));
+    assert!(o.content.contains("sub"), "{}", o.content);
+    let o = call(&t, "bash", json!({"command": "ls", "cwd": "sub"}));
+    assert_eq!(o.content.trim(), "marker.txt");
+    let o = call(&t, "bash", json!({"command": "ls", "cwd": "missing"}));
+    assert!(o.is_error && o.content.contains("not a directory"));
+}
+
+#[test]
+fn quotes_in_a_command_survive_to_the_shell() {
+    let ws = Ws::new("sb-quotes");
+    let o = call(&ws.tools(), "bash", json!({"command": "echo \"hello world\" 'single q'"}));
+    assert_eq!(o.content.trim(), "hello world single q");
+}
+
+#[test]
+fn credential_variables_are_removed_from_every_child() {
+    let ws = Ws::new("sb-scrub");
+    // Only this test touches these variables.
+    std::env::set_var("OPENROUTER_API_KEY", "sk-test-secret");
+    std::env::set_var("HF_TOKEN", "hf-test-secret");
+    let t = ws.tools();
+    let o = call(&t, "bash", json!({"command": "echo \"[${OPENROUTER_API_KEY:-unset}] [${HF_TOKEN:-unset}]\""}));
+    assert_eq!(o.content.trim(), "[unset] [unset]");
+    let o = call(&t, "powershell", json!({"command": "Write-Output \"[$env:OPENROUTER_API_KEY]\""}));
+    assert!(!o.content.contains("sk-test"), "{}", o.content);
+    let o = call(&t, "python", json!({"code": "import os; print(os.environ.get('OPENROUTER_API_KEY', 'unset'))"}));
+    assert_eq!(o.content.trim(), "unset", "{}", o.content);
+}
+
+#[cfg(windows)]
+#[test]
+fn powershell_runs_with_the_documented_flags() {
+    let ws = Ws::new("sb-ps");
+    let t = ws.tools();
+    let o = call(&t, "powershell", json!({"command": "Write-Output (1+2); (Get-Location).Path"}));
+    assert!(!o.is_error, "{}", o.content);
+    assert!(o.content.starts_with("3"), "{}", o.content);
+    assert!(o.content.contains(ws.root.file_name().unwrap().to_str().unwrap()), "cwd is the workspace");
+    let o = call(&t, "powershell", json!({"command": "Write-Output 'héllo ✓'"}));
+    assert!(o.content.contains("héllo ✓"), "utf-8 output: {}", o.content);
+    let o = call(&t, "powershell", json!({"command": "exit 4"}));
+    assert!(o.is_error && o.summary == "exit 4");
+    let o = call(&t, "powershell", json!({"command": "Start-Sleep -Seconds 30", "timeout_ms": 700}));
+    assert_eq!(o.summary, "timed out");
+}
+
+#[test]
+fn python_runs_snippets_and_scripts() {
+    let ws = Ws::new("sb-py");
+    let t = ws.tools();
+    let o = call(&t, "python", json!({"code": "print(6*7)"}));
+    if o.is_error && o.content.contains("no python interpreter") {
+        eprintln!("skipped: no python on this machine");
+        return;
+    }
+    assert_eq!(o.content.trim(), "42", "{}", o.content);
+    ws.put("s.py", "import sys, os\nprint('args', sys.argv[1:])\nprint(os.getcwd() == os.path.realpath(os.getcwd()))\n");
+    let o = call(&t, "python", json!({"path": "s.py", "args": ["a", "b"]}));
+    assert!(o.content.contains("args ['a', 'b']"), "{}", o.content);
+    let o = call(&t, "python", json!({"code": "import sys; print('é✓'); sys.exit(2)"}));
+    assert!(o.is_error && o.summary == "exit 2" && o.content.contains("é✓"), "{}", o.content);
+    let o = call(&t, "python", json!({"code": "raise ValueError('boom')"}));
+    assert!(o.is_error && o.content.contains("ValueError: boom"));
+    assert!(call(&t, "python", json!({})).is_error);
+    assert!(call(&t, "python", json!({"code": "1", "path": "s.py"})).is_error);
+    let o = call(&t, "python", json!({"code": "import time; time.sleep(30)", "timeout_ms": 700}));
+    assert_eq!(o.summary, "timed out");
 }

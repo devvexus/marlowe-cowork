@@ -43,6 +43,7 @@ const SCHEME_NAME: &str = "Marlowe";
 const FONT: &str = "Cascadia Code";
 
 /// What happened, so `launch` can report rather than assume.
+#[allow(dead_code)]
 pub struct Outcome {
     pub terminal: Option<String>,
     pub profile_written: bool,
@@ -128,8 +129,6 @@ fn launch_windows(extra_args: &[String]) -> std::io::Result<Outcome> {
         // and scheme are the terminal's own.
         cmd.arg("--");
         cmd.arg(&exe);
-        cmd.arg("--tui");
-        cmd.arg("--ground");
         for a in extra_args {
             cmd.arg(a);
         }
@@ -191,7 +190,7 @@ fn settings_path() -> Option<PathBuf> {
 /// **No key is ever written here.** This string lands in `settings.json` in plain text; the child
 /// inherits `OPENROUTER_API_KEY` from the environment instead.
 fn profile_commandline(exe: &std::path::Path, extra_args: &[String]) -> String {
-    let mut out = format!("\"{}\" --tui --ground", exe.display());
+    let mut out = format!("\"{}\"", exe.display());
     for a in extra_args {
         out.push(' ');
         // Quoted per-argument: a slug has no spaces today, and a commandline built by
@@ -484,12 +483,9 @@ mod profile_commandline_tests {
     fn the_shortcut_carries_the_provider_it_was_launched_with() {
         let c = profile_commandline(
             Path::new("C:/m/marlowe.exe"),
-            &["--provider".into(), "openrouter".into(),
-              "--openrouter-model".into(), "stealth/ox-alpha".into()],
+            &["--workspace".into(), "C:/work".into()],
         );
-        assert!(c.contains("--provider openrouter"), "{c}");
-        assert!(c.contains("--openrouter-model stealth/ox-alpha"), "{c}");
-        assert!(c.contains("--tui"), "{c}");
+        assert!(c.contains("--workspace C:/work"), "{c}");
     }
 
     /// The control. Without it, the assertion above passes on a build that appends the flags
@@ -497,7 +493,7 @@ mod profile_commandline_tests {
     #[test]
     fn a_plain_launch_writes_exactly_what_it_always_did() {
         let c = profile_commandline(Path::new("C:/m/marlowe.exe"), &[]);
-        assert_eq!(c, "\"C:/m/marlowe.exe\" --tui --ground");
+        assert_eq!(c, "\"C:/m/marlowe.exe\"");
     }
 
     /// `settings.json` is plain text on disk and readable by anything on the machine.
@@ -505,7 +501,7 @@ mod profile_commandline_tests {
     fn a_key_can_never_reach_the_profile() {
         let c = profile_commandline(
             Path::new("C:/m/marlowe.exe"),
-            &["--provider".into(), "openrouter".into()],
+            &["--workspace".into(), "x".into()],
         );
         assert!(!c.contains("sk-or"), "{c}");
         assert!(!c.to_lowercase().contains("api_key"), "{c}");
@@ -516,144 +512,5 @@ mod profile_commandline_tests {
     fn an_argument_with_a_space_is_quoted() {
         let c = profile_commandline(Path::new("C:/m/marlowe.exe"), &["a b".into()]);
         assert!(c.ends_with("\"a b\""), "{c}");
-    }
-}
-
-// ─── a window per run (`M3-DESIGN.md` §6.7) ───────────────────────────────────────────────────
-
-/// What happened when Marlowe tried to open a window on a run.
-///
-/// **`command` is always populated, whether or not the spawn worked**, and that is the whole shape
-/// of §6.7: *"Best-effort, with a printed attach command as the fallback, so it degrades to a
-/// copy-paste rather than a broken button."* A caller that only reported success would leave a user
-/// on an unsupported platform with a button that does nothing and no way forward.
-pub struct WindowOutcome {
-    /// The terminal that opened one, or `None` if none could be.
-    pub terminal: Option<String>,
-    /// The command that attaches to this run from any terminal, anywhere.
-    pub command: String,
-    /// Why the spawn did not happen, in the user's words.
-    pub degraded: Option<String>,
-}
-
-/// Open a terminal window attached to `run`. Best-effort.
-///
-/// # Why best-effort is the right contract here and not a cop-out
-///
-/// Spawning a terminal is per-platform and per-terminal: `wt.exe`, `open -a Terminal`, and on Linux
-/// a guess between a dozen emulators. Getting that wrong is not a small failure — it is a window
-/// that does not appear, or one that appears in the wrong emulator with the wrong font.
-///
-/// What makes the degraded path acceptable is §10.1's *"addressable from outside"*: `marlowe --watch
-/// <run>` is an ordinary command that works in a terminal the user already has open, over SSH, from
-/// a script. So the fallback is not a lesser version of the feature — it is the feature, without
-/// the convenience of something else typing it.
-pub fn open_window(run: &str) -> WindowOutcome {
-    let exe = std::env::current_exe()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "marlowe".to_string());
-    // Quoted, because a Windows install path has spaces in it more often than not.
-    let command = if exe.contains(' ') {
-        format!("\"{exe}\" --watch {run}")
-    } else {
-        format!("{exe} --watch {run}")
-    };
-
-    #[cfg(windows)]
-    {
-        let Some(wt) = which_wt() else {
-            return WindowOutcome {
-                terminal: None,
-                command,
-                degraded: Some(
-                    "Windows Terminal (wt.exe) was not found, so Marlowe cannot open a window for \
-                     you. Run this in a terminal you have open:"
-                        .to_string(),
-                ),
-            };
-        };
-        // **`wt -w -1` opens a NEW window rather than a tab in the current one.** A tab would put
-        // the run beside the conversation in one frame, which is precisely what §6.6's first
-        // interface rule exists to prevent.
-        let spawned = Command::new(&wt)
-            .args(["-w", "-1", "--title", "marlowe run", "--"])
-            .arg(&exe)
-            .arg("--watch")
-            .arg(run)
-            .spawn();
-        match spawned {
-            Ok(_) => WindowOutcome {
-                terminal: Some("Windows Terminal".to_string()),
-                command,
-                degraded: None,
-            },
-            Err(e) => WindowOutcome {
-                terminal: None,
-                command,
-                degraded: Some(format!(
-                    "Windows Terminal would not start ({e}). Run this in a terminal you have open:"
-                )),
-            },
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        // `open -a Terminal <path>` runs a file, not a command line, so the command goes through a
-        // one-line script. Recorded rather than attempted blind: this is unverified on the platform
-        // and §6.7 says to plan for that rather than discover it.
-        WindowOutcome {
-            terminal: None,
-            command,
-            degraded: Some(
-                "opening a window is implemented for Windows Terminal only, and this is macOS. \
-                 Run this in a terminal you have open:"
-                    .to_string(),
-            ),
-        }
-    }
-
-    #[cfg(all(not(windows), not(target_os = "macos")))]
-    {
-        // **No guessing between emulators.** `x-terminal-emulator`, `gnome-terminal`, `konsole`,
-        // `alacritty` and `kitty` all take different arguments, and one that half-works — a window
-        // that opens and immediately closes because the argument form was wrong — is worse than a
-        // command the user can paste and see fail with a real message.
-        WindowOutcome {
-            terminal: None,
-            command,
-            degraded: Some(
-                "opening a window is implemented for Windows Terminal only. Run this in a \
-                 terminal you have open:"
-                    .to_string(),
-            ),
-        }
-    }
-}
-
-#[cfg(test)]
-mod window_tests {
-    use super::*;
-
-    /// §6.7's contract, and the property that makes the whole thing degrade rather than break:
-    /// **there is always a command**, whatever the platform did.
-    #[test]
-    fn a_command_is_always_offered_whether_or_not_a_window_opened() {
-        let out = open_window("a1b2c3d4");
-        assert!(out.command.contains("--watch a1b2c3d4"), "{}", out.command);
-        assert!(
-            out.terminal.is_some() || out.degraded.is_some(),
-            "a spawn that neither opened a window nor said why is a button that does nothing"
-        );
-    }
-
-    /// A path with a space in it is quoted. A Windows install is under `Program Files` more often
-    /// than not, and an unquoted command that the user pastes and watches fail is worse than none.
-    #[test]
-    fn the_fallback_command_survives_a_path_with_spaces() {
-        let out = open_window("r");
-        if out.command.starts_with('"') {
-            assert!(out.command.contains("\" --watch r"), "{}", out.command);
-        }
     }
 }

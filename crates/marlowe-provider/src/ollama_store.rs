@@ -26,7 +26,7 @@
 //! coherently, and nothing anywhere reports a mismatch. That is precisely the shape this project
 //! keeps deleting.
 //!
-//! So [`crate::llamacpp::LlamaCppDriver`] reads the layer and sends it, and announces where it came
+//! So a `llama-server` driver reads the layer and sends it, and announces where it came
 //! from. A model with **no** `.params` layer is a legitimate, reported state (`marlowe-red:9b` has
 //! none); a store that could not be read at all is not, and refuses.
 
@@ -66,7 +66,7 @@ pub enum ResolveError {
 
 impl ResolveError {
     /// The line the user sees. **Names the remedy**, because a refusal a user cannot act on is a
-    /// crash with better manners — the same rule [`crate::Availability::remedy`] follows.
+    /// crash with better manners — the same rule every provider error follows.
     pub fn remedy(&self) -> String {
         match self {
             ResolveError::NoStore { root, .. } => format!(
@@ -259,7 +259,7 @@ impl ResolvedModel {
     /// # This exists because ADR-060's hybrid makes Marlowe the thing that spawns it
     ///
     /// Until the hybrid was accepted the launch was only ever a *string* a person copied into a
-    /// shell, so a string was the whole product. Now [`crate::hybrid`] spawns the server itself,
+    /// shell, so a string was the whole product. Now a supervisor spawns the server itself,
     /// and a second place assembling `-ngl 99 -np 1 --jinja --reasoning-format deepseek` would be
     /// two definitions of the flags that decide whether the model can call a tool at all — with
     /// the printed hint and the spawned process free to disagree, and only the hint ever read by

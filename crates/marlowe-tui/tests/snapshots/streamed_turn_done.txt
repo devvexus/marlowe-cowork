@@ -1,0 +1,40 @@
+╭─ MARLOWE · what changed in the gate overnight? ─────────────────────────── ⣀⣀⣀⣀⣀⣀ idle · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
+│  you  what changed in the gate overnight?                                                             │  CREW                            │
+│  ▸ thought · 1,204 tokens                                                                             │  no runs                         │
+│  ⋯ bash git log --since=yesterday · 3 commits                                                         │                                  │
+│  ⋯ read src/gate.rs · file not found                                                                  │  WATCH                           │
+│                                                                                                       │  nothing watched                 │
+│  Overnight                                                                                            │                                  │
+│                                                                                                       │  THREADS                         │
+│  Two commits touched the gate:                                                                        │  no open threads                 │
+│  • gate.rs moved the threshold to 0.42                                                                │                                  │
+│  • the eval harness now pins the tokenizer                                                            │  TODAY                           │
+│                                                                                                       │  nothing scheduled               │
+│  The read of src/gate.rs failed — the file moved to crates/gate/src/lib.rs.                           │                                  │
+│                                                        12.4k in · 830 out · 1.2k reasoning · $0.0496  │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › message Marlowe…                                                                                                                       │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────── ↵ send  ⇧↵ newline  ^k palette ─╯

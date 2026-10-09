@@ -3,28 +3,24 @@ name = "marlowe"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "The Marlowe binary. One binary, two roles (ADR-002), plus the eval adapter."
+description = "The Marlowe binary: TUI client, daemon, and headless commands."
 
 [dependencies]
-marlowe-contract.workspace = true
-marlowe-journal.workspace = true
-marlowe-memory.workspace = true
+marlowe-model.workspace = true
+marlowe-proto.workspace = true
+marlowe-agent.workspace = true
+marlowe-brains.workspace = true
 marlowe-daemon.workspace = true
-# The in-process `--ask` path supplies its own ApprovalGate, which is a loop type over a
-# permission type. It reaches neither through the daemon's re-exports on purpose: a CLI that
-# borrowed them would make the daemon's public surface accidental.
-marlowe-loop.workspace = true
-marlowe-permission.workspace = true
+marlowe-tui.workspace = true
+# Concrete providers and tools are wired here and nowhere else.
 marlowe-provider.workspace = true
-# ADR-046. Used by `resolve_provider` for the LOAD-TIME key check only -- the driver itself is
-# constructed in the daemon. The refusal has to happen before a daemon starts, or it arrives on
-# the first turn as something that looks like a provider fault.
 marlowe-openrouter.workspace = true
-marlowe-stub.workspace = true
-marlowe-view.workspace = true
-marlowe-surface.workspace = true
+marlowe-exec.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-ratatui.workspace = true
 crossterm.workspace = true
+
+# SetHandleInformation for the detached daemon spawn (daemon_ctl.rs).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation"] }

@@ -1,0 +1,17 @@
+[package]
+name = "marlowe-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The daemon: actor threads, a numbered multi-client event bus, persistent sessions."
+
+[dependencies]
+marlowe-model.workspace = true
+marlowe-proto.workspace = true
+marlowe-agent.workspace = true
+marlowe-brains.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+crossbeam-channel.workspace = true
+rusqlite.workspace = true

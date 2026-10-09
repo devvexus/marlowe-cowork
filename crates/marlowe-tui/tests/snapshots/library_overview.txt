@@ -1,0 +1,40 @@
+╭─ MARLOWE · library ─────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
+│                                                                                                                                          │
+│  SLOTS  ·  which model does what                                                                                                         │
+│                                                                                                                                          │
+│    slot                model                             provider      effort                                                            │
+│  › Conductor           Claude Sonnet 4.5                 OpenRouter    medium   default                                                  │
+│    Crew · general      Claude Sonnet 4.5                 OpenRouter    medium   default                                                  │
+│    Reflection          Claude Sonnet 4.5                 OpenRouter    medium   default                                                  │
+│    Quick               Claude Sonnet 4.5                 OpenRouter    medium   default                                                  │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│  MODELS  ·  1 in the library                                                                                                             │
+│                                                                                                                                          │
+│    model                             provider      context   price / Mtok      can                                                       │
+│  › Claude Sonnet 4.5                 OpenRouter    200k      $3 / $15          tools · reasoning                                         │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+╰─ added anthropic/claude-sonnet-4.5 ───── ↑↓ select  ·  ←→ model  ·  e effort  ·  tab slots / models  ·  a add  ·  d remove  ·  esc back ─╯

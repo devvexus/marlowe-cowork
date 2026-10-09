@@ -4,7 +4,10 @@
 # output still flows through the normal pipes.
 #
 #   powershell -NoProfile -File scripts/cargo-idle.ps1 check --workspace --all-targets -j 2
-param([Parameter(ValueFromRemainingArguments = $true)][string[]]$CargoArgs)
+#   powershell -NoProfile -File scripts/cargo-idle.ps1 test -p marlowe-daemon -j 2 -- --ignored
+#
+# No param() block on purpose: an advanced script binds `-p` to -PipelineVariable and swallows
+# `--`. Plain $args passes every argument through to cargo as written.
 (Get-Process -Id $PID).PriorityClass = 'Idle'
-& cargo @CargoArgs
+& cargo @args
 exit $LASTEXITCODE

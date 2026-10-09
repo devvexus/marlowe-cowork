@@ -5,26 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-marlowe-contract.workspace = true
-marlowe-loop.workspace = true
-marlowe-permission.workspace = true
-marlowe-tools.workspace = true
+marlowe-agent.workspace = true
+marlowe-model.workspace = true
+marlowe-brains.workspace = true
 marlowe-net.workspace = true
-# The extraction half. `marlowe-net` returns bytes; this turns them into text. Neither depends on
-# the other — this crate is the only place the two meet, which is what keeps a parser bug out of
-# the egress path.
 marlowe-extract.workspace = true
-# ADR-059. `grep`'s engine — see the workspace manifest for why it is `regex` and not
-# `fancy-regex`. Default features are taken deliberately: trimming to `default-features = false`
-# saves binary size and changes which Unicode classes compile, and a `\w` that silently stops
-# matching an accented identifier is a worse trade than a megabyte.
 regex.workspace = true
-
-[dev-dependencies]
-# The `batch_parallelism` example drives the real `Engine`, which needs a `Recorder` and a
-# `Clock`. Dev-only: nothing in the shipped executor touches the journal.
-marlowe-journal.workspace = true
 serde_json.workspace = true
 
-[target.'cfg(unix)'.dependencies]
-rustix = { version = "0.38", features = ["fs", "process"] }
+[dev-dependencies]
+marlowe-proto.workspace = true

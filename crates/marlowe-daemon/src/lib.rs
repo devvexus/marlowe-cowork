@@ -1,0 +1,108 @@
+//! The daemon. Concrete providers and tools are injected through [`DaemonDeps`], so this crate
+//! depends on no provider or executor crate.
+//!
+//! Threads: an acceptor; per client a reader (requests) and a writer (bounded queue; a client
+//! that falls behind is dropped, never the daemon); a [`bus`] that numbers broadcast events and
+//! keeps a replay ring; a store actor owning the sessions/turns tables in `cowork.db`; one runner
+//! per active session owning its `Conversation` and steer inbox.
+//!
+//! Reply convention: replies to one client carry `seq: 0`. A `SessionOpened` with `seq: 0` means
+//! "the session you asked for" (OpenSession, NewSession, or an Ask that created it); the same
+//! event with `seq > 0` tells every client the session exists or was retitled.
+
+#![forbid(unsafe_code)]
+
+mod bus;
+mod client;
+mod daemon;
+mod library;
+mod session;
+mod store;
+
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use marlowe_agent::{ToolHost, UserInfo};
+use marlowe_brains::{BrainsError, ProviderFactory};
+
+pub use daemon::Daemon;
+
+/// Builds the tool host for a session's workspace root (`None`: no workspace).
+pub type ToolHostFactory = Arc<dyn Fn(Option<&Path>) -> Arc<dyn ToolHost> + Send + Sync>;
+
+/// Everything the binary injects.
+pub struct DaemonDeps {
+    /// Provider constructors, registered by the binary.
+    pub providers: ProviderFactory,
+    /// Tool hosts per workspace.
+    pub tools: ToolHostFactory,
+    /// Name and address form for the system prompt's user block.
+    pub user: UserInfo,
+}
+
+/// Tunables. `Default` is what the binary runs with; tests shrink them.
+#[derive(Debug, Clone)]
+pub struct DaemonConfig {
+    /// Events queued per client before that client is dropped as too slow. Raised to
+    /// `replay_ring + 2` so a full replay always fits.
+    pub client_queue: usize,
+    /// Broadcast events kept for replay.
+    pub replay_ring: usize,
+    /// An unanswered approval is denied after this long.
+    pub approval_timeout: Duration,
+    /// A connection must send `Hello` within this long.
+    pub hello_timeout: Duration,
+    /// A blocked socket write fails after this long and drops the client.
+    pub write_timeout: Duration,
+    /// How long shutdown waits for running turns to stop and persist.
+    pub drain_timeout: Duration,
+    /// An idle session's runner exits after this long; the next ask reloads it from the store.
+    pub session_idle: Duration,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            client_queue: 16_384,
+            replay_ring: 8_192,
+            approval_timeout: Duration::from_secs(600),
+            hello_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(15),
+            drain_timeout: Duration::from_secs(10),
+            session_idle: Duration::from_secs(30 * 60),
+        }
+    }
+}
+
+/// A daemon failure.
+#[derive(Debug, thiserror::Error)]
+pub enum DaemonError {
+    #[error("i/o: {0}")]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Brains(#[from] BrainsError),
+    #[error("database: {0}")]
+    Db(#[from] rusqlite::Error),
+    #[error("a daemon is already serving {0}")]
+    AlreadyRunning(String),
+}
+
+/// Runs the daemon for the profile home `home` until `Shutdown`. Binds 127.0.0.1:0, writes
+/// `daemon.json`, serves clients, and removes `daemon.json` on exit.
+pub fn run(deps: DaemonDeps, home: &Path) -> Result<(), DaemonError> {
+    Daemon::start(deps, home, DaemonConfig::default())?.wait()
+}
+
+/// Unix epoch milliseconds.
+pub(crate) fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Locks a mutex, ignoring poison: a panicked holder must not take the daemon down.
+pub(crate) fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}

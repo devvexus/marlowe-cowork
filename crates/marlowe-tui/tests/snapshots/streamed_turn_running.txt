@@ -1,0 +1,40 @@
+╭─ MARLOWE · what changed in the gate overnight? ──────────────────────── ⣦⣤⣤⣤⣴⣿ working · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
+│  you  what changed in the gate overnight?                                                             │  CREW                            │
+│  ▸ thought · 1,204 tokens                                                                             │  no runs                         │
+│  ⋯ bash git log --since=yesterday …                                                                   │                                  │
+│  ⋯ read src/gate.rs …                                                                                 │  WATCH                           │
+│                                                                                                       │  nothing watched                 │
+│                                                                                                       │                                  │
+│                                                                                                       │  THREADS                         │
+│                                                                                                       │  no open threads                 │
+│                                                                                                       │                                  │
+│                                                                                                       │  TODAY                           │
+│                                                                                                       │  nothing scheduled               │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › steer the running turn…                                                                                                                │
+╰────────────────────────────────────────────────────────────────────────────────────────── ↵ send  ⇧↵ newline  esc interrupt  ^k palette ─╯

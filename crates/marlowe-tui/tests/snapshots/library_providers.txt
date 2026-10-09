@@ -1,0 +1,40 @@
+╭─ MARLOWE · library ───────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle · add a model ▾ · C:/work/valiance · 21:40 ─╮
+│                                                                                                                                          │
+│  ADD A MODEL  ·  choose a provider                                                                                                       │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│  › Ollama          ● running at 127.0.0.1:11434                    runs on this machine                                                  │
+│                                                                                                                                          │
+│    Local GGUF      coming soon                                                                                                           │
+│                                                                                                                                          │
+│    OpenRouter      ○ needs an API key                              hosted                                                                │
+│                                                                                                                                          │
+│    Anthropic       coming soon                                                                                                           │
+│                                                                                                                                          │
+│    OpenAI          coming soon                                                                                                           │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────── ↑↓ select  ·  ↵ choose  ·  esc back ─╯

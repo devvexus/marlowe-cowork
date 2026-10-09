@@ -12,16 +12,21 @@ members = [
     "crates/marlowe-mcp",
     "crates/marlowe-view",
     "crates/marlowe-surface",
-]
-# Parked until M1 ports them onto the `marlowe-model` seam: they still depend on the old
-# `marlowe-loop`, which now lives under legacy/ as reference only.
-exclude = [
+    # M1: the model seam, wire protocol, loop, library, daemon and client.
+    "crates/marlowe-model",
+    "crates/marlowe-proto",
+    "crates/marlowe-agent",
+    "crates/marlowe-brains",
+    "crates/marlowe-daemon",
+    "crates/marlowe-tui",
+    # M1: ported onto `marlowe-model`.
     "crates/marlowe-provider",
     "crates/marlowe-openrouter",
     "crates/marlowe-exec",
     "crates/marlowe",
-    "legacy",
 ]
+# Reference sources only; never built.
+exclude = ["legacy"]
 
 [workspace.package]
 version = "0.1.0"
@@ -39,6 +44,15 @@ marlowe-permission = { path = "crates/marlowe-permission" }
 marlowe-net = { path = "crates/marlowe-net" }
 marlowe-extract = { path = "crates/marlowe-extract" }
 marlowe-mcp = { path = "crates/marlowe-mcp" }
+marlowe-model = { path = "crates/marlowe-model" }
+marlowe-proto = { path = "crates/marlowe-proto" }
+marlowe-agent = { path = "crates/marlowe-agent" }
+marlowe-brains = { path = "crates/marlowe-brains" }
+marlowe-daemon = { path = "crates/marlowe-daemon" }
+marlowe-tui = { path = "crates/marlowe-tui" }
+marlowe-provider = { path = "crates/marlowe-provider" }
+marlowe-openrouter = { path = "crates/marlowe-openrouter" }
+marlowe-exec = { path = "crates/marlowe-exec" }
 
 # Terminal. crossterm, not termion: Windows is the primary platform.
 ratatui = "0.30"
@@ -66,6 +80,10 @@ getrandom = "0.2"
 
 # The daemon is std threads + channels, not an async runtime: everything inherited blocks.
 crossbeam-channel = "0.5"
+# Local wall-clock time for the system prompt's environment block and session timestamps.
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# API keys live in Windows Credential Manager, never on disk.
+keyring = { version = "3", features = ["windows-native"] }
 
 [profile.release]
 debug = 1

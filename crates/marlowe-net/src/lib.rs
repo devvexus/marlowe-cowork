@@ -412,17 +412,25 @@ impl Client {
                 return Ok(addrs.clone());
             }
         }
-        let addrs: Vec<SocketAddr> = (target.host.as_str(), target.port)
+        let all: Vec<SocketAddr> = (target.host.as_str(), target.port)
             .to_socket_addrs()
             .map_err(|e| FetchError::Unreachable {
                 host: target.host.clone(),
                 detail: e.to_string(),
             })?
             .collect();
-        if addrs.is_empty() {
+        if all.is_empty() {
             return Err(FetchError::Unreachable {
                 host: target.host.clone(),
                 detail: "resolved to no addresses".into(),
+            });
+        }
+        // Checked after resolution, so a public name pointing at a local address is refused too.
+        let addrs: Vec<SocketAddr> = all.into_iter().filter(|a| is_public(a.ip())).collect();
+        if addrs.is_empty() {
+            return Err(FetchError::Unsupported {
+                url: target.host.clone(),
+                detail: "it resolves only to loopback, private or link-local addresses".into(),
             });
         }
         self.dns
@@ -449,6 +457,37 @@ impl Client {
         let bucket = pool.entry((target.host.clone(), target.port)).or_default();
         if bucket.len() < MAX_POOLED_PER_HOST {
             bucket.push(Pooled { reader, idle_since: Mark::now() });
+        }
+    }
+}
+
+/// Whether `ip` is a public unicast address. Loopback, private, link-local, CGNAT, unspecified,
+/// broadcast, multicast and documentation ranges are not.
+pub fn is_public(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                || a == 0
+                || (a == 100 && (64..128).contains(&b)))
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public(IpAddr::V4(v4));
+            }
+            let first = v6.segments()[0];
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80)
         }
     }
 }
@@ -768,6 +807,24 @@ mod tests {
         // client cannot outlive one request on one thread.
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Client>();
+    }
+
+    #[test]
+    fn local_and_private_addresses_are_not_public() {
+        for ip in ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fe80::1", "fd00::1", "::ffff:127.0.0.1"] {
+            assert!(!is_public(ip.parse().unwrap()), "{ip} counted as public");
+        }
+        for ip in ["1.1.1.1", "104.18.2.3", "2606:4700::1111"] {
+            assert!(is_public(ip.parse().unwrap()), "{ip} counted as local");
+        }
+    }
+
+    #[test]
+    fn a_fetch_to_a_local_address_is_refused_before_connecting() {
+        for url in ["https://127.0.0.1:1/", "https://169.254.169.254/latest/meta-data/", "https://10.0.0.1/"] {
+            let err = Client::new().fetch(&Target::parse(url).unwrap()).unwrap_err();
+            assert!(matches!(err, FetchError::Unsupported { .. }), "{url}: {err}");
+        }
     }
 
     #[test]

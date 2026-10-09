@@ -54,7 +54,9 @@ Kept: the two shipped models (`jina-embeddings-v2-small-en`, `ms-marco-MiniLM-L-
 
 Workspace dependencies: `ort = "=2.0.0-rc.10"` with `["download-binaries"]` only (CUDA removed; rc.10 ships a static aarch64-windows build). Add `crossbeam-channel`, `notify`, `windows`. Release profile gets `lto = "thin"`.
 
-M0 state: `marlowe-contract`, `marlowe-journal`, `marlowe-memory`, `marlowe-net`, `marlowe-extract`, `marlowe-tools`, `marlowe-permission`, `marlowe-mcp`, `marlowe-view`, `marlowe-surface` are workspace members. `marlowe-provider`, `marlowe-openrouter`, `marlowe-exec` and the `marlowe` bin are parked (excluded). `marlowe-loop`, `marlowe-daemon`, `marlowe-stub` live in `legacy/` as reference.
+M1 state: every crate under `crates/` is a workspace member. `marlowe-provider` is the Ollama adapter only (hybrid/llama.cpp/routing deleted); `marlowe-exec` is `BuiltinTools: ToolHost`; the bin wires concrete providers and tools into `marlowe-daemon` through `DaemonDeps`. `legacy/` (old loop, daemon, stub, bin, exec) is reference only and excluded from the workspace.
+
+Windows notes (M1): a `TcpStream::try_clone` does not share SO_RCVTIMEO set after the clone, so set timeouts on the handle that is read. `Command::spawn` inherits every inheritable handle, so the bin clears the inherit flag on its std handles before spawning the detached daemon (the one `unsafe` call in the bin).
 
 ## The marlowe-model seam
 

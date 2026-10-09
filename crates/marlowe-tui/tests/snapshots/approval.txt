@@ -1,0 +1,40 @@
+╭─ MARLOWE · what changed in the gate overnight? ────────────────────── ⣠⣾⣦⣴⣷⣄ needs you · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
+│  you  what changed in the gate overnight?                                                             │  CREW                            │
+│  ▸ thought · 1,204 tokens                                                                             │  no runs                         │
+│  ⋯ powershell Remove-Item build …                                                                     │                                  │
+│                                                                                                       │  WATCH                           │
+│                                                                                                       │  nothing watched                 │
+│                                                                                                       │                                  │
+│                                                                                                       │  THREADS                         │
+│                                                                                                       │  no open threads                 │
+│                                                                                                       │                                  │
+│                                                                                                       │  TODAY                           │
+│                                                                                                       │  nothing scheduled               │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                              ╔ approval ══════════════════════════════════════════════════════════════════╗                              │
+│                              ║ powershell  wants to act                                                   ║                              │
+│                              ║                                                                            ║                              │
+│                              ║ Remove-Item -Recurse build                                                 ║                              │
+│                              ║                                                                            ║                              │
+│                              ║ ▏ command  Remove-Item -Recurse build                                      ║                              │
+│                              ║                                                                            ║                              │
+│                              ║   y allow        a allow for session      › n deny                         ║                              │
+│                              ╚════════════════════════════════════════════════════════════════════════════╝                              │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › steer the running turn…                                                                                                                │
+╰────────────────────────────────────────────────────────────────────────────────────────── ↵ send  ⇧↵ newline  esc interrupt  ^k palette ─╯

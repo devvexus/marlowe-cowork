@@ -1,36 +1,8 @@
 //! `text/event-stream`, decoded as the bytes land.
 //!
-//! # Why this lives HERE and not beside the driver that first needed it
-//!
-//! It was written in `marlowe-openrouter`, which was the right place while one provider streamed
-//! SSE. A local `llama-server` speaks the same dialect (ADR-060 §6), and `marlowe-openrouter`
-//! depends on `marlowe-net` for TLS while
-//! `crates/marlowe-provider/tests/no_tls_in_the_default_path.rs` **fails the build** if any TLS
-//! crate becomes reachable from this crate. So a local driver cannot borrow the decoder where it
-//! was; the choice was to move it down or to write a second one, and a second one is how two
-//! providers end up disagreeing about `data: [DONE]`.
-//!
-//! The move costs no dependency: this file is `std::io::BufRead` and nothing else, so
-//! `marlowe-provider/Cargo.toml` is unchanged and the no-TLS walk sees the identical graph.
-//! `marlowe-openrouter` re-exports it (`pub use marlowe_provider::sse;`) so `crate::sse::` keeps
-//! resolving at its three call sites and its public API is unchanged.
-//!
-//! # Why this is not `post_ndjson`
-//!
-//! Ollama streams NDJSON: one JSON value per line, end of stream at EOF. OpenRouter streams
-//! **SSE**, which is three things NDJSON is not:
-//!
-//! * every payload line is prefixed `data: `;
-//! * `data: [DONE]` is a **sentinel**, not JSON — parsing it as JSON is a malformed-frame error
-//!   on the last frame of every successful call;
-//! * lines beginning `:` are comments, and OpenRouter uses them as keepalives while a request is
-//!   queued behind a busy upstream (`: OPENROUTER PROCESSING`). A decoder that treats a
-//!   non-`data` line as a protocol error fails on exactly the slow requests where streaming
-//!   matters most.
-//!
-//! An event may also carry several `data:` lines, which the specification joins with a newline.
-//! OpenRouter sends one, and this handles both, because "the provider currently sends one" is a
-//! statement about one provider on one day.
+//! `data:` lines are joined per event, `data: [DONE]` ends the stream, and `:` comment lines
+//! (OpenRouter keepalives) are counted and skipped. Lives here, not in `marlowe-openrouter`, so a
+//! local SSE server can share it without pulling TLS into this crate.
 
 use std::io::BufRead;
 
