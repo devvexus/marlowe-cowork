@@ -14,6 +14,7 @@ mod ids;
 mod memory;
 pub mod paths;
 mod request;
+mod user;
 mod watch;
 
 pub use event::{
@@ -25,6 +26,7 @@ pub use ids::{ApprovalId, SessionId};
 pub use memory::{ImportReport, MemoryChange, MemoryHit, MemoryKind, MemoryScope, MemoryStatsReport, MemoryTrust};
 pub use paths::DaemonInfo;
 pub use request::{ApprovalDecision, Request, Secret, Slot, SlotParseError};
+pub use user::{clean_user_field, AddressForm, AddressParseError, USER_FIELD_MAX};
 pub use watch::{
     BriefItem, BriefItemKind, GitInfo, GpuDevice, GpuReport, Notice, NoticeSource, OllamaReport, QuietHours,
     RunInfo, RunStatus, Severity, VoiceStatus, WatchCandidate, WatchRoot, WatchState, ENVELOPE_HZ,

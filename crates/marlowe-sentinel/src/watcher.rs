@@ -121,6 +121,10 @@ impl Inner {
         &self.store
     }
 
+    pub fn max_metric_json(&self) -> u64 {
+        self.cfg.max_metric_json
+    }
+
     pub fn state(&self) -> WatchState {
         lock(&self.snapshot).clone()
     }

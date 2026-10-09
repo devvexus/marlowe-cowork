@@ -279,6 +279,11 @@ impl State {
         out.push(Request::VoiceSettings { enabled: None, voice: None });
     }
 
+    /// A "not running" answer to a request just sent is expected, not flashed.
+    pub(crate) fn expect_error(&mut self, kind: &'static str) {
+        self.wake.expected_errors.push(kind);
+    }
+
     /// A "not running" error: records the absence. True when it answered a probe and should not
     /// be flashed.
     pub(crate) fn absorb_absent(&mut self, message: &str) -> bool {

@@ -229,4 +229,12 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         voice: Option<String>,
     },
+    /// Sets the user's name and address form; both are replaced and `None` clears one. The
+    /// daemon writes `user.json` in the profile home and broadcasts `User`.
+    SetUser {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        address: Option<String>,
+    },
 }

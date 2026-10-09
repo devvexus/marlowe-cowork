@@ -104,21 +104,13 @@ pub fn tool_factory(credentials: Arc<dyn CredentialStore>) -> ToolHostFactory {
     })
 }
 
-/// Name and address form for the system prompt: `<home>\user.json`, else env, else none.
+/// Name and address form for the system prompt: `<home>\user.json` when it exists (written by
+/// `SetUser`; it is the whole answer, so a cleared address stays cleared), else env, else none.
 pub fn user_info(home: &Path) -> UserInfo {
-    #[derive(serde::Deserialize, Default)]
-    struct File {
-        name: Option<String>,
-        address: Option<String>,
-    }
-    let file: File = std::fs::read_to_string(home.join("user.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-    UserInfo {
-        name: std::env::var("MARLOWE_USER_NAME").ok().or(file.name),
-        address: std::env::var("MARLOWE_USER_ADDRESS").ok().or(file.address),
-    }
+    marlowe_daemon::user::load(home).unwrap_or_else(|| UserInfo {
+        name: std::env::var("MARLOWE_USER_NAME").ok(),
+        address: std::env::var("MARLOWE_USER_ADDRESS").ok(),
+    })
 }
 
 pub fn daemon_deps(home: &Path) -> DaemonDeps {

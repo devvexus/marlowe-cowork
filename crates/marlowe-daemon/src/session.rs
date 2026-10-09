@@ -271,7 +271,7 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
     }
     let mut env = Environment::current(workspace.clone(), info.display.clone());
     env.repo = workspace.as_deref().and_then(|w| repo_context(core, w));
-    let system = system.user(core.user.clone()).environment(env);
+    let system = system.user(core.user()).environment(env);
     let mut agent = Agent::new(provider, info, tools.clone(), system);
     agent.effort = effort;
     agent.memory = match &core.mind {

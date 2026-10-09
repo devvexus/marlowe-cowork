@@ -686,6 +686,81 @@ fn an_interactive_client_is_briefed_once_into_the_days_session() {
     stop(d, &home);
 }
 
+fn user_event(e: &Event) -> Option<(Option<String>, Option<String>, bool)> {
+    match e {
+        Event::User { name, address, set } => Some((name.clone(), address.clone(), *set)),
+        _ => None,
+    }
+}
+
+#[test]
+fn set_user_persists_reaches_the_next_turn_and_the_next_brief_greets_with_the_address() {
+    let home = temp_home("user");
+    seed_model(&home);
+    let p = Arc::new(Scripted::default());
+    let mut unnamed = deps(p.clone());
+    unnamed.user = UserInfo::default();
+    let d = Daemon::start(unnamed, &home, DaemonConfig::default()).unwrap();
+    let info = d.info();
+    let d = Running { info, join: std::thread::spawn(move || d.wait()) };
+
+    // Unset: the Welcome flow says so, as a reply.
+    let mut a = Client::connect(&d.info, None);
+    let env = a.next().unwrap();
+    assert_eq!(env.seq, 0);
+    assert_eq!(user_event(&env.event), Some((None, None, false)));
+    let mut b = Client::connect(&d.info, None);
+
+    // A bad value is refused and nothing is written.
+    match a.request(&Request::SetUser { name: Some("Matt\nhew".into()), address: None }, |e| matches!(e, Event::Error { .. })) {
+        Event::Error { message, .. } => assert!(message.contains("control character"), "{message}"),
+        _ => unreachable!(),
+    }
+    assert!(marlowe_daemon::user::load(&home).is_none());
+
+    a.send(&Request::SetUser { name: Some(" Matthew ".into()), address: Some("sir".into()) });
+    let set = |e: &Event| matches!(e, Event::User { set: true, .. });
+    let env = a.until(set).pop().unwrap();
+    assert!(env.seq > 0, "SetUser is broadcast");
+    let want = (Some("Matthew".to_string()), Some("sir".to_string()), true);
+    assert_eq!(user_event(&env.event), Some(want.clone()));
+    assert_eq!(user_event(&b.until(set).pop().unwrap().event), Some(want.clone()), "every client hears it");
+    assert_eq!(
+        marlowe_daemon::user::load(&home),
+        Some(UserInfo { name: Some("Matthew".into()), address: Some("sir".into()) }),
+        "user.json holds it"
+    );
+
+    // Live: the brief greets with the address, and the next turn's user block carries both.
+    match a.request(&Request::Brief, |e| matches!(e, Event::Brief { .. })) {
+        Event::Brief { text, .. } => {
+            let greeting = text.split_once('.').map(|(g, _)| g).unwrap_or(&text);
+            assert!(greeting.ends_with(", sir"), "{text}");
+        }
+        _ => unreachable!(),
+    }
+    a.send(&Request::Ask { session: None, text: "hello".into(), workspace: None });
+    a.until(is_finished);
+    let system = p.requests()[0].system_text();
+    assert!(system.contains("Name: Matthew") && system.contains("Formal address: sir"), "{system}");
+    stop(d, &home);
+
+    // After a restart the binary's loader finds it, and the Welcome flow sends it.
+    let mut named = deps(p.clone());
+    named.user = marlowe_daemon::user::load(&home).unwrap();
+    let d = Daemon::start(named, &home, DaemonConfig::default()).unwrap();
+    let info = d.info();
+    let d = Running { info, join: std::thread::spawn(move || d.wait()) };
+    let mut c = Client::connect(&d.info, None);
+    assert_eq!(user_event(&c.next().unwrap().event), Some(want));
+    // Clearing the address is a choice too: still `set`, and stored as such.
+    c.send(&Request::SetUser { name: Some("Matthew".into()), address: None });
+    let env = c.until(set).pop().unwrap();
+    assert_eq!(user_event(&env.event), Some((Some("Matthew".into()), None, true)));
+    assert_eq!(marlowe_daemon::user::load(&home), Some(UserInfo { name: Some("Matthew".into()), address: None }));
+    stop(d, &home);
+}
+
 // ---------------------------------------------------------------- memory
 
 /// The shipped ONNX models in the dev tree (git-ignored; CPU only).

@@ -76,6 +76,7 @@ fn event_loop(client: &Client, state: &mut State, theme: &Theme) -> Result<(), T
     let input = spawn_input();
     loop {
         tick(state);
+        send_all(client, state.on_tick());
         term.draw(|f| render::draw(f, state, theme))?;
         if state.quit {
             return Ok(());

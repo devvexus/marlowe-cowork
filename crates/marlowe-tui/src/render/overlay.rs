@@ -254,3 +254,104 @@ pub fn import_offer(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &
     }
     put(buf, inner.x, inner.y + body.len() as u16 + 1, &Line::from(spans), inner.width);
 }
+
+/// First-run onboarding. Returns where the cursor goes on the name step.
+pub fn onboard(area: Rect, state: &State, theme: &Theme, buf: &mut Buffer) -> Option<(u16, u16)> {
+    use crate::onboard::{address_choices, ItemKind, ItemState, Onboard, Step};
+    let Onboard::Active { step, .. } = &state.onboard else { return None };
+    let accent = ink(Ink::Accent, theme);
+    let dim = ink(Ink::Dim, theme);
+    let dimmer = ink(Ink::Dimmer, theme);
+    let w: u16 = 72;
+    let tw = (w - 4) as usize;
+    let key = |k: &'static str, what: &'static str| [Span::styled(k, accent), Span::styled(what, dim)];
+    let mut lines: Vec<Line> = Vec::new();
+    let mut cursor_row = None;
+    let hints: Vec<Span> = match step {
+        Step::Name { input } => {
+            lines.push(Line::from(Span::styled("What should I call you?", theme.bright())));
+            lines.push(Line::from(""));
+            let shown = text::clean(input.text());
+            let field = if shown.is_empty() {
+                Span::styled("your name", dimmer)
+            } else {
+                Span::styled(text::truncate(&shown, tw - 2), theme.normal())
+            };
+            cursor_row = Some((lines.len(), text::width(&text::clean(&input.text()[..input.cursor()])).min(tw - 2)));
+            lines.push(Line::from(vec![Span::styled("› ", accent), field]));
+            [key("↵", " next   "), key("esc", " skip setup")].concat()
+        }
+        Step::Address { name, sel } => {
+            lines.push(Line::from(Span::styled(
+                "In greetings: \u{201c}sir\u{201d}, your name, or nothing?",
+                theme.bright(),
+            )));
+            lines.push(Line::from(""));
+            let mut spans = Vec::new();
+            for (i, f) in address_choices(name.as_deref()).into_iter().enumerate() {
+                let label = match f {
+                    marlowe_proto::AddressForm::Sir => "sir".to_string(),
+                    marlowe_proto::AddressForm::Name => text::truncate(&text::clean(name.as_deref().unwrap_or("")), 24),
+                    marlowe_proto::AddressForm::Nothing => "nothing".to_string(),
+                };
+                let on = i == *sel;
+                spans.push(Span::styled(if on { "› " } else { "  " }, accent));
+                spans.push(Span::styled(format!("{} ", i + 1), dimmer));
+                spans.push(Span::styled(label, if on { accent.add_modifier(Modifier::BOLD) } else { theme.normal() }));
+                spans.push(Span::raw("      "));
+            }
+            lines.push(Line::from(spans));
+            [key("↵", " choose   "), key("← →", " move   "), key("⌫", " back   "), key("esc", " skip setup")].concat()
+        }
+        Step::Checklist { items, sel } => {
+            lines.push(Line::from(Span::styled("A few next steps. Each one is optional.", theme.bright())));
+            lines.push(Line::from(""));
+            for (i, it) in items.iter().enumerate() {
+                let on = i == *sel;
+                let (glyph, gstyle) = match it.state {
+                    ItemState::Open => ("○ ", dim),
+                    ItemState::Done => ("✓ ", ink(Ink::Green, theme)),
+                    ItemState::Skipped => ("– ", dimmer),
+                };
+                let (label, detail) = match &it.kind {
+                    ItemKind::Import { approx_entries } => (
+                        "Import memories from the old harness".to_string(),
+                        format!("about {}", text::thousands(*approx_entries)),
+                    ),
+                    ItemKind::Watch(c) => (format!("Watch {}", text::short_path(&c.path)), text::clean(&c.reason)),
+                    ItemKind::AddModel => ("Add a model".to_string(), "opens the library".to_string()),
+                };
+                let lstyle = match (on, it.state) {
+                    (_, ItemState::Skipped) => dimmer,
+                    (true, _) => accent.add_modifier(Modifier::BOLD),
+                    (false, _) => theme.normal(),
+                };
+                let room = tw.saturating_sub(4);
+                let label = text::truncate(&text::clean(&label), room);
+                let rest = room.saturating_sub(text::width(&label) + 3);
+                let mut spans = vec![
+                    Span::styled(if on { "› " } else { "  " }, accent),
+                    Span::styled(glyph, gstyle),
+                    Span::styled(label, lstyle),
+                ];
+                if rest > 4 {
+                    spans.push(Span::styled(format!(" · {}", text::truncate(&detail, rest)), dimmer));
+                }
+                lines.push(Line::from(spans));
+            }
+            if state.wake.candidates.is_none() && state.wake.sentinel != crate::wake::Presence::Absent {
+                lines.push(Line::from(Span::styled("  looking for run folders…", dimmer)));
+            }
+            [key("↵", " do it   "), key("s", " skip   "), key("esc", " done")].concat()
+        }
+    };
+    lines.push(Line::from(""));
+    lines.push(Line::from(hints));
+
+    let r = centred(area, w, lines.len() as u16 + 2, false);
+    let inner = panel(r, "setup", accent, false, buf);
+    for (i, l) in lines.iter().enumerate().take(inner.height as usize) {
+        put(buf, inner.x, inner.y + i as u16, l, inner.width);
+    }
+    cursor_row.map(|(row, col)| (inner.x + 2 + col as u16, inner.y + row as u16))
+}

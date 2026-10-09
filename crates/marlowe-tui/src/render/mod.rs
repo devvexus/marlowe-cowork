@@ -127,9 +127,11 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
     }
     let cursor = g.composer.and_then(|r| draw_composer(r, state, theme, buf));
 
+    let mut onboard_cursor = None;
     match &state.overlay {
         Some(Overlay::Palette { query, sel }) => overlay::palette(area, query, *sel, theme, buf),
         Some(Overlay::ImportOffer { sel }) => overlay::import_offer(area, state, *sel, theme, buf),
+        Some(Overlay::Onboard) => onboard_cursor = overlay::onboard(area, state, theme, buf),
         Some(Overlay::Sessions { sel }) => overlay::sessions(area, state, *sel, theme, buf),
         Some(Overlay::ModelPicker { sel }) => {
             if let Some(r) = g.picker {
@@ -144,6 +146,9 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
     if let Some(a) = state.current_approval() {
         overlay::approval(area, state, a, theme, buf);
         return;
+    }
+    if let Some(c) = onboard_cursor {
+        frame.set_cursor_position(c);
     }
     if state.overlay.is_none() && state.view == View::Conversation {
         if let Some(c) = cursor {

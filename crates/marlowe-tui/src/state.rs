@@ -14,6 +14,7 @@ use marlowe_proto::{
 use crate::composer::Composer;
 use crate::library::Library;
 use crate::memory::{ImportStatus, LegacyOffer, MemoryState};
+use crate::onboard::{Onboard, UserProfile};
 use crate::wake::Wake;
 
 /// What the connection thread reports.
@@ -115,13 +116,14 @@ pub enum Command {
     Brief,
     ToggleVoice,
     ImportMemories,
+    Introduce,
     ToggleThinking,
     Interrupt,
     Quit,
 }
 
 impl Command {
-    pub const ALL: [Command; 11] = [
+    pub const ALL: [Command; 12] = [
         Command::NewSession,
         Command::Sessions,
         Command::Library,
@@ -130,6 +132,7 @@ impl Command {
         Command::Brief,
         Command::ToggleVoice,
         Command::ImportMemories,
+        Command::Introduce,
         Command::ToggleThinking,
         Command::Interrupt,
         Command::Quit,
@@ -145,6 +148,7 @@ impl Command {
             Command::Brief => "Brief me now",
             Command::ToggleVoice => "Turn the voice on or off",
             Command::ImportMemories => "Import memories from the old harness",
+            Command::Introduce => "Your name and how I greet you",
             Command::ToggleThinking => "Show or hide thinking",
             Command::Interrupt => "Interrupt the running turn",
             Command::Quit => "Quit",
@@ -161,6 +165,7 @@ impl Command {
             Command::Brief => "",
             Command::ToggleVoice => "",
             Command::ImportMemories => "",
+            Command::Introduce => "",
             Command::ToggleThinking => "^t",
             Command::Interrupt => "esc",
             Command::Quit => "^q",
@@ -176,6 +181,8 @@ pub enum Overlay {
     ModelPicker { sel: usize },
     /// First-run offer to import the old harness memories; `sel` 0 is Yes, 1 is Not now.
     ImportOffer { sel: usize },
+    /// First-run onboarding; its state is `State::onboard`.
+    Onboard,
 }
 
 /// A transient one-line message under the composer.
@@ -268,6 +275,9 @@ pub struct State {
     /// The user chose Not now; the offer stays in the palette only.
     pub legacy_dismissed: bool,
     pub import: Option<ImportStatus>,
+    /// Who the user is, once the daemon has said.
+    pub user: Option<UserProfile>,
+    pub onboard: Onboard,
     /// The boot, the Sentinel's runs and notices, toasts, the voice.
     pub wake: Wake,
 
@@ -323,6 +333,8 @@ impl State {
             legacy: None,
             legacy_dismissed: false,
             import: None,
+            user: None,
+            onboard: Onboard::Idle,
             wake: Wake::default(),
             view: View::Conversation,
             overlay: None,
@@ -657,7 +669,10 @@ impl State {
                     }
                 } else {
                     self.legacy = Some(LegacyOffer { path: path.clone(), approx_entries: *approx_entries });
-                    if self.overlay.is_none() && self.import.is_none() && (reply || !self.legacy_dismissed) {
+                    // While onboarding is pending or up, its checklist carries the offer. The
+                    // daemon re-sends it (as a reply) after every Welcome: a dismissal holds.
+                    let free = self.overlay.is_none() && !self.onboard.in_progress();
+                    if free && self.import.is_none() && !self.legacy_dismissed {
                         self.overlay = Some(Overlay::ImportOffer { sel: 0 });
                     }
                 }
@@ -667,7 +682,13 @@ impl State {
             Event::Notice(n) => self.on_notice(n),
             Event::Notices { list } => self.on_notices(list),
             Event::WatchState(ws) => self.on_watch_state(ws),
-            Event::WatchCandidates { candidates } => self.on_candidates(candidates),
+            Event::WatchCandidates { candidates } => {
+                self.on_candidates(candidates);
+                self.onboard_candidates();
+            }
+            Event::User { name, address, set } => {
+                self.on_user(UserProfile { name: name.clone(), address: address.clone(), set: *set })
+            }
             Event::VoiceState(v) => self.on_voice(v),
             Event::Error { session: None, message } if self.absorb_absent(message) => {}
             Event::Error { session: None, message } if reply && message.starts_with("replay gap") => {

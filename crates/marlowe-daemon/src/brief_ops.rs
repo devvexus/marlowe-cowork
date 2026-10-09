@@ -15,7 +15,7 @@ use marlowe_proto::{
     BriefItemKind, Event, GpuReport, Notice, NoticeSource, QuietHours, SessionId, SessionSummary, Severity, Slot, WatchCandidate,
 };
 
-use crate::brief::{self, Brief, BriefInputs, POLISH_TIMEOUT};
+use crate::brief::{self, Brief, BriefInputs, BriefRoot, MemoryNews, POLISH_TIMEOUT};
 use crate::daemon::Core;
 use crate::{lock, now_ms};
 
@@ -26,6 +26,8 @@ const PRESENCE_CLIENTS: [&str; 1] = ["tui"];
 const LAST_SEEN: &str = "presence.last_seen_ms";
 const DAY_SESSION: &str = "brief.day_session";
 const OFFERED: &str = "brief.offered:";
+/// Profile memory ids as of the last delivered brief, newline-separated.
+const PROFILE_SEEN: &str = "brief.profile_ids";
 
 /// A discovery candidate is offered again after this long.
 const OFFER_AGAIN_MS: i64 = 3 * 86_400_000;
@@ -128,7 +130,7 @@ pub(crate) fn on_hello(core: &Arc<Core>, client: u64, client_name: &str) {
     }
     let core = core.clone();
     let _ = std::thread::Builder::new().name("marlowe-brief".into()).spawn(move || {
-        let Some((inputs, b)) = guard(|| build(&core, last, away, first_today)) else {
+        let Some((inputs, b, profile)) = guard(|| build(&core, last, away, first_today)) else {
             return core.bus.reply(client, Event::Error { session: None, message: "the brief failed".into() });
         };
         let session = match store_brief(&core, &b.text) {
@@ -139,6 +141,9 @@ pub(crate) fn on_hello(core: &Arc<Core>, client: u64, client_name: &str) {
             }
         };
         mark_offered(&core, &inputs.offers);
+        if let Some(ids) = profile {
+            let _ = core.store.set_kv(PROFILE_SEEN, &ids.join("\n"));
+        }
         let said = b.spoken.clone();
         core.bus.reply(client, Event::Brief { text: b.text, spoken: b.spoken, items: b.items, offers: b.offers, session });
         speak(&core, &said);
@@ -162,7 +167,7 @@ pub(crate) fn reply(core: &Arc<Core>, client: u64) {
         let last = last_seen(&core);
         let away = last.map(|l| Duration::from_millis((now_ms() - l).max(0) as u64));
         match guard(|| build(&core, last, away, false)) {
-            Some((_, b)) => core.bus.reply(
+            Some((_, b, _)) => core.bus.reply(
                 client,
                 Event::Brief { text: b.text, spoken: b.spoken, items: b.items, offers: b.offers, session: None },
             ),
@@ -172,7 +177,7 @@ pub(crate) fn reply(core: &Arc<Core>, client: u64) {
 }
 
 /// Gathers inputs, composes, and polishes when there is something to say.
-fn build(core: &Core, last_seen: Option<i64>, away: Option<Duration>, first_today: bool) -> (BriefInputs, Brief) {
+fn build(core: &Core, last_seen: Option<i64>, away: Option<Duration>, first_today: bool) -> (BriefInputs, Brief, Option<Vec<String>>) {
     let now = Local::now();
     let now_ms = now.timestamp_millis();
     let since = last_seen.unwrap_or(now_ms - NO_HISTORY_WINDOW_MS);
@@ -180,12 +185,15 @@ fn build(core: &Core, last_seen: Option<i64>, away: Option<Duration>, first_toda
         now,
         away,
         first_today,
-        address: core.user.address.clone(),
+        address: core.user().address,
         notices: Vec::new(),
         runs: Vec::new(),
         new_models: Vec::new(),
         git: Vec::new(),
         memory: None,
+        memory_news: MemoryNews::default(),
+        roots: Vec::new(),
+        results: Vec::new(),
         offers: Vec::new(),
         sentinel: false,
     };
@@ -199,6 +207,16 @@ fn build(core: &Core, last_seen: Option<i64>, away: Option<Duration>, first_toda
         let state = guard(|| s.state());
         inputs.sentinel = state.is_some();
         let state = state.unwrap_or_default();
+        inputs.roots = state
+            .roots
+            .iter()
+            .map(|root| {
+                let under = |d: &str| d == root.path || Path::new(d).starts_with(&root.path);
+                let pipelines = state.runs.iter().filter(|r| under(&r.dir) && brief::is_pipeline(r)).count() as u32;
+                BriefRoot { path: root.path.clone(), pipelines }
+            })
+            .collect();
+        inputs.results = results_since(s, &inputs.notices);
         inputs.runs = state.runs.into_iter().filter(|r| r.status.is_live() || r.since_ms >= since).collect();
         inputs.new_models = state.ollama.new_models;
         gpu = state.gpu;
@@ -210,6 +228,8 @@ fn build(core: &Core, last_seen: Option<i64>, away: Option<Duration>, first_toda
         inputs.offers = fresh_offers(core, guard(|| s.candidates()).unwrap_or_default(), now_ms);
     }
     inputs.memory = core.mind.as_ref().and_then(|m| m.stats().ok());
+    let (news, profile) = memory_news(core);
+    inputs.memory_news = news;
     let mut b = brief::compose(&inputs);
     if !b.is_quiet() {
         if let Some(text) = polish(core, &inputs, &b, &gpu) {
@@ -217,7 +237,42 @@ fn build(core: &Core, last_seen: Option<i64>, away: Option<Duration>, first_toda
             b.text = text;
         }
     }
-    (inputs, b)
+    (inputs, b, profile)
+}
+
+/// Result files behind the metric notices, newest first, each beside its previous sibling.
+fn results_since(s: &marlowe_sentinel::Sentinel, notices: &[Notice]) -> Vec<brief::ResultComparison> {
+    const MAX_RESULTS: usize = 3;
+    let mut files: Vec<(&str, i64)> = Vec::new();
+    for n in notices.iter().filter(|n| n.source == NoticeSource::Metric && n.kind == "result") {
+        match files.iter_mut().find(|(f, _)| *f == n.subject) {
+            Some(f) => f.1 = f.1.max(n.at_ms),
+            None => files.push((&n.subject, n.at_ms)),
+        }
+    }
+    files.sort_by_key(|f| std::cmp::Reverse(f.1));
+    files.into_iter().take(MAX_RESULTS).filter_map(|(f, _)| guard(|| s.result_comparison(Path::new(f))).flatten()).collect()
+}
+
+/// Profile memories not in the last delivered brief's set, split by whether the user said them,
+/// and the current set (stored once the brief is delivered). The first look is a baseline.
+fn memory_news(core: &Core) -> (MemoryNews, Option<Vec<String>>) {
+    let Some(mind) = &core.mind else { return (MemoryNews::default(), None) };
+    let Some(Ok(profile)) = guard(|| mind.profile(marlowe_mind::ProfileQuery::default())) else {
+        return (MemoryNews::default(), None);
+    };
+    let mut news = MemoryNews::default();
+    if let Some(seen) = core.store.kv(PROFILE_SEEN).ok().flatten() {
+        let seen: Vec<&str> = seen.lines().collect();
+        for id in profile.ids.iter().filter(|id| !seen.contains(&id.as_str())) {
+            match guard(|| mind.get(id)).and_then(Result::ok).flatten() {
+                Some(h) if h.trust == marlowe_proto::MemoryTrust::User => news.from_user += 1,
+                Some(_) => news.other += 1,
+                None => {}
+            }
+        }
+    }
+    (news, Some(profile.ids))
 }
 
 /// One call on the Quick slot (else the Conductor) in the briefing block's register. Skipped on a
@@ -228,7 +283,7 @@ fn polish(core: &Core, inputs: &BriefInputs, b: &Brief, gpu: &GpuReport) -> Opti
     if !brief::polish_allowed(provider.kind(), core.cfg.local_polish, &inputs.runs, gpu) {
         return None;
     }
-    let system = SystemPrompt::new().block(PersonaBlock::Briefing).user(core.user.clone()).render();
+    let system = SystemPrompt::new().block(PersonaBlock::Briefing).user(core.user()).render();
     let req = brief::polish_request(&info.id, system, inputs, b);
     let attention: Vec<String> = b.items.iter().filter(|i| i.kind == BriefItemKind::Attention).map(|i| i.text.clone()).collect();
     brief::polish(provider, req, &b.text, &attention, POLISH_TIMEOUT)
@@ -338,7 +393,7 @@ pub(crate) fn speak_notice(core: &Arc<Core>, n: &Notice) {
         return;
     }
     let title = n.title.trim().trim_end_matches('.');
-    let line = match core.user.address.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+    let line = match core.user().address.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
         Some(a) => format!("{}, {title}.", capitalize(a)),
         None => format!("{title}."),
     };

@@ -545,3 +545,46 @@ fn severities_order_and_quiet_hours_wrap_midnight() {
     }
     assert!(RunStatus::Stalled.is_live() && !RunStatus::Failed.is_live());
 }
+
+#[test]
+fn user_request_and_event_round_trip_and_parse_with_defaults() {
+    let r = Request::SetUser { name: Some("Matthew".into()), address: Some("sir".into()) };
+    assert_eq!(round_trip(&r), r#"{"op":"set_user","name":"Matthew","address":"sir"}"#);
+    let r: Request = serde_json::from_str(r#"{"op":"set_user"}"#).unwrap();
+    assert_eq!(r, Request::SetUser { name: None, address: None });
+    let ev = Event::User { name: Some("Matthew".into()), address: None, set: true };
+    let env = Envelope { seq: 0, at_ms: 1, event: ev.clone() };
+    assert!(round_trip(&env).contains(r#""ev":"user""#));
+    assert_eq!(ev.session(), None);
+    let ev: Event = serde_json::from_str(r#"{"ev":"user"}"#).unwrap();
+    assert_eq!(ev, Event::User { name: None, address: None, set: false });
+}
+
+#[test]
+fn address_forms_parse_resolve_and_classify() {
+    assert_eq!("sir".parse::<AddressForm>().unwrap(), AddressForm::Sir);
+    assert_eq!(" Name ".parse::<AddressForm>().unwrap(), AddressForm::Name);
+    assert_eq!("none".parse::<AddressForm>().unwrap(), AddressForm::Nothing);
+    assert!("madam".parse::<AddressForm>().is_err());
+    assert_eq!(AddressForm::Sir.resolve(Some("Matthew")).as_deref(), Some("sir"));
+    assert_eq!(AddressForm::Name.resolve(Some(" Matthew ")).as_deref(), Some("Matthew"));
+    assert_eq!(AddressForm::Name.resolve(None), None);
+    assert_eq!(AddressForm::Nothing.resolve(Some("Matthew")), None);
+    assert_eq!(AddressForm::classify(Some("sir"), None), Some(AddressForm::Sir));
+    assert_eq!(AddressForm::classify(Some("Matthew"), Some("Matthew")), Some(AddressForm::Name));
+    assert_eq!(AddressForm::classify(None, Some("Matthew")), Some(AddressForm::Nothing));
+    assert_eq!(AddressForm::classify(Some("Doctor"), Some("Matthew")), None);
+    for f in AddressForm::ALL {
+        assert_eq!(f.to_string().parse::<AddressForm>().unwrap(), f);
+    }
+}
+
+#[test]
+fn user_fields_are_trimmed_and_bounded() {
+    assert_eq!(clean_user_field("name", Some("  Matthew ")).unwrap().as_deref(), Some("Matthew"));
+    assert_eq!(clean_user_field("name", Some("   ")).unwrap(), None);
+    assert_eq!(clean_user_field("name", None).unwrap(), None);
+    assert!(clean_user_field("name", Some("Matt\nhew")).is_err());
+    assert!(clean_user_field("name", Some(&"x".repeat(USER_FIELD_MAX + 1))).is_err());
+    assert!(clean_user_field("name", Some(&"é".repeat(USER_FIELD_MAX))).is_ok());
+}

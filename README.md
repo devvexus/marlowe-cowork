@@ -18,7 +18,7 @@ MarloweCowork is a local-first research engineer that lives on your machine. It 
 | M0 | Foundation: workspace, inherited crates pruned, persona v3, docs | Done — 654 tests green |
 | M1 | Walking skeleton: model seam, Ollama and OpenRouter, lean loop, daemon and bus, minimal TUI | Done |
 | M2 | Memory that knows: turn ingest, embed queue, snapshots, episodes, `import-legacy` | Done — LongMemEval held-out reproduced exactly (R@1 0.6725, R@5 0.8865, R@10 0.9039, n=229) |
-| M3 | The Wake v1: boot sequence, spoken greeting, brief, watchers | Planned |
+| M3 | The Wake v1: boot sequence, spoken greeting, brief, watchers, first-run onboarding | Done |
 | M4 | Crew: Job Objects, dispatch, durable runs, sandbox, playbooks | Planned |
 | M5 | Sentinel II and dreaming: routines, arXiv, wrap-up, overnight queue | Planned |
 | M6 | Full voice: `marlowe-voice.exe` sidecar with sherpa-onnx | Planned |

@@ -47,6 +47,7 @@ pub(crate) fn serve(core: Arc<Core>, stream: TcpStream) {
     if !core.bus.attach(link, welcome, since) {
         return;
     }
+    core.bus.reply(id, core.user.event());
     crate::mind_ops::offer_legacy(&core, id);
     crate::brief::on_hello(&core, id, &name);
 
@@ -123,6 +124,11 @@ fn dispatch(core: &Arc<Core>, client: u64, client_name: &str, req: Request) {
             }
         }
         Request::Status => reply(Event::Status(core.status())),
+        Request::SetUser { name, address } => {
+            if let Err(m) = crate::user::set(core, name, address) {
+                refuse((None, m));
+            }
+        }
         Request::Shutdown => core.request_shutdown(),
         lib @ (Request::LibraryState
         | Request::DetectProviders

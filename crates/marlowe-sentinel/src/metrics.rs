@@ -163,6 +163,100 @@ pub fn most_similar<'a>(stem: &str, siblings: &'a [String]) -> Option<&'a str> {
         .map(|(_, s)| s)
 }
 
+/// The sibling a result is judged against: the counter family's nearest lower member (`wnr4` ->
+/// `wnr3`, as [`most_similar`]); without a counter, among the stems sharing the longest prefix,
+/// the newest written no later than this one (`final` -> `wnr7`, not the alphabetically first).
+/// `siblings` are `(stem, modified_ms)`.
+pub fn previous_sibling<'a>(stem: &str, modified_ms: i64, siblings: &'a [(String, i64)]) -> Option<&'a str> {
+    let others = || siblings.iter().filter(move |(s, _)| s != stem);
+    let (fam, n) = family(stem);
+    if let Some(n) = n {
+        let same: Vec<(u64, &str)> = others()
+            .filter_map(|(s, _)| match family(s) {
+                (f, Some(m)) if f == fam => Some((m, s.as_str())),
+                _ => None,
+            })
+            .collect();
+        let lower = same.iter().filter(|(m, _)| *m < n).max_by_key(|(m, _)| *m);
+        let higher = same.iter().filter(|(m, _)| *m > n).min_by_key(|(m, _)| *m);
+        if let Some((_, s)) = lower.or(higher) {
+            return Some(s);
+        }
+    }
+    let shared = |s: &str| stem.bytes().zip(s.bytes()).take_while(|(a, b)| a == b).count();
+    let close: Vec<(usize, &str, i64)> = others()
+        .map(|(s, t)| (shared(s), s.as_str(), *t))
+        .filter(|(p, s, _)| *p >= 4 && *p * 10 >= stem.len().max(s.len()) * 6)
+        .collect();
+    let top = close.iter().map(|(p, _, _)| *p).max()?;
+    let tied = || close.iter().filter(move |(p, _, _)| *p == top);
+    tied()
+        .filter(|(_, _, t)| *t <= modified_ms)
+        .max_by(|a, b| a.2.cmp(&b.2).then(b.1.cmp(a.1)))
+        .or_else(|| tied().min_by(|a, b| a.1.cmp(b.1)))
+        .map(|(_, s, _)| *s)
+}
+
+/// Metric-file stems in `dir` other than `stem`, with their modification times (listing and
+/// metadata only).
+pub fn metric_siblings(dir: &Path, stem: &str, max_len: u64) -> Vec<(String, i64)> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    rd.flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| {
+            let meta = e.metadata().ok()?;
+            let path = e.path();
+            if !is_metric_file(&path, meta.len(), max_len) {
+                return None;
+            }
+            let s = path.file_stem()?.to_string_lossy().into_owned();
+            let at = meta.modified().map(crate::discover::ms).unwrap_or(0);
+            (s != stem).then_some((s, at))
+        })
+        .collect()
+}
+
+/// Flat metrics of a result file read once, read-only (Python's bare `NaN` tolerated).
+pub fn read_flat(path: &Path, max_len: u64) -> Option<Vec<(String, f64)>> {
+    let bytes = crate::logs::read_capped(path, max_len + 1).ok()?;
+    if bytes.len() as u64 > max_len {
+        return None;
+    }
+    let (clean, _) = sanitize_non_finite(&String::from_utf8_lossy(&bytes));
+    serde_json::from_str::<serde_json::Value>(&clean).ok().map(|v| flatten(&v))
+}
+
+/// Flat `(dotted.path, value)` metrics, as [`flatten`] returns them.
+pub type Flat = Vec<(String, f64)>;
+
+/// A result file beside the sibling it is judged against, for the brief.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResultComparison {
+    pub path: String,
+    pub stem: String,
+    pub sibling: String,
+    pub sibling_modified_ms: i64,
+    pub modified_ms: i64,
+    pub now: Vec<(String, f64)>,
+    pub before: Vec<(String, f64)>,
+}
+
+/// Loads `path` and its [`previous_sibling`]; `cached` answers from stored metrics first.
+/// `None` without a sibling or without readable metrics.
+pub fn load_comparison(path: &Path, max_len: u64, cached: &dyn Fn(&Path) -> Option<Flat>) -> Option<ResultComparison> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified_ms = meta.modified().map(crate::discover::ms).unwrap_or(0);
+    let stem = path.file_stem()?.to_string_lossy().into_owned();
+    let dir = path.parent()?;
+    let siblings = metric_siblings(dir, &stem, max_len);
+    let sibling = previous_sibling(&stem, modified_ms, &siblings)?.to_string();
+    let sibling_modified_ms = siblings.iter().find(|(s, _)| *s == sibling).map_or(0, |(_, t)| *t);
+    let load = |p: &Path| cached(p).or_else(|| read_flat(p, max_len));
+    let now = load(path)?;
+    let before = load(&dir.join(format!("{sibling}.json")))?;
+    Some(ResultComparison { path: path.to_string_lossy().into_owned(), stem, sibling, sibling_modified_ms, modified_ms, now, before })
+}
+
 /// One metric's change against the sibling.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Delta {
@@ -297,6 +391,42 @@ mod tests {
         assert!(!is_metric_file(Path::new("a/heartbeat.json"), 100, 1 << 20));
         assert!(!is_metric_file(Path::new("a/big.json"), 2 << 20, 1 << 20));
     }
+
+    #[test]
+    fn the_previous_sibling_is_the_newest_close_name_not_the_first() {
+        let s = |n: &str, t: i64| (format!("audit2_marlowe-valiance-22b-{n}"), t);
+        let sib = vec![s("h3", 100), s("refit1", 500), s("wnr6", 800), s("wnr7", 900), s("zB_bag", 400), ("audit2_parent".into(), 50)];
+        let final_ = "audit2_marlowe-valiance-22b-final";
+        assert_eq!(previous_sibling(final_, 1000, &sib), Some("audit2_marlowe-valiance-22b-wnr7"));
+        // Written before any of them: the alphabetically first close name.
+        assert_eq!(previous_sibling(final_, 10, &sib), Some("audit2_marlowe-valiance-22b-h3"));
+        // A counter family still steps down by one.
+        assert_eq!(previous_sibling("audit2_marlowe-valiance-22b-wnr7", 900, &sib), Some("audit2_marlowe-valiance-22b-wnr6"));
+        assert_eq!(previous_sibling("summary", 10, &sib), None);
+    }
+
+    #[test]
+    fn loads_a_result_beside_its_newest_close_sibling() {
+        use std::time::{Duration, SystemTime};
+        let dir = std::env::temp_dir().join(format!("sentinel-compare-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = SystemTime::now() - Duration::from_secs(3600);
+        for (name, kl, mins) in [("audit2_m-22b-h3", 0.3, 0), ("audit2_m-22b-wnr7", 0.2, 50), ("audit2_m-22b-final", NAN_MARK, 52)] {
+            let p = dir.join(format!("{name}.json"));
+            let body = if kl == NAN_MARK { r#"{"code":{"kl":0.1,"top1":NaN}}"#.to_string() } else { format!(r#"{{"code":{{"kl":{kl}}}}}"#) };
+            std::fs::write(&p, body).unwrap();
+            std::fs::File::options().write(true).open(&p).unwrap().set_modified(base + Duration::from_secs(mins * 60)).unwrap();
+        }
+        let none = |_: &Path| None;
+        let c = load_comparison(&dir.join("audit2_m-22b-final.json"), 1 << 20, &none).unwrap();
+        assert_eq!((c.stem.as_str(), c.sibling.as_str()), ("audit2_m-22b-final", "audit2_m-22b-wnr7"));
+        assert_eq!(c.now, vec![("code.kl".to_string(), 0.1)], "a bare NaN is tolerated and left out");
+        assert_eq!(c.before, vec![("code.kl".to_string(), 0.2)]);
+        assert_eq!(c.modified_ms - c.sibling_modified_ms, 120_000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const NAN_MARK: f64 = -1.0;
 
     #[test]
     fn compares_and_flags_best_so_far() {

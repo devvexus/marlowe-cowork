@@ -22,6 +22,7 @@ mod mind;
 mod mind_ops;
 mod session;
 mod store;
+pub mod user;
 mod watch_ops;
 
 use std::path::Path;
@@ -46,7 +47,8 @@ pub struct DaemonDeps {
     pub providers: ProviderFactory,
     /// Tool hosts per workspace.
     pub tools: ToolHostFactory,
-    /// Name and address form for the system prompt's user block.
+    /// Name and address form for the system prompt's user block, as of start (the binary reads
+    /// [`user::load`], else env). `SetUser` replaces it live.
     pub user: UserInfo,
     /// The memory service. `None`: no memory (tests, or a profile that failed to open).
     pub mind: Option<marlowe_mind::Mind>,

@@ -4,6 +4,30 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### M3.1 Brief narrative and first-run onboarding
+
+First-run onboarding:
+- **Added.** Proto: `SetUser { name, address }` request; `User { name, address, set }` event, sent after `Welcome` and broadcast on change. `set` is false until something has named the user.
+- **Added.** Daemon: `SetUser` writes `<home>\user.json` atomically, updates the live user (next turn, next brief, spoken notices), and broadcasts `User`. Names and addresses are trimmed, at most 64 chars, no control characters.
+- **Changed.** `user.json`, when it exists, is the whole answer; `MARLOWE_USER_NAME`/`_ADDRESS` apply only without it, so a cleared address stays cleared.
+- **Added.** TUI onboarding for an unset user, after the boot: name, then "sir" / your name / nothing (default sir), then a checklist of only what applies (import old memories, watch each suggested folder, add a model), each skippable. Esc skips all for the session. Typing during the boot, or within 600 ms of it appearing, sends the keys to the composer instead. The palette reopens it ("Your name and how I greet you"). The idle greeting uses the address.
+- **Added.** CLI: `marlowe me [--name N] [--address sir|name|none]`.
+- **Fixed.** "Not now" on the import offer now lasts the session. The daemon re-sends the offer as a reply after every `Welcome`, and the TUI treated that reply as an explicit ask.
+- **Fixed (review).** The onboarding checklist no longer waits forever for discovery when the Sentinel is not running: it closes.
+
+Brief narrative:
+- **Changed.** The deterministic brief reads like a colleague:
+  - A root with one pipeline is named for itself (`Valiance`); otherwise runs are named without the project prefix (`wnr-final`).
+  - Runs are said as finished, failed (with a short reason), or stopped. Day words are `at 06:54`, `yesterday`, `on Tuesday`.
+  - Raw log lines are never quoted. A written artifact plus a passed check, or llama.cpp's `quant size … BPW`, is paraphrased.
+  - The newest result is compared with its previous sibling in at most two numbers. A sibling written within 24 h is preferred, and the run's own result comes first.
+  - Memory is mentioned only when the profile gained entries; zero counts are never said.
+  - At most one offer, as a short question; the offer's folder is spoken by name, not path.
+  - At most 5 sentences and 90 words.
+- **Changed.** Sentinel: once a run's process is gone, `X written`, `check OK`, `saved`, `exported` or `shipped` ends it as finished, and a non-zero exit code ends it as failed (`logs::ending`). A result's sibling without a counter is the newest close name, not the alphabetically first (`final` → `wnr7`, not `h3`). Added `Sentinel::result_comparison`.
+- **Fixed (review).** A failing or negated last line is never reported as success. `check FAILED` / `check failed`, `3 tests failed`, `completed with errors`, `aborted` end a run as failed (`its check failed`, `errors`, `aborted`), whatever the Sentinel's status. `not written`, `wasn't saved`, `not finished` are no longer completions (`stopped` at most). The brief paraphrases a last line only when that line itself states success, and a bare "an error" is not given as a reason. `0 failed` / `no errors` still count as success.
+- **Fixed (review).** A result whose primary metric did not move says `holds at`, not `is up to`; with no suite improved and not all worse it says `did not beat`, not `trailed … on all`.
+
 ### M3 The Wake v1
 - **Added.** `marlowe-sentinel`, a strictly read-only watcher over consented roots.
   - Run dirs: the heartbeat pid, with protection against pid reuse, gives alive / stalled / finished / failed / ended. Stalled means the heartbeat is older than max(10 min, 5x its usual gap).

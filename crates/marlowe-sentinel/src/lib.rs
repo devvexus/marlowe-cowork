@@ -184,6 +184,14 @@ impl Sentinel {
         self.inner.store().notices_since(since_ms)
     }
 
+    /// A result file beside the sibling it is judged against (stored metrics first, else a
+    /// read-only read). Blocking (a directory listing); call it off the request thread.
+    pub fn result_comparison(&self, file: &Path) -> Option<metrics::ResultComparison> {
+        let store = self.inner.store();
+        let cached = |p: &Path| store.metrics(&p.to_string_lossy()).ok().flatten();
+        metrics::load_comparison(file, self.inner.max_metric_json(), &cached)
+    }
+
     /// Marks a notice seen for `client`. False when no such notice exists.
     pub fn mark_seen(&self, client: &str, id: &str) -> Result<bool, SentinelError> {
         self.inner.store().mark_seen(client, id)

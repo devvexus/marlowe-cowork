@@ -21,8 +21,12 @@ use marlowe_proto::{
     BriefItem, BriefItemKind, GitInfo, GpuReport, MemoryStatsReport, Notice, NoticeSource, RunInfo, RunStatus, Severity,
     WatchCandidate,
 };
+pub use marlowe_sentinel::metrics::ResultComparison;
 
 use crate::daemon::Core;
+
+#[path = "brief_words.rs"]
+mod words;
 
 pub(crate) use crate::brief_ops::Presence;
 
@@ -37,12 +41,6 @@ const MAX_SENTENCES: usize = 5;
 
 /// Items listed per sentence before "and N more".
 const MAX_LISTED: usize = 3;
-
-/// A notice detail longer than this stays out of the sentence (it is still in `items`).
-const DETAIL_MAX: usize = 100;
-
-/// Away this long in the morning reads as "overnight".
-const OVERNIGHT: Duration = Duration::from_secs(6 * 3600);
 
 /// Output cap for the polish call.
 const POLISH_MAX_TOKENS: u32 = 400;
@@ -66,12 +64,34 @@ pub struct BriefInputs {
     pub new_models: Vec<String>,
     /// Active workspaces' git state: `(workspace, info)`.
     pub git: Vec<(String, GitInfo)>,
+    /// Memory health; only a degraded recall is said.
     pub memory: Option<MemoryStatsReport>,
+    /// Profile memories recorded since the last brief; said only when non-zero.
+    pub memory_news: MemoryNews,
+    /// Watch roots, for naming runs the way the person does.
+    pub roots: Vec<BriefRoot>,
+    /// Result files changed since last seen, beside their previous siblings, newest first.
+    pub results: Vec<ResultComparison>,
     /// Discovery candidates to offer.
     pub offers: Vec<WatchCandidate>,
     /// The Sentinel answered. False when it is not running (or failed to report): the brief
     /// then says it knows nothing about runs rather than that nothing moved.
     pub sentinel: bool,
+}
+
+/// A watch root and the heartbeat pipelines under it: a root with one is named for itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BriefRoot {
+    pub path: String,
+    pub pipelines: u32,
+}
+
+/// Profile memories new since the last brief.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MemoryNews {
+    /// At the user's own trust: things they said.
+    pub from_user: u32,
+    pub other: u32,
 }
 
 /// A composed brief.
@@ -90,6 +110,11 @@ impl Brief {
     pub fn is_quiet(&self) -> bool {
         self.items.iter().all(|i| i.kind == BriefItemKind::Memory)
     }
+}
+
+/// A heartbeat-driven pipeline rather than a directory of logs.
+pub(crate) fn is_pipeline(r: &RunInfo) -> bool {
+    words::is_pipeline(r)
 }
 
 /// Whether to brief on this Hello.
@@ -134,17 +159,45 @@ pub fn greeting(part: DayPart, address: Option<&str>) -> String {
 
 // ---------------------------------------------------------------- composition
 
+/// A brief is at most this many words, greeting included.
+const MAX_WORDS: usize = 90;
+
+/// A result's sibling written further apart than this is a stale comparison.
+const FRESH_SIBLING_MS: i64 = 24 * 3600 * 1000;
+
+/// Body priorities: lower is kept first when sentences or words run short.
+const P_LEAD: u8 = 0;
+const P_ATTENTION: u8 = 1;
+const P_RESULT: u8 = 2;
+const P_OTHERS: u8 = 3;
+const P_RUNNING: u8 = 4;
+const P_OFFER: u8 = 5;
+const P_MODELS: u8 = 6;
+const P_GIT: u8 = 7;
+const P_MEMORY: u8 = 8;
+
+/// One body sentence, with a spoken form when the ear needs other words (a folder, not a path).
+struct Line {
+    priority: u8,
+    text: String,
+    spoken: Option<String>,
+}
+
+impl Line {
+    fn new(priority: u8, text: String) -> Line {
+        Line { priority, text, spoken: None }
+    }
+}
+
 /// Renders the deterministic brief.
 pub fn compose(inputs: &BriefInputs) -> Brief {
-    let items = collect_items(inputs);
+    let (mut lines, items) = story(inputs);
     let part = DayPart::of(&inputs.now);
-    let mut sentences = vec![greeting(part, inputs.address.as_deref())];
+    let mut head = vec![greeting(part, inputs.address.as_deref())];
     if let Some(a) = absence_line(inputs.away) {
-        sentences.push(a);
+        head.push(a);
     }
-    let offer = offer_sentence(&inputs.offers);
-    let quiet = items.iter().all(|i| i.kind == BriefItemKind::Memory);
-    if quiet {
+    if items.iter().all(|i| i.kind == BriefItemKind::Memory) {
         let line = if !inputs.sentinel {
             "The Sentinel is not running, so I have nothing on your runs."
         } else if inputs.away.is_none() {
@@ -152,45 +205,34 @@ pub fn compose(inputs: &BriefInputs) -> Brief {
         } else {
             "Nothing moved while you were away."
         };
-        sentences.push(line.into());
-        sentences.extend(offer);
-    } else {
-        let room = MAX_SENTENCES.saturating_sub(sentences.len());
-        sentences.extend(body(inputs, part, &items, offer, room));
+        lines.insert(0, Line::new(P_LEAD, line.into()));
     }
-    let text = sentences.join(" ");
-    Brief { spoken: spoken(&text), text, items, offers: inputs.offers.clone() }
+    let words = head.iter().map(|h| word_count(h)).sum::<usize>();
+    let body = fit(lines, MAX_SENTENCES.saturating_sub(head.len()), MAX_WORDS.saturating_sub(words));
+    let said: Vec<String> = head.iter().cloned().chain(body.iter().map(|l| l.spoken.clone().unwrap_or_else(|| l.text.clone()))).collect();
+    let text = head.into_iter().chain(body.into_iter().map(|l| l.text)).collect::<Vec<_>>().join(" ");
+    Brief { spoken: spoken(&said.join(" ")), text, items, offers: inputs.offers.clone() }
 }
 
-/// What a run's status says in a brief.
-fn run_kind(status: RunStatus) -> BriefItemKind {
-    match status {
-        RunStatus::Alive => BriefItemKind::Running,
-        RunStatus::Stalled | RunStatus::Failed => BriefItemKind::Attention,
-        RunStatus::Finished | RunStatus::Ended => BriefItemKind::Finished,
-    }
+fn word_count(s: &str) -> usize {
+    s.split_whitespace().filter(|w| w.chars().any(char::is_alphanumeric)).count()
 }
 
-fn is_end_kind(kind: &str) -> bool {
-    matches!(kind, "finished" | "completed" | "complete" | "done" | "ended" | "end")
-}
-
-/// Where a notice goes in a brief; `None` leaves it out (GPU chatter, discovery, run starts).
-fn notice_kind(n: &Notice) -> Option<BriefItemKind> {
-    if n.severity.is_urgent() {
-        return Some(BriefItemKind::Attention);
-    }
-    match n.source {
-        NoticeSource::Ollama => Some(BriefItemKind::Model),
-        NoticeSource::Git => Some(BriefItemKind::Git),
-        // A plain "new results" stays on the board; only a best-so-far is news.
-        NoticeSource::Metric => (n.severity == Severity::Good).then_some(BriefItemKind::Finished),
-        NoticeSource::Trainer => Some(BriefItemKind::Finished),
-        NoticeSource::Run | NoticeSource::Log => {
-            (n.severity == Severity::Good || is_end_kind(&n.kind)).then_some(BriefItemKind::Finished)
+/// Keeps lines by priority within `room` sentences and `words` words, in their given order.
+fn fit(lines: Vec<Line>, room: usize, words: usize) -> Vec<Line> {
+    let mut order: Vec<usize> = (0..lines.len()).collect();
+    order.sort_by_key(|&i| lines[i].priority);
+    let (mut s_left, mut w_left) = (room, words);
+    let mut keep = vec![false; lines.len()];
+    for i in order {
+        let (s, w) = (sentence_count(&lines[i].text).max(1), word_count(&lines[i].text));
+        if s <= s_left && w <= w_left {
+            keep[i] = true;
+            s_left -= s;
+            w_left -= w;
         }
-        NoticeSource::Gpu | NoticeSource::Discovery => None,
     }
+    lines.into_iter().zip(keep).filter_map(|(l, k)| k.then_some(l)).collect()
 }
 
 /// `HH:MM` local for an epoch-ms instant.
@@ -199,40 +241,6 @@ fn clock(ms: i64) -> String {
         Some(t) => t.format("%H:%M").to_string(),
         None => "?".into(),
     }
-}
-
-fn notice_text(n: &Notice) -> String {
-    let mut t = n.title.trim().to_string();
-    let ends = matches!(n.source, NoticeSource::Run | NoticeSource::Log | NoticeSource::Trainer) && is_end_kind(&n.kind);
-    if ends && !t.contains(" at ") {
-        t.push_str(&format!(" at {}", clock(n.at_ms)));
-    }
-    // The title already says when; drop the line's own `[hh:mm:ss]` prefix.
-    let d = if t.contains(" at ") || n.source == NoticeSource::Log { log_line_body(&n.detail) } else { n.detail.trim().to_string() };
-    if let Some(d) = fit_detail(&d) {
-        t.push_str(&format!(" ({d})"));
-    }
-    t
-}
-
-/// A detail that fits [`DETAIL_MAX`]: whole, else its leading ` · `-separated parts that fit
-/// (a metric notice puts its bests first), else nothing.
-fn fit_detail(d: &str) -> Option<String> {
-    if d.is_empty() {
-        return None;
-    }
-    if d.chars().count() <= DETAIL_MAX {
-        return Some(d.to_string());
-    }
-    let mut kept = String::new();
-    for part in d.split(" · ").map(str::trim).filter(|p| !p.is_empty()) {
-        let next = if kept.is_empty() { part.to_string() } else { format!("{kept} · {part}") };
-        if next.chars().count() > DETAIL_MAX {
-            break;
-        }
-        kept = next;
-    }
-    (!kept.is_empty()).then_some(kept)
 }
 
 /// `stage wnr-p5, layer 9` / `step 1200, loss 1.218`.
@@ -248,7 +256,7 @@ fn run_progress(r: &RunInfo) -> Option<String> {
         parts.push(format!("step {s}"));
     }
     if let Some(l) = r.loss {
-        parts.push(format!("loss {l}"));
+        parts.push(format!("loss {}", round_sig(l, 4)));
     }
     (!parts.is_empty()).then(|| parts.join(", "))
 }
@@ -261,27 +269,6 @@ fn span(ms: i64) -> String {
         (h, 0) => format!("{h} h"),
         (h, m) => format!("{h} h {m} min"),
     }
-}
-
-fn run_item(r: &RunInfo, now_ms: i64) -> BriefItem {
-    let paren = |s: Option<String>| s.map(|s| format!(" ({s})")).unwrap_or_default();
-    let last = r.last_line.as_deref().map(str::trim).filter(|l| !l.is_empty() && l.chars().count() <= DETAIL_MAX);
-    let (severity, text) = match r.status {
-        RunStatus::Alive => (Severity::Info, format!("{}{}", r.name, paren(run_progress(r)))),
-        RunStatus::Stalled => {
-            let at = r.layer.map(|l| format!(" at layer {l}")).unwrap_or_default();
-            let quiet = r.heartbeat_ms.map(|h| format!("no heartbeat for {}", span(now_ms - h)));
-            (Severity::Attention, format!("{} has stalled{at}{}", r.name, paren(quiet)))
-        }
-        RunStatus::Finished => {
-            (Severity::Good, format!("{} finished at {}{}", r.name, clock(r.since_ms), paren(run_progress(r))))
-        }
-        RunStatus::Failed => {
-            (Severity::Attention, format!("{} failed at {}{}", r.name, clock(r.since_ms), paren(last.map(String::from))))
-        }
-        RunStatus::Ended => (Severity::Info, format!("{} ended at {}{}", r.name, clock(r.since_ms), paren(last.map(String::from)))),
-    };
-    BriefItem { kind: run_kind(r.status), severity, text, subject: Some(r.dir.clone()) }
 }
 
 /// A log line without its leading `[hh:mm:ss]` and without decoration words (`===`, `-->`).
@@ -332,108 +319,374 @@ fn git_text(workspace: &str, g: &GitInfo) -> String {
     t
 }
 
-fn memory_text(m: &MemoryStatsReport) -> String {
-    let recall = match &m.degraded {
-        None => "recall online".to_string(),
-        Some(_) => "recall degraded".to_string(),
-    };
-    format!("{}, {}, {recall}", plural(m.beliefs, "belief", "beliefs"), plural(m.episodes, "episode", "episodes"))
+/// The innermost watch root holding `dir`.
+fn root_of<'a>(dir: &str, roots: &'a [BriefRoot]) -> Option<&'a BriefRoot> {
+    roots.iter().filter(|r| within(dir, &r.path)).max_by_key(|r| r.path.len())
 }
 
-/// Every brief item, in canonical order: finished, attention, running, models, git, memory.
-fn collect_items(inp: &BriefInputs) -> Vec<BriefItem> {
-    let now_ms = inp.now.timestamp_millis();
-    let mut from_notices: Vec<(BriefItemKind, &Notice)> =
-        inp.notices.iter().filter_map(|n| notice_kind(n).map(|k| (k, n))).collect();
-    // Alarms first within each kind; stable otherwise (the caller ranked them).
-    from_notices.sort_by_key(|(_, n)| std::cmp::Reverse(n.severity));
-    // Two logs in one run dir often carry the same line (a stage log and its tee): say it once.
-    let mut seen_lines: BTreeSet<(String, String)> = BTreeSet::new();
-    from_notices.retain(|(_, n)| {
-        if n.source != NoticeSource::Log || n.detail.trim().is_empty() {
-            return true;
-        }
-        let dir = n.subject.rsplit_once(['\\', '/']).map_or("", |(d, _)| d).to_string();
-        seen_lines.insert((dir, log_line_body(&n.detail)))
-    });
-    // A stall or failure the run has since moved on from is history, not something needing you.
-    from_notices.retain(|(_, n)| {
-        let was = match (n.source, n.kind.as_str()) {
-            (NoticeSource::Run, "stalled") => RunStatus::Stalled,
-            (NoticeSource::Run, "failed") => RunStatus::Failed,
-            _ => return true,
-        };
-        !inp.runs.iter().any(|r| within(&n.subject, &r.dir) && r.status != was)
-    });
-    // A log's completion inside a run that is still going is a stage ending, not the run: fold it
-    // into the run's "still running" line (ranked newest first, so the first one per run wins).
-    let mut stage_done: Vec<(&str, String)> = Vec::new();
-    from_notices.retain(|(k, n)| {
-        if *k != BriefItemKind::Finished || n.source != NoticeSource::Log {
-            return true;
-        }
-        let Some(r) = inp.runs.iter().find(|r| r.status.is_live() && within(&n.subject, &r.dir)) else { return true };
-        let body = log_line_body(&n.detail);
-        if !body.is_empty() && !stage_done.iter().any(|(d, _)| *d == r.dir) {
-            let when = n.title.rsplit_once(" at ").map_or_else(|| clock(n.at_ms), |(_, t)| t.trim().to_string());
-            stage_done.push((r.dir.as_str(), format!("{body} at {when}")));
-        }
-        false
-    });
-    let mut items: Vec<BriefItem> = from_notices
+/// What the person calls a run: the root's name when the root holds one pipeline (`Valiance`),
+/// else the run name without the project prefix (`wnr-final`); a log directory by its name.
+fn display_name(r: &RunInfo, roots: &[BriefRoot]) -> String {
+    if !words::is_pipeline(r) {
+        return r.name.clone();
+    }
+    match root_of(&r.dir, roots) {
+        Some(root) if root.pipelines <= 1 => capitalize(leaf(&root.path)),
+        Some(root) => words::shorten(&r.name, leaf(&root.path)),
+        None => r.name.clone(),
+    }
+}
+
+/// Capitalises a sentence that opens with a plain lowercase word (`coherence`), not with an
+/// identifier (`wnr7`, `ft-a`).
+fn sentence_case(s: &str) -> String {
+    let first = s.split_whitespace().next().unwrap_or("");
+    if !first.is_empty() && first.chars().all(|c| c.is_ascii_lowercase()) {
+        capitalize(s)
+    } else {
+        s.to_string()
+    }
+}
+
+/// A finished or failed run that only a notice still remembers (the Sentinel has dropped it).
+fn run_from_notice(n: &Notice, runs: &[RunInfo]) -> Option<RunInfo> {
+    let status = match (n.source, n.kind.as_str()) {
+        (NoticeSource::Run | NoticeSource::Trainer, "finished") => RunStatus::Finished,
+        (NoticeSource::Run, "failed") => RunStatus::Failed,
+        (NoticeSource::Run, "ended") => RunStatus::Ended,
+        _ => return None,
+    };
+    if runs.iter().any(|r| within(&n.subject, &r.dir) || within(&r.dir, &n.subject)) {
+        return None;
+    }
+    let title = n.title.trim();
+    let name = [" finished training", " finished", " failed", " ended"]
         .iter()
-        .map(|(k, n)| {
-            // A model is named by its tag.
-            let text = if *k == BriefItemKind::Model { n.subject.clone() } else { notice_text(n) };
-            BriefItem { kind: *k, severity: n.severity, text, subject: Some(n.subject.clone()) }
+        .find_map(|s| title.split_once(s).map(|(a, _)| a.trim()))
+        .filter(|s| !s.is_empty())
+        .unwrap_or(leaf(&n.subject));
+    // A run notice's detail ends with the run's last line.
+    let last_line = (n.source == NoticeSource::Run)
+        .then(|| n.detail.rsplit(" · ").next().unwrap_or("").trim().to_string())
+        .filter(|l| !l.is_empty());
+    Some(RunInfo {
+        dir: n.subject.clone(),
+        name: name.to_string(),
+        status,
+        stage: None,
+        layer: None,
+        pid: None,
+        heartbeat_ms: None,
+        last_line,
+        step: None,
+        loss: None,
+        since_ms: n.at_ms,
+    })
+}
+
+/// `HH:MM` a notice happened: from its title's ` at HH:MM[:SS]`, else when it was raised.
+fn notice_clock(n: &Notice) -> String {
+    n.title.rsplit_once(" at ").map(|(_, t)| t.trim().chars().take(5).collect::<String>()).filter(|t| t.len() == 5 && t.as_bytes()[2] == b':').unwrap_or_else(|| clock(n.at_ms))
+}
+
+/// A notice detail clean and short enough to say; noisy lines stay on the board.
+fn clean_detail(d: &str) -> Option<String> {
+    let body = log_line_body(d);
+    (!body.is_empty() && !words::is_noisy(&body)).then_some(body)
+}
+
+/// `coherence finished and longhorizon stopped yesterday`: the runs after the lead, grouped by
+/// how and when they ended.
+fn others_text(others: &[(String, words::Outcome, i64)], now: &DateTime<Local>) -> String {
+    let day_of = |ms: i64| words::day_word(ms, now);
+    // (verb, day, names, failure reasons, times)
+    type Group = (&'static str, Option<String>, Vec<String>, Vec<Option<String>>, Vec<i64>);
+    let mut groups: Vec<Group> = Vec::new();
+    for verb in ["finished", "stopped", "failed"] {
+        for (name, o, at) in others.iter().filter(|(_, o, _)| o.verb() == verb) {
+            let day = day_of(*at);
+            let why = match o {
+                words::Outcome::Failed(w) => w.clone(),
+                _ => None,
+            };
+            match groups.iter_mut().find(|g| g.0 == verb && g.1 == day) {
+                Some(g) => {
+                    g.2.push(name.clone());
+                    g.3.push(why);
+                    g.4.push(*at);
+                }
+                None => groups.push((verb, day, vec![name.clone()], vec![why], vec![*at])),
+            }
+        }
+    }
+    // One day for several clauses is said once, at the end.
+    let shared_day = groups
+        .first()
+        .and_then(|g| g.1.clone())
+        .filter(|d| groups.len() > 1 && groups.iter().all(|g| g.1.as_deref() == Some(d)));
+    let clauses: Vec<String> = groups
+        .iter()
+        .map(|(verb, day, names, whys, ats)| {
+            let when = match (&shared_day, day) {
+                (Some(_), _) => String::new(),
+                (None, Some(d)) => format!(" {d}"),
+                (None, None) if ats.len() == 1 => format!(" {}", words::when(ats[0], now)),
+                (None, None) => " earlier today".into(),
+            };
+            let labelled = |i: usize| match &whys[i] {
+                Some(w) => format!("{} ({w})", names[i]),
+                None => names[i].clone(),
+            };
+            match (names.len(), &whys[0]) {
+                // A lone failure gives its reason after the day: `failed yesterday (exit code 1)`.
+                (1, Some(w)) if shared_day.is_none() => format!("{} {verb}{when} ({w})", names[0]),
+                _ => format!("{} {verb}{when}", join_list(&(0..names.len()).map(labelled).collect::<Vec<_>>())),
+            }
         })
         .collect();
-    for r in &inp.runs {
-        let kind = run_kind(r.status);
-        let covered = from_notices.iter().any(|(k, n)| *k == kind && within(&n.subject, &r.dir));
-        if !covered {
-            let mut item = run_item(r, now_ms);
-            if r.status == RunStatus::Alive {
-                if let Some((_, done)) = stage_done.iter().find(|(d, _)| *d == r.dir) {
-                    item.text = match run_progress(r) {
-                        Some(p) => format!("{} ({p}; {done})", r.name),
-                        None => format!("{} ({done})", r.name),
-                    };
-                }
-            }
-            items.push(item);
-        }
-    }
-    let mut models: BTreeSet<&str> = BTreeSet::new();
-    for (k, n) in &from_notices {
-        if *k == BriefItemKind::Model {
-            models.insert(n.subject.as_str());
-        }
-    }
-    for m in &inp.new_models {
-        if models.insert(m.as_str()) {
-            items.push(BriefItem { kind: BriefItemKind::Model, severity: Severity::Info, text: m.clone(), subject: Some(m.clone()) });
-        }
-    }
-    for (ws, g) in &inp.git {
-        let noticed = from_notices.iter().any(|(k, n)| *k == BriefItemKind::Git && (n.subject == *ws || within(ws, &n.subject)));
-        if g.new_commits > 0 && !noticed {
-            items.push(BriefItem { kind: BriefItemKind::Git, severity: Severity::Info, text: git_text(ws, g), subject: Some(ws.clone()) });
-        }
-    }
-    if let Some(m) = &inp.memory {
-        items.push(BriefItem { kind: BriefItemKind::Memory, severity: Severity::Info, text: memory_text(m), subject: None });
-    }
-    let order = |k: BriefItemKind| match k {
-        BriefItemKind::Finished => 0,
-        BriefItemKind::Attention => 1,
-        BriefItemKind::Running => 2,
-        BriefItemKind::Model => 3,
-        BriefItemKind::Git => 4,
-        BriefItemKind::Memory => 5,
+    let mut text = match clauses.len() {
+        0 => String::new(),
+        1 => clauses[0].clone(),
+        2 if !clauses[0].contains(" and ") => format!("{} and {}", clauses[0], clauses[1]),
+        n => format!("{}, and {}", clauses[..n - 1].join(", "), clauses[n - 1]),
     };
-    items.sort_by_key(|i| order(i.kind));
-    items
+    if let Some(d) = shared_day {
+        text.push_str(&format!(" {d}"));
+    }
+    text
+}
+
+fn needs(texts: &[String]) -> String {
+    let head = match texts.len() {
+        1 => "One thing needs you".to_string(),
+        n => format!("{} things need you", capitalize(&count_word(n as u64))),
+    };
+    format!("{head}: {}.", join_list(texts))
+}
+
+/// The body lines in canonical order (what finished and how it measured, what needs you, what
+/// is still running, models, git, memory, the offer) and the structured items behind them.
+fn story(inp: &BriefInputs) -> (Vec<Line>, Vec<BriefItem>) {
+    let now = &inp.now;
+    let now_ms = now.timestamp_millis();
+    let mut lines = Vec::new();
+    let mut items = Vec::new();
+    let item = |kind, severity, text: &str, subject: Option<&str>| BriefItem {
+        kind,
+        severity,
+        text: text.to_string(),
+        subject: subject.map(String::from),
+    };
+
+    let mut notices: Vec<&Notice> = inp.notices.iter().collect();
+    // Alarms first; stable otherwise (the caller ranked them).
+    notices.sort_by_key(|n| std::cmp::Reverse(n.severity));
+    let mut runs = inp.runs.clone();
+    for n in &notices {
+        if let Some(r) = run_from_notice(n, &runs) {
+            runs.push(r);
+        }
+    }
+
+    // Notices the runs do not already tell: alarms outside a failed run, stage endings inside a
+    // live one, models and commits.
+    let mut seen_lines: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut stage_done: Vec<(String, String)> = Vec::new();
+    let mut attention: Vec<String> = Vec::new();
+    let mut models: Vec<String> = Vec::new();
+    let mut git: Vec<String> = Vec::new();
+    for n in &notices {
+        // Two logs in one run dir often carry the same line (a stage log and its tee).
+        if n.source == NoticeSource::Log && !n.detail.trim().is_empty() {
+            let dir = n.subject.rsplit_once(['\\', '/']).map_or("", |(d, _)| d).to_string();
+            if !seen_lines.insert((dir, log_line_body(&n.detail))) {
+                continue;
+            }
+        }
+        let run = runs.iter().find(|r| within(&n.subject, &r.dir));
+        match n.source {
+            NoticeSource::Ollama => {
+                if !models.contains(&n.subject) {
+                    models.push(n.subject.clone());
+                }
+                continue;
+            }
+            NoticeSource::Git => {
+                git.push(n.title.trim().to_string());
+                continue;
+            }
+            NoticeSource::Log if n.severity == Severity::Good => {
+                // A log's completion inside a live run is a stage ending, not the run.
+                if let Some(r) = run.filter(|r| r.status.is_live()) {
+                    if let Some(body) = clean_detail(&n.detail) {
+                        if !stage_done.iter().any(|(d, _)| *d == r.dir) {
+                            stage_done.push((r.dir.clone(), format!("{body} at {}", notice_clock(n))));
+                        }
+                    }
+                }
+                continue;
+            }
+            _ => {}
+        }
+        if !n.severity.is_urgent() {
+            continue;
+        }
+        match run {
+            // The run's state says it: a stall it is still in, a failure, or one it moved on from.
+            Some(_) if n.source == NoticeSource::Run => continue,
+            Some(r) if !r.status.is_live() && matches!(words::outcome(r), words::Outcome::Failed(_)) => continue,
+            _ => {}
+        }
+        let mut t = n.title.trim().to_string();
+        if let Some(d) = clean_detail(&n.detail) {
+            t.push_str(&format!(" ({d})"));
+        }
+        items.push(item(BriefItemKind::Attention, n.severity, &t, Some(&n.subject)));
+        attention.push(t);
+    }
+
+    // Runs that ended since you were here: the most prominent leads (a pipeline over a log
+    // directory, then the latest), the rest follow in one sentence.
+    let mut ended: Vec<&RunInfo> = runs.iter().filter(|r| !r.status.is_live()).collect();
+    ended.sort_by(|a, b| words::is_pipeline(b).cmp(&words::is_pipeline(a)).then(b.since_ms.cmp(&a.since_ms)));
+    let lead = ended.first().copied();
+    let outcome_item = |r: &RunInfo, o: &words::Outcome, text: &str| {
+        let (kind, sev) = match o {
+            words::Outcome::Finished => (BriefItemKind::Finished, Severity::Good),
+            words::Outcome::Failed(_) => (BriefItemKind::Attention, Severity::Attention),
+            words::Outcome::Stopped => (BriefItemKind::Finished, Severity::Info),
+        };
+        item(kind, sev, text, Some(&r.dir))
+    };
+    if let Some(r) = lead {
+        let o = words::outcome(r);
+        let root_leaf = root_of(&r.dir, &inp.roots).map(|x| leaf(&x.path));
+        let short = root_leaf.map_or_else(|| r.name.clone(), |l| words::shorten(&r.name, l));
+        let detail = match &o {
+            words::Outcome::Finished => r.last_line.as_deref().and_then(|l| words::paraphrase(l, &r.name, &short, root_leaf)),
+            words::Outcome::Failed(why) => why.clone(),
+            words::Outcome::Stopped => None,
+        };
+        let mut text = format!("{} {} {}", display_name(r, &inp.roots), o.verb(), words::when(r.since_ms, now));
+        if let Some(d) = detail {
+            text.push_str(&format!(" — {d}"));
+        }
+        let text = sentence_case(&text);
+        items.push(outcome_item(r, &o, &text));
+        lines.push(Line::new(P_LEAD, format!("{text}.")));
+    }
+
+    // The newest result judged against its previous sibling, preferring the lead's and one whose
+    // sibling is fresh (a two-day-old match compares eras, not steps); "its" when it is the lead's.
+    let lead_root = lead.and_then(|r| root_of(&r.dir, &inp.roots));
+    let ours = |path: &str| lead.is_some_and(|r| lead_root.map_or(within(path, &r.dir), |root| within(path, &root.path)));
+    let fresh = |c: &&ResultComparison| (c.modified_ms - c.sibling_modified_ms).abs() <= FRESH_SIBLING_MS;
+    let result = [(true, true), (true, false), (false, true), (false, false)]
+        .into_iter()
+        .find_map(|(need_ours, need_fresh)| inp.results.iter().find(|c| (!need_ours || ours(&c.path)) && (!need_fresh || fresh(c))));
+    if let Some(c) = result {
+        if let Some((t, beat)) = words::result_sentence(c, if ours(&c.path) { "Its" } else { "The latest" }) {
+            items.push(item(BriefItemKind::Finished, if beat { Severity::Good } else { Severity::Info }, &t, Some(&c.path)));
+            lines.push(Line::new(P_RESULT, format!("{t}.")));
+        }
+    }
+
+    let others: Vec<(String, words::Outcome, i64)> =
+        ended.iter().skip(1).map(|r| (display_name(r, &inp.roots), words::outcome(r), r.since_ms)).collect();
+    for ((name, o, at), r) in others.iter().zip(ended.iter().skip(1)) {
+        let why = match o {
+            words::Outcome::Failed(Some(w)) => format!(" ({w})"),
+            _ => String::new(),
+        };
+        items.push(outcome_item(r, o, &format!("{name} {} {}{why}", o.verb(), words::when(*at, now))));
+    }
+    if !others.is_empty() {
+        lines.push(Line::new(P_OTHERS, format!("{}.", sentence_case(&others_text(&others, now)))));
+    }
+
+    // Live runs: a stall needs you; the rest are still running.
+    let mut running = Vec::new();
+    let mut stalls = Vec::new();
+    for r in runs.iter().filter(|r| r.status.is_live()) {
+        let name = display_name(r, &inp.roots);
+        if r.status == RunStatus::Stalled {
+            let at = r.layer.map(|l| format!(" at layer {l}")).unwrap_or_default();
+            let quiet = r.heartbeat_ms.map(|h| format!(" (no heartbeat for {})", span(now_ms - h))).unwrap_or_default();
+            let t = format!("{name} has stalled{at}{quiet}");
+            items.push(item(BriefItemKind::Attention, Severity::Attention, &t, Some(&r.dir)));
+            stalls.push(t);
+            continue;
+        }
+        let done = stage_done.iter().find(|(d, _)| *d == r.dir).map(|(_, s)| s.as_str());
+        let t = match (run_progress(r), done) {
+            (Some(p), Some(d)) => format!("{name} ({p}; {d})"),
+            (Some(p), None) => format!("{name} ({p})"),
+            (None, Some(d)) => format!("{name} ({d})"),
+            (None, None) => name,
+        };
+        items.push(item(BriefItemKind::Running, Severity::Info, &t, Some(&r.dir)));
+        running.push(t);
+    }
+    if !attention.is_empty() || !stalls.is_empty() {
+        stalls.append(&mut attention);
+        lines.push(Line::new(P_ATTENTION, needs(&stalls)));
+    }
+    match running.len() {
+        0 => {}
+        1 => lines.push(Line::new(P_RUNNING, format!("{} is still running.", sentence_case(&running[0])))),
+        _ => lines.push(Line::new(P_RUNNING, format!("Still running: {}.", join_list(&running)))),
+    }
+
+    for m in &inp.new_models {
+        if !models.contains(m) {
+            models.push(m.clone());
+        }
+    }
+    for m in &models {
+        items.push(item(BriefItemKind::Model, Severity::Info, m, Some(m)));
+    }
+    if !models.is_empty() {
+        lines.push(Line::new(P_MODELS, format!("New in Ollama: {}.", join_list(&models))));
+    }
+
+    for (ws, g) in &inp.git {
+        let noticed = inp.notices.iter().any(|n| n.source == NoticeSource::Git && (n.subject == *ws || within(ws, &n.subject)));
+        if g.new_commits > 0 && !noticed {
+            git.push(git_text(ws, g));
+        }
+    }
+    for t in &git {
+        items.push(item(BriefItemKind::Git, Severity::Info, t, None));
+    }
+    if !git.is_empty() {
+        lines.push(Line::new(P_GIT, format!("{}.", capitalize(&join_list(&git)))));
+    }
+
+    if let Some(t) = memory_news(&inp.memory_news) {
+        items.push(item(BriefItemKind::Memory, Severity::Info, &t, None));
+        lines.push(Line::new(P_MEMORY, format!("{t}.")));
+    }
+    if inp.memory.as_ref().is_some_and(|m| m.degraded.is_some()) {
+        let t = "Memory recall is degraded";
+        items.push(item(BriefItemKind::Memory, Severity::Attention, t, None));
+        lines.push(Line::new(P_MEMORY, format!("{t}.")));
+    }
+    if let Some((text, said)) = offer_sentence(&inp.offers) {
+        lines.push(Line { priority: P_OFFER, text, spoken: Some(said) });
+    }
+    (lines, items)
+}
+
+/// `I recorded three new things you told me`; nothing when nothing changed.
+fn memory_news(m: &MemoryNews) -> Option<String> {
+    let things = |n: u32| if n == 1 { "thing" } else { "things" };
+    let (u, o) = (m.from_user, m.other);
+    match (u, o) {
+        (0, 0) => None,
+        (u, 0) => Some(format!("I recorded {} new {} you told me", count_word(u as u64), things(u))),
+        (0, o) => Some(format!("I noted {} new {} about your work", count_word(o as u64), things(o))),
+        (u, o) => Some(format!("I recorded {} new things, {} of them from you", count_word((u + o) as u64), count_word(u as u64))),
+    }
 }
 
 /// `Three days since you were last here.` after two days or more.
@@ -485,88 +738,34 @@ fn short_path(path: &str) -> String {
     parts[parts.len().saturating_sub(2)..].join(sep)
 }
 
-fn offer_sentence(offers: &[WatchCandidate]) -> Option<String> {
+/// One short question, written with the folder's path and said with its name:
+/// `PruningResearch\engine has fresh runs — shall I watch it?` /
+/// `The engine folder has fresh runs — shall I watch it?`.
+fn offer_sentence(offers: &[WatchCandidate]) -> Option<(String, String)> {
     let why = |c: &WatchCandidate| match c.live_runs {
-        0 => "recent runs",
+        0 => "fresh runs",
         1 => "a live run",
         _ => "live runs",
     };
+    let folder = |c: &WatchCandidate| format!("the {} folder", leaf(&c.path));
     match offers {
         [] => None,
-        [c] => Some(format!("I can watch {} — it has {}. Watch it?", short_path(&c.path), why(c))),
-        [a, b, ..] => {
-            let more = offers.len() - 2;
-            let tail = if more > 0 { format!(", and {more} more") } else { String::new() };
-            Some(format!(
-                "I can watch {} ({}) and {} ({}){tail}. Watch them?",
-                short_path(&a.path),
-                why(a),
-                short_path(&b.path),
-                why(b)
-            ))
+        [c] => Some((
+            format!("{} has {} — shall I watch it?", short_path(&c.path), why(c)),
+            capitalize(&format!("{} has {} — shall I watch it?", folder(c), why(c))),
+        )),
+        [a, b, rest @ ..] => {
+            let more = if rest.is_empty() { String::new() } else { format!(" (and {} more)", rest.len()) };
+            let say = |x: String, y: String| {
+                if why(a) == why(b) {
+                    format!("{x} and {y} have {}{more} — shall I watch them?", why(a))
+                } else {
+                    format!("{x} has {} and {y} has {}{more} — shall I watch them?", why(a), why(b))
+                }
+            };
+            Some((say(short_path(&a.path), short_path(&b.path)), capitalize(&say(folder(a), folder(b)))))
         }
     }
-}
-
-/// Body sentences within `room`, chosen by priority and emitted in canonical order.
-fn body(inp: &BriefInputs, part: DayPart, items: &[BriefItem], offer: Option<String>, room: usize) -> Vec<String> {
-    let of = |k: BriefItemKind| items.iter().filter(|i| i.kind == k).map(|i| i.text.clone()).collect::<Vec<_>>();
-    let (finished, attention, running) = (of(BriefItemKind::Finished), of(BriefItemKind::Attention), of(BriefItemKind::Running));
-    let (models, git) = (of(BriefItemKind::Model), of(BriefItemKind::Git));
-    // (priority, sentence) in canonical order.
-    let mut out: Vec<(u8, String)> = Vec::new();
-    if !finished.is_empty() {
-        let lead = match inp.away {
-            Some(a) if a >= OVERNIGHT && part == DayPart::Morning => "Overnight, ",
-            Some(_) => "Since you were last here, ",
-            None => "In the last day, ",
-        };
-        out.push((0, format!("{lead}{}.", join_list(&finished))));
-    }
-    if !attention.is_empty() {
-        let head = match attention.len() {
-            1 => "One thing needs you".to_string(),
-            n => format!("{} things need you", capitalize(&count_word(n as u64))),
-        };
-        out.push((1, format!("{head}: {}.", join_list(&attention))));
-    }
-    match running.len() {
-        0 => {}
-        1 => out.push((2, format!("{} is still running.", running[0]))),
-        _ => out.push((2, format!("Still running: {}.", join_list(&running)))),
-    }
-    if !models.is_empty() {
-        out.push((4, format!("New in Ollama: {}.", join_list(&models))));
-    }
-    if !git.is_empty() {
-        out.push((5, format!("{}.", capitalize(&join_list(&git)))));
-    }
-    if let Some(m) = &inp.memory {
-        let degraded = if m.degraded.is_some() { "; recall is degraded" } else { "" };
-        out.push((
-            6,
-            format!(
-                "Memory holds {} and {}{degraded}.",
-                plural(m.beliefs, "belief", "beliefs"),
-                plural(m.episodes, "episode", "episodes")
-            ),
-        ));
-    }
-    if let Some(o) = offer {
-        out.push((3, o));
-    }
-    // Fill the sentence budget by priority (the offer costs two), skipping what does not fit.
-    let mut by_priority: Vec<(u8, usize)> = out.iter().map(|(p, s)| (*p, sentence_count(s))).collect();
-    by_priority.sort_unstable();
-    let mut left = room;
-    let mut keep = Vec::new();
-    for (p, cost) in by_priority {
-        if cost <= left {
-            left -= cost;
-            keep.push(p);
-        }
-    }
-    out.into_iter().filter(|(p, _)| keep.contains(p)).map(|(_, s)| s).collect()
 }
 
 /// Sentence ends: `.` or `?` followed by a space or the end (not a decimal point or `04:12`).

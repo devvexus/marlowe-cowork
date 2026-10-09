@@ -748,7 +748,7 @@ impl Engine {
             Kind::Log => self.tail_log(path, silent),
             Kind::Jsonl | Kind::Csv => self.tail_metric_log(path, len, silent),
             Kind::Trainer => self.read_trainer(path, len, mtime, silent),
-            Kind::Metric => self.read_metric(path, len, silent),
+            Kind::Metric => self.read_metric(path, len, mtime, silent),
         };
         if let Some(st) = self.files.get_mut(path) {
             st.mark.len = len;
@@ -890,6 +890,14 @@ impl Engine {
                 }
             }
             let mut last_kind = last.as_ref().map(|(_, k)| *k);
+            // `X.gguf written, check OK` ends a run as surely as `done` (only read once it is gone).
+            if let Some((line, LineKind::Progress)) = &last {
+                match logs::ending(line) {
+                    logs::Ending::Success => last_kind = Some(LineKind::Completion),
+                    logs::Ending::Failure(_) => last_kind = Some(LineKind::Error),
+                    logs::Ending::Unknown => {}
+                }
+            }
             if run.trainer_finished && last_kind.is_none_or(|k| !k.is_failure()) {
                 last_kind = Some(LineKind::Completion);
             }

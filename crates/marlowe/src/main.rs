@@ -9,6 +9,7 @@ mod daemon_ctl;
 mod doctor;
 mod eval;
 mod launcher;
+mod me_cmd;
 mod memory_cmd;
 mod watch_cmd;
 mod wire;
@@ -32,6 +33,8 @@ marlowe watch [list | add <dir> | remove <dir> | candidates]
                                           or in the TUI (candidates are offers, never added)
 marlowe brief                             the brief now: what changed since you were last here
 marlowe say <text>                        speak through the daemon's voice
+marlowe me [--name N] [--address sir|name|none]
+                                          what Marlowe calls you (prints it with no flags)
 marlowe status | shutdown | doctor
 
 ask streams the reply to stdout. A tool that needs approval prompts on stdin; --yes allows
@@ -65,6 +68,7 @@ fn dispatch(home: &std::path::Path, args: &[String]) -> Result<i32, String> {
         Some("watch") => watch_cmd::watch(home, rest),
         Some("brief") => watch_cmd::brief(home),
         Some("say") => watch_cmd::say(home, rest),
+        Some("me") => me_cmd::run(home, rest),
         Some("status") => commands::status(home),
         Some("shutdown") => commands::shutdown(home),
         Some("doctor") => Ok(doctor::run(home)),

@@ -204,6 +204,16 @@ pub enum Event {
     WatchCandidates { candidates: Vec<WatchCandidate> },
     /// Voice state; while speaking, broadcast per envelope chunk (~1 s of frames).
     VoiceState(VoiceStatus),
+    /// Who the user is. Sent after `Welcome` and broadcast after `SetUser`. `set` is false when
+    /// nothing has named the user yet (no `user.json`, no env), so a client may offer onboarding.
+    User {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        address: Option<String>,
+        #[serde(default)]
+        set: bool,
+    },
 }
 
 impl Event {

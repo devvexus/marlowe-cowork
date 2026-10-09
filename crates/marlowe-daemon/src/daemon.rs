@@ -75,7 +75,10 @@ pub(crate) struct Core {
     pub store: Store,
     pub brains: Arc<Brains>,
     pub tools: ToolHostFactory,
-    pub user: UserInfo,
+    /// Name and address form; read with [`Core::user`], changed by `SetUser`.
+    pub user: crate::user::UserCell,
+    /// Serialises `SetUser` writes.
+    pub user_write: Mutex<()>,
     /// The memory service, when the binary supplied one.
     pub mind: Option<marlowe_mind::Mind>,
     /// Legacy-offer cache and the import latch.
@@ -108,6 +111,11 @@ impl Core {
         if !self.shutting_down.swap(true, Ordering::SeqCst) {
             let _ = self.shutdown_tx.send(());
         }
+    }
+
+    /// The user as of now.
+    pub fn user(&self) -> UserInfo {
+        self.user.get()
     }
 
     pub fn uptime(&self) -> Duration {
@@ -307,6 +315,7 @@ impl Daemon {
         let token = auth::mint_token()?;
         let (shutdown_tx, shutdown_rx) = bounded(1);
         let bus = Bus::new(cfg.replay_ring);
+        let user_set = crate::user::path(home).exists() || deps.user != UserInfo::default();
         let core = Arc::new(Core {
             home: home.to_path_buf(),
             cfg,
@@ -316,7 +325,8 @@ impl Daemon {
             store,
             brains,
             tools: deps.tools,
-            user: deps.user,
+            user: crate::user::UserCell::new(deps.user, user_set),
+            user_write: Mutex::new(()),
             mind: deps.mind,
             memory: Default::default(),
             sentinel: deps.sentinel.as_ref().map(|l| l.sentinel.clone()),

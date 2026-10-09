@@ -22,6 +22,11 @@ impl State {
         }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
 
+        // Typing before onboarding shows means they are busy: it stays away this session.
+        let printable = matches!(k.code, KeyCode::Char(_)) && !ctrl;
+        if printable && self.onboard == crate::onboard::Onboard::Pending {
+            self.close_onboarding();
+        }
         // Any key ends the boot and then does what it would have done: typing is never delayed.
         self.wake.boot = None;
         // Barge-in: any key stops the voice.
@@ -42,7 +47,10 @@ impl State {
             self.approval_key(k, &mut out);
             return out;
         }
-        if self.overlay.is_some() {
+        if self.overlay == Some(Overlay::Onboard) && self.onboard_typeahead(&k) {
+            // Typed before the question could be read: the key goes where it was meant to.
+            self.close_onboarding();
+        } else if self.overlay.is_some() {
             self.overlay_key(k, &mut out);
             return out;
         }
@@ -104,6 +112,7 @@ impl State {
                 query.push_str(text.lines().next().unwrap_or(""));
                 *sel = 0;
             }
+            (Some(Overlay::Onboard), _) => self.onboard_paste(text),
             (Some(_), _) => {}
             (None, View::Library) => {
                 for c in text.trim().chars() {
@@ -229,6 +238,10 @@ impl State {
                     self.start_import(out);
                 }
             }
+            Command::Introduce => {
+                self.view = View::Conversation;
+                self.open_onboarding(false, out);
+            }
             Command::ToggleThinking => self.show_thinking = !self.show_thinking,
             Command::Interrupt => {
                 if let (Some(s), true) = (self.session.clone(), self.is_busy()) {
@@ -291,6 +304,10 @@ impl State {
     }
 
     fn overlay_key(&mut self, k: KeyEvent, out: &mut Vec<Request>) {
+        if self.overlay == Some(Overlay::Onboard) {
+            self.onboard_key(k, out);
+            return;
+        }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if k.code == KeyCode::Esc || (ctrl && k.code == KeyCode::Char('k')) {
             if matches!(self.overlay, Some(Overlay::ImportOffer { .. })) {
@@ -326,6 +343,7 @@ impl State {
                 }
             }
             Overlay::ImportOffer { sel } => self.offer_key(k, sel, out),
+            Overlay::Onboard => {}
             Overlay::Sessions { sel } => {
                 let n = self.sessions.as_ref().map_or(0, Vec::len);
                 match k.code {

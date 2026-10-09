@@ -269,7 +269,8 @@ fn empty_state(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
             ]),
         ],
         _ => {
-            let greeting = greeting(&state.clock);
+            let address = state.user.as_ref().and_then(|u| u.address.as_deref());
+            let greeting = greeting(&state.clock, address);
             vec![
                 Line::from(Span::styled("⣿  MARLOWE", accent.add_modifier(Modifier::BOLD))),
                 Line::from(""),
@@ -299,13 +300,18 @@ fn empty_state(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     }
 }
 
-/// `Good morning.` etc. from the clock's hour; plain `Hello.` when the clock is unknown.
-fn greeting(clock: &str) -> &'static str {
+/// `Good morning, sir.` etc. from the clock's hour and the address form; plain `Hello` when the
+/// clock is unknown.
+fn greeting(clock: &str, address: Option<&str>) -> String {
     let hour = clock.split(':').next().and_then(|h| h.trim().parse::<u32>().ok());
-    match hour {
-        Some(5..=11) => "Good morning.",
-        Some(12..=17) => "Good afternoon.",
-        Some(18..=23) | Some(0..=4) => "Good evening.",
-        _ => "Hello.",
+    let head = match hour {
+        Some(5..=11) => "Good morning",
+        Some(12..=17) => "Good afternoon",
+        Some(18..=23) | Some(0..=4) => "Good evening",
+        _ => "Hello",
+    };
+    match address.map(crate::text::clean).filter(|a| !a.trim().is_empty()) {
+        Some(a) => format!("{head}, {}.", a.trim()),
+        None => format!("{head}."),
     }
 }

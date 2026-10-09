@@ -131,11 +131,101 @@ fn is_error(t: &str, lower: &str) -> bool {
 }
 
 fn is_completion(lower: &str) -> bool {
+    // `not finished`, `done, 3 checks failed`, `completed with errors` are not completions.
+    if is_negated(lower) || soft_failure(lower).is_some() {
+        return false;
+    }
     lower
         .split(|c: char| !c.is_ascii_alphanumeric())
         .any(|w| matches!(w, "finished" | "done" | "complete" | "completed" | "succeeded"))
         || lower.contains("saved model")
         || lower.contains("model saved")
+}
+
+fn words(lower: &str) -> Vec<&str> {
+    lower.split(|c: char| !(c.is_ascii_alphanumeric() || c == '\'')).filter(|w| !w.is_empty()).collect()
+}
+
+/// `not written`, `couldn't save`, `unable to`, `never finished`.
+fn is_negated(lower: &str) -> bool {
+    words(lower).iter().any(|w| matches!(*w, "not" | "never" | "unable" | "cannot" | "incomplete" | "unfinished") || w.ends_with("n't"))
+}
+
+/// A failure said in lowercase words: `check failed`, `3 tests failed`, `with errors`, `aborted`.
+/// `0 failed` / `no errors` are not failures. The short reason the brief may say.
+fn soft_failure(lower: &str) -> Option<String> {
+    let w = words(lower);
+    let bad = w.iter().enumerate().find(|(i, x)| {
+        let hit = matches!(**x, "failed" | "fails" | "failure" | "failures" | "errors" | "aborted" | "aborting" | "crashed");
+        let zero = i.checked_sub(1).and_then(|j| w.get(j)).is_some_and(|p| matches!(*p, "0" | "no" | "zero" | "without"));
+        hit && !zero
+    })?;
+    let checked = w.iter().any(|x| matches!(*x, "check" | "checks" | "verify" | "verification" | "test" | "tests" | "eval" | "validation"));
+    Some(match *bad.1 {
+        "failed" | "fails" | "failure" | "failures" if checked => "its check failed".into(),
+        "aborted" | "aborting" => "aborted".into(),
+        "crashed" => "crashed".into(),
+        "errors" => "errors".into(),
+        _ => "it reported a failure".into(),
+    })
+}
+
+/// How a process's last meaningful line says it ended. Judged only once the process is gone:
+/// `=== stage X finished` in a live run is progress.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ending {
+    Success,
+    /// A short reason: `out of memory`, `RuntimeError`, `exit code 137`.
+    Failure(String),
+    Unknown,
+}
+
+/// The ending a last line states. Beyond [`classify_line`]'s completions, an artifact written,
+/// saved, exported or shipped, a passed check, and llama.cpp's closing `quant size ... BPW` count
+/// as success; a non-zero exit code counts as failure. A negated line (`not saved`) is not success.
+pub fn ending(line: &str) -> Ending {
+    if let Some(code) = exit_code(line) {
+        return if code == 0 { Ending::Success } else { Ending::Failure(format!("exit code {code}")) };
+    }
+    let lower = line.to_ascii_lowercase();
+    match classify_line(line) {
+        LineKind::Completion => Ending::Success,
+        LineKind::Error => Ending::Failure(exception_name(line).or_else(|| soft_failure(&lower)).unwrap_or_else(|| "an error".into())),
+        LineKind::Progress | LineKind::Other if soft_failure(&lower).is_some() => Ending::Failure(soft_failure(&lower).unwrap_or_default()),
+        LineKind::Oom => Ending::Failure("out of memory".into()),
+        LineKind::Killed => Ending::Failure("killed".into()),
+        LineKind::NonFinite => Ending::Failure("NaN/inf".into()),
+        LineKind::Traceback => Ending::Failure("a Python traceback".into()),
+        LineKind::Progress if is_success(&lower) => Ending::Success,
+        LineKind::Progress | LineKind::Other => Ending::Unknown,
+    }
+}
+
+fn is_success(lower: &str) -> bool {
+    let negated = is_negated(lower) || soft_failure(lower).is_some();
+    let word = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|w| matches!(w, "written" | "wrote" | "saved" | "exported" | "shipped" | "succeeded" | "success"));
+    let phrase = ["check ok", "checks ok", "check passed", "checks passed"].iter().any(|p| lower.contains(p))
+        || (lower.contains("quant size") && lower.contains("bpw"));
+    !negated && (word || phrase)
+}
+
+/// `exit code 1`, `exited with code 137`, `exit status 2`, `returned non-zero exit status 1`.
+fn exit_code(line: &str) -> Option<i64> {
+    let lower = line.to_ascii_lowercase();
+    let at = ["exit code", "exit status", "exited with code"].iter().filter_map(|k| lower.find(k).map(|i| i + k.len())).min()?;
+    let digits: String = lower[at..].trim_start().trim_start_matches([':', '=']).trim_start().chars().take_while(|c| c.is_ascii_digit() || *c == '-').collect();
+    digits.parse().ok()
+}
+
+/// The last component of a Python exception name on the line: `torch.cuda.FooError` -> `FooError`.
+fn exception_name(line: &str) -> Option<String> {
+    line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.')).find_map(|w| {
+        let last = w.rsplit('.').next().unwrap_or(w);
+        let named = last.len() > 5 && (last.ends_with("Error") || last.ends_with("Exception")) && last.starts_with(|c: char| c.is_ascii_uppercase());
+        named.then(|| last.to_string())
+    })
 }
 
 /// A `[HH:MM:SS]` (or `[YYYY-MM-DD HH:MM:SS...]`, or a leading `HH:MM:SS`) timestamp, as seconds
@@ -290,6 +380,35 @@ mod tests {
         assert_eq!(c("   "), LineKind::Other);
         assert_eq!(LineKind::Oom.severity(), Some(Severity::Alarm));
         assert_eq!(LineKind::Completion.severity(), Some(Severity::Good));
+    }
+
+    #[test]
+    fn endings_from_last_lines() {
+        let e = ending;
+        assert_eq!(e("ship: marlowe-valiance-22b-wnr-final-truewidth-q4_k_s.gguf written, check OK 06:54"), Ending::Success);
+        assert_eq!(e("llama_model_quantize_impl: quant size  = 14853.78 MiB (4.63 BPW)"), Ending::Success);
+        assert_eq!(e("[05:56:27] === stage wnr finished"), Ending::Success);
+        assert_eq!(e("saved model to out/final"), Ending::Success);
+        assert_eq!(e("checkpoint could not be written"), Ending::Unknown);
+        assert_eq!(e("126.47.966.376 I slot print_timing: id  0 | task 62617 | n_gen =   2686, tg =   8.93 t/s"), Ending::Unknown);
+        assert_eq!(e("torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB"), Ending::Failure("out of memory".into()));
+        assert_eq!(e("RuntimeError: shape mismatch"), Ending::Failure("RuntimeError".into()));
+        assert_eq!(e("[03:10:00] step 120 loss nan lr 1e-4"), Ending::Failure("NaN/inf".into()));
+        assert_eq!(e("worker exited with code 137"), Ending::Failure("exit code 137".into()));
+        assert_eq!(e("process finished with exit code 0"), Ending::Success);
+        assert_eq!(e("Killed"), Ending::Failure("killed".into()));
+        // Never success when the line says otherwise.
+        assert_eq!(e("ship: x-q4_k_s.gguf written, check FAILED"), Ending::Failure("its check failed".into()));
+        assert_eq!(e("ship: x-q4_k_s.gguf written, check failed"), Ending::Failure("its check failed".into()));
+        assert_eq!(e("Not written: x.gguf"), Ending::Unknown);
+        assert_eq!(e("x.gguf wasn't saved"), Ending::Unknown);
+        assert_eq!(e("Error writing x.gguf"), Ending::Failure("an error".into()));
+        assert_eq!(e("done, 3 tests failed"), Ending::Failure("its check failed".into()));
+        assert_eq!(e("completed with errors"), Ending::Failure("errors".into()));
+        assert_eq!(e("training not finished"), Ending::Unknown);
+        assert_eq!(e("aborted after step 120"), Ending::Failure("aborted".into()));
+        assert_eq!(e("done: 12 passed, 0 failed"), Ending::Success);
+        assert_eq!(e("saved x.pt, no errors"), Ending::Success);
     }
 
     #[test]

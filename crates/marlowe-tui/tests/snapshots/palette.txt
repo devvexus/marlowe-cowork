@@ -15,11 +15,11 @@
 │                                     Yo│   Brief me now                                           │    │                                  │
 │                                       │   Turn the voice on or off                               │    │                                  │
 │                          Marlowe think│   Import memories from the old harness                   │    │                                  │
-│                      local ones throug│   Show or hide thinking                               ^t │    │                                  │
+│                      local ones throug│   Your name and how I greet you                          │    │                                  │
+│                                       │   Show or hide thinking                               ^t │    │                                  │
 │                                       │   Interrupt the running turn                         esc │    │                                  │
-│                                       │   Quit                                                ^q │    │                                  │
-│                                  ↵ ope╰──────────────────────────────────────────────────────────╯    │                                  │
-│                                                                                                       │                                  │
+│                                  ↵ ope│   Quit                                                ^q │    │                                  │
+│                                       ╰──────────────────────────────────────────────────────────╯    │                                  │
 │                                                                                                       │                                  │
 │                                                                                                       │                                  │
 │                                                                                                       │                                  │

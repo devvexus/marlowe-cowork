@@ -155,7 +155,7 @@ impl Engine {
 
     /// A new or changed metric/result JSON: compare with its most similar sibling, update the
     /// family's bests, and raise one notice.
-    pub(super) fn read_metric(&mut self, path: &Path, len: u64, silent: bool) -> bool {
+    pub(super) fn read_metric(&mut self, path: &Path, len: u64, mtime: i64, silent: bool) -> bool {
         if !metrics::is_metric_file(path, len, self.cfg.max_metric_json) {
             return true;
         }
@@ -176,17 +176,9 @@ impl Engine {
             return true;
         }
         let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
-        let siblings: Vec<String> = std::fs::read_dir(&dir)
-            .map(|rd| {
-                rd.flatten()
-                    .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
-                    .filter(|e| metrics::is_metric_file(&e.path(), e.metadata().map(|m| m.len()).unwrap_or(0), self.cfg.max_metric_json))
-                    .filter_map(|e| e.path().file_stem().map(|s| s.to_string_lossy().into_owned()))
-                    .filter(|s| *s != stem)
-                    .collect()
-            })
-            .unwrap_or_default();
-        let sibling = metrics::most_similar(&stem, &siblings).map(str::to_string);
+        let dated = metrics::metric_siblings(&dir, &stem, self.cfg.max_metric_json);
+        let siblings: Vec<String> = dated.iter().map(|(s, _)| s.clone()).collect();
+        let sibling = metrics::previous_sibling(&stem, mtime, &dated).map(str::to_string);
         let (before, before_label) = match &sibling {
             Some(s) => (self.metrics_of(&dir.join(format!("{s}.json"))), s.rsplit(['-', '_']).next().unwrap_or(s).to_string()),
             None => (previous, "before".to_string()),
