@@ -28,7 +28,7 @@ fn welcome_requests_the_library_and_goes_online() {
     let mut s = state();
     assert_eq!(s.conn, Conn::Connecting);
     let reqs = welcome(&mut s, 0);
-    assert_eq!(reqs, vec![Request::LibraryState]);
+    assert_eq!(reqs, welcome_requests());
     assert!(s.conn.is_online());
 }
 
@@ -169,7 +169,7 @@ fn reconnect_with_a_gap_reloads_the_session() {
     assert!(!s.conn.is_online());
     assert_eq!(s.activity(), Activity::Offline);
     let reqs = welcome(&mut s, 9);
-    assert_eq!(reqs, vec![Request::LibraryState]);
+    assert_eq!(reqs, welcome_requests());
     // seq 4..8 fell out of the ring buffer: the first replayed event is 9.
     let reqs = feed(&mut s, 9, Event::TextDelta { session: sid(), turn: 1, text: "x".into() });
     assert_eq!(reqs, vec![Request::OpenSession { session: sid() }]);

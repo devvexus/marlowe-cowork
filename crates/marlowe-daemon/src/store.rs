@@ -29,6 +29,10 @@ CREATE TABLE IF NOT EXISTS turns (
     at      INTEGER NOT NULL,
     PRIMARY KEY (session, idx)
 );
+CREATE TABLE IF NOT EXISTS daemon_kv (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 ";
 
 pub(crate) type StoreResult<T> = Result<T, String>;
@@ -41,6 +45,9 @@ enum Cmd {
     Tainted(SessionId, Sender<StoreResult<bool>>),
     List(u32, Sender<StoreResult<Vec<SessionSummary>>>),
     Load(SessionId, Sender<StoreResult<Vec<StoredTurn>>>),
+    GetKv(String, Sender<StoreResult<Option<String>>>),
+    SetKv(String, String, Sender<StoreResult<()>>),
+    LastActivity(Sender<StoreResult<Option<i64>>>),
     Close,
 }
 
@@ -122,6 +129,27 @@ fn serve(conn: &mut Connection, cmd: Cmd) -> bool {
         }
         Cmd::Load(id, reply) => {
             let _ = reply.send(load(conn, &id));
+        }
+        Cmd::GetKv(key, reply) => {
+            let r = conn
+                .query_row("SELECT value FROM daemon_kv WHERE key = ?1", [key], |r| r.get::<_, String>(0))
+                .optional()
+                .map_err(e);
+            let _ = reply.send(r);
+        }
+        Cmd::SetKv(key, value, reply) => {
+            let r = conn
+                .execute(
+                    "INSERT INTO daemon_kv (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    params![key, value],
+                )
+                .map(|_| ())
+                .map_err(e);
+            let _ = reply.send(r);
+        }
+        Cmd::LastActivity(reply) => {
+            let r = conn.query_row("SELECT MAX(updated) FROM sessions", [], |r| r.get::<_, Option<i64>>(0)).map_err(e);
+            let _ = reply.send(r);
         }
         Cmd::Close => return false,
     }
@@ -250,6 +278,20 @@ impl Store {
         self.call(|r| Cmd::Load(id.clone(), r))
     }
 
+    /// A daemon setting or marker (`presence.last_seen_ms`, the day's brief session).
+    pub fn kv(&self, key: &str) -> StoreResult<Option<String>> {
+        self.call(|r| Cmd::GetKv(key.to_string(), r))
+    }
+
+    pub fn set_kv(&self, key: &str, value: &str) -> StoreResult<()> {
+        self.call(|r| Cmd::SetKv(key.to_string(), value.to_string(), r))
+    }
+
+    /// When any session last changed (a turn was saved), Unix epoch ms.
+    pub fn last_activity(&self) -> StoreResult<Option<i64>> {
+        self.call(Cmd::LastActivity)
+    }
+
     /// Stops the store thread after pending commands.
     pub fn close(&self) {
         let _ = self.tx.send(Cmd::Close);
@@ -283,6 +325,11 @@ mod tests {
         assert_eq!(turns[1].role, Role::Assistant);
         assert_eq!(store.list(10).unwrap().len(), 1);
         assert!(store.get(&SessionId("nope".into())).unwrap().is_none());
+        assert_eq!(store.last_activity().unwrap(), Some(10));
+        assert_eq!(store.kv("k").unwrap(), None);
+        store.set_kv("k", "a").unwrap();
+        store.set_kv("k", "b").unwrap();
+        assert_eq!(store.kv("k").unwrap().as_deref(), Some("b"));
         store.close();
         handle.join().unwrap();
         assert!(store.list(1).is_err(), "a closed store refuses");

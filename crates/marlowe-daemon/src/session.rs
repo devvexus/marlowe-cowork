@@ -236,6 +236,13 @@ fn workspace_of(convo: &Conversation) -> Option<String> {
     convo.workspace.as_ref().map(|p| p.display().to_string())
 }
 
+/// The workspace's branch, dirty count and last commit, from the Sentinel's short-lived cache.
+/// Read-only git; a broken watcher yields no context rather than a failed turn.
+fn repo_context(core: &Core, workspace: &str) -> Option<marlowe_proto::GitInfo> {
+    let s = core.sentinel.as_ref()?;
+    guard(|| s.git_context(std::path::Path::new(workspace))).ok().flatten()
+}
+
 /// Publishes on the bus; handed to the memory hook and tools.
 fn publisher(core: &Arc<Core>) -> RecallSink {
     let c = core.clone();
@@ -262,7 +269,9 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
     if core.mind.is_some() {
         system = system.block(PersonaBlock::Memory);
     }
-    let system = system.user(core.user.clone()).environment(Environment::current(workspace.clone(), info.display.clone()));
+    let mut env = Environment::current(workspace.clone(), info.display.clone());
+    env.repo = workspace.as_deref().and_then(|w| repo_context(core, w));
+    let system = system.user(core.user.clone()).environment(env);
     let mut agent = Agent::new(provider, info, tools.clone(), system);
     agent.effort = effort;
     agent.memory = match &core.mind {

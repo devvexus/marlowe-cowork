@@ -1,0 +1,16 @@
+[package]
+name = "marlowe-voice"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Spoken voice: WinRT SpeechSynthesizer (Windows), amplitude envelope, barge-in. Stub elsewhere."
+
+[dependencies]
+marlowe-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+crossbeam-channel.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true

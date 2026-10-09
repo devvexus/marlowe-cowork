@@ -99,6 +99,14 @@ Providers translate wire formats only; they never interpret tool names.
 - Autonomy is free inside the sandbox. Merge, push, deletes outside the workspace, new network hosts and budget overrun require approval.
 - Agent = role card (editable markdown) + model/effort slot + tool allowlist + budget and sandbox.
 
+## Sentinel and the Wake (M3)
+
+- **Read-only by construction.** `marlowe-sentinel` never writes, locks, signals or renices anything under a watched root. State (roots, per-file offsets, last metrics, family bests, run status, git heads, notices) lives only in `cowork.db`. Reads are short, use full sharing, and are capped at 256 KiB per tick. Git uses `status --porcelain`/`log -n` with `GIT_OPTIONAL_LOCKS=0` and a 5 s timeout. Ollama is `/api/tags` only. NVML is a query, and absent NVML is "unavailable", not an error. A test snapshots a fixture root (including `.git`) before and after and requires it to be identical.
+- **Threads.** The engine thread owns file and run state, driven by `notify` (750 ms debounce) plus a 15 s poll. Probes (git 60 s, Ollama 120 s, GPU 15 s) run on their own thread so the engine never blocks. The first scan of a root is a silent baseline.
+- **Notices.** Deduped by (source, subject, kind), re-broadcast only on escalation or a changed detail after 30 min, ranked by severity then age, with seen marks per client. Quiet hours (23:00–07:00) suppress speech, not recording. Roots are added only by consent (`marlowe watch add`, or a key press in the TUI Watch view). Discovery returns candidates and never adds them.
+- **Brief.** `brief::compose` is pure and deterministic: a greeting, then finished, needs-you, running, models, git and memory, capped at 5 sentences. The tui client gets it on Hello after 2 h away or on the first session of the day, and it is stored as the day session's first assistant message. One optional polish call (Quick, falling back to Conductor; 6 s) is accepted only if it adds no new number and stays in the persona's register; otherwise the deterministic text is used.
+- **Voice.** An in-daemon WinRT actor synthesizes to a buffer, computes a 30 Hz RMS envelope for the TUI presence meter, and plays through MediaPlayer. Any key barges in. It speaks the brief and urgent notices outside quiet hours, at most one every 20 s.
+
 ## Voice sidecar
 
 `marlowe-voice.exe` (sherpa-onnx, Kokoro TTS, Moonshine STT, `cpal` WASAPI) is spawned lazily by the daemon and speaks stdio JSON lines. Separate process because it avoids ORT symbol clashes with the memory engine, isolates crashes, and keeps the daemon light. The daemon owns it, so alerts speak with no TUI attached. Until M6, a WinRT `SpeechSynthesizer` module runs in-daemon. Windows built-in speech recognition is excluded (needs MSIX identity).

@@ -95,7 +95,10 @@ impl Agent {
         let memory = recollection.blocks;
         let mut system = self.system.clone();
         let workspace = convo.workspace.as_ref().map(|p| p.display().to_string());
-        system.set_environment(Environment::current(workspace, self.model.model_ref().to_string()));
+        // Fresh clock each turn; the caller's repo context is kept.
+        let mut env = Environment::current(workspace, self.model.model_ref().to_string());
+        env.repo = self.system.env().and_then(|e| e.repo.clone());
+        system.set_environment(env);
         let specs = self.tools.specs();
         let spec_tokens = context::tool_spec_tokens(&specs);
         let max_output_tokens = self.model.max_output.map(|_| self.context.reserve_output);

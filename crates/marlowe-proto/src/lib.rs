@@ -14,6 +14,7 @@ mod ids;
 mod memory;
 pub mod paths;
 mod request;
+mod watch;
 
 pub use event::{
     Envelope, Event, LibraryModel, ProviderStatus, SessionSummary, SlotAssignment, StatusReport,
@@ -24,6 +25,10 @@ pub use ids::{ApprovalId, SessionId};
 pub use memory::{ImportReport, MemoryChange, MemoryHit, MemoryKind, MemoryScope, MemoryStatsReport, MemoryTrust};
 pub use paths::DaemonInfo;
 pub use request::{ApprovalDecision, Request, Secret, Slot, SlotParseError};
+pub use watch::{
+    BriefItem, BriefItemKind, GitInfo, GpuDevice, GpuReport, Notice, NoticeSource, OllamaReport, QuietHours,
+    RunInfo, RunStatus, Severity, VoiceStatus, WatchCandidate, WatchRoot, WatchState, ENVELOPE_HZ,
+};
 
 /// Wire protocol version. Bumped on any incompatible change.
 pub const PROTO_VERSION: u32 = 1;

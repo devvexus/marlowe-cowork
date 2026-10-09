@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::ids::{ApprovalId, SessionId};
 use crate::memory::{ImportReport, MemoryChange, MemoryHit, MemoryStatsReport};
 use crate::request::{ApprovalDecision, Slot};
+use crate::watch::{BriefItem, Notice, VoiceStatus, WatchCandidate, WatchState};
 
 /// Every event on the wire. Broadcast events carry a daemon-wide, strictly increasing `seq` and
 /// are replayable; replies addressed to one client (Welcome, SessionList, Transcript, Catalog,
@@ -179,6 +180,30 @@ pub enum Event {
     /// Reply to `MemoryProfile`: the memories in the profile block, in block order, its estimated
     /// tokens, and how many members the budget left out.
     MemoryProfile { hits: Vec<MemoryHit>, tokens: u32, omitted: u32 },
+    /// The Wake brief: sent to a client after `Welcome` when the user has been away (or on a
+    /// first session today), and in reply to `Request::Brief`. `text` is written; `spoken` is the
+    /// ear-friendly version. `session` is where it was stored as the first assistant message.
+    Brief {
+        text: String,
+        spoken: String,
+        #[serde(default)]
+        items: Vec<BriefItem>,
+        #[serde(default)]
+        offers: Vec<WatchCandidate>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+    },
+    /// A new or escalated notice (broadcast).
+    Notice(Notice),
+    /// Reply to `ListNotices`.
+    Notices { list: Vec<Notice> },
+    /// What the Sentinel watches (reply to `WatchList`/`WatchAdd`/`WatchRemove`; also broadcast on
+    /// change).
+    WatchState(WatchState),
+    /// Reply to `WatchCandidates`.
+    WatchCandidates { candidates: Vec<WatchCandidate> },
+    /// Voice state; while speaking, broadcast per envelope chunk (~1 s of frames).
+    VoiceState(VoiceStatus),
 }
 
 impl Event {

@@ -377,3 +377,171 @@ fn memory_kinds_and_trust_have_stable_labels() {
     assert!(MemoryTrust::Untrusted < MemoryTrust::Inferred && MemoryTrust::Observed < MemoryTrust::User);
     assert_eq!(serde_json::to_string(&MemoryTrust::User).unwrap(), r#""user""#);
 }
+
+fn notice(severity: Severity) -> Notice {
+    Notice {
+        id: "n-1".into(),
+        at_ms: 1_700_000_000_000,
+        source: NoticeSource::Run,
+        severity,
+        kind: "finished".into(),
+        title: "wnr5 finished".into(),
+        detail: "stage wnr-p5 · layer 9".into(),
+        subject: "C:/runs/wnr5".into(),
+        seen: false,
+    }
+}
+
+fn watch_state() -> WatchState {
+    WatchState {
+        roots: vec![WatchRoot {
+            path: "C:/runs".into(),
+            added_ms: 5,
+            runs: 1,
+            git: Some(GitInfo {
+                branch: "main".into(),
+                dirty: 2,
+                head: Some("f7f46ce".into()),
+                subject: Some("M2.6 profile memory".into()),
+                commit_ms: Some(1_700_000_000_000),
+                new_commits: 1,
+            }),
+            problem: None,
+        }],
+        runs: vec![RunInfo {
+            dir: "C:/runs/wnr5".into(),
+            name: "marlowe-valiance-22b-wnr5".into(),
+            status: RunStatus::Alive,
+            stage: Some("wnr-p5".into()),
+            layer: Some(9),
+            pid: Some(48440),
+            heartbeat_ms: Some(1_700_000_000_000),
+            last_line: Some("[05:19:34] layer 9 done".into()),
+            step: None,
+            loss: Some(1.218),
+            since_ms: 4,
+        }],
+        gpu: GpuReport {
+            devices: vec![GpuDevice {
+                index: 0,
+                name: "RTX 4090".into(),
+                util_pct: 97,
+                mem_used_mb: 22_000,
+                mem_total_mb: 24_564,
+                temp_c: Some(71),
+                processes: vec!["python.exe".into()],
+            }],
+            unavailable: None,
+        },
+        ollama: OllamaReport { reachable: true, models: 12, new_models: vec!["marlowe-valiance:22b".into()] },
+        quiet: QuietHours::default(),
+    }
+}
+
+fn candidate() -> WatchCandidate {
+    WatchCandidate {
+        path: "C:/Users/m/Projects/PruningResearch/valiance".into(),
+        reason: "heartbeat.json, 3 logs".into(),
+        modified_ms: 9,
+        live_runs: 1,
+    }
+}
+
+#[test]
+fn watch_and_voice_requests_round_trip_and_parse_with_defaults() {
+    let reqs = vec![
+        Request::Brief,
+        Request::WatchList,
+        Request::WatchAdd { path: "C:/runs".into() },
+        Request::WatchRemove { path: "C:/runs".into() },
+        Request::WatchCandidates,
+        Request::ListNotices { limit: 20, unseen_only: true },
+        Request::NoticeSeen { id: "n-1".into() },
+        Request::Speak { text: "Good evening, sir.".into() },
+        Request::StopSpeaking,
+        Request::VoiceSettings { enabled: Some(true), voice: Some("George".into()) },
+        Request::VoiceSettings { enabled: None, voice: None },
+    ];
+    for r in &reqs {
+        let s = round_trip(r);
+        assert!(s.starts_with(r#"{"op":""#), "{s}");
+    }
+    assert_eq!(serde_json::to_string(&Request::Brief).unwrap(), r#"{"op":"brief"}"#);
+    assert_eq!(serde_json::to_string(&reqs[2]).unwrap(), r#"{"op":"watch_add","path":"C:/runs"}"#);
+    let r: Request = serde_json::from_str(r#"{"op":"list_notices","limit":5}"#).unwrap();
+    assert_eq!(r, Request::ListNotices { limit: 5, unseen_only: false });
+    let r: Request = serde_json::from_str(r#"{"op":"voice_settings"}"#).unwrap();
+    assert_eq!(r, Request::VoiceSettings { enabled: None, voice: None });
+    let r: Request = serde_json::from_str(r#"{"op":"stop_speaking"}"#).unwrap();
+    assert_eq!(r, Request::StopSpeaking);
+}
+
+#[test]
+fn watch_and_voice_events_round_trip_inside_an_envelope() {
+    let events = vec![
+        Event::Brief {
+            text: "Good morning, sir. wnr5 finished at 04:12.".into(),
+            spoken: "Good morning, sir. w n r 5 finished at four twelve.".into(),
+            items: vec![BriefItem {
+                kind: BriefItemKind::Finished,
+                severity: Severity::Good,
+                text: "wnr5 finished at 04:12".into(),
+                subject: Some("C:/runs/wnr5".into()),
+            }],
+            offers: vec![candidate()],
+            session: Some(sid()),
+        },
+        Event::Brief { text: "Quiet night, sir.".into(), spoken: "Quiet night, sir.".into(), items: vec![], offers: vec![], session: None },
+        Event::Notice(notice(Severity::Alarm)),
+        Event::Notices { list: vec![notice(Severity::Info), Notice { seen: true, ..notice(Severity::Attention) }] },
+        Event::Notices { list: vec![] },
+        Event::WatchState(watch_state()),
+        Event::WatchState(WatchState::default()),
+        Event::WatchCandidates { candidates: vec![candidate()] },
+        Event::VoiceState(VoiceStatus {
+            available: true,
+            enabled: true,
+            voice: Some("George (en-GB)".into()),
+            speaking: true,
+            envelope: vec![0, 40, 180, 255, 12],
+        }),
+        Event::VoiceState(VoiceStatus::default()),
+    ];
+    for (i, ev) in events.into_iter().enumerate() {
+        assert_eq!(ev.session(), None, "watch events are not session events");
+        let env = Envelope { seq: i as u64, at_ms: 1_700_000_000_000, event: ev };
+        let s = round_trip(&env);
+        assert!(s.contains(r#""ev":""#), "{s}");
+    }
+    let s = serde_json::to_string(&Event::Notice(notice(Severity::Alarm))).unwrap();
+    assert!(s.contains(r#""ev":"notice""#) && s.contains(r#""severity":"alarm""#) && s.contains(r#""source":"run""#), "{s}");
+    // Minimal shapes decode with defaults.
+    let ev: Event = serde_json::from_str(r#"{"ev":"brief","text":"t","spoken":"s"}"#).unwrap();
+    assert_eq!(ev, Event::Brief { text: "t".into(), spoken: "s".into(), items: vec![], offers: vec![], session: None });
+    let ev: Event = serde_json::from_str(
+        r#"{"ev":"watch_state","roots":[],"runs":[],"gpu":{"unavailable":"nvml.dll not found"},"ollama":{"reachable":false,"models":0}}"#,
+    )
+    .unwrap();
+    let Event::WatchState(w) = ev else { panic!() };
+    assert_eq!(w.gpu.unavailable.as_deref(), Some("nvml.dll not found"));
+    assert_eq!(w.quiet, QuietHours::default());
+    let ev: Event = serde_json::from_str(r#"{"ev":"voice_state","available":false,"enabled":false,"speaking":false}"#).unwrap();
+    assert_eq!(ev, Event::VoiceState(VoiceStatus::default()));
+}
+
+#[test]
+fn severities_order_and_quiet_hours_wrap_midnight() {
+    assert!(Severity::Info < Severity::Good && Severity::Good < Severity::Attention && Severity::Attention < Severity::Alarm);
+    assert!(!Severity::Good.is_urgent() && Severity::Attention.is_urgent() && Severity::Alarm.is_urgent());
+    let q = QuietHours::default();
+    assert_eq!(q.label(), "23:00–07:00");
+    assert!(q.contains(23 * 60) && q.contains(0) && q.contains(6 * 60 + 59));
+    assert!(!q.contains(7 * 60) && !q.contains(12 * 60) && !q.contains(22 * 60 + 59));
+    let day = QuietHours { start_min: 12 * 60, end_min: 13 * 60 };
+    assert!(day.contains(12 * 60 + 30) && !day.contains(13 * 60) && !day.contains(0));
+    assert!(!QuietHours { start_min: 60, end_min: 60 }.contains(60), "an empty window is never quiet");
+    for (s, status) in [("\"alive\"", RunStatus::Alive), ("\"stalled\"", RunStatus::Stalled), ("\"finished\"", RunStatus::Finished)] {
+        assert_eq!(serde_json::to_string(&status).unwrap(), s);
+    }
+    assert!(RunStatus::Stalled.is_live() && !RunStatus::Failed.is_live());
+}

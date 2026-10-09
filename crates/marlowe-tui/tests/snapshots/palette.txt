@@ -4,21 +4,21 @@
 │                                                                                                       │                                  │
 │                                                                                                       │  WATCH                           │
 │                                                                                                       │  nothing watched                 │
-│                                                                                                       │                                  │
-│                                       ╭ palette ─────────────────────────────────────────────────╮    │  THREADS                         │
-│                                       │ › type a command                                         │    │  no open threads                 │
-│                                       │                                                          │    │                                  │
-│                                       │ › New session                                         ^n │    │  TODAY                           │
-│                                       │   Sessions                                            ^o │    │  nothing scheduled               │
-│                                       │   Library — models and slots                          ^l │    │                                  │
+│                                       ╭ palette ─────────────────────────────────────────────────╮    │                                  │
+│                                       │ › type a command                                         │    │  THREADS                         │
+│                                       │                                                          │    │  no open threads                 │
+│                                       │ › New session                                         ^n │    │                                  │
+│                                       │   Sessions                                            ^o │    │  TODAY                           │
+│                                       │   Library — models and slots                          ^l │    │  nothing scheduled               │
 │                                       │   Memory — search, correct, forget                    ^g │    │                                  │
-│                                     Yo│   Import memories from the old harness                   │    │                                  │
-│                                       │   Show or hide thinking                               ^t │    │                                  │
-│                          Marlowe think│   Interrupt the running turn                         esc │    │                                  │
-│                      local ones throug│   Quit                                                ^q │    │                                  │
-│                                       ╰──────────────────────────────────────────────────────────╯    │                                  │
-│                                                                                                       │                                  │
-│                                  ↵ open the library      ^k palette                                   │                                  │
+│                                       │   Watch — runs, notices, roots                        ^w │    │                                  │
+│                                     Yo│   Brief me now                                           │    │                                  │
+│                                       │   Turn the voice on or off                               │    │                                  │
+│                          Marlowe think│   Import memories from the old harness                   │    │                                  │
+│                      local ones throug│   Show or hide thinking                               ^t │    │                                  │
+│                                       │   Interrupt the running turn                         esc │    │                                  │
+│                                       │   Quit                                                ^q │    │                                  │
+│                                  ↵ ope╰──────────────────────────────────────────────────────────╯    │                                  │
 │                                                                                                       │                                  │
 │                                                                                                       │                                  │
 │                                                                                                       │                                  │

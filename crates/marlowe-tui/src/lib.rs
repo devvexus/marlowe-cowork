@@ -19,6 +19,7 @@ pub mod render;
 pub mod state;
 mod term;
 pub mod text;
+pub mod wake;
 
 pub use client::{Client, Resolver};
 pub use input::palette_matches;
@@ -79,9 +80,20 @@ pub fn run_with(resolve: Resolver) -> Result<(), TuiError> {
     let theme = marlowe_surface::Theme::resolve(|k| std::env::var(k).ok(), None)
         .map_err(|e| TuiError::Theme(e.to_string()))?;
     let workspace = std::env::current_dir().ok().filter(|d| !too_broad(d)).map(|p| p.display().to_string());
-    let state = State::new(workspace);
+    let mut state = State::new(workspace);
+    state.now_ms = chrono::Local::now().timestamp_millis();
+    state.start_boot(last_launch(state.now_ms));
     let client = Client::spawn(resolve);
     term::run(client, state, theme)
+}
+
+/// The previous launch time, from `<home>/tui-launch`, and records this one. Failures only cost
+/// the short boot.
+fn last_launch(now_ms: i64) -> Option<i64> {
+    let path = marlowe_proto::paths::cowork_home().join("tui-launch");
+    let prev = std::fs::read_to_string(&path).ok().and_then(|s| s.trim().parse::<i64>().ok());
+    let _ = std::fs::write(&path, now_ms.to_string());
+    prev
 }
 
 /// A start directory that should not become a new session's workspace: a drive root, or the

@@ -696,3 +696,24 @@ fn an_untrusted_recollection_taints_the_run_before_any_tool() {
     let first = &p.requests()[0];
     assert!(first.system.iter().any(|b| b.text.contains("a page said so")), "the block is still injected");
 }
+
+#[test]
+fn the_callers_repo_context_survives_the_per_turn_environment_refresh() {
+    let p = ScriptedProvider::new(vec![answer("ok")]);
+    let mut a = agent(p.clone(), TestTools::new());
+    let git = marlowe_proto::GitInfo {
+        branch: "main".into(),
+        dirty: 2,
+        head: Some("abc1234".into()),
+        subject: Some("wire the brief".into()),
+        ..Default::default()
+    };
+    let mut env = Environment::current(None, "m");
+    env.now = "stale".into();
+    env.repo = Some(git);
+    a.system = a.system.clone().environment(env);
+    run(&a, &mut convo(), "hi");
+    let sys: String = p.requests()[0].system.iter().map(|b| b.text.clone()).collect::<Vec<_>>().join("\n");
+    assert!(sys.contains("Repo: main · 2 uncommitted changes · last commit abc1234 \"wire the brief\""), "{sys}");
+    assert!(!sys.contains("Now: stale"), "the clock is refreshed every turn");
+}

@@ -80,6 +80,12 @@ pub(crate) struct Core {
     pub mind: Option<marlowe_mind::Mind>,
     /// Legacy-offer cache and the import latch.
     pub memory: crate::mind_ops::MemoryState,
+    /// The watchers, when the binary supplied them.
+    pub sentinel: Option<marlowe_sentinel::Sentinel>,
+    /// Spoken voice, when the binary supplied it.
+    pub voice: Option<marlowe_voice::Voice>,
+    /// Which interactive clients are here, for the brief's away rule.
+    pub presence: crate::brief::Presence,
     pub approvals: Approvals,
     sessions: Mutex<HashMap<SessionId, Arc<SessionHandle>>>,
     started: Instant,
@@ -102,6 +108,15 @@ impl Core {
         if !self.shutting_down.swap(true, Ordering::SeqCst) {
             let _ = self.shutdown_tx.send(());
         }
+    }
+
+    pub fn uptime(&self) -> Duration {
+        self.started.elapsed()
+    }
+
+    /// True while `id` has a running session runner (its conversation lives in memory).
+    pub fn is_live(&self, id: &SessionId) -> bool {
+        lock(&self.sessions).contains_key(id)
     }
 
     pub fn next_client_id(&self) -> u64 {
@@ -304,6 +319,9 @@ impl Daemon {
             user: deps.user,
             mind: deps.mind,
             memory: Default::default(),
+            sentinel: deps.sentinel.as_ref().map(|l| l.sentinel.clone()),
+            voice: deps.voice.as_ref().map(|l| l.voice.clone()),
+            presence: Default::default(),
             approvals: Approvals::default(),
             sessions: Mutex::new(HashMap::new()),
             started: Instant::now(),
@@ -313,6 +331,12 @@ impl Daemon {
             runners: Mutex::new(Vec::new()),
             writers: Mutex::new(Vec::new()),
         });
+        if let Some(link) = deps.sentinel {
+            core.add_writer(crate::watch_ops::forward_sentinel(core.clone(), link.events)?);
+        }
+        if let Some(link) = deps.voice {
+            core.add_writer(crate::watch_ops::forward_voice(core.clone(), link.events)?);
+        }
         DaemonInfo { port: addr.port(), token, pid: std::process::id() }.write(home)?;
         let acore = core.clone();
         let acceptor = std::thread::Builder::new().name("marlowe-accept".into()).spawn(move || {
@@ -368,6 +392,12 @@ impl Daemon {
             h.stop();
         }
         core.approvals.deny_all();
+        if let Some(v) = &core.voice {
+            v.shutdown();
+        }
+        if let Some(s) = &core.sentinel {
+            s.shutdown();
+        }
         let runners: Vec<JoinHandle<()>> = lock(&core.runners).drain(..).collect();
         join_within(runners, core.cfg.drain_timeout);
         // After the runners: their last turns are ingested before the final snapshot.

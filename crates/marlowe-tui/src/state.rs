@@ -14,6 +14,7 @@ use marlowe_proto::{
 use crate::composer::Composer;
 use crate::library::Library;
 use crate::memory::{ImportStatus, LegacyOffer, MemoryState};
+use crate::wake::Wake;
 
 /// What the connection thread reports.
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +72,8 @@ pub enum Entry {
     Usage { usage: Usage },
     /// Memories the daemon injected before the turn.
     Recall { count: u32, summary: String },
+    /// The Wake brief, with the directories it offers to watch.
+    Brief { text: String, offers: Vec<marlowe_proto::WatchCandidate> },
 }
 
 /// A turn in flight in the open session.
@@ -97,6 +100,8 @@ pub enum View {
     Conversation,
     Library,
     Memory,
+    /// Watch roots, runs, notices and discovery offers (^w).
+    Watch,
 }
 
 /// A palette command.
@@ -106,6 +111,9 @@ pub enum Command {
     Sessions,
     Library,
     Memory,
+    Watch,
+    Brief,
+    ToggleVoice,
     ImportMemories,
     ToggleThinking,
     Interrupt,
@@ -113,11 +121,14 @@ pub enum Command {
 }
 
 impl Command {
-    pub const ALL: [Command; 8] = [
+    pub const ALL: [Command; 11] = [
         Command::NewSession,
         Command::Sessions,
         Command::Library,
         Command::Memory,
+        Command::Watch,
+        Command::Brief,
+        Command::ToggleVoice,
         Command::ImportMemories,
         Command::ToggleThinking,
         Command::Interrupt,
@@ -130,6 +141,9 @@ impl Command {
             Command::Sessions => "Sessions",
             Command::Library => "Library — models and slots",
             Command::Memory => "Memory — search, correct, forget",
+            Command::Watch => "Watch — runs, notices, roots",
+            Command::Brief => "Brief me now",
+            Command::ToggleVoice => "Turn the voice on or off",
             Command::ImportMemories => "Import memories from the old harness",
             Command::ToggleThinking => "Show or hide thinking",
             Command::Interrupt => "Interrupt the running turn",
@@ -143,6 +157,9 @@ impl Command {
             Command::Sessions => "^o",
             Command::Library => "^l",
             Command::Memory => "^g",
+            Command::Watch => "^w",
+            Command::Brief => "",
+            Command::ToggleVoice => "",
             Command::ImportMemories => "",
             Command::ToggleThinking => "^t",
             Command::Interrupt => "esc",
@@ -251,6 +268,8 @@ pub struct State {
     /// The user chose Not now; the offer stays in the palette only.
     pub legacy_dismissed: bool,
     pub import: Option<ImportStatus>,
+    /// The boot, the Sentinel's runs and notices, toasts, the voice.
+    pub wake: Wake,
 
     pub view: View,
     pub overlay: Option<Overlay>,
@@ -264,6 +283,8 @@ pub struct State {
 
     /// Wall clock for the title bar, e.g. `08:14`. Set by the run loop.
     pub clock: String,
+    /// Local date for the rail's TODAY, e.g. `Friday 9 October`. Set by the run loop.
+    pub date: String,
     /// Unix ms, for relative times and the meter. Set by the run loop.
     pub now_ms: i64,
     pub quit: bool,
@@ -302,6 +323,7 @@ impl State {
             legacy: None,
             legacy_dismissed: false,
             import: None,
+            wake: Wake::default(),
             view: View::Conversation,
             overlay: None,
             composer: Composer::default(),
@@ -310,6 +332,7 @@ impl State {
             scroll_max: Cell::new(0),
             flash: None,
             clock: String::new(),
+            date: String::new(),
             now_ms: 0,
             quit: false,
         }
@@ -429,6 +452,7 @@ impl State {
                     self.check_gap = true;
                 }
                 out.push(Request::LibraryState);
+                self.wake_probes(out);
             }
             Event::SessionOpened { session, title, workspace } => {
                 // Only a seq-0 reply is the session our Ask created; a broadcast may be another
@@ -438,7 +462,8 @@ impl State {
                     || self.mine(session);
                 if adopt {
                     if !self.mine(session) && self.pending_open.as_ref() != Some(session) {
-                        self.entries.clear();
+                        // The brief stays as the conversation's opening.
+                        self.entries.retain(|e| matches!(e, Entry::Brief { .. }));
                     }
                     self.session = Some(session.clone());
                     self.title = Some(title.clone()).filter(|t| !t.is_empty());
@@ -638,6 +663,13 @@ impl State {
                 }
             }
             Event::Status(_) => {}
+            Event::Brief { text, offers, .. } => self.on_brief(text, offers),
+            Event::Notice(n) => self.on_notice(n),
+            Event::Notices { list } => self.on_notices(list),
+            Event::WatchState(ws) => self.on_watch_state(ws),
+            Event::WatchCandidates { candidates } => self.on_candidates(candidates),
+            Event::VoiceState(v) => self.on_voice(v),
+            Event::Error { session: None, message } if self.absorb_absent(message) => {}
             Event::Error { session: None, message } if reply && message.starts_with("replay gap") => {
                 // The daemon skipped the replay: reload what is open instead.
                 self.check_gap = false;
@@ -699,7 +731,7 @@ impl State {
             return Activity::Awaiting;
         }
         if self.live.is_none() {
-            return Activity::Idle;
+            return if self.wake.speaking() { Activity::Speaking } else { Activity::Idle };
         }
         for e in self.entries.iter().rev() {
             match e {
@@ -724,6 +756,8 @@ pub enum Activity {
     Writing,
     Running,
     Awaiting,
+    /// The voice is speaking; the meter follows its envelope.
+    Speaking,
 }
 
 impl Activity {
@@ -736,6 +770,7 @@ impl Activity {
             Activity::Writing => "writing",
             Activity::Running => "working",
             Activity::Awaiting => "needs you",
+            Activity::Speaking => "speaking",
         }
     }
 

@@ -51,6 +51,17 @@ pub fn welcome(s: &mut State, seq: u64) -> Vec<Request> {
     )
 }
 
+/// What every Welcome asks for: the library, then the Wake's probes.
+pub fn welcome_requests() -> Vec<Request> {
+    vec![
+        Request::LibraryState,
+        Request::MemoryStats,
+        Request::WatchList,
+        Request::ListNotices { limit: marlowe_tui::wake::NOTICE_LIMIT, unseen_only: false },
+        Request::VoiceSettings { enabled: None, voice: None },
+    ]
+}
+
 pub fn providers(openrouter_configured: bool) -> Vec<ProviderStatus> {
     ProviderKind::ALL
         .iter()

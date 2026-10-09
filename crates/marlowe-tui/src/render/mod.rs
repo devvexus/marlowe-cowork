@@ -2,11 +2,13 @@
 //!
 //! Every style here has a foreground only. The terminal's own background is the background.
 
+mod boot;
 mod conversation;
 mod library;
 mod memory;
 mod overlay;
 mod rail;
+mod watch;
 
 use marlowe_surface::chrome::Ink;
 use marlowe_surface::{Theme, MIN_COLS, MIN_ROWS};
@@ -112,11 +114,16 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
     draw_main_frame(&g, state, theme, buf);
     match state.view {
         View::Conversation => {
-            conversation::draw(g.conversation, state, theme, buf);
+            if state.booting() {
+                boot::draw(g.conversation, state, theme, buf);
+            } else {
+                conversation::draw(g.conversation, state, theme, buf);
+            }
             rail::draw(g.rail, state, theme, buf);
         }
         View::Library => library::draw(g.main, state, theme, buf),
         View::Memory => memory::draw(g.main, state, theme, buf),
+        View::Watch => watch::draw(g.main, state, theme, buf),
     }
     let cursor = g.composer.and_then(|r| draw_composer(r, state, theme, buf));
 
@@ -130,6 +137,9 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
             }
         }
         None => {}
+    }
+    if state.overlay.is_none() && !state.booting() {
+        boot::toasts(&g, state, theme, buf);
     }
     if let Some(a) = state.current_approval() {
         overlay::approval(area, state, a, theme, buf);
@@ -147,6 +157,11 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
     }
     if state.view == View::Memory && state.overlay.is_none() {
         if let Some(c) = memory::cursor(g.main, state) {
+            frame.set_cursor_position(c);
+        }
+    }
+    if state.view == View::Watch && state.overlay.is_none() {
+        if let Some(c) = watch::cursor(g.main, state) {
             frame.set_cursor_position(c);
         }
     }
@@ -193,10 +208,17 @@ fn draw_too_small(area: Rect, buf: &mut Buffer, theme: &Theme) {
     }
 }
 
-/// The braille presence meter: six cells, one row, levels 0..=4 per dot column.
+/// The braille presence meter: six cells, one row, levels 0..=4 per dot column. It assembles
+/// during the boot and follows the voice envelope while Marlowe speaks.
 pub(crate) fn meter(state: &State) -> String {
     let act = state.activity();
-    let levels: [u8; 12] = if act.moving() {
+    let boot = state.wake.boot.filter(|b| b.active(state.now_ms));
+    let voice = state.wake.voice_levels(state.now_ms);
+    let levels: [u8; 12] = if let Some(b) = boot {
+        b.meter_levels(state.now_ms)
+    } else if let (Some(v), false) = (voice, act.moving()) {
+        v
+    } else if act.moving() {
         let t = state.now_ms.max(0) as f64 / 1000.0;
         let speed = match act {
             Activity::Thinking => 4.2,
@@ -233,7 +255,7 @@ fn title_right(state: &State) -> (Vec<Span<'static>>, Option<(u16, u16)>) {
         Span::raw(" "),
         Span::raw(meter(state)),
         Span::raw(" "),
-        Span::raw(act.label()),
+        Span::raw(if state.booting() { "waking" } else { act.label() }),
         Span::raw(" · "),
     ];
     let model = match state.library.conductor() {
@@ -270,6 +292,7 @@ fn draw_main_frame(g: &Geometry, state: &State, theme: &Theme, buf: &mut Buffer)
     let sub = match state.view {
         View::Library => Some("library".to_string()),
         View::Memory => Some("memory".to_string()),
+        View::Watch => Some("watch".to_string()),
         View::Conversation => state.title.as_deref().map(text::clean),
     };
     if let Some(sub) = sub {
@@ -283,6 +306,8 @@ fn draw_main_frame(g: &Geometry, state: &State, theme: &Theme, buf: &mut Buffer)
     let (spans, _) = title_right(state);
     let act = state.activity();
     let meter_style = match act {
+        _ if state.booting() => ink(Ink::Accent, theme),
+        Activity::Speaking => ink(Ink::Speech, theme),
         Activity::Offline => ink(Ink::Red, theme),
         Activity::Awaiting => ink(Ink::Amber, theme),
         a if a.moving() => ink(Ink::Accent, theme),

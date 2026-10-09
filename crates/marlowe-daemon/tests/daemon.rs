@@ -170,6 +170,8 @@ fn deps_with(provider: Arc<Scripted>, mind: Option<Mind>) -> DaemonDeps {
         tools: Arc::new(|_| Arc::new(FakeTools) as Arc<dyn ToolHost>),
         user: UserInfo { name: Some("Tester".into()), address: None },
         mind,
+        sentinel: None,
+        voice: None,
     }
 }
 
@@ -207,10 +209,15 @@ struct Client {
 
 impl Client {
     fn connect(info: &DaemonInfo, since_seq: Option<u64>) -> Client {
+        Self::connect_as(info, since_seq, "test")
+    }
+
+    /// `"tui"` is an interactive client: it counts as presence and may be briefed.
+    fn connect_as(info: &DaemonInfo, since_seq: Option<u64>, name: &str) -> Client {
         let w = TcpStream::connect(info.addr()).unwrap();
         w.set_read_timeout(Some(WAIT)).unwrap();
         let mut c = Client { r: LineReader::new(BufReader::new(w.try_clone().unwrap())), w, welcome_seq: 0 };
-        c.send(&Request::Hello { token: info.token.clone(), client: "test".into(), since_seq });
+        c.send(&Request::Hello { token: info.token.clone(), client: name.into(), since_seq });
         let env = c.next().expect("welcome");
         match env.event {
             Event::Welcome { seq, .. } => c.welcome_seq = seq,
@@ -623,6 +630,59 @@ fn a_client_that_idles_past_the_hello_timeout_stays_connected() {
     a.send(&Request::Ask { session: None, text: "after a pause".into(), workspace: None });
     let got = a.until(is_finished);
     assert!(matches!(got.last().map(|e| &e.event), Some(Event::TurnFinished { stop: TurnStop::Done, .. })));
+    stop(d, &home);
+}
+
+#[test]
+fn an_interactive_client_is_briefed_once_into_the_days_session() {
+    let home = temp_home("brief");
+    seed_model(&home);
+    let p = Arc::new(Scripted::default());
+    let d = start(&home, p.clone(), DaemonConfig::default());
+
+    let mut tui = Client::connect_as(&d.info, None, "tui");
+    let env = tui.until(|e| matches!(e, Event::Brief { .. })).pop().unwrap();
+    assert_eq!(env.seq, 0, "a brief is a reply to the client that arrived");
+    let Event::Brief { text, spoken, session, .. } = env.event else { unreachable!() };
+    // No Sentinel in this daemon: the brief says so instead of claiming a quiet night.
+    assert!(text.ends_with("The Sentinel is not running, so I have nothing on your runs."), "{text}");
+    assert_eq!(spoken, text);
+    let sid = session.expect("the brief is stored in the day's session");
+    match tui.request(&Request::OpenSession { session: sid.clone() }, |e| matches!(e, Event::Transcript { .. })) {
+        Event::Transcript { turns, .. } => {
+            assert_eq!(turns.len(), 1);
+            assert_eq!(turns[0].role, Role::Assistant);
+            assert_eq!(Message { role: turns[0].role, content: turns[0].content.clone() }.joined_text(), text);
+        }
+        _ => unreachable!(),
+    }
+    drop(tui);
+
+    // Back within minutes on the same day: no second brief.
+    let mut again = Client::connect_as(&d.info, None, "tui");
+    again.send(&Request::Status);
+    let seen = again.until(|e| matches!(e, Event::Status(_)));
+    assert!(!seen.iter().any(|e| matches!(e.event, Event::Brief { .. })), "{seen:#?}");
+
+    // `marlowe brief` asks explicitly: composed now, not stored.
+    let mut cli = Client::connect(&d.info, None);
+    match cli.request(&Request::Brief, |e| matches!(e, Event::Brief { .. })) {
+        Event::Brief { text, session, .. } => {
+            assert!(text.ends_with("The Sentinel is not running, so I have nothing on your runs."), "{text}");
+            assert_eq!(session, None);
+        }
+        _ => unreachable!(),
+    }
+    // Without a Sentinel or a voice those requests say so.
+    match cli.request(&Request::WatchList, |e| matches!(e, Event::Error { .. })) {
+        Event::Error { message, .. } => assert!(message.contains("Sentinel"), "{message}"),
+        _ => unreachable!(),
+    }
+    match cli.request(&Request::Speak { text: "hello".into() }, |e| matches!(e, Event::Error { .. })) {
+        Event::Error { message, .. } => assert!(message.contains("voice"), "{message}"),
+        _ => unreachable!(),
+    }
+    assert!(p.requests().is_empty(), "a quiet brief makes no model call");
     stop(d, &home);
 }
 

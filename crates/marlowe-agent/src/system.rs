@@ -3,6 +3,7 @@
 //! Blocks are appended only when their capability is live; the prompt never leads the harness.
 
 use marlowe_model::SystemBlock;
+use marlowe_proto::GitInfo;
 
 /// The stable persona core.
 pub const PERSONA_CORE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../persona/v3.md"));
@@ -52,14 +53,33 @@ pub struct Environment {
     pub os: String,
     pub workspace: Option<String>,
     pub model: String,
+    /// The workspace's git state (branch, dirty count, last commit), when it is a repository.
+    pub repo: Option<GitInfo>,
 }
 
 impl Environment {
-    /// The environment as of now, on this machine.
+    /// The environment as of now, on this machine. `repo` is left empty; the caller sets it.
     pub fn current(workspace: Option<String>, model: impl Into<String>) -> Self {
         let now = chrono::Local::now().format("%A %-d %B %Y, %H:%M (UTC%:z)").to_string();
-        Self { now, os: os_name(), workspace, model: model.into() }
+        Self { now, os: os_name(), workspace, model: model.into(), repo: None }
     }
+}
+
+/// `main · 3 uncommitted · last commit 1a2b3c4 "fix the gate"`.
+fn repo_line(g: &GitInfo) -> String {
+    let mut t = if g.branch.is_empty() { "detached HEAD".to_string() } else { g.branch.clone() };
+    t.push_str(&match g.dirty {
+        0 => " · clean".to_string(),
+        1 => " · 1 uncommitted change".to_string(),
+        n => format!(" · {n} uncommitted changes"),
+    });
+    match (&g.head, &g.subject) {
+        (Some(h), Some(s)) => t.push_str(&format!(" · last commit {h} \"{}\"", s.trim())),
+        (None, Some(s)) => t.push_str(&format!(" · last commit \"{}\"", s.trim())),
+        (Some(h), None) => t.push_str(&format!(" · last commit {h}")),
+        (None, None) => {}
+    }
+    t
 }
 
 fn os_name() -> String {
@@ -121,6 +141,11 @@ impl SystemPrompt {
         self.env = Some(e);
     }
 
+    /// The environment set on this prompt, if any.
+    pub fn env(&self) -> Option<&Environment> {
+        self.env.as_ref()
+    }
+
     pub fn blocks(&self) -> &[PersonaBlock] {
         &self.blocks
     }
@@ -178,6 +203,10 @@ impl SystemPrompt {
             t.push_str(&format!("Workspace: {w}
 "));
         }
+        if let Some(g) = &e.repo {
+            t.push_str(&format!("Repo: {}
+", repo_line(g)));
+        }
         if !e.model.is_empty() {
             t.push_str(&format!("Model: {}
 ", e.model));
@@ -234,6 +263,13 @@ mod tests {
                 os: "Windows (x86_64)".into(),
                 workspace: Some("C:/work".into()),
                 model: "ollama/qwen3:8b".into(),
+                repo: Some(GitInfo {
+                    branch: "main".into(),
+                    dirty: 3,
+                    head: Some("1a2b3c4".into()),
+                    subject: Some("gate refactor".into()),
+                    ..Default::default()
+                }),
             });
         let r = p.render();
         assert_eq!(r.len(), 3);
@@ -241,6 +277,7 @@ mod tests {
         assert!(r[1].text.contains("Name: Matthew") && r[1].text.contains("Formal address: sir"));
         assert!(r[1].cache);
         assert!(r[2].text.contains("Workspace: C:/work"));
+        assert!(r[2].text.contains("Repo: main · 3 uncommitted changes · last commit 1a2b3c4 \"gate refactor\""), "{}", r[2].text);
         assert!(!r[2].cache, "the environment changes every turn and is never cached");
     }
 

@@ -199,4 +199,34 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace: Option<String>,
     },
+    /// Composes the brief now (`marlowe brief`); answered with `Brief` to this client only.
+    Brief,
+    /// Answered with `WatchState`.
+    WatchList,
+    /// Adds a watch root (explicit consent); answered with `WatchState`.
+    WatchAdd { path: String },
+    /// Removes a watch root; answered with `WatchState`.
+    WatchRemove { path: String },
+    /// Runs discovery; answered with `WatchCandidates`. Never adds anything.
+    WatchCandidates,
+    /// Lists notices, newest first, with `seen` for this client; answered with `Notices`.
+    ListNotices {
+        limit: u32,
+        #[serde(default)]
+        unseen_only: bool,
+    },
+    /// Marks a notice seen for this client.
+    NoticeSeen { id: String },
+    /// Speaks `text` (subject to voice being enabled; quiet hours do not apply to explicit asks).
+    Speak { text: String },
+    /// Barge-in: stops speaking now.
+    StopSpeaking,
+    /// Changes voice settings; `None` leaves a field as it is. Answered with `VoiceState`, so
+    /// `VoiceSettings { enabled: None, voice: None }` is a query.
+    VoiceSettings {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        voice: Option<String>,
+    },
 }

@@ -188,6 +188,23 @@ fn entry_lines(e: &Entry, state: &State, width: usize, theme: &Theme, out: &mut 
             }
             out.push(Line::from(spans));
         }
+        Entry::Brief { text: t, offers } => {
+            let base = Style::default().fg(theme.speech());
+            out.extend(markdown::render_prose(t, width, theme, base));
+            for o in offers {
+                let path = text::truncate(&text::short_path(&text::clean(&o.path)), width.saturating_sub(24).max(8));
+                let mut spans = vec![
+                    Span::styled(format!("{} ", chrome::DISCLOSURE_CLOSED), ink(Ink::Accent, theme)),
+                    Span::styled(format!("watch {path}"), ink(Ink::Dim, theme)),
+                ];
+                if o.live_runs > 0 {
+                    let runs = format!(" · {} live run{}", o.live_runs, if o.live_runs == 1 { "" } else { "s" });
+                    spans.push(Span::styled(runs, ink(Ink::Green, theme)));
+                }
+                spans.push(Span::styled("  ^w", ink(Ink::Dimmer, theme)));
+                out.push(Line::from(spans));
+            }
+        }
         Entry::Usage { usage } => {
             let mut parts = vec![
                 format!("{} in", text::compact(usage.input)),

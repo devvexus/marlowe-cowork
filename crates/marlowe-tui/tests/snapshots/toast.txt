@@ -1,0 +1,40 @@
+╭─ MARLOWE ───────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle · Claude Sonnet 4.5 ▾ · C:/work/valiance · 23:40 ─╮
+│                                                        ╭────────────────────────────────────────────╮ │  CREW                            │
+│                                                        │ ✗ wnr5 loss is NaN                         │ │  no runs                         │
+│                                                        │ step 4,120 · loss nan                      │ │                                  │
+│                                                        ╰────────────────────────────────────────────╯ │  WATCH                   1 alive │
+│                                                                                                       │  ✗ llama-8b-sweep-b              │
+│                                                                                                       │    torch.OutOfMemoryError: CUDA… │
+│                                                                                                       │  ◐ marlowe-valiance-22b-wnr3     │
+│                                                                                                       │    silent 23m · pid 51200 alive  │
+│                                                                                                       │  ● marlowe-valiance-22b-wnr5     │
+│                                                                                                       │    wnr-p5 · layer 9 · 40s ago    │
+│                                                                                                       │  ✓ marlowe-valiance-22b-wnr4     │
+│                                              ⣿  MARLOWE                                               │    [05:19:34] done · audit3_mar… │
+│                                                                                                       │  ✗ wnr5 loss is NaN              │
+│                                                                                                       │  ✓ wnr4 best top1                │
+│                                             Good evening.                                             │                                  │
+│                                                                                                       │  THREADS                         │
+│                    ask anything  ·  ^o past sessions  ·  ^l library  ·  ^k palette                    │  no open threads                 │
+│                                                                                                       │                                  │
+│                                                                                                       │  TODAY                           │
+│                                                                                                       │  Friday 9 October                │
+│                                                                                                       │  quiet now · 23:00–07:00         │
+│                                                                                                       │  no routines                     │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+│                                                                                                       │                                  │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › message Marlowe…                                                                                                                       │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────── ↵ send  ⇧↵ newline  ^k palette ─╯

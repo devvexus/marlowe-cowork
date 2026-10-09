@@ -5,11 +5,16 @@ use std::sync::Arc;
 
 use marlowe_agent::{ToolHost, UserInfo};
 use marlowe_brains::{api_key, CredentialStore, KeyringStore, ProviderConfig, ProviderFactory};
-use marlowe_daemon::{DaemonDeps, ToolHostFactory};
+use marlowe_daemon::{DaemonDeps, SentinelLink, ToolHostFactory, VoiceLink};
 use marlowe_exec::{SearchBackend, SearchResponse, SearchResult};
 use marlowe_model::{
     CancelToken, ChatRequest, Effort, Message, Provider, ProviderError, ProviderKind, ToolSpec,
 };
+
+/// Sentinel events queued for the daemon's forwarder; a full queue drops, never blocks a watcher.
+const SENTINEL_QUEUE: usize = 1024;
+/// Voice events (envelope chunks at 30 Hz) queued for the forwarder.
+const VOICE_QUEUE: usize = 256;
 
 /// Small model that runs the OpenRouter server-side search tool.
 const SEARCH_MODEL_DEFAULT: &str = "google/gemini-2.5-flash";
@@ -123,6 +128,38 @@ pub fn daemon_deps(home: &Path) -> DaemonDeps {
         tools: tool_factory(credentials),
         user: user_info(home),
         mind: open_mind(home),
+        sentinel: start_sentinel(home),
+        voice: start_voice(home),
+    }
+}
+
+/// The watchers over the persisted roots. A Sentinel that fails to start (or panics doing so)
+/// leaves the daemon without watching, said on stderr; it never stops the daemon.
+pub fn start_sentinel(home: &Path) -> Option<SentinelLink> {
+    let (tx, events) = crossbeam_channel::bounded(SENTINEL_QUEUE);
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| marlowe_sentinel::Sentinel::start(home, Vec::new(), tx))) {
+        Ok(Ok(sentinel)) => Some(SentinelLink { sentinel, events }),
+        Ok(Err(e)) => {
+            eprintln!("marlowe: the Sentinel is not running: {e}");
+            None
+        }
+        Err(_) => {
+            eprintln!("marlowe: the Sentinel failed to start");
+            None
+        }
+    }
+}
+
+/// Spoken voice. Without a speech backend the voice reports itself unavailable; only a panic
+/// leaves the daemon silent.
+pub fn start_voice(home: &Path) -> Option<VoiceLink> {
+    let (tx, events) = crossbeam_channel::bounded(VOICE_QUEUE);
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| marlowe_voice::Voice::start(home, tx))) {
+        Ok(voice) => Some(VoiceLink { voice, events }),
+        Err(_) => {
+            eprintln!("marlowe: voice failed to start");
+            None
+        }
     }
 }
 

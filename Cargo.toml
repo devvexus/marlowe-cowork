@@ -26,6 +26,9 @@ members = [
     "crates/marlowe",
     # M2: the memory service.
     "crates/marlowe-mind",
+    # M3: the Wake — watchers, notices, the brief, and spoken voice.
+    "crates/marlowe-sentinel",
+    "crates/marlowe-voice",
 ]
 # Reference sources only; never built.
 exclude = ["legacy"]
@@ -56,6 +59,8 @@ marlowe-provider = { path = "crates/marlowe-provider" }
 marlowe-openrouter = { path = "crates/marlowe-openrouter" }
 marlowe-exec = { path = "crates/marlowe-exec" }
 marlowe-mind = { path = "crates/marlowe-mind" }
+marlowe-sentinel = { path = "crates/marlowe-sentinel" }
+marlowe-voice = { path = "crates/marlowe-voice" }
 
 # Terminal. crossterm, not termion: Windows is the primary platform.
 ratatui = "0.30"
@@ -87,6 +92,23 @@ crossbeam-channel = "0.5"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 # API keys live in Windows Credential Manager, never on disk.
 keyring = { version = "3", features = ["windows-native"] }
+
+# M3. File events for the Sentinel (ReadDirectoryChangesW on Windows); debounced in-crate.
+notify = "8.2"
+# NVML loaded at runtime (nvml.dll); absent means "GPU unavailable", never a build dependency.
+nvml-wrapper = "0.13"
+# WinRT speech and playback for the in-daemon voice, plus the Win32 process query the Sentinel
+# uses to ask whether a pid is alive (query-limited rights; never signals). Pinned exactly.
+windows = { version = "=0.62.2", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Media_Core",
+    "Media_Playback",
+    "Media_SpeechSynthesis",
+    "Storage_Streams",
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
 
 [profile.release]
 debug = 1

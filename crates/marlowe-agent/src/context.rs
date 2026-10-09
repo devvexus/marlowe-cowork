@@ -357,6 +357,7 @@ mod tests {
             os: "os".into(),
             workspace: None,
             model: "m".into(),
+            repo: None,
         });
         let mut convo = Conversation::new(SessionId::from("s"), None);
         convo.summary = Some("earlier stuff".into());

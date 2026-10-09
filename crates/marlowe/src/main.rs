@@ -10,6 +10,7 @@ mod doctor;
 mod eval;
 mod launcher;
 mod memory_cmd;
+mod watch_cmd;
 mod wire;
 
 use std::path::PathBuf;
@@ -26,6 +27,11 @@ marlowe sessions [limit]                  recent sessions: id, turns, workspace,
 marlowe memory [search <query> [--limit N] [--project DIR | --global] | stats
                 | probe <query> [--workspace DIR] | forget <id>
                 | correct <id> <text> | import [--from DIR] | bench [--n N]]
+marlowe watch [list | add <dir> | remove <dir> | candidates]
+                                          what the Sentinel watches; roots are added only here
+                                          or in the TUI (candidates are offers, never added)
+marlowe brief                             the brief now: what changed since you were last here
+marlowe say <text>                        speak through the daemon's voice
 marlowe status | shutdown | doctor
 
 ask streams the reply to stdout. A tool that needs approval prompts on stdin; --yes allows
@@ -56,6 +62,9 @@ fn dispatch(home: &std::path::Path, args: &[String]) -> Result<i32, String> {
         Some("models") => commands::models(home, rest),
         Some("sessions") => commands::sessions(home, rest),
         Some("memory") => memory_cmd::run(home, rest),
+        Some("watch") => watch_cmd::watch(home, rest),
+        Some("brief") => watch_cmd::brief(home),
+        Some("say") => watch_cmd::say(home, rest),
         Some("status") => commands::status(home),
         Some("shutdown") => commands::shutdown(home),
         Some("doctor") => Ok(doctor::run(home)),

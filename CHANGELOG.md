@@ -4,6 +4,50 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### M3 The Wake v1
+- **Added.** `marlowe-sentinel`, a strictly read-only watcher over consented roots.
+  - Run dirs: the heartbeat pid, with protection against pid reuse, gives alive / stalled / finished / failed / ended. Stalled means the heartbeat is older than max(10 min, 5x its usual gap).
+  - Logs are tailed for completion, error, traceback, NaN, OOM and Killed lines.
+  - Metric JSON is diffed against its nearest sibling (wnr3 → wnr4), with best-so-far tracked only for metric names whose direction is known.
+  - `trainer_state.json`, JSONL and CSV are checked for NaN, divergence, plateau and finished.
+  - Also watched: git (branch, dirty count, new commits; never fetches), Ollama `/api/tags`, and NVML.
+  - Notices are deduped, ranked and persisted in `cowork.db`, with seen marks per client and quiet hours. Discovery only offers candidates.
+- **Added.** `marlowe-voice`: WinRT SpeechSynthesizer to a buffer, a 30 Hz RMS envelope and MediaPlayer playback, run by an actor with barge-in. The voice is the saved choice, then en-GB male, then en-GB, then the system default. On/off and the voice name persist in `voice.json`.
+- **Added.** Daemon brief (`brief.rs`, `brief_ops.rs`): a deterministic brief in persona v3's register, given to the tui client after 2 h away or on the first session of the day, and stored in the day's session.
+  - The optional polish is one call with a 6 s deadline, rejected if it adds a number or breaks the register.
+  - Urgent notices are spoken outside quiet hours.
+  - Presence (`daemon_kv`) is recorded in `cowork.db`.
+- **Added.** Proto: `Brief`, `WatchList|Add|Remove|Candidates`, `ListNotices`, `NoticeSeen`, `Speak`, `StopSpeaking`, `VoiceSettings` requests; `Brief`, `Notice`, `Notices`, `WatchState`, `WatchCandidates`, `VoiceState` events.
+- **Added.** CLI: `marlowe watch [list|add|remove|candidates]`, `marlowe brief`, `marlowe say`.
+- **Added.** TUI wake:
+  - a boot overlay that shows real systems lines (1.2 s, or 300 ms on a relaunch within 30 min; any key skips);
+  - the brief as Marlowe's first message, with a presence meter driven by the voice envelope;
+  - WATCH and TODAY rail sections, toasts for Attention and Alarm notices, and a Watch view (`^w`).
+- **Added.** Live repo context: `Environment.repo` holds the branch, dirty count and last commit, taken from `Sentinel::git_context`.
+- **Fixed (integration).** A metric notice that is best on more than 3 metrics is titled `best so far on N metrics` instead of listing every name; the live valiance audit listed 16. In the brief, a log line copied into two logs in one run dir is said once, and its `[hh:mm:ss]` is not repeated after "completed at".
+- **Fixed (review).**
+  - Log tails never split a line. Before, a file read with leftover per-pass budget could cut a line in two: `held-out error 0.12` became a false "logged an error", and a CSV header could be cut. Now only a newline-less run as long as the full per-tick cap counts as one line; a shorter cut waits for the next pass.
+  - Run times are the times observed. A run that had already ended when its root was added, or that ended while the daemon was down, is dated by its last heartbeat or log write, not by when Marlowe noticed. Late notices say when (`wnr6 failed at 03:10`). Old runs no longer show up in the brief as "ended at" the time you added the root.
+  - The brief polish no longer loads a local model (Ollama, GGUF) onto the GPU your jobs use. It is off by default for local providers. With `MARLOWE_BRIEF_LOCAL_POLISH=1` it runs only when every GPU is idle and no watched run is live.
+  - The polish is held to persona v3. Rejected: any phrase from `<words_to_avoid>` (read from `persona/v3.md`), any emoji, more than five sentences, and dropping an attention item the draft states (its name and its numbers).
+  - Spoken notices are said once, and again only if the severity rises. A 30-minute re-raise with a new detail shows on screen but is not spoken.
+  - Spoken form: `NaN/inf` is read "NaN or inf", not "inf"; only real paths shrink to their last part. Log decoration (`===`) is no longer read aloud.
+  - Brief honesty:
+    - A stall or failure the run has since recovered from no longer shows as needing you.
+    - A stage log's "completed" inside a live run is folded into that run's "still running" line, not reported as finished.
+    - Plain "new results" stay on the board.
+    - A best-so-far keeps its leading numbers when the full detail is too long; metric details now list bests first.
+    - `===` no longer appears in brief text.
+  - With the Sentinel not running, the brief says "The Sentinel is not running, so I have nothing on your runs." instead of "Nothing moved while you were away."
+- **Verified.**
+  - `cargo check --workspace --all-targets` is clean apart from the 4 existing marlowe-memory lints.
+  - `cargo test --workspace --no-fail-fast`: 1170 passed, 0 failed, 7 ignored (after the review fixes; 1162 before).
+  - Live on a debug build with a temp home, against `PruningResearch\valiance` while a run was going:
+    - discovery offered valiance (1 live run) and engine;
+    - the steady-state daemon used about 4 ms CPU per second, with a working set of about 70 MB;
+    - every file added or removed under the root was the research job's own.
+- **Known.** No en-GB voice is installed on the dev machine, so the voice is David (en-US). Live audio playback was not run. Polish runs on the Quick or Conductor slot. On a local model it is skipped unless `MARLOWE_BRIEF_LOCAL_POLISH=1` is set; a remote slot cannot be switched off.
+
 ### M2.6 Profile in context
 - **Added.** `Mind::profile(ProfileQuery)` returns `Profile { block, ids, tokens, omitted }`. It holds live Preference, Decision, Fact and Procedure records written deliberately (remember, a correction, the harness), never untrusted, Global or in the current project. Each is one line, such as `- preference · 3 Sep: use uv, not pip`. Order is preference, decision, fact, procedure, newest first, capped at 1,500 tokens. The block is deterministic. The reason: short personal facts score poorly on the cross-encoder (admission-floor study), so what the conductor deliberately records now sits in context every turn.
 - **Changed.** `MindMemory` sends the profile as its own cached block in the context tier. `InjectQuery.exclude` keeps profile ids out of the retrieval pool. `MemoryProbe` does not exclude them.

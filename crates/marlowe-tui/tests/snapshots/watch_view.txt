@@ -1,0 +1,40 @@
+╭─ MARLOWE · watch ───────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
+│                                                                                                                                          │
+│  Watch  ·  1 root · 4 runs · 1 alive                                                                                                     │
+│  quiet 23:00–07:00 · gpu RTX 4090 87% · 20.1/24.0 GB · 71°C · ollama 14 models · voice George (en-GB)                                    │
+│                                                                                                                                          │
+│  ROOTS                                                                                                                                   │
+│  › D:/lab/PruningResearch/valiance                         4 runs · main · 2 dirty · wnr5: layer schedule from the audit                 │
+│                                                                                                                                          │
+│  OFFERS                                                                                                                                  │
+│    D:/lab/PruningResearch/quill                            1 live run · heartbeat.json, 3 logs, 2 metric files · 2h ago                  │
+│                                                                                                                                          │
+│  RUNS                                                                                                                                    │
+│    ✗ llama-8b-sweep-b                  failed   torch.OutOfMemoryError: CUDA out of memory.                                              │
+│    ◐ marlowe-valiance-22b-wnr3         stalled  silent 23m · pid 51200 alive                                                             │
+│    ● marlowe-valiance-22b-wnr5         alive    wnr-p5 · layer 9 · 40s ago                                                               │
+│    ✓ marlowe-valiance-22b-wnr4         finished [05:19:34] done · audit3_marlowe-valiance-22b-wnr4.json written                          │
+│                                                                                                                                          │
+│  NOTICES                                                                                                                                 │
+│    ▲ wnr3 stalled                            silent 23m                                                                    2m ago        │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+╰─────────────────────────────────────────────────────────── ↵ watch offer  ·  a add  ·  x remove  ·  r rescan  ·  ↑↓ select  ·  esc back ─╯

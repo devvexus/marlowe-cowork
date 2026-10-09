@@ -80,7 +80,14 @@ fn event_loop(client: &Client, state: &mut State, theme: &Theme) -> Result<(), T
         if state.quit {
             return Ok(());
         }
-        let wait = if state.activity().moving() { 90 } else { 1_000 };
+        // The boot and the voice meter move at ~30 fps; a turn at ~11; otherwise once a second.
+        let wait = if state.booting() || state.wake.speaking() {
+            33
+        } else if state.animating() {
+            90
+        } else {
+            1_000
+        };
         // The clock is re-read before anything is applied: the approval type-ahead guard compares
         // a key's arrival with the modal's.
         select! {
@@ -113,6 +120,7 @@ fn event_loop(client: &Client, state: &mut State, theme: &Theme) -> Result<(), T
 fn tick(state: &mut State) {
     let now = chrono::Local::now();
     state.clock = now.format("%H:%M").to_string();
+    state.date = now.format("%A %-d %B").to_string();
     state.now_ms = now.timestamp_millis();
 }
 

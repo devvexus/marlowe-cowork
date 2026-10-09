@@ -12,6 +12,9 @@ marlowe-agent.workspace = true
 marlowe-brains.workspace = true
 marlowe-daemon.workspace = true
 marlowe-mind.workspace = true
+marlowe-sentinel.workspace = true
+marlowe-voice.workspace = true
+crossbeam-channel.workspace = true
 chrono.workspace = true
 marlowe-tui.workspace = true
 # Concrete providers and tools are wired here and nowhere else.

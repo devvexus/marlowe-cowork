@@ -12,6 +12,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod brief;
+mod brief_ops;
 mod bus;
 mod client;
 mod daemon;
@@ -20,13 +22,17 @@ mod mind;
 mod mind_ops;
 mod session;
 mod store;
+mod watch_ops;
 
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crossbeam_channel::Receiver;
 use marlowe_agent::{ToolHost, UserInfo};
 use marlowe_brains::{BrainsError, ProviderFactory};
+use marlowe_sentinel::{Sentinel, SentinelEvent};
+use marlowe_voice::{Voice, VoiceEvent};
 
 pub use daemon::Daemon;
 pub use mind::{ComposedTools, MindMemory, MindTools, RecallSink, MEMORY_TOOLS};
@@ -44,6 +50,23 @@ pub struct DaemonDeps {
     pub user: UserInfo,
     /// The memory service. `None`: no memory (tests, or a profile that failed to open).
     pub mind: Option<marlowe_mind::Mind>,
+    /// The watchers. `None`: no Sentinel (tests); watch requests answer with an error.
+    pub sentinel: Option<SentinelLink>,
+    /// Spoken voice. `None`: silent (tests); voice requests answer with an error.
+    pub voice: Option<VoiceLink>,
+}
+
+/// A started [`Sentinel`] and the receiving end of the sink it was started with. The daemon
+/// forwards its events to the bus and shuts it down on exit.
+pub struct SentinelLink {
+    pub sentinel: Sentinel,
+    pub events: Receiver<SentinelEvent>,
+}
+
+/// A started [`Voice`] and the receiving end of its event channel.
+pub struct VoiceLink {
+    pub voice: Voice,
+    pub events: Receiver<VoiceEvent>,
 }
 
 /// Tunables. `Default` is what the binary runs with; tests shrink them.
@@ -67,6 +90,10 @@ pub struct DaemonConfig {
     pub session_idle: Duration,
     /// Offer the old harness profile to each client after `Welcome` (needs a memory service).
     pub legacy_offer: bool,
+    /// Let the brief's polish call a local model (Ollama, GGUF). Off by default: it would load a
+    /// model onto the GPU the user's jobs use. Even when on, it waits for an idle GPU and no live
+    /// run. `MARLOWE_BRIEF_LOCAL_POLISH=1` turns it on for `marlowe daemon`.
+    pub local_polish: bool,
 }
 
 impl Default for DaemonConfig {
@@ -80,6 +107,7 @@ impl Default for DaemonConfig {
             drain_timeout: Duration::from_secs(10),
             session_idle: Duration::from_secs(30 * 60),
             legacy_offer: true,
+            local_polish: false,
         }
     }
 }
@@ -100,7 +128,8 @@ pub enum DaemonError {
 /// Runs the daemon for the profile home `home` until `Shutdown`. Binds 127.0.0.1:0, writes
 /// `daemon.json`, serves clients, and removes `daemon.json` on exit.
 pub fn run(deps: DaemonDeps, home: &Path) -> Result<(), DaemonError> {
-    Daemon::start(deps, home, DaemonConfig::default())?.wait()
+    let local_polish = std::env::var("MARLOWE_BRIEF_LOCAL_POLISH").is_ok_and(|v| v.trim() == "1");
+    Daemon::start(deps, home, DaemonConfig { local_polish, ..DaemonConfig::default() })?.wait()
 }
 
 /// Unix epoch milliseconds.

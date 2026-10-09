@@ -22,6 +22,16 @@ impl State {
         }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
 
+        // Any key ends the boot and then does what it would have done: typing is never delayed.
+        self.wake.boot = None;
+        // Barge-in: any key stops the voice.
+        if self.wake.speaking() {
+            if let Some(v) = &mut self.wake.voice {
+                v.speaking = false;
+            }
+            out.push(Request::StopSpeaking);
+        }
+
         // The approval modal takes every key while it is up, except quit (the daemon then times
         // the request out to Deny).
         if ctrl && k.code == KeyCode::Char('q') {
@@ -48,6 +58,10 @@ impl State {
                     'o' => Some(Command::Sessions),
                     'l' => Some(Command::Library),
                     'g' => Some(Command::Memory),
+                    // ^w deletes a word while there is text in the composer, as ^c clears it.
+                    'w' if !(self.view == View::Conversation && !self.composer.text().is_empty()) => {
+                        Some(Command::Watch)
+                    }
                     't' => Some(Command::ToggleThinking),
                     'c' if self.view == View::Conversation && !self.composer.text().is_empty() => {
                         self.composer.clear();
@@ -73,6 +87,7 @@ impl State {
                 }
             }
             View::Memory => self.memory_key(k, &mut out),
+            View::Watch => self.watch_key(k, &mut out),
             View::Conversation => self.conversation_key(k, &mut out),
         }
         out
@@ -80,6 +95,7 @@ impl State {
 
     /// A bracketed or detected paste.
     pub fn on_paste(&mut self, text: &str) {
+        self.wake.boot = None;
         if !self.approvals.is_empty() {
             return;
         }
@@ -100,6 +116,11 @@ impl State {
                 crate::memory::MemMode::Correct { input, .. } => input.insert_str(text),
                 crate::memory::MemMode::ConfirmForget { .. } => {}
             },
+            (None, View::Watch) => {
+                if let crate::wake::WatchMode::Add { input } = &mut self.wake.mode {
+                    input.insert_str(text.lines().next().unwrap_or("").trim());
+                }
+            }
             (None, View::Conversation) => self.composer.insert_str(text),
         }
     }
@@ -107,6 +128,9 @@ impl State {
     /// Handles a mouse event against a frame of `area`.
     pub fn on_mouse(&mut self, m: MouseEvent, area: Rect) -> Vec<Request> {
         let mut out = Vec::new();
+        if matches!(m.kind, MouseEventKind::Down(_)) {
+            self.wake.boot = None;
+        }
         let g = geometry(area, self);
         let at = Position { x: m.column, y: m.row };
         match m.kind {
@@ -184,6 +208,21 @@ impl State {
                 } else {
                     self.open_memory(out);
                 }
+            }
+            Command::Watch => {
+                if self.view == View::Watch {
+                    self.view = View::Conversation;
+                } else {
+                    self.open_watch(out);
+                }
+            }
+            Command::Brief => {
+                self.view = View::Conversation;
+                out.push(Request::Brief);
+            }
+            Command::ToggleVoice => {
+                let on = self.wake.voice.as_ref().is_some_and(|v| v.enabled);
+                out.push(Request::VoiceSettings { enabled: Some(!on), voice: None });
             }
             Command::ImportMemories => {
                 if self.import.is_none() {
