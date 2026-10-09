@@ -3,7 +3,7 @@
 //! *"The ONLY write path. Stamps seq, ts, and signature. There is no unsigned variant."*
 
 use marlowe_contract::Clock;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::JournalError;
 use crate::event::{Actor, AppendRequest, EventKind, JournalEvent, Seq};
@@ -51,8 +51,35 @@ impl Journal {
         Ok(journal)
     }
 
+    /// Open the journal trusting everything up to a checkpoint: the event at `seq` must carry
+    /// `signature`, and only the events after it are verified. The checkpoint comes from a
+    /// sealed snapshot this profile wrote, so boot cost follows the tail, not the history.
+    /// [`JournalError::CheckpointMismatch`] means the caller should fall back to [`Self::open`].
+    pub fn open_from_checkpoint(profile: &Profile, seq: Seq, signature: &str) -> Result<Self, JournalError> {
+        let conn = store::open(&profile.journal_path())?;
+        let stored: Option<String> = conn
+            .query_row("SELECT signature FROM journal WHERE seq = ?1", [seq as i64], |r| r.get(0))
+            .optional()?;
+        if seq == 0 || stored.as_deref() != Some(signature) {
+            return Err(JournalError::CheckpointMismatch { seq });
+        }
+        let mut journal = Self {
+            conn,
+            key: profile.key().clone(),
+            last_seq: seq,
+            last_signature: signature.to_string(),
+        };
+        journal.verify_from(seq, signature.to_string())?;
+        Ok(journal)
+    }
+
     pub fn last_seq(&self) -> Seq {
         self.last_seq
+    }
+
+    /// Signature of the last event (`genesis` when empty); a snapshot stores it as its checkpoint.
+    pub fn last_signature(&self) -> &str {
+        &self.last_signature
     }
 
     /// **The only write path.** Stamps `seq`, `ts` and `signature`.
@@ -136,17 +163,22 @@ impl Journal {
     /// whose integrity is the basis of invariant 7. When the log grows enough for this to
     /// hurt, the answer is a checkpointed verification, not a skipped one.
     pub fn verify_chain(&mut self) -> Result<(), JournalError> {
+        self.verify_from(0, GENESIS.to_string())
+    }
+
+    /// Verify every event after `after`, chaining from `prev` (the signature at `after`).
+    fn verify_from(&mut self, after: Seq, prev: String) -> Result<(), JournalError> {
         let mut stmt = self.conn.prepare(
             "SELECT seq, ts, trace_id, session_id, run_id, actor, kind, payload,
                     prev_signature, signature
-             FROM journal ORDER BY seq ASC",
+             FROM journal WHERE seq > ?1 ORDER BY seq ASC",
         )?;
 
-        let mut expected_seq: Seq = 1;
-        let mut prev = GENESIS.to_string();
-        let mut last_seq: Seq = 0;
+        let mut expected_seq: Seq = after + 1;
+        let mut prev = prev;
+        let mut last_seq: Seq = after;
 
-        let mut rows = stmt.query([])?;
+        let mut rows = stmt.query([after as i64])?;
         while let Some(row) = rows.next()? {
             let seq: i64 = row.get(0)?;
             let seq = seq as Seq;
@@ -208,27 +240,40 @@ impl Journal {
     /// Operator and audit only. See [`OperatorCapability`].
     pub fn replay(
         &self,
-        _cap: &OperatorCapability,
+        cap: &OperatorCapability,
         kind: Option<EventKind>,
     ) -> Result<Vec<(Seq, EventKind, serde_json::Value)>, JournalError> {
         let mut out = Vec::new();
+        self.replay_after(cap, 0, |seq, this_kind, payload_raw| {
+            if kind.is_none_or(|want| want == this_kind) {
+                out.push((seq, this_kind, serde_json::from_str(payload_raw)?));
+            }
+            Ok::<(), JournalError>(())
+        })?;
+        Ok(out)
+    }
+
+    /// Streams every event with `seq > after`, in order, to `f` with its raw payload JSON.
+    /// Ranged in SQL and never collected, so a snapshot's tail costs only the tail.
+    /// Operator and audit only.
+    pub fn replay_after<E: From<JournalError>>(
+        &self,
+        _cap: &OperatorCapability,
+        after: Seq,
+        mut f: impl FnMut(Seq, EventKind, &str) -> Result<(), E>,
+    ) -> Result<(), E> {
         let mut stmt = self
             .conn
-            .prepare("SELECT seq, kind, payload FROM journal ORDER BY seq ASC")?;
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            let seq: i64 = row.get(0)?;
-            let kind_raw: String = row.get(1)?;
-            let payload_raw: String = row.get(2)?;
-            let this_kind: EventKind =
-                serde_json::from_value(serde_json::Value::String(kind_raw))?;
-            if let Some(want) = kind {
-                if this_kind != want {
-                    continue;
-                }
-            }
-            out.push((seq as Seq, this_kind, serde_json::from_str(&payload_raw)?));
+            .prepare("SELECT seq, kind, payload FROM journal WHERE seq > ?1 ORDER BY seq ASC")
+            .map_err(JournalError::from)?;
+        let mut rows = stmt.query([after as i64]).map_err(JournalError::from)?;
+        while let Some(row) = rows.next().map_err(JournalError::from)? {
+            let seq: i64 = row.get(0).map_err(JournalError::from)?;
+            let kind_raw: String = row.get(1).map_err(JournalError::from)?;
+            let payload_raw: String = row.get(2).map_err(JournalError::from)?;
+            let kind: EventKind = serde_json::from_value(serde_json::Value::String(kind_raw)).map_err(JournalError::from)?;
+            f(seq as Seq, kind, &payload_raw)?;
         }
-        Ok(out)
+        Ok(())
     }
 }

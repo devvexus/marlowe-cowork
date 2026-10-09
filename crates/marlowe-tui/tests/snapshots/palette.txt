@@ -11,12 +11,12 @@
 │                                       │ › New session                                         ^n │    │  TODAY                           │
 │                                       │   Sessions                                            ^o │    │  nothing scheduled               │
 │                                       │   Library — models and slots                          ^l │    │                                  │
+│                                       │   Memory — search, correct, forget                    ^g │    │                                  │
+│                                     Yo│   Import memories from the old harness                   │    │                                  │
 │                                       │   Show or hide thinking                               ^t │    │                                  │
-│                                     Yo│   Interrupt the running turn                         esc │    │                                  │
-│                                       │   Quit                                                ^q │    │                                  │
-│                          Marlowe think╰──────────────────────────────────────────────────────────╯    │                                  │
-│                      local ones through Ollama, hosted ones through OpenRouter.                       │                                  │
-│                                                                                                       │                                  │
+│                          Marlowe think│   Interrupt the running turn                         esc │    │                                  │
+│                      local ones throug│   Quit                                                ^q │    │                                  │
+│                                       ╰──────────────────────────────────────────────────────────╯    │                                  │
 │                                                                                                       │                                  │
 │                                  ↵ open the library      ^k palette                                   │                                  │
 │                                                                                                       │                                  │

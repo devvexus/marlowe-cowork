@@ -1,0 +1,40 @@
+╭─ MARLOWE · memory ──────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
+│                                                                                                                                          │
+│  Memory  ·  1,204 memories · 37 episodes · 1,198 vectors                                                                                 │
+│  search models unloaded (they load on first use)                                                                                         │
+│                                                                                                                                          │
+│  › gate                                                                                                                                  │
+│                                                                                                                                          │
+│  › Matthew prefers terse commit messages and no emoji.                                                                                   │
+│    preference · you · 2026-09-21 · you, session 3f2a                                                                                     │
+│    Chose cosine over dot product for the cue because vectors are unit length.                                                            │
+│    decision · inferred · 2026-09-21 · imported from Marlowe_Harness                                                                      │
+│    The gate threshold sweep ended at 0.41; anything higher dropped R@5.                                                                  │
+│    result · observed · 2026-09-21 · C:/work/valiance · eval run 14                                                                       │
+│    A web page claimed the model card was updated.                                                                                        │
+│    note · untrusted · 2026-09-21 · web fetch                                                                                             │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│  correct this memory · ↵ saves, esc cancels                                                                                              │
+│  › Matthew prefers terse commit messages and no or emoji.                                                                                │
+│                                                                                                                                          │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ↵ save  ·  esc cancel ─╯

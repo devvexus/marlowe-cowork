@@ -7,7 +7,9 @@ mod client;
 mod commands;
 mod daemon_ctl;
 mod doctor;
+mod eval;
 mod launcher;
+mod memory_cmd;
 mod wire;
 
 use std::path::PathBuf;
@@ -21,6 +23,9 @@ marlowe ask <text> [--model REF] [--workspace DIR] [--session ID] [--yes]
 marlowe models [list | detect | catalog <provider> | add <provider> <id>
                 | remove <ref> | slot <slot> <ref|default> [effort]]
 marlowe sessions [limit]                  recent sessions: id, turns, workspace, title
+marlowe memory [search <query> [--limit N] [--project DIR | --global] | stats
+                | probe <query> [--workspace DIR] | forget <id>
+                | correct <id> <text> | import [--from DIR] | bench [--n N]]
 marlowe status | shutdown | doctor
 
 ask streams the reply to stdout. A tool that needs approval prompts on stdin; --yes allows
@@ -50,9 +55,11 @@ fn dispatch(home: &std::path::Path, args: &[String]) -> Result<i32, String> {
         Some("ask") => ask(home, rest),
         Some("models") => commands::models(home, rest),
         Some("sessions") => commands::sessions(home, rest),
+        Some("memory") => memory_cmd::run(home, rest),
         Some("status") => commands::status(home),
         Some("shutdown") => commands::shutdown(home),
         Some("doctor") => Ok(doctor::run(home)),
+        Some("--eval-adapter") => eval::run(rest),
         Some("-h" | "--help" | "help") => {
             print!("{USAGE}");
             Ok(0)

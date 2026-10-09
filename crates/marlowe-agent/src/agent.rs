@@ -86,7 +86,12 @@ impl Agent {
         convo.next_turn += 1;
         convo.push(Message::user(user_text));
 
-        let memory = self.memory.before_turn(&convo.session, user_text);
+        let recollection = self.memory.before_turn(&convo.session, user_text);
+        // Untrusted text entering the context taints the run before any tool runs.
+        if recollection.untrusted {
+            convo.exposure.tainted = true;
+        }
+        let memory = recollection.blocks;
         let mut system = self.system.clone();
         let workspace = convo.workspace.as_ref().map(|p| p.display().to_string());
         system.set_environment(Environment::current(workspace, self.model.model_ref().to_string()));

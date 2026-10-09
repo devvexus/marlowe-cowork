@@ -47,6 +47,7 @@ impl State {
                     'n' => Some(Command::NewSession),
                     'o' => Some(Command::Sessions),
                     'l' => Some(Command::Library),
+                    'g' => Some(Command::Memory),
                     't' => Some(Command::ToggleThinking),
                     'c' if self.view == View::Conversation && !self.composer.text().is_empty() => {
                         self.composer.clear();
@@ -71,6 +72,7 @@ impl State {
                     self.view = View::Conversation;
                 }
             }
+            View::Memory => self.memory_key(k, &mut out),
             View::Conversation => self.conversation_key(k, &mut out),
         }
         out
@@ -93,6 +95,11 @@ impl State {
                     let _ = self.library.on_key(KeyEvent::from(KeyCode::Char(c)), &mut ignore);
                 }
             }
+            (None, View::Memory) => match &mut self.memory.mode {
+                crate::memory::MemMode::Browse => self.memory.query.push_str(text.lines().next().unwrap_or("")),
+                crate::memory::MemMode::Correct { input, .. } => input.insert_str(text),
+                crate::memory::MemMode::ConfirmForget { .. } => {}
+            },
             (None, View::Conversation) => self.composer.insert_str(text),
         }
     }
@@ -171,6 +178,18 @@ impl State {
                     out.push(Request::LibraryState);
                 }
             }
+            Command::Memory => {
+                if self.view == View::Memory {
+                    self.view = View::Conversation;
+                } else {
+                    self.open_memory(out);
+                }
+            }
+            Command::ImportMemories => {
+                if self.import.is_none() {
+                    self.start_import(out);
+                }
+            }
             Command::ToggleThinking => self.show_thinking = !self.show_thinking,
             Command::Interrupt => {
                 if let (Some(s), true) = (self.session.clone(), self.is_busy()) {
@@ -235,6 +254,9 @@ impl State {
     fn overlay_key(&mut self, k: KeyEvent, out: &mut Vec<Request>) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if k.code == KeyCode::Esc || (ctrl && k.code == KeyCode::Char('k')) {
+            if matches!(self.overlay, Some(Overlay::ImportOffer { .. })) {
+                self.legacy_dismissed = true;
+            }
             self.overlay = None;
             return;
         }
@@ -264,6 +286,7 @@ impl State {
                     _ => {}
                 }
             }
+            Overlay::ImportOffer { sel } => self.offer_key(k, sel, out),
             Overlay::Sessions { sel } => {
                 let n = self.sessions.as_ref().map_or(0, Vec::len);
                 match k.code {

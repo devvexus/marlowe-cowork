@@ -24,7 +24,7 @@ pub use budget::{Budget, Spent};
 pub use context::{Assembled, ContextConfig, COMPACTION_TRIGGER, KEEP_TOOL_RESULTS};
 pub use convo::Conversation;
 pub use events::{AgentEvent, TurnOutcome};
-pub use memory::{MemoryHook, NoMemory};
+pub use memory::{MemoryHook, NoMemory, Recollection};
 pub use steer::{Steer, SteerRefused, MAX_STEER_CHARS};
 pub use system::{Environment, PersonaBlock, SystemPrompt, UserInfo, PERSONA_CORE};
 pub use tools::{Consequence, Exposure, ToolCallReq, ToolCtx, ToolHost, ToolOutcome};

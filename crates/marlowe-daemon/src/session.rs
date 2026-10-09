@@ -17,7 +17,12 @@ use marlowe_model::{CancelToken, Message, Usage};
 use marlowe_proto::{ApprovalDecision, Event, SessionId, Slot};
 
 use crate::daemon::Core;
+use crate::mind::{ComposedTools, MindMemory, MindTools, RecallSink};
 use crate::{lock, now_ms};
+
+/// Share of the effective context window the memory tier may use (capped at
+/// `marlowe_mind::MAX_INJECT_TOKENS`).
+const MEMORY_TIER_DIVISOR: u32 = 8;
 
 pub(crate) enum RunnerCmd {
     Turn(String),
@@ -175,13 +180,27 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
             return;
         }
     };
-    // A session loaded from the store keeps the taint of what it read before.
+    let tools: Arc<dyn ToolHost> = match &core.mind {
+        Some(mind) => {
+            let memory = MindTools::new(mind.clone(), workspace_of(&convo)).with_events(publisher(core));
+            Arc::new(ComposedTools::new(tools, memory))
+        }
+        None => tools,
+    };
+    // Turns run by this runner; an evicted runner that ran any writes an episode.
+    let mut turns_run = 0u32;
+    let mut evicted = false;
+    // A session loaded from the store keeps the taint of what it read before: the stored flag
+    // (set by `Core::session`) plus anything its history shows.
     convo.recompute_exposure(tools.as_ref());
     loop {
         let text = match cmd_rx.recv_timeout(core.cfg.session_idle) {
             Ok(RunnerCmd::Turn(text)) => text,
             Ok(RunnerCmd::Stop) | Err(RecvTimeoutError::Disconnected) => break,
-            Err(RecvTimeoutError::Timeout) if core.evict_if_idle(handle) => break,
+            Err(RecvTimeoutError::Timeout) if core.evict_if_idle(handle) => {
+                evicted = true;
+                break;
+            }
             Err(RecvTimeoutError::Timeout) => continue,
         };
         let mut next = Some(text);
@@ -191,6 +210,7 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
             }
             let cancel = lock(&handle.state).cancel.clone();
             run_one(core, handle, &mut convo, &tools, &text, &cancel);
+            turns_run += 1;
             // Decide under the lock so an ask arriving now either lands in `left` or starts a
             // fresh turn through the command channel.
             let mut st = lock(&handle.state);
@@ -207,6 +227,21 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
             break;
         }
     }
+    if let (true, Some(mind)) = (evicted && turns_run > 0 && !core.is_shutting_down(), &core.mind) {
+        let _ = guard(|| crate::mind_ops::write_episode(core, mind, &convo));
+    }
+}
+
+fn workspace_of(convo: &Conversation) -> Option<String> {
+    convo.workspace.as_ref().map(|p| p.display().to_string())
+}
+
+/// Publishes on the bus; handed to the memory hook and tools.
+fn publisher(core: &Arc<Core>) -> RecallSink {
+    let c = core.clone();
+    Arc::new(move |e: Event| {
+        c.bus.publish(e);
+    })
 }
 
 fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, tools: &Arc<dyn ToolHost>, text: &str, cancel: &CancelToken) {
@@ -221,13 +256,19 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
         }
     };
     let model = info.model_ref();
-    let workspace = convo.workspace.as_ref().map(|p| p.display().to_string());
+    let workspace = workspace_of(convo);
     let system = SystemPrompt::new()
         .user(core.user.clone())
-        .environment(Environment::current(workspace, info.display.clone()));
+        .environment(Environment::current(workspace.clone(), info.display.clone()));
     let mut agent = Agent::new(provider, info, tools.clone(), system);
     agent.effort = effort;
-    agent.memory = Arc::new(NoMemory);
+    agent.memory = match &core.mind {
+        Some(mind) => {
+            let budget = agent.context.effective_window() / MEMORY_TIER_DIVISOR;
+            Arc::new(MindMemory::new(mind.clone(), workspace, turn, budget, publisher(core)))
+        }
+        None => Arc::new(NoMemory),
+    };
     agent.approvals = Arc::new(Gate { core: core.clone(), cancel: cancel.clone() });
 
     core.bus.publish(Event::TurnStarted { session: session.clone(), turn, model, user: text.to_string() });
@@ -254,7 +295,7 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
         convo.push(m.clone());
         fresh.push(m);
     }
-    if let Err(e) = core.store.append(&session, fresh, convo.next_turn, now_ms()) {
+    if let Err(e) = core.store.append(&session, fresh, convo.next_turn, convo.exposure.tainted, now_ms()) {
         core.bus.publish(Event::Error { session: Some(session.clone()), message: format!("turn not saved: {e}") });
     }
     if let Some(message) = outcome.error.clone().or_else(|| (outcome.stop == TurnStop::Error).then(|| "the turn failed".into())) {

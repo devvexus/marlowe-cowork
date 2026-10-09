@@ -23,7 +23,7 @@
 use marlowe_contract::{Clock, PayloadKind, TrustClass};
 use marlowe_journal::{Actor, AppendRequest, EventKind, Journal, TraceId};
 
-use crate::entry::{memory_id, MemoryEntry, MATURATION_WINDOW_MS};
+use crate::entry::{memory_id, MATURATION_WINDOW_MS};
 use crate::error::MemoryError;
 use crate::store::{BeliefStore, MemoryWriteRejectedPayload, MemoryWrittenPayload};
 use crate::trust::effective_trust;
@@ -201,6 +201,7 @@ pub fn remember_claim(
         created_at: clock.now_ms,
         silent_until: Some(silent_until),
         fidelity: marlowe_contract::Fidelity::Record,
+        tags: Default::default(),
     };
 
     // The journal stamps seq, ts and signature. This is the only write path; there is no unsigned
@@ -217,28 +218,7 @@ pub fn remember_claim(
         },
     )?;
 
-    beliefs.insert(MemoryEntry {
-        id: id.clone(),
-        text: write.text.to_string(),
-        payload_kind: write.payload_kind,
-        embedding_ref: None,
-        source_turn_id: format!("claim:{}", write.run_id),
-        source_session_id: write.session_id.to_string(),
-        trust_class: own_trust,
-        effective_trust: effective,
-        derivation: write.derived_from.to_vec(),
-        origin_event: event.seq,
-        occurred_at_ms: clock.now_ms,
-        created_at: clock.now_ms,
-        last_accessed: clock.now_ms,
-        access_count: 0,
-        confidence: 1.0,
-        activation: 1.0,
-        fidelity: marlowe_contract::Fidelity::Record,
-        silent_until: Some(silent_until),
-        supersedes: Vec::new(),
-        superseded_by: None,
-    });
+    beliefs.insert(payload.to_entry(event.seq));
 
     Ok(Ok(WriteReceipt { id, seq: event.seq, effective_trust: effective, silent_until }))
 }

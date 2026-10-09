@@ -122,6 +122,24 @@ pub fn daemon_deps(home: &Path) -> DaemonDeps {
         providers: provider_factory(credentials.clone()),
         tools: tool_factory(credentials),
         user: user_info(home),
+        mind: open_mind(home),
+    }
+}
+
+/// The memory service for `home`. A profile that will not open leaves the daemon without memory,
+/// said on stderr (the daemon log) rather than silently.
+pub fn open_mind(home: &Path) -> Option<marlowe_mind::Mind> {
+    match marlowe_mind::Mind::open(home) {
+        Ok(mind) => {
+            if let Ok(Some(reason)) = mind.stats().map(|s| s.degraded) {
+                eprintln!("marlowe: memory is degraded: {reason}");
+            }
+            Some(mind)
+        }
+        Err(e) => {
+            eprintln!("marlowe: memory is unavailable: {e}");
+            None
+        }
     }
 }
 

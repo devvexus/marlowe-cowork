@@ -13,6 +13,7 @@ use marlowe_proto::{
 
 use crate::composer::Composer;
 use crate::library::Library;
+use crate::memory::{ImportStatus, LegacyOffer, MemoryState};
 
 /// What the connection thread reports.
 #[derive(Debug, Clone, PartialEq)]
@@ -68,6 +69,8 @@ pub enum Entry {
     Note { text: String, tone: NoteTone },
     /// Usage footer for a finished turn.
     Usage { usage: Usage },
+    /// Memories the daemon injected before the turn.
+    Recall { count: u32, summary: String },
 }
 
 /// A turn in flight in the open session.
@@ -93,6 +96,7 @@ pub struct Approval {
 pub enum View {
     Conversation,
     Library,
+    Memory,
 }
 
 /// A palette command.
@@ -101,16 +105,20 @@ pub enum Command {
     NewSession,
     Sessions,
     Library,
+    Memory,
+    ImportMemories,
     ToggleThinking,
     Interrupt,
     Quit,
 }
 
 impl Command {
-    pub const ALL: [Command; 6] = [
+    pub const ALL: [Command; 8] = [
         Command::NewSession,
         Command::Sessions,
         Command::Library,
+        Command::Memory,
+        Command::ImportMemories,
         Command::ToggleThinking,
         Command::Interrupt,
         Command::Quit,
@@ -121,6 +129,8 @@ impl Command {
             Command::NewSession => "New session",
             Command::Sessions => "Sessions",
             Command::Library => "Library — models and slots",
+            Command::Memory => "Memory — search, correct, forget",
+            Command::ImportMemories => "Import memories from the old harness",
             Command::ToggleThinking => "Show or hide thinking",
             Command::Interrupt => "Interrupt the running turn",
             Command::Quit => "Quit",
@@ -132,6 +142,8 @@ impl Command {
             Command::NewSession => "^n",
             Command::Sessions => "^o",
             Command::Library => "^l",
+            Command::Memory => "^g",
+            Command::ImportMemories => "",
             Command::ToggleThinking => "^t",
             Command::Interrupt => "esc",
             Command::Quit => "^q",
@@ -145,6 +157,8 @@ pub enum Overlay {
     Palette { query: String, sel: usize },
     Sessions { sel: usize },
     ModelPicker { sel: usize },
+    /// First-run offer to import the old harness memories; `sel` 0 is Yes, 1 is Not now.
+    ImportOffer { sel: usize },
 }
 
 /// A transient one-line message under the composer.
@@ -231,6 +245,12 @@ pub struct State {
     pub approval_read: bool,
     pub sessions: Option<Vec<SessionSummary>>,
     pub library: Library,
+    pub memory: MemoryState,
+    /// The old harness profile the daemon found and nothing has imported yet.
+    pub legacy: Option<LegacyOffer>,
+    /// The user chose Not now; the offer stays in the palette only.
+    pub legacy_dismissed: bool,
+    pub import: Option<ImportStatus>,
 
     pub view: View,
     pub overlay: Option<Overlay>,
@@ -278,6 +298,10 @@ impl State {
             approval_read: false,
             sessions: None,
             library: Library::default(),
+            memory: MemoryState::default(),
+            legacy: None,
+            legacy_dismissed: false,
+            import: None,
             view: View::Conversation,
             overlay: None,
             composer: Composer::default(),
@@ -573,6 +597,45 @@ impl State {
             Event::Catalog { provider, models } => {
                 self.library.set_catalog(*provider, models.clone());
             }
+            Event::MemoryResults { hits } => self.memory_results(hits),
+            Event::MemoryChanged { id, change } => self.memory_changed(id, change),
+            Event::MemoryStats(report) => self.memory.stats = Some(report.clone()),
+            Event::Recalled { session, count, summary, .. } if self.mine(session) => {
+                if *count > 0 {
+                    self.entries.push(Entry::Recall { count: *count, summary: crate::text::clean(summary) });
+                }
+            }
+            Event::ImportProgress { read, imported } => {
+                self.import = Some(ImportStatus { read: *read, imported: *imported });
+            }
+            Event::ImportDone { report } => {
+                self.import = None;
+                self.legacy = None;
+                let dup = if report.skipped_duplicates > 0 {
+                    format!(", {} already there", report.skipped_duplicates)
+                } else {
+                    String::new()
+                };
+                let msg = format!("imported {} of {} memories{dup}", report.imported, report.read);
+                if report.errors.is_empty() {
+                    self.flash(msg, NoteTone::Dim);
+                } else {
+                    self.flash(format!("{msg} · {} errors", report.errors.len()), NoteTone::Amber);
+                }
+            }
+            Event::LegacyAvailable { path, approx_entries, already_imported } => {
+                if *already_imported {
+                    self.legacy = None;
+                    if reply {
+                        self.flash("the old memories are already imported", NoteTone::Dim);
+                    }
+                } else {
+                    self.legacy = Some(LegacyOffer { path: path.clone(), approx_entries: *approx_entries });
+                    if self.overlay.is_none() && self.import.is_none() && (reply || !self.legacy_dismissed) {
+                        self.overlay = Some(Overlay::ImportOffer { sel: 0 });
+                    }
+                }
+            }
             Event::Status(_) => {}
             Event::Error { session: None, message } if reply && message.starts_with("replay gap") => {
                 // The daemon skipped the replay: reload what is open instead.
@@ -581,6 +644,9 @@ impl State {
             }
             Event::Error { session, message } => {
                 let text = crate::text::clean(message);
+                if session.is_none() {
+                    self.import = None;
+                }
                 if self.library.catalog_error(&text) {
                     return;
                 }

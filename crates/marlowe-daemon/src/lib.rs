@@ -16,6 +16,8 @@ mod bus;
 mod client;
 mod daemon;
 mod library;
+mod mind;
+mod mind_ops;
 mod session;
 mod store;
 
@@ -27,6 +29,7 @@ use marlowe_agent::{ToolHost, UserInfo};
 use marlowe_brains::{BrainsError, ProviderFactory};
 
 pub use daemon::Daemon;
+pub use mind::{ComposedTools, MindMemory, MindTools, RecallSink, MEMORY_TOOLS};
 
 /// Builds the tool host for a session's workspace root (`None`: no workspace).
 pub type ToolHostFactory = Arc<dyn Fn(Option<&Path>) -> Arc<dyn ToolHost> + Send + Sync>;
@@ -39,6 +42,8 @@ pub struct DaemonDeps {
     pub tools: ToolHostFactory,
     /// Name and address form for the system prompt's user block.
     pub user: UserInfo,
+    /// The memory service. `None`: no memory (tests, or a profile that failed to open).
+    pub mind: Option<marlowe_mind::Mind>,
 }
 
 /// Tunables. `Default` is what the binary runs with; tests shrink them.
@@ -57,8 +62,11 @@ pub struct DaemonConfig {
     pub write_timeout: Duration,
     /// How long shutdown waits for running turns to stop and persist.
     pub drain_timeout: Duration,
-    /// An idle session's runner exits after this long; the next ask reloads it from the store.
+    /// An idle session's runner exits after this long (writing an episode when memory is on);
+    /// the next ask reloads it from the store.
     pub session_idle: Duration,
+    /// Offer the old harness profile to each client after `Welcome` (needs a memory service).
+    pub legacy_offer: bool,
 }
 
 impl Default for DaemonConfig {
@@ -71,6 +79,7 @@ impl Default for DaemonConfig {
             write_timeout: Duration::from_secs(15),
             drain_timeout: Duration::from_secs(10),
             session_idle: Duration::from_secs(30 * 60),
+            legacy_offer: true,
         }
     }
 }

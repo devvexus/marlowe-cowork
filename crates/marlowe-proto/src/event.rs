@@ -4,6 +4,7 @@ use marlowe_model::{Effort, ModelInfo, ModelRef, Part, ProviderKind, Role, Usage
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{ApprovalId, SessionId};
+use crate::memory::{ImportReport, MemoryChange, MemoryHit, MemoryStatsReport};
 use crate::request::{ApprovalDecision, Slot};
 
 /// Every event on the wire. Broadcast events carry a daemon-wide, strictly increasing `seq` and
@@ -147,6 +148,34 @@ pub enum Event {
     },
     /// The daemon is exiting.
     ShuttingDown,
+    /// Reply to `MemorySearch`.
+    MemoryResults { hits: Vec<MemoryHit> },
+    /// A memory was written, corrected or forgotten (broadcast).
+    MemoryChanged { id: String, change: MemoryChange },
+    /// Reply to `MemoryStats`.
+    MemoryStats(MemoryStatsReport),
+    /// Memories were auto-injected into a turn; drives the dim `recall · N memories` line.
+    Recalled { session: SessionId, turn: u32, count: u32, summary: String },
+    /// Legacy import progress (broadcast).
+    ImportProgress { read: u64, imported: u64 },
+    /// Legacy import finished (broadcast).
+    ImportDone { report: ImportReport },
+    /// An old harness profile exists. Sent after `Welcome` when nothing was imported yet, and in
+    /// reply to `LegacyStatus`.
+    LegacyAvailable {
+        path: String,
+        approx_entries: u64,
+        #[serde(default)]
+        already_imported: bool,
+    },
+    /// Reply to `MemoryProbe`: what auto-injection selected (or why it abstained) and how long
+    /// the Mind took.
+    MemoryProbed {
+        recalled: Vec<MemoryHit>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        abstained: Option<String>,
+        latency_ms: u64,
+    },
 }
 
 impl Event {
@@ -162,7 +191,8 @@ impl Event {
             | Event::ToolStarted { session, .. }
             | Event::ToolFinished { session, .. }
             | Event::TurnFinished { session, .. }
-            | Event::ApprovalRequested { session, .. } => Some(session),
+            | Event::ApprovalRequested { session, .. }
+            | Event::Recalled { session, .. } => Some(session),
             Event::Error { session, .. } => session.as_ref(),
             _ => None,
         }

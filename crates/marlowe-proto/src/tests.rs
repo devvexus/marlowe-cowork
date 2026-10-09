@@ -251,3 +251,110 @@ fn session_ids_are_random_hex() {
     assert_ne!(a, SessionId::new_random());
     assert_eq!(serde_json::to_string(&SessionId("x".into())).unwrap(), r#""x""#);
 }
+
+fn hit() -> MemoryHit {
+    MemoryHit {
+        id: "m-s1-t1-0".into(),
+        text: "the deploy job runs on Fridays".into(),
+        kind: MemoryKind::Decision,
+        trust: MemoryTrust::User,
+        scope: MemoryScope::Project("C:/w".into()),
+        occurred_at_ms: 1_700_000_000_000,
+        provenance: "you, session s1".into(),
+        score: 0.75,
+    }
+}
+
+#[test]
+fn memory_requests_round_trip_and_parse_with_defaults() {
+    let reqs = vec![
+        Request::MemorySearch { query: "deploy".into(), scope: Some(MemoryScope::Global), limit: 10 },
+        Request::MemorySearch { query: "deploy".into(), scope: Some(MemoryScope::Project("C:/w".into())), limit: 3 },
+        Request::MemorySearch { query: "deploy".into(), scope: None, limit: 10 },
+        Request::MemoryForget { id: "m-1".into() },
+        Request::MemoryCorrect { id: "m-1".into(), text: "Thursdays".into() },
+        Request::MemoryStats,
+        Request::ImportLegacy { path: Some("C:/old".into()) },
+        Request::ImportLegacy { path: None },
+        Request::LegacyStatus,
+        Request::MemoryProbe { query: "deploy".into(), workspace: Some("C:/w".into()) },
+        Request::MemoryProbe { query: "deploy".into(), workspace: None },
+    ];
+    for r in &reqs {
+        let s = round_trip(r);
+        assert!(s.starts_with(r#"{"op":""#), "{s}");
+    }
+    let s = serde_json::to_string(&reqs[1]).unwrap();
+    assert!(s.contains(r#""op":"memory_search""#) && s.contains(r#""scope":{"project":"C:/w"}"#), "{s}");
+    let s = serde_json::to_string(&reqs[0]).unwrap();
+    assert!(s.contains(r#""scope":"global""#), "{s}");
+    let r: Request = serde_json::from_str(r#"{"op":"memory_search","query":"q","limit":5}"#).unwrap();
+    assert_eq!(r, Request::MemorySearch { query: "q".into(), scope: None, limit: 5 });
+    let r: Request = serde_json::from_str(r#"{"op":"import_legacy"}"#).unwrap();
+    assert_eq!(r, Request::ImportLegacy { path: None });
+    let r: Request = serde_json::from_str(r#"{"op":"legacy_status"}"#).unwrap();
+    assert_eq!(r, Request::LegacyStatus);
+}
+
+#[test]
+fn memory_events_round_trip_inside_an_envelope() {
+    let report = ImportReport {
+        read: 120,
+        imported: 100,
+        skipped_duplicates: 15,
+        tombstoned: 3,
+        superseded: 2,
+        errors: vec!["seq 7: bad payload".into()],
+    };
+    let events = vec![
+        Event::MemoryResults { hits: vec![hit()] },
+        Event::MemoryResults { hits: Vec::new() },
+        Event::MemoryChanged { id: "m-1".into(), change: MemoryChange::Remembered },
+        Event::MemoryChanged { id: "m-1".into(), change: MemoryChange::Corrected { by: "m-2".into() } },
+        Event::MemoryChanged { id: "m-1".into(), change: MemoryChange::Forgotten },
+        Event::MemoryStats(MemoryStatsReport {
+            beliefs: 10,
+            episodes: 2,
+            vectors: 9,
+            models_loaded: vec!["jina-embeddings-v2-small-en".into()],
+            degraded: None,
+            journal_seq: 44,
+        }),
+        Event::MemoryStats(MemoryStatsReport { degraded: Some("models missing".into()), ..Default::default() }),
+        Event::Recalled { session: sid(), turn: 2, count: 3, summary: "deploy on Fridays".into() },
+        Event::ImportProgress { read: 50, imported: 40 },
+        Event::ImportDone { report },
+        Event::LegacyAvailable { path: "C:/old".into(), approx_entries: 1200, already_imported: false },
+        Event::MemoryProbed { recalled: vec![hit()], abstained: None, latency_ms: 41 },
+        Event::MemoryProbed { recalled: Vec::new(), abstained: Some("no runner-up".into()), latency_ms: 0 },
+    ];
+    for (i, ev) in events.into_iter().enumerate() {
+        let env = Envelope { seq: i as u64, at_ms: 1_700_000_000_000, event: ev };
+        let s = round_trip(&env);
+        assert!(s.contains(r#""ev":""#), "{s}");
+    }
+    let s = serde_json::to_string(&Event::MemoryChanged { id: "m-1".into(), change: MemoryChange::Corrected { by: "m-2".into() } }).unwrap();
+    assert!(s.contains(r#""change":{"kind":"corrected","by":"m-2"}"#), "{s}");
+    let ev: Event = serde_json::from_str(r#"{"ev":"legacy_available","path":"p","approx_entries":3}"#).unwrap();
+    assert_eq!(ev, Event::LegacyAvailable { path: "p".into(), approx_entries: 3, already_imported: false });
+    let ev: Event = serde_json::from_str(r#"{"ev":"memory_stats","beliefs":1,"episodes":0,"vectors":0,"journal_seq":5}"#).unwrap();
+    assert_eq!(ev, Event::MemoryStats(MemoryStatsReport { beliefs: 1, journal_seq: 5, ..Default::default() }));
+}
+
+#[test]
+fn recalled_belongs_to_its_session_and_memory_events_to_none() {
+    assert_eq!(Event::Recalled { session: sid(), turn: 1, count: 1, summary: String::new() }.session(), Some(&sid()));
+    assert_eq!(Event::MemoryResults { hits: vec![hit()] }.session(), None);
+}
+
+#[test]
+fn memory_kinds_and_trust_have_stable_labels() {
+    for k in MemoryKind::ALL {
+        assert_eq!(MemoryKind::from_label(k.label()), Some(k));
+        assert_eq!(serde_json::to_string(&k).unwrap(), format!("\"{}\"", k.label()));
+    }
+    assert_eq!(MemoryKind::from_label(" Decision "), Some(MemoryKind::Decision));
+    assert_eq!(MemoryKind::from_label("rumour"), None);
+    assert!(MemoryTrust::Untrusted < MemoryTrust::Inferred && MemoryTrust::Observed < MemoryTrust::User);
+    assert_eq!(serde_json::to_string(&MemoryTrust::User).unwrap(), r#""user""#);
+}

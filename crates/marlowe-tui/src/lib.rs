@@ -14,6 +14,7 @@ pub mod client;
 pub mod composer;
 mod input;
 pub mod library;
+pub mod memory;
 pub mod render;
 pub mod state;
 mod term;

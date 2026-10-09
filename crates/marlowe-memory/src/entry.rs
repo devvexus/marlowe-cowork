@@ -3,8 +3,10 @@
 //! **One envelope for every belief.** This is what makes memory the spine rather than a
 //! module: a commitment and a preference carry identical provenance machinery.
 
-use marlowe_contract::{Fidelity, PayloadKind, TrustClass};
+use marlowe_contract::{Clock, Fidelity, PayloadKind, TrustClass};
 use serde::{Deserialize, Serialize};
+
+use crate::tags::{BeliefKind, BeliefScope, Provenance, Tags, Utterance};
 
 /// Section 5.3's engram maturation window.
 ///
@@ -27,6 +29,45 @@ use serde::{Deserialize, Serialize};
 /// merits, and the eval adapter reports whether the assertion observed anything, rather than
 /// letting a silent pass stand. See `docs/design/` and the Session A notes.
 pub const MATURATION_WINDOW_MS: i64 = 6 * 60 * 60 * 1000;
+
+/// How long a new belief stays silent before it may be auto-injected.
+///
+/// Two policies, and which one a caller uses is a decision about what it is measuring:
+///
+/// * `Uniform` — every belief waits [`MATURATION_WINDOW_MS`]. The section 4.6 `ingest` path the
+///   eval drives keeps this: the clock probe's time-dependence test plants a terminal user turn
+///   and expects it withheld, and the published R@1 was measured with it.
+/// * `ByTrust` — the product. A belief whose **effective** trust is `UserAsserted` is live at
+///   once (the user said it; there is nothing to wait out). Everything else — agent, harness,
+///   web, and anything with an untrusted parent in its lineage — keeps the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaturationPolicy {
+    Uniform,
+    ByTrust,
+}
+
+impl MaturationPolicy {
+    /// The silent window for a belief of this effective trust.
+    pub fn window_ms(self, effective_trust: TrustClass) -> i64 {
+        match (self, effective_trust) {
+            (MaturationPolicy::Uniform, _) => MATURATION_WINDOW_MS,
+            (MaturationPolicy::ByTrust, TrustClass::UserAsserted) => 0,
+            (MaturationPolicy::ByTrust, TrustClass::AgentObserved)
+            | (MaturationPolicy::ByTrust, TrustClass::AgentInferred)
+            | (MaturationPolicy::ByTrust, TrustClass::UntrustedContent) => MATURATION_WINDOW_MS,
+        }
+    }
+
+    /// `silent_until` for a belief written at `clock`. Always the ingest clock, never the
+    /// belief's own `occurred_at_ms`: a backdated plant must not arrive pre-matured.
+    /// `None` when the window is zero.
+    pub fn silent_until(self, clock: Clock, effective_trust: TrustClass) -> Option<i64> {
+        match self.window_ms(effective_trust) {
+            0 => None,
+            window => Some(clock.plus_ms(window)),
+        }
+    }
+}
 
 pub type MemoryId = String;
 
@@ -108,9 +149,43 @@ pub struct MemoryEntry {
     pub silent_until: Option<i64>,
     pub supersedes: Vec<MemoryId>,
     pub superseded_by: Option<MemoryId>,
+
+    /// Kind, scope, speaker and source note. Empty on untagged (eval and pre-M2) entries.
+    #[serde(default)]
+    pub tags: Tags,
 }
 
 impl MemoryEntry {
+    /// The tagged kind, else the one `payload_kind` implies.
+    pub fn kind(&self) -> BeliefKind {
+        self.tags.kind.unwrap_or_else(|| BeliefKind::from_payload_kind(self.payload_kind))
+    }
+
+    pub fn scope(&self) -> &BeliefScope {
+        &self.tags.scope
+    }
+
+    /// Where this belief came from, in one borrow.
+    pub fn provenance(&self) -> Provenance<'_> {
+        Provenance {
+            session_id: &self.source_session_id,
+            turn_id: &self.source_turn_id,
+            trust_class: self.trust_class,
+            effective_trust: self.effective_trust,
+            derivation: &self.derivation,
+            origin_event: self.origin_event,
+            occurred_at_ms: self.occurred_at_ms,
+            created_at: self.created_at,
+            utterance: self.tags.utterance,
+            source: self.tags.source.as_deref(),
+        }
+    }
+
+    /// The model's own prose, stored verbatim. Recallable, never auto-injected.
+    pub fn is_assistant_prose(&self) -> bool {
+        self.tags.utterance == Some(Utterance::Assistant)
+    }
+
     /// Section 4.3 exclusion (3). Separated from the other two because it is the one an
     /// implementation can drop while still passing every latency and precision test — the
     /// attack it defends against is temporally decoupled from its trigger.
@@ -118,13 +193,15 @@ impl MemoryEntry {
         self.silent_until.map_or(true, |t| t <= now_ms)
     }
 
-    /// Section 4.3's three exclusions, together, as the auto-injection candidate predicate.
+    /// Section 4.3's three exclusions plus assistant prose, as the auto-injection predicate.
     ///
-    /// **Three, not two.** The third is easy to lose.
+    /// (3) is the one that is easy to lose. (4) only bites on entries tagged as assistant
+    /// turns, so untagged eval entries are judged exactly as before.
     pub fn is_injection_candidate(&self, now_ms: i64) -> bool {
         self.fidelity > Fidelity::Tombstone      // (1)
             && self.superseded_by.is_none()      // (2)
             && self.is_matured(now_ms)           // (3)
+            && !self.is_assistant_prose()        // (4)
     }
 }
 
@@ -154,6 +231,7 @@ mod tests {
             silent_until: Some(1_000 + MATURATION_WINDOW_MS),
             supersedes: Vec::new(),
             superseded_by: None,
+            tags: Tags::default(),
         }
     }
 
@@ -194,5 +272,59 @@ mod tests {
         assert!(!silent.is_injection_candidate(now), "exclusion 3");
 
         assert!(entry().is_injection_candidate(now), "and a live one passes");
+    }
+
+    #[test]
+    fn assistant_prose_is_never_a_candidate_but_an_episode_summary_is() {
+        let now = 1_000 + MATURATION_WINDOW_MS;
+        let mut prose = entry();
+        prose.tags.kind = Some(BeliefKind::Episode);
+        prose.tags.utterance = Some(Utterance::Assistant);
+        assert!(!prose.is_injection_candidate(now), "exclusion 4");
+
+        let mut summary = entry();
+        summary.tags.kind = Some(BeliefKind::Episode);
+        assert!(summary.is_injection_candidate(now), "a summary block is not prose");
+
+        let mut said = entry();
+        said.tags.utterance = Some(Utterance::User);
+        assert!(said.is_injection_candidate(now), "the user's own turn is");
+    }
+
+    #[test]
+    fn maturation_by_trust_is_instant_only_for_user_asserted() {
+        let clock = Clock::new(1_000);
+        let p = MaturationPolicy::ByTrust;
+        assert_eq!(p.silent_until(clock, TrustClass::UserAsserted), None);
+        for t in [TrustClass::AgentObserved, TrustClass::AgentInferred, TrustClass::UntrustedContent] {
+            assert_eq!(p.silent_until(clock, t), Some(1_000 + MATURATION_WINDOW_MS), "{t:?}");
+        }
+        // The measured configuration keeps the window for everything, user turns included.
+        assert_eq!(
+            MaturationPolicy::Uniform.silent_until(clock, TrustClass::UserAsserted),
+            Some(1_000 + MATURATION_WINDOW_MS)
+        );
+    }
+
+    #[test]
+    fn untagged_kind_falls_back_to_payload_kind_and_provenance_borrows_the_entry() {
+        let e = entry();
+        assert_eq!(e.kind(), BeliefKind::Episode);
+        assert!(e.scope().is_global());
+        let p = e.provenance();
+        assert_eq!((p.session_id, p.turn_id, p.origin_event), ("s-1", "t-1", 1));
+        assert_eq!(p.describe(), "you (session s-1)");
+
+        let mut imported = entry();
+        imported.tags.source = Some("imported from Marlowe_Harness".into());
+        assert_eq!(imported.provenance().describe(), "imported from Marlowe_Harness");
+    }
+
+    #[test]
+    fn an_entry_without_tags_still_deserializes() {
+        let mut v = serde_json::to_value(entry()).unwrap();
+        v.as_object_mut().unwrap().remove("tags");
+        let back: MemoryEntry = serde_json::from_value(v).unwrap();
+        assert_eq!(back, entry());
     }
 }

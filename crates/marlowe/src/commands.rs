@@ -109,6 +109,12 @@ pub fn ask(home: &Path, a: AskArgs) -> CmdResult {
                     eprint!("\r\x1b[2m▸ thinking… {thought} tokens\x1b[0m");
                 }
             }
+            Event::Recalled { count, summary, .. } => {
+                let n = format!("{count} memor{}", if count == 1 { "y" } else { "ies" });
+                // Memory text: no control characters (escape sequences) reach the terminal.
+                let first: String = summary.lines().next().unwrap_or("").chars().filter(|c| !c.is_control()).collect();
+                eprintln!("\x1b[2m⋯ recall · {n} · {first}\x1b[0m")
+            }
             // The summary is `ToolHost::describe`, which already names the tool.
             Event::ToolStarted { tool, summary, .. } => {
                 eprintln!("\x1b[2m⋯ {}\x1b[0m", if summary.is_empty() { tool } else { summary })

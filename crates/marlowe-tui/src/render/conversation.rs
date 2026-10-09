@@ -89,7 +89,11 @@ pub fn transcript_lines(state: &State, width: usize, theme: &Theme) -> Vec<Line<
     }
     // Nothing has streamed yet: say so rather than sit still.
     let waiting = state.pending_user.is_some()
-        || (state.live.is_some() && matches!(state.entries.last(), Some(Entry::User { .. }) | None));
+        || (state.live.is_some()
+            && matches!(
+                state.entries.iter().rev().find(|e| !matches!(e, Entry::Recall { .. })),
+                Some(Entry::User { .. }) | None
+            ));
     if waiting {
         out.push(Line::from(vec![
             Span::styled(format!("{} ", chrome::DISCLOSURE_CLOSED), ink(Ink::Hover, theme)),
@@ -170,6 +174,19 @@ fn entry_lines(e: &Entry, state: &State, width: usize, theme: &Theme, out: &mut 
                     Span::styled(l, note_style(*tone, theme)),
                 ]));
             }
+        }
+        Entry::Recall { count, summary } => {
+            let n = format!("{count} memor{}", if *count == 1 { "y" } else { "ies" });
+            let mut spans = vec![
+                Span::styled("⋯ ", ink(Ink::Dimmer, theme)),
+                Span::styled(format!("recall · {n}"), ink(Ink::Dim, theme)),
+            ];
+            let room = width.saturating_sub(text::width(&n) + 12);
+            if !summary.trim().is_empty() && room > 8 {
+                let first = summary.lines().next().unwrap_or("");
+                spans.push(Span::styled(format!(" · {}", text::truncate(first, room)), ink(Ink::Dimmer, theme)));
+            }
+            out.push(Line::from(spans));
         }
         Entry::Usage { usage } => {
             let mut parts = vec![

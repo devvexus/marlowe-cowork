@@ -13,6 +13,7 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use marlowe_agent::{Consequence, ToolCallReq, ToolCtx, ToolHost, ToolOutcome, UserInfo};
 use marlowe_brains::{Library, MemoryStore, ProviderFactory};
 use marlowe_daemon::{Daemon, DaemonConfig, DaemonDeps, DaemonError};
+use marlowe_mind::{Kind, MemoryIn, Mind, MindConfig, Provenance, RecallQuery, Scope};
 use marlowe_model::{
     CancelToken, ChatRequest, Completion, CompletionBuilder, Message, ModelInfo, Part, Provider, ProviderError,
     ProviderKind, Role, StopReason, StreamEvent, ToolSpec, Usage,
@@ -158,12 +159,17 @@ fn seed_model(home: &Path) {
 }
 
 fn deps(provider: Arc<Scripted>) -> DaemonDeps {
+    deps_with(provider, None)
+}
+
+fn deps_with(provider: Arc<Scripted>, mind: Option<Mind>) -> DaemonDeps {
     let mut providers = ProviderFactory::new(Arc::new(MemoryStore::new()));
     providers.register(ProviderKind::Ollama, move |_| Ok(provider.clone() as Arc<dyn Provider>));
     DaemonDeps {
         providers,
         tools: Arc::new(|_| Arc::new(FakeTools) as Arc<dyn ToolHost>),
         user: UserInfo { name: Some("Tester".into()), address: None },
+        mind,
     }
 }
 
@@ -173,7 +179,11 @@ struct Running {
 }
 
 fn start(home: &Path, provider: Arc<Scripted>, cfg: DaemonConfig) -> Running {
-    let d = Daemon::start(deps(provider), home, cfg).expect("daemon starts");
+    start_with(home, provider, cfg, None)
+}
+
+fn start_with(home: &Path, provider: Arc<Scripted>, cfg: DaemonConfig, mind: Option<Mind>) -> Running {
+    let d = Daemon::start(deps_with(provider, mind), home, cfg).expect("daemon starts");
     let info = d.info();
     assert_eq!(DaemonInfo::read(home).unwrap().as_ref(), Some(&info), "daemon.json names it");
     Running { info, join: std::thread::spawn(move || d.wait()) }
@@ -613,5 +623,342 @@ fn a_client_that_idles_past_the_hello_timeout_stays_connected() {
     a.send(&Request::Ask { session: None, text: "after a pause".into(), workspace: None });
     let got = a.until(is_finished);
     assert!(matches!(got.last().map(|e| &e.event), Some(Event::TurnFinished { stop: TurnStop::Done, .. })));
+    stop(d, &home);
+}
+
+// ---------------------------------------------------------------- memory
+
+/// The shipped ONNX models in the dev tree (git-ignored; CPU only).
+fn models_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("models")
+}
+
+fn models_present() -> bool {
+    let m = models_dir();
+    m.join(marlowe_mind::EMBEDDER_DIR).join("model.onnx").is_file()
+        && m.join(marlowe_mind::RERANKER_DIR).join("model.onnx").is_file()
+}
+
+fn open_mind(home: &Path, models: PathBuf) -> Mind {
+    Mind::open_with(home, MindConfig { models_dir: Some(models), ..MindConfig::default() }).expect("mind opens")
+}
+
+/// No legacy offer: the machine's real old profile must not leak into tests.
+fn mem_cfg() -> DaemonConfig {
+    DaemonConfig { legacy_offer: false, ..DaemonConfig::default() }
+}
+
+fn recalled(log: &[Envelope], sid: &SessionId) -> Option<(u32, String)> {
+    log.iter().find_map(|e| match &e.event {
+        Event::Recalled { session, count, summary, .. } if session == sid => Some((*count, summary.clone())),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_statement_in_one_session_is_recalled_in_another_after_a_restart() {
+    if !models_present() {
+        eprintln!("skipped: models are not in {}", models_dir().display());
+        return;
+    }
+    let home = temp_home("recall");
+    seed_model(&home);
+    let p = Arc::new(Scripted::default());
+    p.push(vec![text("Noted.")]);
+    p.push(vec![text("Noted too.")]);
+    let d = start_with(&home, p, mem_cfg(), Some(open_mind(&home, models_dir())));
+    let mut a = Client::connect(&d.info, None);
+    let statement = "My sister Ingrid lives in Tromsø and works as a marine biologist studying orcas.";
+    a.send(&Request::Ask { session: None, text: statement.into(), workspace: None });
+    let sid_a = opened_session(&a.until(is_finished));
+    // The shipped gate needs a rank-2 candidate to take its margin from; one belief abstains.
+    let other = "The training cluster is called Hyperion and has eight A100 GPUs.";
+    a.send(&Request::Ask { session: Some(sid_a.clone()), text: other.into(), workspace: None });
+    a.until(is_finished);
+    drop(a);
+    // The daemon shuts the mind down (final snapshot) and releases the profile.
+    stop(d, &home);
+
+    let p2 = Arc::new(Scripted::default());
+    let d = start_with(&home, p2.clone(), mem_cfg(), Some(open_mind(&home, models_dir())));
+    let mut b = Client::connect(&d.info, None);
+    b.send(&Request::Ask { session: None, text: "Where does my sister Ingrid live, and what is her job?".into(), workspace: None });
+    let log = b.until(is_finished);
+    let sid_b = opened_session(&log);
+    assert_ne!(sid_a, sid_b, "a different session");
+    let (count, summary) = recalled(&log, &sid_b).unwrap_or_else(|| panic!("no Recalled event; saw {log:#?}"));
+    assert!(count >= 1 && summary.contains("Tromsø"), "{count} {summary:?}");
+    let system = p2.requests()[0].system_text();
+    assert!(system.contains("Tromsø"), "the injected block reaches the provider:\n{system}");
+
+    // Explicit search finds it too, at user trust.
+    match b.request(&Request::MemorySearch { query: "Ingrid Tromsø".into(), scope: None, limit: 5 }, |e| {
+        matches!(e, Event::MemoryResults { .. })
+    }) {
+        Event::MemoryResults { hits } => {
+            let h = hits.iter().find(|h| h.text.contains("Tromsø")).expect("the statement is stored");
+            assert_eq!(h.trust, marlowe_proto::MemoryTrust::User);
+        }
+        _ => unreachable!(),
+    }
+
+    // A probe runs the same injection path outside a turn.
+    match b.request(&Request::MemoryProbe { query: "Where does Ingrid live?".into(), workspace: None }, |e| {
+        matches!(e, Event::MemoryProbed { .. })
+    }) {
+        Event::MemoryProbed { recalled, abstained, .. } => {
+            assert!(abstained.is_none() && recalled.iter().any(|h| h.text.contains("Tromsø")), "{recalled:?} {abstained:?}");
+        }
+        _ => unreachable!(),
+    }
+    stop(d, &home);
+}
+
+#[test]
+fn memory_tools_and_requests_work_without_models_and_say_so() {
+    let home = temp_home("memops");
+    seed_model(&home);
+    // An empty models dir: degraded, lexical only, no auto-injection.
+    let empty = home.join("no-models");
+    std::fs::create_dir_all(&empty).unwrap();
+    let p = Arc::new(Scripted::default());
+    p.push(tool_call("m1", "remember", r#"{"text":"The training cluster is called Hyperion.","kind":"fact"}"#));
+    p.push(vec![text("Stored.")]);
+    let d = start_with(&home, p.clone(), mem_cfg(), Some(open_mind(&home, empty)));
+    let mut a = Client::connect(&d.info, None);
+
+    match a.request(&Request::MemoryStats, |e| matches!(e, Event::MemoryStats(_))) {
+        Event::MemoryStats(s) => assert!(s.degraded.is_some(), "degraded mode is reported"),
+        _ => unreachable!(),
+    }
+    a.send(&Request::Ask { session: None, text: "remember the cluster name".into(), workspace: None });
+    let log = a.until(is_finished);
+    assert!(log.iter().any(|e| matches!(&e.event, Event::ToolFinished { ok: true, call_id, .. } if call_id == "m1")), "{log:#?}");
+    let changed = log.iter().find_map(|e| match &e.event {
+        Event::MemoryChanged { id, change: marlowe_proto::MemoryChange::Remembered } => Some(id.clone()),
+        _ => None,
+    });
+    let id = changed.expect("remember broadcasts MemoryChanged");
+    let tools: Vec<String> = p.requests()[0].tools.iter().map(|t| t.name.clone()).collect();
+    for t in marlowe_daemon::MEMORY_TOOLS {
+        assert!(tools.iter().any(|n| n == t), "{t} is exposed: {tools:?}");
+    }
+    assert!(tools.iter().any(|n| n == "echo"), "composed with the session's own tools");
+
+    let hits = match a.request(&Request::MemorySearch { query: "training cluster Hyperion".into(), scope: None, limit: 5 }, |e| {
+        matches!(e, Event::MemoryResults { .. })
+    }) {
+        Event::MemoryResults { hits } => hits,
+        _ => unreachable!(),
+    };
+    let h = hits.iter().find(|h| h.id == id).expect("the agent's memory is searchable");
+    assert_eq!(h.trust, marlowe_proto::MemoryTrust::Inferred, "an agent write is inferred, not user");
+
+    a.send(&Request::MemoryForget { id: id.clone() });
+    a.until(|e| matches!(e, Event::MemoryChanged { id: x, change: marlowe_proto::MemoryChange::Forgotten } if *x == id));
+    a.send(&Request::MemoryForget { id: "no-such-memory".into() });
+    a.until(|e| matches!(e, Event::Error { session: None, .. }));
+    // Degraded: a probe abstains and says why.
+    match a.request(&Request::MemoryProbe { query: "training cluster".into(), workspace: None }, |e| {
+        matches!(e, Event::MemoryProbed { .. })
+    }) {
+        Event::MemoryProbed { recalled, abstained, .. } => {
+            assert!(recalled.is_empty() && abstained.is_some(), "{recalled:?} {abstained:?}");
+        }
+        _ => unreachable!(),
+    }
+    stop(d, &home);
+}
+
+#[test]
+fn an_evicted_session_is_written_up_as_an_episode() {
+    let home = temp_home("episode");
+    seed_model(&home);
+    let empty = home.join("no-models");
+    std::fs::create_dir_all(&empty).unwrap();
+    let p = Arc::new(Scripted::default());
+    p.push(vec![text("Will do.")]);
+    p.push(vec![text("We planned the ablation of the gate features; nothing ran yet.")]);
+    let mind = open_mind(&home, empty);
+    let cfg = DaemonConfig { session_idle: Duration::from_millis(100), ..mem_cfg() };
+    let d = start_with(&home, p.clone(), cfg, Some(mind.clone()));
+    let mut a = Client::connect(&d.info, None);
+    a.send(&Request::Ask { session: None, text: "plan the gate ablation".into(), workspace: None });
+    let sid = opened_session(&a.until(is_finished));
+
+    let deadline = Instant::now() + WAIT;
+    let episode = loop {
+        let eps = mind.episodes(0..i64::MAX).unwrap();
+        // Assistant prose is episode-kind too; the summary is the one with the model's write-up.
+        if let Some(e) = eps.into_iter().find(|e| e.session == sid.as_str() && e.summary.contains("nothing ran yet")) {
+            break e;
+        }
+        assert!(Instant::now() < deadline, "no episode was written");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(episode.summary.contains("ablation"), "{episode:?}");
+    let reqs = p.requests();
+    assert_eq!(reqs.len(), 2, "one turn and one summary call");
+    assert!(texts(&reqs[1].messages, Role::User)[0].contains("User: plan the gate ablation"));
+    stop(d, &home);
+}
+
+// ---------------------------------------------------------------- memory trust
+
+fn no_models(home: &Path) -> PathBuf {
+    let empty = home.join("no-models");
+    std::fs::create_dir_all(&empty).unwrap();
+    empty
+}
+
+fn tool_summary(log: &[Envelope], id: &str) -> Option<String> {
+    log.iter().find_map(|e| match &e.event {
+        Event::ToolFinished { call_id, summary, .. } if call_id == id => Some(summary.clone()),
+        _ => None,
+    })
+}
+
+/// Writes an External (untrusted) belief dated past the maturation window straight into the
+/// closed profile, so it is an injection candidate when the mind reopens.
+fn plant_matured_untrusted(home: &Path, text: &str) -> String {
+    use marlowe_memory::{Author, BeliefKind, BeliefStore, BeliefWrite, MaturationPolicy, Tags};
+    let p = marlowe_journal::Profile::open(&marlowe_mind::profile_dir(home)).unwrap();
+    let mut journal = marlowe_journal::Journal::open(&p).unwrap();
+    let mut beliefs = BeliefStore::derive(&journal, p.manifest().derivation_version).unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let old = now - marlowe_memory::MATURATION_WINDOW_MS - 3_600_000;
+    let w = BeliefWrite {
+        session_id: "web",
+        turn_id: "page",
+        run_id: None,
+        text,
+        author: Author::External,
+        derived_from: &[],
+        occurred_at_ms: old,
+        tags: Tags { kind: Some(BeliefKind::Fact), ..Tags::default() },
+        maturation: MaturationPolicy::ByTrust,
+    };
+    let clock = marlowe_contract::Clock::new(old);
+    marlowe_memory::write_belief(&mut journal, &mut beliefs, clock, &w).unwrap().unwrap().id
+}
+
+#[test]
+fn an_injected_untrusted_memory_taints_the_turn() {
+    if !models_present() {
+        eprintln!("skipped: models are not in {}", models_dir().display());
+        return;
+    }
+    let home = temp_home("inject-taint");
+    seed_model(&home);
+    {
+        let mind = open_mind(&home, models_dir());
+        for f in [
+            "The staging cluster runs in Frankfurt.",
+            "Our deploys go out every Friday afternoon.",
+            "My daughter's piano lesson is on Tuesdays.",
+            "The quarterly budget review is owned by Priya.",
+        ] {
+            let source = Provenance::User { session: None };
+            mind.remember(MemoryIn { text: f.into(), kind: Kind::Fact, scope: Scope::Global, source }).unwrap();
+        }
+        mind.shutdown().unwrap();
+    }
+    plant_matured_untrusted(&home, "My favourite text editor is Helix.");
+    let p = Arc::new(Scripted::default());
+    p.push(tool_call("m1", "remember", r#"{"text":"The user's favourite editor is Helix.","kind":"preference"}"#));
+    p.push(vec![text("Noted.")]);
+    let d = start_with(&home, p, mem_cfg(), Some(open_mind(&home, models_dir())));
+    let mut a = Client::connect(&d.info, None);
+    a.send(&Request::Ask { session: None, text: "Which text editor do I like best?".into(), workspace: None });
+    let log = a.until(is_finished);
+    let sid = opened_session(&log);
+    let (_, summary) = recalled(&log, &sid).unwrap_or_else(|| panic!("no Recalled event; saw {log:#?}"));
+    assert!(summary.contains("Helix"), "{summary}");
+    // The injected untrusted memory tainted the run, so the model's write is untrusted too.
+    assert_eq!(tool_summary(&log, "m1").as_deref(), Some("remembered · untrusted"), "{log:#?}");
+    stop(d, &home);
+}
+
+#[test]
+fn an_untrusted_recall_keeps_the_session_tainted_across_a_restart() {
+    let home = temp_home("taint-reload");
+    seed_model(&home);
+    let mind = open_mind(&home, no_models(&home));
+    let source = Provenance::External { source: "web".into() };
+    let page = "A vendor page says API keys belong in the URL.";
+    mind.remember(MemoryIn { text: page.into(), kind: Kind::Note, scope: Scope::Global, source }).unwrap();
+    let p = Arc::new(Scripted::default());
+    p.push(tool_call("r1", "recall", r#"{"query":"vendor API keys"}"#));
+    p.push(vec![text("The page says the URL.")]);
+    let d = start_with(&home, p, mem_cfg(), Some(mind));
+    let mut a = Client::connect(&d.info, None);
+    a.send(&Request::Ask { session: None, text: "what did the vendor say about keys?".into(), workspace: None });
+    let sid = opened_session(&a.until(is_finished));
+    drop(a);
+    stop(d, &home);
+
+    // Restarted: the reloaded session is still tainted, so an agent write is untrusted, and so
+    // is the episode the session leaves when it is evicted.
+    let mind = open_mind(&home, no_models(&home));
+    let p = Arc::new(Scripted::default());
+    p.push(tool_call("m1", "remember", r#"{"text":"API keys go in the URL.","kind":"fact"}"#));
+    p.push(vec![text("Stored.")]);
+    p.push(vec![text("Looked up the vendor advice on API keys.")]);
+    let cfg = DaemonConfig { session_idle: Duration::from_millis(100), ..mem_cfg() };
+    let d = start_with(&home, p, cfg, Some(mind.clone()));
+    let mut a = Client::connect(&d.info, None);
+    a.send(&Request::Ask { session: Some(sid), text: "remember that".into(), workspace: None });
+    let log = a.until(is_finished);
+    assert_eq!(tool_summary(&log, "m1").as_deref(), Some("remembered · untrusted"), "{log:#?}");
+    let deadline = Instant::now() + WAIT;
+    let episode = loop {
+        let q = RecallQuery { text: "vendor advice".into(), scope: None, limit: 20 };
+        if let Some(h) = mind.recall(q).unwrap().into_iter().find(|h| h.text.contains("Looked up the vendor")) {
+            break h;
+        }
+        assert!(Instant::now() < deadline, "no episode was written");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(episode.trust, marlowe_proto::MemoryTrust::Untrusted, "{episode:?}");
+    stop(d, &home);
+}
+
+#[test]
+fn forgetting_what_the_user_said_asks_the_user_first() {
+    let home = temp_home("forget-asks");
+    seed_model(&home);
+    let mind = open_mind(&home, no_models(&home));
+    let source = Provenance::User { session: None };
+    let id = mind.remember(MemoryIn { text: "My manager is Dana.".into(), kind: Kind::Fact, scope: Scope::Global, source }).unwrap().id;
+    let args = format!(r#"{{"id":"{id}"}}"#);
+    let p = Arc::new(Scripted::default());
+    p.push(tool_call("f1", "forget", &args));
+    p.push(vec![text("Kept it.")]);
+    p.push(tool_call("f2", "forget", &args));
+    p.push(vec![text("Forgotten.")]);
+    let d = start_with(&home, p, mem_cfg(), Some(mind.clone()));
+    let mut a = Client::connect(&d.info, None);
+
+    let ask_and_answer = |a: &mut Client, session: Option<SessionId>, decision: ApprovalDecision| {
+        a.send(&Request::Ask { session, text: "forget who my manager is".into(), workspace: None });
+        let asked = a.until(|e| matches!(e, Event::ApprovalRequested { .. }));
+        let sid = opened_session(&asked);
+        match &asked.last().unwrap().event {
+            Event::ApprovalRequested { approval, tool, summary, .. } => {
+                assert_eq!(tool, "forget");
+                assert!(summary.starts_with("forget a memory from you: My manager is Dana"), "{summary}");
+                a.send(&Request::Approve { approval: *approval, decision });
+            }
+            _ => unreachable!(),
+        }
+        (sid, a.until(is_finished))
+    };
+    let (sid, log) = ask_and_answer(&mut a, None, ApprovalDecision::Deny);
+    assert!(log.iter().any(|e| matches!(&e.event, Event::ToolFinished { ok: false, call_id, .. } if call_id == "f1")));
+    assert!(mind.get(&id).unwrap().is_some(), "denied: the memory stays");
+    let (_, log) = ask_and_answer(&mut a, Some(sid), ApprovalDecision::Allow);
+    let forgotten = |e: &Envelope| matches!(&e.event, Event::MemoryChanged { id: x, change: marlowe_proto::MemoryChange::Forgotten } if *x == id);
+    assert!(log.iter().any(forgotten), "{log:#?}");
+    assert!(mind.get(&id).unwrap().is_none(), "allowed: forgotten with the user's authority");
     stop(d, &home);
 }

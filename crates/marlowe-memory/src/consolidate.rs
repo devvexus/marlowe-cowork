@@ -775,6 +775,7 @@ mod tests {
             silent_until: Some(1_000 + MATURATION_WINDOW_MS),
             supersedes: Vec::new(),
             superseded_by: None,
+            tags: Default::default(),
         }
     }
 

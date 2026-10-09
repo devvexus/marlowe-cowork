@@ -22,7 +22,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::entry::MemoryEntry;
+use crate::entry::{MemoryEntry, MemoryId};
 
 /// BM25 term-frequency saturation. The standard value.
 pub const BM25_K1: f64 = 1.2;
@@ -134,14 +134,7 @@ pub fn score_texts(docs: &[&str], query_text: &str) -> Vec<f32> {
         return Vec::new();
     }
 
-    // The query's terms, deduplicated in order of first appearance. **This order is the
-    // accumulation order below and therefore part of the arithmetic**, not a presentation choice.
-    let mut query_terms: Vec<String> = Vec::new();
-    for term in tokenize(query_text) {
-        if !query_terms.contains(&term) {
-            query_terms.push(term);
-        }
-    }
+    let query_terms = query_terms(query_text);
     let t = query_terms.len();
     // Term -> its column. BTreeMap because the determinism guard bans hash-ordered collections on
     // any path whose order can reach the wire.
@@ -169,6 +162,27 @@ pub fn score_texts(docs: &[&str], query_text: &str) -> Vec<f32> {
         lengths[i] = length;
     }
 
+    bm25(n, t, &counts, &lengths)
+}
+
+/// The query's terms, deduplicated in order of first appearance. **This order is the
+/// accumulation order in [`bm25`] and therefore part of the arithmetic**, not a presentation
+/// choice.
+fn query_terms(query_text: &str) -> Vec<String> {
+    let mut query_terms: Vec<String> = Vec::new();
+    for term in tokenize(query_text) {
+        if !query_terms.contains(&term) {
+            query_terms.push(term);
+        }
+    }
+    query_terms
+}
+
+/// BM25 from per-document query-term counts (row-major, `n * t`) and token lengths.
+///
+/// The one place the scoring arithmetic lives. [`score_texts`] and [`score_indexed`] differ only
+/// in how they fill `counts` and `lengths`, which are integers, so their scores are bit-identical.
+fn bm25(n: usize, t: usize, counts: &[u32], lengths: &[usize]) -> Vec<f32> {
     // Summed in document order, exactly as `lengths.iter().sum()` did.
     let total_len: usize = lengths.iter().sum();
     // A candidate set of empty documents has no average length to speak of. Guarding with 1.0
@@ -226,6 +240,110 @@ pub fn score_texts(docs: &[&str], query_text: &str) -> Vec<f32> {
     scores.into_iter().map(|s| s as f32).collect()
 }
 
+/// Per-document term statistics, cached so a query never re-tokenizes the store.
+///
+/// Holds exactly the integers [`score_texts`] would compute from each document's text: its
+/// token count and its term frequencies. Corpus statistics (`N`, df, avgdl) are **not** cached:
+/// they are taken over the candidate set each query actually ranks, which moves with maturation
+/// and scope, and caching them over the whole store would change the arithmetic.
+///
+/// Kept current by [`crate::store::BeliefStore`], the only writer of entry text.
+#[derive(Debug, Default, Clone)]
+pub struct LexicalIndex {
+    /// Interned terms. BTreeMap: hash-ordered collections are banned on the scored path.
+    vocab: BTreeMap<String, u32>,
+    docs: BTreeMap<MemoryId, DocTerms>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct DocTerms {
+    length: usize,
+    /// `(term id, count)`, sorted by term id.
+    terms: Vec<(u32, u32)>,
+}
+
+impl LexicalIndex {
+    /// Index (or re-index) one document's current text.
+    pub fn upsert(&mut self, id: &str, text: &str) {
+        let mut counts: BTreeMap<u32, u32> = BTreeMap::new();
+        let mut length = 0usize;
+        let mut buffer = String::new();
+        let vocab = &mut self.vocab;
+        for_each_token(text, &mut buffer, |token| {
+            length += 1;
+            let term = match vocab.get(token) {
+                Some(term) => *term,
+                None => {
+                    let next = vocab.len() as u32;
+                    vocab.insert(token.to_string(), next);
+                    next
+                }
+            };
+            *counts.entry(term).or_insert(0) += 1;
+        });
+        self.docs.insert(id.to_string(), DocTerms { length, terms: counts.into_iter().collect() });
+    }
+
+    pub fn remove(&mut self, id: &str) {
+        self.docs.remove(id);
+    }
+
+    /// Documents indexed.
+    pub fn len(&self) -> usize {
+        self.docs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.docs.is_empty()
+    }
+
+    /// Distinct terms ever seen. Never shrinks; ids are stable for the index's life.
+    pub fn vocabulary(&self) -> usize {
+        self.vocab.len()
+    }
+}
+
+/// [`score_all`] over cached statistics. **Bit-identical to `score_all`** for any documents whose
+/// cached text is current; a document missing from the index is tokenized on the spot, so the
+/// result never depends on whether the cache was warm.
+pub fn score_indexed(index: &LexicalIndex, docs: &[&MemoryEntry], query_text: &str) -> Vec<f32> {
+    let n = docs.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let query_terms = query_terms(query_text);
+    let t = query_terms.len();
+    let ids: Vec<Option<u32>> = query_terms.iter().map(|q| index.vocab.get(q).copied()).collect();
+
+    let mut counts = vec![0u32; n * t];
+    let mut lengths = vec![0usize; n];
+    let mut buffer = String::new();
+    for (i, doc) in docs.iter().enumerate() {
+        match index.docs.get(&doc.id) {
+            Some(cached) => {
+                lengths[i] = cached.length;
+                for (j, id) in ids.iter().enumerate() {
+                    let Some(id) = id else { continue };
+                    if let Ok(k) = cached.terms.binary_search_by_key(id, |(term, _)| *term) {
+                        counts[i * t + j] = cached.terms[k].1;
+                    }
+                }
+            }
+            None => {
+                let mut length = 0usize;
+                for_each_token(&doc.text, &mut buffer, |token| {
+                    length += 1;
+                    if let Some(j) = query_terms.iter().position(|q| q == token) {
+                        counts[i * t + j] += 1;
+                    }
+                });
+                lengths[i] = length;
+            }
+        }
+    }
+    bm25(n, t, &counts, &lengths)
+}
+
 /// Squash a raw BM25 score into `[0, 1)`. See [`BM25_SATURATION`].
 pub fn saturate(raw: f32) -> f32 {
     let s = raw as f64;
@@ -263,6 +381,7 @@ mod tests {
             silent_until: Some(1_000 + MATURATION_WINDOW_MS),
             supersedes: Vec::new(),
             superseded_by: None,
+            tags: Default::default(),
         }
     }
 
@@ -395,5 +514,77 @@ mod tests {
             assert!(s > previous || (raw == 0.0 && s == 0.0), "{raw} -> {s}");
             previous = s;
         }
+    }
+
+    /// **The cache changes no arithmetic.** `assert_eq` on `f32`, not an epsilon, across
+    /// queries with repeated, absent, digit and non-ASCII terms, a doc set that is a subset of
+    /// the index, documents re-indexed after an edit, and one missing from the index entirely.
+    #[test]
+    fn the_indexed_path_is_bit_identical_to_tokenizing_every_query() {
+        let mut entries = vec![
+            entry("a", "moved off Postgres in April 2023, Postgres was slow"),
+            entry("b", "the database migration finished; the migration took 3 days"),
+            entry("c", "nothing to do with any of it"),
+            entry("d", ""),
+            entry("e", "Café crème at the café: v1.2.3 shipped"),
+            entry("f", "postgres postgres postgres migration"),
+            entry("g", "the ingest job times out on the nightly run"),
+        ];
+        let mut index = LexicalIndex::default();
+        for e in &entries {
+            index.upsert(&e.id, &e.text);
+        }
+        // An edit after indexing, re-indexed the way the store does it.
+        entries[2].text = "a late note about the postgres migration".into();
+        index.upsert("c", &entries[2].text);
+        // And a tombstone: text cleared, re-indexed as empty.
+        entries[6].text.clear();
+        index.upsert("g", "");
+        // One entry the index has never seen.
+        let stranger = entry("z", "postgres in april, and café");
+
+        let queries = [
+            "postgres migration",
+            "april 2023 postgres postgres",
+            "",
+            "unrelated words entirely",
+            "café v1 3",
+            "THE the The",
+            "ingest nightly",
+        ];
+        let all: Vec<&MemoryEntry> = entries.iter().chain(std::iter::once(&stranger)).collect();
+        let subsets: [Vec<&MemoryEntry>; 3] = [
+            all.clone(),
+            vec![all[0], all[4], all[7]],
+            vec![all[5]],
+        ];
+        let mut nonzero = false;
+        for docs in &subsets {
+            for q in queries {
+                let fresh = score_all(docs, q);
+                let cached = score_indexed(&index, docs, q);
+                assert_eq!(
+                    fresh.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+                    cached.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+                    "diverged on {q:?}"
+                );
+                nonzero |= fresh.iter().any(|s| *s > 0.0);
+            }
+        }
+        assert!(nonzero, "control: something must have scored above zero");
+        assert_eq!(score_indexed(&index, &[], "anything"), Vec::<f32>::new());
+    }
+
+    #[test]
+    fn reindexing_replaces_rather_than_accumulates() {
+        let mut index = LexicalIndex::default();
+        index.upsert("a", "one two two");
+        index.upsert("a", "two");
+        let e = entry("a", "two");
+        assert_eq!(score_indexed(&index, &[&e], "two"), score_all(&[&e], "two"));
+        assert_eq!(index.len(), 1);
+        index.remove("a");
+        assert!(index.is_empty());
+        assert_eq!(index.vocabulary(), 2, "term ids are never reused");
     }
 }

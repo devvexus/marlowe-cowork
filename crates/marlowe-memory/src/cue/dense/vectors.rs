@@ -16,8 +16,17 @@
 
 use std::collections::BTreeMap;
 
+use marlowe_contract::Fidelity;
+
 use crate::cue::dense::embedder::{EmbedError, Embedder};
+use crate::entry::{MemoryEntry, MemoryId};
 use crate::store::BeliefStore;
+
+/// A memory whose text can carry a vector: anything not tombstoned. A tombstone's text is gone,
+/// and so must its vector be.
+fn wants_vector(entry: &MemoryEntry) -> bool {
+    entry.fidelity > Fidelity::Tombstone
+}
 
 /// Vectors for live memories, keyed by memory id.
 #[derive(Debug, Default, Clone)]
@@ -54,24 +63,50 @@ impl VectorStore {
         beliefs: &BeliefStore,
         embedder: &mut Embedder,
     ) -> Result<usize, EmbedError> {
-        let mut ids: Vec<String> = Vec::new();
-        let mut texts: Vec<String> = Vec::new();
-        for entry in beliefs.recall_candidates() {
-            if !self.vectors.contains_key(&entry.id) {
-                ids.push(entry.id.clone());
-                texts.push(entry.text.clone());
-            }
-        }
+        let (ids, texts): (Vec<MemoryId>, Vec<String>) = self.pending(beliefs).into_iter().unzip();
         if ids.is_empty() {
             return Ok(0);
         }
 
         let vectors = embedder.embed_batch(&texts)?;
         debug_assert_eq!(vectors.len(), ids.len());
-        for (id, vector) in ids.iter().zip(vectors) {
-            self.vectors.insert(id.clone(), vector);
+        for ((id, text), vector) in ids.iter().zip(&texts).zip(vectors) {
+            self.install(beliefs, id, text, vector);
         }
         Ok(ids.len())
+    }
+
+    /// `(id, text)` for every memory that wants a vector and has none, in store order.
+    ///
+    /// With [`Self::install`] this is [`Self::embed_missing`] split in two, so the embedding can
+    /// run on another thread while the store keeps serving. `embed_missing` is built from these
+    /// two calls, so the split and the one-shot path are the same code.
+    pub fn pending(&self, beliefs: &BeliefStore) -> Vec<(MemoryId, String)> {
+        beliefs
+            .entries()
+            .filter(|e| wants_vector(e) && !self.vectors.contains_key(&e.id))
+            .map(|e| (e.id.clone(), e.text.clone()))
+            .collect()
+    }
+
+    /// Install a vector the [`Embedder`] computed for `text`.
+    ///
+    /// Accepted only if `id` is still a memory that wants a vector **and its text is still
+    /// `text`** — a vector computed before a forget or an edit is dropped, never attached to
+    /// text it was not computed from. Returns whether it was installed.
+    pub fn install(&mut self, beliefs: &BeliefStore, id: &str, text: &str, vector: Vec<f32>) -> bool {
+        match beliefs.get(id) {
+            Some(entry) if wants_vector(entry) && entry.text == text => {
+                self.vectors.insert(id.to_string(), vector);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Drop one memory's vector, e.g. on forget.
+    pub fn remove(&mut self, memory_id: &str) {
+        self.vectors.remove(memory_id);
     }
 
     /// Install a vector directly. **Tests only, and it stays that way.**
@@ -97,8 +132,8 @@ impl VectorStore {
     /// memory — which is precisely the forgetting leak the module docs refuse to create.
     pub fn retain_live(&mut self, beliefs: &BeliefStore) {
         let live: std::collections::BTreeSet<&str> = beliefs
-            .recall_candidates()
-            .iter()
+            .entries()
+            .filter(|e| wants_vector(e))
             .map(|e| e.id.as_str())
             .collect();
         self.vectors.retain(|id, _| live.contains(id.as_str()));
@@ -133,6 +168,7 @@ mod tests {
             silent_until: Some(1_000 + MATURATION_WINDOW_MS),
             supersedes: Vec::new(),
             superseded_by: None,
+            tags: Default::default(),
         }
     }
 
@@ -163,5 +199,30 @@ mod tests {
             store.get("m-gone").is_none(),
             "a vector outliving its memory is the forgetting leak ADR-009 refuses"
         );
+    }
+
+    #[test]
+    fn pending_and_install_refuse_stale_or_forgotten_text() {
+        let mut beliefs = BeliefStore::default();
+        beliefs.insert(entry("m-a", "alpha"));
+        beliefs.insert(entry("m-b", "beta"));
+        let mut store = VectorStore::default();
+
+        let pending = store.pending(&beliefs);
+        assert_eq!(pending, vec![("m-a".to_string(), "alpha".to_string()), ("m-b".to_string(), "beta".to_string())]);
+
+        assert!(store.install(&beliefs, "m-a", "alpha", vec![1.0; 4]));
+        assert!(!store.install(&beliefs, "m-b", "old text", vec![1.0; 4]), "stale text");
+        assert!(!store.install(&beliefs, "m-none", "x", vec![1.0; 4]), "unknown id");
+        assert_eq!(store.pending(&beliefs).len(), 1);
+
+        beliefs.tombstone("m-a");
+        assert!(store.pending(&beliefs).iter().all(|(id, _)| id != "m-a"), "a tombstone wants no vector");
+        store.retain_live(&beliefs);
+        assert!(store.get("m-a").is_none(), "and keeps none");
+
+        store.install(&beliefs, "m-b", "beta", vec![1.0; 4]);
+        store.remove("m-b");
+        assert!(store.get("m-b").is_none());
     }
 }

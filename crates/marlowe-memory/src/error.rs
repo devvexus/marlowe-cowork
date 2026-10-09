@@ -25,6 +25,9 @@ pub enum MemoryError {
     )]
     EventForUnknownMemory { seq: Seq, id: String },
 
+    #[error("belief snapshot rejected: {0}. Derive from the journal instead")]
+    SnapshotRejected(String),
+
     #[error(transparent)]
     Journal(#[from] marlowe_journal::JournalError),
 

@@ -76,6 +76,10 @@ pub(crate) struct Core {
     pub brains: Arc<Brains>,
     pub tools: ToolHostFactory,
     pub user: UserInfo,
+    /// The memory service, when the binary supplied one.
+    pub mind: Option<marlowe_mind::Mind>,
+    /// Legacy-offer cache and the import latch.
+    pub memory: crate::mind_ops::MemoryState,
     pub approvals: Approvals,
     sessions: Mutex<HashMap<SessionId, Arc<SessionHandle>>>,
     started: Instant,
@@ -159,7 +163,8 @@ impl Core {
         let turns = self.store.load(id).map_err(refuse)?;
         let messages = turns.into_iter().map(|t| Message { role: t.role, content: t.content }).collect();
         let workspace = summary.workspace.clone();
-        let convo = Conversation::from_messages(id.clone(), workspace.as_ref().map(PathBuf::from), messages, summary.turns);
+        let mut convo = Conversation::from_messages(id.clone(), workspace.as_ref().map(PathBuf::from), messages, summary.turns);
+        convo.exposure.tainted = self.store.tainted(id).map_err(refuse)?;
         Ok(self.spawn_session(convo, summary.title, workspace))
     }
 
@@ -297,6 +302,8 @@ impl Daemon {
             brains,
             tools: deps.tools,
             user: deps.user,
+            mind: deps.mind,
+            memory: Default::default(),
             approvals: Approvals::default(),
             sessions: Mutex::new(HashMap::new()),
             started: Instant::now(),
@@ -346,7 +353,8 @@ impl Daemon {
     }
 
     /// Blocks until shutdown is requested, then stops running turns (persisting them), denies
-    /// pending approvals, announces `ShuttingDown`, flushes clients, and removes `daemon.json`.
+    /// pending approvals, shuts the memory service down (final snapshot), announces
+    /// `ShuttingDown`, flushes clients, and removes `daemon.json`.
     pub fn wait(mut self) -> Result<(), DaemonError> {
         let _ = self.shutdown_rx.recv();
         let core = self.core.clone();
@@ -362,6 +370,12 @@ impl Daemon {
         core.approvals.deny_all();
         let runners: Vec<JoinHandle<()>> = lock(&core.runners).drain(..).collect();
         join_within(runners, core.cfg.drain_timeout);
+        // After the runners: their last turns are ingested before the final snapshot.
+        if let Some(mind) = &core.mind {
+            if let Err(e) = mind.shutdown() {
+                core.bus.publish(Event::Error { session: None, message: format!("memory did not shut down cleanly: {e}") });
+            }
+        }
         core.bus.publish(Event::ShuttingDown);
         core.bus.close_all();
         let writers: Vec<JoinHandle<()>> = lock(&core.writers).drain(..).collect();

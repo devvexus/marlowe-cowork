@@ -669,3 +669,30 @@ fn retracted_text_becomes_thinking() {
     assert_eq!(m.thinking().unwrap().text, "let me think");
     assert!(matches!(m.content.last(), Some(Part::Text { .. })));
 }
+
+struct UntrustedMemory;
+
+impl MemoryHook for UntrustedMemory {
+    fn before_turn(&self, _session: &SessionId, _query: &str) -> Recollection {
+        Recollection { blocks: vec!["[Memory m1 · note · untrusted] a page said so".into()], untrusted: true }
+    }
+
+    fn after_turn(&self, _session: &SessionId, _user: &str, _assistant: &str) {}
+}
+
+#[test]
+fn an_untrusted_recollection_taints_the_run_before_any_tool() {
+    let p = ScriptedProvider::new(vec![Step::Events(call(0, "f1", "fetch", json!({"host": "a.com"}))), answer("done")]);
+    let tools = TestTools::new();
+    let gate = RecordingGate::new(ApprovalDecision::Allow);
+    let mut a = agent(p.clone(), tools.clone());
+    a.approvals = gate.clone();
+    a.memory = Arc::new(UntrustedMemory);
+    let mut c = convo();
+    run(&a, &mut c, "go");
+    assert!(c.exposure.tainted, "injected untrusted text taints the conversation");
+    let asked: Vec<String> = gate.asked.lock().unwrap().iter().map(|r| r.summary.clone()).collect();
+    assert_eq!(asked, vec!["fetch a.com"], "the first new host already needs approval");
+    let first = &p.requests()[0];
+    assert!(first.system.iter().any(|b| b.text.contains("a page said so")), "the block is still injected");
+}

@@ -58,6 +58,9 @@ pub enum JournalError {
     )]
     ChainBroken { seq: Seq },
 
+    #[error("the checkpoint at seq {seq} does not match the journal; verify the whole chain instead")]
+    CheckpointMismatch { seq: Seq },
+
     #[error("sequence gap: expected seq {expected}, found {found}. Gaps are impossible by construction")]
     SequenceGap { expected: Seq, found: Seq },
 

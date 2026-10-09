@@ -4,6 +4,7 @@
 
 mod conversation;
 mod library;
+mod memory;
 mod overlay;
 mod rail;
 
@@ -115,11 +116,13 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
             rail::draw(g.rail, state, theme, buf);
         }
         View::Library => library::draw(g.main, state, theme, buf),
+        View::Memory => memory::draw(g.main, state, theme, buf),
     }
     let cursor = g.composer.and_then(|r| draw_composer(r, state, theme, buf));
 
     match &state.overlay {
         Some(Overlay::Palette { query, sel }) => overlay::palette(area, query, *sel, theme, buf),
+        Some(Overlay::ImportOffer { sel }) => overlay::import_offer(area, state, *sel, theme, buf),
         Some(Overlay::Sessions { sel }) => overlay::sessions(area, state, *sel, theme, buf),
         Some(Overlay::ModelPicker { sel }) => {
             if let Some(r) = g.picker {
@@ -139,6 +142,11 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
     }
     if let View::Library = state.view {
         if let Some(c) = library::cursor(g.main, state) {
+            frame.set_cursor_position(c);
+        }
+    }
+    if state.view == View::Memory && state.overlay.is_none() {
+        if let Some(c) = memory::cursor(g.main, state) {
             frame.set_cursor_position(c);
         }
     }
@@ -261,6 +269,7 @@ fn draw_main_frame(g: &Geometry, state: &State, theme: &Theme, buf: &mut Buffer)
     ];
     let sub = match state.view {
         View::Library => Some("library".to_string()),
+        View::Memory => Some("memory".to_string()),
         View::Conversation => state.title.as_deref().map(text::clean),
     };
     if let Some(sub) = sub {

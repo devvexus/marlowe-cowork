@@ -24,6 +24,8 @@ members = [
     "crates/marlowe-openrouter",
     "crates/marlowe-exec",
     "crates/marlowe",
+    # M2: the memory service.
+    "crates/marlowe-mind",
 ]
 # Reference sources only; never built.
 exclude = ["legacy"]
@@ -53,6 +55,7 @@ marlowe-tui = { path = "crates/marlowe-tui" }
 marlowe-provider = { path = "crates/marlowe-provider" }
 marlowe-openrouter = { path = "crates/marlowe-openrouter" }
 marlowe-exec = { path = "crates/marlowe-exec" }
+marlowe-mind = { path = "crates/marlowe-mind" }
 
 # Terminal. crossterm, not termion: Windows is the primary platform.
 ratatui = "0.30"

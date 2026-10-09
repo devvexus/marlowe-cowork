@@ -7,6 +7,7 @@ use marlowe_model::{Effort, ModelRef, ProviderKind};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{ApprovalId, SessionId};
+use crate::memory::MemoryScope;
 
 /// A secret on the wire. `Debug` and `Display` never print it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,4 +168,30 @@ pub enum Request {
     SetCredential { provider: ProviderKind, secret: Secret },
     Status,
     Shutdown,
+    /// Searches memory. `scope: None` searches everything; a project scope includes global memories.
+    MemorySearch {
+        query: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<MemoryScope>,
+        limit: u32,
+    },
+    /// Tombstones a memory.
+    MemoryForget { id: String },
+    /// Supersedes a memory with corrected text, at user trust.
+    MemoryCorrect { id: String, text: String },
+    MemoryStats,
+    /// Imports the old harness profile. `path: None` uses the default old profile location.
+    ImportLegacy {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+    /// Asks whether an old profile exists; answered with `LegacyAvailable` or an `Error`.
+    LegacyStatus,
+    /// Runs the auto-injection pipeline for `query` outside a turn (diagnostics, `memory bench`).
+    /// Answered with `MemoryProbed`; the decision is journalled like any injection.
+    MemoryProbe {
+        query: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
 }

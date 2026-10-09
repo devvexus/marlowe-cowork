@@ -1358,11 +1358,16 @@ dependencies = [
 name = "marlowe"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "crossterm",
  "marlowe-agent",
  "marlowe-brains",
+ "marlowe-contract",
  "marlowe-daemon",
  "marlowe-exec",
+ "marlowe-journal",
+ "marlowe-memory",
+ "marlowe-mind",
  "marlowe-model",
  "marlowe-openrouter",
  "marlowe-proto",
@@ -1413,9 +1418,14 @@ dependencies = [
 name = "marlowe-daemon"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "crossbeam-channel",
  "marlowe-agent",
  "marlowe-brains",
+ "marlowe-contract",
+ "marlowe-journal",
+ "marlowe-memory",
+ "marlowe-mind",
  "marlowe-model",
  "marlowe-proto",
  "rusqlite",
@@ -1493,6 +1503,21 @@ dependencies = [
  "thiserror 2.0.19",
  "unicode-general-category",
  "unicode-normalization",
+]
+
+[[package]]
+name = "marlowe-mind"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "crossbeam-channel",
+ "marlowe-contract",
+ "marlowe-journal",
+ "marlowe-memory",
+ "marlowe-proto",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

@@ -524,6 +524,43 @@ pub fn select_for_injection_probed<'a, P: StageProbe>(
     scope: RetrievalScope,
     probe: &mut P,
 ) -> Selection<'a> {
+    select_for_injection_filtered(
+        beliefs,
+        session_id,
+        query_text,
+        now_ms,
+        max_tokens,
+        scoring,
+        vectors,
+        query_vector,
+        rerank,
+        scope,
+        &|_| true,
+        probe,
+    )
+}
+
+/// [`select_for_injection_probed`] with an extra scope predicate, applied with the session
+/// scope before any cue runs (e.g. "global, or this workspace's project").
+///
+/// Narrowing the pool is a scope decision like `RetrievalScope`, not a scoring change: every
+/// number after the scope stage is computed by the same code over the admitted set. With a
+/// predicate that admits everything this *is* the shipped path.
+#[allow(clippy::too_many_arguments)]
+pub fn select_for_injection_filtered<'a, P: StageProbe>(
+    beliefs: &'a BeliefStore,
+    session_id: &str,
+    query_text: &str,
+    now_ms: i64,
+    max_tokens: u32,
+    scoring: &Scoring<'_>,
+    vectors: &VectorStore,
+    query_vector: Option<&[f32]>,
+    rerank: &mut Rerank<'_>,
+    scope: RetrievalScope,
+    admit: &dyn Fn(&MemoryEntry) -> bool,
+    probe: &mut P,
+) -> Selection<'a> {
     probe.enter(Stage::Candidates);
     let candidates = beliefs.injection_candidates(now_ms);
     let considered = candidates.len() as u32;
@@ -537,10 +574,12 @@ pub fn select_for_injection_probed<'a, P: StageProbe>(
             RetrievalScope::ThisSession => e.source_session_id == session_id,
             RetrievalScope::Profile => true,
         })
+        .filter(|e| admit(e))
         .collect();
 
     probe.enter(Stage::Lexical);
-    let raw_scores = lexical::score_all(&scoped, query_text);
+    // Cached term statistics; bit-identical to `lexical::score_all` (see its tests).
+    let raw_scores = lexical::score_indexed(beliefs.lexicon(), &scoped, query_text);
     probe.enter(Stage::Dense);
     let dense_scores = dense_for(&scoped, query_vector, vectors);
 
@@ -849,6 +888,7 @@ mod tests {
             silent_until: Some(created + MATURATION_WINDOW_MS),
             supersedes: Vec::new(),
             superseded_by: None,
+            tags: Default::default(),
         }
     }
 
@@ -1282,5 +1322,25 @@ mod tests {
             Some(Abstention::NoReranker),
             "the operating point decides before the budget does"
         );
+    }
+
+    #[test]
+    fn a_filter_narrows_the_pool_and_an_admit_all_filter_changes_nothing() {
+        let now = 3_000 + MATURATION_WINDOW_MS;
+        let gate = test_gate();
+        let point = op();
+        let scoring = Scoring::Gated { gate: &gate, operating_point: &point, coverage: Coverage::Declared };
+        let beliefs = store();
+        let q = "why is the ingest job timing out";
+        let base = select_for_injection(&beliefs, "s-1", q, now, 7000, &scoring, &VectorStore::default(), None, &mut Rerank::Off, RetrievalScope::Profile);
+        let all = select_for_injection_filtered(&beliefs, "s-1", q, now, 7000, &scoring, &VectorStore::default(), None, &mut Rerank::Off, RetrievalScope::Profile, &|_| true, &mut ());
+        let key = |s: &Selection| s.scored.iter().map(|c| (c.entry.id.clone(), c.score.to_bits(), c.margin.to_bits(), c.features.0.iter().map(|f| f.to_bits()).collect::<Vec<_>>())).collect::<Vec<_>>();
+        assert_eq!(key(&base), key(&all));
+        assert_eq!(base.scoped, 3);
+
+        let narrowed = select_for_injection_filtered(&beliefs, "s-1", q, now, 7000, &scoring, &VectorStore::default(), None, &mut Rerank::Off, RetrievalScope::Profile, &|e| e.id != "m-b", &mut ());
+        assert_eq!(narrowed.scoped, 2);
+        assert_eq!(narrowed.considered, 3, "considered still counts the whole candidate set");
+        assert!(narrowed.scored.iter().all(|c| c.entry.id != "m-b"));
     }
 }

@@ -11,6 +11,8 @@ marlowe-proto.workspace = true
 marlowe-agent.workspace = true
 marlowe-brains.workspace = true
 marlowe-daemon.workspace = true
+marlowe-mind.workspace = true
+chrono.workspace = true
 marlowe-tui.workspace = true
 # Concrete providers and tools are wired here and nowhere else.
 marlowe-provider.workspace = true
@@ -20,6 +22,10 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 crossterm.workspace = true
+# `--eval-adapter` (src/eval/): the §4.0 NDJSON target the LongMemEval reproduction drives.
+marlowe-contract.workspace = true
+marlowe-journal.workspace = true
+marlowe-memory.workspace = true
 
 # SetHandleInformation for the detached daemon spawn (daemon_ctl.rs).
 [target.'cfg(windows)'.dependencies]

@@ -1,0 +1,562 @@
+{
+  "session": "M0b Session F",
+  "split": {
+    "redrawn": false,
+    "rule": "Within each harness category (Case.category -- question_type, or 'abstention' for the _abs subset), sort query_ids by (sha256(query_id).hexdigest(), query_id) and assign even indices to `fit` and odd indices to `heldout`. Deterministic, and stratified rather than merely random: every category is split within one case of even, so both halves have support in all seven.",
+    "digest": "3a685798a4fcac4cb97b645394d4935906a4f67e605398e7d659d48c8f685a3d",
+    "fit_cases": 251,
+    "heldout_cases": 249,
+    "corpus_sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+    "note": "Session B's split, unchanged through C, D, E and F and asserted by digest. Redrawing it would invalidate every number fit under it."
+  },
+  "what_is_tested": "Brief section 5.2/5.3 consolidation, measured on retrieval. Near-duplicate merging as a SUPERSESSION edge: a cluster elects one of its existing members and the rest leave the section 4.3 candidate set. No new belief is minted, so every retrievable memory keeps the id ingest returned for exactly one turn.",
+  "registered_against_split": "3a685798a4fcac4cb97b645394d4935906a4f67e605398e7d659d48c8f685a3d",
+  "corpus_sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+  "corpus_variant": "cleaned",
+  "derived_from": {
+    "sweep": "runs/session-f/consolidation-sweep.ndjson",
+    "features": "runs/session-f/fit-features.ndjson",
+    "population": "the FIT split only",
+    "why": "A threshold chosen against held-out cases is a threshold fit on the number it will later be judged by."
+  },
+  "disclosure": {
+    "_what": "Before any of this was measured, a PROXY reachability check was run on the HELD-OUT split, using token-Jaccard and TF-IDF cosine as stand-ins for the jina rule. It answered one question -- can pool reduction move the oracle at all -- and it reported +0.000 to +0.017 depending on the proxy and threshold.",
+    "_why_it_is_recorded": "It touched held-out data, so it cannot be laundered into a prediction. Every band below is re-derived on the FIT split with the real rule. Recording the earlier read is what stops the re-derivation from being quoted as if no held-out data had ever been seen.",
+    "proxy_range_seen_on_heldout": [
+      0.0,
+      0.0174
+    ],
+    "proxy_rules": [
+      "token Jaccard",
+      "TF-IDF cosine"
+    ]
+  },
+  "reach_check": {
+    "_what": "ADR-010: check that a shape can move the metric it will be judged on, BEFORE registering the band.",
+    "can_consolidation_move_the_oracle": true,
+    "why": "Rank is defined over the candidate set. Removing a non-gold candidate ranked above gold strictly improves gold's rank, so the oracle is structurally reachable -- unlike Session E's per-query features, which were monotone within-query transforms and therefore rank-preserving by construction.",
+    "measured_headroom_on_the_fit_split": {
+      "max_delta_oracle_over_the_whole_sweep": 0.0044,
+      "at": [
+        {
+          "linkage": "complete",
+          "threshold": 0.97
+        },
+        {
+          "linkage": "complete",
+          "threshold": 0.98
+        },
+        {
+          "linkage": "single",
+          "threshold": 0.97
+        },
+        {
+          "linkage": "single",
+          "threshold": 0.98
+        }
+      ],
+      "in_cases": 1,
+      "of_cases": 229
+    }
+  },
+  "number_1_pool_reduction": {
+    "_what": "The session's PRIMARY quantity, and the only well-powered one. Fraction of the section 4.3 candidate pool removed by consolidation, on the held-out split.",
+    "_why_primary": "It is counted over ~113,000 candidates rather than over 230 cases, so it has the resolution the top-1 rates do not. Session E's block-concentration played the same role.",
+    "predicted": 0.012084,
+    "bands": [
+      {
+        "condition": "reduction >= 0.10",
+        "verdict": "PREMISE CONFIRMED -- near-duplicates are a material fraction of the pool and consolidation has something to work with"
+      },
+      {
+        "condition": "0.03 <= reduction < 0.10",
+        "verdict": "PREMISE PARTLY HELD -- a small but non-trivial duplicate mass"
+      },
+      {
+        "condition": "reduction < 0.03",
+        "verdict": "PREMISE REFUTED -- the candidate pool is not meaningfully duplicated, and the ~493-turn pool named in STATE.md is ~493 DISTINCT turns"
+      }
+    ]
+  },
+  "number_2_oracle": {
+    "_what": "The either-cue top-1 oracle after consolidation, against Session E's 0.6522.",
+    "band": null,
+    "_why_no_band": "The reach check passes -- the metric is movable -- but the measured fit-split headroom is at most +0.0044, which is one case in 229. The Wilson half-width at p=0.65 over 230 held-out cases is 0.0636. A band whose width is an order of magnitude below the instrument's resolution cannot be read, and registering one anyway is ADR-011's error in the opposite direction from ADR-010's. Reported as a DIAGNOSTIC, beside 0.6522.",
+    "session_e_reference": 0.6522
+  },
+  "number_3_floor": {
+    "_what": "The fused gate's top-1 against the best single cue, both measured AFTER consolidation.",
+    "_why_rebased": "Through Session E the floor was Session C's best single cue, 0.5478. Consolidation changes the cues themselves, so a fusion could clear the inherited floor while still losing to its own inputs -- exactly what the floor exists to catch. The floor is therefore the post-consolidation best single cue measured in the SAME run. Session C's 0.5478 is reported beside it as the superseded basis so the five-session series stays readable.",
+    "rule": "fitted_gate_top1 >= max(lexical_top1, dense_top1), same run, same split",
+    "superseded_basis": 0.5478,
+    "hard": true,
+    "partial_credit": false
+  },
+  "predicted_outcome": {
+    "_status": "REGISTERED AS THE PREDICTION, before the held-out run exists",
+    "prediction": "Consolidation does not move the either-cue oracle on this benchmark. The held-out pool reduction lands near 0.0121 and the oracle moves by at most one or two cases in either direction.",
+    "the_reason_and_it_has_two_halves": {
+      "half_1_this_is_a_property_of_the_corpus": "LongMemEval-S haystacks are assembled from DISTINCT real sessions, so distractors are topically related rather than textually duplicated. Measured over 30,587,870 pairwise similarities on the fit split, only 0.008569% of pairs reach 0.98 and 0.365805% reach 0.90. There is very little for a near-duplicate rule to remove because there is very little duplication present.",
+      "half_2_it_does_not_generalize_to_real_user_history": "On real history the same thing genuinely does get said repeatedly across months, and the duplicate density would be higher. A null here is evidence about THIS BENCHMARK'S candidate pool. It is NOT evidence that section 5.3 consolidation is unnecessary in production.",
+      "_why_both_are_registered": "A bare null invites two opposite misreadings and both are wrong. Neither half may be quoted without the other."
+    },
+    "what_would_refute_this": "The proxies used lexical overlap and could not see semantic restatement; the jina rule can. If the real rule had found materially more structure than the proxies did, the prediction would be refuted and that would be the finding. It did not: the largest oracle movement anywhere in the sweep is +0.0044."
+  },
+  "the_named_lever_list_closes_here": {
+    "_status": "REGISTERED BEFORE THE RESULT EXISTS",
+    "statement": "After this session the cross-encoder is out on latency (measured, docs/design/spike-2026-08-04-cross-encoder.md) and consolidation is measured. There is no further named mechanism that raises the either-cue oracle within M0b's budget. Whatever this session returns, the next conversation is about K1's DEFINITION -- what 0.95 injection precision means and whether it is the right bar for this cue set -- and not about the next lever.",
+    "_why_registered_rather_than_concluded": "Session D's escalation read was recorded as confounded precisely because it was assembled after seeing a disappointing number. This is written first, so it cannot read as a reaction to one.",
+    "_this_is_not": "an escalation, or a recommendation to stop. It is a statement about the option space."
+  },
+  "expected_check_failures": {
+    "unchanged_cue_check": {
+      "_what": "tools/analyze_cue_overlap.py asserts lexical / dense / oracle at top-1 are identical to Session C, and warns that a move means the held-out POPULATION changed rather than the ranking.",
+      "will_fire": true,
+      "and_that_is_correct": "This session changes the candidate set on purpose. The check is doing its job; it is registered as expected here so that a real invariant is not quietly reinterpreted on the day it fires.",
+      "what_would_still_be_alarming": "a move in the UNCONSOLIDATED numbers, or a move larger than the pool reduction can account for."
+    }
+  },
+  "attribution_rule": {
+    "_the_registered_risk": "LongMemEval's gold labels are per-turn. If consolidation merged a gold turn into a belief with other turns, attribution could break -- a correct retrieval scoring as a miss because the merged memory is not the annotated turn.",
+    "resolution": "The merge is a SUPERSESSION edge and the survivor is an existing per-turn belief, so every retrievable memory keeps the id ingest returned for exactly one turn. Attributor.attribute is exact and eval/ is untouched. This is what HP5 already specifies -- 'merges are supersedes edges and are therefore undoable' -- so the attribution property falls out of the designed mechanism rather than being arranged for the benchmark.",
+    "what_was_ruled_out_and_why": "A merged belief with a NEW id. Attributor.record builds its reverse map as _turn_of[memory_id] = turn_id, LAST WRITE WINS, so a belief reported under several turns resolves to whichever was recorded last, silently; and evidence_precision drops unattributable injections from its denominator entirely, so a store of merged beliefs would report a vacuous precision over an empty set. Neither failure is visible in any number the harness prints.",
+    "the_cost_is_measured_not_corrected": "When a cluster contains gold and elects a different member, that case is lost. Under a per-turn evidence key that is a GENUINE retrieval failure, not an attribution artifact, and correcting it would be the implementation authoring its own measurement. Reported as cases_with_gold_suppressed.",
+    "fit_split_cost_at_the_chosen_threshold": 2
+  },
+  "frozen_parameters": {
+    "threshold": 0.98,
+    "linkage": "complete",
+    "survivor_rule": "latest origin_event, then id ascending",
+    "_survivor_rule_why": "Supersession means a newer belief displaces an older one, and LongMemEval's knowledge-update category makes the LATEST statement gold. Electing the earliest member would systematically suppress gold across that whole category and present as an unexplained retrieval regression.",
+    "selection_rule": "most selective threshold in the binary's SWEEP_THRESHOLDS whose FIT-SPLIT pool reduction is at least 0.01, under complete linkage",
+    "_selection_rule_is_gold_blind": "Pool reduction is a property of the clustering alone. Choosing the threshold that maximised the fit-split oracle would be selecting a parameter by the metric it is about to be judged on, using gold labels, one split away from the published number.",
+    "_frozen_under": "HP1's freeze scope, which names 'consolidation merge thresholds (HP5)' explicitly. It is on the measured path and is not a quality knob.",
+    "linkage_choice_is_measured": {
+      "rejected": "single",
+      "why": "jina's similarity distribution over chat turns is anisotropic -- 40.80% of all pairs reach 0.70 -- so a transitive linkage chains. At threshold 0.70 single link removed 99.8% of the fit-split pool and built a 616-member cluster: the entire session declared one near-duplicate. Complete link bounds a cluster's diameter by the threshold. Both are swept and both tables are recorded."
+    }
+  },
+  "fit_split_sweep": [
+    {
+      "linkage": "complete",
+      "threshold": 0.7,
+      "pool_reduction": 0.902404,
+      "lexical_top1": 0.0262,
+      "dense_top1": 0.0349,
+      "either_oracle_top1": 0.0349,
+      "delta_oracle": -0.6288,
+      "cases_with_gold_suppressed": 225,
+      "largest_cluster": 70
+    },
+    {
+      "linkage": "complete",
+      "threshold": 0.75,
+      "pool_reduction": 0.834275,
+      "lexical_top1": 0.048,
+      "dense_top1": 0.048,
+      "either_oracle_top1": 0.0524,
+      "delta_oracle": -0.6114,
+      "cases_with_gold_suppressed": 221,
+      "largest_cluster": 64
+    },
+    {
+      "linkage": "complete",
+      "threshold": 0.8,
+      "pool_reduction": 0.736193,
+      "lexical_top1": 0.0786,
+      "dense_top1": 0.0786,
+      "either_oracle_top1": 0.0961,
+      "delta_oracle": -0.5677,
+      "cases_with_gold_suppressed": 212,
+      "largest_cluster": 62
+    },
+    {
+      "linkage": "complete",
+      "threshold": 0.85,
+      "pool_reduction": 0.601396,
+      "lexical_top1": 0.1266,
+      "dense_top1": 0.1354,
+      "either_oracle_top1": 0.1659,
+      "delta_oracle": -0.4978,
+      "cases_with_gold_suppressed": 209,
+      "largest_cluster": 62
+    },
+    {
+      "linkage": "complete",
+      "threshold": 0.88,
+      "pool_reduction": 0.494658,
+      "lexical_top1": 0.1659,
+      "dense_top1": 0.1703,
+      "either_oracle_top1": 0.2271,
+      "delta_oracle": -0.4367,
+      "cases_with_gold_suppressed": 202,
+      "largest_cluster": 43
+    },
+    {
+      "linkage": "complete",
+      "threshold": 0.9,
+      "pool_reduction": 0.408137,
+      "lexical_top1": 0.2576,
+      "dense_top1": 0.2533,
+      "either_oracle_top1": 0.3362,
+      "delta_oracle": -0.3275,
+      "cases_with_gold_suppressed": 187,
+      "largest_cluster": 43
+    },
+    {
+      "linkage": "complete",
+      "threshold": 0.92,
+      "pool_reduction": 0.289004,
+      "lexical_top1": 0.3712,
+      "dense_top1": 0.3188,
+      "either_oracle_top1": 0.4367,
+      "delta_oracle": -0.2271,
+      "cases_with_gold_suppressed": 154,
+      "largest_cluster": 42
+    },
+    {
+      "linkage": "complete",
+      "threshold": 0.94,
+      "pool_reduction": 0.144143,
+      "lexical_top1": 0.476,
+      "dense_top1": 0.4105,
+      "either_oracle_top1": 0.5721,
+      "delta_oracle": -0.0917,
+      "cases_with_gold_suppressed": 91,
+      "largest_cluster": 24
+    },
+    {
+      "linkage": "complete",
+      "threshold": 0.95,
+      "pool_reduction": 0.079593,
+      "lexical_top1": 0.5328,
+      "dense_top1": 0.4541,
+      "either_oracle_top1": 0.6332,
+      "delta_oracle": -0.0306,
+      "cases_with_gold_suppressed": 30,
+      "largest_cluster": 23
+    },
+    {
+      "linkage": "complete",
+      "threshold": 0.96,
+      "pool_reduction": 0.039168,
+      "lexical_top1": 0.5502,
+      "dense_top1": 0.4585,
+      "either_oracle_top1": 0.655,
+      "delta_oracle": -0.0087,
+      "cases_with_gold_suppressed": 9,
+      "largest_cluster": 23
+    },
+    {
+      "linkage": "complete",
+      "threshold": 0.97,
+      "pool_reduction": 0.020279,
+      "lexical_top1": 0.5633,
+      "dense_top1": 0.4629,
+      "either_oracle_top1": 0.6681,
+      "delta_oracle": 0.0044,
+      "cases_with_gold_suppressed": 3,
+      "largest_cluster": 23
+    },
+    {
+      "linkage": "complete",
+      "threshold": 0.98,
+      "pool_reduction": 0.012084,
+      "lexical_top1": 0.5633,
+      "dense_top1": 0.4629,
+      "either_oracle_top1": 0.6681,
+      "delta_oracle": 0.0044,
+      "cases_with_gold_suppressed": 2,
+      "largest_cluster": 23
+    },
+    {
+      "linkage": "complete",
+      "threshold": 0.99,
+      "pool_reduction": 0.007876,
+      "lexical_top1": 0.5633,
+      "dense_top1": 0.4585,
+      "either_oracle_top1": 0.6638,
+      "delta_oracle": 0.0,
+      "cases_with_gold_suppressed": 2,
+      "largest_cluster": 19
+    },
+    {
+      "linkage": "single",
+      "threshold": 0.7,
+      "pool_reduction": 0.997971,
+      "lexical_top1": 0.0,
+      "dense_top1": 0.0,
+      "either_oracle_top1": 0.0,
+      "delta_oracle": -0.6638,
+      "cases_with_gold_suppressed": 229,
+      "largest_cluster": 616
+    },
+    {
+      "linkage": "single",
+      "threshold": 0.75,
+      "pool_reduction": 0.997386,
+      "lexical_top1": 0.0,
+      "dense_top1": 0.0,
+      "either_oracle_top1": 0.0,
+      "delta_oracle": -0.6638,
+      "cases_with_gold_suppressed": 229,
+      "largest_cluster": 616
+    },
+    {
+      "linkage": "single",
+      "threshold": 0.8,
+      "pool_reduction": 0.972793,
+      "lexical_top1": 0.0175,
+      "dense_top1": 0.0175,
+      "either_oracle_top1": 0.0175,
+      "delta_oracle": -0.6463,
+      "cases_with_gold_suppressed": 225,
+      "largest_cluster": 538
+    },
+    {
+      "linkage": "single",
+      "threshold": 0.85,
+      "pool_reduction": 0.857354,
+      "lexical_top1": 0.0306,
+      "dense_top1": 0.0349,
+      "either_oracle_top1": 0.0349,
+      "delta_oracle": -0.6288,
+      "cases_with_gold_suppressed": 223,
+      "largest_cluster": 211
+    },
+    {
+      "linkage": "single",
+      "threshold": 0.88,
+      "pool_reduction": 0.737025,
+      "lexical_top1": 0.0655,
+      "dense_top1": 0.0742,
+      "either_oracle_top1": 0.0873,
+      "delta_oracle": -0.5764,
+      "cases_with_gold_suppressed": 216,
+      "largest_cluster": 107
+    },
+    {
+      "linkage": "single",
+      "threshold": 0.9,
+      "pool_reduction": 0.599819,
+      "lexical_top1": 0.1441,
+      "dense_top1": 0.1266,
+      "either_oracle_top1": 0.1703,
+      "delta_oracle": -0.4934,
+      "cases_with_gold_suppressed": 202,
+      "largest_cluster": 62
+    },
+    {
+      "linkage": "single",
+      "threshold": 0.92,
+      "pool_reduction": 0.394387,
+      "lexical_top1": 0.3319,
+      "dense_top1": 0.2751,
+      "either_oracle_top1": 0.3843,
+      "delta_oracle": -0.2795,
+      "cases_with_gold_suppressed": 168,
+      "largest_cluster": 62
+    },
+    {
+      "linkage": "single",
+      "threshold": 0.94,
+      "pool_reduction": 0.173902,
+      "lexical_top1": 0.4803,
+      "dense_top1": 0.4105,
+      "either_oracle_top1": 0.5764,
+      "delta_oracle": -0.0873,
+      "cases_with_gold_suppressed": 99,
+      "largest_cluster": 43
+    },
+    {
+      "linkage": "single",
+      "threshold": 0.95,
+      "pool_reduction": 0.090535,
+      "lexical_top1": 0.5328,
+      "dense_top1": 0.4541,
+      "either_oracle_top1": 0.6332,
+      "delta_oracle": -0.0306,
+      "cases_with_gold_suppressed": 33,
+      "largest_cluster": 42
+    },
+    {
+      "linkage": "single",
+      "threshold": 0.96,
+      "pool_reduction": 0.042782,
+      "lexical_top1": 0.5502,
+      "dense_top1": 0.4585,
+      "either_oracle_top1": 0.655,
+      "delta_oracle": -0.0087,
+      "cases_with_gold_suppressed": 10,
+      "largest_cluster": 23
+    },
+    {
+      "linkage": "single",
+      "threshold": 0.97,
+      "pool_reduction": 0.021741,
+      "lexical_top1": 0.5633,
+      "dense_top1": 0.4629,
+      "either_oracle_top1": 0.6681,
+      "delta_oracle": 0.0044,
+      "cases_with_gold_suppressed": 3,
+      "largest_cluster": 23
+    },
+    {
+      "linkage": "single",
+      "threshold": 0.98,
+      "pool_reduction": 0.012598,
+      "lexical_top1": 0.5633,
+      "dense_top1": 0.4629,
+      "either_oracle_top1": 0.6681,
+      "delta_oracle": 0.0044,
+      "cases_with_gold_suppressed": 2,
+      "largest_cluster": 23
+    },
+    {
+      "linkage": "single",
+      "threshold": 0.99,
+      "pool_reduction": 0.008018,
+      "lexical_top1": 0.5633,
+      "dense_top1": 0.4585,
+      "either_oracle_top1": 0.6638,
+      "delta_oracle": 0.0,
+      "cases_with_gold_suppressed": 2,
+      "largest_cluster": 19
+    }
+  ],
+  "fit_split_baseline": {
+    "cases": 229,
+    "mean_pool": 492.9,
+    "lexical_top1": 0.5633,
+    "dense_top1": 0.4585,
+    "either_oracle_top1": 0.6638
+  },
+  "similarity_distribution": {
+    "_what": "every pairwise cosine on the fit split, as a survival function",
+    "total_pairs": 30587870,
+    "mean_candidates_per_session": 493.26,
+    "at_or_above": {
+      "0.00": 30587870,
+      "0.02": 30587870,
+      "0.04": 30587870,
+      "0.06": 30587870,
+      "0.08": 30587870,
+      "0.10": 30587870,
+      "0.12": 30587870,
+      "0.14": 30587870,
+      "0.16": 30587870,
+      "0.18": 30587870,
+      "0.20": 30587870,
+      "0.22": 30587870,
+      "0.24": 30587870,
+      "0.26": 30587870,
+      "0.28": 30587870,
+      "0.30": 30587870,
+      "0.32": 30587870,
+      "0.34": 30587870,
+      "0.36": 30587870,
+      "0.38": 30587870,
+      "0.40": 30587870,
+      "0.42": 30587870,
+      "0.44": 30587870,
+      "0.46": 30587870,
+      "0.48": 30587870,
+      "0.50": 30587865,
+      "0.52": 30587833,
+      "0.54": 30587383,
+      "0.56": 30582835,
+      "0.58": 30548305,
+      "0.60": 30365376,
+      "0.62": 29669267,
+      "0.64": 27775142,
+      "0.66": 24030075,
+      "0.68": 18544609,
+      "0.70": 12479468,
+      "0.72": 7327025,
+      "0.74": 3870885,
+      "0.76": 1979111,
+      "0.78": 1082268,
+      "0.80": 675861,
+      "0.82": 471483,
+      "0.84": 344684,
+      "0.86": 250978,
+      "0.88": 174114,
+      "0.90": 111892,
+      "0.92": 62675,
+      "0.94": 26060,
+      "0.96": 6997,
+      "0.98": 2621
+    }
+  },
+  "power_floor": {
+    "_registered_explicitly": "PARTIAL COVERAGE AT HIGH PRECISION IS A PASS. Brief section 5.5 is precision-first -- 'the gate must be tuned for precision, with recall recovered by making the agent's explicit memory search tool excellent' -- and K1's wording carries no coverage term at all. A gate firing on 30% of queries at >= 0.95 precision MEETS K1's stated requirement. It is not a partial success and must not be reported as one.",
+    "name": "power floor on attributed injections",
+    "why_injections_and_not_coverage": "The injection count is the primitive that decides whether the precision number is readable at all, and it is exactly computable before the fit. A coverage fraction is not: it depends on the mean injections per firing case, which does not exist until the gate has been fit.",
+    "condition": "at least 139 ATTRIBUTED injections (gold + distractor) on the held-out split at the reported operating point",
+    "n_min": 139,
+    "derivation": "the smallest N whose Wilson 95% lower bound at p_hat = 0.95 exceeds 0.9. Wilson, never Wald: at p near 1 the normal approximation extends above 1.0 and its coverage collapses, which is exactly the regime a 0.95 claim is read in.",
+    "wilson_lower_bound_at_n_min": 0.900164,
+    "wilson_lower_bound_at_n_min_minus_1": 0.899932,
+    "if_violated": "the precision number is reported as UNDERPOWERED -- not as a pass, and not as a failure. It means the held-out split could not certify the claim at this coverage, which is a statement about the INSTRUMENT, not about the gate.",
+    "implied_coverage_floor": "derived after the fact as 139 / (230 * m), with m the measured mean attributed injections per firing case. Reported, never used to move the floor.",
+    "predicted_difficulty": "At m = 1 this needs coverage 0.604 on 230 answerable held-out cases, and at m = 2 it needs 0.302. **And m is structurally bounded by 2 under this shape** -- see shape.STRUCTURAL_CAP: margin is positive for at most one candidate per cue per query, so the gate can inject at most one memory per cue. The realistic case is m ~ 1, which needs coverage 0.604 -- above this cue set's measured top-1 hit rate. **So UNDERPOWERED is the PREDICTED outcome, not a surprise.** Written down before the fit so it cannot later be read as a failure of the gate. The response is to report it and name what would fix it -- a larger scored population, since the all-500 run has twice the cases -- never to lower the floor and never to widen the feature until it injects more.",
+    "degenerate_pass_guard_still_applies": "coverage < 0.05 still reports the operating-point precision as NOT a quality signal. The power floor sits beside that guard, not in place of it."
+  },
+  "label_set_feasibility": {
+    "_status": "COMPANION. REPORTED WITH NO VERDICT. It does not decide this session's result.",
+    "_why_no_verdict": "At m = 1 injection per firing case and a 30-case smallest category, the >= 50-per-category requirement needs coverage 1.67 -- above 1.0, so it is unmeetable by construction. Registering it as a pass/fail floor would be exactly the ADR-010 error: a band on a quantity the tested shape cannot reach.",
+    "what_it_answers": "whether K1's own validation instrument is reachable at this operating point. K1's headline is human-judged, and the label set is what makes it measurable at all -- so a gate whose output cannot support a label draw has a headline nobody can compute.",
+    "requirement": {
+      "source": "ROADMAP.md, 'The human label set -- your deliverable, not the agent's'",
+      "total_judged_injections": 400,
+      "per_category": 50,
+      "stratified_by": "category and gate score decile"
+    },
+    "corpus_category_counts": {
+      "abstention": 30,
+      "knowledge-update": 72,
+      "multi-session": 121,
+      "single-session-assistant": 56,
+      "single-session-preference": 30,
+      "single-session-user": 64,
+      "temporal-reasoning": 127
+    },
+    "smallest_answerable_category": {
+      "category": "single-session-preference",
+      "cases": 30
+    },
+    "to_be_reported": "projected judged injections per category on a full-500 run at the MEASURED coverage and m, against both thresholds. Reported in summary.json beside the power floor."
+  },
+  "number_2": {
+    "name": "cue capability",
+    "definition": "held-out evidence_precision read off the precision/coverage curve at the most selective cut where coverage reaches 0.25. UNCHANGED from Sessions B, C and D.",
+    "read_rule_unchanged": true,
+    "band": null
+  },
+  "number_2b": {
+    "name": "cue capability at matched coverage",
+    "_status": "CARRIED FORWARD from Session D, anchored on the same point.",
+    "definition": "held-out evidence_precision read at the most selective cut whose coverage is at least 0.504274 -- Session C's REALISED coverage, not its floor.",
+    "session_c_reference_at_this_coverage": 0.371429,
+    "band": null,
+    "note": "Reported as a companion, never a replacement. Number 2's verdict stands on Number 2's own rule. Session D could not read this at matched coverage -- its step function offered no cut near the read point -- and reported it as unmatched rather than quoting the delta. A shape whose calibration is continuous at the head should be able to offer the read point; whether it does is itself a signal."
+  },
+  "session_c_baseline": {
+    "number_2": {
+      "value": 0.371429,
+      "read_at_cut": 0.317597,
+      "coverage_there": 0.504274
+    },
+    "_note": "Read from runs/session-c/summary.json, not retyped."
+  },
+  "carried_forward_from_session_e": {
+    "keys": [
+      "power_floor",
+      "label_set_feasibility",
+      "number_2",
+      "number_2b",
+      "session_c_baseline"
+    ],
+    "_why": "Copied from runs/session-e/PREREGISTRATION.json, not restated. number_2's read rule has been unchanged since Session B and that is the only reason B through F are comparable. A drifted read rule is invisible -- it produces a number of exactly the right shape against a baseline that no longer means the same thing."
+  }
+}

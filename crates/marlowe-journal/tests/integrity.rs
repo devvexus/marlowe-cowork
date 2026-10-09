@@ -228,3 +228,60 @@ fn replay_reads_back_what_was_appended() {
     assert_eq!(writes[0].2, serde_json::json!({"a": 1}));
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_checkpoint_skips_the_verified_prefix_but_still_checks_the_tail() {
+    let dir = tmp("checkpoint");
+    let checkpoint = {
+        let profile = Profile::init(&dir).unwrap();
+        let mut journal = Journal::open(&profile).unwrap();
+        let clock = Clock::new(1_780_000_000_000);
+        for i in 0..5 {
+            journal
+                .append(clock, req(EventKind::MemoryWritten, Actor::Harness, serde_json::json!({"i": i})))
+                .unwrap();
+        }
+        let cap = OperatorCapability::for_operator_or_audit();
+        let mut tail = Vec::new();
+        journal
+            .replay_after(&cap, 3, |seq, _, payload| {
+                tail.push((seq, payload.to_string()));
+                Ok::<(), JournalError>(())
+            })
+            .unwrap();
+        assert_eq!(tail, vec![(4, r#"{"i":3}"#.to_string()), (5, r#"{"i":4}"#.to_string())], "only the tail, in order");
+        let conn = rusqlite::Connection::open(dir.join("journal.db")).unwrap();
+        let sig: String = conn.query_row("SELECT signature FROM journal WHERE seq = 3", [], |r| r.get(0)).unwrap();
+        sig
+    };
+
+    {
+        let profile = Profile::open(&dir).unwrap();
+        let mut journal = Journal::open_from_checkpoint(&profile, 3, &checkpoint).unwrap();
+        assert_eq!(journal.last_seq(), 5);
+        let full_last = journal.last_signature().to_string();
+        // Appends continue the chain exactly as after a full verification.
+        journal
+            .append(Clock::new(1_780_000_000_001), req(EventKind::MemoryWritten, Actor::Harness, serde_json::json!({})))
+            .unwrap();
+        assert_ne!(journal.last_signature(), full_last);
+        assert!(matches!(
+            Journal::open_from_checkpoint(&profile, 3, "not-the-signature"),
+            Err(JournalError::CheckpointMismatch { seq: 3 })
+        ));
+    }
+    let profile = Profile::open(&dir).unwrap();
+    assert_eq!(Journal::open(&profile).unwrap().last_seq(), 6, "the full chain still verifies");
+    drop(profile);
+
+    // A tampered row after the checkpoint is still caught.
+    let conn = rusqlite::Connection::open(dir.join("journal.db")).unwrap();
+    conn.execute("UPDATE journal SET payload = ?1 WHERE seq = 5", rusqlite::params![r#"{"i":999}"#]).unwrap();
+    drop(conn);
+    let profile = Profile::open(&dir).unwrap();
+    assert!(matches!(
+        Journal::open_from_checkpoint(&profile, 3, &checkpoint),
+        Err(JournalError::ChainBroken { seq: 5 })
+    ));
+    let _ = fs::remove_dir_all(&dir);
+}

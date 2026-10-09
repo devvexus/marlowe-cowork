@@ -231,3 +231,26 @@ pub fn model_picker(r: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut
         );
     }
 }
+
+/// The first-run offer to import the old harness memories.
+pub fn import_offer(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut Buffer) {
+    let n = state.legacy.as_ref().map_or(0, |l| l.approx_entries);
+    let msg = format!("I found memories from the old harness \u{2014} about {} entries. Import them?", text::thousands(n));
+    let w: u16 = 62;
+    let body = text::wrap(&msg, (w - 4) as usize);
+    let r = centred(area, w, body.len() as u16 + 5, false);
+    let inner = panel(r, "memories", ink(Ink::Accent, theme), false, buf);
+    for (i, l) in body.iter().enumerate() {
+        put(buf, inner.x, inner.y + i as u16, &Line::from(Span::styled(l.clone(), theme.normal())), inner.width);
+    }
+    let mut spans = Vec::new();
+    for (i, (key, label)) in [("y", "Yes"), ("n", "Not now")].into_iter().enumerate() {
+        let on = i == sel;
+        let style = if on { ink(Ink::Accent, theme).add_modifier(Modifier::BOLD) } else { theme.normal() };
+        spans.push(Span::styled(if on { "\u{203a} " } else { "  " }, ink(Ink::Accent, theme)));
+        spans.push(Span::styled(format!("{key} "), ink(Ink::Dimmer, theme)));
+        spans.push(Span::styled(label, style));
+        spans.push(Span::raw("      "));
+    }
+    put(buf, inner.x, inner.y + body.len() as u16 + 1, &Line::from(spans), inner.width);
+}

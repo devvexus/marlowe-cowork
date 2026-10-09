@@ -11,6 +11,7 @@ pub mod auth;
 mod event;
 mod frame;
 mod ids;
+mod memory;
 pub mod paths;
 mod request;
 
@@ -20,6 +21,7 @@ pub use event::{
 };
 pub use frame::{write_line, FrameError, LineReader, MAX_LINE_BYTES};
 pub use ids::{ApprovalId, SessionId};
+pub use memory::{ImportReport, MemoryChange, MemoryHit, MemoryKind, MemoryScope, MemoryStatsReport, MemoryTrust};
 pub use paths::DaemonInfo;
 pub use request::{ApprovalDecision, Request, Secret, Slot, SlotParseError};
 

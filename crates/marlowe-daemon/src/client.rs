@@ -47,6 +47,7 @@ pub(crate) fn serve(core: Arc<Core>, stream: TcpStream) {
     if !core.bus.attach(link, welcome, since) {
         return;
     }
+    crate::mind_ops::offer_legacy(&core, id);
 
     loop {
         let next = reader.next::<Request>();
@@ -128,5 +129,12 @@ fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
         | Request::RemoveModel { .. }
         | Request::SetSlot { .. }
         | Request::SetCredential { .. }) => crate::library::spawn(core.clone(), client, lib),
+        mem @ (Request::MemorySearch { .. }
+        | Request::MemoryForget { .. }
+        | Request::MemoryCorrect { .. }
+        | Request::MemoryStats
+        | Request::ImportLegacy { .. }
+        | Request::LegacyStatus
+        | Request::MemoryProbe { .. }) => crate::mind_ops::dispatch(core, client, mem),
     }
 }

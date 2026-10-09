@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     workspace TEXT,
     created   INTEGER NOT NULL,
     updated   INTEGER NOT NULL,
-    next_turn INTEGER NOT NULL DEFAULT 0
+    next_turn INTEGER NOT NULL DEFAULT 0,
+    tainted   INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS sessions_updated ON sessions(updated DESC);
 CREATE TABLE IF NOT EXISTS turns (
@@ -35,8 +36,9 @@ pub(crate) type StoreResult<T> = Result<T, String>;
 enum Cmd {
     Create(SessionSummary, Sender<StoreResult<()>>),
     SetTitle(SessionId, String, Sender<StoreResult<()>>),
-    Append { session: SessionId, messages: Vec<Message>, next_turn: u32, at: i64, reply: Sender<StoreResult<()>> },
+    Append { session: SessionId, messages: Vec<Message>, next_turn: u32, tainted: bool, at: i64, reply: Sender<StoreResult<()>> },
     Get(SessionId, Sender<StoreResult<Option<SessionSummary>>>),
+    Tainted(SessionId, Sender<StoreResult<bool>>),
     List(u32, Sender<StoreResult<Vec<SessionSummary>>>),
     Load(SessionId, Sender<StoreResult<Vec<StoredTurn>>>),
     Close,
@@ -55,6 +57,7 @@ pub(crate) fn open(path: &Path) -> Result<(Store, JoinHandle<()>), rusqlite::Err
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.execute_batch(SCHEMA)?;
+    migrate(&conn)?;
     let (tx, rx) = unbounded::<Cmd>();
     let handle = std::thread::Builder::new()
         .name("marlowe-store".into())
@@ -90,8 +93,16 @@ fn serve(conn: &mut Connection, cmd: Cmd) -> bool {
                 .map_err(e);
             let _ = reply.send(r);
         }
-        Cmd::Append { session, messages, next_turn, at, reply } => {
-            let _ = reply.send(append(conn, &session, &messages, next_turn, at).map_err(e));
+        Cmd::Append { session, messages, next_turn, tainted, at, reply } => {
+            let _ = reply.send(append(conn, &session, &messages, next_turn, tainted, at).map_err(e));
+        }
+        Cmd::Tainted(id, reply) => {
+            let r = conn
+                .query_row("SELECT tainted FROM sessions WHERE id = ?1", [id.as_str()], |r| r.get::<_, i64>(0))
+                .optional()
+                .map(|t| t.unwrap_or(0) != 0)
+                .map_err(e);
+            let _ = reply.send(r);
         }
         Cmd::Get(id, reply) => {
             let r = conn
@@ -130,7 +141,20 @@ fn summary_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionSummary> {
     })
 }
 
-fn append(conn: &mut Connection, session: &SessionId, messages: &[Message], next_turn: u32, at: i64) -> rusqlite::Result<()> {
+/// Adds `sessions.tainted` to a database created before it existed.
+fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    let has: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'tainted'")?
+        .exists([])?;
+    if !has {
+        conn.execute_batch("ALTER TABLE sessions ADD COLUMN tainted INTEGER NOT NULL DEFAULT 0")?;
+    }
+    Ok(())
+}
+
+/// Appends a turn's messages. `tainted` latches: once a session read untrusted content it stays
+/// tainted across reloads, including taint that left no trace in its messages (an injected memory).
+fn append(conn: &mut Connection, session: &SessionId, messages: &[Message], next_turn: u32, tainted: bool, at: i64) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     let mut idx: i64 = tx.query_row(
         "SELECT COALESCE(MAX(idx) + 1, 0) FROM turns WHERE session = ?1",
@@ -146,8 +170,8 @@ fn append(conn: &mut Connection, session: &SessionId, messages: &[Message], next
         }
     }
     tx.execute(
-        "UPDATE sessions SET updated = ?2, next_turn = MAX(next_turn, ?3) WHERE id = ?1",
-        params![session.as_str(), at, next_turn],
+        "UPDATE sessions SET updated = ?2, next_turn = MAX(next_turn, ?3), tainted = MAX(tainted, ?4) WHERE id = ?1",
+        params![session.as_str(), at, next_turn, tainted as i64],
     )?;
     tx.commit()
 }
@@ -205,8 +229,13 @@ impl Store {
         self.call(|r| Cmd::SetTitle(id.clone(), title.to_string(), r))
     }
 
-    pub fn append(&self, session: &SessionId, messages: Vec<Message>, next_turn: u32, at: i64) -> StoreResult<()> {
-        self.call(|reply| Cmd::Append { session: session.clone(), messages, next_turn, at, reply })
+    pub fn append(&self, session: &SessionId, messages: Vec<Message>, next_turn: u32, tainted: bool, at: i64) -> StoreResult<()> {
+        self.call(|reply| Cmd::Append { session: session.clone(), messages, next_turn, tainted, at, reply })
+    }
+
+    /// Whether the session has read untrusted content.
+    pub fn tainted(&self, id: &SessionId) -> StoreResult<bool> {
+        self.call(|r| Cmd::Tainted(id.clone(), r))
     }
 
     pub fn get(&self, id: &SessionId) -> StoreResult<Option<SessionSummary>> {
@@ -242,12 +271,15 @@ mod tests {
             .create(SessionSummary { id: id.clone(), title: String::new(), workspace: Some("C:/w".into()), created_ms: 1, updated_ms: 1, turns: 0 })
             .unwrap();
         store.set_title(&id, "hello").unwrap();
-        store.append(&id, vec![Message::user("hi"), Message::assistant("hey")], 1, 5).unwrap();
-        store.append(&id, vec![Message::user("again")], 2, 9).unwrap();
+        store.append(&id, vec![Message::user("hi"), Message::assistant("hey")], 1, false, 5).unwrap();
+        assert!(!store.tainted(&id).unwrap());
+        store.append(&id, vec![Message::user("again")], 2, true, 9).unwrap();
+        store.append(&id, vec![Message::user("later")], 3, false, 10).unwrap();
+        assert!(store.tainted(&id).unwrap(), "taint latches");
         let s = store.get(&id).unwrap().unwrap();
-        assert_eq!((s.title.as_str(), s.turns, s.updated_ms), ("hello", 2, 9));
+        assert_eq!((s.title.as_str(), s.turns, s.updated_ms), ("hello", 3, 10));
         let turns = store.load(&id).unwrap();
-        assert_eq!(turns.iter().map(|t| t.idx).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(turns.iter().map(|t| t.idx).collect::<Vec<_>>(), vec![0, 1, 2, 3]);
         assert_eq!(turns[1].role, Role::Assistant);
         assert_eq!(store.list(10).unwrap().len(), 1);
         assert!(store.get(&SessionId("nope".into())).unwrap().is_none());

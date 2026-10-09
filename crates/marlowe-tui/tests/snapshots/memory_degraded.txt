@@ -1,0 +1,40 @@
+╭─ MARLOWE · memory ──────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
+│                                                                                                                                          │
+│  Memory  ·  0 memories · 0 episodes · 0 vectors                                                                                          │
+│  degraded: embedding model not found · keyword search only, nothing is injected on its own                                               │
+│                                                                                                                                          │
+│  › search your memories                                                                                                                  │
+│                                                                                                                                          │
+│    type a question or a name and press ↵                                                                                                 │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+╰─────────────────────────────────────────────────────────────────────── ↵ search  ·  ↑↓ select  ·  ^e correct  ·  ^d forget  ·  esc back ─╯

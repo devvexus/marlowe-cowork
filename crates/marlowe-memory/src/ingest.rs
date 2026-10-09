@@ -13,7 +13,7 @@
 use marlowe_contract::{Clock, IngestRequest, PayloadKind, RejectedWrite, Written};
 use marlowe_journal::{Actor, AppendRequest, EventKind, Journal, TraceId};
 
-use crate::entry::{memory_id, MemoryEntry, MATURATION_WINDOW_MS};
+use crate::entry::{memory_id, MaturationPolicy, MATURATION_WINDOW_MS};
 use crate::error::MemoryError;
 use crate::store::{BeliefStore, MemoryWrittenPayload, MemoryWriteRejectedPayload};
 use crate::trust::{check_actor, effective_trust, trust_for_channel};
@@ -85,7 +85,9 @@ pub fn ingest(
         let effective = effective_trust(own_trust, &parents);
 
         let id = memory_id(&request.session_id, &turn.turn_id, index);
-        let silent_until = Some(clock.plus_ms(MATURATION_WINDOW_MS));
+        // `Uniform`, always: this is the measured §4.6 path, and the clock probe's
+        // time-dependence test plants a terminal user turn here. See `MaturationPolicy`.
+        let silent_until = MaturationPolicy::Uniform.silent_until(clock, effective);
 
         let payload = MemoryWrittenPayload {
             id: id.clone(),
@@ -104,6 +106,8 @@ pub fn ingest(
             silent_until,
             // Explicit on every write. Replay must never have to assume a tier.
             fidelity: marlowe_contract::Fidelity::Record,
+            // Untagged: the eval's events serialize exactly as before.
+            tags: Default::default(),
         };
 
         // The journal stamps seq, ts and signature. This is the only write path; there is no
@@ -120,28 +124,8 @@ pub fn ingest(
             },
         )?;
 
-        beliefs.insert(MemoryEntry {
-            id: id.clone(),
-            text: turn.text.clone(),
-            payload_kind: PayloadKind::Episode,
-            embedding_ref: None,
-            source_turn_id: turn.turn_id.clone(),
-            source_session_id: request.session_id.clone(),
-            trust_class: own_trust,
-            effective_trust: effective,
-            derivation,
-            origin_event: event.seq,
-            occurred_at_ms: turn.occurred_at_ms,
-            created_at: clock.now_ms,
-            last_accessed: clock.now_ms,
-            access_count: 0,
-            confidence: 1.0,
-            activation: 1.0,
-            fidelity: marlowe_contract::Fidelity::Record,
-            silent_until,
-            supersedes: Vec::new(),
-            superseded_by: None,
-        });
+        // Same constructor the replay uses, so the live entry and a rebuild cannot differ.
+        beliefs.insert(payload.to_entry(event.seq));
 
         written.push(Written {
             turn_id: turn.turn_id.clone(),
