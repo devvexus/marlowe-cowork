@@ -1,4 +1,5 @@
-//! The Memory view: search, results with kind, trust, date and provenance, forget and correct.
+//! The Memory view: search, results with kind, trust, date and provenance, forget and correct;
+//! and the profile filter, listing what is in the conductor's context every turn.
 
 use marlowe_proto::{MemoryHit, MemoryScope, MemoryTrust};
 use marlowe_surface::chrome::Ink;
@@ -9,7 +10,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
 use super::{ink, note_style, put};
-use crate::memory::MemMode;
+use crate::memory::{MemFilter, MemMode};
 use crate::state::State;
 use crate::text;
 
@@ -100,13 +101,15 @@ pub fn draw(main: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     };
     put(buf, c.x, c.y + 3, &Line::from(vec![Span::styled("\u{203a} ", ink(Ink::Accent, theme)), q]), w);
 
-    // Results.
+    // Results, or the profile.
     let list = Rect { y: c.y + HEADER, height: c.height - HEADER - prompt_rows(state), ..c };
-    if m.hits.is_empty() {
-        let msg = if m.searched { "nothing found" } else { "type a question or a name and press \u{21b5}" };
-        put(buf, list.x + 2, list.y, &Line::from(Span::styled(msg, dim)), list.width.saturating_sub(2));
-    } else {
-        draw_hits(list, state, theme, buf);
+    match m.filter {
+        MemFilter::Profile => draw_profile(list, state, theme, buf),
+        MemFilter::Search if m.hits.is_empty() => {
+            let msg = if m.searched { "nothing found" } else { "type a question or a name and press \u{21b5}" };
+            put(buf, list.x + 2, list.y, &Line::from(Span::styled(msg, dim)), list.width.saturating_sub(2));
+        }
+        MemFilter::Search => draw_hits(list, state, theme, buf),
     }
 
     // Prompt for forget or correct.
@@ -114,7 +117,7 @@ pub fn draw(main: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     match &m.mode {
         MemMode::Browse => {}
         MemMode::ConfirmForget { id } => {
-            let what = m.hits.iter().find(|h| &h.id == id).map_or(String::new(), |h| {
+            let what = m.shown().iter().find(|h| &h.id == id).map_or(String::new(), |h| {
                 text::truncate(&text::clean(h.text.lines().next().unwrap_or("")), w as usize - 24)
             });
             put(
@@ -155,6 +158,9 @@ pub fn draw(main: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
 
     // Footer hints, then the flash.
     let hints: &[(&str, &str)] = match &m.mode {
+        MemMode::Browse if m.filter == MemFilter::Profile => {
+            &[("\u{21b5}", "search"), ("^p", "results"), ("^e", "correct"), ("^d", "forget"), ("esc", "back")]
+        }
         MemMode::Browse => &[("\u{21b5}", "search"), ("\u{2191}\u{2193}", "select"), ("^e", "correct"), ("^d", "forget"), ("esc", "back")],
         MemMode::ConfirmForget { .. } => &[("y", "forget"), ("n", "keep")],
         MemMode::Correct { .. } => &[("\u{21b5}", "save"), ("esc", "cancel")],
@@ -181,12 +187,41 @@ pub fn draw(main: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     }
 }
 
+/// The profile section: a summary row, then the items in block order.
+fn draw_profile(list: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
+    let dim = ink(Ink::Dim, theme);
+    let w = list.width.saturating_sub(2);
+    let Some(p) = &state.memory.profile else {
+        put(buf, list.x + 2, list.y, &Line::from(Span::styled("reading the profile\u{2026}", dim)), w);
+        return;
+    };
+    let n = p.hits.len();
+    let mut head = vec![
+        Span::styled("profile", ink(Ink::Accent, theme).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("  \u{b7}  in context every turn \u{b7} {n} {} \u{b7} ~{} tokens", if n == 1 { "item" } else { "items" }, text::thousands(u64::from(p.tokens))),
+            dim,
+        ),
+    ];
+    if p.omitted > 0 {
+        head.push(Span::styled(format!(" \u{b7} {} left out by the budget", p.omitted), ink(Ink::Amber, theme)));
+    }
+    put(buf, list.x + 2, list.y, &Line::from(head), w);
+    let rest = Rect { y: list.y + 2, height: list.height.saturating_sub(2), ..list };
+    if p.hits.is_empty() {
+        let msg = "nothing recorded yet \u{b7} preferences, decisions and facts you ask to keep appear here";
+        put(buf, rest.x + 2, rest.y, &Line::from(Span::styled(text::truncate(msg, w as usize), dim)), w);
+    } else if rest.height > 0 {
+        draw_hits(rest, state, theme, buf);
+    }
+}
+
 fn draw_hits(list: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     let m = &state.memory;
     let tw = list.width.saturating_sub(2) as usize;
     let mut lines: Vec<Line<'static>> = Vec::new();
     let (mut sel_start, mut sel_end) = (0, 0);
-    for (i, h) in m.hits.iter().enumerate() {
+    for (i, h) in m.shown().iter().enumerate() {
         let selected = i == m.sel;
         if selected {
             sel_start = lines.len();

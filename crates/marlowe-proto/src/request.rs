@@ -194,4 +194,9 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace: Option<String>,
     },
+    /// What the profile block holds for `workspace` now; answered with `MemoryProfile`.
+    MemoryProfile {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
 }

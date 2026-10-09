@@ -5,7 +5,11 @@ use marlowe_proto::SessionId;
 /// What memory adds to one turn.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Recollection {
-    /// Blocks to inject into the context. Only retrieved memories, never invented.
+    /// What was deliberately recorded about the user, as one block (empty: none). Stable
+    /// between turns, so it is cached; changes only when memory does.
+    pub profile: String,
+    /// Retrieved blocks for this turn, never including a profile item. Only retrieved
+    /// memories, never invented.
     pub blocks: Vec<String>,
     /// At least one block carries untrusted lineage; the loop then marks the run tainted.
     pub untrusted: bool,

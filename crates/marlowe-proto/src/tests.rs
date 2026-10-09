@@ -279,6 +279,8 @@ fn memory_requests_round_trip_and_parse_with_defaults() {
         Request::LegacyStatus,
         Request::MemoryProbe { query: "deploy".into(), workspace: Some("C:/w".into()) },
         Request::MemoryProbe { query: "deploy".into(), workspace: None },
+        Request::MemoryProfile { workspace: Some("C:/w".into()) },
+        Request::MemoryProfile { workspace: None },
     ];
     for r in &reqs {
         let s = round_trip(r);
@@ -294,6 +296,8 @@ fn memory_requests_round_trip_and_parse_with_defaults() {
     assert_eq!(r, Request::ImportLegacy { path: None });
     let r: Request = serde_json::from_str(r#"{"op":"legacy_status"}"#).unwrap();
     assert_eq!(r, Request::LegacyStatus);
+    let r: Request = serde_json::from_str(r#"{"op":"memory_profile"}"#).unwrap();
+    assert_eq!(r, Request::MemoryProfile { workspace: None });
 }
 
 #[test]
@@ -333,6 +337,8 @@ fn memory_events_round_trip_inside_an_envelope() {
         Event::LegacyAvailable { path: "C:/old".into(), approx_entries: 1200, already_imported: false },
         Event::MemoryProbed { recalled: vec![hit()], abstained: None, latency_ms: 41 },
         Event::MemoryProbed { recalled: Vec::new(), abstained: Some("no runner-up".into()), latency_ms: 0 },
+        Event::MemoryProfile { hits: vec![hit()], tokens: 22, omitted: 3 },
+        Event::MemoryProfile { hits: Vec::new(), tokens: 0, omitted: 0 },
     ];
     for (i, ev) in events.into_iter().enumerate() {
         let env = Envelope { seq: i as u64, at_ms: 1_700_000_000_000, event: ev };

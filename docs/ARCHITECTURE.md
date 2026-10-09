@@ -31,6 +31,9 @@ When a GPU job is running, crew runs prefer cloud slots so local models do not t
   - The floor's 0.90 precision rests on n = 1 (`floor_status = target_not_attained_with_support`).
   - The band (0.086) cannot fire together with the 1.165 margin gate.
   - A product floor needs a pointwise (query, fact) precision curve measured on short facts, pre-registered with a fit/held-out split.
+- **Profile (M2.6).** The fix for the young store is structural, not a threshold. `Mind::profile` renders every live Preference, Decision, Fact and Procedure that was written deliberately (remember, a correction, the harness), is not UntrustedContent, and is Global or in the current project. It is one line each, preference and decision first, newest first within a kind, capped at 1,500 tokens with an omitted count. The block is deterministic.
+  - `MindMemory` sends it as its own cached block in the context tier, ahead of the retrieved block. Retrieval runs on the pool without the profile's ids, so the gate judges only what it can admit.
+  - What is durable is the conductor's call when it uses `remember` (`persona/blocks/memory.md`). An untainted deliberate write is live at once (`MaturationPolicy::Deliberate`). A tainted write stays UntrustedContent, keeps the window and never enters the profile. Turns, imports and episodes stay with calibrated retrieval.
 
 ## Crates
 

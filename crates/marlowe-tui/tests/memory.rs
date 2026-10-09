@@ -374,3 +374,77 @@ fn approval_takes_the_keys_over_the_offer() {
     s.on_key(key(KeyCode::Char('y')));
     assert!(s.import.is_none());
 }
+
+fn profile_hits() -> Vec<MemoryHit> {
+    let mut decision = hit(
+        "p2",
+        "ship M3 before voice (reason: the Wake needs the brief first)",
+        MemoryKind::Decision,
+        MemoryTrust::User,
+        "you",
+    );
+    decision.scope = MemoryScope::Project("C:/work/valiance".into());
+    vec![
+        hit("p1", "use uv, not pip", MemoryKind::Preference, MemoryTrust::Inferred, "conductor, session 3f2a1b9c turn 2"),
+        decision,
+        hit("p3", "the training cluster has eight A100s", MemoryKind::Fact, MemoryTrust::User, "you"),
+    ]
+}
+
+#[test]
+fn the_profile_filter_lists_what_is_in_context_now() {
+    let mut s = in_memory();
+    // ^p asks for the profile of the shown workspace and switches the list.
+    assert_eq!(s.on_key(ctrl('p')), vec![Request::MemoryProfile { workspace: Some("C:/work/valiance".into()) }]);
+    assert!(s.memory.shown().is_empty(), "nothing until the daemon answers");
+    assert!(contains(&render(&s, W, H), "reading the profile"));
+    feed(&mut s, 0, Event::MemoryProfile { hits: profile_hits(), tokens: 64, omitted: 2 });
+    assert_eq!(s.memory.selected().unwrap().id, "p1");
+    let buf = render(&s, W, H);
+    for want in [
+        "profile",
+        "in context every turn \u{b7} 3 items \u{b7} ~64 tokens",
+        "2 left out by the budget",
+        "use uv, not pip",
+        "preference \u{b7} inferred",
+        "ship M3 before voice",
+        "^p results",
+    ] {
+        assert!(contains(&buf, want), "missing {want:?}\n{}", dump(&buf));
+    }
+    assert!(!contains(&buf, "The gate threshold sweep"), "search results are hidden");
+    assert_palette_only(&buf);
+    snapshot("memory_profile", &buf);
+
+    // Forget and correct act on the profile item; a change re-reads the profile.
+    s.on_key(key(KeyCode::Down));
+    s.on_key(ctrl('d'));
+    assert_eq!(s.on_key(key(KeyCode::Char('y'))), vec![Request::MemoryForget { id: "p2".into() }]);
+    let reqs = feed(&mut s, 7, Event::MemoryChanged { id: "p2".into(), change: MemoryChange::Forgotten });
+    assert_eq!(reqs, vec![Request::MemoryProfile { workspace: Some("C:/work/valiance".into()) }]);
+    assert_eq!(s.memory.shown().len(), 2);
+    assert_eq!(s.memory.hits.len(), 4, "search results are untouched");
+
+    // ^p again returns to the search results without a request; a search also leaves the profile.
+    assert!(s.on_key(ctrl('p')).is_empty());
+    assert_eq!(s.memory.shown().len(), 4);
+    s.on_key(ctrl('p'));
+    type_str(&mut s, "x");
+    assert_eq!(s.on_key(key(KeyCode::Enter)), vec![Request::MemorySearch { query: "gatex".into(), scope: None, limit: 30 }]);
+    assert_eq!(s.memory.shown().len(), 4);
+}
+
+#[test]
+fn an_empty_profile_says_so() {
+    let mut s = in_memory();
+    s.on_key(ctrl('p'));
+    feed(&mut s, 0, Event::MemoryProfile { hits: vec![], tokens: 0, omitted: 0 });
+    let buf = render(&s, W, H);
+    assert!(contains(&buf, "0 items") && contains(&buf, "nothing recorded yet"), "{}", dump(&buf));
+    assert_palette_only(&buf);
+    // A change elsewhere in memory while the profile is shown re-reads it.
+    assert_eq!(
+        feed(&mut s, 8, Event::MemoryChanged { id: "m9".into(), change: MemoryChange::Remembered }),
+        vec![Request::MemoryProfile { workspace: Some("C:/work/valiance".into()) }]
+    );
+}

@@ -1,7 +1,7 @@
 //! Context assembly: tiered system prompt, tool-result masking, compaction.
 //!
-//! Tiers: stable (persona core + blocks + user, cached) -> context (compaction summary, memory
-//! blocks) -> volatile (environment, history). Only the last [`KEEP_TOOL_RESULTS`] tool
+//! Tiers: stable (persona core + blocks + user, cached) -> context (profile, compaction summary,
+//! retrieved memory blocks) -> volatile (environment, history). Only the last [`KEEP_TOOL_RESULTS`] tool
 //! results keep their bodies; older ones are masked. At [`COMPACTION_TRIGGER`] of the window a
 //! summariser call condenses older history.
 
@@ -122,13 +122,28 @@ pub fn summary_block(summary: &str) -> SystemBlock {
     SystemBlock { text: format!("{SUMMARY_PREFACE}\n\n{}", summary.trim()), cache: true }
 }
 
+/// [`assemble_with`] without a profile block.
+pub fn assemble(system: &SystemPrompt, memory: &[String], convo: &Conversation, cfg: &ContextConfig) -> Assembled {
+    assemble_with(system, "", memory, convo, cfg)
+}
+
 /// Builds the system blocks and message list for the next model call.
 ///
-/// System: stable tier (core, blocks, user), the compaction summary, memory blocks, then the
-/// environment. Messages: the history with thinking dropped from assistant messages before the
-/// last user message, and all but the last `keep_tool_results` tool results masked.
-pub fn assemble(system: &SystemPrompt, memory: &[String], convo: &Conversation, cfg: &ContextConfig) -> Assembled {
+/// System: stable tier (core, blocks, user), the profile (cached), the compaction summary,
+/// retrieved memory blocks, then the environment. Messages: the history with thinking dropped
+/// from assistant messages before the last user message, and all but the last
+/// `keep_tool_results` tool results masked.
+pub fn assemble_with(
+    system: &SystemPrompt,
+    profile: &str,
+    memory: &[String],
+    convo: &Conversation,
+    cfg: &ContextConfig,
+) -> Assembled {
     let mut blocks = system.render_stable();
+    if !profile.trim().is_empty() {
+        blocks.push(SystemBlock { text: profile.trim().to_string(), cache: true });
+    }
     if let Some(s) = convo.summary.as_deref().filter(|s| !s.trim().is_empty()) {
         blocks.push(summary_block(s));
     }
@@ -366,6 +381,19 @@ mod tests {
         assert_eq!(a.messages[1].joined_text(), "answer");
         assert!(convo.messages[1].thinking().is_some(), "the stored history is untouched");
         assert!(a.tokens > 0);
+    }
+
+    #[test]
+    fn the_profile_sits_after_the_stable_tier_and_is_cached() {
+        let sys = SystemPrompt::with_core("core");
+        let convo = Conversation::new(SessionId::from("s"), None);
+        let cfg = ContextConfig::for_model(&ModelInfo::bare(ProviderKind::Ollama, "m"));
+        let profile = "<profile>\n- preference \u{b7} 3 Sep: use uv\n</profile>";
+        let a = assemble_with(&sys, profile, &["[Memory m2] x".into()], &convo, &cfg);
+        let texts: Vec<&str> = a.system.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(texts, ["core", profile, "[Memory m2] x"]);
+        assert!(a.system[1].cache && !a.system[2].cache);
+        assert_eq!(assemble_with(&sys, " ", &[], &convo, &cfg).system.len(), 1, "an empty profile adds nothing");
     }
 
     #[test]

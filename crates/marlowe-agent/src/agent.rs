@@ -91,6 +91,7 @@ impl Agent {
         if recollection.untrusted {
             convo.exposure.tainted = true;
         }
+        let profile = recollection.profile;
         let memory = recollection.blocks;
         let mut system = self.system.clone();
         let workspace = convo.workspace.as_ref().map(|p| p.display().to_string());
@@ -112,12 +113,12 @@ impl Agent {
                 break if dim == "steps" { TurnStop::StepLimit } else { TurnStop::Budget };
             }
 
-            let mut asm = context::assemble(&system, &memory, convo, &self.context);
+            let mut asm = context::assemble_with(&system, &profile, &memory, convo, &self.context);
             if context::needs_compaction(asm.tokens + spec_tokens, &self.context) {
                 match context::compact(convo, self.provider.as_ref(), &self.model.id, &self.context, cancel) {
                     Ok((before, after)) if after < before => {
                         sink(AgentEvent::Compacted { before_tokens: before, after_tokens: after });
-                        asm = context::assemble(&system, &memory, convo, &self.context);
+                        asm = context::assemble_with(&system, &profile, &memory, convo, &self.context);
                     }
                     Ok(_) => {}
                     Err(e) if e.is_cancelled() || cancel.is_cancelled() => break TurnStop::Interrupted,

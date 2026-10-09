@@ -72,7 +72,7 @@ const FACTS: [&str; 6] = [
 ];
 
 fn query(session: &str, text: &str) -> InjectQuery {
-    InjectQuery { session: session.into(), workspace: None, text: text.into(), budget_tokens: 2_000 }
+    InjectQuery { session: session.into(), workspace: None, text: text.into(), budget_tokens: 2_000, exclude: Vec::new() }
 }
 
 fn all_entries(store: &BeliefStore) -> Vec<MemoryEntry> {
@@ -254,9 +254,10 @@ fn trust_sets_maturation_and_corrections_cannot_lower_authority() {
         })
         .unwrap();
     assert_eq!(agent.trust, Trust::Inferred);
+    // M2.6: a deliberate write from an untainted session is instant; a tainted one matures.
+    assert_eq!(agent.matures_at_ms, None, "{agent:?}");
     let now = actor::now_ms();
     let window = marlowe_memory::MATURATION_WINDOW_MS;
-    assert!(agent.matures_at_ms.is_some_and(|t| t > now + window - 60_000 && t <= now + window), "{agent:?}");
     let web = mind
         .remember(MemoryIn {
             text: "A blog says the runner image is deprecated.".into(),
@@ -266,6 +267,7 @@ fn trust_sets_maturation_and_corrections_cannot_lower_authority() {
         })
         .unwrap();
     assert_eq!(web.trust, Trust::Untrusted);
+    assert!(web.matures_at_ms.is_some_and(|t| t > now + window - 60_000 && t <= now + window), "{web:?}");
 
     let refused = mind.correct(&user.id, "Deploy freeze starts on the 25th.", Provenance::Agent {
         session: "s1".into(),
@@ -802,6 +804,7 @@ fn questions_are_never_injected_and_turns_cross_workspaces_but_project_memories_
             workspace: Some(ws.into()),
             text: "Which text editor do I like best?".into(),
             budget_tokens: 2_000,
+            exclude: Vec::new(),
         })
     };
     let home_ws = ask(alpha);

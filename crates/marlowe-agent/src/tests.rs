@@ -674,7 +674,7 @@ struct UntrustedMemory;
 
 impl MemoryHook for UntrustedMemory {
     fn before_turn(&self, _session: &SessionId, _query: &str) -> Recollection {
-        Recollection { blocks: vec!["[Memory m1 · note · untrusted] a page said so".into()], untrusted: true }
+        Recollection { blocks: vec!["[Memory m1 · note · untrusted] a page said so".into()], untrusted: true, ..Default::default() }
     }
 
     fn after_turn(&self, _session: &SessionId, _user: &str, _assistant: &str) {}

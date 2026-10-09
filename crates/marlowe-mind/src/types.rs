@@ -130,6 +130,8 @@ pub struct InjectQuery {
     pub text: String,
     /// Capped at [`crate::MAX_INJECT_TOKENS`].
     pub budget_tokens: u32,
+    /// Ids already in context (the profile); they never compete for a slot.
+    pub exclude: Vec<String>,
 }
 
 /// What was injected, or why nothing was.

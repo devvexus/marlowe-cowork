@@ -19,6 +19,24 @@ pub enum MemMode {
     Correct { id: String, input: Composer },
 }
 
+/// Which list the Memory view shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MemFilter {
+    /// Search results.
+    #[default]
+    Search,
+    /// The profile: what is in the conductor's context every turn.
+    Profile,
+}
+
+/// The profile as the daemon last reported it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ProfileView {
+    pub hits: Vec<MemoryHit>,
+    pub tokens: u32,
+    pub omitted: u32,
+}
+
 /// The Memory view.
 #[derive(Debug, Clone)]
 pub struct MemoryState {
@@ -29,17 +47,38 @@ pub struct MemoryState {
     pub searched: bool,
     pub stats: Option<MemoryStatsReport>,
     pub mode: MemMode,
+    pub filter: MemFilter,
+    /// `None` until the daemon answers a `MemoryProfile`.
+    pub profile: Option<ProfileView>,
 }
 
 impl Default for MemoryState {
     fn default() -> Self {
-        Self { query: String::new(), hits: Vec::new(), sel: 0, searched: false, stats: None, mode: MemMode::Browse }
+        Self {
+            query: String::new(),
+            hits: Vec::new(),
+            sel: 0,
+            searched: false,
+            stats: None,
+            mode: MemMode::Browse,
+            filter: MemFilter::Search,
+            profile: None,
+        }
     }
 }
 
 impl MemoryState {
+    /// The list on screen: search results or the profile.
+    pub fn shown(&self) -> &[MemoryHit] {
+        match (self.filter, &self.profile) {
+            (MemFilter::Profile, Some(p)) => &p.hits,
+            (MemFilter::Profile, None) => &[],
+            (MemFilter::Search, _) => &self.hits,
+        }
+    }
+
     pub fn selected(&self) -> Option<&MemoryHit> {
-        self.hits.get(self.sel)
+        self.shown().get(self.sel)
     }
 }
 
@@ -128,7 +167,9 @@ impl State {
             },
             MemMode::Browse => {
                 self.flash = None;
+                let workspace = self.shown_workspace().map(str::to_string);
                 let m = &mut self.memory;
+                let last = m.shown().len().saturating_sub(1);
                 match k.code {
                     KeyCode::Esc => self.view = View::Conversation,
                     KeyCode::Enter => {
@@ -136,13 +177,27 @@ impl State {
                         if q.is_empty() {
                             self.flash("type something to search for", NoteTone::Dim);
                         } else {
+                            if m.filter == MemFilter::Profile {
+                                m.filter = MemFilter::Search;
+                                m.sel = 0;
+                            }
                             out.push(Request::MemorySearch { query: q, scope: None, limit: SEARCH_LIMIT });
                         }
                     }
+                    // Toggles between search results and what is in context now.
+                    KeyCode::Char('p') if ctrl => {
+                        m.sel = 0;
+                        if m.filter == MemFilter::Profile {
+                            m.filter = MemFilter::Search;
+                        } else {
+                            m.filter = MemFilter::Profile;
+                            out.push(Request::MemoryProfile { workspace });
+                        }
+                    }
                     KeyCode::Up => m.sel = m.sel.saturating_sub(1),
-                    KeyCode::Down | KeyCode::Tab => m.sel = (m.sel + 1).min(m.hits.len().saturating_sub(1)),
+                    KeyCode::Down | KeyCode::Tab => m.sel = (m.sel + 1).min(last),
                     KeyCode::PageUp => m.sel = m.sel.saturating_sub(5),
-                    KeyCode::PageDown => m.sel = (m.sel + 5).min(m.hits.len().saturating_sub(1)),
+                    KeyCode::PageDown => m.sel = (m.sel + 5).min(last),
                     KeyCode::Char('d') if ctrl => {
                         if let Some(h) = m.selected() {
                             m.mode = MemMode::ConfirmForget { id: h.id.clone() };
@@ -172,15 +227,29 @@ impl State {
         self.memory.searched = true;
     }
 
-    pub(crate) fn memory_changed(&mut self, id: &str, change: &MemoryChange) {
+    pub(crate) fn memory_profile(&mut self, hits: &[MemoryHit], tokens: u32, omitted: u32) {
+        self.memory.profile = Some(ProfileView { hits: hits.to_vec(), tokens, omitted });
+        if self.memory.filter == MemFilter::Profile {
+            self.memory.sel = self.memory.sel.min(hits.len().saturating_sub(1));
+        }
+    }
+
+    /// While the profile is on screen, any change re-reads it (a correction adds a line).
+    pub(crate) fn memory_changed(&mut self, id: &str, change: &MemoryChange, out: &mut Vec<Request>) {
         match change {
             MemoryChange::Remembered => self.flash("remembered", NoteTone::Dim),
             MemoryChange::Corrected { .. } | MemoryChange::Forgotten => {
                 self.memory.hits.retain(|h| h.id != id);
-                self.memory.sel = self.memory.sel.min(self.memory.hits.len().saturating_sub(1));
+                if let Some(p) = &mut self.memory.profile {
+                    p.hits.retain(|h| h.id != id);
+                }
+                self.memory.sel = self.memory.sel.min(self.memory.shown().len().saturating_sub(1));
                 let word = if matches!(change, MemoryChange::Forgotten) { "forgotten" } else { "corrected" };
                 self.flash(word, NoteTone::Dim);
             }
+        }
+        if self.view == View::Memory && self.memory.filter == MemFilter::Profile {
+            out.push(Request::MemoryProfile { workspace: self.shown_workspace().map(str::to_string) });
         }
     }
 }

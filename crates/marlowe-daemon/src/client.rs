@@ -135,6 +135,7 @@ fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
         | Request::MemoryStats
         | Request::ImportLegacy { .. }
         | Request::LegacyStatus
-        | Request::MemoryProbe { .. }) => crate::mind_ops::dispatch(core, client, mem),
+        | Request::MemoryProbe { .. }
+        | Request::MemoryProfile { .. }) => crate::mind_ops::dispatch(core, client, mem),
     }
 }

@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use marlowe_agent::Conversation;
 use marlowe_mind::{
-    default_legacy_profile, InjectQuery, LegacyStatus, MemoryChange, Mind, Provenance, RecallQuery, MAX_INJECT_TOKENS,
+    default_legacy_profile, InjectQuery, LegacyStatus, MemoryChange, Mind, ProfileQuery, Provenance, RecallQuery,
+    MAX_INJECT_TOKENS,
 };
 use marlowe_model::{CancelToken, ChatRequest, Message, Part, Role, SystemBlock};
 use marlowe_proto::{Event, Request, Slot};
@@ -103,15 +104,24 @@ fn handle(core: &Arc<Core>, mind: &Mind, client: u64, req: Request) {
             Err(e) => reply(error(format!("could not read the old profile: {e}"))),
         },
         Request::ImportLegacy { path } => import(core, mind, client, path),
+        // Retrieval alone: the profile is not excluded, so `memory bench` measures the pipeline.
         Request::MemoryProbe { query, workspace } => {
             let i = mind.inject(InjectQuery {
                 session: PROBE_SESSION.into(),
                 workspace,
                 text: query,
                 budget_tokens: MAX_INJECT_TOKENS,
+                exclude: Vec::new(),
             });
             reply(Event::MemoryProbed { recalled: i.recalled, abstained: i.abstained, latency_ms: i.latency_ms });
         }
+        Request::MemoryProfile { workspace } => match mind.profile(ProfileQuery { workspace, ..ProfileQuery::default() }) {
+            Ok(p) => {
+                let hits = p.ids.iter().filter_map(|id| mind.get(id).ok().flatten()).collect();
+                reply(Event::MemoryProfile { hits, tokens: p.tokens, omitted: p.omitted });
+            }
+            Err(e) => reply(error(format!("memory profile failed: {e}"))),
+        },
         _ => reply(error("not a memory request".into())),
     }
 }

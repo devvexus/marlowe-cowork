@@ -66,9 +66,9 @@ impl Actor {
         }
         let now = now_ms();
         let workspace = q.workspace.as_deref().filter(|w| !w.trim().is_empty());
-        // User requests and other projects' explicit Project memories never compete; assistant
-        // prose is excluded by the core.
-        let admit = |e: &MemoryEntry| workspaces::admits(e, workspace);
+        // User requests, other projects' explicit Project memories and ids already in context
+        // (the profile) never compete; assistant prose is excluded by the core.
+        let admit = |e: &MemoryEntry| workspaces::admits(e, workspace) && !q.exclude.contains(&e.id);
         let (total, missing) = {
             let pool: Vec<&MemoryEntry> = self.beliefs.injection_candidates(now).into_iter().filter(|e| admit(e)).collect();
             let missing: Vec<(String, String)> = pool
@@ -353,6 +353,12 @@ fn block(h: &MemoryHit, episode: bool) -> String {
 
 /// `YYYY-MM-DD` (UTC) for epoch milliseconds.
 pub(crate) fn civil_date(ms: i64) -> String {
+    let (y, m, d) = civil(ms);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// (year, month, day) in UTC for epoch milliseconds.
+pub(crate) fn civil(ms: i64) -> (i64, i64, i64) {
     let days = ms.div_euclid(86_400_000);
     // Hinnant's civil-from-days.
     let z = days + 719_468;
@@ -364,5 +370,5 @@ pub(crate) fn civil_date(ms: i64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02}")
+    (y, m, d)
 }

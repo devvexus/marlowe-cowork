@@ -10,8 +10,8 @@ use std::thread::JoinHandle;
 
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 use marlowe_agent::{
-    Agent, AgentEvent, ApprovalGate, ApprovalReq, Conversation, Environment, NoMemory, Steer, SteerRefused,
-    SystemPrompt, ToolHost, TurnOutcome, TurnStop,
+    Agent, AgentEvent, ApprovalGate, ApprovalReq, Conversation, Environment, NoMemory, PersonaBlock, Steer,
+    SteerRefused, SystemPrompt, ToolHost, TurnOutcome, TurnStop,
 };
 use marlowe_model::{CancelToken, Message, Usage};
 use marlowe_proto::{ApprovalDecision, Event, SessionId, Slot};
@@ -257,9 +257,12 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
     };
     let model = info.model_ref();
     let workspace = workspace_of(convo);
-    let system = SystemPrompt::new()
-        .user(core.user.clone())
-        .environment(Environment::current(workspace.clone(), info.display.clone()));
+    let mut system = SystemPrompt::new();
+    // The memory block describes the profile and memory tools, so only when a Mind is attached.
+    if core.mind.is_some() {
+        system = system.block(PersonaBlock::Memory);
+    }
+    let system = system.user(core.user.clone()).environment(Environment::current(workspace.clone(), info.display.clone()));
     let mut agent = Agent::new(provider, info, tools.clone(), system);
     agent.effort = effort;
     agent.memory = match &core.mind {

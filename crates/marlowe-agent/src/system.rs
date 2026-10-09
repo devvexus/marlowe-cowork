@@ -8,6 +8,7 @@ use marlowe_model::SystemBlock;
 pub const PERSONA_CORE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../persona/v3.md"));
 
 const BLOCK_BRIEFING: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../persona/blocks/briefing.md"));
+const BLOCK_MEMORY: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../persona/blocks/memory.md"));
 const BLOCK_CREW: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../persona/blocks/crew.md"));
 const BLOCK_VOICE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../persona/blocks/voice.md"));
 
@@ -18,6 +19,8 @@ pub enum PersonaBlock {
     Briefing,
     /// The `dispatch` tool is exposed (M4).
     Crew,
+    /// A memory service is attached: the profile block and the memory tools exist (M2.6).
+    Memory,
     /// The reply will be spoken (M3+).
     Voice,
 }
@@ -27,6 +30,7 @@ impl PersonaBlock {
         match self {
             PersonaBlock::Briefing => BLOCK_BRIEFING,
             PersonaBlock::Crew => BLOCK_CREW,
+            PersonaBlock::Memory => BLOCK_MEMORY,
             PersonaBlock::Voice => BLOCK_VOICE,
         }
     }
@@ -209,6 +213,16 @@ mod tests {
         assert!(!plain.contains("<crew>"));
         let voiced = SystemPrompt::new().block(PersonaBlock::Voice).block(PersonaBlock::Voice).render_text();
         assert_eq!(voiced.matches("<voice_channel>").count(), 1);
+    }
+
+    #[test]
+    fn the_memory_block_describes_the_tools_and_names_no_operator() {
+        assert!(!SystemPrompt::new().render_text().contains("<memory_tools>"));
+        let t = SystemPrompt::new().block(PersonaBlock::Memory).render_text();
+        for want in ["<memory_tools>", "<profile>", "`remember`", "`recall`", "`correct`", "use uv, not pip"] {
+            assert!(t.contains(want), "{want}");
+        }
+        assert!(!PersonaBlock::Memory.text().contains("Matthew"));
     }
 
     #[test]

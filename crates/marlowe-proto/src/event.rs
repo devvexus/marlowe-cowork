@@ -176,6 +176,9 @@ pub enum Event {
         abstained: Option<String>,
         latency_ms: u64,
     },
+    /// Reply to `MemoryProfile`: the memories in the profile block, in block order, its estimated
+    /// tokens, and how many members the budget left out.
+    MemoryProfile { hits: Vec<MemoryHit>, tokens: u32, omitted: u32 },
 }
 
 impl Event {

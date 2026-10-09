@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use marlowe_agent::{Consequence, Exposure, MemoryHook, Recollection, ToolCallReq, ToolCtx, ToolHost, ToolOutcome};
 use marlowe_mind::{
-    InjectQuery, Kind, MemoryChange, MemoryIn, MemoryKind, Mind, Provenance, RecallHit, RecallQuery, Remembered,
-    Scope, Trust, TurnIn, TurnRole,
+    InjectQuery, Kind, MemoryChange, MemoryIn, MemoryKind, Mind, ProfileQuery, Provenance, RecallHit, RecallQuery,
+    Remembered, Scope, Trust, TurnIn, TurnRole,
 };
 use marlowe_model::ToolSpec;
 use marlowe_proto::{Event, SessionId};
@@ -29,8 +29,9 @@ const RECALL_MAX: usize = 20;
 /// Longest `Recalled` summary, in characters.
 const RECALLED_SUMMARY_CHARS: usize = 160;
 
-/// The agent's memory for one turn: `before_turn` injects via [`Mind::inject`], emits `Recalled`
-/// and ingests the user's words; `after_turn` ingests the assistant's reply.
+/// The agent's memory for one turn: `before_turn` reads the profile ([`Mind::profile`]), injects
+/// via [`Mind::inject`] excluding what the profile already holds, emits `Recalled` and ingests the
+/// user's words; `after_turn` ingests the assistant's reply.
 pub struct MindMemory {
     mind: Mind,
     workspace: Option<String>,
@@ -40,7 +41,8 @@ pub struct MindMemory {
 }
 
 impl MindMemory {
-    /// `budget_tokens` is capped at `marlowe_mind::MAX_INJECT_TOKENS`.
+    /// `budget_tokens` (the whole memory tier) is capped at `marlowe_mind::MAX_INJECT_TOKENS`;
+    /// the profile takes its share first, at most `marlowe_mind::DEFAULT_PROFILE_TOKENS`.
     pub fn new(mind: Mind, workspace: Option<String>, turn: u32, budget_tokens: u32, emit: RecallSink) -> Self {
         let budget_tokens = budget_tokens.min(marlowe_mind::MAX_INJECT_TOKENS);
         Self { mind, workspace, turn, budget_tokens, emit }
@@ -65,11 +67,17 @@ impl MindMemory {
 
 impl MemoryHook for MindMemory {
     fn before_turn(&self, session: &SessionId, query: &str) -> Recollection {
+        // A failed profile read leaves the turn with retrieval only.
+        let profile = self
+            .mind
+            .profile(ProfileQuery { workspace: self.workspace.clone(), ..ProfileQuery::default() })
+            .unwrap_or_default();
         let injection = self.mind.inject(InjectQuery {
             session: session.to_string(),
             workspace: self.workspace.clone(),
             text: query.to_string(),
-            budget_tokens: self.budget_tokens,
+            budget_tokens: self.budget_tokens.saturating_sub(profile.tokens),
+            exclude: profile.ids,
         });
         // Ingested here rather than in `after_turn` (which a failed turn skips), and after the
         // inject so a statement is never recalled back to itself.
@@ -84,7 +92,7 @@ impl MemoryHook for MindMemory {
         }
         // Untrusted lineage in the context taints the run, as an untrusted `recall` does.
         let untrusted = injection.floor == Some(Trust::Untrusted);
-        Recollection { blocks: injection.blocks, untrusted }
+        Recollection { profile: profile.block, blocks: injection.blocks, untrusted }
     }
 
     fn after_turn(&self, session: &SessionId, _user: &str, assistant: &str) {
@@ -344,28 +352,37 @@ fn spec(name: &str, description: &str, schema: Value) -> ToolSpec {
 
 impl ToolHost for MindTools {
     fn specs(&self) -> Vec<ToolSpec> {
-        let kinds = ["fact", "preference", "decision", "result", "note", "procedure"];
+        let kinds = ["preference", "decision", "fact", "procedure", "result", "note"];
         vec![
             spec(
                 "remember",
-                "Store a durable memory: something the user told you, a decision and its reason, a \
-                 result worth keeping, or how to do something. One self-contained statement per call.",
+                "Record something durable about the user. Preferences, decisions, facts and \
+                 procedures go into the profile that is in context every turn. Call it once, when \
+                 the user states it, without announcing it. Not for one-off requests or small \
+                 talk. To change something already recorded, use correct instead.",
                 json!({
                     "type": "object",
                     "properties": {
-                        "text": { "type": "string", "description": "The memory, written to stand on its own." },
-                        "kind": { "type": "string", "enum": kinds, "default": "fact" },
-                        "reason": { "type": "string", "description": "Why; required when kind is decision." },
+                        "text": { "type": "string",
+                                  "description": "One self-contained statement, e.g. \"use uv, not pip\"." },
+                        "kind": { "type": "string", "enum": kinds,
+                                  "description": "preference: a preference or standing instruction (\"don't push \
+                                                  to main\"); decision: a choice made, with its reason; fact: about \
+                                                  their work or life; procedure: how they do something; result: an \
+                                                  outcome worth keeping; note: anything else. Results and notes \
+                                                  are retrieved when relevant, not kept in the profile." },
+                        "reason": { "type": "string", "description": "Why it was decided. Required when kind is decision." },
                         "scope": { "type": "string", "enum": ["global", "project"], "default": "global",
-                                   "description": "project: applies only to this session's workspace." }
+                                   "description": "global: everywhere. project: only in this session's workspace." }
                     },
-                    "required": ["text"]
+                    "required": ["text", "kind"]
                 }),
             ),
             spec(
                 "recall",
-                "Search stored memories, including ones not yet matured and forgotten records. Each \
-                 hit shows its id, kind, trust, date and provenance.",
+                "Search stored memories: past conversations, episodes, imported history and anything \
+                 not in the profile, including ones not yet matured. Use it when the user asks about \
+                 the past. Each hit shows its id, kind, trust, date and provenance.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -386,8 +403,10 @@ impl ToolHost for MindTools {
             ),
             spec(
                 "correct",
-                "Replace a memory's text with a corrected version. Refused if it would lower the \
-                 memory's trust.",
+                "Replace a memory's text with a corrected version, keeping its kind and scope. Use it, \
+                 not remember, when something recorded has changed (recall finds the id). A decision \
+                 keeps a reason only if the new text ends with \"(reason: ...)\". Refused if it would \
+                 lower the memory's trust.",
                 json!({
                     "type": "object",
                     "properties": { "id": { "type": "string" }, "text": { "type": "string" } },

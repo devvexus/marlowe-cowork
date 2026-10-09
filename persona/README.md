@@ -27,6 +27,7 @@ model fabricate it. So v3 is a **stable core** that describes no feature-specifi
 
 | Block | Injected when |
 |---|---|
+| `blocks/memory.md` | a memory service is attached: the `<profile>` block and the `remember`/`recall`/`correct`/`forget` tools exist (M2.6) |
 | `blocks/briefing.md` | opening a session with a Wake briefing in context (M3) |
 | `blocks/crew.md` | the `dispatch` tool is exposed (M4) |
 | `blocks/voice.md` | the reply will be spoken (M3 WinRT / M6 Kokoro) |

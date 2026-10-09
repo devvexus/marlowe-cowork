@@ -20,6 +20,7 @@ mod error;
 mod legacy;
 mod models;
 mod paths;
+mod profile;
 mod select;
 mod store;
 mod tags;
@@ -45,6 +46,7 @@ pub use paths::{
     default_legacy_profile, models_dir_candidates, profile_dir, resolve_models_dir, EMBEDDER_DIR,
     MODELS_ENV, RERANKER_DIR,
 };
+pub use profile::{Profile, ProfileQuery, DEFAULT_PROFILE_TOKENS};
 pub use types::{
     wire_trust, ConsolidateReport, Episode, ImportProgress, InjectQuery, Injection, Kind,
     LegacyStatus, MemoryIn, MindConfig, Provenance, RecallQuery, Remembered, SnapshotInfo,
@@ -179,6 +181,13 @@ impl Mind {
     pub fn inject(&self, query: InjectQuery) -> Injection {
         self.call(|r| Cmd::Inject(query, r))
             .unwrap_or_else(|e| Injection { abstained: Some(e.to_string()), ..Injection::default() })
+    }
+
+    /// What was deliberately recorded about the user (Preference, Decision, Fact, Procedure from
+    /// remember, corrections or the harness; never turns, imports, episodes or untrusted
+    /// writes), rendered one line each for the context tier. Deterministic; needs no models.
+    pub fn profile(&self, query: ProfileQuery) -> Result<Profile, MindError> {
+        self.call(|r| Cmd::Profile(query, r))
     }
 
     /// Explicit search. Works in degraded mode (lexical only); sees unmatured beliefs too.
@@ -316,5 +325,7 @@ impl Mind {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_profile;
 #[cfg(test)]
 mod tests_service;

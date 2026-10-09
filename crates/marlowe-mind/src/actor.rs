@@ -21,6 +21,7 @@ use crate::capture::{classify, Capture};
 use crate::error::MindError;
 use crate::legacy::{ChunkResult, ImportOp, Speaker};
 use crate::models::Models;
+use crate::profile::{self, Profile as UserProfile, ProfileQuery};
 use crate::store::{self, Boot};
 use crate::tags::{belief_kind, belief_scope, is_episode_summary, short};
 use crate::types::{
@@ -39,6 +40,7 @@ pub(crate) enum Cmd {
     Ingest(TurnIn, Reply<Result<(), MindError>>),
     Remember(MemoryIn, Reply<Result<Remembered, MindError>>),
     Inject(InjectQuery, Reply<Injection>),
+    Profile(ProfileQuery, Reply<UserProfile>),
     Recall(RecallQuery, Reply<Result<Vec<RecallHit>, MindError>>),
     Correct(String, String, Provenance, Reply<Result<Remembered, MindError>>),
     Forget(String, Provenance, Reply<Result<(), MindError>>),
@@ -152,6 +154,12 @@ fn receipt(r: &BeliefReceipt) -> Remembered {
     Remembered { id: r.id.clone(), trust: wire_trust(r.effective_trust), matures_at_ms: r.silent_until }
 }
 
+/// The reason a decision's text carries as a trailing ` (reason: …)`, the form `remember` writes.
+fn trailing_reason(text: &str) -> Option<String> {
+    let (_, r) = text.strip_suffix(')')?.rsplit_once(" (reason: ")?;
+    Some(r.trim()).filter(|r| !r.is_empty()).map(str::to_string)
+}
+
 /// Not tombstoned and not superseded.
 pub(crate) fn is_live(e: &MemoryEntry) -> bool {
     e.fidelity > Fidelity::Tombstone && e.superseded_by.is_none()
@@ -232,6 +240,7 @@ impl Actor {
             Cmd::Ingest(t, r) => drop(r.send(self.ingest(t))),
             Cmd::Remember(m, r) => drop(r.send(self.remember(m))),
             Cmd::Inject(q, r) => drop(r.send(self.inject(q))),
+            Cmd::Profile(q, r) => drop(r.send(profile::build(self.beliefs.entries(), &q, now_ms()))),
             Cmd::Recall(q, r) => drop(r.send(self.recall(q))),
             Cmd::Correct(id, text, src, r) => drop(r.send(self.correct(&id, &text, src))),
             Cmd::Forget(id, src, r) => drop(r.send(self.forget(&id, &src))),
@@ -357,16 +366,19 @@ impl Actor {
         };
         let author = author(&m.source);
         let scope = belief_scope(&m.scope);
-        // An identical live memory in the same scope at equal or higher trust is the same memory.
-        // Duplicates would also collapse the rank-1/rank-2 rerank margin and block injection.
+        let kind = m.kind.tag();
+        // An identical live deliberate memory of the same kind and scope at equal or higher trust
+        // is the same memory. Duplicates would also collapse the rank-1/rank-2 rerank margin and
+        // block injection. A captured turn or an import with the same text is not: matching it
+        // would keep the deliberate record, and so the profile line, from being written.
         let trust = m.source.trust_class();
         if let Some(e) = self.beliefs.entries().find(|e| {
             is_live(e)
                 && e.text == text
                 && e.effective_trust >= trust
                 && *e.scope() == scope
-                && !e.is_assistant_prose()
-                && !is_user_request(e)
+                && e.kind() == belief_kind(kind)
+                && profile::is_deliberate(e)
         }) {
             return Ok(Remembered { id: e.id.clone(), trust: wire_trust(e.effective_trust), matures_at_ms: e.silent_until });
         }
@@ -375,7 +387,9 @@ impl Actor {
             Provenance::Agent { turn, .. } => Some(format!("turn-{turn}")),
             _ => None,
         };
-        let kind = m.kind.tag();
+        // A deliberate write from a session that never read untrusted content cannot have been
+        // steered by it (the taint latch guarantees that), so it is live at once; a tainted one
+        // is UntrustedContent, keeps the maturation window and never enters the profile.
         let r = self.write(&BeliefWrite {
             session_id: &session,
             turn_id: kind.label(),
@@ -385,7 +399,7 @@ impl Actor {
             derived_from: &[],
             occurred_at_ms: now_ms(),
             tags: Tags { kind: Some(belief_kind(kind)), scope, utterance: None, source: source_note(&m.source), reason },
-            maturation: MaturationPolicy::ByTrust,
+            maturation: MaturationPolicy::Deliberate,
         })?;
         Ok(receipt(&r))
     }
@@ -403,12 +417,15 @@ impl Actor {
             Some(n) => format!("{n}, corrects {id}"),
             None => format!("you, corrects {id}"),
         };
+        // The reason comes from the corrected text, never from the target: the corrector vouches
+        // only for words it wrote, so an untrusted target's reason cannot ride into the profile.
+        let reason = if target.kind() == BeliefKind::Decision { trailing_reason(new_text.trim()) } else { None };
         let tags = Tags {
             kind: Some(target.kind()),
             scope: target.scope().clone(),
             utterance: None,
             source: Some(note),
-            reason: target.tags.reason.clone(),
+            reason,
         };
         let write = BeliefWrite {
             session_id: &session,
@@ -419,7 +436,7 @@ impl Actor {
             derived_from: &[],
             occurred_at_ms: now_ms(),
             tags,
-            maturation: MaturationPolicy::ByTrust,
+            maturation: MaturationPolicy::Deliberate,
         };
         match correct_belief(&mut self.journal, &mut self.beliefs, clock(), &write, id)? {
             Ok(r) => {

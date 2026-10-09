@@ -40,10 +40,13 @@ pub const MATURATION_WINDOW_MS: i64 = 6 * 60 * 60 * 1000;
 /// * `ByTrust` — the product. A belief whose **effective** trust is `UserAsserted` is live at
 ///   once (the user said it; there is nothing to wait out). Everything else — agent, harness,
 ///   web, and anything with an untrusted parent in its lineage — keeps the window.
+/// * `Deliberate` — an explicit `remember`/`correct`. Live at once unless its effective trust is
+///   `UntrustedContent`; a tainted write keeps the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaturationPolicy {
     Uniform,
     ByTrust,
+    Deliberate,
 }
 
 impl MaturationPolicy {
@@ -55,6 +58,8 @@ impl MaturationPolicy {
             (MaturationPolicy::ByTrust, TrustClass::AgentObserved)
             | (MaturationPolicy::ByTrust, TrustClass::AgentInferred)
             | (MaturationPolicy::ByTrust, TrustClass::UntrustedContent) => MATURATION_WINDOW_MS,
+            (MaturationPolicy::Deliberate, TrustClass::UntrustedContent) => MATURATION_WINDOW_MS,
+            (MaturationPolicy::Deliberate, _) => 0,
         }
     }
 
@@ -304,6 +309,16 @@ mod tests {
             MaturationPolicy::Uniform.silent_until(clock, TrustClass::UserAsserted),
             Some(1_000 + MATURATION_WINDOW_MS)
         );
+    }
+
+    #[test]
+    fn deliberate_writes_are_instant_unless_untrusted() {
+        let clock = Clock::new(1_000);
+        let p = MaturationPolicy::Deliberate;
+        for t in [TrustClass::UserAsserted, TrustClass::AgentObserved, TrustClass::AgentInferred] {
+            assert_eq!(p.silent_until(clock, t), None, "{t:?}");
+        }
+        assert_eq!(p.silent_until(clock, TrustClass::UntrustedContent), Some(1_000 + MATURATION_WINDOW_MS));
     }
 
     #[test]

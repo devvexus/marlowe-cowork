@@ -598,7 +598,8 @@ impl State {
                 self.library.set_catalog(*provider, models.clone());
             }
             Event::MemoryResults { hits } => self.memory_results(hits),
-            Event::MemoryChanged { id, change } => self.memory_changed(id, change),
+            Event::MemoryChanged { id, change } => self.memory_changed(id, change, out),
+            Event::MemoryProfile { hits, tokens, omitted } => self.memory_profile(hits, *tokens, *omitted),
             Event::MemoryStats(report) => self.memory.stats = Some(report.clone()),
             Event::Recalled { session, count, summary, .. } if self.mine(session) => {
                 if *count > 0 {

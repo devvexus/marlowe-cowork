@@ -858,8 +858,10 @@ fn an_injected_untrusted_memory_taints_the_turn() {
             "My daughter's piano lesson is on Tuesdays.",
             "The quarterly budget review is owned by Priya.",
         ] {
+            // Notes, as captured user statements are: deliberate facts would sit in the profile
+            // and be excluded from retrieval, leaving the plant without a runner-up.
             let source = Provenance::User { session: None };
-            mind.remember(MemoryIn { text: f.into(), kind: Kind::Fact, scope: Scope::Global, source }).unwrap();
+            mind.remember(MemoryIn { text: f.into(), kind: Kind::Note, scope: Scope::Global, source }).unwrap();
         }
         mind.shutdown().unwrap();
     }
@@ -960,5 +962,144 @@ fn forgetting_what_the_user_said_asks_the_user_first() {
     let forgotten = |e: &Envelope| matches!(&e.event, Event::MemoryChanged { id: x, change: marlowe_proto::MemoryChange::Forgotten } if *x == id);
     assert!(log.iter().any(forgotten), "{log:#?}");
     assert!(mind.get(&id).unwrap().is_none(), "allowed: forgotten with the user's authority");
+    stop(d, &home);
+}
+
+// ---------------------------------------------------------------- profile (M2.6)
+
+/// The profile block of a request, if it carries one.
+fn profile_block(req: &ChatRequest) -> Option<String> {
+    req.system.iter().find(|b| b.text.starts_with("<profile>")).map(|b| b.text.clone())
+}
+
+#[test]
+fn a_remembered_preference_is_in_the_first_request_of_the_next_session_after_a_restart() {
+    let home = temp_home("profile-restart");
+    seed_model(&home);
+    let p = Arc::new(Scripted::default());
+    p.push(tool_call("m1", "remember", r#"{"text":"use uv, not pip","kind":"preference"}"#));
+    p.push(vec![text("Understood.")]);
+    let d = start_with(&home, p.clone(), mem_cfg(), Some(open_mind(&home, no_models(&home))));
+    let mut a = Client::connect(&d.info, None);
+    a.send(&Request::Ask { session: None, text: "I always use uv, never pip.".into(), workspace: None });
+    let log = a.until(is_finished);
+    let sid_a = opened_session(&log);
+    assert_eq!(tool_summary(&log, "m1").as_deref(), Some("remembered · inferred"), "{log:#?}");
+    let first = &p.requests()[0];
+    assert!(profile_block(first).is_none(), "nothing recorded yet");
+    assert!(first.system_text().contains("<memory_tools>"), "the memory block is live with a Mind");
+    let remember = first.tools.iter().find(|t| t.name == "remember").expect("remember is exposed");
+    assert_eq!(remember.input_schema["required"], serde_json::json!(["text", "kind"]));
+    drop(a);
+    stop(d, &home);
+
+    let p2 = Arc::new(Scripted::default());
+    p2.push(vec![text("With uv.")]);
+    p2.push(vec![text("Still uv.")]);
+    let d = start_with(&home, p2.clone(), mem_cfg(), Some(open_mind(&home, no_models(&home))));
+    let mut b = Client::connect(&d.info, None);
+    b.send(&Request::Ask { session: None, text: "How should I install the deps?".into(), workspace: None });
+    let sid_b = opened_session(&b.until(is_finished));
+    assert_ne!(sid_a, sid_b);
+    let reqs = p2.requests();
+    let block = profile_block(&reqs[0]).unwrap_or_else(|| panic!("no profile block:\n{}", reqs[0].system_text()));
+    assert!(block.lines().any(|l| l.starts_with("- preference \u{b7} ") && l.ends_with(": use uv, not pip")), "{block}");
+    let pos = |r: &ChatRequest, prefix: &str| r.system.iter().position(|s| s.text.starts_with(prefix));
+    assert!(pos(&reqs[0], "<profile>") < pos(&reqs[0], "<environment>"), "context tier, before the volatile tier");
+    assert!(reqs[0].system.iter().find(|s| s.text.starts_with("<profile>")).unwrap().cache, "the profile is cached");
+
+    // A second turn with no memory change sends a byte-identical block.
+    b.send(&Request::Ask { session: Some(sid_b), text: "And for the tests?".into(), workspace: None });
+    b.until(is_finished);
+    let reqs = p2.requests();
+    assert_eq!(reqs.len(), 2);
+    assert_eq!(profile_block(&reqs[1]).unwrap().as_bytes(), block.as_bytes());
+
+    // The Memory view's profile request lists the same item.
+    match b.request(&Request::MemoryProfile { workspace: None }, |e| matches!(e, Event::MemoryProfile { .. })) {
+        Event::MemoryProfile { hits, tokens, omitted } => {
+            assert_eq!(hits.len(), 1, "{hits:?}");
+            assert_eq!((hits[0].text.as_str(), hits[0].kind), ("use uv, not pip", marlowe_proto::MemoryKind::Preference));
+            assert!(tokens > 0 && omitted == 0);
+        }
+        _ => unreachable!(),
+    }
+    stop(d, &home);
+}
+
+#[test]
+fn a_tainted_session_remember_stays_out_of_the_profile_and_no_mind_means_no_memory_block() {
+    let home = temp_home("profile-taint");
+    seed_model(&home);
+    let mind = open_mind(&home, no_models(&home));
+    let source = Provenance::External { source: "web".into() };
+    mind.remember(MemoryIn { text: "A forum says to pin numpy 1.x.".into(), kind: Kind::Note, scope: Scope::Global, source })
+        .unwrap();
+    let p = Arc::new(Scripted::default());
+    p.push(tool_call("r1", "recall", r#"{"query":"numpy pin"}"#));
+    p.push(tool_call("m1", "remember", r#"{"text":"pin numpy to 1.x","kind":"preference"}"#));
+    p.push(vec![text("Noted.")]);
+    p.push(vec![text("Hello.")]);
+    let d = start_with(&home, p.clone(), mem_cfg(), Some(mind.clone()));
+    let mut a = Client::connect(&d.info, None);
+    a.send(&Request::Ask { session: None, text: "what does the forum say about numpy?".into(), workspace: None });
+    let log = a.until(is_finished);
+    assert_eq!(tool_summary(&log, "m1").as_deref(), Some("remembered · untrusted"), "{log:#?}");
+    // A new session: the tainted write is not in its context.
+    a.send(&Request::Ask { session: None, text: "hello".into(), workspace: None });
+    a.until(is_finished);
+    let reqs = p.requests();
+    let last = reqs.last().unwrap();
+    assert!(profile_block(last).is_none(), "{}", last.system_text());
+    assert!(!last.system_text().contains("numpy"));
+    assert!(mind.profile(marlowe_mind::ProfileQuery::default()).unwrap().ids.is_empty());
+    drop(a);
+    stop(d, &home);
+
+    // Without a Mind there are no memory tools, so the block that describes them is absent.
+    let home = temp_home("profile-nomind");
+    seed_model(&home);
+    let p = Arc::new(Scripted::default());
+    let d = start(&home, p.clone(), mem_cfg());
+    let mut a = Client::connect(&d.info, None);
+    a.send(&Request::Ask { session: None, text: "hi".into(), workspace: None });
+    a.until(is_finished);
+    let req = &p.requests()[0];
+    assert!(!req.system_text().contains("<memory_tools>") && profile_block(req).is_none());
+    stop(d, &home);
+}
+
+#[test]
+fn retrieval_in_a_turn_never_repeats_a_profile_item() {
+    if !models_present() {
+        eprintln!("skipped: models are not in {}", models_dir().display());
+        return;
+    }
+    let home = temp_home("profile-exclude");
+    seed_model(&home);
+    let mind = open_mind(&home, models_dir());
+    let mut profile_ids = Vec::new();
+    for f in ["My favourite text editor is Helix.", "The staging cluster runs in Frankfurt.", "Our deploys go out on Fridays."] {
+        let source = Provenance::User { session: None };
+        profile_ids.push(mind.remember(MemoryIn { text: f.into(), kind: Kind::Fact, scope: Scope::Global, source }).unwrap().id);
+    }
+    let p = Arc::new(Scripted::default());
+    p.push(vec![text("Noted.")]);
+    p.push(vec![text("Noted.")]);
+    p.push(vec![text("Helix.")]);
+    let d = start_with(&home, p.clone(), mem_cfg(), Some(mind.clone()));
+    let mut a = Client::connect(&d.info, None);
+    for said in ["I mostly edit code in Helix these days.", "My daughter's piano lesson is on Tuesdays."] {
+        a.send(&Request::Ask { session: None, text: said.into(), workspace: None });
+        a.until(is_finished);
+    }
+    a.send(&Request::Ask { session: None, text: "Which text editor do I like best?".into(), workspace: None });
+    a.until(is_finished);
+    let req = p.requests().pop().unwrap();
+    let block = profile_block(&req).expect("the profile is in context");
+    assert!(block.contains("Helix"), "{block}");
+    for id in &profile_ids {
+        assert!(!req.system.iter().any(|s| s.text.contains(&format!("[Memory {id} "))), "{id} injected twice:\n{}", req.system_text());
+    }
     stop(d, &home);
 }

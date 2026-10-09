@@ -4,6 +4,14 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### M2.6 Profile in context
+- **Added.** `Mind::profile(ProfileQuery)` returns `Profile { block, ids, tokens, omitted }`. It holds live Preference, Decision, Fact and Procedure records written deliberately (remember, a correction, the harness), never untrusted, Global or in the current project. Each is one line, such as `- preference · 3 Sep: use uv, not pip`. Order is preference, decision, fact, procedure, newest first, capped at 1,500 tokens. The block is deterministic. The reason: short personal facts score poorly on the cross-encoder (admission-floor study), so what the conductor deliberately records now sits in context every turn.
+- **Changed.** `MindMemory` sends the profile as its own cached block in the context tier. `InjectQuery.exclude` keeps profile ids out of the retrieval pool. `MemoryProbe` does not exclude them.
+- **Changed.** Maturation: `MaturationPolicy::Deliberate` makes remember/correct from an untainted session live at once. From a tainted session the write stays UntrustedContent and keeps the 6 h window.
+- **Added.** `persona/blocks/memory.md` is appended only when a Mind is attached. The remember tool now requires `kind`. Its kind enum has descriptions, decisions require a reason, and scope is `global|project`. The recall and correct descriptions are also updated.
+- **Added.** `Request::MemoryProfile` / `Event::MemoryProfile`. In the TUI Memory view, `^p` toggles a profile list of what is in context now.
+- **Security.** `remember` deduplicates only against deliberate records of the same kind, so a captured user turn with the same text no longer swallows the profile entry. A correction takes a decision's reason from its own text (`(reason: …)`), never from the target, so an untrusted reason cannot reach the profile through `correct`.
+
 ### Security
 - Taint gate: after a web_fetch, web_search or a read outside the workspace, web_search and web_fetch to a host not approved this session ask (`Exposure` on `Conversation`, `ToolHost::consequence_exposed`/`taints`/`egress_host`). A reloaded session recomputes it from history.
 - marlowe-net refuses loopback, private, link-local and CGNAT addresses after DNS resolution.
