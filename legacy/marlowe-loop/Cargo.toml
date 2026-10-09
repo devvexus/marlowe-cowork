@@ -1,0 +1,28 @@
+[package]
+name = "marlowe-loop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+marlowe-contract.workspace = true
+marlowe-journal.workspace = true
+marlowe-permission.workspace = true
+marlowe-tools.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# **Content addressing must be collision-resistant, not merely fast.** See ADR-043.
+blake3.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+# **A DEV-DEPENDENCY CYCLE, AND IT IS DELIBERATE.** `marlowe-provider` depends on this crate;
+# cargo permits the reverse edge for a test target and this is the one thing that needs it.
+#
+# `compaction_wire.rs` asserts what a compacted conversation looks like ON THE WIRE. That
+# property lives in the seam between `Assembler::compact`, which chooses a `SourceKind`, and
+# `request_body`, which derives a role from it -- and every unit test on either half was green
+# throughout the live failure. A test that built the request bytes itself would be asserting
+# about its own reconstruction, which is the reconstruction that was never wrong.
+[dev-dependencies]
+marlowe-provider.workspace = true

@@ -1,0 +1,9 @@
+[package]
+name = "marlowe-stub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The scripted producer M1's surfaces were built against. No model, no memory, no network."
+
+[dependencies]
+marlowe-view.workspace = true

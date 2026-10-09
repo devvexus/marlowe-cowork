@@ -1,0 +1,53 @@
+[package]
+name = "marlowe-extract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Document extraction: bytes and a content type in, readable text out. No network, no Marlowe types."
+
+# **This crate depends on nothing of Marlowe's, for the same reason `marlowe-net` does not.**
+# ADR-031 split fetching from parsing because parsing is where the interesting bugs live, and an
+# extractor that panics must not be able to take the egress path down with it. Keeping the
+# dependency edge absent in BOTH directions is what makes that a compile-time property rather
+# than a comment: `marlowe-net` cannot call an extractor, and an extractor cannot open a socket.
+[dependencies]
+# Charset decoding is a CORRECTNESS problem, not a performance one, and it is the one place in
+# this crate where hand-rolling is more dangerous rather than merely more work. A mis-decoded
+# page does not crash -- it produces plausible, silently-mangled text that scores and ranks and
+# reads fine in English. `encoding_rs` is the WHATWG implementation that ships in Firefox, it is
+# SIMD-accelerated, and it cost ONE new crate against a 323-crate lockfile.
+encoding_rs = "0.8"
+# Already in the lockfile via `ort-sys`: ZERO new crates. Used for gzip on the wire and for
+# DEFLATE entries inside ZIP containers (docx/xlsx/pptx/epub).
+flate2 = "1"
+# Already in the lockfile: ZERO new crates. The `<` scan in the HTML tokenizer runs at memory
+# bandwidth on top of this.
+memchr = "2"
+# Already in the lockfile: ZERO new crates. `extract_many` is a work-stealing fan-out; this is
+# the whole reason a 300-document corpus is a parallel problem rather than a serial one.
+rayon = "1"
+# One new crate. A pull parser for the Office/epub XML parts -- chosen over a DOM because the
+# extraction pass never needs the tree it would have to build first.
+quick-xml = "0.37"
+# **The coverage decision, taken deliberately.** 22 new crates, including an AES stack (PDF
+# encryption) and a timezone database (PDF date fields). Hand-rolling PDF properly is xref
+# tables AND xref streams, object streams, FlateDecode, LZW, encryption, font CMaps, ToUnicode
+# maps and text-positioning math -- several thousand lines before it is trustworthy, against a
+# corpus that is relentlessly non-conforming. For a deep research agent the requirement is
+# COVERAGE, so the library wins and the tree is the price.
+pdf-extract = "0.12"
+# **Zero additional crates**: already in the tree beneath `pdf-extract`. Naming it explicitly buys
+# a real page count and title instead of a guess, which is what the scanned-document warning
+# is scaled against.
+lopdf = "0.44"
+# **Content addressing must be collision-resistant, not merely fast.** See ADR-043.
+blake3.workspace = true
+thiserror.workspace = true
+serde = { workspace = true, optional = true }
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[dev-dependencies]
+blake3.workspace = true

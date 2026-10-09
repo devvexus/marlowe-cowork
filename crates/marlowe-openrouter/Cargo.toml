@@ -1,0 +1,34 @@
+[package]
+name = "marlowe-openrouter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# **A SEPARATE CRATE, and that is ADR-046's TLS ruling made structural.**
+#
+# ADR-031 §2.3 is that `marlowe-net` is the whole of the TLS supply-chain surface, so that
+# `cargo tree -p marlowe-provider` shows no TLS and ADR-028's "the default path reaches no
+# network" is a property rather than a comment. Putting an HTTPS driver *inside*
+# `marlowe-provider` would have ended that property on the day it shipped; a cargo feature would
+# have ended it whenever anyone built with `--all-features`, which is the permissive-default shape
+# this project keeps deleting.
+#
+# So the hosted driver is a crate that DEPENDS on `marlowe-provider` instead of living in it.
+# `cargo tree -p marlowe-provider` is unchanged, and
+# `marlowe-provider/tests/no_tls_in_the_default_path.rs` now asserts it rather than asserting the
+# comment.
+[dependencies]
+marlowe-contract.workspace = true
+marlowe-loop.workspace = true
+marlowe-permission.workspace = true
+marlowe-tools.workspace = true
+# The Ollama adapter's REUSABLE parts: `parse_step` (which routes the loop-control tools),
+# `ThinkSplitter`, `ModelCapability`. Reimplementing `parse_step` here would give the two
+# providers two ideas of what `ask` means, and the one that drifted would be the hosted one
+# nobody runs by default.
+marlowe-provider.workspace = true
+# TLS, and the only source of it. See the header.
+marlowe-net.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

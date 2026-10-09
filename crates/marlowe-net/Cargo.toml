@@ -1,0 +1,23 @@
+[package]
+name = "marlowe-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# **This crate depends on nothing of Marlowe's, deliberately.** ADR-031 §2.3: it is the whole of
+# the TLS supply-chain surface, and `cargo tree -p marlowe-provider` must continue to show no TLS
+# so ADR-028's "the default path reaches no network" stays a property rather than a comment.
+[dependencies]
+# ADR-031 §2.1. Pure Rust: no OpenSSL, no C toolchain, no platform TLS whose behaviour would have
+# to be verified per platform (ADR-027's standing rule).
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+# ADR-031 §2.2. A PINNED, VENDORED root set that diffs on update — not the OS store, which changes
+# underneath the binary with no version and no test.
+webpki-roots = "0.26"
+thiserror = "2"
+# **Content-Encoding is a transport concern, so it lives with the transport.** Both are pure Rust
+# and neither touches the TLS path. `flate2` was already in the workspace lockfile (zero new
+# crates); `brotli` costs four. Together they are the single largest wall-clock win available on
+# the fetch path — HTML compresses 3-5x, and those are bytes that never cross the network.
+flate2 = "1"
+brotli = "7"

@@ -1,0 +1,30 @@
+[package]
+name = "marlowe-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+marlowe-contract.workspace = true
+marlowe-exec.workspace = true
+marlowe-journal.workspace = true
+marlowe-loop.workspace = true
+marlowe-memory.workspace = true
+marlowe-permission.workspace = true
+marlowe-provider.workspace = true
+# ADR-046. The HOSTED provider, opt-in at runtime. Present in the dependency graph and absent
+# from every default path: nothing here runs unless `--provider openrouter` is given.
+marlowe-openrouter.workspace = true
+# ADR-052. MCP servers the user installed. No servers configured => nothing here runs.
+marlowe-mcp.workspace = true
+marlowe-tools.workspace = true
+marlowe-view.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+# The daemon socket token. See src/auth.rs for what it does and does not defend.
+getrandom.workspace = true
+
+[dev-dependencies]
+marlowe-provider.workspace = true

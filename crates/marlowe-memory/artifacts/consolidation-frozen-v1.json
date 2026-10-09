@@ -1,0 +1,9 @@
+{
+  "version": "consolidation-v1",
+  "state": "registered",
+  "rule": "complete-link near-duplicate merge over dense cosine; survivor = latest origin_event, then id ascending; losers superseded",
+  "threshold": 0.98,
+  "derived_from": "runs/session-f/PREREGISTRATION.json",
+  "split_digest": "3a685798a4fcac4cb97b645394d4935906a4f67e605398e7d659d48c8f685a3d",
+  "notes": "Chosen by a gold-blind rule: the most selective swept threshold whose FIT-SPLIT candidate-pool reduction is at least 0.01. Measured reduction at this threshold: 0.0121."
+}

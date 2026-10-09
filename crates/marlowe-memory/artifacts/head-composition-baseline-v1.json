@@ -1,0 +1,59 @@
+{
+  "_what": "standing head-composition tripwire baseline",
+  "_why": "harm is zero at the operating point because the head contains almost no knowledge-update queries, not because harm is detected. A perfect supersession oracle moves the fit share 4.3% -> 13.0%, so success at knowledge-update removes the protection. This records the pre-change state.",
+  "version": 1,
+  "configuration": "ms-marco-MiniLM-L-2-v2-ft-session-j (f32, seq 256, depth 10)",
+  "operating_coverage": 0.1,
+  "ku_base_rate": 0.157,
+  "trip_conditions": {
+    "TRIP": "harm_count_top_decile > 0",
+    "WARN": "ku_share_top_decile >= 0.157"
+  },
+  "_interval_rule": "0 of 23 has a Clopper-Pearson upper bound of 0.1482. The point estimate is never reported without its interval.",
+  "baseline": {
+    "fit": {
+      "split": "fit",
+      "n": 229,
+      "coverage": 0.1004,
+      "n_c": 23,
+      "margin_threshold": 1.463927,
+      "ku_count_top_decile": 1,
+      "ku_share_top_decile": 0.0435,
+      "ci95_ku_share": [
+        0.0011,
+        0.2195
+      ],
+      "ku_base_rate": 0.157,
+      "harm_count_top_decile": 0,
+      "harm_rate_top_decile": 0.0,
+      "ci95_harm_top_decile": [
+        0.0,
+        0.1482
+      ],
+      "harm_count_overall": 17,
+      "harm_rate_overall": 0.0742
+    },
+    "heldout": {
+      "split": "heldout",
+      "n": 229,
+      "coverage": 0.1004,
+      "n_c": 23,
+      "margin_threshold": 1.165071,
+      "ku_count_top_decile": 0,
+      "ku_share_top_decile": 0.0,
+      "ci95_ku_share": [
+        0.0,
+        0.1482
+      ],
+      "ku_base_rate": 0.157,
+      "harm_count_top_decile": 0,
+      "harm_rate_top_decile": 0.0,
+      "ci95_harm_top_decile": [
+        0.0,
+        0.1482
+      ],
+      "harm_count_overall": 13,
+      "harm_rate_overall": 0.0568
+    }
+  }
+}

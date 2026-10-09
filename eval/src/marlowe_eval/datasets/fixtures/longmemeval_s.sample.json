@@ -1,0 +1,140 @@
+[
+  {
+    "question_id": "lme-0001",
+    "question_type": "single-session-user",
+    "question": "What database am I using?",
+    "answer": "SQLite. You moved off Postgres in April.",
+    "question_date": "2023/05/20 (Sat) 02:36",
+    "haystack_session_ids": ["s-0001-a"],
+    "haystack_dates": ["2023/04/11 (Tue) 09:15"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "I moved off Postgres in April, running SQLite now.", "has_answer": true},
+        {"role": "assistant", "content": "Noted. Smaller footprint, single file."},
+        {"role": "user", "content": "The deploy script still runs on Fridays."}
+      ]
+    ],
+    "answer_session_ids": ["s-0001-a"]
+  },
+  {
+    "question_id": "lme-0002",
+    "question_type": "single-session-assistant",
+    "question": "What did you recommend for the timeout?",
+    "answer": "Thirty seconds, with one retry.",
+    "question_date": "2023/05/21 (Sun) 11:02",
+    "haystack_session_ids": ["s-0002-a"],
+    "haystack_dates": ["2023/04/28 (Fri) 14:40"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "The ingest job keeps hanging."},
+        {"role": "assistant", "content": "Set the timeout to thirty seconds with one retry.", "has_answer": true},
+        {"role": "user", "content": "I'll try that tomorrow."}
+      ]
+    ],
+    "answer_session_ids": ["s-0002-a"]
+  },
+  {
+    "question_id": "lme-0003",
+    "question_type": "single-session-preference",
+    "question": "How do I like my summaries?",
+    "answer": "Short, no bullet points.",
+    "question_date": "2023/05/22 (Mon) 08:12",
+    "haystack_session_ids": ["s-0003-a"],
+    "haystack_dates": ["2023/03/02 (Thu) 17:05"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "Keep summaries short and skip the bullet points.", "has_answer": true},
+        {"role": "assistant", "content": "Understood."}
+      ]
+    ],
+    "answer_session_ids": ["s-0003-a"]
+  },
+  {
+    "question_id": "lme-0004",
+    "question_type": "multi-session",
+    "question": "Which service did I move to the new region, and when?",
+    "answer": "The ingest service, in May.",
+    "question_date": "2023/06/01 (Thu) 10:00",
+    "haystack_session_ids": ["s-0004-a", "s-0004-b"],
+    "haystack_dates": ["2023/05/03 (Wed) 09:00", "2023/05/17 (Wed) 16:20"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "Thinking about moving one service to eu-west."},
+        {"role": "assistant", "content": "Which one is most latency sensitive?"}
+      ],
+      [
+        {"role": "user", "content": "Moved the ingest service to eu-west this week.", "has_answer": true},
+        {"role": "assistant", "content": "How is the tail latency?"}
+      ]
+    ],
+    "answer_session_ids": ["s-0004-b"]
+  },
+  {
+    "question_id": "lme-0005",
+    "question_type": "temporal-reasoning",
+    "question": "How long after the outage did I change the retry policy?",
+    "answer": "Nine days.",
+    "question_date": "2023/06/04 (Sun) 19:30",
+    "haystack_session_ids": ["s-0005-a", "s-0005-b"],
+    "haystack_dates": ["2023/05/08 (Mon) 03:10", "2023/05/17 (Wed) 12:00"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "We had an outage overnight, the queue backed up.", "has_answer": true}
+      ],
+      [
+        {"role": "user", "content": "Changed the retry policy to exponential backoff today.", "has_answer": true}
+      ]
+    ],
+    "answer_session_ids": ["s-0005-a", "s-0005-b"]
+  },
+  {
+    "question_id": "lme-0006",
+    "question_type": "knowledge-update",
+    "question": "Who owns the billing service now?",
+    "answer": "Priya. It was Marcus until June.",
+    "question_date": "2023/07/02 (Sun) 09:45",
+    "haystack_session_ids": ["s-0006-a", "s-0006-b"],
+    "haystack_dates": ["2023/02/14 (Tue) 11:00", "2023/06/20 (Tue) 15:30"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "Marcus owns the billing service."}
+      ],
+      [
+        {"role": "user", "content": "Priya took over billing from Marcus this month.", "has_answer": true}
+      ]
+    ],
+    "answer_session_ids": ["s-0006-b"]
+  },
+  {
+    "question_id": "lme-0007_abs",
+    "question_type": "single-session-user",
+    "question": "What did I say about the Helsinki office move?",
+    "answer": "",
+    "question_date": "2023/07/03 (Mon) 08:00",
+    "haystack_session_ids": ["s-0007-a"],
+    "haystack_dates": ["2023/06/28 (Wed) 10:10"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "Booked flights for the Lisbon offsite."},
+        {"role": "assistant", "content": "Sounds good."}
+      ]
+    ],
+    "answer_session_ids": []
+  },
+  {
+    "question_id": "lme-0008_abs",
+    "question_type": "multi-session",
+    "question": "Which vendor did I pick for the audit?",
+    "answer": "",
+    "question_date": "2023/07/05 (Wed) 13:20",
+    "haystack_session_ids": ["s-0008-a"],
+    "haystack_dates": ["2023/06/30 (Fri) 09:00"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "We should get an audit scheduled at some point."},
+        {"role": "assistant", "content": "Want me to draft a shortlist?"}
+      ]
+    ],
+    "answer_session_ids": []
+  }
+]

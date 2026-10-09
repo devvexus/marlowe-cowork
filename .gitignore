@@ -1,0 +1,23 @@
+# Cargo build output.
+/target/
+
+# Personal permission allowlists.
+.claude/settings.local.json
+
+# Model weights: large, fetched/copied by scripts/fetch-models.ps1, pinned by sha256 in code.
+models/
+
+# Benchmark corpora (LongMemEval etc.) are never vendored; eval/ fetches them by digest.
+data/
+corpora/
+
+# Python bytecode / caches from eval/.
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Derived embedding cache.
+.embedding-cache/
+
+# Local profile roots written by tests or dev runs.
+/profile-*/

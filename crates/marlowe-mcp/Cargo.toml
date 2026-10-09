@@ -1,0 +1,16 @@
+[package]
+name = "marlowe-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+marlowe-tools.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+# **NO `marlowe-net`, and that is the design.** ADR-052 §3: this crate speaks JSON-RPC over a
+# child process's stdio and reaches no socket. `cargo tree -p marlowe-mcp` showing no TLS is what
+# makes "MCP does not cross layer 4" a compile-time property rather than a claim in a header — the
+# same discipline ADR-031 §2.3 applies to `marlowe-provider`.

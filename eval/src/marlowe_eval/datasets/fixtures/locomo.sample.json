@@ -1,0 +1,27 @@
+[
+  {
+    "sample_id": "locomo-0001",
+    "conversation": {
+      "speaker_a": "Alice",
+      "speaker_b": "Bob",
+      "session_1_date_time": "1:56 pm on 8 May, 2023",
+      "session_1": [
+        {"speaker": "Alice", "dia_id": "D1:1", "text": "I finally sold the old estate car."},
+        {"speaker": "Bob", "dia_id": "D1:2", "text": "About time. What did you replace it with?"},
+        {"speaker": "Alice", "dia_id": "D1:3", "text": "A second-hand hatchback, blue one."}
+      ],
+      "session_2_date_time": "9:12 am on 3 June, 2023",
+      "session_2": [
+        {"speaker": "Bob", "dia_id": "D2:1", "text": "How is the hatchback holding up?"},
+        {"speaker": "Alice", "dia_id": "D2:2", "text": "Needed new brakes already, cost me two hundred."}
+      ]
+    },
+    "qa": [
+      {"question": "What car did Alice buy?", "answer": "A blue second-hand hatchback.", "evidence": ["D1:3"], "category": 4},
+      {"question": "How long after buying the car did Alice pay for repairs?", "answer": "About four weeks.", "evidence": ["D1:3", "D2:2"], "category": 2},
+      {"question": "Why did Alice sell the estate car and buy the hatchback?", "answer": "She wanted something smaller and cheaper to run.", "evidence": ["D1:1", "D1:3"], "category": 1},
+      {"question": "What colour is Bob's motorbike?", "answer": "", "evidence": [], "category": 5},
+      {"question": "Is a hatchback smaller than an estate car?", "answer": "Yes, which is why Alice downsized.", "evidence": ["D1:1", "D1:3"], "category": 3}
+    ]
+  }
+]

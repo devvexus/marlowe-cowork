@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Marlowe TUI</title>
+<style>
+  :root{
+    --bg:#0f0e14;--border:#2e2a3d;--border-dim:#221f2e;
+    --text:#cdc9d6;--dim:#6a6480;--dimmer:#4a4460;
+    --accent:#9B7EDE;--accent-dim:#6f5aa3;--violet:#b39ae8;
+    --green:#8fd4a8;--amber:#d6a95f;--red:#dd7f85;--blue:#7fa8dd;--sel:#251f38;
+  }
+  *{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#2e2a3d transparent;}
+  html,body{margin:0;padding:0;background:#000;}
+  body{font-family:"DejaVu Sans Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    font-size:15px;line-height:1.5;color:var(--text);background:#000;padding:8px;}
+  ::-webkit-scrollbar{width:8px;height:8px;}
+  ::-webkit-scrollbar-track{background:transparent;}
+  ::-webkit-scrollbar-thumb{background:#2e2a3d;border-radius:4px;}
+  ::-webkit-scrollbar-thumb:hover{background:#3d3752;}
+  ::-webkit-scrollbar-corner{background:transparent;}
+
+  .app{position:relative;background:var(--bg);border-radius:10px;overflow:hidden;
+    height:calc(100vh - 16px);display:flex;flex-direction:column;}
+  .titlebar{position:relative;background:#1a1725;padding:3px 0;text-align:center;font-size:17px;}
+  .titlebar .star{position:absolute;left:10px;top:2px;color:var(--accent);}
+  .titlebar .right{position:absolute;right:10px;top:3px;color:var(--dim);font-size:14px;}
+
+  .field{position:relative;border:1px solid var(--border);border-radius:4px;
+    padding:6px 10px;min-height:44px;display:flex;align-items:center;cursor:default;}
+  .field > .label{position:absolute;top:-11px;left:10px;background:var(--bg);
+    padding:0 5px;font-size:15px;color:var(--accent);white-space:nowrap;}
+  .field .hint{position:absolute;bottom:-12px;right:8px;background:var(--bg);
+    padding:0 4px;color:var(--accent-dim);font-size:14px;}
+  .field .val{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .caret{color:var(--dim);margin-left:8px;}
+  .field.sel{border-color:var(--accent);}
+  .field.sel > .label{color:var(--violet);}
+  .field.sel > .hint{color:var(--accent);}
+  .field.sel .val{color:#e2ddf0;}
+  .field.dim{border-color:var(--border-dim);}
+  .field.dim > .label{color:var(--dimmer);}
+  .field.amber{border-color:#6b5326;}
+  .field.amber > .label{color:var(--amber);}
+  .field.red{border-color:#7a3b40;}
+  .field.red > .label{color:var(--red);}
+  .field.green > .label{color:var(--green);}
+  .field.pick{cursor:pointer;}
+  .field.pick:hover{border-color:var(--accent-dim);}
+
+  .menu{display:none;position:absolute;top:100%;left:-1px;right:-1px;margin-top:3px;z-index:30;
+    background:#16141f;border:1px solid var(--accent);border-radius:4px;padding:2px 0;}
+  .menu.open{display:block;}
+  .menu div{padding:2px 10px;color:var(--dim);cursor:pointer;}
+  .menu div:hover{color:var(--text);background:#1e1a2b;}
+  .menu div.on{color:var(--violet);}
+  .menu div.on::before{content:'›';margin-left:-8px;margin-right:2px;}
+
+  .controls{padding:16px 12px 4px;}
+  .row{display:grid;gap:14px;margin-bottom:18px;
+    grid-template-columns:0.85fr 0.7fr 1.1fr 1.4fr 0.85fr;}
+
+  .statusband{margin:0 12px 18px;position:relative;border:1px solid var(--border);
+    border-radius:4px;padding:8px 12px;display:flex;align-items:center;gap:16px;cursor:pointer;}
+  .statusband > .label{position:absolute;top:-11px;left:10px;background:var(--bg);
+    padding:0 5px;color:var(--accent);}
+  .statusband .hint{position:absolute;bottom:-12px;right:8px;background:var(--bg);
+    padding:0 4px;color:var(--accent-dim);font-size:14px;}
+  .rings{position:relative;width:40px;height:40px;flex:0 0 auto;}
+  .ring{position:absolute;border-radius:50%;border:1px solid currentColor;
+    top:50%;left:50%;transform:translate(-50%,-50%);}
+  .r1{width:12px;height:12px;background:currentColor;border:none;animation:p1 1.6s ease-in-out infinite;}
+  .r2{width:24px;height:24px;opacity:.5;animation:p2 1.6s ease-in-out infinite;}
+  .r3{width:38px;height:38px;opacity:.2;animation:p3 1.6s ease-in-out infinite;}
+  .rings.calm .ring{animation-duration:3.4s;}
+  .rings.busy .ring{animation-duration:0.9s;}
+  .rings.still .ring{animation:none;}
+  @keyframes p1{0%,100%{transform:translate(-50%,-50%) scale(1)}50%{transform:translate(-50%,-50%) scale(1.4)}}
+  @keyframes p2{0%,100%{transform:translate(-50%,-50%) scale(.92)}50%{transform:translate(-50%,-50%) scale(1.12)}}
+  @keyframes p3{0%,100%{transform:translate(-50%,-50%) scale(.88)}50%{transform:translate(-50%,-50%) scale(1.08)}}
+  .sstate{font-size:16px;}
+  .sdetail{color:var(--dim);font-size:14px;margin-left:auto;text-align:right;}
+
+  .main{display:grid;grid-template-columns:1.3fr 1fr;grid-template-rows:minmax(0,1fr);
+    gap:14px;padding:0 12px 6px;flex:1;min-height:0;overflow:hidden;}
+  .convo{position:relative;border:1px solid var(--border);border-radius:4px;
+    display:flex;flex-direction:column;min-height:0;padding:14px 14px 0;overflow:visible;}
+  .cscroll{flex:1;min-height:0;overflow-y:scroll;padding-right:8px;}
+  .convo > .label{position:absolute;top:-11px;left:12px;background:var(--bg);
+    padding:0 5px;color:var(--accent);}
+  .convo > .hint{position:absolute;bottom:-12px;right:8px;background:var(--bg);
+    padding:0 4px;color:var(--accent-dim);font-size:14px;}
+  .you{color:var(--dim);margin:6px 0 10px;}
+  .said{margin:0 0 12px;}
+  .toolline{color:var(--dim);display:flex;justify-content:space-between;}
+  .toolline .v{color:#8a83a3;}
+  .toolline.fail .v{color:var(--red);}
+  .toolgroup{margin:0 0 12px;}
+  .compact{color:var(--accent-dim);text-align:center;margin:6px 0 14px;font-size:14px;}
+  .pager{flex:0 0 auto;text-align:right;padding:6px 2px 4px;color:var(--accent-dim);font-size:14px;}
+
+  .detail{display:flex;flex-direction:column;min-height:0;overflow:visible;}
+  .dscroll{flex:1;min-height:0;overflow:auto;padding-right:6px;}
+  .tabs{display:flex;gap:16px;padding:2px 4px 0;flex-wrap:wrap;}
+  .tabs span{color:var(--dim);cursor:pointer;padding-bottom:3px;}
+  .tabs span.active{color:#e2ddf0;border-bottom:2px solid var(--accent);}
+  .tabs span:hover{color:var(--text);}
+  .tabs b{color:var(--accent-dim);font-weight:normal;margin-right:4px;font-size:13px;}
+  .tabs span.active b{color:var(--accent);}
+  .pane{display:none;}
+  .pane.on{display:block;}
+  .dgrid{display:grid;gap:16px 14px;margin-top:22px;}
+  .g3{grid-template-columns:1fr 1fr 1fr;}
+  .g2{grid-template-columns:1fr 1fr;}
+  .g1{grid-template-columns:1fr;}
+  .stack{flex-direction:column;align-items:flex-start;gap:2px;min-height:auto;padding:8px 10px;}
+  .note{color:var(--amber);font-size:14px;}
+  .note.ok{color:var(--dim);}
+  .note.gr{color:var(--green);}
+  .dot{color:var(--accent);margin-right:6px;}
+  .dot.idle{color:var(--dim);}
+
+  .msgwrap{padding:14px 12px 4px;}
+  .scrim{display:none;position:absolute;inset:0;background:rgba(8,7,12,.72);z-index:60;
+    align-items:center;justify-content:center;}
+  .scrim.on{display:flex;}
+  .approve{width:min(560px,86%);background:#171422;border:2px solid var(--amber);
+    border-radius:6px;padding:18px 22px 16px;position:relative;}
+  .approve .cap{position:absolute;top:-12px;left:16px;background:#171422;padding:0 8px;
+    color:var(--amber);}
+  .approve h4{margin:2px 0 10px;font-weight:normal;font-size:17px;color:var(--text);}
+  .approve .radius{color:var(--red);margin-bottom:10px;}
+  .approve .why{color:var(--dim);font-size:14px;margin-bottom:14px;}
+  .approve .keys{display:flex;gap:22px;border-top:1px solid var(--border-dim);padding-top:10px;}
+  .approve .keys span{color:var(--text);}
+  .approve .keys b{color:var(--amber);font-weight:normal;margin-right:6px;}
+  .footer{display:flex;align-items:center;gap:20px;padding:4px 10px;
+    border-top:1px solid var(--border-dim);font-size:16px;flex-wrap:wrap;}
+  .footer .k{color:var(--accent);}
+  .footer .right{margin-left:auto;display:flex;gap:8px;padding-left:18px;
+    border-left:1px solid var(--border-dim);}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="titlebar">
+    <span class="star">*</span>marlowe — thursday
+    <span class="right">2 runs · 3 due today</span>
+  </div>
+
+  <div class="controls">
+    <div class="row">
+      <div class="field pick" data-menu>
+        <span class="label">Model</span><span class="val">opus-5</span>
+        <span class="caret">▾</span><span class="hint">(m)</span>
+        <div class="menu"><div class="on">opus-5</div><div>sonnet-5</div><div>haiku-4.5</div><div>local/qwen-32b</div></div>
+      </div>
+      <div class="field pick" data-menu>
+        <span class="label">Profile</span><span class="val">work</span>
+        <span class="caret">▾</span><span class="hint">(p)</span>
+        <div class="menu"><div class="on">work</div><div>personal</div></div>
+      </div>
+      <div class="field pick" data-menu>
+        <span class="label">Session</span><span class="val">thursday</span>
+        <span class="caret">▾</span><span class="hint">(s)</span>
+        <div class="menu"><div class="on">thursday</div><div>ingest-debug</div><div>q3-research</div><div>marlowe-m1</div></div>
+      </div>
+      <div class="field pick" data-menu>
+        <span class="label">Workspace</span><span class="val">~/projects/ingest</span>
+        <span class="caret">▾</span><span class="hint">(w)</span>
+        <div class="menu"><div class="on">~/projects/ingest</div><div>~/projects/marlowe</div><div>~/notes</div></div>
+      </div>
+      <div class="field pick" data-menu>
+        <span class="label">Autonomy</span><span class="val">draft</span>
+        <span class="caret">▾</span><span class="hint">(a)</span>
+        <div class="menu"><div>observe</div><div>suggest</div><div class="on">draft</div><div>confirm</div><div>act</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="statusband" id="sband">
+    <span class="label">Status</span>
+    <div class="rings" id="rings" style="color:var(--green)">
+      <div class="ring r3"></div><div class="ring r2"></div><div class="ring r1"></div>
+    </div>
+    <div>
+      <div class="sstate" id="sstate" style="color:var(--green)">listening</div>
+      <div style="color:var(--dim);font-size:14px" id="ssub">voice · barge-in on · say "marlowe" to interrupt</div>
+    </div>
+    <div class="sdetail" id="sdetail">740 ms voice-to-voice<br>opus-5 · work</div>
+    <span class="hint">(click to cycle · ^v)</span>
+  </div>
+
+  <div class="main">
+
+    <div class="convo">
+      <span class="label">Conversation</span>
+      <div class="cscroll">
+      <div class="compact">─ compacted · 47 turns → summary ─</div>
+
+      <div class="you">what does my day look like</div>
+      <div class="said">Three things need you. The vendor call at eleven is the one to look at — you owe them a pricing sheet from March and it was never sent.</div>
+
+      <div class="toolgroup">
+        <div class="toolline"><span>⋯ calendar&nbsp; thursday</span><span class="v">4 events</span></div>
+        <div class="toolline"><span>⋯ recall&nbsp;&nbsp;&nbsp;&nbsp;open commitments</span><span class="v">3 due</span></div>
+      </div>
+
+      <div class="you">draft the pricing sheet email</div>
+      <div class="said">Drafted, in your register — short, no apology for the delay since you never promised a date. Waiting on you to send.</div>
+
+      <div class="you">what did we agree with them back in march</div>
+      <div class="said">You quoted tiered pricing at three volume bands and said you'd follow up with the sheet inside a week. They accepted the bands verbally. Nothing was signed.</div>
+
+      <div class="toolgroup">
+        <div class="toolline"><span>⋯ recall&nbsp;&nbsp;&nbsp;&nbsp;acme · march · pricing</span><span class="v">6 memories</span></div>
+        <div class="toolline"><span>⋯ read&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;notes/acme-call-0314.md</span><span class="v">41 lines</span></div>
+      </div>
+
+      <div class="you">did anything change since</div>
+      <div class="said">Your cost base moved. The middle band was priced against the old egress rate and that went up eleven percent in June — the sheet as drafted would lose money at volume.</div>
+
+      <div class="you">flag that in the draft</div>
+      <div class="said">Flagged. I've left the bands as agreed and added a line saying the middle band is under review, so you're not reopening the negotiation by email.</div>
+
+      <div class="toolgroup">
+        <div class="toolline"><span>⋯ edit&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;drafts/acme-pricing.md</span><span class="v">+3 −0</span></div>
+      </div>
+
+      <div class="you">also start a deep dive on their pricing model</div>
+      <div class="said">Running. About twenty minutes and roughly $3 — I'll ping you.</div>
+
+      <div class="toolgroup">
+        <div class="toolline"><span>⋯ run&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;deep-research</span><span class="v">spawned</span></div>
+      </div>
+
+      </div>
+      <div class="pager">turn 12 · 47 compacted · lineage 3 deep</div>
+      <span class="hint">(c)</span>
+    </div>
+
+    <div class="detail">
+      <div class="tabs">
+        <span data-tab="runs"><b>1</b>Runs</span>
+        <span data-tab="sched" class="active"><b>2</b>Schedule</span>
+        <span data-tab="sess"><b>3</b>Sessions</span>
+        <span data-tab="skills"><b>4</b>Skills</span>
+        <span data-tab="trust"><b>5</b>Trust</span>
+        <span data-tab="status"><b>6</b>Status</span>
+      </div>
+
+      <div class="dscroll">
+      <div class="pane" id="p-runs">
+        <div class="dgrid g1"><div class="field stack sel">
+          <span class="label">deep-research — acme pricing</span>
+          <span class="note ok"><span class="dot">●</span>running · 34 sources · 12 pending</span>
+          <span class="hint">(r)</span>
+        </div></div>
+        <div class="dgrid g3">
+          <div class="field"><span class="label">Elapsed</span><span class="val">4m 12s</span></div>
+          <div class="field amber"><span class="label">Spend</span><span class="val">$1.20 / $3.00</span></div>
+          <div class="field"><span class="label">Depth</span><span class="val">2 subagents</span></div>
+        </div>
+        <div class="dgrid g1"><div class="field">
+          <span class="label">Steer</span>
+          <span class="val" style="color:var(--dim)">inject guidance without restarting…</span>
+          <span class="hint">(g)</span>
+        </div></div>
+        <div class="dgrid g1"><div class="field stack">
+          <span class="label">test-suite</span>
+          <span class="note ok"><span class="dot">●</span>running · 3 of 12 passed</span>
+          <span class="hint">(2)</span>
+        </div></div>
+        <div class="dgrid g1"><div class="field stack dim">
+          <span class="label">pdf-export</span>
+          <span class="note ok"><span class="dot idle">○</span>queued · waiting on deep-research</span>
+        </div></div>
+        <div class="dgrid g2">
+          <div class="field stack dim"><span class="label">Completed today</span><span class="note ok">7 runs · $4.80</span></div>
+          <div class="field stack dim"><span class="label">Failed</span><span class="note ok">1 · budget ceiling</span></div>
+        </div>
+      </div>
+
+      <div class="pane on" id="p-sched">
+        <div class="dgrid g1"><div class="field stack dim">
+          <span class="label">09:30 · standup</span>
+          <span class="note ok">15m · no prep needed</span>
+        </div></div>
+        <div class="dgrid g1"><div class="field stack sel">
+          <span class="label">11:00 · vendor call — acme</span>
+          <span class="note">you owe them the pricing sheet · promised 14 March</span>
+          <span class="note ok">last spoke 6 weeks ago · your norm is 2</span>
+          <span class="hint">(↵)</span>
+        </div></div>
+        <div class="dgrid g1"><div class="field stack red">
+          <span class="label">14:00 · design review</span>
+          <span class="note" style="color:var(--red)">conflict · your flight lands 14:50</span>
+          <span class="note ok">▸ move to 16:00 · ▸ send regrets</span>
+          <span class="hint">(3)</span>
+        </div></div>
+        <div class="dgrid g1"><div class="field stack dim">
+          <span class="label">18:30 · dinner — mara</span>
+          <span class="note ok">personal profile · no prep</span>
+        </div></div>
+        <div class="dgrid g1"><div class="field stack amber">
+          <span class="label">Due today</span>
+          <span class="note">pricing sheet → acme · drafted, unsent</span>
+          <span class="note">contract review → legal · 8 days late</span>
+          <span class="note ok">expenses → finance · draft ready</span>
+          <span class="hint">(d)</span>
+        </div></div>
+        <div class="dgrid g2">
+          <div class="field stack dim"><span class="label">Owed to you</span><span class="note ok">2 · oldest 8 days</span></div>
+          <div class="field stack dim"><span class="label">Tomorrow</span><span class="note ok">1 event · 09:00</span></div>
+        </div>
+      </div>
+
+      <div class="pane" id="p-sess">
+        <div class="dgrid g1"><div class="field stack sel">
+          <span class="label">thursday</span>
+          <span class="note ok">today · 12 turns · lineage 3 deep</span>
+          <span class="hint">(↵)</span>
+        </div></div>
+        <div class="dgrid g1"><div class="field stack">
+          <span class="label">ingest-debug</span>
+          <span class="note ok">yesterday · 84 turns · PR #412 opened</span>
+        </div></div>
+        <div class="dgrid g1"><div class="field stack">
+          <span class="label">q3-research</span>
+          <span class="note ok">6 Aug · 31 turns · report.md, 14 sources</span>
+        </div></div>
+        <div class="dgrid g1"><div class="field stack dim">
+          <span class="label">marlowe-m1</span>
+          <span class="note ok">4 Aug · 210 turns · compacted ×5</span>
+        </div></div>
+        <div class="dgrid g2">
+          <div class="field stack dim"><span class="label">This week</span><span class="note ok">11 sessions · $38.40</span></div>
+          <div class="field stack dim"><span class="label">Search</span><span class="note ok">by content, not title</span></div>
+        </div>
+      </div>
+
+      <div class="pane" id="p-skills">
+        <div class="dgrid g1"><div class="field stack">
+          <span class="label">research</span>
+          <span class="note ok">arxiv · blogwatcher · docs-fetch · cite-check</span>
+        </div></div>
+        <div class="dgrid g1"><div class="field stack sel">
+          <span class="label">writing</span>
+          <span class="note ok">report · changelog · email-draft · one-pager</span>
+          <span class="hint">(↵)</span>
+        </div></div>
+        <div class="dgrid g1"><div class="field stack">
+          <span class="label">devops</span>
+          <span class="note ok">deploy · kanban · webhook-sub · log-tail</span>
+        </div></div>
+        <div class="dgrid g1"><div class="field stack">
+          <span class="label">data</span>
+          <span class="note ok">csv-analyze · chart · sql · spreadsheet</span>
+        </div></div>
+        <div class="dgrid g1"><div class="field stack dim">
+          <span class="label">personal</span>
+          <span class="note ok">inbox-triage · calendar · expenses</span>
+        </div></div>
+        <div class="dgrid g2">
+          <div class="field stack dim"><span class="label">Installed</span><span class="note ok">31 skills · 6 domains</span></div>
+          <div class="field stack dim"><span class="label">Exposed now</span><span class="note ok">11 tools · budget 12</span></div>
+        </div>
+      </div>
+
+      <div class="pane" id="p-trust">
+        <div class="dgrid g1"><div class="field stack green">
+          <span class="label">reply to scheduling email</span>
+          <span class="note gr">tier 4 · act · 96% agreement · ▲ steady</span>
+          <span class="hint">(↵)</span>
+        </div></div>
+        <div class="dgrid g1"><div class="field stack sel">
+          <span class="label">draft vendor email</span>
+          <span class="note">tier 2 · draft · 88% agreement · ▲ rising</span>
+          <span class="note ok">▸ promote to confirm — 21 of 23 sent unedited</span>
+          <span class="hint">(↵)</span>
+        </div></div>
+        <div class="dgrid g1"><div class="field stack">
+          <span class="label">move a calendar event</span>
+          <span class="note ok">tier 3 · confirm · 91% agreement · ▬ flat</span>
+        </div></div>
+        <div class="dgrid g1"><div class="field stack amber">
+          <span class="label">file an expense</span>
+          <span class="note">tier 1 · suggest · demoted 2 days ago</span>
+          <span class="note ok">you corrected the last one · back in shadow</span>
+        </div></div>
+        <div class="dgrid g1"><div class="field stack dim">
+          <span class="label">send as you</span>
+          <span class="note ok">ceiling · never promotable</span>
+        </div></div>
+        <div class="dgrid g2">
+          <div class="field stack dim"><span class="label">Handled this week</span><span class="note ok">64 · 3 needed you</span></div>
+          <div class="field stack dim"><span class="label">Time saved</span><span class="note ok">≈ 6.2 h · estimate</span></div>
+        </div>
+      </div>
+
+      <div class="pane" id="p-status">
+        <div class="dgrid g2">
+          <div class="field"><span class="label">Model</span><span class="val">opus-5</span></div>
+          <div class="field"><span class="label">Provider</span><span class="val">anthropic</span></div>
+        </div>
+        <div class="dgrid g3">
+          <div class="field"><span class="label">Context</span><span class="val">12%</span></div>
+          <div class="field"><span class="label">Session</span><span class="val">$0.18</span></div>
+          <div class="field"><span class="label">Today</span><span class="val">$6.31</span></div>
+        </div>
+        <div class="dgrid g1"><div class="field stack">
+          <span class="label">Connections</span>
+          <span class="note gr">calendar · mail · drive — healthy</span>
+          <span class="note">slack — token expires in 3 days</span>
+          <span class="hint">(↵)</span>
+        </div></div>
+        <div class="dgrid g1"><div class="field stack amber">
+          <span class="label">Degraded</span>
+          <span class="note">dense retrieval offline · lexical only</span>
+          <span class="note ok">recall quality reduced · not silent</span>
+        </div></div>
+        <div class="dgrid g2">
+          <div class="field stack dim"><span class="label">Memory</span><span class="note ok">412k entries · 1.2 GB</span></div>
+          <div class="field stack dim"><span class="label">Uptime</span><span class="note ok">daemon 6d 4h</span></div>
+        </div>
+      </div>
+
+    </div>
+    </div>
+  </div>
+
+  <div class="scrim" id="scrim">
+    <div class="approve">
+      <span class="cap">approval</span>
+      <h4>Send email as you — mara@acme.com</h4>
+      <div class="radius">Sends under your name. Not recallable.</div>
+      <div class="why">unusual · first send to this recipient · class sits at its ceiling and cannot be promoted</div>
+      <div class="keys">
+        <span><b>↵</b>send</span><span><b>e</b>edit first</span>
+        <span><b>s</b>send as marlowe</span><span><b>esc</b>deny</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="msgwrap">
+    <div class="field">
+      <span class="label">Message</span>
+      <span class="val" style="color:var(--dim)" id="msgph">listening — type to take over</span>
+      <span class="val" style="flex:0 0 auto;color:var(--dim);font-size:14px;">12%&nbsp;&nbsp;$0.18&nbsp;&nbsp;22m</span>
+      <span class="hint">(i)</span>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span><span class="k">^v</span> Voice</span>
+    <span><span class="k">^n</span> New</span>
+    <span><span class="k">^r</span> Runs</span>
+    <span><span class="k">^l</span> Lineage</span>
+    <span><span class="k">^t</span> Trust</span>
+    <span><span class="k">^u</span> Undo</span>
+    <span><span class="k">esc</span> Interrupt</span>
+    <span class="right"><span class="k">^k</span> palette</span>
+  </div>
+
+</div>
+
+<script>
+(function(){
+  var tabs=document.querySelectorAll('.tabs span');
+  function show(id){
+    document.querySelectorAll('.pane').forEach(function(p){p.classList.remove('on');});
+    var el=document.getElementById('p-'+id); if(el) el.classList.add('on');
+  }
+  tabs.forEach(function(t){
+    t.addEventListener('click',function(){
+      tabs.forEach(function(s){s.classList.remove('active');});
+      t.classList.add('active'); show(t.dataset.tab);
+    });
+  });
+
+  document.querySelectorAll('[data-menu]').forEach(function(f){
+    var menu=f.querySelector('.menu'), val=f.querySelector('.val');
+    f.addEventListener('click',function(e){
+      var open=menu.classList.contains('open');
+      document.querySelectorAll('.menu').forEach(function(m){m.classList.remove('open');});
+      document.querySelectorAll('.controls .field').forEach(function(x){x.classList.remove('sel');});
+      if(!open){menu.classList.add('open');f.classList.add('sel');}
+      e.stopPropagation();
+    });
+    menu.querySelectorAll('div').forEach(function(o){
+      o.addEventListener('click',function(e){
+        menu.querySelectorAll('div').forEach(function(x){x.classList.remove('on');});
+        o.classList.add('on'); val.textContent=o.textContent;
+        menu.classList.remove('open'); e.stopPropagation();
+      });
+    });
+  });
+  document.addEventListener('click',function(){
+    document.querySelectorAll('.menu').forEach(function(m){m.classList.remove('open');});
+  });
+
+  var states=[
+    {n:'listening', c:'var(--green)', p:'calm',  s:'voice · barge-in on · say "marlowe" to interrupt', d:'740 ms voice-to-voice<br>opus-5 · work', m:'listening — type to take over'},
+    {n:'thinking',  c:'var(--accent)',p:'busy',  s:'reading 34 sources · 12 pending',                  d:'deep-research · 4m 12s<br>$1.20 of $3.00',       m:'thinking — esc to interrupt'},
+    {n:'speaking',  c:'var(--green)', p:'busy',  s:'answering · interrupt any time',                   d:'740 ms voice-to-voice<br>opus-5 · work',         m:'speaking — type to take over'},
+    {n:'writing',   c:'var(--accent)',p:'calm',  s:'report.md · 1,840 words so far',                   d:'streaming<br>$0.31 this turn',                   m:'writing — esc to stop'},
+    {n:'running',   c:'var(--amber)', p:'busy',  s:'bash · pytest tests/memory',                       d:'0m 41s elapsed<br>3 of 12 passed',               m:'running a tool — esc cancels'},
+    {n:'waiting',   c:'var(--amber)', p:'still', s:'approval needed · send email as you',              d:'irreversible · ceiling tier<br>↵ approve · esc deny', m:'waiting on you'},
+    {n:'idle',      c:'var(--dim)',   p:'still', s:'nothing running · 2 background runs elsewhere',    d:'daemon 6d 4h<br>$6.31 today',                    m:'ask me something'}
+  ];
+  var i=0, band=document.getElementById('sband');
+  band.addEventListener('click',function(){
+    i=(i+1)%states.length; var s=states[i];
+    var rings=document.getElementById('rings');
+    rings.style.color=s.c; rings.className='rings '+s.p;
+    var st=document.getElementById('sstate');
+    st.textContent=s.n; st.style.color=s.c;
+    document.getElementById('ssub').innerHTML=s.s;
+    document.getElementById('sdetail').innerHTML=s.d;
+    document.getElementById('msgph').textContent=s.m;
+    document.getElementById('scrim').classList.toggle('on', s.n==='waiting');
+  });
+  document.getElementById('scrim').addEventListener('click',function(){
+    this.classList.remove('on');
+  });
+
+})();
+</script>
+</body>
+</html>

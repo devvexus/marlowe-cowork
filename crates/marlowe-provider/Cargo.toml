@@ -1,0 +1,23 @@
+[package]
+name = "marlowe-provider"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+marlowe-contract.workspace = true
+marlowe-loop.workspace = true
+marlowe-permission.workspace = true
+marlowe-tools.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+marlowe-journal.workspace = true
+# **A DEV-dependency, and the distinction is the test's whole subject.** `TERMINATE_CANARY` and
+# `TERMINATE_LABEL` live in `marlowe-view`, and `tests/terminate_is_absent_from_the_request_body.rs`
+# asserts that neither reaches a model. Making this a real dependency would put the view crate in
+# this crate's shipping graph -- which is the shape the assertion exists to refuse. A dev-dep lets
+# the test name the constants it is looking for without any adapter being able to.
+marlowe-view.workspace = true
