@@ -30,6 +30,17 @@ impl OperatorCapability {
     }
 }
 
+/// One stored event without its signatures, as [`Journal::replay_meta`] returns it.
+#[derive(Debug, Clone)]
+pub struct ReplayedEvent {
+    pub seq: Seq,
+    /// Journal timestamp, UTC millis.
+    pub ts: i64,
+    pub session_id: Option<String>,
+    pub kind: EventKind,
+    pub payload: serde_json::Value,
+}
+
 pub struct Journal {
     conn: Connection,
     key: SigningKey,
@@ -250,6 +261,33 @@ impl Journal {
             }
             Ok::<(), JournalError>(())
         })?;
+        Ok(out)
+    }
+
+    /// [`Self::replay`] with each event's `ts` and `session_id`. Operator and audit only.
+    pub fn replay_meta(
+        &self,
+        _cap: &OperatorCapability,
+        kind: Option<EventKind>,
+    ) -> Result<Vec<ReplayedEvent>, JournalError> {
+        let mut stmt = self.conn.prepare("SELECT seq, ts, session_id, kind, payload FROM journal ORDER BY seq ASC")?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            let kind_raw: String = row.get(3)?;
+            let this_kind: EventKind = serde_json::from_value(serde_json::Value::String(kind_raw))?;
+            if kind.is_some_and(|want| want != this_kind) {
+                continue;
+            }
+            let payload_raw: String = row.get(4)?;
+            out.push(ReplayedEvent {
+                seq: row.get::<_, i64>(0)? as Seq,
+                ts: row.get(1)?,
+                session_id: row.get(2)?,
+                kind: this_kind,
+                payload: serde_json::from_str(&payload_raw)?,
+            });
+        }
         Ok(out)
     }
 

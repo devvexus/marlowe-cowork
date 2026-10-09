@@ -33,6 +33,6 @@ mod store;
 
 pub use error::JournalError;
 pub use event::{Actor, AppendRequest, EventKind, JournalEvent, Seq, TraceId};
-pub use journal::{Journal, OperatorCapability};
+pub use journal::{Journal, OperatorCapability, ReplayedEvent};
 pub use profile::{Manifest, Profile, DERIVATION_VERSION};
 pub use signature::SigningKey;

@@ -295,7 +295,7 @@ fn trust_sets_maturation_and_corrections_cannot_lower_authority() {
 }
 
 #[test]
-fn project_scope_filters_recall_and_turns_take_the_workspace() {
+fn explicit_project_scope_filters_recall_and_turns_are_global() {
     let home = temp_home("scope");
     let mind = Mind::open_with(&home, without_models(&home)).unwrap();
     mind.ingest_turn(TurnIn {
@@ -325,15 +325,25 @@ fn project_scope_filters_recall_and_turns_take_the_workspace() {
         texts
     };
     assert_eq!(search(None).len(), 3);
-    assert_eq!(search(Some(Scope::Global)), vec!["orchid is pronounced like the flower"]);
-    let alpha = search(Some(Scope::Project("C:/work/alpha/".into())));
-    assert_eq!(alpha, vec!["alpha uses the orchid build system", "orchid is pronounced like the flower"]);
+    // The turn is Global: what was said in alpha is visible from everywhere.
+    let global = vec!["alpha uses the orchid build system", "orchid is pronounced like the flower"];
+    assert_eq!(search(Some(Scope::Global)), global);
+    assert_eq!(search(Some(Scope::Project("C:/work/alpha/".into()))), global);
+    // An explicit Project memory stays inside its project.
     let beta = search(Some(Scope::Project(r"C:\work\beta".into())));
-    assert_eq!(beta, vec!["orchid builds need the beta toolchain", "orchid is pronounced like the flower"]);
+    assert_eq!(
+        beta,
+        vec!["alpha uses the orchid build system", "orchid builds need the beta toolchain", "orchid is pronounced like the flower"]
+    );
     let hit = mind.recall(RecallQuery { text: "alpha".into(), scope: None, limit: 1 }).unwrap().remove(0);
     assert_eq!((hit.kind, hit.trust), (MemoryKind::Note, Trust::User));
-    assert_eq!(hit.scope, Scope::Project(r"C:\work\alpha".into()));
+    assert_eq!(hit.scope, Scope::Global);
     assert_eq!(hit.occurred_at_ms, 5);
+    // The session's workspace is remembered for the boost and survives a reopen.
+    drop(mind);
+    let mind = Mind::open_with(&home, without_models(&home)).unwrap();
+    mind.write_episode("s1", "Talked about orchid.", 9, false).unwrap();
+    assert_eq!(mind.episodes(0..10).unwrap()[0].workspace.as_deref(), Some(r"C:\work\alpha"));
     drop(mind);
     let _ = fs::remove_dir_all(&home);
 }
@@ -711,4 +721,239 @@ fn civil_dates_are_utc_days() {
     assert_eq!(select::civil_date(0), "1970-01-01");
     assert_eq!(select::civil_date(T_OLD), "2023-11-14");
     assert_eq!(select::civil_date(951_782_400_000), "2000-02-29");
+}
+
+// ---- capture policy and the workspace boost -------------------------------------------------
+
+fn turn(session: &str, workspace: Option<&str>, role: TurnRole, text: &str) -> TurnIn {
+    TurnIn { session: session.into(), workspace: workspace.map(str::to_string), role, text: text.into(), at_ms: 7 }
+}
+
+#[test]
+fn user_questions_and_requests_are_episodes_and_statements_are_notes() {
+    let home = temp_home("capture");
+    let mind = Mind::open_with(&home, without_models(&home)).unwrap();
+    for t in ["My cat Biscuit is twelve years old.", "How old is Biscuit?", "summarise the Biscuit vet notes"] {
+        mind.ingest_turn(turn("s1", None, TurnRole::User, t)).unwrap();
+    }
+    let hits = mind.recall(RecallQuery { text: "Biscuit".into(), scope: None, limit: 10 }).unwrap();
+    let kind = |t: &str| hits.iter().find(|h| h.text == t).map(|h| (h.kind, h.trust));
+    assert_eq!(kind("My cat Biscuit is twelve years old."), Some((MemoryKind::Note, Trust::User)));
+    assert_eq!(kind("How old is Biscuit?"), Some((MemoryKind::Episode, Trust::User)), "{hits:?}");
+    assert_eq!(kind("summarise the Biscuit vet notes"), Some((MemoryKind::Episode, Trust::User)), "{hits:?}");
+    // A request is not a session summary.
+    assert_eq!(mind.stats().unwrap().episodes, 0);
+    assert!(mind.episodes(0..100).unwrap().is_empty());
+    // Remembering the same words as a fact is a new memory, not the stored question.
+    let fact = mind
+        .remember(MemoryIn { text: "How old is Biscuit?".into(), kind: Kind::Fact, scope: Scope::Global, source: user() })
+        .unwrap();
+    assert_eq!(mind.get(&fact.id).unwrap().map(|h| h.kind), Some(MemoryKind::Fact));
+    drop(mind);
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
+fn the_boost_keeps_rank_one_and_prefers_same_project_memories_for_later_slots() {
+    use crate::select::{fill_slots, Slot, WORKSPACE_BOOST};
+    fn slot(id: &str, rerank: f32, same_project: bool) -> Slot<'_> {
+        Slot { id, text: "a short memory", rerank, score: 0.0, margin: 0.0, same_project }
+    }
+    let ids = |v: Vec<(String, f32)>| v.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+    let first = ("m-top", "the top memory", 1.0);
+    // Without a same-project candidate the order is the core's: rerank logit, then id.
+    let plain = vec![slot("m-b", 2.0, false), slot("m-c", 3.0, false), slot("m-a", 2.0, false)];
+    assert_eq!(ids(fill_slots(first, plain, 1_000)), vec!["m-top", "m-c", "m-a"]);
+    // Within the boost, a same-project memory overtakes; beyond it, it does not.
+    let near = vec![slot("m-c", 3.0, false), slot("m-b", 2.0, false), slot("m-p", 3.0 - WORKSPACE_BOOST / 2.0, true)];
+    assert_eq!(ids(fill_slots(first, near, 1_000)), vec!["m-top", "m-p", "m-c"]);
+    let far = vec![slot("m-c", 3.0, false), slot("m-b", 2.9, false), slot("m-p", 3.0 - WORKSPACE_BOOST * 2.0, true)];
+    assert_eq!(ids(fill_slots(first, far, 1_000)), vec!["m-top", "m-c", "m-b"]);
+    // The budget cuts as the core's does: rank 1 always, then stop at the first that misses.
+    let tight = vec![slot("m-c", 3.0, false)];
+    let one = marlowe_memory::retrieve::estimate_tokens(first.1);
+    assert_eq!(ids(fill_slots(first, tight, one)), vec!["m-top"]);
+}
+
+#[test]
+fn questions_are_never_injected_and_turns_cross_workspaces_but_project_memories_do_not() {
+    let Some(models) = models_or_skip("questions_are_never_injected_and_turns_cross_workspaces_but_project_memories_do_not")
+    else {
+        return;
+    };
+    let home = temp_home("capture-inject");
+    let (alpha, beta) = (r"C:\work\alpha", r"C:\work\beta");
+    let mind = Mind::open_with(&home, with_models(&models)).unwrap();
+    for f in &FACTS[1..] {
+        mind.ingest_turn(turn("sa", Some(alpha), TurnRole::User, f)).unwrap();
+    }
+    // Word for word the query below: without the capture policy it would win rank 1.
+    mind.ingest_turn(turn("sa", Some(alpha), TurnRole::User, "Which text editor do I like best?")).unwrap();
+    mind.remember(MemoryIn {
+        text: FACTS[0].into(),
+        kind: Kind::Preference,
+        scope: Scope::Project(alpha.into()),
+        source: Provenance::User { session: Some("sa".into()) },
+    })
+    .unwrap();
+    let ask = |ws: &str| {
+        mind.inject(InjectQuery {
+            session: "sq".into(),
+            workspace: Some(ws.into()),
+            text: "Which text editor do I like best?".into(),
+            budget_tokens: 2_000,
+        })
+    };
+    let home_ws = ask(alpha);
+    assert_eq!(home_ws.abstained, None, "{home_ws:?}");
+    assert_eq!(home_ws.recalled[0].text, FACTS[0], "{home_ws:?}");
+    assert!(home_ws.recalled.iter().all(|h| h.kind != MemoryKind::Episode), "a question was injected: {home_ws:?}");
+    let away = ask(beta);
+    assert!(away.recalled.iter().all(|h| h.text != FACTS[0]), "another project's memory leaked: {away:?}");
+    assert!(away.recalled.iter().all(|h| h.kind != MemoryKind::Episode), "a question was injected: {away:?}");
+
+    // A statement made in alpha reaches beta: turns are Global.
+    mind.ingest_turn(turn("sa", Some(alpha), TurnRole::User, "My favourite text editor is Kakoune.")).unwrap();
+    let away = ask(beta);
+    assert_eq!(away.abstained, None, "{away:?}");
+    assert!(away.recalled[0].text.contains("Kakoune"), "{away:?}");
+    drop(mind);
+    let _ = fs::remove_dir_all(&home);
+}
+
+// ---- legacy conversation import -------------------------------------------------------------
+
+/// One `state.volatile[]` block as the old harness wrote it.
+fn block(source: &str, trust: &str, text: &str) -> serde_json::Value {
+    serde_json::json!({ "source": source, "text": text, "tokens": text.len() / 4, "trust": trust, "wire": null })
+}
+
+/// The old profile of [`synthetic_old_profile`] plus `checkpointed` events carrying the
+/// conversation the way the old harness did: cumulative history, tool results, skill banners,
+/// machine payloads and step-only checkpoints.
+fn synthetic_old_profile_with_conversation(dir: &Path) {
+    use marlowe_journal::{Actor as JActor, AppendRequest, TraceId};
+    synthetic_old_profile(dir);
+    let profile = Profile::open(dir).unwrap();
+    let mut journal = Journal::open(&profile).unwrap();
+    let banner = "Possibly relevant here:\n- release-notes: Produce release notes.\nLoad one with `skill`.";
+    let first = vec![
+        block("history", "user_asserted", "My cat Biscuit is twelve years old."),
+        block("history", "user_asserted", "What time is it?"),
+        block("history", "agent_inferred", "It is noon in Porto."),
+        block("tool_results", "agent_observed", "README.md\nCargo.toml"),
+        block("skills", "user_asserted", banner),
+        block("history", "agent_inferred", r#"[{"path":"budget.rs","summary":"Enforces budget limits"}]"#),
+        block("history", "agent_observed", "[spawned] tools: read · budget: 4000 tokens · returns: what you found"),
+        block("history", "agent_inferred", ""),
+        block("history", "user_asserted", "   "),
+    ];
+    let mut second = first.clone();
+    second.push(block("history", "user_asserted", "I prefer dark roast coffee."));
+    let third = vec![
+        block("history", "user_asserted", "What time is it?"),
+        block("history", "agent_observed", "[output contract] field `findings` is 2644 characters and the contract caps it at 2000"),
+        block("history", "user_asserted", "summarise the README"),
+    ];
+    let events = [
+        ("old-a", T_OLD + 50, serde_json::json!({ "step": 1 })),
+        ("old-a", T_OLD + 100, serde_json::json!({ "session": "old-a", "state": { "session": "old-a", "volatile": first } })),
+        ("old-a", T_OLD + 200, serde_json::json!({ "session": "old-a", "state": { "session": "old-a", "volatile": second } })),
+        ("old-b", T_OLD + 300, serde_json::json!({ "session": "old-b", "state": { "session": "old-b", "volatile": third } })),
+    ];
+    for (session, ts, payload) in events {
+        journal
+            .append(
+                Clock::new(ts),
+                AppendRequest {
+                    trace_id: TraceId::new_v5(&TraceId::NAMESPACE_OID, session.as_bytes()),
+                    session_id: Some(session.into()),
+                    run_id: Some("run-1".into()),
+                    actor: JActor::Harness,
+                    kind: EventKind::Checkpointed,
+                    payload,
+                },
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn import_legacy_brings_the_old_conversation_over_as_turns() {
+    let old = temp_home("legacy-talk-old").join("default-profile");
+    synthetic_old_profile_with_conversation(&old);
+    let before = digest_dir(&old);
+    let home = temp_home("legacy-talk-new");
+    let mind = Mind::open_with(&home, without_models(&home)).unwrap();
+
+    // A marker from an import that predates the conversation import does not count.
+    let v1 = r#"{"source":"x","completed_at_ms":1,"report":{"read":7,"imported":4,"skipped_duplicates":0,"tombstoned":1,"superseded":1}}"#;
+    fs::write(profile_dir(&home).join("legacy-import.json"), v1).unwrap();
+    let status = mind.legacy_status(Some(&old)).unwrap().unwrap();
+    assert_eq!((status.approx_entries, status.already_imported), (5 + 5, false), "{status:?}");
+
+    let mut progress = Vec::new();
+    let report = mind.import_legacy(&old, &mut |p| progress.push(p)).unwrap();
+    assert_eq!(report.conversation_turns_read, 8, "distinct non-empty history texts: {report:?}");
+    assert_eq!(report.conversation_skipped, 3, "JSON tool results and two harness status lines: {report:?}");
+    assert_eq!(report.conversation_turns_imported, 5, "{report:?}");
+    assert_eq!(
+        (report.conversation_user_turns, report.conversation_user_requests, report.conversation_assistant_turns),
+        (4, 2, 1),
+        "{report:?}"
+    );
+    assert_eq!((report.read, report.imported, report.skipped_duplicates), (7 + 8, 4 + 5, 0), "{report:?}");
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert_eq!(progress.last().copied(), Some(ImportProgress { read: 15, imported: 9 }));
+
+    let find = |q: &str| mind.recall(RecallQuery { text: q.into(), scope: None, limit: 10 }).unwrap();
+    let cat = find("Biscuit twelve").remove(0);
+    assert_eq!(cat.text, "My cat Biscuit is twelve years old.");
+    assert_eq!((cat.kind, cat.trust, cat.scope.clone()), (MemoryKind::Note, Trust::User, Scope::Global));
+    assert_eq!(cat.occurred_at_ms, T_OLD + 100, "dated by the first checkpoint that carried it");
+    assert_eq!(cat.provenance, LEGACY_CONVERSATION_PROVENANCE);
+    assert!(cat.id.starts_with("m-old-a-"), "filed under the event's session: {}", cat.id);
+    let coffee = find("dark roast coffee").remove(0);
+    assert_eq!((coffee.kind, coffee.occurred_at_ms), (MemoryKind::Note, T_OLD + 200));
+    let time: Vec<RecallHit> = find("what time").into_iter().filter(|h| h.text == "What time is it?").collect();
+    assert_eq!(time.len(), 1, "deduplicated by text across sessions: {time:?}");
+    assert_eq!((time[0].kind, time[0].trust), (MemoryKind::Episode, Trust::User));
+    assert!(time[0].id.starts_with("m-old-a-"), "first-seen session wins: {}", time[0].id);
+    let readme = find("summarise README").remove(0);
+    assert_eq!((readme.kind, readme.trust), (MemoryKind::Episode, Trust::User));
+    assert!(readme.id.starts_with("m-old-b-"), "{}", readme.id);
+    let noon = find("noon Porto").remove(0);
+    assert_eq!((noon.kind, noon.trust), (MemoryKind::Episode, Trust::Inferred), "assistant prose");
+    for machine in ["budget.rs Enforces", "spawned tools budget", "output contract findings", "release-notes skill", "Cargo.toml"] {
+        let hits = find(machine);
+        assert!(hits.iter().all(|h| h.provenance != LEGACY_CONVERSATION_PROVENANCE), "{machine}: {hits:?}");
+    }
+    // Conversation turns are not session summaries.
+    assert!(mind.episodes(0..i64::MAX).unwrap().is_empty());
+
+    let again = mind.import_legacy(&old, &mut |_| {}).unwrap();
+    assert_eq!((again.imported, again.skipped_duplicates, again.conversation_turns_imported), (0, 9, 0), "{again:?}");
+    assert!(mind.legacy_status(Some(&old)).unwrap().unwrap().already_imported);
+    assert_eq!(mind.stats().unwrap().beliefs, 3 + 5);
+    mind.shutdown().unwrap();
+    assert_eq!(digest_dir(&old), before, "the old profile must never be written");
+    let _ = fs::remove_dir_all(&home);
+    let _ = fs::remove_dir_all(old.parent().unwrap());
+}
+
+#[test]
+fn a_forgotten_imported_turn_stays_forgotten_on_reimport() {
+    let old = temp_home("legacy-talk-forget").join("default-profile");
+    synthetic_old_profile_with_conversation(&old);
+    let home = temp_home("legacy-talk-forget-new");
+    let mind = Mind::open_with(&home, without_models(&home)).unwrap();
+    mind.import_legacy(&old, &mut |_| {}).unwrap();
+    let cat = mind.recall(RecallQuery { text: "Biscuit".into(), scope: None, limit: 1 }).unwrap().remove(0);
+    mind.forget(&cat.id, user()).unwrap();
+    let again = mind.import_legacy(&old, &mut |_| {}).unwrap();
+    assert_eq!(again.imported, 0, "{again:?}");
+    assert!(mind.recall(RecallQuery { text: "Biscuit".into(), scope: None, limit: 1 }).unwrap().is_empty());
+    drop(mind);
+    let _ = fs::remove_dir_all(&home);
+    let _ = fs::remove_dir_all(old.parent().unwrap());
 }

@@ -226,6 +226,13 @@ fn replay_reads_back_what_was_appended() {
     let writes = journal.replay(&cap, Some(EventKind::MemoryWritten)).unwrap();
     assert_eq!(writes.len(), 1);
     assert_eq!(writes[0].2, serde_json::json!({"a": 1}));
+
+    // The same events with their timestamp and session.
+    let meta = journal.replay_meta(&cap, None).unwrap();
+    assert_eq!(meta.len(), 2);
+    assert_eq!((meta[0].seq, meta[0].ts, meta[0].session_id.as_deref()), (1, clock.now_ms, Some("s-1")));
+    let tombs = journal.replay_meta(&cap, Some(EventKind::Tombstoned)).unwrap();
+    assert_eq!((tombs.len(), tombs[0].kind, &tombs[0].payload), (1, EventKind::Tombstoned, &serde_json::json!({"b": 2})));
     let _ = fs::remove_dir_all(&dir);
 }
 

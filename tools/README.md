@@ -10,6 +10,7 @@ depth 10, the declared operating point, and frozen consolidation. `eval/` is not
 | `score_longmemeval.py` | The scorer, ported from the old harness with its reporting rules intact: held-out is the headline, all-500 carries its contamination label, and diagnostics are marked driver-side. |
 | `recall_at_k.py` | Computes R@1, R@3, R@5 and R@10 for one pass directory, from the binary's own dump and the shipped ranking key. |
 | `warm_embedding_cache.py` | Fills `.embedding-cache/` first, so that no cold ingest hits the harness's 30 s deadline. |
+| `admission_study.py` | Rank-1 floor / rank-2..3 band study on the fit split, through a debug binary. Writes `crates/marlowe-memory/artifacts/admission-floor-v1.json`; see `docs/research/admission-floor.md`. |
 | `split.json` | The pre-registered fit/held-out split, digest `3a6857…`. The gate artifact checks against it. |
 | `preregistration-session-f.json` | The bands and power floor the full two-pass summary reads. |
 

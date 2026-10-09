@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 
 mod actor;
+mod capture;
 mod error;
 mod legacy;
 mod models;
@@ -24,6 +25,7 @@ mod store;
 mod tags;
 mod types;
 mod vecfile;
+mod workspaces;
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -54,6 +56,9 @@ pub const MAX_INJECT_TOKENS: u32 = 7_000;
 
 /// Provenance stamped on every belief imported from the old harness.
 pub const LEGACY_PROVENANCE: &str = "imported from Marlowe_Harness";
+
+/// Provenance stamped on every conversation turn imported from the old harness.
+pub const LEGACY_CONVERSATION_PROVENANCE: &str = "imported from Marlowe_Harness (conversation)";
 
 /// Import ops sent to the actor per command, so turns interleave with a long import.
 const IMPORT_CHUNK: usize = 100;
@@ -156,7 +161,10 @@ impl Mind {
         reply_rx.recv().map_err(|_| MindError::Closed)
     }
 
-    /// Ingests one turn. User turns: user trust, no maturation. Assistant turns: Episode kind.
+    /// Ingests one turn. User turns: user trust, no maturation; a statement is a Note (an
+    /// injection candidate), a question or request an Episode (recall only). Assistant turns:
+    /// Episode kind, never injected. Turns are Global; the workspace is kept per session and
+    /// boosts that project's memories at injection.
     pub fn ingest_turn(&self, turn: TurnIn) -> Result<(), MindError> {
         self.call(|r| Cmd::Ingest(turn, r))?
     }
@@ -240,7 +248,7 @@ impl Mind {
                 n
             }
         };
-        let already_imported = profile_dir(&self.inner.home).join(legacy::MARKER_FILE).is_file();
+        let already_imported = legacy::marker_is_current(&profile_dir(&self.inner.home));
         Ok(Some(LegacyStatus { path, approx_entries: entries, already_imported }))
     }
 
@@ -249,6 +257,10 @@ impl Mind {
     /// [`LEGACY_PROVENANCE`], the original `occurred_at` and trust class. Idempotent by content
     /// digest. Never writes to `old_profile_dir`. Memories forgotten in the old profile are not
     /// copied; `tombstoned` counts them.
+    ///
+    /// Also imports the old conversation from its checkpoints (see `legacy`), carrying
+    /// [`LEGACY_CONVERSATION_PROVENANCE`]: user turns at user trust (statements as Notes,
+    /// requests as Episodes), assistant prose as Episodes. Machine payloads are skipped.
     pub fn import_legacy(
         &self,
         old_profile_dir: &Path,
@@ -269,10 +281,15 @@ impl Mind {
             report.imported += r.imported;
             report.skipped_duplicates += r.skipped_duplicates;
             report.superseded += r.superseded;
+            report.conversation_user_turns += r.user_turns;
+            report.conversation_user_requests += r.user_requests;
+            report.conversation_assistant_turns += r.assistant_turns;
             on_progress(ImportProgress { read: report.read * done / total, imported: report.imported });
         }
+        report.conversation_turns_imported = report.conversation_user_turns + report.conversation_assistant_turns;
         on_progress(ImportProgress { read: report.read, imported: report.imported });
         let marker = legacy::Marker {
+            version: legacy::MARKER_VERSION,
             source: old_profile_dir.display().to_string(),
             completed_at_ms: actor::now_ms(),
             report: report.clone(),

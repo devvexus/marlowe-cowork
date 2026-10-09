@@ -3,18 +3,23 @@
 //! The old profile is copied to a temp dir first (it may hold a lock and WAL files), its chain is
 //! verified under its own key, and its memory events are turned into an ordered list of ops that
 //! the actor applies in chunks. Ids are content digests, so a second import is a no-op.
+//!
+//! The old harness wrote few memories; its conversation lives in `checkpointed` events as
+//! `state.volatile[]` blocks with `source: "history"`. Those are imported as turns: deduplicated
+//! by text, dated by the first journal event that carried them, filed under that event's session.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use marlowe_contract::{Fidelity, PayloadKind, TrustClass};
-use marlowe_journal::{EventKind, Journal, JournalError, OperatorCapability, Profile};
+use marlowe_journal::{EventKind, Journal, JournalError, OperatorCapability, Profile, ReplayedEvent};
 use marlowe_memory::memory_id;
 use marlowe_memory::store::{FidelityDemotedPayload, MemoryWrittenPayload, SupersededPayload, TombstonedPayload};
 use marlowe_memory::BeliefKind;
 use serde::{Deserialize, Serialize};
 
+use crate::capture::{classify, is_machine_payload, Capture};
 use crate::error::MindError;
 use crate::ImportReport;
 
@@ -25,6 +30,8 @@ pub(crate) const SESSION: &str = "legacy";
 const COPIED: [&str; 5] = ["journal.db", "journal.db-wal", "journal.db-shm", "profile.key", "profile.json"];
 /// Marker written into the new profile when an import completes.
 pub(crate) const MARKER_FILE: &str = "legacy-import.json";
+/// Marker version that includes the conversation import. An older marker means "import again".
+pub(crate) const MARKER_VERSION: u32 = 2;
 /// Most errors listed in a report.
 const MAX_ERRORS: usize = 50;
 
@@ -42,11 +49,33 @@ pub(crate) struct LegacyWrite {
     pub occurred_at_ms: i64,
 }
 
+/// Who spoke an old conversation turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Speaker {
+    User,
+    Assistant,
+}
+
+/// One old conversation turn to write. Its id is `memory_id(session, digest, 0)`.
+#[derive(Debug, Clone)]
+pub(crate) struct LegacyTurn {
+    pub session: String,
+    pub digest: String,
+    pub text: String,
+    pub speaker: Speaker,
+    /// Note for a user statement; Episode for a user request and for assistant prose.
+    pub kind: BeliefKind,
+    pub trust_class: TrustClass,
+    pub occurred_at_ms: i64,
+}
+
 /// One step of an import, applied by the actor.
 #[derive(Debug, Clone)]
 pub(crate) enum ImportOp {
     /// Skipped when a belief with this digest id already exists.
     Write(Box<LegacyWrite>),
+    /// A conversation turn; skipped when its id already exists (live or forgotten).
+    Turn(Box<LegacyTurn>),
     Supersede { loser: String, winner: String },
     /// Forgotten in the old profile after an earlier import brought it over.
     Tombstone { id: String },
@@ -57,6 +86,10 @@ pub(crate) struct ChunkResult {
     pub imported: u64,
     pub skipped_duplicates: u64,
     pub superseded: u64,
+    /// Conversation turns written, by speaker; user requests among the user turns.
+    pub user_turns: u64,
+    pub user_requests: u64,
+    pub assistant_turns: u64,
 }
 
 pub(crate) struct Plan {
@@ -67,9 +100,24 @@ pub(crate) struct Plan {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Marker {
+    /// 1 (absent) for an import that predates the conversation import.
+    #[serde(default = "marker_v1")]
+    pub version: u32,
     pub source: String,
     pub completed_at_ms: i64,
     pub report: ImportReport,
+}
+
+fn marker_v1() -> u32 {
+    1
+}
+
+/// Whether the marker in `profile_dir` records a complete import at the current version.
+pub(crate) fn marker_is_current(profile_dir: &Path) -> bool {
+    fs::read(profile_dir.join(MARKER_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Marker>(&b).ok())
+        .is_some_and(|m| m.version >= MARKER_VERSION)
 }
 
 /// A throwaway copy of the old profile, removed on drop.
@@ -106,7 +154,7 @@ impl Drop for TempCopy {
 }
 
 /// Copies, opens and verifies the old journal; returns its events.
-fn read_events(old: &Path) -> Result<Vec<(u64, EventKind, serde_json::Value)>, MindError> {
+fn read_events(old: &Path) -> Result<Vec<ReplayedEvent>, MindError> {
     let copy = TempCopy::new(old)?;
     let events = {
         let profile = Profile::open(&copy.0).map_err(|e| MindError::LegacyChain(e.to_string()))?;
@@ -114,15 +162,18 @@ fn read_events(old: &Path) -> Result<Vec<(u64, EventKind, serde_json::Value)>, M
             JournalError::ChainBroken { .. } | JournalError::SequenceGap { .. } => MindError::LegacyChain(e.to_string()),
             other => MindError::Journal(other),
         })?;
-        journal.replay(&OperatorCapability::for_operator_or_audit(), None)?
+        journal.replay_meta(&OperatorCapability::for_operator_or_audit(), None)?
     };
     drop(copy);
     Ok(events)
 }
 
-/// Approximate number of memories in the old profile (its `MemoryWritten` events).
+/// Approximate number of entries to import: `MemoryWritten` events plus importable
+/// conversation turns.
 pub(crate) fn count(old: &Path) -> Result<u64, MindError> {
-    Ok(read_events(old)?.iter().filter(|(_, k, _)| *k == EventKind::MemoryWritten).count() as u64)
+    let events = read_events(old)?;
+    let memories = events.iter().filter(|e| e.kind == EventKind::MemoryWritten).count() as u64;
+    Ok(memories + conversation(&events).turns.len() as u64)
 }
 
 /// A file's size and mtime, to tell whether a cached count is stale.
@@ -146,6 +197,88 @@ pub(crate) fn digest(old_id: &str, text: &str) -> String {
     h.finalize().to_hex()[..24].to_string()
 }
 
+/// Content digest of an old conversation turn: its text alone (turns are deduplicated by text).
+pub(crate) fn turn_digest(text: &str) -> String {
+    let mut h = blake3::Hasher::new();
+    h.update(b"marlowe-legacy-turn-v1\0");
+    h.update(text.as_bytes());
+    h.finalize().to_hex()[..24].to_string()
+}
+
+/// The old conversation, deduplicated, in first-seen order.
+struct Conversation {
+    turns: Vec<LegacyTurn>,
+    /// Distinct non-empty texts seen, imported or not.
+    read: u64,
+    /// Machine payloads skipped.
+    skipped: u64,
+}
+
+/// A `state.volatile[]` block of an old checkpoint.
+#[derive(Deserialize)]
+struct VolatileBlock {
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    trust: Option<String>,
+}
+
+/// An old block's trust label. Anything unrecognised is untrusted: trust is never raised.
+fn block_trust(label: &str) -> TrustClass {
+    match label {
+        "user_asserted" => TrustClass::UserAsserted,
+        "agent_observed" => TrustClass::AgentObserved,
+        "agent_inferred" => TrustClass::AgentInferred,
+        _ => TrustClass::UntrustedContent,
+    }
+}
+
+/// Extracts `source: "history"` blocks from `checkpointed` events. User-asserted text is a
+/// user turn; anything else is assistant prose at its own trust. Empty texts are dropped;
+/// machine payloads are counted and dropped.
+fn conversation(events: &[ReplayedEvent]) -> Conversation {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut out = Conversation { turns: Vec::new(), read: 0, skipped: 0 };
+    for e in events.iter().filter(|e| e.kind == EventKind::Checkpointed) {
+        let Some(blocks) = e.payload.pointer("/state/volatile").and_then(|v| v.as_array()) else { continue };
+        let session = e
+            .session_id
+            .clone()
+            .or_else(|| e.payload.get("session").and_then(|s| s.as_str()).map(str::to_string))
+            .unwrap_or_else(|| SESSION.to_string());
+        for raw in blocks {
+            let Ok(b) = VolatileBlock::deserialize(raw) else { continue };
+            let text = b.text.as_deref().unwrap_or("").trim();
+            if b.source.as_deref() != Some("history") || text.is_empty() || !seen.insert(text.to_string()) {
+                continue;
+            }
+            out.read += 1;
+            if is_machine_payload(text) {
+                out.skipped += 1;
+                continue;
+            }
+            let trust = block_trust(b.trust.as_deref().unwrap_or(""));
+            let (speaker, kind) = match (trust, classify(text)) {
+                (TrustClass::UserAsserted, Capture::Statement) => (Speaker::User, BeliefKind::Note),
+                (TrustClass::UserAsserted, Capture::Request) => (Speaker::User, BeliefKind::Episode),
+                _ => (Speaker::Assistant, BeliefKind::Episode),
+            };
+            out.turns.push(LegacyTurn {
+                session: session.clone(),
+                digest: turn_digest(text),
+                text: text.to_string(),
+                speaker,
+                kind,
+                trust_class: trust,
+                occurred_at_ms: e.ts,
+            });
+        }
+    }
+    out
+}
+
 /// Old conversation turns were stored as episodes; here they are notes, so they read as what
 /// was said rather than as session summaries.
 fn imported_kind(kind: PayloadKind) -> BeliefKind {
@@ -157,6 +290,7 @@ fn imported_kind(kind: PayloadKind) -> BeliefKind {
 
 pub(crate) fn plan(old: &Path) -> Result<Plan, MindError> {
     let events = read_events(old)?;
+    let talk = conversation(&events);
     let mut report = ImportReport::default();
     let mut errors = Vec::new();
     let mut written: Vec<MemoryWrittenPayload> = Vec::new();
@@ -164,7 +298,7 @@ pub(crate) fn plan(old: &Path) -> Result<Plan, MindError> {
     let mut tombstoned: BTreeSet<String> = BTreeSet::new();
     let mut demoted: BTreeMap<String, Fidelity> = BTreeMap::new();
 
-    for (seq, kind, payload) in events {
+    for ReplayedEvent { seq, kind, payload, .. } in events {
         let decoded = match kind {
             EventKind::MemoryWritten => serde_json::from_value::<MemoryWrittenPayload>(payload).map(|p| written.push(p)),
             EventKind::Superseded => {
@@ -224,6 +358,10 @@ pub(crate) fn plan(old: &Path) -> Result<Plan, MindError> {
             _ => errors.push(format!("supersession {loser} -> {winner} names a memory the old journal never wrote")),
         }
     }
+    report.read += talk.read;
+    report.conversation_turns_read = talk.read;
+    report.conversation_skipped = talk.skipped;
+    ops.extend(talk.turns.into_iter().map(|t| ImportOp::Turn(Box::new(t))));
     if errors.len() > MAX_ERRORS {
         let extra = errors.len() - MAX_ERRORS;
         errors.truncate(MAX_ERRORS);

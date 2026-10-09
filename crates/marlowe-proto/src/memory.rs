@@ -129,8 +129,9 @@ pub struct MemoryStatsReport {
 /// Outcome of importing the old harness profile.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportReport {
-    /// Memory events read from the old journal.
+    /// Memory events plus distinct conversation turns read from the old journal.
     pub read: u64,
+    /// Beliefs written, conversation turns included.
     pub imported: u64,
     /// Already present (same content digest); makes re-import a no-op.
     pub skipped_duplicates: u64,
@@ -138,4 +139,22 @@ pub struct ImportReport {
     pub superseded: u64,
     #[serde(default)]
     pub errors: Vec<String>,
+    /// Distinct non-empty conversation texts found in the old checkpoints.
+    #[serde(default)]
+    pub conversation_turns_read: u64,
+    /// Conversation turns written (user + assistant).
+    #[serde(default)]
+    pub conversation_turns_imported: u64,
+    /// Of those, the user's own turns (user trust).
+    #[serde(default)]
+    pub conversation_user_turns: u64,
+    /// Of the user turns, questions and requests stored as episodes (never injected as facts).
+    #[serde(default)]
+    pub conversation_user_requests: u64,
+    /// Of those, assistant prose (episodes, never injected).
+    #[serde(default)]
+    pub conversation_assistant_turns: u64,
+    /// Skipped as machine payloads (tool-result JSON, harness status lines, skill banners).
+    #[serde(default)]
+    pub conversation_skipped: u64,
 }

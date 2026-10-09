@@ -18,6 +18,31 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - web_fetch honours interrupt and has a 60 s total deadline.
 - OpenRouter: parallel tool calls streamed at one index with distinct ids stay separate calls.
 
+## M2.5 Memory that listens — integration — 2026-10-09
+
+### Changed
+- Capture policy: a user turn that asks or requests (trailing `?` on its first sentence with a content word; a leading wh-word, auxiliary or imperative verb after greetings; "I want you to"; filler such as "ok", "got it", "I guess right") is stored as an Episode, which can be recalled but is never auto-injected. Facts are kept when a greeting sentence comes first ("Hi! I'm Matthew."), when the user asks Marlowe to remember or note something ("Please remember that ...", "Can you note that ...?"), for short first-person turns ("I'm vegan"), for `when`/`where` clauses ("When I train I use bf16") and for a noun or name head before `is`/`was` ("Will is my manager", "Plan is to ship Friday"). A declarative statement stays a Note and can be injected. Turns are stored Global. The session's workspace is kept in `profile/workspaces.json` and gives a soft boost: rank 1 is still the core's judged memory, and slots 2–3 add `WORKSPACE_BOOST` (1.0 logit, unmeasured) to same-project candidates. Explicit `scope=Project` memories stay filtered to their project. The eval adapter and the core ranking are unchanged.
+- `import_legacy` also imports the old conversation from `checkpointed` `state.volatile[]` history blocks. Each distinct text is imported once, dated by the first event that carried it and filed under that event's session. User text is imported at user trust (statement → Note, request → Episode). Assistant text is imported as an Episode. Tool-result JSON, harness status lines and skill banners are skipped. Provenance is "imported from Marlowe_Harness (conversation)". `ImportReport` gains `conversation_*` counts (serde-default). The import marker is now v2, so a v1 import is offered again. `Journal::replay_meta` adds `ts` and `session_id` to replay.
+- `marlowe memory import` also prints the `conversation_*` breakdown.
+
+### Added
+- `tools/admission_study.py` and `crates/marlowe-memory/artifacts/admission-floor-v1.json` (measurement only; `docs/research/admission-floor.md`). On LongMemEval fit the rank-1 logit never reaches 0.90 precision with support. The frozen floor -5.0551 rests on n = 1 (`floor_status = target_not_attained_with_support`). The band is 0.086 (17/21 on fit, 0/4 held-out). The artifact is not read by any code.
+- `marlowe-mind/examples/legacy_dry_run.rs` (imports into a throwaway home) and `examples/seed_turns.rs` (ingests user turns through `Mind::ingest_turn`, so `memory probe` can be tried without a model).
+
+### Not shipped
+- The product admission rule (rank-1 floor for a one-candidate store, rank-2..3 band) is not shipped. The floor is unlicensed. The band cannot fire together with the 1.165071 margin gate, so it would cut every admission to top-1. As a result:
+  - A store with one candidate still always abstains (NoRunnerUp).
+  - An admission still injects all of top-3.
+- In the small-store diagnostic (adapter, debug build), "what precision do I train in?" against "my training cluster is called halcyon and I use bf16" scores logit -7.80. Unrelated pairs reach -7.34 in the admission probe. No floor on this cross-encoder separates them.
+- Small-store scenarios, run with `memory probe` on a debug daemon:
+  - One statement: both the bf16 question and the quantum prompt abstain ("only one candidate").
+  - Three statements: the bf16 question and the quantum prompt both abstain on margin. "what is my training cluster called?" injects the right memory at rank 1, and the two unrelated ones with it.
+
+### Verified
+- `cargo check --workspace --all-targets` is clean (only the pre-existing `marlowe-memory` test-name lints).
+- `cargo test --workspace --no-fail-fast`: 1051 passed, 0 failed, 3 ignored (network/live). `embedding_reference` and `cross_encoder_reference` ran against the models and passed.
+- The old profile, imported from a copy into a temp home (debug build), gave: read 410, imported 390, conversation read 408 / imported 388 / yours 176 (requests 148) / assistant 212 / skipped 20. Re-importing it imported 0. The old directory's 12 files are sha256-identical before and after.
+
 ## M2 Total Recall — integration — 2026-10-09
 
 ### Added

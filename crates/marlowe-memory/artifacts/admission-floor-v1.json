@@ -1,0 +1,408 @@
+{
+  "version": 1,
+  "split_digest": "3a685798a4fcac4cb97b645394d4935906a4f67e605398e7d659d48c8f685a3d",
+  "n_fit": 236,
+  "floor_logit": -5.0551,
+  "floor_precision_fit": 1.0,
+  "floor_ci": [
+    0.025,
+    1.0
+  ],
+  "floor_coverage_fit": 0.0042,
+  "floor_status": "target_not_attained_with_support",
+  "band_delta": 0.086,
+  "band_precision_fit": 0.8095,
+  "band_ci": [
+    0.5809,
+    0.9455
+  ],
+  "heldout_check": {
+    "n": 34,
+    "floor_precision": null,
+    "band_precision": 0.0
+  },
+  "model_sha256": "9c222dac4315cfd2f33f2e865bb651a7a16bf532c11e55b7fb1a43bb041880c0",
+  "_detail": {
+    "what": "Rank-1 floor and rank-2..3 band on the shipped cross-encoder logits (ms-marco-MiniLM-L-2-v2-ft-session-j), chosen on the FIT split of tools/split.json and read once on a held-out slice that chose nothing. Produced by tools/admission_study.py; see docs/research/admission-floor.md.",
+    "population": "answerable fit cases (abstention cases excluded). A case whose gold turn never reaches the reranked slate counts as rank-1 not gold; coverage = admitted / n_fit.",
+    "floor_rule": "admit rank 1 iff logit1 >= floor_logit: the lowest cut whose cumulative fit precision is >= 0.9, set midway to the next lower rank-1 logit.",
+    "floor_status_meaning": "target_not_attained_with_support: the only cuts reaching the target admit fewer than 20 fit cases, so floor_logit is a degenerate, unsupported cut. floor_best_supported shows what the logit can actually deliver.",
+    "band_rule": "with rank 1 admitted, admit rank k in {2,3} iff logit_k >= logit1 - band_delta: the widest band whose pooled cumulative fit precision is >= 0.8, set midway to the next wider gap.",
+    "floor_fit": {
+      "n": 236,
+      "admitted": 1,
+      "gold": 1,
+      "precision": 1.0,
+      "ci95": [
+        0.025,
+        1.0
+      ],
+      "coverage": 0.0042
+    },
+    "floor_cut_point": {
+      "logit": -5.05257511138916,
+      "admitted": 1,
+      "gold": 1,
+      "precision": 1.0
+    },
+    "floor_best_supported": {
+      "admitted>=20": {
+        "logit": -6.2094,
+        "admitted": 26,
+        "gold": 23,
+        "precision": 0.8846,
+        "ci95": [
+          0.6985,
+          0.9755
+        ],
+        "coverage": 0.1102
+      },
+      "admitted>=30": {
+        "logit": -6.7022,
+        "admitted": 67,
+        "gold": 59,
+        "precision": 0.8806,
+        "ci95": [
+          0.7782,
+          0.947
+        ],
+        "coverage": 0.2839
+      },
+      "admitted>=50": {
+        "logit": -6.7022,
+        "admitted": 67,
+        "gold": 59,
+        "precision": 0.8806,
+        "ci95": [
+          0.7782,
+          0.947
+        ],
+        "coverage": 0.2839
+      }
+    },
+    "floor_table_fit": [
+      {
+        "t": -5.0,
+        "admitted": 0,
+        "gold": 0,
+        "precision": null,
+        "ci95": [
+          null,
+          null
+        ],
+        "coverage": 0.0
+      },
+      {
+        "t": -5.5,
+        "admitted": 4,
+        "gold": 3,
+        "precision": 0.75,
+        "ci95": [
+          0.1941,
+          0.9937
+        ],
+        "coverage": 0.0169
+      },
+      {
+        "t": -6.0,
+        "admitted": 13,
+        "gold": 10,
+        "precision": 0.7692,
+        "ci95": [
+          0.4619,
+          0.9496
+        ],
+        "coverage": 0.0551
+      },
+      {
+        "t": -6.25,
+        "admitted": 28,
+        "gold": 23,
+        "precision": 0.8214,
+        "ci95": [
+          0.6311,
+          0.9394
+        ],
+        "coverage": 0.1186
+      },
+      {
+        "t": -6.5,
+        "admitted": 44,
+        "gold": 37,
+        "precision": 0.8409,
+        "ci95": [
+          0.6993,
+          0.9336
+        ],
+        "coverage": 0.1864
+      },
+      {
+        "t": -7.0,
+        "admitted": 102,
+        "gold": 87,
+        "precision": 0.8529,
+        "ci95": [
+          0.7691,
+          0.9153
+        ],
+        "coverage": 0.4322
+      },
+      {
+        "t": -7.5,
+        "admitted": 185,
+        "gold": 150,
+        "precision": 0.8108,
+        "ci95": [
+          0.7468,
+          0.8645
+        ],
+        "coverage": 0.7839
+      },
+      {
+        "t": -8.0,
+        "admitted": 216,
+        "gold": 170,
+        "precision": 0.787,
+        "ci95": [
+          0.7264,
+          0.8397
+        ],
+        "coverage": 0.9153
+      }
+    ],
+    "band_fit": {
+      "admitted": 21,
+      "gold": 17,
+      "precision": 0.8095,
+      "ci95": [
+        0.5809,
+        0.9455
+      ],
+      "per_rank": {
+        "2": {
+          "admitted": 21,
+          "gold": 17
+        },
+        "3": {
+          "admitted": 0,
+          "gold": 0
+        }
+      },
+      "queries_touched": 21,
+      "queries_rescued": 6
+    },
+    "band_events_fit": 458,
+    "band_table_fit": [
+      {
+        "d": 0.01,
+        "admitted": 4,
+        "gold": 3,
+        "precision": 0.75,
+        "ci95": [
+          0.1941,
+          0.9937
+        ]
+      },
+      {
+        "d": 0.025,
+        "admitted": 8,
+        "gold": 6,
+        "precision": 0.75,
+        "ci95": [
+          0.3491,
+          0.9681
+        ]
+      },
+      {
+        "d": 0.05,
+        "admitted": 12,
+        "gold": 10,
+        "precision": 0.8333,
+        "ci95": [
+          0.5159,
+          0.9791
+        ]
+      },
+      {
+        "d": 0.075,
+        "admitted": 20,
+        "gold": 16,
+        "precision": 0.8,
+        "ci95": [
+          0.5634,
+          0.9427
+        ]
+      },
+      {
+        "d": 0.1,
+        "admitted": 25,
+        "gold": 18,
+        "precision": 0.72,
+        "ci95": [
+          0.5061,
+          0.8793
+        ]
+      },
+      {
+        "d": 0.25,
+        "admitted": 85,
+        "gold": 42,
+        "precision": 0.4941,
+        "ci95": [
+          0.3839,
+          0.6048
+        ]
+      },
+      {
+        "d": 0.5,
+        "admitted": 193,
+        "gold": 82,
+        "precision": 0.4249,
+        "ci95": [
+          0.3542,
+          0.4979
+        ]
+      },
+      {
+        "d": 1.0,
+        "admitted": 319,
+        "gold": 125,
+        "precision": 0.3918,
+        "ci95": [
+          0.3379,
+          0.4478
+        ]
+      },
+      {
+        "d": 2.0,
+        "admitted": 428,
+        "gold": 131,
+        "precision": 0.3061,
+        "ci95": [
+          0.2627,
+          0.3521
+        ]
+      }
+    ],
+    "band_conditional_on_floor": {
+      "events": 2,
+      "delta": 0.0,
+      "read": {
+        "admitted": 0,
+        "gold": 0,
+        "precision": null,
+        "ci95": [
+          null,
+          null
+        ],
+        "per_rank": {
+          "2": {
+            "admitted": 0,
+            "gold": 0
+          },
+          "3": {
+            "admitted": 0,
+            "gold": 0
+          }
+        },
+        "queries_touched": 0,
+        "queries_rescued": 0
+      }
+    },
+    "separation_fit": {
+      "auc_rank1_gold_by_logit1": 0.7008,
+      "auc_rank1_gold_by_margin": 0.6677,
+      "auc_candidate_gold_by_logit": 0.929,
+      "logit1_gold_p10_p50_p90": [
+        -7.595,
+        -6.991,
+        -6.181
+      ],
+      "logit1_nongold_p10_p50_p90": [
+        -8.349,
+        -7.419,
+        -6.333
+      ],
+      "abstention_case_logit1": [
+        -8.544,
+        -7.785,
+        -7.738,
+        -7.682,
+        -7.514,
+        -7.509,
+        -7.473,
+        -7.289,
+        -7.221,
+        -7.156,
+        -6.658,
+        -6.576,
+        -6.514
+      ]
+    },
+    "shipped_margin_gate_fit": {
+      "margin_threshold": 1.165071,
+      "fires": 38,
+      "rank1_gold": 36,
+      "precision": 0.9474,
+      "ci95": [
+        0.8225,
+        0.9936
+      ],
+      "coverage": 0.161,
+      "note": "when this gate fires logit2 <= logit1 - margin_threshold, so any band_delta below margin_threshold admits no rank 2..3 alongside it"
+    },
+    "fit_cases_total": 251,
+    "fit_gold_in_dump": 229,
+    "fit_gold_in_slate": 211,
+    "fit_rank1_gold": 173,
+    "fit_abstention_cases": 15,
+    "fit_abstention_admitted_by_floor": 0,
+    "heldout_check": {
+      "label": "HELD-OUT CHECK: first 40 held-out ids in sorted order; read once, after floor_logit and band_delta were frozen; chose nothing",
+      "cases": 40,
+      "answerable": 34,
+      "floor": {
+        "n": 34,
+        "admitted": 0,
+        "gold": 0,
+        "precision": null,
+        "ci95": [
+          null,
+          null
+        ],
+        "coverage": 0.0
+      },
+      "band": {
+        "admitted": 4,
+        "gold": 0,
+        "precision": 0.0,
+        "ci95": [
+          0.0,
+          0.6024
+        ],
+        "per_rank": {
+          "2": {
+            "admitted": 4,
+            "gold": 0
+          },
+          "3": {
+            "admitted": 0,
+            "gold": 0
+          }
+        },
+        "queries_touched": 4,
+        "queries_rescued": 0
+      },
+      "abstention_cases": 6,
+      "abstention_admitted_by_floor": 0
+    },
+    "binary": {
+      "_what": "the binary that produced this run. Compare its mtime against the source you believe you measured -- `cargo run --example` does not rebuild marlowe.exe.",
+      "path": "C:\\Users\\matth\\Projects\\MarloweCowork\\target\\debug\\marlowe.exe",
+      "sha256": "c57b738d31bac5e5935fff0a132b3d70208c432c16c6830295ecd1568bf248ca",
+      "size": 51904512,
+      "mtime_epoch": 1791536203
+    },
+    "corpus_sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442"
+  }
+}

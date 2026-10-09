@@ -9,7 +9,8 @@ use marlowe_proto::{MemoryHit, MemoryKind, MemoryScope, MemoryTrust};
 /// Who spoke a turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TurnRole {
-    /// Ingested at user trust, no maturation delay.
+    /// Ingested at user trust, no maturation delay. Statements are injection candidates;
+    /// questions and requests are stored as Episodes (recall only).
     User,
     /// Stored as Episode-kind memory; never auto-injected as a fact.
     Assistant,
@@ -19,7 +20,8 @@ pub enum TurnRole {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnIn {
     pub session: String,
-    /// The session's workspace root; scopes what the turn produces to that project.
+    /// The session's workspace root. Turns are stored Global; the workspace is recorded per
+    /// session and boosts that project's memories at injection.
     pub workspace: Option<String>,
     pub role: TurnRole,
     pub text: String,
@@ -122,7 +124,8 @@ pub struct Remembered {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InjectQuery {
     pub session: String,
-    /// Beliefs scoped to this workspace are boosted; other projects' beliefs are filtered out.
+    /// Memories from this workspace are preferred after rank 1; only explicit Project memories
+    /// of other projects are filtered out.
     pub workspace: Option<String>,
     pub text: String,
     /// Capped at [`crate::MAX_INJECT_TOKENS`].

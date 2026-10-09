@@ -248,6 +248,17 @@ fn print_report(r: &ImportReport) {
         "read {} · imported {} · already present {} · forgotten {} · superseded {}",
         r.read, r.imported, r.skipped_duplicates, r.tombstoned, r.superseded
     );
+    if r.conversation_turns_read > 0 {
+        println!(
+            "conversation: read {} · imported {} · yours {} (requests {}) · assistant {} · skipped {}",
+            r.conversation_turns_read,
+            r.conversation_turns_imported,
+            r.conversation_user_turns,
+            r.conversation_user_requests,
+            r.conversation_assistant_turns,
+            r.conversation_skipped
+        );
+    }
     for e in &r.errors {
         println!("error: {e}");
     }

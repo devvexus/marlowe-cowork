@@ -41,14 +41,6 @@ pub(crate) fn belief_scope(s: &MemoryScope) -> BeliefScope {
     }
 }
 
-/// A workspace string as a scope: empty or absent is global.
-pub(crate) fn workspace_scope(workspace: Option<&str>) -> BeliefScope {
-    match workspace {
-        Some(w) if !w.trim().is_empty() => BeliefScope::Project(w.to_string()),
-        _ => BeliefScope::Global,
-    }
-}
-
 /// A session summary written by `write_episode` (not assistant prose, which is also Episode kind).
 pub(crate) fn is_episode_summary(e: &MemoryEntry) -> bool {
     e.kind() == BeliefKind::Episode && e.tags.utterance.is_none()

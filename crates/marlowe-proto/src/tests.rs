@@ -305,6 +305,12 @@ fn memory_events_round_trip_inside_an_envelope() {
         tombstoned: 3,
         superseded: 2,
         errors: vec!["seq 7: bad payload".into()],
+        conversation_turns_read: 40,
+        conversation_turns_imported: 30,
+        conversation_user_turns: 12,
+        conversation_user_requests: 7,
+        conversation_assistant_turns: 18,
+        conversation_skipped: 4,
     };
     let events = vec![
         Event::MemoryResults { hits: vec![hit()] },
@@ -337,6 +343,13 @@ fn memory_events_round_trip_inside_an_envelope() {
     assert!(s.contains(r#""change":{"kind":"corrected","by":"m-2"}"#), "{s}");
     let ev: Event = serde_json::from_str(r#"{"ev":"legacy_available","path":"p","approx_entries":3}"#).unwrap();
     assert_eq!(ev, Event::LegacyAvailable { path: "p".into(), approx_entries: 3, already_imported: false });
+    // A report from before the conversation counts still decodes.
+    let ev: Event = serde_json::from_str(
+        r#"{"ev":"import_done","report":{"read":3,"imported":2,"skipped_duplicates":1,"tombstoned":0,"superseded":0}}"#,
+    )
+    .unwrap();
+    let old = ImportReport { read: 3, imported: 2, skipped_duplicates: 1, ..ImportReport::default() };
+    assert_eq!(ev, Event::ImportDone { report: old });
     let ev: Event = serde_json::from_str(r#"{"ev":"memory_stats","beliefs":1,"episodes":0,"vectors":0,"journal_seq":5}"#).unwrap();
     assert_eq!(ev, Event::MemoryStats(MemoryStatsReport { beliefs: 1, journal_seq: 5, ..Default::default() }));
 }

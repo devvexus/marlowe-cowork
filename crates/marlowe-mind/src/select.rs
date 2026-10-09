@@ -5,7 +5,8 @@ use std::time::Instant;
 use marlowe_journal::{Actor as JournalActor, AppendRequest, EventKind, TraceId};
 use marlowe_memory::cue::{dense, lexical};
 use marlowe_memory::retrieve::{
-    debug_assert_injection_valid, select_for_injection_filtered, Rerank, RetrievalScope, Scoring, RERANK_BUDGET,
+    debug_assert_injection_valid, estimate_tokens, select_for_injection_filtered, Rerank, RetrievalScope, Scoring,
+    Selection, ADMIT_TOP_K, RERANK_BUDGET,
 };
 use marlowe_memory::{Abstention, Coverage, MemoryEntry, GATE_VERSION};
 use marlowe_proto::MemoryHit;
@@ -15,6 +16,7 @@ use crate::actor::{is_live, now_ms, Actor};
 use crate::error::MindError;
 use crate::tags::{is_episode_summary, recall_admits, wire_kind, wire_scope};
 use crate::types::{wire_trust, InjectQuery, Injection, RecallQuery};
+use crate::workspaces::{self, Workspaces};
 use crate::MAX_INJECT_TOKENS;
 
 /// Texts embedded per background step; small so commands interleave.
@@ -30,6 +32,9 @@ const RECALL_FLUSH_LIMIT: usize = 512;
 const RRF_K: f32 = 60.0;
 /// Default recall size when the caller passes 0.
 const DEFAULT_RECALL: usize = 10;
+/// Cross-encoder logits added to a same-project memory when filling the slots after rank 1.
+/// Product path only and unmeasured; the eval adapter never passes a workspace.
+pub(crate) const WORKSPACE_BOOST: f32 = 1.0;
 
 /// `MemoryInjected` payload: what was admitted and why, for the audit trail.
 #[derive(Serialize)]
@@ -61,8 +66,9 @@ impl Actor {
         }
         let now = now_ms();
         let workspace = q.workspace.as_deref().filter(|w| !w.trim().is_empty());
-        // Other projects' beliefs never compete; assistant prose is excluded by the core.
-        let admit = |e: &MemoryEntry| e.scope().admits(workspace);
+        // User requests and other projects' explicit Project memories never compete; assistant
+        // prose is excluded by the core.
+        let admit = |e: &MemoryEntry| workspaces::admits(e, workspace);
         let (total, missing) = {
             let pool: Vec<&MemoryEntry> = self.beliefs.injection_candidates(now).into_iter().filter(|e| admit(e)).collect();
             let missing: Vec<(String, String)> = pool
@@ -90,12 +96,13 @@ impl Actor {
         let encoder = self.models.reranker()?;
         let scoring = Scoring::Gated { gate: &self.gate, operating_point: &self.point, coverage: Coverage::Declared };
         let mut rerank = Rerank::CrossEncoder { encoder, budget: RERANK_BUDGET, batched: false };
+        let budget = q.budget_tokens.min(MAX_INJECT_TOKENS);
         let selection = select_for_injection_filtered(
             &self.beliefs,
             &q.session,
             &q.text,
             now,
-            q.budget_tokens.min(MAX_INJECT_TOKENS),
+            budget,
             &scoring,
             &self.vectors,
             Some(&query_vector),
@@ -113,11 +120,14 @@ impl Actor {
                 None => "nothing was eligible".into(),
             });
         }
+        let slate = workspace
+            .and_then(|ws| boosted_slate(&selection, budget, &self.workspaces, ws))
+            .unwrap_or_else(|| selection.injected.iter().map(|m| (m.memory_id.clone(), m.score)).collect());
         let mut blocks = Vec::new();
         let mut recalled = Vec::new();
-        for m in &selection.injected {
-            let Some(entry) = self.beliefs.get(&m.memory_id) else { continue };
-            let h = hit(entry, m.score);
+        for (id, score) in &slate {
+            let Some(entry) = self.beliefs.get(id) else { continue };
+            let h = hit(entry, *score);
             blocks.push(block(&h, is_episode_summary(entry)));
             recalled.push(h);
         }
@@ -250,6 +260,68 @@ impl Actor {
         self.vectors_dirty |= installed > 0;
         Ok(installed)
     }
+}
+
+/// A reranked candidate competing for a slot after rank 1.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Slot<'a> {
+    pub id: &'a str,
+    pub text: &'a str,
+    pub rerank: f32,
+    pub score: f32,
+    pub margin: f32,
+    pub same_project: bool,
+}
+
+/// The shipped slate with the workspace boost applied, or `None` (keep the shipped slate) when
+/// nothing was injected or no reranked candidate is from this workspace.
+fn boosted_slate(sel: &Selection<'_>, max_tokens: u32, map: &Workspaces, workspace: &str) -> Option<Vec<(String, f32)>> {
+    let first = sel.injected.first()?;
+    let slots: Vec<Slot<'_>> = sel
+        .scored
+        .iter()
+        .filter(|c| c.survived_pruning && c.entry.id != first.memory_id)
+        .filter_map(|c| {
+            Some(Slot {
+                id: &c.entry.id,
+                text: &c.entry.text,
+                rerank: c.rerank_score?,
+                score: c.score,
+                margin: c.margin,
+                same_project: map.same_project(c.entry, workspace),
+            })
+        })
+        .collect();
+    if !slots.iter().any(|s| s.same_project) {
+        return None;
+    }
+    Some(fill_slots((&first.memory_id, &first.content, first.score), slots, max_tokens))
+}
+
+/// Rank 1 (the memory the operating point judged) stays first. Slots 2..=ADMIT_TOP_K go to the
+/// reranked candidates by rerank logit plus [`WORKSPACE_BOOST`] when same-project, then the
+/// core's own tie-breaks (score, margin, id). Stops at the first that does not fit the budget,
+/// as the core does.
+pub(crate) fn fill_slots(first: (&str, &str, f32), mut slots: Vec<Slot<'_>>, max_tokens: u32) -> Vec<(String, f32)> {
+    let key = |s: &Slot<'_>| s.rerank + if s.same_project { WORKSPACE_BOOST } else { 0.0 };
+    slots.sort_by(|a, b| {
+        key(b)
+            .total_cmp(&key(a))
+            .then_with(|| b.score.total_cmp(&a.score))
+            .then_with(|| b.margin.total_cmp(&a.margin))
+            .then_with(|| a.id.cmp(b.id))
+    });
+    let mut out = vec![(first.0.to_string(), first.2)];
+    let mut tokens = estimate_tokens(first.1);
+    for s in slots.into_iter().take(ADMIT_TOP_K - 1) {
+        let cost = estimate_tokens(s.text);
+        if tokens + cost > max_tokens {
+            break;
+        }
+        tokens += cost;
+        out.push((s.id.to_string(), s.score));
+    }
+    out
 }
 
 pub(crate) fn hit(e: &MemoryEntry, score: f32) -> MemoryHit {

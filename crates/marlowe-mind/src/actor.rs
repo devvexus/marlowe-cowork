@@ -17,16 +17,18 @@ use marlowe_memory::{
 };
 use marlowe_proto::{MemoryHit, MemoryStatsReport};
 
+use crate::capture::{classify, Capture};
 use crate::error::MindError;
-use crate::legacy::{ChunkResult, ImportOp};
+use crate::legacy::{ChunkResult, ImportOp, Speaker};
 use crate::models::Models;
 use crate::store::{self, Boot};
-use crate::tags::{belief_kind, belief_scope, is_episode_summary, short, workspace_scope};
+use crate::tags::{belief_kind, belief_scope, is_episode_summary, short};
 use crate::types::{
     wire_trust, ConsolidateReport, Episode, Kind, MemoryIn, MindConfig, Provenance, Remembered,
     SnapshotInfo, TurnIn, TurnRole,
 };
-use crate::{paths, vecfile, InjectQuery, Injection, RecallHit, RecallQuery, LEGACY_PROVENANCE};
+use crate::workspaces::{is_user_request, Workspaces};
+use crate::{paths, vecfile, InjectQuery, Injection, RecallHit, RecallQuery, LEGACY_CONVERSATION_PROVENANCE, LEGACY_PROVENANCE};
 
 type Reply<T> = Sender<T>;
 
@@ -99,6 +101,8 @@ pub(crate) struct Actor {
     pub gate: FrozenGate,
     pub point: OperatingPoint,
     pub queue: EmbedQueue,
+    /// Session -> workspace, for the soft project boost.
+    pub workspaces: Workspaces,
     /// Vectors changed since the vector file was last written.
     pub vectors_dirty: bool,
     /// Background embedding is paused until then after a failure.
@@ -183,6 +187,7 @@ impl Actor {
         }
         let rebuild = !vectors.pending(&beliefs).is_empty();
         let queue = EmbedQueue { pending: BTreeSet::new(), rebuild, cap: cfg.embed_queue.max(1) };
+        let workspaces = Workspaces::load(&profile_dir);
         Ok(Actor {
             cfg,
             profile_dir,
@@ -195,6 +200,7 @@ impl Actor {
             gate,
             point,
             queue,
+            workspaces,
             vectors_dirty: false,
             embed_retry_at: None,
             snapshot_seq,
@@ -296,13 +302,21 @@ impl Actor {
         }
     }
 
+    /// Capture policy: user statements are Notes (injection candidates), user questions and
+    /// requests are Episodes (recall only), assistant prose is an Episode the core never
+    /// injects. Every turn is Global; the session's workspace goes to the boost map.
     fn ingest(&mut self, t: TurnIn) -> Result<(), MindError> {
         let text = t.text.trim();
         if text.is_empty() {
             return Ok(());
         }
+        self.workspaces.record(&t.session, t.workspace.as_deref());
+        let user_kind = match classify(text) {
+            Capture::Statement => BeliefKind::Note,
+            Capture::Request => BeliefKind::Episode,
+        };
         let (author, kind, utterance, turn_id) = match t.role {
-            TurnRole::User => (Author::User, BeliefKind::Note, Utterance::User, "user"),
+            TurnRole::User => (Author::User, user_kind, Utterance::User, "user"),
             TurnRole::Assistant => (
                 Author::Agent { run_floor: TrustClass::UserAsserted },
                 BeliefKind::Episode,
@@ -320,7 +334,7 @@ impl Actor {
             occurred_at_ms: t.at_ms,
             tags: Tags {
                 kind: Some(kind),
-                scope: workspace_scope(t.workspace.as_deref()),
+                scope: BeliefScope::Global,
                 utterance: Some(utterance),
                 source: None,
                 reason: None,
@@ -347,7 +361,12 @@ impl Actor {
         // Duplicates would also collapse the rank-1/rank-2 rerank margin and block injection.
         let trust = m.source.trust_class();
         if let Some(e) = self.beliefs.entries().find(|e| {
-            is_live(e) && e.text == text && e.effective_trust >= trust && *e.scope() == scope && !e.is_assistant_prose()
+            is_live(e)
+                && e.text == text
+                && e.effective_trust >= trust
+                && *e.scope() == scope
+                && !e.is_assistant_prose()
+                && !is_user_request(e)
         }) {
             return Ok(Remembered { id: e.id.clone(), trust: wire_trust(e.effective_trust), matures_at_ms: e.silent_until });
         }
@@ -462,7 +481,7 @@ impl Actor {
                 session: e.source_session_id.clone(),
                 workspace: match e.scope() {
                     BeliefScope::Project(p) => Some(p.clone()),
-                    BeliefScope::Global => None,
+                    BeliefScope::Global => self.workspaces.of(&e.source_session_id).map(str::to_string),
                 },
                 summary: e.text.clone(),
                 at_ms: e.occurred_at_ms,
@@ -519,7 +538,8 @@ impl Actor {
     }
 
     /// Frozen-policy consolidation per session, never across trust classes and never touching
-    /// assistant prose, so a merge cannot let a weaker belief supersede a stronger one.
+    /// assistant prose or user requests, so a merge cannot let a weaker belief supersede a
+    /// stronger one, nor a question supersede a statement.
     fn consolidate(&mut self) -> Result<ConsolidateReport, MindError> {
         if let Some(reason) = self.models.degraded() {
             return Err(MindError::Degraded(reason.to_string()));
@@ -528,7 +548,7 @@ impl Actor {
         let policy = Policy::load().map_err(|e| MindError::Artifact(e.to_string()))?;
         let mut groups: BTreeMap<(String, TrustClass), BeliefStore> = BTreeMap::new();
         for e in self.beliefs.entries() {
-            if is_live(e) && !e.is_assistant_prose() {
+            if is_live(e) && !e.is_assistant_prose() && !is_user_request(e) {
                 groups.entry((e.source_session_id.clone(), e.effective_trust)).or_default().insert(e.clone());
             }
         }
@@ -594,6 +614,43 @@ impl Actor {
                     })?;
                     debug_assert_eq!(r.id, id);
                     out.imported += 1;
+                }
+                ImportOp::Turn(t) => {
+                    let id = memory_id(&t.session, &t.digest, 0);
+                    if self.beliefs.get(&id).is_some() {
+                        out.skipped_duplicates += 1;
+                        continue;
+                    }
+                    let utterance = match t.speaker {
+                        Speaker::User => Utterance::User,
+                        Speaker::Assistant => Utterance::Assistant,
+                    };
+                    let r = self.write(&BeliefWrite {
+                        session_id: &t.session,
+                        turn_id: &t.digest,
+                        run_id: Some("legacy-import"),
+                        text: &t.text,
+                        author: Author::Imported { trust_class: t.trust_class, effective_trust: t.trust_class },
+                        derived_from: &[],
+                        occurred_at_ms: t.occurred_at_ms,
+                        tags: Tags {
+                            kind: Some(t.kind),
+                            scope: BeliefScope::Global,
+                            utterance: Some(utterance),
+                            source: Some(LEGACY_CONVERSATION_PROVENANCE.to_string()),
+                            reason: None,
+                        },
+                        maturation: MaturationPolicy::ByTrust,
+                    })?;
+                    debug_assert_eq!(r.id, id);
+                    out.imported += 1;
+                    match t.speaker {
+                        Speaker::User => {
+                            out.user_turns += 1;
+                            out.user_requests += u64::from(t.kind == BeliefKind::Episode);
+                        }
+                        Speaker::Assistant => out.assistant_turns += 1,
+                    }
                 }
                 ImportOp::Supersede { loser, winner } => {
                     if self.beliefs.get(&loser).is_some_and(|e| e.superseded_by.is_none()) {

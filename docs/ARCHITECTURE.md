@@ -22,6 +22,16 @@ When a GPU job is running, crew runs prefer cloud slots so local models do not t
 - **The signed journal** remains the audit spine for memory events, with content hashes and a verified-through watermark.
 - **BeliefStore snapshots** keep boot time flat regardless of history.
 
+## Memory (marlowe-mind)
+
+- **Capture.** Every turn is stored Global. A user statement becomes a Note at user trust (live at once). A user question or request becomes an Episode, which can be recalled but is never injected. `capture::classify` makes this call lexically from the first sentence that has a content word, and keeps "please remember ..." requests as statements. Assistant prose is an Episode that is never injected. Machine payloads (tool JSON, harness status lines) are skipped. The legacy import applies the same policy to the old conversation.
+- **Scope.** A session's workspace is recorded in `profile/workspaces.json` and is not journalled. At injection, slots 2–3 add `WORKSPACE_BOOST` (1.0 logit, unmeasured) to same-project candidates. Rank 1 and the admit/abstain verdict stay the core's. An explicit `scope=Project` memory is admitted only in its own project.
+- **Admission.** Injection is the shipped core unchanged: rerank, the frozen gate, and the margin operating point 1.165071 (from `precision-coverage-heldout-v1.json`). It admits top-3 or abstains. Two known gaps remain. A store with one candidate always abstains (NoRunnerUp). An admitted query injects all of top-3, irrelevant memories included.
+- **Proposed fixes, not shipped.** `admission-floor-v1.json` proposes a rank-1 floor and a rank-2..3 band, measured on LongMemEval fit. Neither is licensed, so neither ships:
+  - The floor's 0.90 precision rests on n = 1 (`floor_status = target_not_attained_with_support`).
+  - The band (0.086) cannot fire together with the 1.165 margin gate.
+  - A product floor needs a pointwise (query, fact) precision curve measured on short facts, pre-registered with a fit/held-out split.
+
 ## Crates
 
 | Crate | Fate | Notes |
