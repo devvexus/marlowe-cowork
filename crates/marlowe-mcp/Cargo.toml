@@ -3,14 +3,33 @@ name = "marlowe-mcp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "MCP client: stdio and streamable HTTP with OAuth, resources, prompts, list_changed and tool search."
 
 [dependencies]
 marlowe-tools.workspace = true
+# Every child process starts through marlowe-os::child (scrubbed env, Job Object).
+marlowe-os.workspace = true
+# The only road to a remote host (ADR-052, amended by M4.6 9.2-d). Loopback servers use the
+# plain-HTTP client in src/http.rs, which never leaves the machine.
+marlowe-net.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+crossbeam-channel.workspace = true
+sha2.workspace = true
+getrandom.workspace = true
+# OAuth tokens for MCP servers live in Windows Credential Manager (src/oauth.rs), never on disk.
+keyring.workspace = true
 
-# **NO `marlowe-net`, and that is the design.** ADR-052 §3: this crate speaks JSON-RPC over a
-# child process's stdio and reaches no socket. `cargo tree -p marlowe-mcp` showing no TLS is what
-# makes "MCP does not cross layer 4" a compile-time property rather than a claim in a header — the
-# same discipline ADR-031 §2.3 applies to `marlowe-provider`.
+[features]
+# The scripted MCP server the tests talk to (src/fake.rs, src/bin/marlowe-mcp-fake.rs).
+fake-server = []
+
+[[bin]]
+name = "marlowe-mcp-fake"
+path = "src/bin/marlowe-mcp-fake.rs"
+required-features = ["fake-server"]
+
+[dev-dependencies]
+# Turns the fake server on for this crate's own tests.
+marlowe-mcp = { path = ".", features = ["fake-server"] }
