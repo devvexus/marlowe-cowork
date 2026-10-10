@@ -41,7 +41,7 @@ fn a_read_returns_absolute_line_numbers_not_window_relative_ones() {
 fn a_grep_hit_can_be_turned_into_a_read_without_counting() {
     let ws = Ws::new("ln-grep");
     ws.put("src/a.rs", (1..=40).map(|i| if i == 33 { "NEEDLE here\n".into() } else { format!("filler {i}\n") }).collect::<String>());
-    let g = call(&ws.tools(), "grep", json!({"pattern": "NEEDLE"}));
+    let g = call(&ws.tools(), "grep", json!({"pattern": "NEEDLE", "output_mode": "content"}));
     assert_eq!(g.content.lines().next(), Some("src/a.rs:33:NEEDLE here"), "{}", g.content);
     let r = call(&ws.tools(), "read", json!({"path": "src/a.rs", "range": "33-33"}));
     assert!(r.content.starts_with(&format!("{}NEEDLE here", prefix(33))));

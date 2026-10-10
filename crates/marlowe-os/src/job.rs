@@ -295,3 +295,248 @@ fn resume_threads(pid: u32) -> Result<(), OsError> {
         _ => Ok(()),
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Background shell jobs: the process-wide registry (track B).
+//
+// `marlowe-exec` runs the jobs (`jobs/`); this registry is what the daemon, which depends on
+// no executor crate, talks to: list and kill jobs, detach a foreground shell (Ctrl+B), run the
+// user's `!` shell, subscribe to start/output/exit events, and collect the notices an idle
+// session must be woken for. Every tool host registers its table once; the registry holds it
+// weakly, so a host that is dropped (its jobs are killed) simply disappears.
+// ---------------------------------------------------------------------------------------------
+
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+
+/// One background job (or a foreground shell call that can still be detached).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BgInfo {
+    pub id: String,
+    pub session: String,
+    pub command: String,
+    pub started_ms: i64,
+    /// `None` while it runs.
+    pub exit_code: Option<i32>,
+    /// A foreground call the user may still detach with Ctrl+B.
+    pub foreground: bool,
+    /// The full output on disk.
+    pub log: Option<std::path::PathBuf>,
+}
+
+/// What the registry broadcasts to subscribers (the daemon turns these into wire events).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BgEvent {
+    Started(BgInfo),
+    /// New output from a watched job or the user's `!` shell, in order.
+    Output { session: String, id: String, text: String },
+    Exited { session: String, id: String, code: i32 },
+}
+
+/// Why a notice exists. [`NoticeKind::wakes`] says whether an idle session is woken for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeKind {
+    /// The job exited.
+    Exit,
+    /// A `job_watch` line batch.
+    Lines,
+    /// A `job_watch` `until_regex` matched.
+    Match,
+    /// The user's `!` command finished: context for the next turn, never a wake.
+    UserShell,
+}
+
+impl NoticeKind {
+    pub fn wakes(self) -> bool {
+        matches!(self, NoticeKind::Exit | NoticeKind::Match)
+    }
+}
+
+/// Something the model should hear about a job, already worded for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BgNotice {
+    pub session: String,
+    pub id: String,
+    pub kind: NoticeKind,
+    pub text: String,
+}
+
+/// Whether a table runs the commands of a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Serves {
+    /// It has run a turn or a command for the session.
+    Yes,
+    /// It has served no session yet, so it may be the one a fresh session will use.
+    Maybe,
+    No,
+}
+
+/// A table of jobs the registry can reach. Implemented by `marlowe-exec`'s per-host job table.
+pub trait BgOwner: Send + Sync {
+    /// Jobs of `session` (all when `None`).
+    fn bg_list(&self, session: Option<&str>) -> Vec<BgInfo>;
+    /// Kills job `id` if this table has it (`None`: not here; `Some(false)`: already gone).
+    fn bg_kill(&self, id: &str) -> Option<bool>;
+    /// Moves a running foreground shell of `session` to the background: the one for `call_id`,
+    /// else the session's only one. Returns the job id.
+    fn bg_detach(&self, session: &str, call_id: Option<&str>) -> Option<String>;
+    /// Sessions with a notice that wakes them.
+    fn bg_waking(&self) -> Vec<String>;
+    /// Removes and returns the pending notices of `session` (all kinds).
+    fn bg_take(&self, session: &str) -> Vec<BgNotice>;
+    /// Whether this table serves `session` (see [`Serves`]).
+    fn bg_serves(&self, session: &str) -> Serves;
+    /// Runs the user's `!` command in `session`'s workspace as a job; returns its id. `None`:
+    /// this table does not serve `session`.
+    fn bg_user_shell(&self, session: &str, command: &str) -> Option<Result<String, String>>;
+    /// How many jobs of `session` are running (the daemon should not idle the session out).
+    fn bg_running(&self, session: &str) -> usize;
+}
+
+/// The process-wide registry; see [`bg_hub`].
+#[derive(Default)]
+pub struct BgHub {
+    owners: Mutex<Vec<Weak<dyn BgOwner>>>,
+    subs: Mutex<Vec<Sender<BgEvent>>>,
+}
+
+/// The one registry in this process.
+pub fn bg_hub() -> &'static BgHub {
+    static HUB: OnceLock<BgHub> = OnceLock::new();
+    HUB.get_or_init(BgHub::default)
+}
+
+fn guard<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+impl BgHub {
+    /// Adds a table. Held weakly.
+    pub fn register(&self, owner: Weak<dyn BgOwner>) {
+        guard(&self.owners).push(owner);
+    }
+
+    fn live(&self) -> Vec<Arc<dyn BgOwner>> {
+        let mut owners = guard(&self.owners);
+        owners.retain(|w| w.strong_count() > 0);
+        owners.iter().filter_map(Weak::upgrade).collect()
+    }
+
+    /// A stream of every event from now on. Drop the receiver to unsubscribe.
+    pub fn subscribe(&self) -> Receiver<BgEvent> {
+        let (tx, rx) = channel();
+        guard(&self.subs).push(tx);
+        rx
+    }
+
+    /// Broadcasts `event` (called by the tables).
+    pub fn publish(&self, event: BgEvent) {
+        let mut subs = guard(&self.subs);
+        subs.retain(|s| s.send(event.clone()).is_ok());
+    }
+
+    /// Jobs of `session` (all when `None`), running first, newest first.
+    pub fn list(&self, session: Option<&str>) -> Vec<BgInfo> {
+        let mut all: Vec<BgInfo> = self.live().iter().flat_map(|o| o.bg_list(session)).collect();
+        all.sort_by(|a, b| a.exit_code.is_some().cmp(&b.exit_code.is_some()).then(b.started_ms.cmp(&a.started_ms)));
+        all
+    }
+
+    /// Kills job `id`; true when it was running.
+    pub fn kill(&self, id: &str) -> bool {
+        self.live().iter().find_map(|o| o.bg_kill(id)).unwrap_or(false)
+    }
+
+    /// Ctrl+B: moves the running foreground shell call (`call_id`, else the session's only one)
+    /// to the background and returns the new job's id.
+    pub fn detach(&self, session: &str, call_id: Option<&str>) -> Option<String> {
+        self.live().iter().find_map(|o| o.bg_detach(session, call_id))
+    }
+
+    /// Sessions that have a notice that should wake them.
+    pub fn waking_sessions(&self) -> Vec<String> {
+        let mut s: Vec<String> = self.live().iter().flat_map(|o| o.bg_waking()).collect();
+        s.sort();
+        s.dedup();
+        s
+    }
+
+    /// Removes and returns `session`'s pending notices.
+    pub fn take_notices(&self, session: &str) -> Vec<BgNotice> {
+        self.live().iter().flat_map(|o| o.bg_take(session)).collect()
+    }
+
+    /// Runs the user's `!` command for `session`; the job id, or why not. A table that has served
+    /// the session runs it; failing that, one that has served nobody yet.
+    pub fn user_shell(&self, session: &str, command: &str) -> Result<String, String> {
+        let owners = self.live();
+        let by = |want: Serves| owners.iter().find(|o| o.bg_serves(session) == want);
+        by(Serves::Yes)
+            .or_else(|| by(Serves::Maybe))
+            .and_then(|o| o.bg_user_shell(session, command))
+            .unwrap_or_else(|| Err("this session has no shell to run it in".to_string()))
+    }
+
+    /// Running jobs of `session` across tables.
+    pub fn running(&self, session: &str) -> usize {
+        self.live().iter().map(|o| o.bg_running(session)).sum()
+    }
+}
+
+#[cfg(test)]
+mod bg_tests {
+    use super::*;
+
+    struct Fake;
+    impl BgOwner for Fake {
+        fn bg_list(&self, _: Option<&str>) -> Vec<BgInfo> {
+            Vec::new()
+        }
+        fn bg_kill(&self, id: &str) -> Option<bool> {
+            (id == "x").then_some(true)
+        }
+        fn bg_detach(&self, _: &str, _: Option<&str>) -> Option<String> {
+            None
+        }
+        fn bg_waking(&self) -> Vec<String> {
+            vec!["s".into()]
+        }
+        fn bg_take(&self, _: &str) -> Vec<BgNotice> {
+            Vec::new()
+        }
+        fn bg_serves(&self, _: &str) -> Serves {
+            Serves::No
+        }
+        fn bg_user_shell(&self, _: &str, _: &str) -> Option<Result<String, String>> {
+            None
+        }
+        fn bg_running(&self, _: &str) -> usize {
+            2
+        }
+    }
+
+    #[test]
+    fn the_registry_holds_tables_weakly_and_fans_events_out() {
+        let hub = BgHub::default();
+        let owner: Arc<dyn BgOwner> = Arc::new(Fake);
+        hub.register(Arc::downgrade(&owner));
+        assert!(hub.kill("x") && !hub.kill("y"));
+        assert_eq!(hub.waking_sessions(), ["s"]);
+        assert_eq!(hub.running("s"), 2);
+        let rx = hub.subscribe();
+        hub.publish(BgEvent::Exited { session: "s".into(), id: "j1".into(), code: 0 });
+        assert!(matches!(rx.try_recv(), Ok(BgEvent::Exited { code: 0, .. })));
+        drop(owner);
+        assert!(hub.waking_sessions().is_empty(), "a dropped table disappears");
+        drop(rx);
+        hub.publish(BgEvent::Exited { session: "s".into(), id: "j2".into(), code: 1 });
+        assert!(guard(&hub.subs).is_empty(), "a dropped subscriber is pruned");
+        assert!(hub.user_shell("s", "x").is_err());
+    }
+
+    #[test]
+    fn only_exits_and_matches_wake_an_idle_session() {
+        assert!(NoticeKind::Exit.wakes() && NoticeKind::Match.wakes());
+        assert!(!NoticeKind::Lines.wakes() && !NoticeKind::UserShell.wakes());
+    }
+}
