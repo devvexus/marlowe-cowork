@@ -16,15 +16,16 @@ use std::thread::JoinHandle;
 
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 use marlowe_agent::{
-    Agent, AgentEvent, ApprovalGate, ApprovalReq, Conversation, Environment, NoMemory, PersonaBlock, Steer,
-    SteerRefused, SystemPrompt, ToolHost, TurnOutcome, TurnStop,
+    Agent, AgentEvent, ApprovalGate, ApprovalReq, Conversation, Environment, NoMemory, Notification, NotificationKind,
+    PersonaBlock, Steer, SteerRefused, SystemPrompt, ToolHost, TurnObserver, TurnOutcome, TurnStop,
 };
 use marlowe_model::{CancelToken, Message, Usage};
 use marlowe_proto::{ApprovalDecision, Event, SessionId, Slot};
 
 use crate::daemon::Core;
 use crate::mind::{ComposedTools, MindMemory, MindTools, RecallSink};
-use crate::{lock, now_ms};
+use crate::stack::{self, Stack};
+use crate::{lock, now_ms, HostRequest};
 
 /// Share of the effective context window the memory tier may use (capped at
 /// `marlowe_mind::MAX_INJECT_TOKENS`).
@@ -236,13 +237,17 @@ fn runner(core: Arc<Core>, handle: Arc<SessionHandle>, convo: Conversation, cmd_
 }
 
 fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation, cmd_rx: &Receiver<RunnerCmd>) {
-    let tools = match guard(|| (core.tools)(convo.workspace.as_deref())) {
+    // The tool set is fixed for the session from the conductor's model as of now (prompt cache).
+    let model = guard(|| conductor_model(core)).ok().flatten();
+    let request = HostRequest { workspace: convo.workspace.clone(), model };
+    let tools = match guard(|| (core.tools)(&request)) {
         Ok(t) => t,
         Err(e) => {
             core.bus.publish(Event::Error { session: Some(handle.id.clone()), message: format!("tools unavailable: {e}") });
             return;
         }
     };
+    let tools = stack::tools(core, &convo, tools);
     let tools: Arc<dyn ToolHost> = match &core.mind {
         Some(mind) => {
             let memory = MindTools::new(mind.clone(), workspace_of(&convo)).with_events(publisher(core));
@@ -258,6 +263,11 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
     // A session loaded from the store keeps the taint of what it read before: the stored flag
     // (set by `Core::session`) plus anything its history shows.
     convo.recompute_exposure(tools.as_ref());
+    // Middleware, observers and services from every track, for this runner's lifetime.
+    let stack = Stack::build(core, &convo);
+    for o in &stack.observers {
+        let _ = guard(|| o.on_session_start(&convo));
+    }
     loop {
         let first = match cmd_rx.recv_timeout(core.cfg.session_idle) {
             Ok(RunnerCmd::Turn(input)) => input,
@@ -275,7 +285,7 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
                 break;
             }
             let cancel = lock(&handle.state).cancel.clone();
-            run_one(core, handle, &mut convo, &tools, &input, &cancel);
+            run_one(core, handle, &mut convo, &tools, &stack, &input, &cancel);
             turns_run += 1;
             // Decide under the lock so an ask arriving now either lands in `left` or starts a
             // fresh turn through the command channel.
@@ -324,7 +334,22 @@ fn publisher(core: &Arc<Core>) -> RecallSink {
     })
 }
 
-fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, tools: &Arc<dyn ToolHost>, input: &TurnInput, cancel: &CancelToken) {
+/// The conductor slot's model, without building a provider.
+fn conductor_model(core: &Core) -> Option<marlowe_model::ModelInfo> {
+    let (model, _) = core.brains.resolve(&Slot::Conductor).ok()?;
+    core.brains.model_info(&model).ok()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_one(
+    core: &Arc<Core>,
+    handle: &SessionHandle,
+    convo: &mut Conversation,
+    tools: &Arc<dyn ToolHost>,
+    stack: &Stack,
+    input: &TurnInput,
+    cancel: &CancelToken,
+) {
     let text = input.text.as_str();
     if input.tainted {
         convo.exposure.tainted = true;
@@ -350,6 +375,8 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
     if core.crew.get().is_some() {
         system = system.block(PersonaBlock::Crew);
     }
+    // Tool groups' blocks, only for groups this session exposes.
+    system = system.blocks_from(tools.persona_blocks());
     let mut env = Environment::current(workspace.clone(), info.display.clone());
     env.repo = workspace.as_deref().and_then(|w| repo_context(core, w));
     let system = system.user(core.user()).environment(env);
@@ -363,7 +390,11 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
         }
         None => Arc::new(NoMemory),
     };
-    agent.approvals = Arc::new(Gate { core: core.clone(), cancel: cancel.clone() });
+    agent.approvals = Arc::new(Gate { core: core.clone(), cancel: cancel.clone(), observers: stack.observers.clone() });
+    // After the host's own middleware (seeded by `Agent::new`).
+    agent.middleware.extend(stack.middleware.iter().cloned());
+    agent.observers = stack.observers.clone();
+    agent.services = stack.services.clone();
     let window = agent.context.window_tokens;
 
     core.bus.publish(Event::TurnStarted { session: session.clone(), turn, model, user: text.to_string() });
@@ -387,7 +418,15 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
         steps: 0,
         text: String::new(),
         error: Some(format!("the turn failed: {e}")),
+        blocked: false,
     });
+    if outcome.blocked {
+        // A hook refused the prompt before anything ran: nothing to store, and it is not kept.
+        let message = outcome.error.clone().unwrap_or_else(|| "the prompt was blocked".into());
+        core.bus.publish(Event::Error { session: Some(session.clone()), message });
+        core.bus.publish(Event::TurnFinished { session, turn, usage: outcome.usage, stop: outcome.stop });
+        return;
+    }
     convo.next_turn = convo.next_turn.max(turn + 1);
 
     let mut fresh = new_messages(convo, before_len, before_summary.as_deref(), text);
@@ -455,15 +494,21 @@ fn guard<T>(f: impl FnOnce() -> T) -> Result<T, String> {
 }
 
 /// Approvals as an ApprovalRequested / Approve round trip. Denies on timeout, cancel, shutdown.
+/// Observers hear about each request (E's Notification hook).
 struct Gate {
     core: Arc<Core>,
     cancel: CancelToken,
+    observers: Vec<Arc<dyn TurnObserver>>,
 }
 
 impl ApprovalGate for Gate {
     fn ask(&self, req: ApprovalReq) -> ApprovalDecision {
         if self.core.is_shutting_down() || self.cancel.is_cancelled() {
             return ApprovalDecision::Deny;
+        }
+        let note = Notification { kind: NotificationKind::PermissionPrompt, message: req.summary.clone() };
+        for o in &self.observers {
+            let _ = guard(|| o.on_notification(&req.session, &note));
         }
         let (id, tx, rx) = self.core.approvals.register();
         let _hook = self.cancel.on_cancel(move || {
@@ -476,6 +521,7 @@ impl ApprovalGate for Gate {
             summary: req.summary,
             detail: req.detail,
             run: None,
+            proposed_rule: None,
         });
         let decision = rx.recv_timeout(self.core.cfg.approval_timeout).unwrap_or(ApprovalDecision::Deny);
         self.core.approvals.remove(id);

@@ -21,13 +21,16 @@
 #![deny(unsafe_code)]
 
 pub mod discover;
+pub mod ci;
 mod engine;
+pub mod experiments;
 pub mod git;
 pub mod gpu;
 pub mod logs;
 pub mod metrics;
 pub mod notice;
 pub mod ollama;
+pub mod probe;
 pub mod process;
 pub mod run;
 pub mod store;

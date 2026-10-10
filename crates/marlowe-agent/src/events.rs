@@ -32,4 +32,7 @@ pub struct TurnOutcome {
     pub text: String,
     /// Set when `stop` is `Error`.
     pub error: Option<String>,
+    /// A `before_turn` middleware blocked the turn (`error` holds its reason): nothing was
+    /// appended and the prompt is not kept.
+    pub blocked: bool,
 }

@@ -81,6 +81,12 @@ pub fn estimate_tokens(text: &str) -> u32 {
     (text.chars().count() as u32).div_ceil(3)
 }
 
+/// Estimated tokens of one image: about one per 750 pixels (Anthropic's rule), within the range
+/// providers charge for a downscaled image.
+pub fn estimate_image_tokens(i: &marlowe_model::ImageRef) -> u32 {
+    (u64::from(i.w) * u64::from(i.h) / 750).clamp(85, 1_600) as u32
+}
+
 /// Estimated tokens of one message, all parts included.
 pub fn estimate_message_tokens(m: &Message) -> u32 {
     let parts: u32 = m
@@ -90,7 +96,8 @@ pub fn estimate_message_tokens(m: &Message) -> u32 {
             Part::Text { text } => estimate_tokens(text),
             Part::Thinking(t) => estimate_tokens(&t.text),
             Part::ToolCall(c) => estimate_tokens(&c.name) + estimate_tokens(&c.args.to_string()) + 2,
-            Part::ToolResult(r) => estimate_tokens(&r.content) + 2,
+            Part::ToolResult(r) => estimate_tokens(&r.content) + 2 + r.images().map(estimate_image_tokens).sum::<u32>(),
+            Part::Image(i) => estimate_image_tokens(i),
         })
         .sum();
     parts + MESSAGE_OVERHEAD
@@ -332,7 +339,7 @@ mod tests {
     }
 
     fn result(id: &str) -> Message {
-        Message::tool_results([ToolResult { call_id: id.into(), content: format!("body {id}"), is_error: false }])
+        Message::tool_results([ToolResult { call_id: id.into(), content: format!("body {id}"), is_error: false, parts: Vec::new() }])
     }
 
     #[test]

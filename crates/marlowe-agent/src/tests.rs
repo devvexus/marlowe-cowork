@@ -717,3 +717,7 @@ fn the_callers_repo_context_survives_the_per_turn_environment_refresh() {
     assert!(sys.contains("Repo: main · 2 uncommitted changes · last commit abc1234 \"wire the brief\""), "{sys}");
     assert!(!sys.contains("Now: stale"), "the clock is refreshed every turn");
 }
+
+// Seam extension points (middleware, observers, extensions), reusing the helpers above.
+#[path = "tests_seam.rs"]
+mod seam;

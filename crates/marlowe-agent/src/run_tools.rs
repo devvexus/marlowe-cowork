@@ -1,9 +1,16 @@
 //! Runs every tool call of one assistant message: free calls start at once in parallel, calls
 //! that need approval are asked one at a time (so "allow for session" covers later calls) and
 //! start as soon as they are allowed.
+//!
+//! Middleware sees every call twice: `before_approval` on the turn thread before the gate
+//! decides (it may rewrite the arguments, and the gate, taint and egress judge the rewritten
+//! call), then `before_call` / `pre_mutation` / `after_call` around the run itself. The
+//! conversation's extensions are lent to the batch through [`CallCtx::scope`] and taken back when
+//! it ends.
 
 use std::collections::HashSet;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use marlowe_model::{CancelToken, ToolCall, ToolResult};
@@ -12,7 +19,8 @@ use serde_json::Value;
 use crate::approval::{ApprovalGate, ApprovalReq};
 use crate::convo::Conversation;
 use crate::events::AgentEvent;
-use crate::tools::{Consequence, ToolCtx, ToolHost, ToolOutcome};
+use crate::middleware::{CallFlow, ToolMiddleware};
+use crate::tools::{CallCtx, Consequence, Mutation, Services, SessionScope, ToolCtx, ToolHost, ToolOutcome};
 use crate::ApprovalDecision;
 
 /// Content returned to the model for a denied call.
@@ -30,9 +38,14 @@ enum Msg {
 }
 
 /// Runs `calls` and returns one result per call, in call order. Emits `ToolStarted` for every
-/// call up front (in order) and `ToolFinished` as each completes.
+/// call up front (in order) and `ToolFinished` as each completes. Every call passes through
+/// `middleware`: `before_approval` before the gate, then `before_call`, `pre_mutation` and
+/// `after_call` around the run.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_calls(
     host: &dyn ToolHost,
+    middleware: &[Arc<dyn ToolMiddleware>],
+    services: &Services,
     gate: &dyn ApprovalGate,
     calls: &[ToolCall],
     convo: &mut Conversation,
@@ -40,21 +53,27 @@ pub(crate) fn run_calls(
     cancel: &CancelToken,
     sink: &mut dyn FnMut(AgentEvent),
 ) -> Vec<ToolResult> {
-    let ctx = ToolCtx {
-        session: convo.session.clone(),
-        turn,
-        workspace: convo.workspace.clone(),
-        cancel: cancel.clone(),
-        tainted: convo.exposure.tainted,
-    };
+    let tool = ToolCtx::new(convo.session.clone(), turn, convo.workspace.clone(), cancel.clone(), convo.exposure.tainted);
+    let ext = Arc::new(Mutex::new(std::mem::take(&mut convo.ext)));
+    let cx = CallCtx::new(tool, SessionScope { ext: ext.clone(), services: services.clone() });
     for c in calls {
         sink(AgentEvent::ToolStarted { call_id: c.id.clone(), tool: c.name.clone(), summary: host.describe(c) });
     }
 
     let mut outcomes: Vec<Option<ToolOutcome>> = vec![None; calls.len()];
+    // The calls as they will run: `before_approval` may have rewritten their arguments.
+    let mut effective: Vec<ToolCall> = calls.to_vec();
     let mut free = Vec::new();
     let mut ask = Vec::new();
-    for (i, c) in calls.iter().enumerate() {
+    for (i, c) in effective.iter_mut().enumerate() {
+        if let Some(bad) = invalid_args(c) {
+            outcomes[i] = Some(bad);
+            continue;
+        }
+        if let Some(answered) = before_approval(middleware, c, &cx) {
+            outcomes[i] = Some(answered);
+            continue;
+        }
         if let Some(bad) = invalid_args(c) {
             outcomes[i] = Some(bad);
             continue;
@@ -74,12 +93,13 @@ pub(crate) fn run_calls(
 
     let allowed = convo.session_allows.clone();
     let (tx, rx) = crossbeam_channel::unbounded::<Msg>();
-    let ctx = &ctx;
+    let calls: &[ToolCall] = &effective;
+    let ctx = &cx;
     thread::scope(|s| {
         for &i in &free {
             let tx = tx.clone();
             s.spawn(move || {
-                let _ = tx.send(Msg::Done { i, out: run_one(host, &calls[i], ctx), ran: true });
+                let _ = tx.send(Msg::Done { i, out: run_one(host, middleware, &calls[i], ctx), ran: true });
             });
         }
         if !ask.is_empty() {
@@ -104,7 +124,7 @@ pub(crate) fn run_calls(
                         })
                     };
                     if !decision.is_allowed() {
-                        let denied = ToolOutcome { content: DENIED.into(), is_error: true, summary: "denied".into() };
+                        let denied = ToolOutcome { summary: "denied".into(), ..ToolOutcome::error(DENIED) };
                         let _ = tx.send(Msg::Done { i, out: denied, ran: false });
                         continue;
                     }
@@ -116,7 +136,7 @@ pub(crate) fn run_calls(
                     }
                     let tx = tx.clone();
                     s.spawn(move || {
-                        let _ = tx.send(Msg::Done { i, out: run_one(host, &calls[i], ctx), ran: true });
+                        let _ = tx.send(Msg::Done { i, out: run_one(host, middleware, &calls[i], ctx), ran: true });
                     });
                 }
             });
@@ -138,13 +158,15 @@ pub(crate) fn run_calls(
             }
         }
     });
+    // Take the extensions back; a tool that kept the scope sees them empty from here on.
+    convo.ext = std::mem::take(&mut *ext.lock().unwrap_or_else(|p| p.into_inner()));
 
     calls
         .iter()
         .zip(outcomes)
         .map(|(c, o)| {
             let o = o.unwrap_or_else(|| ToolOutcome::error("the tool produced no result"));
-            ToolResult { call_id: c.id.clone(), content: o.content, is_error: o.is_error }
+            ToolResult { call_id: c.id.clone(), content: o.content, is_error: o.is_error, parts: o.parts }
         })
         .collect()
 }
@@ -154,16 +176,58 @@ fn finished(c: &ToolCall, o: &ToolOutcome) -> AgentEvent {
 }
 
 fn interrupted() -> ToolOutcome {
-    ToolOutcome { content: INTERRUPTED.into(), is_error: true, summary: "interrupted".into() }
+    ToolOutcome { summary: "interrupted".into(), ..ToolOutcome::error(INTERRUPTED) }
 }
 
-/// Runs one call, unless the turn is already interrupted. A panicking tool becomes an error.
-fn run_one(host: &dyn ToolHost, call: &ToolCall, ctx: &ToolCtx) -> ToolOutcome {
-    if ctx.cancel.is_cancelled() {
+/// Runs `before_approval` over one call; `Some` when a middleware answered for it (or panicked).
+/// Only the arguments may change: the name and id are restored.
+fn before_approval(middleware: &[Arc<dyn ToolMiddleware>], call: &mut ToolCall, cx: &CallCtx) -> Option<ToolOutcome> {
+    if middleware.is_empty() {
+        return None;
+    }
+    let (name, id) = (call.name.clone(), call.id.clone());
+    let answered = catch_unwind(AssertUnwindSafe(|| {
+        middleware.iter().find_map(|m| match m.before_approval(call, cx) {
+            CallFlow::Continue => None,
+            CallFlow::Done(out) => Some(out),
+        })
+    }));
+    call.name = name;
+    call.id = id;
+    answered.unwrap_or_else(|_| Some(ToolOutcome::error(format!("the {} call was refused: a check before it failed", call.name))))
+}
+
+/// Runs one call, unless the turn is already interrupted. A panicking tool (or middleware)
+/// becomes an error. With middleware: `before_call` may answer for it, `pre_mutation` sees what
+/// the call will change, `after_call` may amend the outcome.
+fn run_one(host: &dyn ToolHost, middleware: &[Arc<dyn ToolMiddleware>], call: &ToolCall, cx: &CallCtx) -> ToolOutcome {
+    if cx.cancel.is_cancelled() {
         return interrupted();
     }
-    catch_unwind(AssertUnwindSafe(|| host.call(call, ctx)))
-        .unwrap_or_else(|_| ToolOutcome::error(format!("the {} tool failed unexpectedly", call.name)))
+    catch_unwind(AssertUnwindSafe(|| {
+        if middleware.is_empty() {
+            return host.call_scoped(call, cx);
+        }
+        for m in middleware {
+            if let CallFlow::Done(out) = m.before_call(call, cx) {
+                return out;
+            }
+        }
+        let mutation = host.mutation(call, &cx.tool);
+        if mutation != Mutation::None {
+            for m in middleware {
+                if let Err(out) = m.pre_mutation(call, cx, &mutation) {
+                    return out;
+                }
+            }
+        }
+        let mut out = host.call_scoped(call, cx);
+        for m in middleware {
+            m.after_call(call, cx, &mut out);
+        }
+        out
+    }))
+    .unwrap_or_else(|_| ToolOutcome::error(format!("the {} tool failed unexpectedly", call.name)))
 }
 
 /// Arguments the fold could not parse arrive as a JSON string; report them instead of running.

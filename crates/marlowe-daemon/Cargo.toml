@@ -21,6 +21,12 @@ thiserror.workspace = true
 crossbeam-channel.workspace = true
 rusqlite.workspace = true
 chrono.workspace = true
+# Pre-declared by the seam (M4.6) so wave-1 tracks do not edit this block or Cargo.lock's
+# dependency list for it; integ regenerates Cargo.lock rather than hand-merging it.
+# E (settings layers, mode_ops) and K (MCP registry, mcp_ops). Still no executor or provider
+# crate: those are injected through DaemonDeps.
+marlowe-settings.workspace = true
+marlowe-mcp.workspace = true
 
 [dev-dependencies]
 marlowe-contract.workspace = true

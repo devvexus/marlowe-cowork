@@ -108,6 +108,136 @@ impl<'de> Deserialize<'de> for ExposedSet {
     }
 }
 
+/// The unit of tool exposure. Every entry in `marlowe_exec`'s registration table names its group;
+/// a session exposes whole groups (design 3: frontier models get every group, local models the
+/// core groups plus the ones detected for the workspace, fixed for the session so the prompt
+/// cache holds).
+///
+/// | Group | Tools | Owner |
+/// |---|---|---|
+/// | `files` | read, write, edit, multi_edit, edit_lines, notebook_edit | A |
+/// | `search` | glob, grep | B |
+/// | `shell` | bash, powershell, python, job_output, job_watch, job_kill | B |
+/// | `web` | web_fetch, web_search, arxiv, paper | seam |
+/// | `code` | symbols, definition, references, hover, diagnostics, rename_symbol | C |
+/// | `verify` | project, service, http_check, browser | D |
+/// | `agent` | todo, ask_user, skill, agent, send_message, exit_plan, enter/exit_worktree | F |
+/// | `git` | git, gh, ci_status | J |
+/// | `ml` | train_launch, experiments | J2 |
+/// | `mcp` | mcp__server__tool, tool_search | K |
+/// | `memory` | remember, recall, forget, correct (daemon) | - |
+/// | `crew` | dispatch (daemon) | - |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolGroup {
+    Files,
+    Search,
+    Shell,
+    Web,
+    Code,
+    Verify,
+    Agent,
+    Git,
+    Ml,
+    Mcp,
+    Memory,
+    Crew,
+}
+
+impl ToolGroup {
+    pub const ALL: [ToolGroup; 12] = [
+        ToolGroup::Files,
+        ToolGroup::Search,
+        ToolGroup::Shell,
+        ToolGroup::Web,
+        ToolGroup::Code,
+        ToolGroup::Verify,
+        ToolGroup::Agent,
+        ToolGroup::Git,
+        ToolGroup::Ml,
+        ToolGroup::Mcp,
+        ToolGroup::Memory,
+        ToolGroup::Crew,
+    ];
+
+    /// Groups a local model always gets. The rest are exposed when detected for the workspace
+    /// (a project profile, a git repo, an LSP, a training setup) or, for `mcp`, behind
+    /// `tool_search` over its threshold.
+    pub const CORE: [ToolGroup; 7] = [
+        ToolGroup::Files,
+        ToolGroup::Search,
+        ToolGroup::Shell,
+        ToolGroup::Web,
+        ToolGroup::Agent,
+        ToolGroup::Memory,
+        ToolGroup::Crew,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ToolGroup::Files => "files",
+            ToolGroup::Search => "search",
+            ToolGroup::Shell => "shell",
+            ToolGroup::Web => "web",
+            ToolGroup::Code => "code",
+            ToolGroup::Verify => "verify",
+            ToolGroup::Agent => "agent",
+            ToolGroup::Git => "git",
+            ToolGroup::Ml => "ml",
+            ToolGroup::Mcp => "mcp",
+            ToolGroup::Memory => "memory",
+            ToolGroup::Crew => "crew",
+        }
+    }
+}
+
+/// Which model classes a tool is offered to inside its group (e.g. `edit_lines` is a local-model
+/// bench arm; a GPT-only `apply_patch` would be frontier-only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Profiles {
+    pub frontier: bool,
+    pub local: bool,
+}
+
+impl Profiles {
+    pub const ALL: Profiles = Profiles { frontier: true, local: true };
+    pub const FRONTIER: Profiles = Profiles { frontier: true, local: false };
+    pub const LOCAL: Profiles = Profiles { frontier: false, local: true };
+
+    pub fn admits(self, profile: ExposureProfile) -> bool {
+        match profile {
+            ExposureProfile::Frontier => self.frontier,
+            ExposureProfile::Local => self.local,
+        }
+    }
+}
+
+impl Default for Profiles {
+    fn default() -> Self {
+        Profiles::ALL
+    }
+}
+
+/// The model class a session's tool set is chosen for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExposureProfile {
+    Frontier,
+    Local,
+}
+
+/// The groups a session exposes: every group for a frontier model; the core groups plus
+/// `detected` for a local one. Sorted, no duplicates. Chosen once per session (prompt cache).
+pub fn select_groups(profile: ExposureProfile, detected: &[ToolGroup]) -> Vec<ToolGroup> {
+    let mut groups: Vec<ToolGroup> = match profile {
+        ExposureProfile::Frontier => ToolGroup::ALL.to_vec(),
+        ExposureProfile::Local => ToolGroup::CORE.iter().chain(detected).copied().collect(),
+    };
+    groups.sort();
+    groups.dedup();
+    groups
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,6 +263,19 @@ mod tests {
             Err(ExposureError::TooMany { got: MAX_EXPOSED_TOOLS + 1 }),
             "the refusal carries the count the user has to act on"
         );
+    }
+
+    #[test]
+    fn frontier_gets_every_group_and_local_gets_core_plus_detected() {
+        assert_eq!(select_groups(ExposureProfile::Frontier, &[]), ToolGroup::ALL.to_vec());
+        let local = select_groups(ExposureProfile::Local, &[ToolGroup::Git, ToolGroup::Files]);
+        assert!(local.contains(&ToolGroup::Git));
+        assert!(!local.contains(&ToolGroup::Code));
+        assert_eq!(local.len(), ToolGroup::CORE.len() + 1, "detected core groups are not doubled");
+        assert!(Profiles::LOCAL.admits(ExposureProfile::Local) && !Profiles::LOCAL.admits(ExposureProfile::Frontier));
+        for g in ToolGroup::ALL {
+            assert_eq!(serde_json::to_string(&g).unwrap(), format!("\"{}\"", g.as_str()));
+        }
     }
 
     #[test]

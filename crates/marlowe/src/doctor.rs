@@ -1,4 +1,5 @@
-//! `marlowe doctor`: what this machine has and what is missing. Never prints a secret.
+//! `marlowe doctor`: what this machine has and what is missing. Never prints a secret. Owned by
+//! track K from M4.6 (U13).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

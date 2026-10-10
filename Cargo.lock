@@ -2676,10 +2676,21 @@ dependencies = [
  "chrono",
  "crossbeam-channel",
  "marlowe-model",
+ "marlowe-os",
+ "marlowe-permission",
  "marlowe-proto",
+ "marlowe-settings",
+ "marlowe-tools",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "marlowe-anthropic"
+version = "0.1.0"
+dependencies = [
+ "marlowe-model",
 ]
 
 [[package]]
@@ -2689,8 +2700,20 @@ dependencies = [
  "keyring",
  "marlowe-hw",
  "marlowe-model",
+ "marlowe-os",
  "marlowe-proto",
  "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "marlowe-code"
+version = "0.1.0"
+dependencies = [
+ "marlowe-model",
+ "marlowe-os",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -2738,11 +2761,13 @@ dependencies = [
  "marlowe-crew",
  "marlowe-hw",
  "marlowe-journal",
+ "marlowe-mcp",
  "marlowe-memory",
  "marlowe-mind",
  "marlowe-model",
  "marlowe-proto",
  "marlowe-sentinel",
+ "marlowe-settings",
  "marlowe-voice",
  "rusqlite",
  "serde",
@@ -2757,12 +2782,14 @@ dependencies = [
  "headless_chrome",
  "marlowe-agent",
  "marlowe-brains",
+ "marlowe-code",
  "marlowe-extract",
  "marlowe-model",
  "marlowe-net",
  "marlowe-os",
  "marlowe-proto",
  "marlowe-research",
+ "marlowe-verify",
  "regex",
  "serde_json",
  "sha2 0.10.9",
@@ -2962,6 +2989,7 @@ dependencies = [
  "chrono",
  "crossbeam-channel",
  "marlowe-hw",
+ "marlowe-os",
  "marlowe-proto",
  "notify",
  "nvml-wrapper",
@@ -2970,6 +2998,15 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
  "windows",
+]
+
+[[package]]
+name = "marlowe-settings"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -3034,6 +3071,17 @@ dependencies = [
  "tiny-skia",
  "typst",
  "typst-render",
+]
+
+[[package]]
+name = "marlowe-verify"
+version = "0.1.0"
+dependencies = [
+ "marlowe-model",
+ "marlowe-os",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

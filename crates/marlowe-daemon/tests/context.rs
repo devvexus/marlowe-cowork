@@ -177,7 +177,7 @@ fn usage_policies_and_the_approval_gated_restart() {
     let model: marlowe_model::ModelRef = "ollama/llama3:8b".parse().unwrap();
 
     // Each model call reports the context it holds, out of the agent's window.
-    c.send(&Request::Ask { session: None, text: "hi".into(), workspace: None });
+    c.send(&Request::Ask { session: None, text: "hi".into(), workspace: None, images: Vec::new(), options: None });
     let evs = c.until(|e| matches!(e, Event::TurnFinished { .. }));
     assert!(
         evs.iter().any(|e| matches!(e, Event::ContextUsage { tokens: 1234, window: 8_192, .. })),
@@ -209,7 +209,7 @@ fn usage_policies_and_the_approval_gated_restart() {
     assert_eq!(pending, Some((true, 3)), "{saved:#?}");
 
     // The next turn's agent compacts against the policy's window.
-    c.send(&Request::Ask { session: None, text: "again".into(), workspace: None });
+    c.send(&Request::Ask { session: None, text: "again".into(), workspace: None, images: Vec::new(), options: None });
     let evs = c.until(|e| matches!(e, Event::TurnFinished { .. }));
     assert!(evs.iter().any(|e| matches!(e, Event::ContextUsage { window: 4_096, .. })), "{evs:#?}");
 

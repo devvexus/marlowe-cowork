@@ -14,6 +14,10 @@ marlowe-extract.workspace = true
 # the corpus uses its host gate (robots.txt, per-host spacing) and DocRef.
 marlowe-research.workspace = true
 marlowe-os.workspace = true
+# Pre-declared by the seam (M4.6) so wave-1 tracks do not edit this block or Cargo.lock's
+# dependency list for it; integ regenerates Cargo.lock rather than hand-merging it.
+marlowe-code.workspace = true
+marlowe-verify.workspace = true
 # Chrome DevTools Protocol over a synchronous websocket (tungstenite; no tokio), driving the system
 # Microsoft Edge for client-rendered pages. Default `offline` feature: the protocol bindings are
 # pre-generated, nothing is downloaded at build time; the `fetch` feature (downloads a Chromium)

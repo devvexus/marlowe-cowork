@@ -1,0 +1,1 @@
+{"provider":"ollama","id":"marlowe-dusk:27b-super","display":"marlowe-dusk:27b-super","context_window":131072,"max_output":8192,"supports_tools":true,"supports_reasoning":true,"effort_levels":["low","medium","high"],"local":true}

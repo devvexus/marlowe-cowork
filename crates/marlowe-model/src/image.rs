@@ -1,0 +1,1 @@
+//! The blake3 image blob store behind `ImageRef` and per-provider downscaling (long edge 1024/1568/2048) (design 3.10). Serde-only crate: file I/O stays in a caller-supplied store. Track G; empty until it lands (declared by the seam so no track edits `lib.rs`).

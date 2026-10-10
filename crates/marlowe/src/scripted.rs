@@ -114,7 +114,7 @@ fn render_last(req: &ChatRequest) -> String {
             Part::Text { text } => out.push_str(text),
             Part::ToolCall(c) => out.push_str(&format!("{} {}", c.name, c.args)),
             Part::ToolResult(r) => out.push_str(&r.content),
-            Part::Thinking(_) => {}
+            Part::Thinking(_) | Part::Image(_) => {}
         }
         out.push('\n');
     }

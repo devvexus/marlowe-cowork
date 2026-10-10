@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use marlowe_model::{Message, Part};
 use marlowe_proto::SessionId;
 
+use crate::middleware::Extensions;
 use crate::tools::{Exposure, ToolHost};
 
 /// The messages of one session plus loop bookkeeping.
@@ -23,6 +24,8 @@ pub struct Conversation {
     pub next_turn: u32,
     /// Untrusted reads and approved hosts; drives the approval gate.
     pub exposure: Exposure,
+    /// Per-session state owned by middleware and later tracks (one value per type).
+    pub ext: Extensions,
 }
 
 impl Conversation {
@@ -36,6 +39,7 @@ impl Conversation {
             session_allows: HashSet::new(),
             next_turn: 0,
             exposure: Exposure::default(),
+            ext: Extensions::new(),
         }
     }
 

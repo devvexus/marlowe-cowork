@@ -1,0 +1,15 @@
+[package]
+name = "marlowe-verify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The verification harness: project profiles, services, http_check, browser checks. M4.6 track D."
+
+[dependencies]
+# Pre-declared by the seam (M4.6) so wave-1 tracks do not edit this block or Cargo.lock's
+# dependency list for it; integ regenerates Cargo.lock rather than hand-merging it.
+marlowe-os.workspace = true
+marlowe-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

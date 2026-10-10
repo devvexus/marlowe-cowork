@@ -15,10 +15,11 @@ use crate::context::{self, ContextConfig};
 use crate::convo::Conversation;
 use crate::events::{AgentEvent, TurnOutcome};
 use crate::memory::{MemoryHook, NoMemory};
+use crate::middleware::{FinalFlow, ModelCall, StepInfo, ToolMiddleware, TurnFlow, TurnObserver};
 use crate::run_tools;
 use crate::steer::Steer;
 use crate::system::{Environment, SystemPrompt};
-use crate::tools::ToolHost;
+use crate::tools::{Services, ToolHost};
 use crate::TurnStop;
 
 /// Model calls per turn before the loop stops with `TurnStop::StepLimit`.
@@ -40,6 +41,14 @@ pub struct Agent {
     pub system: SystemPrompt,
     pub budget: Budget,
     pub context: ContextConfig,
+    /// Around every turn, tool call and step, in order (see [`crate::middleware`]). `new` seeds
+    /// it with the tool host's own ([`ToolHost::middleware`]); the daemon appends its per-track
+    /// list (`marlowe-daemon/src/stack.rs`).
+    pub middleware: Vec<Arc<dyn ToolMiddleware>>,
+    /// Told about every model call and tool batch (F2's per-call turn rows). Empty by default.
+    pub observers: Vec<Arc<dyn TurnObserver>>,
+    /// Daemon services lent to every call through [`crate::CallCtx::scope`]. Empty by default.
+    pub services: Services,
 }
 
 /// How one model call ended.
@@ -51,9 +60,11 @@ enum CallEnd {
 }
 
 impl Agent {
-    /// An agent with no memory, denying approvals, default budget and context sizing.
+    /// An agent with no memory, denying approvals, default budget and context sizing, and the
+    /// tool host's own middleware.
     pub fn new(provider: Arc<dyn Provider>, model: ModelInfo, tools: Arc<dyn ToolHost>, system: SystemPrompt) -> Self {
         let context = ContextConfig::for_model(&model);
+        let middleware = tools.middleware();
         Self {
             provider,
             model,
@@ -64,6 +75,9 @@ impl Agent {
             system,
             budget: Budget::default(),
             context,
+            middleware,
+            observers: Vec::new(),
+            services: Services::default(),
         }
     }
 
@@ -74,6 +88,9 @@ impl Agent {
     /// each gated by `consequence` and `approvals`, honouring `convo.session_allows`) -> append
     /// results -> drain `inbox` steers at the step boundary -> repeat. Stops when a message has
     /// no tool calls, at `budget`, or on `cancel`. Assigns ids to tool calls that lack one.
+    ///
+    /// Middleware's `before_turn` runs first: it may rewrite the text, or block the turn (then
+    /// nothing is appended, no model is called, and the outcome is `blocked`).
     pub fn run_turn(
         &self,
         convo: &mut Conversation,
@@ -82,6 +99,20 @@ impl Agent {
         inbox: &Receiver<Steer>,
         sink: &mut dyn FnMut(AgentEvent),
     ) -> TurnOutcome {
+        let mut text_in = user_text.to_string();
+        for m in &self.middleware {
+            if let TurnFlow::Block(reason) = m.before_turn(convo, &mut text_in) {
+                return TurnOutcome {
+                    stop: TurnStop::Error,
+                    usage: Default::default(),
+                    steps: 0,
+                    text: String::new(),
+                    error: Some(reason),
+                    blocked: true,
+                };
+            }
+        }
+        let user_text = text_in.as_str();
         let turn = convo.next_turn;
         convo.next_turn += 1;
         convo.push(Message::user(user_text));
@@ -118,6 +149,9 @@ impl Agent {
 
             let mut asm = context::assemble_with(&system, &profile, &memory, convo, &self.context);
             if context::needs_compaction(asm.tokens + spec_tokens, &self.context) {
+                for m in &self.middleware {
+                    m.before_compact(convo, None);
+                }
                 match context::compact(convo, self.provider.as_ref(), &self.model.id, &self.context, cancel) {
                     Ok((before, after)) if after < before => {
                         sink(AgentEvent::Compacted { before_tokens: before, after_tokens: after });
@@ -139,6 +173,7 @@ impl Agent {
                 tools: specs.clone(),
                 temperature: None,
             };
+            let call_started = Instant::now();
             let mut c = match self.call_model(&req, cancel, sink) {
                 CallEnd::Done(c) => c,
                 CallEnd::Cancelled(partial) => {
@@ -163,6 +198,18 @@ impl Agent {
                 c.tool_calls.clear();
             }
             assign_ids(&mut c.tool_calls, turn, spent.steps);
+            let info = StepInfo { turn, step: spent.steps };
+            if !self.observers.is_empty() {
+                let call = ModelCall {
+                    info,
+                    request: &req,
+                    completion: &c,
+                    latency_ms: call_started.elapsed().as_millis() as u64,
+                };
+                for o in &self.observers {
+                    o.on_model_call(convo, &call);
+                }
+            }
             if !c.text.is_empty() {
                 texts.push(c.text.clone());
             }
@@ -181,11 +228,19 @@ impl Agent {
                 if !inbox.is_empty() {
                     continue;
                 }
+                // Middleware may keep the turn going (a Stop hook, open todos); the budget check
+                // at the top of the loop still bounds it.
+                if let Some(reminder) = self.before_final(info, convo, &c.text) {
+                    convo.push(Message::user(reminder));
+                    continue;
+                }
                 break TurnStop::Done;
             }
 
             let results = run_tools::run_calls(
                 self.tools.as_ref(),
+                &self.middleware,
+                &self.services,
                 self.approvals.as_ref(),
                 &c.tool_calls,
                 convo,
@@ -193,14 +248,30 @@ impl Agent {
                 cancel,
                 sink,
             );
+            for o in &self.observers {
+                o.on_tools_done(convo, info, &c.tool_calls, &results);
+            }
             convo.push(Message::tool_results(results));
+            for m in &self.middleware {
+                for extra in m.after_step(info, convo) {
+                    convo.push(extra);
+                }
+            }
         };
 
         let text = texts.join("\n\n");
         if stop != TurnStop::Error {
             self.memory.after_turn(&convo.session, user_text, &text);
         }
-        TurnOutcome { stop, usage: spent.usage, steps: spent.steps, text, error }
+        TurnOutcome { stop, usage: spent.usage, steps: spent.steps, text, error, blocked: false }
+    }
+
+    /// The first middleware that wants the turn to continue, and its reminder.
+    fn before_final(&self, info: StepInfo, convo: &mut Conversation, text: &str) -> Option<String> {
+        self.middleware.iter().find_map(|m| match m.before_final(info, convo, text) {
+            FinalFlow::Accept => None,
+            FinalFlow::Continue(reminder) => Some(reminder),
+        })
     }
 
     /// One model call, forwarding deltas to `sink`. Retries a retriable error only when nothing

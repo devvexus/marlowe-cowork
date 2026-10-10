@@ -170,6 +170,7 @@ mod tests {
                     call_id: "call_1".into(),
                     content: "hello".into(),
                     is_error: false,
+                    parts: Vec::new(),
                 }]),
                 Message {
                     role: Role::Assistant,

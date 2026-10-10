@@ -370,6 +370,7 @@ fn approval_takes_the_keys_over_the_offer() {
             summary: "run".into(),
             detail: "ls".into(),
             run: None,
+            proposed_rule: None,
         },
     );
     s.on_key(key(KeyCode::Char('y')));

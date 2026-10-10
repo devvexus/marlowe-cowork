@@ -182,9 +182,13 @@ impl Renderer for EdgeRenderer {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-        let mut child = marlowe_os::spawn_in_job(&mut cmd).map_err(|e| RenderError::Launch(e.to_string()))?;
+        // Scrubbed and in its own kill-on-close job (never uncontained), like every child.
+        let spec = marlowe_os::ChildSpec::new()
+            .with_creation_flags(0)
+            .with_containment(marlowe_os::Containment::Job);
+        let mut child = marlowe_os::child::spawn(&mut cmd, &spec).map_err(|e| RenderError::Launch(e.to_string()))?;
         let result = drive(&profile.0, url, self.settle, deadline, cancel);
-        let _ = child.kill_tree();
+        child.kill_tree();
         let _ = child.child_mut().wait();
         drop(profile);
         result

@@ -89,6 +89,7 @@ fn a_tool_turn_round_trips_reasoning_details() {
         call_id: "toolu_1".into(),
         content: "hi".into(),
         is_error: false,
+        parts: Vec::new(),
     }]));
     let second = p.stream(&req, &CancelToken::new(), &mut |_| {}).unwrap();
     assert_eq!(second.text, "It says hi.");

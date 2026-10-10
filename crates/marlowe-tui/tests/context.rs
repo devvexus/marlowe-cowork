@@ -300,6 +300,7 @@ fn a_server_restart_is_allow_or_deny_never_for_the_session() {
             summary: "Restart Ollama with OLLAMA_KV_CACHE_TYPE=q4_0".into(),
             detail: "These are Ollama server settings: every Ollama model uses them.".into(),
             run: None,
+            proposed_rule: None,
         },
     );
     let buf = render(&s, W, H);

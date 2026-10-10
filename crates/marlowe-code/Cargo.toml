@@ -1,0 +1,15 @@
+[package]
+name = "marlowe-code"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Code tools: edits with FileState, notebooks, edit_lines, tags index, repo map, LSP client. M4.6 tracks A and C."
+
+[dependencies]
+# Pre-declared by the seam (M4.6) so wave-1 tracks do not edit this block or Cargo.lock's
+# dependency list for it; integ regenerates Cargo.lock rather than hand-merging it.
+marlowe-os.workspace = true
+marlowe-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

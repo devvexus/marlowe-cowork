@@ -13,36 +13,59 @@
 #![forbid(unsafe_code)]
 
 pub mod brief;
+mod blob_ops;
+mod boot;
 mod brief_ops;
 mod bus;
+mod checkpoint;
 mod client;
+mod conductor_ops;
 mod context_ops;
 mod crew;
 mod crew_ops;
 mod daemon;
+mod exp_ops;
+mod job_ops;
 mod library;
+mod mcp_ops;
 mod mind;
 mod mind_ops;
+mod mode_ops;
+mod pr_ops;
+mod schedule_ops;
 mod session;
+mod session_ops;
+mod stack;
 mod store;
 pub mod user;
 mod watch_ops;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use crossbeam_channel::Receiver;
 use marlowe_agent::{ToolHost, UserInfo};
 use marlowe_brains::{BrainsError, ProviderFactory};
+use marlowe_model::ModelInfo;
 use marlowe_sentinel::{Sentinel, SentinelEvent};
 use marlowe_voice::{Voice, VoiceEvent};
 
 pub use daemon::Daemon;
 pub use mind::{ComposedTools, MindMemory, MindTools, RecallSink, MEMORY_TOOLS};
 
-/// Builds the tool host for a session's workspace root (`None`: no workspace).
-pub type ToolHostFactory = Arc<dyn Fn(Option<&Path>) -> Arc<dyn ToolHost> + Send + Sync>;
+/// What the daemon knows when it builds a session's tool host.
+#[derive(Debug, Clone, Default)]
+pub struct HostRequest {
+    /// The session's workspace root (`None`: no workspace).
+    pub workspace: Option<PathBuf>,
+    /// The conductor's model when the session started, so the host fixes its tool set for the
+    /// session (`BuiltinTools::with_model_exposure`). `None` when no model is assigned yet.
+    pub model: Option<ModelInfo>,
+}
+
+/// Builds the tool host for a session.
+pub type ToolHostFactory = Arc<dyn Fn(&HostRequest) -> Arc<dyn ToolHost> + Send + Sync>;
 
 /// Everything the binary injects.
 pub struct DaemonDeps {

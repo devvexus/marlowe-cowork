@@ -1,0 +1,1 @@
+//! The allow/ask/deny rules engine (deny > ask > allow) applied to conductor and crew in every mode (design 2.3 M7, M11). Track E; empty until it lands (declared by the seam so no track edits `lib.rs`).

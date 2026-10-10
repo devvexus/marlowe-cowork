@@ -42,12 +42,63 @@ pub struct ToolCall {
 }
 
 /// The result of one tool call, attributed by `call_id`.
+///
+/// `content` is the text the model reads. `parts` carries anything else the result holds (today:
+/// [`Part::Image`] from `read` on a PNG, a notebook's image outputs, a browser screenshot);
+/// providers that cannot put images in a tool result move them to a following user message
+/// (track G). Old stored turns have no `parts` and load with it empty.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolResult {
     pub call_id: String,
     pub content: String,
     #[serde(default)]
     pub is_error: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<ResultPart>,
+}
+
+/// A non-text piece of a tool result. Serialized like the matching [`Part`]
+/// (`{"type":"image",..}`), so a provider can lift it into a message unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResultPart {
+    Image(ImageRef),
+}
+
+impl From<ResultPart> for Part {
+    fn from(p: ResultPart) -> Part {
+        match p {
+            ResultPart::Image(i) => Part::Image(i),
+        }
+    }
+}
+
+impl ToolResult {
+    /// A text-only result.
+    pub fn text(call_id: impl Into<String>, content: impl Into<String>, is_error: bool) -> Self {
+        Self { call_id: call_id.into(), content: content.into(), is_error, parts: Vec::new() }
+    }
+
+    /// The images this result carries, in order.
+    pub fn images(&self) -> impl Iterator<Item = &ImageRef> {
+        self.parts.iter().map(|p| match p {
+            ResultPart::Image(i) => i,
+        })
+    }
+}
+
+/// An image in a message or tool result. The bytes live in the blake3-addressed blob store
+/// (`<home>\blobs\<hex>`, track G's `marlowe-model/src/image.rs` writes and reads it); a
+/// message carries only the reference, so stored turns stay small.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ImageRef {
+    /// `image/png`, `image/jpeg`, `image/webp` or `image/gif`.
+    pub mime: String,
+    /// Lower-case hex blake3 of the encoded bytes.
+    pub blob: String,
+    /// Pixel width and height of the stored (already downscaled) image.
+    pub w: u32,
+    pub h: u32,
 }
 
 /// One piece of a message.
@@ -58,6 +109,9 @@ pub enum Part {
     Thinking(Thinking),
     ToolCall(ToolCall),
     ToolResult(ToolResult),
+    /// An image: user-attached (paste, `@img.png`) or, inside [`ToolResult::parts`], produced by
+    /// a tool. Serialized `{"type":"image","mime":..,"blob":..,"w":..,"h":..}`.
+    Image(ImageRef),
 }
 
 /// A message in a conversation.
@@ -81,6 +135,21 @@ impl Message {
     /// An assistant message.
     pub fn assistant(text: impl Into<String>) -> Self {
         Self::text(Role::Assistant, text)
+    }
+
+    /// A message holding text and images (a user turn with an attachment).
+    pub fn with_images(role: Role, text: impl Into<String>, images: impl IntoIterator<Item = ImageRef>) -> Self {
+        let mut content = vec![Part::Text { text: text.into() }];
+        content.extend(images.into_iter().map(Part::Image));
+        Self { role, content }
+    }
+
+    /// The images in this message (not those inside tool results), in order.
+    pub fn images(&self) -> impl Iterator<Item = &ImageRef> {
+        self.content.iter().filter_map(|p| match p {
+            Part::Image(i) => Some(i),
+            _ => None,
+        })
     }
 
     /// A tool message carrying results.

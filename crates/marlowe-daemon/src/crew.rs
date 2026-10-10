@@ -305,7 +305,7 @@ pub(crate) fn ask(core: &Core, run: &RunId, session: Option<&SessionId>, tool: S
         lock(&link.pending).entry(run.clone()).or_default().push(id);
     }
     let session = session.cloned().unwrap_or_else(|| orphan_session(run));
-    core.bus.publish(Event::ApprovalRequested { approval: id, session, tool, summary, detail, run: Some(run.clone()) });
+    core.bus.publish(Event::ApprovalRequested { approval: id, session, tool, summary, detail, run: Some(run.clone()), proposed_rule: None });
     let decision = rx.recv_timeout(core.cfg.approval_timeout).unwrap_or(ApprovalDecision::Deny);
     core.approvals.remove(id);
     if let Some(link) = core.crew.get() {
@@ -413,6 +413,22 @@ impl ToolHost for WithDispatch {
         }
     }
 
+    fn call_scoped(&self, call: &ToolCallReq, cx: &marlowe_agent::CallCtx) -> ToolOutcome {
+        if is_dispatch(call) {
+            self.call(call, cx)
+        } else {
+            self.inner.call_scoped(call, cx)
+        }
+    }
+
+    fn middleware(&self) -> Vec<Arc<dyn marlowe_agent::ToolMiddleware>> {
+        self.inner.middleware()
+    }
+
+    fn persona_blocks(&self) -> Vec<marlowe_agent::PersonaBlock> {
+        self.inner.persona_blocks()
+    }
+
     fn consequence(&self, call: &ToolCallReq) -> Consequence {
         if is_dispatch(call) {
             self.dispatch.consequence(call)
@@ -438,6 +454,40 @@ impl ToolHost for WithDispatch {
             None
         } else {
             self.inner.egress_host(call)
+        }
+    }
+
+    fn manifest(&self, name: &str) -> Option<marlowe_agent::ToolManifest> {
+        if name == DISPATCH_TOOL {
+            Some(marlowe_agent::ToolManifest {
+                group: marlowe_agent::ToolGroup::Crew,
+                profiles: marlowe_agent::Profiles::ALL,
+                effects: marlowe_agent::Effects::NONE,
+                path_args: &[],
+            })
+        } else {
+            self.inner.manifest(name)
+        }
+    }
+
+    fn mutation(&self, call: &ToolCallReq, ctx: &ToolCtx) -> marlowe_agent::Mutation {
+        if is_dispatch(call) {
+            marlowe_agent::Mutation::None
+        } else {
+            self.inner.mutation(call, ctx)
+        }
+    }
+
+    fn consequence_in_sandbox(
+        &self,
+        call: &ToolCallReq,
+        exposure: &Exposure,
+        sandbox: &dyn marlowe_agent::SandboxView,
+    ) -> Option<Consequence> {
+        if is_dispatch(call) {
+            None
+        } else {
+            self.inner.consequence_in_sandbox(call, exposure, sandbox)
         }
     }
 

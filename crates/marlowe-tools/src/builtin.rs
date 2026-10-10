@@ -153,12 +153,28 @@ fn registration(
 // the same on both: it is bash. See `marlowe_exec::spawn_shell`.
 const SHELL_DESCRIPTION: &str = "Run one command line through bash — really bash, including on Windows, where it is Git Bash. So `ls`, `head`, `tail`, `sed`, `awk`, `sort`, `&&`, `|`, `2>/dev/null` and forward slashes all work as you expect. Paths are POSIX: `docs/design`, and the workspace is the working directory. **Reach for a real tool first** — `glob` lists files by name, `grep` searches inside them, `read`, `write` and `edit` handle files, and none of those interrupt the user, whereas EVERY call to this one STOPS AND ASKS THEM for approval, so a wrong guess costs them a prompt. Each call is a fresh shell: no `cd` or variable carries over, use `cwd`. It reaches the network normally. For something the user already told Marlowe, try `recall` first.";
 
+/// The manifest sources [`builtin_registry`] concatenates, in order. A group that declares
+/// capability manifests for the permission adjudicator adds one function here and keeps its
+/// registrations in its own module; nothing else in this file changes. (The tools the loop runs
+/// are registered in `marlowe_exec::specs`; this registry is the adjudicator's view of them.)
+pub const REGISTRATIONS: &[fn() -> Result<Vec<ToolRegistration>, LoadError>] = &[adr006];
+
 /// Every builtin, registered. **Registration, not exposure** — a profile still selects ≤12.
 pub fn builtin_registry() -> Result<ToolRegistry, LoadError> {
+    let mut r = ToolRegistry::new();
+    for source in REGISTRATIONS {
+        for reg in source()? {
+            r.register(reg).expect("builtin ids are distinct and each manifest names its own tool");
+        }
+    }
+    Ok(r)
+}
+
+/// ADR-006's twelve.
+fn adr006() -> Result<Vec<ToolRegistration>, LoadError> {
     use ConsequenceLevel::*;
     use ParamType::*;
 
-    let mut r = ToolRegistry::new();
     let regs = [
         registration(
             "bash",
@@ -770,11 +786,7 @@ pub fn builtin_registry() -> Result<ToolRegistry, LoadError> {
         ),
     ];
 
-    for reg in regs {
-        let reg = reg?;
-        r.register(reg).expect("builtin ids are distinct and each manifest names its own tool");
-    }
-    Ok(r)
+    regs.into_iter().collect()
 }
 
 #[cfg(test)]

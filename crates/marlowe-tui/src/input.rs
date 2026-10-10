@@ -928,7 +928,7 @@ impl State {
                 if self.is_busy() {
                     self.entries.push(crate::state::Entry::User { text: text.clone(), steer: true });
                 }
-                out.push(Request::Ask { session: Some(s), text, workspace: None });
+                out.push(Request::Ask { session: Some(s), text, workspace: None, images: Vec::new(), options: None });
             }
             None => {
                 self.expect_new_session(&text);
@@ -936,6 +936,8 @@ impl State {
                     session: None,
                     text,
                     workspace: self.default_workspace.clone(),
+                    images: Vec::new(),
+                    options: None,
                 });
             }
         }

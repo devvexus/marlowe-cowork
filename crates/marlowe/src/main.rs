@@ -3,6 +3,7 @@
 // One audited exception: `daemon_ctl::stop_std_handle_inheritance` (Windows).
 #![deny(unsafe_code)]
 
+mod bench;
 mod client;
 mod commands;
 mod crew_cmd;
@@ -10,8 +11,11 @@ mod crew_plan;
 mod daemon_ctl;
 mod doctor;
 mod eval;
+mod eval_entry;
+mod export;
 mod launcher;
 mod math_cmd;
+mod mcp_cmd;
 mod me_cmd;
 mod memory_cmd;
 mod research_wire;
@@ -51,6 +55,7 @@ marlowe math [--grid | --images] [--width N]
                                           a sheet of hard equations and matrices, drawn as the
                                           conversation pane draws them (grid, and Sixel images)
 marlowe status | shutdown | doctor
+marlowe bench | export | mcp | eval        M4.6 commands (not available yet)
 
 ask streams the reply to stdout. A tool that needs approval prompts on stdin; --yes allows
 every approval in this turn; an empty answer or a closed stdin denies.
@@ -88,6 +93,11 @@ fn dispatch(home: &std::path::Path, args: &[String]) -> Result<i32, String> {
         Some("status") => commands::status(home),
         Some("shutdown") => commands::shutdown(home),
         Some("doctor") => Ok(doctor::run(home)),
+        // M4.6 entry points; each module is owned by its track (design section 7).
+        Some("bench") => bench::run(home, rest),
+        Some("export") => export::run(home, rest),
+        Some("mcp") => mcp_cmd::run(home, rest),
+        Some("eval") => eval_entry::run(home, rest),
         Some("math") => math_cmd::run(rest),
         Some("--eval-adapter") => eval::run(rest),
         Some("-h" | "--help" | "help") => {

@@ -1,0 +1,1 @@
+//! The `agent` and `send_message` tools: clean-context subagents, `background:true` -> crew dispatch (design 2.2 A2-A11). Track F; empty until it lands (declared by the seam so no track edits `lib.rs`).

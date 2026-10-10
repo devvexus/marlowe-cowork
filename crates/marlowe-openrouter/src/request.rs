@@ -178,7 +178,7 @@ mod tests {
                         Part::ToolCall(ToolCall { id: "c1".into(), name: "read".into(), args: json!({"path": "a.md"}) }),
                     ],
                 },
-                Message::tool_results([ToolResult { call_id: "c1".into(), content: "hello".into(), is_error: false }]),
+                Message::tool_results([ToolResult { call_id: "c1".into(), content: "hello".into(), is_error: false, parts: Vec::new() }]),
             ],
         );
         req.system = vec![
@@ -230,7 +230,7 @@ mod tests {
     fn an_orphaned_result_is_demoted_and_no_tools_means_no_key() {
         let mut req = ChatRequest::new(
             "x/y",
-            vec![Message::tool_results([ToolResult { call_id: "ghost".into(), content: "page".into(), is_error: false }])],
+            vec![Message::tool_results([ToolResult { call_id: "ghost".into(), content: "page".into(), is_error: false, parts: Vec::new() }])],
         );
         req.max_output_tokens = Some(512);
         let body = request_body(&req, None);

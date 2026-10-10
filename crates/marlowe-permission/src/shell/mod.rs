@@ -1,0 +1,1 @@
+//! Per-shell parsers (bash, PowerShell) and `classify_shell`/`classify_code`, moved from `marlowe-crew/src/shell_policy.rs`; unparseable -> Ask (design 2.3 M8). Track E; empty until it lands (declared by the seam so no track edits `lib.rs`).

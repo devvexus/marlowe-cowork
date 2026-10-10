@@ -8,22 +8,9 @@ use marlowe_model::ProviderKind;
 
 use crate::error::BrainsError;
 
-/// Environment variables removed from every child process the harness spawns.
-pub const SCRUBBED_ENV: &[&str] = &[
-    "OPENROUTER_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "OPENAI_API_KEY",
-    "GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
-    "XAI_API_KEY",
-    "MISTRAL_API_KEY",
-    "GROQ_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "TOGETHER_API_KEY",
-    "FIREWORKS_API_KEY",
-    "HF_TOKEN",
-    "HUGGING_FACE_HUB_TOKEN",
-];
+/// Environment variables removed from every child process the harness spawns. The list lives in
+/// `marlowe_os::child`, which applies it to every launch; this re-export keeps old callers working.
+pub use marlowe_os::child::SCRUBBED_ENV;
 
 /// The variable names to remove from a child process environment.
 pub fn scrubbed_env() -> &'static [&'static str] {

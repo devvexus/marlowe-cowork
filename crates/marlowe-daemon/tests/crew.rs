@@ -328,7 +328,7 @@ fn without_a_crew_there_is_no_dispatch_tool_no_crew_block_and_crew_requests_fail
     let p = Arc::new(Routed::default());
     let d = start(&home, p.clone(), false);
     let mut a = Client::connect(&d.info);
-    a.send(&Request::Ask { session: None, text: "hello".into(), workspace: None });
+    a.send(&Request::Ask { session: None, text: "hello".into(), workspace: None, images: Vec::new(), options: None });
     a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
     let (_, req) = p.requests().into_iter().next().unwrap();
     assert!(!tool_names(&req).contains(&"dispatch".to_string()));
@@ -356,7 +356,7 @@ fn dispatch_returns_at_once_and_the_idle_session_gets_a_relay_turn_that_leads_wi
     let d = start(&home, p.clone(), true);
     let mut a = Client::connect(&d.info);
 
-    a.send(&Request::Ask { session: None, text: "find the answer".into(), workspace: None });
+    a.send(&Request::Ask { session: None, text: "find the answer".into(), workspace: None, images: Vec::new(), options: None });
     let first = a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
     // The turn ended while the crew step is still held at the gate.
     assert!(!first.iter().any(|e| matches!(e.event, Event::RunFinished { .. })), "the conductor did not wait");
@@ -558,7 +558,7 @@ fn a_busy_session_sees_an_untainted_result_at_its_next_step() {
     let d = start(&home, p.clone(), true);
     let mut a = Client::connect(&d.info);
 
-    a.send(&Request::Ask { session: None, text: "count the failing seeds".into(), workspace: None });
+    a.send(&Request::Ask { session: None, text: "count the failing seeds".into(), workspace: None, images: Vec::new(), options: None });
     // The run finishes while the conductor's turn is still in its second model call.
     let before = a.until_event(|e| matches!(e, Event::RunFinished { .. }));
     assert!(!before.iter().any(|e| matches!(e.event, Event::TurnFinished { .. })));
@@ -590,7 +590,7 @@ fn a_run_that_read_untrusted_content_relays_tainted_to_a_busy_session() {
     let d = start(&home, p.clone(), true);
     let mut a = Client::connect(&d.info);
 
-    a.send(&Request::Ask { session: None, text: "have the reader read the page".into(), workspace: None });
+    a.send(&Request::Ask { session: None, text: "have the reader read the page".into(), workspace: None, images: Vec::new(), options: None });
     let before = a.until_event(|e| matches!(e, Event::RunFinished { .. }));
     let run = before
         .iter()
@@ -630,7 +630,7 @@ fn a_result_finished_but_never_relayed_is_relayed_after_a_restart() {
     let p = Arc::new(Routed::default());
     let d = start(&home, p.clone(), true);
     let mut a = Client::connect(&d.info);
-    a.send(&Request::Ask { session: None, text: "hello".into(), workspace: None });
+    a.send(&Request::Ask { session: None, text: "hello".into(), workspace: None, images: Vec::new(), options: None });
     let got = a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
     let session = got
         .iter()

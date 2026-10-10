@@ -410,6 +410,7 @@ fn approval_buttons_answer_with_a_click() {
             summary: "run the eval".into(),
             detail: "python eval.py".into(),
             run: None,
+            proposed_rule: None,
         },
     );
     let buf = frame(&s);

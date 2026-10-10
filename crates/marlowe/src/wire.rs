@@ -1,4 +1,8 @@
 //! The only place concrete provider and tool crates are named.
+//!
+//! Owned by track K from M4.6 (with `doctor.rs`). Tracks that configure tool hosts do it in their
+//! own `marlowe-exec/src/specs/<group>.rs` (`configure`, run here through
+//! `marlowe_exec::specs::configure`); the MCP host is composed in the daemon (`stack.rs`).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -6,7 +10,7 @@ use std::sync::Arc;
 use marlowe_agent::{ToolHost, UserInfo};
 use marlowe_brains::{api_key, CredentialStore, KeyringStore, MemoryStore, ProviderConfig, ProviderFactory};
 use marlowe_crew::{CrewConfig, CrewSetup, CrewToolFactory, Sandbox, SandboxKind};
-use marlowe_daemon::{DaemonDeps, SentinelLink, ToolHostFactory, VoiceLink};
+use marlowe_daemon::{DaemonDeps, HostRequest, SentinelLink, ToolHostFactory, VoiceLink};
 use marlowe_exec::{Leftovers, ResearchConfig, SearchBackend, SearchResponse, SearchResult};
 use marlowe_model::{
     CancelToken, ChatRequest, Effort, Message, Provider, ProviderError, ProviderKind, ToolSpec,
@@ -135,15 +139,20 @@ fn research(home: &Path) -> ResearchConfig {
     ResearchConfig::default().with_cache_dir(home.join("cache"))
 }
 
-/// Tool host factory: builtin tools rooted at the session workspace. With no workspace every
-/// write asks.
+/// Tool host factory: builtin tools rooted at the session workspace, exposing the groups the
+/// session's model gets, configured by every group's `configure`. With no workspace every write
+/// asks.
 pub fn tool_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> ToolHostFactory {
     let home = home.to_path_buf();
-    Arc::new(move |workspace: Option<&Path>| {
-        let tools = marlowe_exec::BuiltinTools::new(workspace.map(Path::to_path_buf))
+    Arc::new(move |req: &HostRequest| {
+        let mut tools = marlowe_exec::BuiltinTools::new(req.workspace.clone())
             .with_search(search_backend(&credentials))
             .with_research(research(&home));
-        Arc::new(tools) as Arc<dyn ToolHost>
+        if let Some(model) = &req.model {
+            tools = tools.with_model_exposure(model);
+        }
+        let setup = marlowe_exec::specs::HostSetup { home: &home, workspace: req.workspace.as_deref() };
+        Arc::new(marlowe_exec::specs::configure(tools, &setup)) as Arc<dyn ToolHost>
     })
 }
 

@@ -27,7 +27,7 @@ fn mref() -> ModelRef {
 fn every_request_round_trips_and_is_tagged_by_op() {
     let reqs = vec![
         Request::Hello { token: "t".into(), client: "tui".into(), since_seq: Some(4) },
-        Request::Ask { session: None, text: "hi".into(), workspace: Some("C:/w".into()) },
+        Request::Ask { session: None, text: "hi".into(), workspace: Some("C:/w".into()), images: Vec::new(), options: None },
         Request::Interrupt { session: sid() },
         Request::ListSessions { limit: 20 },
         Request::OpenSession { session: sid() },
@@ -65,7 +65,7 @@ fn a_secret_never_appears_in_debug_output() {
 #[test]
 fn minimal_requests_parse_with_defaults() {
     let r: Request = serde_json::from_str(r#"{"op":"ask","text":"hello"}"#).unwrap();
-    assert_eq!(r, Request::Ask { session: None, text: "hello".into(), workspace: None });
+    assert_eq!(r, Request::Ask { session: None, text: "hello".into(), workspace: None, images: Vec::new(), options: None });
     let r: Request = serde_json::from_str(r#"{"op":"set_slot","slot":"quick"}"#).unwrap();
     assert_eq!(r, Request::SetSlot { slot: Slot::Quick, model: None, effort: Effort::Medium });
     assert!(serde_json::from_str::<Request>(r#"{"op":"set_slot","slot":"chef"}"#).is_err());
@@ -98,7 +98,7 @@ fn every_event_round_trips_inside_an_envelope() {
         Event::ToolStarted { session: sid(), turn: 1, call_id: "c".into(), tool: "read".into(), summary: "src/main.rs".into() },
         Event::ToolFinished { session: sid(), turn: 1, call_id: "c".into(), ok: true, summary: "41 lines".into() },
         Event::TurnFinished { session: sid(), turn: 1, usage: Usage { input: 3, ..Default::default() }, stop: TurnStop::Done },
-        Event::ApprovalRequested { approval: ApprovalId(1), session: sid(), tool: "bash".into(), summary: "cargo test".into(), detail: "{}".into(), run: None },
+        Event::ApprovalRequested { approval: ApprovalId(1), session: sid(), tool: "bash".into(), summary: "cargo test".into(), detail: "{}".into(), run: None, proposed_rule: None },
         Event::ApprovalResolved { approval: ApprovalId(1), decision: ApprovalDecision::Deny },
         Event::LibraryState {
             models: vec![LibraryModel { model: mref(), info: info.clone(), added_ms: 7 }],

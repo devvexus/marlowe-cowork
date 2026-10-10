@@ -4,6 +4,16 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### M4.6 seam
+
+- **Added.** The registration table (`marlowe-exec/src/specs/`): one `ToolDef` per tool in its group's file; `BuiltinTools` dispatches by name. Schemas are byte-identical to M4.5 (`tests/table_specs.rs` against the old `specs.rs`), and consequence, taint, egress and description match the old `match` for a 31-call matrix under every exposure (`specs/tests.rs`).
+- **Added.** `ToolMiddleware`, `TurnObserver` and `Conversation::ext` in `marlowe-agent`; `ToolHost::{manifest, mutation, consequence_in_sandbox}` with defaults. With no middleware registered the loop behaves as before.
+- **Added.** `marlowe_os::child`: the scrub list moved here from `marlowe-brains` (re-exported), `ChildSpec{env_allow, env, cwd, containment}`, `spawn` and bounded `run`. Shell tools, the Edge renderer and the Sentinel's git probe use it; a launch can no longer re-inject a scrubbed key through `env`. `marlowe_os::workspace`: `Workspace` + `LocalFs`, `WorktreeProvider` + `NoWorktrees`.
+- **Added.** `Part::Image`, `ToolResult::parts`, `ModelInfo::supports_vision`; 31 new requests and 17 events (modes, rules, hooks, settings, conductor, schedules, sessions, PRs, experiments, MCP) routed to stub `*_ops.rs` that answer with an error naming the owning track.
+- **Added.** Skeleton crates `marlowe-code`, `marlowe-verify`, `marlowe-settings`, `marlowe-anthropic`; `marlowe bench|export|mcp|eval` stubs.
+- **Added (seam review).** Registration points so no track edits another's file: per-group `middleware`/`persona_block`/`configure`/`detect`, `ToolHost::{call_scoped, middleware, persona_blocks}`, the daemon's `stack.rs`, `boot.rs` and `Core::ext`, Sentinel probes, `Workspace::spawn`; the remaining CC hook points (`before_turn`, `before_compact`, `on_session_start`, `on_notification`); proto additions (`Ask.images`/`options`, `PutBlob`, jobs, `UserShell`, `AllowPattern`, `NoticeSource::{Ci, Experiment}`); internal crate dependencies pre-declared.
+- **Changed.** `before_call` can no longer rewrite arguments; `before_approval` does, before the gate. A host fixes its tool set per session from the conductor's model. The shell tools run through the `Workspace` port. The spawn audit counts the unscrubbed `spawn_in_job*` calls. `LocalFs` temp names are unique per write; the Sentinel's git probe kills its whole tree on timeout.
+
 ### Context and hardware planner
 
 Matthew's rule: the user sets each model's maximum context up front; agents get that or less, never more; and the cost on this GPU is shown before anything loads.

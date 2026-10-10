@@ -4,6 +4,7 @@
 
 use marlowe_model::SystemBlock;
 use marlowe_proto::GitInfo;
+use marlowe_tools::ToolGroup;
 
 /// The stable persona core.
 pub const PERSONA_CORE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../persona/v3.md"));
@@ -24,6 +25,10 @@ pub enum PersonaBlock {
     Memory,
     /// The reply will be spoken (M3+).
     Voice,
+    /// A tool group's block (`persona/blocks/<group>.md`), declared beside the group's tools in
+    /// `marlowe-exec/src/specs/<group>.rs` and handed over by [`crate::ToolHost::persona_blocks`]
+    /// only while the group is exposed.
+    Tool { group: ToolGroup, text: &'static str },
 }
 
 impl PersonaBlock {
@@ -33,6 +38,7 @@ impl PersonaBlock {
             PersonaBlock::Crew => BLOCK_CREW,
             PersonaBlock::Memory => BLOCK_MEMORY,
             PersonaBlock::Voice => BLOCK_VOICE,
+            PersonaBlock::Tool { text, .. } => text,
         }
     }
 }
@@ -122,6 +128,14 @@ impl SystemPrompt {
     pub fn block(mut self, b: PersonaBlock) -> Self {
         if !self.blocks.contains(&b) {
             self.blocks.push(b);
+        }
+        self
+    }
+
+    /// Appends each of `blocks` (once), e.g. a tool host's [`crate::ToolHost::persona_blocks`].
+    pub fn blocks_from(mut self, blocks: impl IntoIterator<Item = PersonaBlock>) -> Self {
+        for b in blocks {
+            self = self.block(b);
         }
         self
     }

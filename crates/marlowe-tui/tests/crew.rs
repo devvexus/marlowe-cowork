@@ -309,6 +309,7 @@ fn build_run_view_shows_the_diff_and_merges_only_on_request() {
         summary: "merge crew/ee55ff66 into main (fast-forward)".into(),
         detail: String::new(),
         run: Some(id.clone()),
+        proposed_rule: None,
     });
     let buf = render(&s, W, H);
     assert!(contains(&buf, "from the crew · engineer · fix the gate threshold off-by-one"));

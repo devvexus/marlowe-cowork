@@ -1,0 +1,1 @@
+//! Hook execution (all Claude Code events, output schema) as `ToolMiddleware`; children through `marlowe_os::child` (design 2.6 X1-X9). Track E; empty until it lands (declared by the seam so no track edits `lib.rs`).

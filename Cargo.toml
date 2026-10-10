@@ -42,6 +42,11 @@ members = [
     "crates/marlowe-ort-gpu",
     # M4.5: context and hardware planner (GGUF header, KV/state maths, VRAM budget).
     "crates/marlowe-hw",
+    # M4.6: full-stack engineering (seam skeletons; each owned by one track, design section 7).
+    "crates/marlowe-code",
+    "crates/marlowe-verify",
+    "crates/marlowe-settings",
+    "crates/marlowe-anthropic",
 ]
 # Reference sources only; never built.
 exclude = ["legacy"]
@@ -80,6 +85,10 @@ marlowe-typeset = { path = "crates/marlowe-typeset" }
 marlowe-research = { path = "crates/marlowe-research" }
 marlowe-ort-gpu = { path = "crates/marlowe-ort-gpu" }
 marlowe-hw = { path = "crates/marlowe-hw" }
+marlowe-code = { path = "crates/marlowe-code" }
+marlowe-verify = { path = "crates/marlowe-verify" }
+marlowe-settings = { path = "crates/marlowe-settings" }
+marlowe-anthropic = { path = "crates/marlowe-anthropic" }
 
 # Terminal. crossterm, not termion: Windows is the primary platform.
 ratatui = "0.30"

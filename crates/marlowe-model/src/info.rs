@@ -163,6 +163,10 @@ pub struct ModelInfo {
     pub supports_tools: bool,
     #[serde(default)]
     pub supports_reasoning: bool,
+    /// Accepts [`crate::Part::Image`] input. False sends images through the vision slot's caption
+    /// or refuses them (track A/G); old library rows load as false.
+    #[serde(default)]
+    pub supports_vision: bool,
     /// Effort levels this model accepts; empty means effort is ignored.
     #[serde(default)]
     pub effort_levels: Vec<Effort>,
@@ -184,6 +188,7 @@ impl ModelInfo {
             max_output: None,
             supports_tools: false,
             supports_reasoning: false,
+            supports_vision: false,
             effort_levels: Vec::new(),
             pricing: None,
             local: provider.is_local(),

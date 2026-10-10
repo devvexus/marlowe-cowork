@@ -475,6 +475,22 @@ G, K, L0; 2 = D, F, F2, H, H2, I, J, J2, L, M; 3 = integ. Each wave merges only 
 
 ## 9. Approvals Matthew must give
 
+### 9.0 Matthew's decisions (2026-10-09) — these override the recommendations below
+
+- **Local only, $0.** No paid API anywhere in M4.6 (9.2-a/b/c/k/o lapse). Track G keeps vision for
+  Ollama; the native Anthropic provider waits until Matthew funds a frontier path.
+- **H2H (A1) on the same local model:** Claude Code pointed at Ollama's Anthropic-compatible
+  endpoint (Ollama 0.32.5 serves `/v1/messages`) vs Marlowe, both on `marlowe-dusk:27b-super`, CC
+  config isolated from Matthew's own. A pure harness comparison; no frontier arm.
+- **Installs approved:** 9.1-a (`gh`; Matthew runs `gh auth login`), 9.1-b, 9.1-c, 9.1-i (after
+  M4.5 merges, never during a build). **Not approved:** 9.1-d (uv, Go), 9.1-e (Docker/WSL), 9.1-f
+  (eval venv). So: the A3 bash-only baseline is Marlowe's own shell-only ablation arm (no
+  mini-SWE-agent); polyglot uses only the toolchains already installed; tb/vmini are unscored.
+  9.1-g (crates) and 9.1-j (project-local npm dev deps) are build dependencies of their tracks.
+- **Every 9.3 item is deferred** until the load-bearing parity work is in ("Claude Code is the
+  goal right now"); they return after M4.6's core.
+- Still open: 9.2-h (Matthew picks the own-repo tasks and the A6 specs/repo before eval runs).
+
 ### 9.1 Installs and system changes
 
 | # | Item | Why |

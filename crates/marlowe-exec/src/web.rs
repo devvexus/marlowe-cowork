@@ -119,6 +119,7 @@ pub(crate) fn web_fetch(args: &Value, cancel: &CancelToken) -> ToolOutcome {
             content: "web_fetch stopped: the turn was interrupted.".into(),
             is_error: true,
             summary: "interrupted".into(),
+            parts: Vec::new(),
         },
         Outcome::Unreachable { detail, .. } => ToolOutcome::error(format!("could not fetch {url}: {detail}")),
         other => {

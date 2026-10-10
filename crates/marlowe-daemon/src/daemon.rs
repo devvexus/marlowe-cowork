@@ -1,5 +1,6 @@
 //! Shared daemon state, startup and shutdown.
 
+use std::any::{Any, TypeId};
 use std::collections::hash_map::Entry as MapEntry;
 use std::collections::HashMap;
 use std::io::{BufReader, Write};
@@ -66,6 +67,33 @@ impl Approvals {
     }
 }
 
+/// Daemon-lifetime state for later tracks, one value per type: E's per-session modes and rules,
+/// F's schedules, F2's checkpoint store, J2's experiments, K's MCP registry. Each track keeps its
+/// own type in its own file and reaches it with [`CoreExt::get_or_init`], so no track adds a field
+/// to [`Core`].
+// Unused until those tracks land.
+#[allow(dead_code)]
+#[derive(Default)]
+pub(crate) struct CoreExt {
+    map: Mutex<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
+}
+
+#[allow(dead_code)]
+impl CoreExt {
+    /// The value of type `T`, created by `init` on first use. `init` runs under the map's lock:
+    /// keep it cheap and start slow work on a thread.
+    pub fn get_or_init<T: Any + Send + Sync>(&self, init: impl FnOnce() -> T) -> Arc<T> {
+        let mut map = lock(&self.map);
+        let entry = map.entry(TypeId::of::<T>()).or_insert_with(|| Arc::new(init()));
+        Arc::clone(entry).downcast::<T>().unwrap_or_else(|_| unreachable!("keyed by TypeId"))
+    }
+
+    /// The value of type `T`, if one was created.
+    pub fn get<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        lock(&self.map).get(&TypeId::of::<T>()).cloned().and_then(|v| v.downcast::<T>().ok())
+    }
+}
+
 pub(crate) struct Core {
     pub home: PathBuf,
     pub cfg: DaemonConfig,
@@ -93,6 +121,9 @@ pub(crate) struct Core {
     /// Which interactive clients are here, for the brief's away rule.
     pub presence: crate::brief::Presence,
     pub approvals: Approvals,
+    /// State later tracks keep for the daemon's lifetime (see [`CoreExt`]).
+    #[allow(dead_code)]
+    pub ext: CoreExt,
     sessions: Mutex<HashMap<SessionId, Arc<SessionHandle>>>,
     started: Instant,
     shutting_down: AtomicBool,
@@ -337,6 +368,7 @@ impl Daemon {
             crew: OnceLock::new(),
             presence: Default::default(),
             approvals: Approvals::default(),
+            ext: CoreExt::default(),
             sessions: Mutex::new(HashMap::new()),
             started: Instant::now(),
             shutting_down: AtomicBool::new(false),
@@ -362,6 +394,8 @@ impl Daemon {
                 Err(e) => eprintln!("marlowe: {e}"),
             }
         }
+        // Per-track start hooks (schedules, experiment deadlines, MCP servers).
+        crate::boot::run(&core);
         DaemonInfo { port: addr.port(), token, pid: std::process::id() }.write(home)?;
         let acore = core.clone();
         let acceptor = std::thread::Builder::new().name("marlowe-accept".into()).spawn(move || {
@@ -476,4 +510,23 @@ fn probe(info: &DaemonInfo) -> bool {
     );
     let _ = s.flush();
     ok
+}
+
+#[cfg(test)]
+mod ext_tests {
+    use super::CoreExt;
+
+    #[derive(Default)]
+    struct Modes(std::sync::Mutex<Vec<String>>);
+
+    #[test]
+    fn core_ext_keeps_one_value_per_type_for_the_daemons_life() {
+        let ext = CoreExt::default();
+        assert!(ext.get::<Modes>().is_none());
+        ext.get_or_init(Modes::default).0.lock().unwrap().push("plan".into());
+        let again = ext.get_or_init(|| -> Modes { unreachable!("created once") });
+        assert_eq!(*again.0.lock().unwrap(), vec!["plan".to_string()]);
+        assert_eq!(*ext.get_or_init(|| 7u32), 7);
+        assert!(ext.get::<Modes>().is_some());
+    }
 }

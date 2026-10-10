@@ -89,6 +89,16 @@ trait Provider: Send + Sync {
 
 Providers translate wire formats only; they never interpret tool names.
 
+## The M4.6 seam
+
+Parallel tracks (design `docs/research/m46-design.md` sections 7-8) plug in without editing a shared `match`:
+
+- **Tools** are rows in `marlowe-exec/src/specs/<group>.rs` (`ToolDef`: spec, manifest, call, consequence, crew consequence, describe, taint, egress, mutation). Each group file also declares `middleware`, `persona_block`, `configure` and `detect`. `BuiltinTools` only concatenates `specs::GROUPS` and looks calls up by name; per-host tool state lives in `BuiltinTools::state::<T>()`. A host's tool set is fixed per session (`with_model_exposure`: every group for frontier models, core plus detected for local ones); calls outside it are refused. `marlowe-tools` holds the exposure vocabulary (`ToolGroup`, `Profiles`, `select_groups`).
+- **Loop hooks** (`marlowe-agent/src/middleware.rs`): `ToolMiddleware{before_turn, before_approval, before_call, pre_mutation, after_call, after_step, before_final, before_compact}` and `TurnObserver{on_session_start, on_notification, on_model_call, on_tools_done}`. Only `before_approval` may rewrite a call's arguments, so the gate, taint and egress judge the call that runs. Calls get a `CallCtx` (the `ToolCtx` plus a `SessionScope`: `Conversation::ext` lent for the batch, and daemon `Services`). Middleware comes from the tool host (`ToolHost::middleware`, seeded by `Agent::new`) and from `marlowe-daemon/src/stack.rs`, which concatenates one constructor per track; daemon-lifetime state goes in `Core::ext`, start hooks in `boot.rs`. Tool groups' persona blocks reach the prompt through `ToolHost::persona_blocks`, only while exposed.
+- **Children** start only through `marlowe_os::child` (scrub list `SCRUBBED_ENV`, per-launch `env_allow`, Job Object); `marlowe-os/tests/spawn_audit.rs` allowlists the few remaining direct spawns with their owners. `marlowe_os::workspace` has the `Workspace` port (`LocalFs`; `DockerExec` later), which the shell tools run through (`exec`; `spawn` for background jobs), and `WorktreeProvider`. The Sentinel ticks registered probes (`marlowe-sentinel/src/probe.rs`: CI, experiments).
+- **Wire**: new `Request`/`Event` variants (types in `marlowe-proto/src/coding.rs`) are routed in `marlowe-daemon/src/client.rs` to stub `*_ops.rs` files, one per owning track. `Part::Image`, `ToolResult::parts` (`ResultPart`) and `ModelInfo::supports_vision` are additive; pre-M4.6 turns and library rows load unchanged (fixtures in `marlowe-model/tests/fixtures`).
+- Skeleton crates `marlowe-code`, `marlowe-verify`, `marlowe-settings`, `marlowe-anthropic`; `marlowe bench|export|mcp|eval` stubs in the binary.
+
 ## Crew and sandbox model
 
 An agent is a role card (`roles/*.md`, overridden by `<home>\roles\*.md`: slot, effort, tool allowlist, budget, sandbox kind, instructions), and that is all. Depth 1: crew runs never get `dispatch`.

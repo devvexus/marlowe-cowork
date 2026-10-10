@@ -41,6 +41,10 @@ pub enum NoticeSource {
     Gpu,
     /// A discovery candidate (offered, never auto-added).
     Discovery,
+    /// CI on a pushed branch (track J).
+    Ci,
+    /// The experiments bridge: metrics, plateaus, deadlines (track J2).
+    Experiment,
 }
 
 /// One observation worth telling the user. Deduplicated by `(source, subject, kind)`.

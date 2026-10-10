@@ -1,33 +1,54 @@
 //! The built-in tools behind [`marlowe_agent::ToolHost`]: read, write, edit, glob, grep, bash,
 //! powershell, python, web_fetch, arxiv, paper and (with an injected backend) web_search.
 //!
+//! Every tool is one entry in the registration table ([`specs`]): `specs/<group>.rs` declares its
+//! schema, manifest, call, consequence (plain and in a crew sandbox), description, taint, egress
+//! and mutation, plus the group's middleware, persona block, host configuration and detection.
+//! This file only looks calls up by name; it holds no per-tool `match`, so a track adds tools
+//! without touching it.
+//!
+//! A host exposes a fixed set of groups for its session ([`BuiltinTools::with_exposure`], default
+//! every group): `specs()` lists only exposed tools, and a call to a tool outside the set is
+//! refused.
+//!
 //! The host is built per session with that session's workspace root. Relative paths resolve
 //! against the root; reads are free anywhere, writes are free only inside the root, and a root
 //! that is too broad (a drive root, the home directory, a system or app-data directory) frees
 //! nothing. Shell tools always ask. Once untrusted content is in the conversation (a fetched
 //! page, search results, a file from outside the root), web_search and web_fetch to a host not
 //! yet approved this session ask too. Every child process has the credential variables from
-//! [`marlowe_brains::scrubbed_env`] removed from its environment and runs in its own
-//! kill-on-close Job Object, so a timeout or interrupt kills the whole tree.
+//! [`marlowe_os::SCRUBBED_ENV`] removed from its environment (by `marlowe_os::child`, the only
+//! spawner) and runs in its own kill-on-close Job Object, so a timeout or interrupt kills the
+//! whole tree.
 
 #![forbid(unsafe_code)]
 
 pub mod corpus;
 mod fs_tools;
+pub mod git;
+pub mod jobs;
 mod paper;
 pub mod paths;
 pub mod render;
 pub mod research;
+pub mod search;
 pub mod shell;
-mod specs;
+pub mod specs;
+pub mod summarize;
 pub mod text;
 mod web;
 
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use marlowe_agent::{Consequence, Exposure, ToolCallReq, ToolCtx, ToolHost, ToolOutcome};
-use marlowe_model::ToolSpec;
+use marlowe_agent::{
+    CallCtx, Consequence, Exposure, ExposureProfile, Mutation, PersonaBlock, SandboxView, ToolCallReq, ToolCtx,
+    ToolGroup, ToolHost, ToolManifest, ToolMiddleware, ToolOutcome,
+};
+use marlowe_model::{ModelInfo, ToolSpec};
+use marlowe_os::workspace::{LocalFs, Workspace};
 use serde_json::Value;
 
 pub use shell::{run_bounded, run_script, Interpreter, Leftovers, ShellLimits, ShellRun, SpawnOpts};
@@ -56,6 +77,14 @@ pub struct BuiltinTools {
     shell_dir: Option<PathBuf>,
     leftovers: shell::Leftovers,
     held: shell::HeldJobs,
+    /// Where file, search and code tools act (this machine, or a container from track K).
+    port: Arc<dyn Workspace>,
+    /// Per-host state for tools that keep it across calls, one value per type ([`Self::state`]).
+    states: Mutex<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
+    /// The model class this host's tools are offered to.
+    profile: ExposureProfile,
+    /// The groups this host exposes (sorted).
+    groups: Vec<ToolGroup>,
 }
 
 impl BuiltinTools {
@@ -77,6 +106,10 @@ impl BuiltinTools {
             shell_dir: None,
             leftovers: shell::Leftovers::Release,
             held: shell::HeldJobs::default(),
+            port: Arc::new(LocalFs),
+            states: Mutex::new(HashMap::new()),
+            profile: ExposureProfile::Frontier,
+            groups: ToolGroup::ALL.to_vec(),
         }
     }
 
@@ -157,85 +190,89 @@ impl BuiltinTools {
         self.root.as_deref()
     }
 
+    /// Where file, search and code tools act. [`LocalFs`] unless a port was injected.
+    pub fn with_workspace_port(mut self, port: Arc<dyn Workspace>) -> Self {
+        self.port = port;
+        self
+    }
+
+    /// The workspace port tools should read, write, walk and exec through.
+    pub fn workspace_port(&self) -> &dyn Workspace {
+        self.port.as_ref()
+    }
+
+    /// This host's value of type `T`, created with `T::default()` on first use. For tools that
+    /// keep state across calls (B's job table, C's LSP manager) without adding fields here.
+    pub fn state<T: Default + Send + Sync + 'static>(&self) -> Arc<T> {
+        let mut states = self.states.lock().unwrap_or_else(|p| p.into_inner());
+        let entry = states.entry(TypeId::of::<T>()).or_insert_with(|| Arc::new(T::default()));
+        Arc::clone(entry).downcast::<T>().unwrap_or_else(|_| unreachable!("keyed by TypeId"))
+    }
+
+    /// Installs this host's value of type `T` (configured state, e.g. an LSP manager with paths).
+    pub fn with_state<T: Send + Sync + 'static>(self, value: T) -> Self {
+        self.states.lock().unwrap_or_else(|p| p.into_inner()).insert(TypeId::of::<T>(), Arc::new(value));
+        self
+    }
+
+    /// Fixes the tool set for this host's session: tools in `groups` that admit `profile`.
+    /// The default is every group for a frontier model (everything registered).
+    pub fn with_exposure(mut self, profile: ExposureProfile, groups: Vec<ToolGroup>) -> Self {
+        let mut groups = groups;
+        groups.sort();
+        groups.dedup();
+        self.profile = profile;
+        self.groups = groups;
+        self
+    }
+
+    /// [`Self::with_exposure`] for `model` in this host's workspace: every group for a frontier
+    /// model; the core groups plus the detected ones for a local model.
+    pub fn with_model_exposure(self, model: &ModelInfo) -> Self {
+        let profile = marlowe_agent::exposure_profile(model);
+        let groups = specs::exposed_groups(profile, self.root.as_deref());
+        self.with_exposure(profile, groups)
+    }
+
+    /// The model class and groups this host exposes.
+    pub fn exposure(&self) -> (ExposureProfile, &[ToolGroup]) {
+        (self.profile, &self.groups)
+    }
+
+    /// Whether `def` is in this host's tool set (its group is exposed and it admits the profile).
+    pub fn exposes(&self, def: &specs::ToolDef) -> bool {
+        self.groups.contains(&def.manifest.group) && def.manifest.profiles.admits(self.profile)
+    }
+
+    /// The registered tool `name`.
+    pub fn tool(&self, name: &str) -> Option<&'static specs::ToolDef> {
+        specs::table().get(name)
+    }
+
     fn root_for(&self, ctx: &ToolCtx) -> Option<PathBuf> {
         self.root.clone().or_else(|| ctx.workspace.clone())
     }
 
-    fn scrub(&self, cmd: &mut std::process::Command) {
-        for name in &self.scrub {
-            cmd.env_remove(name);
-        }
+    /// [`Self::root_for`], borrowed.
+    pub(crate) fn root_for_ref<'a>(&'a self, ctx: &'a ToolCtx) -> Option<&'a Path> {
+        self.root.as_deref().or(ctx.workspace.as_deref())
     }
 
-    fn run_shell(&self, kind: Interpreter, args: &Value, ctx: &ToolCtx) -> ToolOutcome {
-        // Where relative script paths and `cwd` resolve: the pinned shell dir, else the root.
-        let root = self.shell_dir.clone().or_else(|| self.root_for(ctx));
-        let built = match kind {
-            Interpreter::Bash | Interpreter::PowerShell => {
-                let Some(script) = str_arg(args, "command").filter(|c| !c.trim().is_empty()) else {
-                    return ToolOutcome::error("`command` is required");
-                };
-                if kind == Interpreter::Bash {
-                    shell::bash_command(script)
-                } else {
-                    Ok(shell::powershell_command(script))
-                }
-            }
-            Interpreter::Python => {
-                let extra: Vec<String> = args
-                    .get("args")
-                    .and_then(Value::as_array)
-                    .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
-                    .unwrap_or_default();
-                match (str_arg(args, "code"), str_arg(args, "path")) {
-                    (Some(code), None) => shell::python_command(shell::PythonTarget::Code(code), &extra),
-                    (None, Some(path)) => {
-                        let abs = paths::resolve(root.as_deref(), path);
-                        shell::python_command(
-                            shell::PythonTarget::Script(&abs.to_string_lossy()),
-                            &extra,
-                        )
-                    }
-                    _ => return ToolOutcome::error("give exactly one of `code` or `path`"),
-                }
-            }
-        };
-        let mut cmd = match built {
-            Ok(c) => c,
-            Err(e) => return ToolOutcome::error(e.to_string()),
-        };
-        let dir = match str_arg(args, "cwd") {
-            Some(c) => paths::resolve(root.as_deref(), c),
-            None => root.clone().unwrap_or_else(|| paths::resolve(None, ".")),
-        };
-        if !dir.is_dir() {
-            return ToolOutcome::error(format!("cwd {} is not a directory", dir.display()));
-        }
-        if let Some(pin) = self.shell_dir.as_deref().filter(|p| !paths::inside(p, &dir)) {
-            return ToolOutcome::error(format!(
-                "cwd {} is outside the sandbox {}; commands run inside it",
-                dir.display(),
-                pin.display()
-            ));
-        }
-        cmd.current_dir(&dir);
-        self.scrub(&mut cmd);
-        cmd.envs(self.child_env.iter().map(|(k, v)| (k, v)));
-        let mut limits = self.limits;
-        if let Some(ms) = int_arg(args, "timeout_ms").filter(|m| *m > 0) {
-            limits = limits.with_timeout(ms as u64);
-        }
-        match run_bounded(cmd, limits, Some(&ctx.cancel)) {
-            Err(e) => ToolOutcome::error(format!("could not start {}: {e}", kind.tool_name())),
-            Ok(mut run) => {
-                self.held.settle(&mut run, self.leftovers);
-                shell_outcome(run, limits)
-            }
+    /// Where shell `cwd` and script paths resolve: the pinned shell dir, else the root.
+    pub(crate) fn shell_root(&self, ctx: &ToolCtx) -> Option<PathBuf> {
+        self.shell_dir.clone().or_else(|| self.root_for(ctx))
+    }
+
+    /// The plain (non-sandbox) consequence of `call` under `exposure`.
+    pub(crate) fn consequence_of(&self, call: &ToolCallReq, exposure: &Exposure) -> Consequence {
+        match self.tool(&call.name) {
+            Some(def) => (def.consequence)(self, call, exposure),
+            None => Consequence::Free,
         }
     }
 
     /// Whether `raw` lies inside a root that frees writes.
-    fn inside_root(&self, raw: &str) -> bool {
+    pub(crate) fn inside_root(&self, raw: &str) -> bool {
         match &self.root {
             Some(root) if self.free_writes => paths::inside(root, &paths::resolve(Some(root), raw)),
             _ => false,
@@ -243,7 +280,7 @@ impl BuiltinTools {
     }
 
     /// Whether reading `raw` stays within the user's own files: the write root or a read root.
-    fn trusted_read(&self, raw: &str) -> bool {
+    pub(crate) fn trusted_read(&self, raw: &str) -> bool {
         if self.inside_root(raw) {
             return true;
         }
@@ -252,46 +289,12 @@ impl BuiltinTools {
     }
 }
 
-fn shell_outcome(run: ShellRun, limits: ShellLimits) -> ToolOutcome {
-    let mut text = if run.text.trim().is_empty() {
-        "(no output)".to_string()
-    } else {
-        text::head_and_tail(&run.text, shell::MAX_SHELL_RESULT_BYTES)
-    };
-    let summary;
-    if run.cancelled {
-        text.push_str("\n[the command was stopped because the turn was interrupted.]");
-        summary = "interrupted".to_string();
-    } else if run.timed_out {
-        text.push_str(&format!(
-            "\n[the harness stopped this command after {} ms. The output above is what it had \
-             produced by then; the command did not finish.]",
-            limits.timeout_ms
-        ));
-        summary = "timed out".to_string();
-    } else if run.flooded {
-        text.push_str(&format!(
-            "\n[the harness stopped this command after it produced more than {} bytes on one \
-             stream. The output above is a prefix; the command did not finish.]",
-            limits.max_output_bytes
-        ));
-        summary = "output cap".to_string();
-    } else if run.code != 0 {
-        text.push_str(&format!("\n[exit {}]", run.code));
-        summary = format!("exit {}", run.code);
-    } else {
-        summary = format!("{} lines", run.text.lines().count());
-    }
-    let failed = run.code != 0 || run.timed_out || run.flooded || run.cancelled;
-    ToolOutcome { content: text, is_error: failed, summary }
-}
-
 pub(crate) fn str_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(Value::as_str)
 }
 
 /// The `paper` tool's input, under any of its accepted names.
-fn research_input(args: &Value) -> &str {
+pub(crate) fn research_input(args: &Value) -> &str {
     str_arg(args, "url_or_arxiv_id").or_else(|| str_arg(args, "url")).or_else(|| str_arg(args, "id")).unwrap_or("")
 }
 
@@ -304,7 +307,7 @@ pub(crate) fn int_arg(args: &Value, key: &str) -> Option<i64> {
 }
 
 /// ` (+N lines)` when `s` has lines beyond its first, so a one-line summary never hides a script.
-fn more_lines(s: &str) -> String {
+pub(crate) fn more_lines(s: &str) -> String {
     match s.trim().lines().count().saturating_sub(1) {
         0 => String::new(),
         1 => " (+1 line)".into(),
@@ -312,7 +315,7 @@ fn more_lines(s: &str) -> String {
     }
 }
 
-fn first_line(s: &str, max: usize) -> String {
+pub(crate) fn first_line(s: &str, max: usize) -> String {
     let line = s.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
     let cut = text::floor_boundary(line, max);
     if cut < line.len() {
@@ -324,11 +327,15 @@ fn first_line(s: &str, max: usize) -> String {
 
 impl ToolHost for BuiltinTools {
     fn specs(&self) -> Vec<ToolSpec> {
-        specs::all(self.search.is_some())
+        specs::table().defs.iter().filter(|d| self.exposes(d) && (d.enabled)(self)).map(|d| d.spec.clone()).collect()
     }
 
     fn call(&self, call: &ToolCallReq, ctx: &ToolCtx) -> ToolOutcome {
-        if ctx.cancel.is_cancelled() {
+        self.call_scoped(call, &CallCtx::detached(ctx.clone()))
+    }
+
+    fn call_scoped(&self, call: &ToolCallReq, cx: &CallCtx) -> ToolOutcome {
+        if cx.cancel.is_cancelled() {
             return ToolOutcome::error("interrupted before the tool ran");
         }
         let args = &call.args;
@@ -339,136 +346,68 @@ impl ToolHost for BuiltinTools {
                 first_line(&args.to_string(), 80)
             ));
         }
-        let root = self.root_for(ctx);
-        let fs = fs_tools::Fs { tools: self, root: root.as_deref() };
-        match call.name.as_str() {
-            "read" => fs.read(args),
-            "write" => fs.write(args),
-            "edit" => fs.edit(args),
-            "glob" => fs.glob(args),
-            "grep" => fs.grep(args),
-            "bash" => self.run_shell(Interpreter::Bash, args, ctx),
-            "powershell" => self.run_shell(Interpreter::PowerShell, args, ctx),
-            "python" => self.run_shell(Interpreter::Python, args, ctx),
-            "web_fetch" => web::web_fetch(args, &ctx.cancel),
-            "arxiv" => research::arxiv(&self.research, args, &ctx.cancel),
-            "paper" => research::paper(&self.research, args, &ctx.cancel),
-            "web_search" => match &self.search {
-                Some(b) => web::web_search(b.as_ref(), args, &ctx.cancel),
-                None => ToolOutcome::error("web_search is not available in this build"),
-            },
-            other => ToolOutcome::error(format!("unknown tool `{other}`")),
+        match self.tool(&call.name) {
+            Some(def) if self.exposes(def) => (def.call)(self, args, cx),
+            Some(_) => ToolOutcome::error(format!("`{}` is not available in this session", call.name)),
+            None => ToolOutcome::error(format!("unknown tool `{}`", call.name)),
         }
+    }
+
+    fn middleware(&self) -> Vec<Arc<dyn ToolMiddleware>> {
+        specs::GROUPS.iter().filter(|g| self.groups.contains(&g.group)).flat_map(|g| (g.middleware)(self)).collect()
+    }
+
+    fn persona_blocks(&self) -> Vec<PersonaBlock> {
+        let table = specs::table();
+        specs::GROUPS
+            .iter()
+            .filter(|g| self.groups.contains(&g.group))
+            .filter(|g| table.defs.iter().any(|d| d.manifest.group == g.group && self.exposes(d) && (d.enabled)(self)))
+            .filter_map(|g| (g.persona_block)().map(|text| PersonaBlock::Tool { group: g.group, text }))
+            .collect()
     }
 
     fn consequence(&self, call: &ToolCallReq) -> Consequence {
-        let args = &call.args;
-        match call.name.as_str() {
-            "write" | "edit" => match str_arg(args, "path") {
-                Some(p) if self.inside_root(p) => Consequence::Free,
-                Some(p) => Consequence::Ask {
-                    summary: format!("{} {} (outside the workspace)", call.name, first_line(p, 100)),
-                },
-                None => Consequence::Free, // refused by `call` for the missing argument
-            },
-            "bash" | "powershell" => {
-                let command = str_arg(args, "command").unwrap_or("");
-                Consequence::Ask {
-                    summary: format!("{}: {}{}", call.name, first_line(command, 100), more_lines(command)),
-                }
-            }
-            "python" => Consequence::Ask {
-                summary: match (str_arg(args, "code"), str_arg(args, "path")) {
-                    (Some(code), _) => format!("python: {}{}", first_line(code, 100), more_lines(code)),
-                    (None, Some(path)) => format!("python {}", first_line(path, 100)),
-                    _ => "python".to_string(),
-                },
-            },
-            _ => Consequence::Free,
-        }
+        self.consequence_of(call, &Exposure::default())
     }
 
     fn consequence_exposed(&self, call: &ToolCallReq, exposure: &Exposure) -> Consequence {
-        if exposure.tainted {
-            let args = &call.args;
-            match call.name.as_str() {
-                "web_fetch" => {
-                    if let Some(host) = self.egress_host(call).filter(|h| !exposure.approved_hosts.contains(h)) {
-                        return Consequence::Ask {
-                            summary: format!("web_fetch {host}: a new host, after untrusted content"),
-                        };
-                    }
-                }
-                "paper" => {
-                    let input = research_input(args);
-                    if let Some(host) = research::paper_host(input).filter(|h| !exposure.approved_hosts.contains(h)) {
-                        return Consequence::Ask {
-                            summary: format!("paper {host}: a new host, after untrusted content"),
-                        };
-                    }
-                }
-                "arxiv" => {
-                    return Consequence::Ask {
-                        summary: format!(
-                            "arxiv: {} (after untrusted content)",
-                            first_line(str_arg(args, "query").unwrap_or(""), 100)
-                        ),
-                    }
-                }
-                "web_search" => {
-                    return Consequence::Ask {
-                        summary: format!(
-                            "web_search: {} (after untrusted content)",
-                            first_line(str_arg(args, "query").unwrap_or(""), 100)
-                        ),
-                    }
-                }
-                _ => {}
-            }
-        }
-        self.consequence(call)
+        self.consequence_of(call, exposure)
+    }
+
+    fn consequence_in_sandbox(
+        &self,
+        call: &ToolCallReq,
+        exposure: &Exposure,
+        sandbox: &dyn SandboxView,
+    ) -> Option<Consequence> {
+        let f = self.tool(&call.name)?.crew_consequence?;
+        Some(f(self, call, exposure, sandbox))
     }
 
     fn taints(&self, call: &ToolCallReq) -> bool {
-        match call.name.as_str() {
-            "web_fetch" | "web_search" | "arxiv" | "paper" => true,
-            "read" | "glob" | "grep" => !self.trusted_read(str_arg(&call.args, "path").unwrap_or(".")),
-            _ => false,
-        }
+        self.tool(&call.name).is_some_and(|d| (d.taints)(self, call))
     }
 
     fn egress_host(&self, call: &ToolCallReq) -> Option<String> {
-        if call.name == "paper" {
-            return research::paper_host(research_input(&call.args));
+        (self.tool(&call.name)?.egress)(self, call)
+    }
+
+    fn manifest(&self, name: &str) -> Option<ToolManifest> {
+        self.tool(name).map(|d| d.manifest.clone())
+    }
+
+    fn mutation(&self, call: &ToolCallReq, ctx: &ToolCtx) -> Mutation {
+        match self.tool(&call.name) {
+            Some(def) => (def.mutation)(self, call, ctx),
+            None => Mutation::None,
         }
-        if call.name != "web_fetch" {
-            return None;
-        }
-        let url = str_arg(&call.args, "url")?;
-        marlowe_net::Target::parse(url).ok().map(|t| t.host)
     }
 
     fn describe(&self, call: &ToolCallReq) -> String {
-        let args = &call.args;
-        let key = match call.name.as_str() {
-            "read" | "write" | "edit" => "path",
-            "glob" => "pattern",
-            "grep" => "pattern",
-            "bash" | "powershell" => "command",
-            "python" => "code",
-            "web_fetch" => "url",
-            "web_search" | "arxiv" => "query",
-            "paper" => "url_or_arxiv_id",
-            _ => "",
-        };
-        let detail = str_arg(args, key)
-            .or_else(|| str_arg(args, "path"))
-            .map(|s| first_line(s, 60))
-            .unwrap_or_default();
-        if detail.is_empty() {
-            call.name.clone()
-        } else {
-            format!("{} {}", call.name, detail)
+        match self.tool(&call.name) {
+            Some(def) => (def.describe)(call),
+            None => specs::describe_default(call),
         }
     }
 }

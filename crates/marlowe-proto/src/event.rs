@@ -139,6 +139,10 @@ pub enum Event {
         /// Set when a crew run asks; `session` is then the run's parent session.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run: Option<RunId>,
+        /// The rule `ApprovalDecision::AllowPattern` would add (tool plus normalised prefix or
+        /// path glob, never a bare tool), when E's rules engine proposes one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        proposed_rule: Option<String>,
     },
     ApprovalResolved { approval: ApprovalId, decision: ApprovalDecision },
     LibraryState {
@@ -256,6 +260,67 @@ pub enum Event {
     /// The outcome of `ApplyOllamaServer` (broadcast): restarted, refused, or failed, with what
     /// to do by hand when it did not happen.
     ServerApplied { ok: bool, message: String },
+
+    // ---- M4.6 (types in `coding.rs`).
+    /// A session's permission mode changed (broadcast).
+    ModeChanged { session: SessionId, mode: crate::coding::PermissionMode },
+    /// Reply to `ListRules`, `AddRule`, `RemoveRule`.
+    Rules { rules: Vec<crate::coding::RuleInfo> },
+    /// Reply to `ListHooks`, `TrustHooks`.
+    Hooks { hooks: Vec<crate::coding::HookInfo> },
+    /// Reply to `GetSettings`, `SetSetting`.
+    Settings { layers: Vec<crate::coding::SettingsLayer> },
+    /// Reply to `ListCommands`.
+    Commands { list: Vec<crate::coding::CommandInfo> },
+    /// Reply to `ListAgentTypes`.
+    AgentTypes { list: Vec<crate::coding::AgentTypeInfo> },
+    /// `ask_user` is waiting; answered with `AnswerQuestion` (broadcast).
+    QuestionAsked { session: SessionId, id: String, questions: Vec<crate::coding::Question> },
+    /// The session's todo list changed (broadcast).
+    Todos { session: SessionId, items: Vec<crate::coding::TodoItem> },
+    /// Reply to `ListSchedules`, `AddSchedule`, `RemoveSchedule`.
+    Schedules { list: Vec<crate::coding::ScheduleInfo> },
+    /// A rewind finished (broadcast).
+    Rewound { session: SessionId, turn: u32, scope: crate::coding::RewindScope },
+    /// Reply to `ListCheckpoints`.
+    Checkpoints { session: SessionId, list: Vec<crate::coding::CheckpointInfo> },
+    /// Reply to `SessionDiff`: a unified diff.
+    SessionDiff {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn: Option<u32>,
+        diff: String,
+    },
+    /// Reply to `SessionCost`.
+    SessionCost { session: SessionId, report: crate::coding::CostReport },
+    /// Reply to `ExportSession`.
+    SessionExported { session: SessionId, format: crate::coding::ExportFormat, text: String },
+    /// A PR was opened for a run (broadcast).
+    PrOpened { run: RunId, url: String },
+    /// Reply to `ListExperiments`; also broadcast when one changes.
+    Experiments { list: Vec<crate::coding::ExperimentInfo> },
+    /// Reply to `McpList`, `McpAdd`, `McpRemove`.
+    McpServers { list: Vec<crate::coding::McpServerInfo> },
+    /// Reply to `PutBlob`: the reference an `Ask` carries in `images`.
+    BlobStored { blob: String, mime: String, w: u32, h: u32 },
+    /// Reply to `ListJobs`.
+    Jobs { list: Vec<crate::coding::JobInfo> },
+    /// A background job started (broadcast).
+    JobStarted { job: crate::coding::JobInfo },
+    /// New output from a watched job (`job_watch`, the `!` shell), in order.
+    JobOutput {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        id: String,
+        text: String,
+    },
+    /// A background job ended (broadcast).
+    JobExited {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        id: String,
+        code: i32,
+    },
 }
 
 impl Event {
@@ -273,8 +338,19 @@ impl Event {
             | Event::TurnFinished { session, .. }
             | Event::ApprovalRequested { session, .. }
             | Event::Recalled { session, .. }
-            | Event::ContextUsage { session, .. } => Some(session),
-            Event::Error { session, .. } => session.as_ref(),
+            | Event::ContextUsage { session, .. }
+            | Event::ModeChanged { session, .. }
+            | Event::QuestionAsked { session, .. }
+            | Event::Todos { session, .. }
+            | Event::Rewound { session, .. }
+            | Event::Checkpoints { session, .. }
+            | Event::SessionDiff { session, .. }
+            | Event::SessionCost { session, .. }
+            | Event::SessionExported { session, .. } => Some(session),
+            Event::Error { session, .. }
+            | Event::JobOutput { session, .. }
+            | Event::JobExited { session, .. } => session.as_ref(),
+            Event::JobStarted { job } => job.session.as_ref(),
             _ => None,
         }
     }

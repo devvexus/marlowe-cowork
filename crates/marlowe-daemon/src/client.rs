@@ -98,7 +98,9 @@ fn dispatch(core: &Arc<Core>, client: u64, client_name: &str, req: Request) {
     let refuse = |(session, message): (Option<marlowe_proto::SessionId>, String)| reply(Event::Error { session, message });
     match req {
         Request::Hello { .. } => reply(Event::Error { session: None, message: "already greeted".into() }),
-        Request::Ask { session, text, workspace } => {
+        // `images` (G, H) and `options` (K) are carried on the wire; the conductor applies them
+        // once those tracks land.
+        Request::Ask { session, text, workspace, .. } => {
             if let Err(r) = core.ask(client, session, text, workspace) {
                 refuse(r);
             }
@@ -170,5 +172,52 @@ fn dispatch(core: &Arc<Core>, client: u64, client_name: &str, req: Request) {
         | Request::ContextPolicies
         | Request::SetContextPolicy { .. }
         | Request::ApplyOllamaServer { .. }) => crate::context_ops::dispatch(core, client, ctx),
+        // M4.6: one arm per owning track (design section 7). The stubs answer `Error` until the
+        // track fills its `*_ops.rs`; no track edits this match.
+        mode @ (Request::SetMode { .. }
+        | Request::ListRules { .. }
+        | Request::AddRule { .. }
+        | Request::RemoveRule { .. }
+        | Request::ListHooks { .. }
+        | Request::TrustHooks { .. }
+        | Request::GetSettings { .. }
+        | Request::SetSetting { .. }) => crate::mode_ops::dispatch(core, client, mode),
+        cond @ (Request::Compact { .. }
+        | Request::AddDir { .. }
+        | Request::SwitchModel { .. }
+        | Request::ListCommands { .. }
+        | Request::ListAgentTypes { .. }
+        | Request::AnswerQuestion { .. }
+        | Request::ReloadInstructions { .. }
+        | Request::DetachCall { .. }) => crate::conductor_ops::dispatch(core, client, cond),
+        sched @ (Request::ListSchedules | Request::AddSchedule { .. } | Request::RemoveSchedule { .. }) => {
+            crate::schedule_ops::dispatch(core, client, sched)
+        }
+        sess @ (Request::Rewind { .. }
+        | Request::ListCheckpoints { .. }
+        | Request::SessionDiff { .. }
+        | Request::SessionCost { .. }
+        | Request::RenameSession { .. }
+        | Request::ForkSession { .. }
+        | Request::ExportSession { .. }) => crate::session_ops::dispatch(core, client, sess),
+        pr @ Request::OpenPr { .. } => crate::pr_ops::dispatch(core, client, pr),
+        exp @ Request::ListExperiments { .. } => crate::exp_ops::dispatch(core, client, exp),
+        mcp @ (Request::McpList { .. } | Request::McpAdd { .. } | Request::McpRemove { .. }) => {
+            crate::mcp_ops::dispatch(core, client, mcp)
+        }
+        blob @ Request::PutBlob { .. } => crate::blob_ops::dispatch(core, client, blob),
+        job @ (Request::ListJobs { .. } | Request::KillJob { .. } | Request::UserShell { .. }) => {
+            crate::job_ops::dispatch(core, client, job)
+        }
     }
+}
+
+/// The answer a seam stub gives: an `Error` to this client naming the request, its session (if
+/// any) and the track that will implement it.
+pub(crate) fn not_yet(core: &Arc<Core>, client: u64, req: &Request, track: &str) {
+    let v = serde_json::to_value(req).unwrap_or_default();
+    let op = v.get("op").and_then(|o| o.as_str()).unwrap_or("request").to_string();
+    let session = v.get("session").and_then(|s| s.as_str()).map(|s| marlowe_proto::SessionId(s.to_string()));
+    let message = format!("`{op}` is not available yet (M4.6 track {track})");
+    core.bus.reply(client, Event::Error { session, message });
 }

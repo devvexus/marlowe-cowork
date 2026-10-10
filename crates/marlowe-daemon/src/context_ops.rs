@@ -101,6 +101,7 @@ fn apply(core: &Core, change: ServerChange) {
         summary,
         detail: detail.join("\n"),
         run: None,
+        proposed_rule: None,
     });
     let decision = rx.recv_timeout(core.cfg.approval_timeout).unwrap_or(ApprovalDecision::Deny);
     core.approvals.remove(id);

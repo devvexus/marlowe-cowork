@@ -1,0 +1,1 @@
+//! Background shells: `run_in_background`, job_output, job_watch, job_kill; the job table lives in `BuiltinTools::state` (design 2.1 T15-T18). Track B; empty until it lands (declared by the seam so no track edits `lib.rs`).

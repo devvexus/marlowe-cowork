@@ -47,6 +47,8 @@ fn enter_sends_shift_enter_breaks_the_line() {
             session: None,
             text: "line one\nline two".into(),
             workspace: Some("C:/work/valiance".into()),
+            images: Vec::new(),
+            options: None,
         }]
     );
     assert!(s.composer.text().is_empty());
@@ -69,7 +71,7 @@ fn the_new_session_is_adopted_and_the_turn_streams() {
     // A later ask in a busy session is a steer, shown at once.
     type_str(&mut s, "also check CI");
     let reqs = s.on_key(key(KeyCode::Enter));
-    assert_eq!(reqs, vec![Request::Ask { session: Some(sid()), text: "also check CI".into(), workspace: None }]);
+    assert_eq!(reqs, vec![Request::Ask { session: Some(sid()), text: "also check CI".into(), workspace: None, images: Vec::new(), options: None }]);
     assert_eq!(s.entries.last(), Some(&Entry::User { text: "also check CI".into(), steer: true }));
 }
 
@@ -206,7 +208,7 @@ fn a_restarted_daemon_reloads_and_drops_the_lost_turn() {
         StoredTurn {
             idx: 2,
             role: Role::Tool,
-            content: vec![Part::ToolResult(ToolResult { call_id: "c1".into(), content: "x\ny".into(), is_error: false })],
+            content: vec![Part::ToolResult(ToolResult { call_id: "c1".into(), content: "x\ny".into(), is_error: false, parts: Vec::new() })],
             at_ms: 0,
         },
     ];
@@ -254,6 +256,7 @@ fn approvals_queue_and_resolve_from_any_client() {
             summary: format!("cmd {id}"),
             detail: String::new(),
             run: None,
+            proposed_rule: None,
         });
     }
     assert_eq!(s.activity(), Activity::Awaiting);
@@ -275,6 +278,7 @@ fn ask_approval(s: &mut State, id: u64, detail: &str) {
         summary: "bash: echo hi".into(),
         detail: detail.into(),
         run: None,
+        proposed_rule: None,
     });
 }
 

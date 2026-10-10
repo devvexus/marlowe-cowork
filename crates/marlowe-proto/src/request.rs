@@ -3,9 +3,10 @@
 use std::fmt;
 use std::str::FromStr;
 
-use marlowe_model::{Effort, ModelRef, ProviderKind};
+use marlowe_model::{Effort, ImageRef, ModelRef, ProviderKind};
 use serde::{Deserialize, Serialize};
 
+use crate::coding::{ExportFormat, HeadlessOptions, PermissionMode, RewindScope, SettingsScope};
 use crate::context::{ContextPolicy, KvType};
 use crate::crew::{CrewBudget, Playbook, RunId};
 use crate::ids::{ApprovalId, SessionId};
@@ -43,6 +44,11 @@ pub enum ApprovalDecision {
     /// Allow this tool for the rest of the session without asking.
     AllowForSession,
     Deny,
+    /// Allow, and stop asking for the rule the request proposed (`Event::ApprovalRequested`'s
+    /// `proposed_rule`, e.g. `bash(cargo test*)`), stored at `scope` ("always for this project"
+    /// is `Local`). Design 2.3 M11; track E keeps the proposal per approval and writes the rule.
+    /// Until E lands it allows this call only.
+    AllowPattern { scope: SettingsScope },
 }
 
 impl ApprovalDecision {
@@ -143,6 +149,12 @@ pub enum Request {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace: Option<String>,
+        /// Pasted or attached images (U3), uploaded first with `PutBlob`. G and H.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageRef>,
+        /// Headless overrides for this ask (H4). K.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        options: Option<HeadlessOptions>,
     },
     /// Cancels the session's running turn.
     Interrupt { session: SessionId },
@@ -291,4 +303,168 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         flash_attn: Option<bool>,
     },
+
+    // ---- M4.6. Each group is routed in `marlowe-daemon/src/client.rs` to the `*_ops.rs` its
+    // track owns (design section 7); until that track lands the stub answers with an `Error`.
+
+    // E: modes, rules, hooks, settings (`mode_ops.rs`).
+    /// Answered with `ModeChanged` (broadcast).
+    SetMode { session: SessionId, mode: PermissionMode },
+    /// Answered with `Rules`.
+    ListRules {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
+    /// `pattern` like `bash(git push*)`; answered with `Rules`.
+    AddRule {
+        action: crate::coding::RuleAction,
+        pattern: String,
+        scope: SettingsScope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
+    RemoveRule {
+        pattern: String,
+        scope: SettingsScope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
+    /// Answered with `Hooks`.
+    ListHooks {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
+    /// Trusts a project's hooks at this digest; answered with `Hooks`.
+    TrustHooks { workspace: String, digest: String },
+    /// Answered with `Settings`.
+    GetSettings {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
+    /// Sets one dotted key (`network.allow_hosts`) in a layer; answered with `Settings`.
+    SetSetting {
+        scope: SettingsScope,
+        key: String,
+        value: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
+
+    // F: the conductor (`conductor_ops.rs`).
+    /// `/compact [focus]`.
+    Compact {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        focus: Option<String>,
+    },
+    /// `/add-dir`: another workspace root for the session.
+    AddDir { session: SessionId, path: String },
+    /// `/model` mid-session; history is kept.
+    SwitchModel {
+        session: SessionId,
+        model: ModelRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<Effort>,
+    },
+    /// Answered with `Commands`.
+    ListCommands {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
+    /// Answered with `AgentTypes`.
+    ListAgentTypes {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
+    /// Answers a `QuestionAsked` (one entry per question, in order).
+    AnswerQuestion { session: SessionId, id: String, answers: Vec<String> },
+    /// `/memory`: re-read instruction files.
+    ReloadInstructions { session: SessionId },
+    /// Ctrl+B: move a running foreground shell call to a background job.
+    DetachCall { session: SessionId, call_id: String },
+
+    // F: schedules (`schedule_ops.rs`).
+    /// Answered with `Schedules`.
+    ListSchedules,
+    /// `/loop <interval> <text>`; answered with `Schedules`.
+    AddSchedule {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        every_secs: u64,
+        text: String,
+    },
+    RemoveSchedule { id: String },
+
+    // F2: sessions and checkpoints (`session_ops.rs`).
+    /// `/rewind`; answered with `Rewound` (broadcast).
+    Rewind { session: SessionId, turn: u32, scope: RewindScope },
+    /// Answered with `Checkpoints`.
+    ListCheckpoints { session: SessionId },
+    /// `/diff [turn]`; answered with `SessionDiff`.
+    SessionDiff {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn: Option<u32>,
+    },
+    /// `/cost`; answered with `SessionCost`.
+    SessionCost { session: SessionId },
+    /// `/rename`; answered with `SessionOpened` (broadcast).
+    RenameSession { session: SessionId, title: String },
+    /// `/fork`: a copy up to `at_turn` under a new id; answered with `SessionOpened`.
+    ForkSession {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at_turn: Option<u32>,
+    },
+    /// `/export`; answered with `SessionExported`.
+    ExportSession { session: SessionId, format: ExportFormat },
+
+    // J: pull requests (`pr_ops.rs`).
+    /// Pushes a merged run's branch and opens a PR, after one approval; answered with `PrOpened`.
+    OpenPr {
+        run: RunId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        body: Option<String>,
+    },
+
+    // J2: experiments (`exp_ops.rs`).
+    /// Answered with `Experiments`.
+    ListExperiments { limit: u32 },
+
+    // K: MCP servers (`mcp_ops.rs`).
+    /// Answered with `McpServers`.
+    McpList {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
+    /// Adds a server (`.mcp.json` shape for `config`); answered with `McpServers`.
+    McpAdd {
+        name: String,
+        scope: SettingsScope,
+        config: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
+    McpRemove {
+        name: String,
+        scope: SettingsScope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
+
+    // G: images (`blob_ops.rs`).
+    /// Stores an image in the blob store (downscaled as needed); answered with `BlobStored`.
+    PutBlob { mime: String, base64: String },
+
+    // B: background jobs and the `!` shell (`job_ops.rs`).
+    /// Answered with `Jobs`.
+    ListJobs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+    },
+    KillJob { id: String },
+    /// U8 `!cmd`: runs as the user (no approval), its output goes into the session's context.
+    UserShell { session: SessionId, command: String },
 }

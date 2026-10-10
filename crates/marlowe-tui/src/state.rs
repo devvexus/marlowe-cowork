@@ -855,7 +855,7 @@ impl State {
                     out.push(Request::ContextPolicies);
                 }
             }
-            Event::ApprovalRequested { approval, session, tool, summary, detail, run } => {
+            Event::ApprovalRequested { approval, session, tool, summary, detail, run, .. } => {
                 if !self.approvals.iter().any(|a| a.id == *approval) {
                     let first = self.approvals.is_empty();
                     self.approvals.push(Approval {

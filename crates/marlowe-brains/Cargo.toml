@@ -9,6 +9,8 @@ description = "Model library, slots and effort, provider registry and detection,
 marlowe-model.workspace = true
 marlowe-proto.workspace = true
 marlowe-hw.workspace = true
+# The credential scrub list lives with the child spawner.
+marlowe-os.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
