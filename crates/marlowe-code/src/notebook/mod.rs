@@ -2,7 +2,8 @@
 //!
 //! [`render`] turns an `.ipynb` into what `read` returns: every cell with its index, id, type and
 //! source, then its outputs (stream text, results, errors with ANSI codes stripped); image
-//! outputs come back as bytes for `ResultPart::Image`. [`edit`] is `notebook_edit`: replace,
+//! outputs come back as bytes for `ResultPart::Image`; [`render_range`] renders a window of cells
+//! under a byte cap, for large notebooks. [`edit`] is `notebook_edit`: replace,
 //! insert or delete one cell, addressed by id or index; the file is written back with the
 //! notebook's own indentation and sorted keys, as Jupyter writes it.
 //!
@@ -110,75 +111,122 @@ pub fn language(nb: &Value) -> String {
 
 /// Every cell with its outputs; image outputs decoded into `images`.
 pub fn render(nb: &Value) -> Rendered {
-    let cells = nb["cells"].as_array().cloned().unwrap_or_default();
+    let r = render_range(nb, 0, usize::MAX, usize::MAX);
+    Rendered { text: r.text, images: r.images, cells: r.cells }
+}
+
+/// Part of a notebook: cells `first..end` (0-based, `end` exclusive) of `cells`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedRange {
+    pub text: String,
+    pub images: Vec<NotebookImage>,
+    /// Cells in the whole notebook.
+    pub cells: usize,
+    pub first: usize,
+    pub end: usize,
+    /// The one cell shown was cut at the byte cap (it alone is larger).
+    pub cut: bool,
+}
+
+/// Up to `limit` cells from cell `from`, whole cells only while the text stays within
+/// `max_bytes`; a first cell larger than that is cut, and says so.
+pub fn render_range(nb: &Value, from: usize, limit: usize, max_bytes: usize) -> RenderedRange {
+    let cells = nb["cells"].as_array().map(Vec::as_slice).unwrap_or(&[]);
     let lang = language(nb);
+    let mut out =
+        RenderedRange { text: String::new(), images: Vec::new(), cells: cells.len(), first: from, end: from, cut: false };
+    for (i, cell) in cells.iter().enumerate().skip(from).take(limit) {
+        let (mut text, images) = render_cell(i, cell, &lang);
+        if out.text.len() + text.len() > max_bytes {
+            if out.end > from {
+                break;
+            }
+            let mut cut = max_bytes.min(text.len());
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            let more = text.len() - cut;
+            text.truncate(cut);
+            text.push_str(&format!("\n…[cell {i} cut here: {more} more bytes]\n"));
+            out.cut = true;
+        }
+        out.text.push_str(&text);
+        out.images.extend(images);
+        out.end = i + 1;
+        if out.cut {
+            break;
+        }
+    }
+    out
+}
+
+/// One cell with its outputs, and its image outputs decoded.
+fn render_cell(i: usize, cell: &Value, lang: &str) -> (String, Vec<NotebookImage>) {
     let mut text = String::new();
     let mut images = Vec::new();
-    for (i, cell) in cells.iter().enumerate() {
-        let kind = cell.get("cell_type").and_then(Value::as_str).unwrap_or("code");
-        let id = cell.get("id").and_then(Value::as_str).map(|s| format!(" id=\"{s}\"")).unwrap_or_default();
-        let count = match cell.get("execution_count") {
-            Some(Value::Number(n)) => format!(" execution_count=\"{n}\""),
-            _ => String::new(),
-        };
-        let lang_attr = if kind == "code" { format!(" language=\"{lang}\"") } else { String::new() };
-        text.push_str(&format!("<cell index=\"{i}\"{id} type=\"{kind}\"{lang_attr}{count}>\n"));
-        let src = joined(cell.get("source"));
-        text.push_str(src.trim_end_matches('\n'));
-        text.push_str("\n</cell>\n");
-        let outputs = cell.get("outputs").and_then(Value::as_array).cloned().unwrap_or_default();
-        if outputs.is_empty() {
-            continue;
-        }
-        let mut out_text = String::new();
-        for o in &outputs {
-            match o.get("output_type").and_then(Value::as_str).unwrap_or("") {
-                "stream" => out_text.push_str(&clip(&strip_ansi(&joined(o.get("text"))))),
-                "error" => {
-                    let tb = o.get("traceback").and_then(Value::as_array).map(|a| {
-                        a.iter().filter_map(Value::as_str).map(strip_ansi).collect::<Vec<_>>().join("\n")
-                    });
-                    let head = format!(
-                        "{}: {}",
-                        o.get("ename").and_then(Value::as_str).unwrap_or("Error"),
-                        o.get("evalue").and_then(Value::as_str).unwrap_or("")
-                    );
-                    out_text.push_str(&clip(&tb.filter(|t| !t.is_empty()).unwrap_or(head)));
-                }
-                "execute_result" | "display_data" => {
-                    let data = o.get("data").and_then(Value::as_object).cloned().unwrap_or_default();
-                    let mut shown = false;
-                    for mime in ["image/png", "image/jpeg", "image/gif", "image/webp"] {
-                        let Some(b64) = data.get(mime).map(|v| joined(Some(v))) else { continue };
-                        if let Some(bytes) = media::base64_decode(&b64) {
-                            if let Some((m, w, h)) = media::sniff_image(&bytes) {
-                                out_text.push_str(&format!("[image output: {m}, {w}x{h}, attached]"));
-                                images.push(NotebookImage { mime: m, bytes, width: w, height: h, cell: i });
-                                shown = true;
-                                break;
-                            }
-                        }
-                    }
-                    if !shown {
-                        let t = data
-                            .get("text/plain")
-                            .or_else(|| data.get("text/markdown"))
-                            .or_else(|| data.get("text/html"))
-                            .map(|v| joined(Some(v)));
-                        if let Some(t) = t {
-                            out_text.push_str(&clip(&strip_ansi(&t)));
-                        }
-                    }
-                }
-                _ => {}
-            }
-            if !out_text.ends_with('\n') {
-                out_text.push('\n');
-            }
-        }
-        text.push_str(&format!("<outputs cell=\"{i}\">\n{}</outputs>\n", out_text));
+    let kind = cell.get("cell_type").and_then(Value::as_str).unwrap_or("code");
+    let id = cell.get("id").and_then(Value::as_str).map(|s| format!(" id=\"{s}\"")).unwrap_or_default();
+    let count = match cell.get("execution_count") {
+        Some(Value::Number(n)) => format!(" execution_count=\"{n}\""),
+        _ => String::new(),
+    };
+    let lang_attr = if kind == "code" { format!(" language=\"{lang}\"") } else { String::new() };
+    text.push_str(&format!("<cell index=\"{i}\"{id} type=\"{kind}\"{lang_attr}{count}>\n"));
+    let src = joined(cell.get("source"));
+    text.push_str(src.trim_end_matches('\n'));
+    text.push_str("\n</cell>\n");
+    let outputs = cell.get("outputs").and_then(Value::as_array).cloned().unwrap_or_default();
+    if outputs.is_empty() {
+        return (text, images);
     }
-    Rendered { text, images, cells: cells.len() }
+    let mut out_text = String::new();
+    for o in &outputs {
+        match o.get("output_type").and_then(Value::as_str).unwrap_or("") {
+            "stream" => out_text.push_str(&clip(&strip_ansi(&joined(o.get("text"))))),
+            "error" => {
+                let tb = o.get("traceback").and_then(Value::as_array).map(|a| {
+                    a.iter().filter_map(Value::as_str).map(strip_ansi).collect::<Vec<_>>().join("\n")
+                });
+                let head = format!(
+                    "{}: {}",
+                    o.get("ename").and_then(Value::as_str).unwrap_or("Error"),
+                    o.get("evalue").and_then(Value::as_str).unwrap_or("")
+                );
+                out_text.push_str(&clip(&tb.filter(|t| !t.is_empty()).unwrap_or(head)));
+            }
+            "execute_result" | "display_data" => {
+                let data = o.get("data").and_then(Value::as_object).cloned().unwrap_or_default();
+                let mut shown = false;
+                for mime in ["image/png", "image/jpeg", "image/gif", "image/webp"] {
+                    let Some(b64) = data.get(mime).map(|v| joined(Some(v))) else { continue };
+                    if let Some(bytes) = media::base64_decode(&b64) {
+                        if let Some((m, w, h)) = media::sniff_image(&bytes) {
+                            out_text.push_str(&format!("[image output: {m}, {w}x{h}, attached]"));
+                            images.push(NotebookImage { mime: m, bytes, width: w, height: h, cell: i });
+                            shown = true;
+                            break;
+                        }
+                    }
+                }
+                if !shown {
+                    let t = data
+                        .get("text/plain")
+                        .or_else(|| data.get("text/markdown"))
+                        .or_else(|| data.get("text/html"))
+                        .map(|v| joined(Some(v)));
+                    if let Some(t) = t {
+                        out_text.push_str(&clip(&strip_ansi(&t)));
+                    }
+                }
+            }
+            _ => {}
+        }
+        if !out_text.ends_with('\n') {
+            out_text.push('\n');
+        }
+    }
+    text.push_str(&format!("<outputs cell=\"{i}\">\n{}</outputs>\n", out_text));
+    (text, images)
 }
 
 /// How `notebook_edit` changes the notebook.

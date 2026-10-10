@@ -22,6 +22,24 @@ fn parity_t4_fixture_notebook_rendered() {
     assert!(img.bytes.starts_with(b"\x89PNG"));
 }
 
+/// A cell range renders whole cells until the byte cap and cuts only a first cell that alone is
+/// larger than the cap.
+#[test]
+fn a_cell_range_stops_at_whole_cells_under_the_cap() {
+    let nb = parse(DEMO.as_bytes()).unwrap();
+    let r = render_range(&nb, 1, 2, usize::MAX);
+    assert_eq!((r.first, r.end, r.cells, r.cut), (1, 3, 4, false));
+    assert!(r.text.starts_with("<cell index=\"1\"") && !r.text.contains("<cell index=\"3\""), "{}", r.text);
+    assert_eq!(r.images.len(), 1, "cell 2's image comes with it");
+    let one = render_range(&nb, 1, 1, usize::MAX).text.len();
+    let r = render_range(&nb, 1, usize::MAX, one + 1);
+    assert_eq!((r.end, r.cut), (2, false), "cell 2 would pass the cap");
+    let r = render_range(&nb, 1, usize::MAX, 10);
+    assert_eq!((r.end, r.cut), (2, true));
+    assert!(r.text.contains("…[cell 1 cut here:"), "{}", r.text);
+    assert_eq!(render_range(&nb, 9, 5, usize::MAX).end, 9, "past the end: nothing");
+}
+
 #[test]
 fn an_unchanged_notebook_serialises_byte_identical() {
     let nb = parse(DEMO.as_bytes()).unwrap();

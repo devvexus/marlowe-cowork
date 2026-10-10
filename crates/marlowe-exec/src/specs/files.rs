@@ -6,19 +6,26 @@
 //! Read-before-edit: `read` records a `FileState` in the conversation's extensions, and the
 //! edit tools record what they wrote. [`FileGuard`] (this group's middleware) refuses an edit of
 //! an existing file the agent has not read, or that changed since, before the approval gate asks;
-//! the tools re-check staleness under the write lock; after every step it polls the files the
-//! agent knows and appends a reminder with a short diff for any changed by something else.
-//! Calls outside a session (no middleware, empty extensions) keep the old free-form behaviour.
+//! the tools re-check staleness under the write lock; after every step, and before each new user
+//! turn, it polls the files the agent knows and adds a reminder with a short diff for any changed
+//! by something else. Calls outside a session (no middleware, empty extensions) keep the old
+//! free-form behaviour.
 //!
-//! Secret hygiene (B6): writing a secret-shaped file (`.env`, keys, credential stores) or content
-//! that looks like a credential asks, inside the workspace and in a crew sandbox alike.
+//! Off this machine (UNC hosts, device paths; [`crate::text::off_machine`]) nothing touches the
+//! filesystem before approval: `read` and the writers ask, naming the host as egress, the
+//! middleware skips its stat, and a tool opens such a path only when `FileGuard::before_call`
+//! cleared it, which happens only after the gate.
+//!
+//! Secret hygiene (B6): writing a secret-shaped file (`.env`, keys, credential stores, judged as
+//! Win32 spells the name) or content that looks like a credential asks. The crew's own consequence
+//! (`CrewTools`) does not consult this group yet, so in crew runs it is not live (seam-crew).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use marlowe_agent::{
     CallCtx, CallFlow, Consequence, Conversation, Effects, Exposure, Mutation, SandboxView, StepInfo, ToolCallReq,
-    ToolCtx, ToolGroup, ToolMiddleware, ToolOutcome,
+    ToolCtx, ToolGroup, ToolMiddleware, ToolOutcome, TurnFlow,
 };
 use marlowe_code::edit::{self, FileEdit, MultiError, Planned, TextDoc, Tier};
 use marlowe_code::editlines::{self, Anchor, Op};
@@ -54,6 +61,8 @@ pub fn tools() -> Vec<ToolDef> {
     vec![
         ToolDef::new(read_spec(), ToolGroup::Files, Effects::READ, read)
             .path_args(&["path"])
+            .consequence(read_consequence)
+            .egress(off_machine_host)
             .describe(|c| describe_by(c, "path"))
             .taints(untrusted_read),
         writer(write_spec(), write),
@@ -69,6 +78,7 @@ fn writer(spec: ToolSpec, call: super::CallFn) -> ToolDef {
         .path_args(&["path"])
         .consequence(write_consequence)
         .crew_consequence(crew_write_consequence)
+        .egress(off_machine_host)
         .describe(|c| describe_by(c, "path"))
         .mutation(written_paths)
 }
@@ -105,9 +115,69 @@ impl Default for BlobDir {
 
 // ---------------------------------------------------------------- policy
 
-/// Reading outside the user's own folders brings untrusted content in (read, glob, grep).
+/// Reading outside the user's own folders brings untrusted content in (read, glob, grep). A path
+/// off this machine is untrusted without asking the filesystem (that would reach the host).
 pub(crate) fn untrusted_read(tools: &BuiltinTools, call: &ToolCallReq) -> bool {
-    !tools.trusted_read(str_arg(&call.args, "path").unwrap_or("."))
+    let raw = str_arg(&call.args, "path").unwrap_or(".");
+    off_machine_of(tools.root.as_deref(), raw).is_some() || !tools.trusted_read(raw)
+}
+
+/// Where `raw` leaves this machine (a UNC host, a device), judged on strings only: its own
+/// spelling, then resolved against `root` (a workspace on a share).
+fn off_machine_of(root: Option<&Path>, raw: &str) -> Option<OffMachine> {
+    off_machine(raw).or_else(|| off_machine(&paths::resolve(root, raw).to_string_lossy()))
+}
+
+/// Asks before a call reaches a network host the user has not allowed in this session, or a
+/// device. Runs before anything that touches the filesystem, which for a UNC path is already an
+/// SMB connection (non-negotiable 5: new network hosts need approval).
+fn off_machine_ask(root: Option<&Path>, call: &ToolCallReq, exposure: &Exposure) -> Option<Consequence> {
+    for raw in targets(&call.args) {
+        let Some(om) = off_machine_of(root, &raw) else { continue };
+        if om.host().is_some_and(|h| exposure.approved_hosts.contains(h)) {
+            continue;
+        }
+        return Some(Consequence::Ask {
+            summary: format!("{} {} ({}; nothing leaves this machine without approval)", call.name, clip(&raw, 100), om.describe()),
+        });
+    }
+    None
+}
+
+/// The network host a call reaches, recorded as allowed for the session when the user approves.
+fn off_machine_host(tools: &BuiltinTools, call: &ToolCallReq) -> Option<String> {
+    targets(&call.args)
+        .iter()
+        .find_map(|raw| off_machine_of(tools.root.as_deref(), raw).and_then(|om| om.host().map(str::to_string)))
+}
+
+/// `read` is free on this machine; off it, it asks.
+fn read_consequence(tools: &BuiltinTools, call: &ToolCallReq, exposure: &Exposure) -> Consequence {
+    off_machine_ask(tools.root.as_deref(), call, exposure).unwrap_or(Consequence::Free)
+}
+
+/// The key an approved off-machine target is cleared under (see [`Cleared`]).
+fn clear_key(abs: &Path) -> String {
+    abs.to_string_lossy().replace('/', "\\").to_lowercase()
+}
+
+/// Off-machine targets whose call passed the approval gate: [`FileGuard::before_call`] (which
+/// runs only for a call the gate let through) adds one per target, and the tool spends it before
+/// it opens the path. Without one (no session, a crew host without the middleware) the tool
+/// refuses, so an off-machine path is never opened unapproved.
+#[derive(Debug, Default, Clone)]
+struct Cleared(std::collections::HashMap<String, usize>);
+
+impl Cleared {
+    fn spend(&mut self, key: &str) -> bool {
+        match self.0.get_mut(key) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 /// The raw paths a call names: `path`, then each `edits[].path` (multi_edit), deduplicated.
@@ -146,11 +216,24 @@ fn written_text(args: &Value) -> Vec<&str> {
     out
 }
 
+/// Why the file `raw` names is secret-shaped: judged on its spelling, on the path it resolves to
+/// (`cfg/.env/.`), and on what an existing local file really is (a link, an 8.3 short name such
+/// as `ENV~1`). Off-machine paths are judged on the strings only.
+fn secret_target(root: Option<&Path>, raw: &str) -> Option<&'static str> {
+    let abs = paths::resolve(root, raw);
+    secret_path(raw).or_else(|| secret_path(&abs.to_string_lossy())).or_else(|| {
+        if off_machine_of(root, raw).is_some() {
+            return None;
+        }
+        std::fs::canonicalize(&abs).ok().and_then(|real| secret_path(&real.to_string_lossy()))
+    })
+}
+
 /// Asks for a secret-shaped target or credential-shaped content (design 2.1 B6).
-fn secret_ask(call: &ToolCallReq) -> Option<Consequence> {
+fn secret_ask(root: Option<&Path>, call: &ToolCallReq) -> Option<Consequence> {
     let ts = targets(&call.args);
     for p in &ts {
-        if let Some(why) = secret_path(p) {
+        if let Some(why) = secret_target(root, p) {
             return Some(Consequence::Ask {
                 summary: format!("{} {} ({why}; secrets need approval)", call.name, crate::first_line(p, 100)),
             });
@@ -167,9 +250,11 @@ fn secret_ask(call: &ToolCallReq) -> Option<Consequence> {
     None
 }
 
-/// Writes inside a root that frees writes are free; anywhere else, or a secret, asks.
-fn write_consequence(tools: &BuiltinTools, call: &ToolCallReq, _exposure: &Exposure) -> Consequence {
-    if let Some(ask) = secret_ask(call) {
+/// Writes inside a root that frees writes are free; anywhere else, off this machine, or a secret,
+/// asks.
+fn write_consequence(tools: &BuiltinTools, call: &ToolCallReq, exposure: &Exposure) -> Consequence {
+    let root = tools.root.as_deref();
+    if let Some(ask) = off_machine_ask(root, call, exposure).or_else(|| secret_ask(root, call)) {
         return ask;
     }
     match targets(&call.args).into_iter().find(|p| !tools.inside_root(p)) {
@@ -184,10 +269,11 @@ fn write_consequence(tools: &BuiltinTools, call: &ToolCallReq, _exposure: &Expos
 fn crew_write_consequence(
     _tools: &BuiltinTools,
     call: &ToolCallReq,
-    _exposure: &Exposure,
+    exposure: &Exposure,
     sandbox: &dyn SandboxView,
 ) -> Consequence {
-    if let Some(ask) = secret_ask(call) {
+    let root = Some(sandbox.root());
+    if let Some(ask) = off_machine_ask(root, call, exposure).or_else(|| secret_ask(root, call)) {
         return ask;
     }
     match targets(&call.args).into_iter().find(|p| !sandbox.allows_write(Path::new(p))) {
@@ -213,24 +299,43 @@ struct Files<'a> {
     tools: &'a BuiltinTools,
     cx: &'a CallCtx,
     root: Option<&'a Path>,
+    /// Off-machine targets this call already spent its clearance on.
+    spent: std::cell::RefCell<Vec<String>>,
 }
 
 impl<'a> Files<'a> {
     fn new(tools: &'a BuiltinTools, cx: &'a CallCtx) -> Self {
-        Self { tools, cx, root: tools.root_for_ref(&cx.tool) }
+        Self { tools, cx, root: tools.root_for_ref(&cx.tool), spent: Default::default() }
     }
 
     fn port(&self) -> &dyn Workspace {
         self.tools.workspace_port()
     }
 
-    fn resolve(&self, raw: &str) -> PathBuf {
-        paths::resolve(self.root, raw)
+    /// `raw` resolved, refused before any filesystem access when it leaves this machine and no
+    /// approval cleared it (see [`Cleared`]).
+    fn target(&self, raw: &str) -> Result<PathBuf, ToolOutcome> {
+        let abs = paths::resolve(self.root, raw);
+        let Some(om) = off_machine_of(self.root, raw) else { return Ok(abs) };
+        let key = clear_key(&abs);
+        if self.spent.borrow().contains(&key) {
+            return Ok(abs);
+        }
+        if self.cx.scope.with_ext(|e| e.get_mut::<Cleared>().is_some_and(|c| c.spend(&key))) {
+            self.spent.borrow_mut().push(key);
+            return Ok(abs);
+        }
+        Err(ToolOutcome::error(format!(
+            "{} {}, so it was not opened: a path off this machine is opened only after the user \
+             approves it in a session.",
+            clip(raw, 100),
+            om.describe()
+        )))
     }
 
     fn path(&self, args: &Value) -> Result<PathBuf, ToolOutcome> {
         match str_arg(args, "path") {
-            Some(p) if !p.trim().is_empty() => Ok(self.resolve(p)),
+            Some(p) if !p.trim().is_empty() => self.target(p),
             _ => Err(ToolOutcome::error("`path` is required")),
         }
     }
@@ -258,15 +363,21 @@ impl<'a> Files<'a> {
     /// Refuses when the agent read `abs` and it changed since (checked under the write lock, so
     /// a change between approval and the write is caught too). Files the agent never read pass:
     /// the middleware refuses those before approval, and calls outside a session have no states.
+    /// Off this machine the middleware did not look (that would have reached the host before
+    /// approval), so an unread existing file is refused here instead.
     fn guard_fresh(&self, abs: &Path) -> Result<(), ToolOutcome> {
         let port = self.port();
+        let strict = off_machine(&abs.to_string_lossy()).is_some();
         let fresh = self.cx.scope.with_ext(|e| {
-            let states = e.get::<FileStates>()?;
-            states.get(abs)?;
+            let states = e.get_or_default::<FileStates>();
+            if !strict {
+                states.get(abs)?;
+            }
             Some(states.check(port, abs))
         });
         match fresh {
             Some(Freshness::Stale { diff }) => Err(stale(&self.shown(abs), &diff)),
+            Some(Freshness::Unread) => Err(unread(&self.shown(abs))),
             _ => Ok(()),
         }
     }
@@ -395,29 +506,19 @@ fn read(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
         ));
     }
     let name = abs.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-    // Huge files on this machine: a prefix only, tracked by size and mtime.
-    let (bytes, whole) = if meta.len > MAX_HASH_BYTES && f.port().kind() == "local" {
-        use std::io::Read;
-        let mut buf = Vec::new();
-        let r = std::fs::File::open(&abs).and_then(|h| h.take(MAX_READ_BYTES + 1).read_to_end(&mut buf));
-        if let Err(e) = r {
-            return ToolOutcome::error(format!("cannot read {shown}: {e}"));
-        }
-        (buf, false)
-    } else {
-        match f.port().read(&abs) {
-            Ok(b) => (b, true),
-            Err(e) => return ToolOutcome::error(format!("cannot read {shown}: {e}")),
-        }
-    };
-    if whole {
-        f.record(&abs, &bytes);
-    } else {
+    // Huge files on this machine are streamed a window at a time and tracked by size and mtime.
+    if meta.len > MAX_HASH_BYTES && f.port().kind() == "local" {
         f.record_meta(&abs, &meta);
+        return read_huge(tools, args, &abs, &shown, meta.len);
     }
+    let bytes = match f.port().read(&abs) {
+        Ok(b) => b,
+        Err(e) => return ToolOutcome::error(format!("cannot read {shown}: {e}")),
+    };
+    f.record(&abs, &bytes);
     if name.ends_with(".ipynb") {
         if let Ok(nb) = notebook::parse(&bytes) {
-            return read_notebook(tools, &shown, &nb);
+            return read_notebook(tools, args, &shown, &nb);
         }
     }
     if let Some((mime, w, h)) = media::sniff_image(&bytes) {
@@ -426,31 +527,74 @@ fn read(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
     if pdf::is_pdf(&bytes) {
         return read_pdf(&shown, &bytes, str_arg(args, "pages"));
     }
-    if args.get("pages").is_some_and(|p| !p.is_null()) {
-        return ToolOutcome::error(format!("`pages` is for PDFs, and {shown} is not one. Use `offset` and `limit`."));
+    if let Some(e) = pages_not_pdf(args, &shown) {
+        return e;
     }
-    read_text(tools, args, &shown, bytes, meta.len)
+    read_text(tools, args, &shown, &bytes)
 }
 
-/// The text of `bytes` (BOM and UTF-16 decoded) and whether it was cut at [`MAX_READ_BYTES`];
-/// `None` for binary.
-fn decode_text(mut bytes: Vec<u8>) -> Option<(String, bool)> {
-    if bytes.len() as u64 <= MAX_READ_BYTES {
-        return TextDoc::decode(&bytes).map(|d| (d.text, false));
+fn pages_not_pdf(args: &Value, shown: &str) -> Option<ToolOutcome> {
+    args.get("pages").is_some_and(|p| !p.is_null()).then(|| {
+        ToolOutcome::error(format!("`pages` is for PDFs, and {shown} is not one. Use `offset` and `limit`."))
+    })
+}
+
+/// The whole text of `bytes` (BOM and UTF-16 decoded) and whether invalid UTF-8 was replaced;
+/// `None` for binary. A large file with a stray invalid byte (a log) still reads as text.
+fn decode_text(bytes: &[u8]) -> Option<(String, bool)> {
+    if let Some(d) = TextDoc::decode(bytes) {
+        return Some((d.text, false));
     }
-    bytes.truncate(MAX_READ_BYTES as usize);
-    let start = if bytes.starts_with(b"\xEF\xBB\xBF") { 3 } else { 0 };
-    match std::str::from_utf8(&bytes[start..]) {
-        Ok(s) => Some((s.to_string(), true)),
-        Err(e) if e.valid_up_to() > 0 => {
-            Some((String::from_utf8_lossy(&bytes[start..start + e.valid_up_to()]).into_owned(), true))
+    let body = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    let head = &body[..body.len().min(8 * 1024)];
+    // An invalid sequence in the head means binary; one cut off at the head's end does not.
+    let invalid_head = std::str::from_utf8(head).is_err_and(|e| e.error_len().is_some());
+    if (bytes.len() as u64) <= MAX_READ_BYTES || head.contains(&0) || invalid_head {
+        return None;
+    }
+    Some((String::from_utf8_lossy(body).into_owned(), true))
+}
+
+/// Which lines a text read asks for: an explicit `range`, else `offset` (1-based, default 1)
+/// and `limit` (default the window).
+#[derive(Clone, Copy)]
+struct Want<'a> {
+    range: Option<&'a str>,
+    first: usize,
+    /// Lines asked for (the window may still cut them short).
+    n: usize,
+    limit: Option<usize>,
+}
+
+impl<'a> Want<'a> {
+    fn of(args: &'a Value) -> Result<Self, ToolOutcome> {
+        let limit = int_arg(args, "limit").filter(|&l| l > 0).map(|l| usize::try_from(l).unwrap_or(usize::MAX));
+        if let Some(range) = str_arg(args, "range") {
+            let (a, b) = parse_range(range).map_err(ToolOutcome::error)?;
+            return Ok(Want { range: Some(range), first: a, n: (b - a).saturating_add(1), limit });
         }
-        Err(_) => None,
+        let first = usize::try_from(int_arg(args, "offset").unwrap_or(1).max(1)).unwrap_or(usize::MAX);
+        Ok(Want { range: None, first, n: limit.unwrap_or(READ_WINDOW_LINES), limit })
+    }
+
+    /// The refusal for a window that starts past the last line.
+    fn past_end(&self, shown: &str, total: usize) -> ToolOutcome {
+        match self.range {
+            Some(range) => ToolOutcome::error(format!(
+                "`range` \"{range}\" selected no lines: the file has {total}. Ask for a range inside \
+                 1-{total}, or omit `range` for the whole file."
+            )),
+            None => ToolOutcome::error(format!(
+                "`offset` {} is past the end: {shown} has {total} lines. Use an offset from 1 to {total}.",
+                self.first
+            )),
+        }
     }
 }
 
-fn read_text(tools: &BuiltinTools, args: &Value, shown: &str, bytes: Vec<u8>, size: u64) -> ToolOutcome {
-    let Some((text, capped)) = decode_text(bytes) else {
+fn read_text(tools: &BuiltinTools, args: &Value, shown: &str, bytes: &[u8]) -> ToolOutcome {
+    let size = bytes.len();
+    let Some((text, lossy)) = decode_text(bytes) else {
         return ToolOutcome::ok(
             format!("{shown} is not UTF-8 text ({size} bytes), so its bytes were not returned."),
             format!("binary · {size} B"),
@@ -459,41 +603,128 @@ fn read_text(tools: &BuiltinTools, args: &Value, shown: &str, bytes: Vec<u8>, si
     if text.is_empty() {
         return ToolOutcome::ok(format!("{shown} is empty (0 bytes)."), "0 lines · 0 B");
     }
-    let total = count_lines(&text);
-    let whole_file_tokens = estimate_tokens_of(text.len() + total * (LINE_NUMBER_WIDTH + 1));
-    let range = str_arg(args, "range");
-    let limit = int_arg(args, "limit").filter(|&l| l > 0).map(|l| l as usize);
-    let (mut window, first, wanted) = if let Some(range) = range {
-        match slice_lines(&text, range) {
-            Ok((sliced, _)) if sliced.is_empty() => {
-                return ToolOutcome::error(format!(
-                    "`range` \"{range}\" selected no lines: the file has {total}. Ask for a range \
-                     inside 1-{total}, or omit `range` for the whole file."
-                ));
-            }
-            Ok((sliced, start)) => {
-                let n = count_lines(&sliced);
-                (sliced, start, n)
-            }
-            Err(why) => return ToolOutcome::error(why),
-        }
-    } else {
-        let offset = int_arg(args, "offset").unwrap_or(1).max(1) as usize;
-        if offset > total {
-            return ToolOutcome::error(format!(
-                "`offset` {offset} is past the end: {shown} has {total} lines. Use an offset from 1 \
-                 to {total}."
-            ));
-        }
-        let n = limit.unwrap_or(READ_WINDOW_LINES).min(total - offset + 1);
-        let w: String = text.split_inclusive('\n').skip(offset - 1).take(n).collect();
-        (w, offset, n)
+    let want = match Want::of(args) {
+        Ok(w) => w,
+        Err(e) => return e,
     };
-    let mut kept = wanted;
-    if wanted > READ_WINDOW_LINES {
-        window = take_lines(&window, READ_WINDOW_LINES);
-        kept = READ_WINDOW_LINES;
+    let total = count_lines(&text);
+    if want.first > total {
+        return want.past_end(shown, total);
     }
+    // Only the lines the window can show are copied, however many were asked for.
+    let window: String = text.split_inclusive('\n').skip(want.first - 1).take(want.n.min(READ_WINDOW_LINES)).collect();
+    let note = (lossy && window.contains('\u{fffd}'))
+        .then(|| "[the file is not valid UTF-8 throughout; invalid bytes show as \u{fffd}.]".to_string());
+    let whole_file_tokens = estimate_tokens_of(text.len() + total * (LINE_NUMBER_WIDTH + 1));
+    numbered_window(tools, &want, window, total, whole_file_tokens, note)
+}
+
+/// A file above [`MAX_HASH_BYTES`] on this machine: the asked-for window is streamed from disk
+/// (any offset, never the whole file in memory) and the total line count is counted on the way.
+fn read_huge(tools: &BuiltinTools, args: &Value, abs: &Path, shown: &str, size: u64) -> ToolOutcome {
+    let head = match read_head(abs, 64 * 1024) {
+        Ok(h) => h,
+        Err(e) => return ToolOutcome::error(format!("cannot read {shown}: {e}")),
+    };
+    if let Some((mime, w, h)) = media::sniff_image(&head) {
+        return read_image(tools, shown, &head, size, mime, w, h);
+    }
+    if pdf::is_pdf(&head) {
+        return ToolOutcome::error(format!(
+            "{shown} is a PDF of {}, larger than the {} `read` extracts text from.",
+            kib(size),
+            kib(MAX_HASH_BYTES)
+        ));
+    }
+    if let Some(e) = pages_not_pdf(args, shown) {
+        return e;
+    }
+    let sample = head.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&head);
+    if sample.contains(&0) {
+        return ToolOutcome::ok(
+            format!("{shown} is not UTF-8 text ({size} bytes), so its bytes were not returned."),
+            format!("binary · {size} B"),
+        );
+    }
+    let want = match Want::of(args) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    let (raw, total) = match stream_lines(abs, want.first, want.n.min(READ_WINDOW_LINES)) {
+        Ok(r) => r,
+        Err(e) => return ToolOutcome::error(format!("cannot read {shown}: {e}")),
+    };
+    if want.first > total {
+        return want.past_end(shown, total);
+    }
+    let raw = if want.first == 1 { raw.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&raw).to_vec() } else { raw };
+    let window = String::from_utf8_lossy(&raw).into_owned();
+    let whole_file_tokens = estimate_tokens_of(size as usize + total * (LINE_NUMBER_WIDTH + 1));
+    numbered_window(tools, &want, window, total, whole_file_tokens, None)
+}
+
+/// The first `n` bytes of a file.
+fn read_head(abs: &Path, n: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    std::fs::File::open(abs)?.take(n).read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+/// Lines `first..first + n` (1-based) of a file, each kept to what [`clip_long_lines`] can still
+/// mark as cut, and the file's line count. One pass, a buffer at a time.
+fn stream_lines(abs: &Path, first: usize, n: usize) -> std::io::Result<(Vec<u8>, usize)> {
+    use std::io::BufRead;
+    // Enough bytes for MAX_LINE_CHARS characters of any width, plus one more to show the cut.
+    const LINE_KEEP: usize = (MAX_LINE_CHARS + 1) * 4;
+    let mut r = std::io::BufReader::with_capacity(1 << 20, std::fs::File::open(abs)?);
+    let (mut line, mut kept, mut ended) = (1usize, 0usize, true);
+    let mut out = Vec::new();
+    let end = first.saturating_add(n);
+    loop {
+        let buf = r.fill_buf()?;
+        if buf.is_empty() {
+            break;
+        }
+        let len = buf.len();
+        let mut i = 0;
+        while i < len {
+            let rest = &buf[i..];
+            let nl = rest.iter().position(|&b| b == b'\n');
+            let seg = nl.map_or(rest.len(), |p| p + 1);
+            if line >= first && line < end {
+                let take = seg.min(LINE_KEEP.saturating_sub(kept));
+                out.extend_from_slice(&rest[..take]);
+                kept += take;
+                if nl.is_some() && take < seg {
+                    out.push(b'\n');
+                }
+            }
+            ended = nl.is_some();
+            if ended {
+                line += 1;
+                kept = 0;
+            }
+            i += seg;
+        }
+        r.consume(len);
+    }
+    Ok((out, if ended { line - 1 } else { line }))
+}
+
+/// Numbers a selected window, applies the line and byte ceilings, and says how to continue.
+fn numbered_window(
+    tools: &BuiltinTools,
+    want: &Want<'_>,
+    window: String,
+    total: usize,
+    whole_file_tokens: u32,
+    note: Option<String>,
+) -> ToolOutcome {
+    let first = want.first;
+    let wanted = want.n.min(total - first + 1);
+    let mut kept = wanted.min(READ_WINDOW_LINES);
+    let window = if wanted > READ_WINDOW_LINES { take_lines(&window, READ_WINDOW_LINES) } else { window };
     let (window, clipped) = clip_long_lines(&window);
     // Shown with LF endings (as `cat -n` in a terminal reads): a CR is noise to the model, and an
     // LF snippet copied from here still lands on a CRLF file (the edit's EOL tier).
@@ -512,16 +743,13 @@ fn read_text(tools: &BuiltinTools, args: &Value, shown: &str, bytes: Vec<u8>, si
              text inside them.]"
         ));
     }
-    if capped {
-        out.push_str(&format!(
-            "\n\n[the harness stopped reading at {MAX_READ_BYTES} bytes. The file is longer than this \
-             and the text above is a prefix.]"
-        ));
+    if let Some(note) = note {
+        out.push_str(&format!("\n\n{note}"));
     }
     let last = first + kept.saturating_sub(1);
     // An explicit range or limit continues only if the window cut it short; a default window
     // continues whenever the file goes on.
-    let more = if range.is_some() || limit.is_some() { kept < wanted } else { last < total };
+    let more = if want.range.is_some() || want.limit.is_some() { kept < wanted } else { last < total };
     if more {
         let cost = if whole_file_tokens > tools.context_tokens / 4 {
             format!(
@@ -531,7 +759,7 @@ fn read_text(tools: &BuiltinTools, args: &Value, shown: &str, bytes: Vec<u8>, si
         } else {
             String::new()
         };
-        let next = if range.is_some() {
+        let next = if want.range.is_some() {
             format!("range \"{}-{}\"", last + 1, (last + READ_WINDOW_LINES).min(total))
         } else {
             format!("offset {}", last + 1)
@@ -593,12 +821,12 @@ fn read_image(tools: &BuiltinTools, shown: &str, bytes: &[u8], size: u64, mime: 
     }
 }
 
-fn cap_document(mut text: String, what: &str) -> String {
+fn cap_document(mut text: String) -> String {
     if text.len() > DOCUMENT_TEXT_MAX {
         let cut = floor_boundary(&text, DOCUMENT_TEXT_MAX);
         let more = text.len() - cut;
         text.truncate(cut);
-        text.push_str(&format!("\n\n[{what} continues for {more} more bytes; read fewer pages or cells.]"));
+        text.push_str(&format!("\n\n[the text continues for {more} more bytes; ask for fewer `pages`.]"));
     }
     text
 }
@@ -639,17 +867,43 @@ fn read_pdf(shown: &str, bytes: &[u8], pages: Option<&str>) -> ToolOutcome {
             "[no text layer on these pages: they are probably scanned images, which this build cannot read.]",
         );
     }
-    let out = cap_document(out.trim_end().to_string(), "the text");
+    let out = cap_document(out.trim_end().to_string());
     let summary = format!("pdf · {} of {total} pages", selected.len());
     ToolOutcome::ok(out, summary)
 }
 
-fn read_notebook(tools: &BuiltinTools, shown: &str, nb: &Value) -> ToolOutcome {
-    let r = notebook::render(nb);
-    let mut out = ToolOutcome::ok(
-        cap_document(format!("{shown}: Jupyter notebook, {} cells.\n{}", r.cells, r.text.trim_end()), "the notebook"),
-        format!("notebook · {} cells", r.cells),
-    );
+/// A notebook as cells with their outputs. `offset` is the first cell's 0-based index (as
+/// `<cell index=..>` and `notebook_edit` count) and `limit` a number of cells; whole cells come
+/// back until the window's byte cap, and a cut says exactly where to continue.
+fn read_notebook(tools: &BuiltinTools, args: &Value, shown: &str, nb: &Value) -> ToolOutcome {
+    let from = usize::try_from(int_arg(args, "offset").unwrap_or(0).max(0)).unwrap_or(usize::MAX);
+    let limit = int_arg(args, "limit").filter(|&l| l > 0).map_or(usize::MAX, |l| usize::try_from(l).unwrap_or(usize::MAX));
+    let cells = nb["cells"].as_array().map_or(0, Vec::len);
+    if from > 0 && from >= cells {
+        return ToolOutcome::error(format!(
+            "`offset` {from} is past the last cell: {shown} has {cells} cells, numbered 0-{}. For a \
+             notebook, `offset` is a 0-based cell index.",
+            cells.saturating_sub(1)
+        ));
+    }
+    let r = notebook::render_range(nb, from, limit, window_bytes(tools.context_tokens));
+    let mut text = format!("{shown}: Jupyter notebook, {cells} cells.\n");
+    let partial = r.first > 0 || r.end < cells;
+    if partial && r.end > r.first {
+        text.push_str(&format!("Cells {}-{}:\n", r.first, r.end - 1));
+    }
+    text.push_str(r.text.trim_end());
+    let asked_end = from.saturating_add(limit).min(cells);
+    if r.end < asked_end {
+        let why = if r.cut { "the cell above is larger than one read returns" } else { "the read's size cap" };
+        text.push_str(&format!(
+            "\n\n[showing cells {}-{} of {cells} ({why}). Continue with offset {} (cells are 0-based).]",
+            r.first,
+            r.end - 1,
+            r.end
+        ));
+    }
+    let mut out = ToolOutcome::ok(text, format!("notebook · {} of {cells} cells", r.end - r.first));
     for img in &r.images {
         match store_blob(tools, &img.bytes, img.mime, img.width, img.height) {
             Ok(i) => out = out.with_part(ResultPart::Image(i)),
@@ -815,7 +1069,11 @@ fn multi_edit(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
         if looks_numbered(new) {
             return ToolOutcome::error(format!("edit {n}: {}", numbered_refusal("new_string").content));
         }
-        edits.push(FileEdit { path: f.resolve(raw), old: old.into(), new: new.into(), replace_all: bool_arg(e, "replace_all") });
+        let path = match f.target(raw) {
+            Ok(p) => p,
+            Err(o) => return o,
+        };
+        edits.push(FileEdit { path, old: old.into(), new: new.into(), replace_all: bool_arg(e, "replace_all") });
     }
     let _guard = f.lock();
     let mut seen: Vec<&Path> = Vec::new();
@@ -992,12 +1250,27 @@ impl ToolMiddleware for FileGuard {
         "files"
     }
 
+    /// Before turn one of a new user message: files the agent knows that changed since its last
+    /// step (the user edited them between turns). The reminder goes in as its own message ahead
+    /// of the user's, never into `text`: the user's words are what memory ingests at user trust.
+    fn before_turn(&self, convo: &mut Conversation, _text: &mut String) -> TurnFlow {
+        if let Some(m) = self.reminder(convo) {
+            convo.push(m);
+        }
+        TurnFlow::Continue
+    }
+
     fn before_approval(&self, call: &mut ToolCall, cx: &CallCtx) -> CallFlow {
         if !WRITE_TOOLS.contains(&call.name.as_str()) {
             return CallFlow::Continue;
         }
         let root = self.root.as_deref().or(cx.workspace.as_deref());
         for raw in targets(&call.args) {
+            // Off this machine, even a stat reaches the host: the gate asks first, and the tool
+            // applies read-before-edit itself once approved.
+            if off_machine_of(root, &raw).is_some() {
+                continue;
+            }
             let abs = paths::resolve(root, &raw);
             let fresh = cx.scope.with_ext(|e| e.get_or_default::<FileStates>().check(self.port.as_ref(), &abs));
             let shown = paths::display(root, &abs);
@@ -1010,14 +1283,36 @@ impl ToolMiddleware for FileGuard {
         CallFlow::Continue
     }
 
-    fn after_step(&self, _info: StepInfo, convo: &mut Conversation) -> Vec<Message> {
-        let root = self.root.clone().or_else(|| convo.workspace.clone());
-        let Some(states) = convo.ext.get_mut::<FileStates>() else { return Vec::new() };
-        let changes = states.poll(self.port.as_ref());
-        if changes.is_empty() {
-            return Vec::new();
+    /// Runs only for a call the approval gate let through: clears its off-machine targets for
+    /// the tool (see [`Cleared`]).
+    fn before_call(&self, call: &ToolCall, cx: &CallCtx) -> CallFlow {
+        if call.name != "read" && !WRITE_TOOLS.contains(&call.name.as_str()) {
+            return CallFlow::Continue;
         }
-        vec![Message::user(filestate::reminder(&changes, &|p| paths::display(root.as_deref(), p)))]
+        let root = self.root.as_deref().or(cx.workspace.as_deref());
+        for raw in targets(&call.args) {
+            if off_machine_of(root, &raw).is_some() {
+                let key = clear_key(&paths::resolve(root, &raw));
+                cx.scope.with_ext(|e| *e.get_or_default::<Cleared>().0.entry(key).or_default() += 1);
+            }
+        }
+        CallFlow::Continue
+    }
+
+    fn after_step(&self, _info: StepInfo, convo: &mut Conversation) -> Vec<Message> {
+        self.reminder(convo).into_iter().collect()
+    }
+}
+
+impl FileGuard {
+    /// The reminder for files the agent knows that changed outside its tools, if any.
+    fn reminder(&self, convo: &mut Conversation) -> Option<Message> {
+        let root = self.root.clone().or_else(|| convo.workspace.clone());
+        let changes = convo.ext.get_mut::<FileStates>()?.poll(self.port.as_ref());
+        if changes.is_empty() {
+            return None;
+        }
+        Some(Message::user(filestate::reminder(&changes, &|p| paths::display(root.as_deref(), p))))
     }
 }
 
@@ -1052,12 +1347,13 @@ fn read_spec() -> ToolSpec {
          `limit` lines; a result that stops early says how to continue. Lines over 2000 characters \
          are cut. Images (png, jpg, gif, webp) come back as images, PDFs as text per page (`pages`, \
          e.g. \"1-5\"; at most 20 per call, required above 10 pages), Jupyter notebooks as cells \
-         with their outputs. Read a file before you edit or overwrite it, and never copy the \
+         with their outputs (for a notebook, `offset` is a 0-based cell index and `limit` a \
+         number of cells). Read a file before you edit or overwrite it, and never copy the \
          line-number prefix into an edit.",
         json!({
             "path": {"type": "string", "description": "File path, relative to the workspace or absolute."},
-            "offset": {"type": "integer", "description": "1-based line to start from."},
-            "limit": {"type": "integer", "description": "Number of lines to return."},
+            "offset": {"type": "integer", "description": "1-based line to start from (for a notebook, a 0-based cell index)."},
+            "limit": {"type": "integer", "description": "Number of lines (for a notebook, cells) to return."},
             "pages": {"type": "string", "description": "PDF pages, e.g. \"3\", \"1-5\" or \"1,4-6\"."}
         }),
         &["path"],

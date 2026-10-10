@@ -1,0 +1,201 @@
+[
+  {
+    "name": "read",
+    "description": "Read a file (relative to the workspace, or absolute). Text comes back numbered `cat -n` style (line number, tab, text): up to 2000 lines from `offset` (1-based, default 1), or `limit` lines; a result that stops early says how to continue. Lines over 2000 characters are cut. Images (png, jpg, gif, webp) come back as images, PDFs as text per page (`pages`, e.g. \"1-5\"; at most 20 per call, required above 10 pages), Jupyter notebooks as cells with their outputs (for a notebook, `offset` is a 0-based cell index and `limit` a number of cells). Read a file before you edit or overwrite it, and never copy the line-number prefix into an edit.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "description": "Number of lines (for a notebook, cells) to return.",
+          "type": "integer"
+        },
+        "offset": {
+          "description": "1-based line to start from (for a notebook, a 0-based cell index).",
+          "type": "integer"
+        },
+        "pages": {
+          "description": "PDF pages, e.g. \"3\", \"1-5\" or \"1,4-6\".",
+          "type": "string"
+        },
+        "path": {
+          "description": "File path, relative to the workspace or absolute.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "write",
+    "description": "Create a file, or replace an existing one entirely with `content`; parent directories are created. Overwriting an existing file needs a `read` of it first in this session; it keeps its byte-order mark and CRLF line endings. Prefer `edit` for a change to part of a file.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "description": "The complete new file content.",
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "edit",
+    "description": "Replace `old_string` with `new_string` in one file. `old_string` must occur exactly once (copy it from `read` without the line-number prefix, with enough surrounding lines to be unique), or set `replace_all` to change every occurrence. A match that differs only in line endings or by one uniform indentation still applies when it is unique, and the result says so. `read` the file first in this session. To create a file use `write`.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "new_string": {
+          "description": "The replacement text.",
+          "type": "string"
+        },
+        "old_string": {
+          "description": "The exact text to replace.",
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "replace_all": {
+          "description": "Replace every occurrence (default false).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "old_string",
+        "new_string"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "multi_edit",
+    "description": "Several `edit`s at once, in one or more files, applied all together or not at all. Edits run in order, each seeing the result of the ones before it. `path` is the default file; an edit may name its own. An empty `old_string` creates a file that does not exist. `read` each existing file first.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "edits": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "new_string": {
+                "type": "string"
+              },
+              "old_string": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "replace_all": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "old_string",
+              "new_string"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "path": {
+          "description": "The file the edits apply to unless an edit names its own.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "edits"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "edit_lines",
+    "description": "Edit lines by anchor. `read` shows each line as `N:hhh|text`; name a line by its anchor `N:hhh` (and the last line of a range by `end`). `op`: replace (default), insert_after, insert_before or delete. An anchor whose line changed since you read it is refused with fresh anchors. `anchor` \"0\" with insert_after writes at the top of the file.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "anchor": {
+          "description": "`N:hhh` as `read` printed it.",
+          "type": "string"
+        },
+        "end": {
+          "description": "Anchor of the last line of the range (default: `anchor`).",
+          "type": "string"
+        },
+        "op": {
+          "enum": [
+            "replace",
+            "insert_after",
+            "insert_before",
+            "delete"
+          ],
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "text": {
+          "description": "The new lines.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "anchor"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "notebook_edit",
+    "description": "Edit one cell of a Jupyter notebook (.ipynb). `cell` is the cell's id or 0-based index as `read` shows it. `mode`: replace (default) the cell's source, insert a new cell after `cell` (at the top without one), or delete it. `cell_type` sets the new cell's type and changes it on replace. Replacing a code cell clears its outputs. `read` the notebook first.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "cell": {
+          "description": "Cell id, or 0-based index.",
+          "type": "string"
+        },
+        "cell_type": {
+          "enum": [
+            "code",
+            "markdown"
+          ],
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "replace",
+            "insert",
+            "delete"
+          ],
+          "type": "string"
+        },
+        "new_source": {
+          "description": "The cell's new source.",
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    }
+  }
+]

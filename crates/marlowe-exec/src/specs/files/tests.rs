@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use marlowe_agent::{
     CallCtx, CallFlow, Consequence, Conversation, Exposure, SandboxView, SessionScope, StepInfo, ToolCtx, ToolHost,
-    ToolMiddleware, ToolOutcome,
+    ToolMiddleware, ToolOutcome, TurnFlow,
 };
 use marlowe_model::{CancelToken, ChatRequest, Message, ResultPart, ToolCall, ToolResult};
 use marlowe_os::workspace::{ExecOutput, ExecRequest, LocalFs, Meta, WalkEntry, WalkOpts, Workspace};
@@ -235,6 +235,49 @@ fn parity_t1_read_window_and_continue_hint_exact() {
     assert!(small.read("big.txt").content.contains("`grep` searches inside files"));
 }
 
+/// T1 past 4 MB: a 6 MB log reads at any offset, its line count is the whole file's, and a stray
+/// invalid byte deep inside does not make it binary.
+#[test]
+fn parity_t1_a_6mb_file_reads_at_an_offset_past_4mb() {
+    let mut s = Session::new("t1big");
+    let mut body: Vec<u8> = (1..=100_000).flat_map(|n| format!("line {n:06} {}\n", "x".repeat(48)).into_bytes()).collect();
+    assert!(body.len() > 6_000_000);
+    let at = body.len() - 1000;
+    body[at] = 0xFF; // in line 99_984
+    s.put("run.log", &body);
+    let o = s.ok("read", json!({"path": "run.log", "offset": 90_000, "limit": 2}));
+    let x = "x".repeat(48);
+    assert_eq!(o.content, format!(" 90000\tline 090000 {x}\n 90001\tline 090001 {x}\n"));
+    let o = s.read("run.log");
+    assert!(o.content.contains("of 100000. Continue with offset"), "{}", &o.content[o.content.len() - 300..]);
+    assert!(!o.content.contains("invalid bytes"), "only a window that shows one says so");
+    let o = s.ok("read", json!({"path": "run.log", "offset": 99_980, "limit": 10}));
+    assert!(o.content.contains('\u{fffd}') && o.content.contains("invalid bytes show as"), "{}", o.content);
+    let o = s.ok("read", json!({"path": "run.log", "range": "99999-100000"}));
+    assert!(o.content.starts_with(" 99999\tline 099999") && o.content.contains("100000\tline 100000"), "{}", o.content);
+    let e = s.err("read", json!({"path": "run.log", "offset": 100_001}));
+    assert!(e.content.contains("has 100000 lines"), "{}", e.content);
+}
+
+/// Files above the hash ceiling are streamed: the window at any offset and the whole file's line
+/// count, without holding the file (driven directly; a 64 MB fixture is not worth the disk).
+#[test]
+fn a_huge_file_is_streamed_by_window() {
+    let s = Session::new("huge");
+    let long = "y".repeat(super::MAX_LINE_CHARS * 5);
+    s.put("h.txt", format!("\u{feff}a\nb\n{long}\nd\ne"));
+    let (raw, total) = super::stream_lines(&s.p("h.txt"), 3, 2).unwrap();
+    assert_eq!(total, 5, "an unterminated last line counts");
+    assert!(raw.ends_with(b"\nd\n") && raw.len() < long.len(), "{}", raw.len());
+    let o = super::read_huge(&s.tools, &json!({"offset": 3, "limit": 2}), &s.p("h.txt"), "h.txt", 1 << 27);
+    assert!(o.content.starts_with("     3\tyyy") && o.content.contains("     4\td"), "{}", &o.content[..60]);
+    assert!(o.content.contains("line(s) longer than"), "a long line is still marked as cut");
+    let o = super::read_huge(&s.tools, &json!({}), &s.p("h.txt"), "h.txt", 1 << 27);
+    assert!(o.content.starts_with("     1\ta\n"), "the BOM is not shown: {:?}", &o.content[..12]);
+    let e = super::read_huge(&s.tools, &json!({"offset": 9}), &s.p("h.txt"), "h.txt", 1 << 27);
+    assert!(e.is_error && e.content.contains("has 5 lines"), "{}", e.content);
+}
+
 /// T1, FlashAgent `line_endings_and_a_last_line_without_one_read_the_same`: CRLF shows as LF,
 /// and a last line without an ending reads like the others.
 #[test]
@@ -304,6 +347,39 @@ fn parity_t4_notebook_read_through_the_tool() {
     assert!(o.content.starts_with("demo.ipynb: Jupyter notebook, 4 cells.\n<cell index=\"0\" id=\"intro\""), "{}", o.content);
     assert!(o.content.contains("<outputs cell=\"1\">\nloaded 3 rows"), "{}", o.content);
     assert!(matches!(o.parts.as_slice(), [ResultPart::Image(i)] if i.mime == "image/png"), "{:?}", o.parts);
+    // `offset`/`limit` pick cells (0-based, as `<cell index>` and `notebook_edit` count).
+    let o = s.ok("read", json!({"path": "demo.ipynb", "offset": 2, "limit": 1}));
+    assert!(o.content.contains("Cells 2-2:\n<cell index=\"2\"") && !o.content.contains("index=\"3\""), "{}", o.content);
+    assert_eq!(o.parts.len(), 1, "cell 2's image comes with it");
+    let e = s.err("read", json!({"path": "demo.ipynb", "offset": 4}));
+    assert!(e.content.contains("has 4 cells, numbered 0-3"), "{}", e.content);
+}
+
+/// T4 at research size: a 150-cell notebook larger than one read comes back in whole cells, says
+/// exactly where to continue, and the rest is reachable by that offset.
+#[test]
+fn parity_t4_a_large_notebook_reads_in_cell_windows() {
+    let mut s = Session::with("t4big", |t| t.with_context_tokens(8_000));
+    let cells: Vec<Value> = (0..150)
+        .map(|i| {
+            json!({"cell_type": "code", "id": format!("c{i}"), "execution_count": i, "metadata": {},
+                   "source": [format!("step_{i} = train({i})\n"), "x".repeat(900)],
+                   "outputs": [{"output_type": "stream", "name": "stdout", "text": [format!("done {i}\n")]}]})
+        })
+        .collect();
+    let nb = json!({"cells": cells, "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    s.put("big.ipynb", serde_json::to_string(&nb).unwrap());
+    let o = s.read("big.ipynb");
+    assert!(o.content.len() <= 32 * 1024 + 300, "{}", o.content.len());
+    let tail = &o.content[o.content.len() - 120..];
+    let next: usize = tail.split("Continue with offset ").nth(1).and_then(|t| t.split(' ').next()).unwrap().parse().unwrap();
+    assert!(tail.contains(&format!("[showing cells 0-{} of 150", next - 1)), "{tail}");
+    assert!(o.content.contains(&format!("<outputs cell=\"{}\">\ndone {}", next - 1, next - 1)), "whole cells only");
+    assert!(!o.content.contains("read fewer pages or cells"));
+    let o = s.ok("read", json!({"path": "big.ipynb", "offset": next}));
+    assert!(o.content.contains(&format!("Cells {next}-")) && o.content.contains(&format!("step_{next} = train")), "{}", &o.content[..200]);
+    let o = s.ok("read", json!({"path": "big.ipynb", "offset": 149}));
+    assert!(o.content.contains("done 149") && !o.content.contains("Continue with"), "{}", o.content);
 }
 
 // ---------------------------------------------------------------- parity: write (T5)
@@ -397,6 +473,34 @@ fn parity_t7_external_modify_reminder_in_next_request() {
     assert!(s.step_end().is_empty(), "the agent's own edit is not an external change");
     std::fs::remove_file(s.p("cfg.toml")).unwrap();
     assert!(s.step_end()[0].joined_text().contains("cfg.toml: deleted."));
+}
+
+/// T7 between turns: Matthew edits a file the agent read while no turn runs. The next turn
+/// starts with the reminder as its own message ahead of his, and his words stay untouched (they
+/// are what memory ingests at user trust).
+#[test]
+fn parity_t7_a_change_between_turns_is_reported_when_the_next_turn_starts() {
+    let mut s = Session::new("t7turn");
+    s.put("train.py", "lr = 1e-3\n");
+    s.read("train.py");
+    s.step_end(); // the turn ends
+    s.put("train.py", "lr = 0.0003\n");
+    let mut convo = Conversation::new(SessionId::from("s"), Some(s.root.clone()));
+    convo.ext = std::mem::take(&mut *s.scope.ext.lock().unwrap());
+    let mut text = "why is the loss flat?".to_string();
+    for m in &s.mw {
+        assert!(matches!(m.before_turn(&mut convo, &mut text), TurnFlow::Continue));
+    }
+    assert_eq!(text, "why is the loss flat?");
+    let [reminder] = convo.messages.as_slice() else { panic!("{:?}", convo.messages) };
+    let r = reminder.joined_text();
+    assert!(r.contains("train.py: modified.") && r.contains("-lr = 1e-3\n+lr = 0.0003"), "{r}");
+    // Seen now: the next turn starts clean.
+    let mut text = "go on".to_string();
+    for m in &s.mw {
+        m.before_turn(&mut convo, &mut text);
+    }
+    assert_eq!(convo.messages.len(), 1);
 }
 
 /// B1: an existing file must be read before it is edited or overwritten, and an edit of a file
@@ -554,8 +658,11 @@ impl SandboxView for Sandbox {
     }
 }
 
-/// B6: writing a secret-shaped file or credential-shaped content asks, inside the workspace and
-/// in a crew sandbox; ordinary writes inside stay free; templates do not count.
+/// B6: writing a secret-shaped file or credential-shaped content asks inside the workspace,
+/// however the name is spelled (Win32 drops trailing dots and spaces and reads `:stream` as the
+/// file); ordinary writes inside stay free; templates do not count. The crew half below checks
+/// this group's sandbox hook only: `CrewTools` does not call it yet (a seam-crew need), so B6 is
+/// not live in crew runs until it does.
 #[test]
 fn parity_b6_secret_writes_need_approval() {
     let root = temp("b6");
@@ -571,7 +678,14 @@ fn parity_b6_secret_writes_need_approval() {
         (call("write", json!({"path": "deploy/server.pem", "content": "x"})), true),
         (call("edit", json!({"path": "src/cfg.rs", "old_string": "x", "new_string": format!("let t = \"{key}\";")})), true),
         (call("multi_edit", json!({"edits": [{"path": "a.txt", "old_string": "", "new_string": "ok"}, {"path": ".npmrc", "old_string": "", "new_string": "x"}]})), true),
+        (call("write", json!({"path": ".env ", "content": "A=1"})), true),
+        (call("write", json!({"path": "cfg/.env/.", "content": "A=1"})), true),
+        (call("write", json!({"path": "id_rsa.", "content": "x"})), true),
+        (call("write", json!({"path": "deploy/server.pem.", "content": "x"})), true),
+        (call("write", json!({"path": ".env::$DATA", "content": "A=1"})), true),
+        (call("edit", json!({"path": "cfg/../.ENV. ", "old_string": "a", "new_string": "b"})), true),
         (call("write", json!({"path": ".env.example", "content": "A="})), false),
+        (call("write", json!({"path": ".env.example.", "content": "A="})), false),
         (call("write", json!({"path": "src/main.rs", "content": "fn main() {}"})), false),
     ];
     for (c, ask) in &cases {
@@ -583,6 +697,120 @@ fn parity_b6_secret_writes_need_approval() {
         other => panic!("{other:?}"),
     }
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A [`LocalFs`] that answers for any path naming `host` without touching anything, and counts
+/// each such call: the proof that nothing reached the share.
+struct CountingPort {
+    host: &'static str,
+    hits: std::sync::atomic::AtomicUsize,
+}
+
+impl CountingPort {
+    fn hit(&self, p: &Path) -> Option<std::io::Error> {
+        p.to_string_lossy().to_ascii_lowercase().contains(self.host).then(|| {
+            self.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the fake share")
+        })
+    }
+
+    fn hits(&self) -> usize {
+        self.hits.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Workspace for CountingPort {
+    fn kind(&self) -> String {
+        "local".into()
+    }
+    fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        self.hit(path).map_or_else(|| LocalFs.read(path), Err)
+    }
+    fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.hit(path).map_or_else(|| LocalFs.write(path, bytes), Err)
+    }
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.hit(from).or_else(|| self.hit(to)).map_or_else(|| LocalFs.rename(from, to), Err)
+    }
+    fn walk(&self, dir: &Path, opts: &WalkOpts) -> std::io::Result<Vec<WalkEntry>> {
+        self.hit(dir).map_or_else(|| LocalFs.walk(dir, opts), Err)
+    }
+    fn metadata(&self, path: &Path) -> std::io::Result<Meta> {
+        self.hit(path).map_or_else(|| LocalFs.metadata(path), Err)
+    }
+    fn exec(&self, req: &ExecRequest, cancelled: &dyn Fn() -> bool) -> std::io::Result<ExecOutput> {
+        LocalFs.exec(req, cancelled)
+    }
+}
+
+/// Non-negotiable 5 for file paths: a UNC write (or read) is never stat'ed, read or written before
+/// approval, in any spelling. The gate asks naming the host as egress; the middleware does not
+/// look; the tool refuses unless `before_call` (which runs only after the gate) cleared it; and
+/// after approval the call goes through, once. A device path asks too, with no host.
+#[test]
+fn parity_t5_a_unc_write_is_never_touched_before_approval() {
+    const HOST: &str = "marlowe-unc-test.invalid";
+    let port = Arc::new(CountingPort { host: HOST, hits: Default::default() });
+    let s = Session::with("unc", |t| t.with_workspace_port(port.clone()));
+    let cx = s.cx();
+    for spelling in [
+        format!(r"\\{HOST}\share\notes.txt"),
+        format!("//{HOST}/share/notes.txt"),
+        format!(r"\\?\UNC\{HOST}\share\notes.txt"),
+        format!(r"\\.\UNC\{}\share\notes.txt", HOST.to_uppercase()),
+    ] {
+        for (name, args) in [
+            ("write", json!({"path": spelling, "content": "x"})),
+            ("edit", json!({"path": spelling, "old_string": "a", "new_string": "b"})),
+            ("multi_edit", json!({"edits": [{"path": "local.txt", "old_string": "", "new_string": "a"}, {"path": spelling, "old_string": "a", "new_string": "b"}]})),
+            ("read", json!({"path": spelling})),
+        ] {
+            let mut call = ToolCall { id: "c".into(), name: name.into(), args };
+            for m in &s.mw {
+                assert!(matches!(m.before_approval(&mut call, &cx), CallFlow::Continue), "{name} {spelling}");
+            }
+            match s.tools.consequence_exposed(&call, &Exposure::default()) {
+                Consequence::Ask { summary } => assert!(summary.contains(&format!("reaches network host {HOST}")), "{summary}"),
+                other => panic!("{name} {spelling}: {other:?}"),
+            }
+            assert_eq!(s.tools.egress_host(&call).as_deref(), Some(HOST), "{name} {spelling}");
+            if name == "read" {
+                assert!(s.tools.taints(&call));
+                let approved = Exposure { approved_hosts: [HOST.to_string()].into(), ..Exposure::default() };
+                assert_eq!(s.tools.consequence_exposed(&call, &approved), Consequence::Free, "an allowed host");
+            }
+            // Called without the gate's clearance (a host without the middleware, a crew run).
+            let o = s.tools.call_scoped(&call, &cx);
+            assert!(o.is_error && o.content.contains("was not opened"), "{name} {spelling}: {}", o.content);
+            assert_eq!(port.hits(), 0, "{name} {spelling} touched the share before approval");
+        }
+    }
+    let crew = s.tools.consequence_in_sandbox(
+        &ToolCall { id: "c".into(), name: "write".into(), args: json!({"path": format!(r"\\{HOST}\s\x"), "content": "x"}) },
+        &Exposure::default(),
+        &Sandbox(s.root.clone()),
+    );
+    assert!(matches!(crew, Some(Consequence::Ask { summary }) if summary.contains(HOST)));
+    assert_eq!(port.hits(), 0);
+
+    // Approved: before_call clears it, the tool goes to the share (the fake refuses), once.
+    let call = ToolCall { id: "c".into(), name: "write".into(), args: json!({"path": format!(r"\\{HOST}\share\notes.txt"), "content": "x"}) };
+    for m in &s.mw {
+        assert!(matches!(m.before_call(&call, &cx), CallFlow::Continue));
+    }
+    let o = s.tools.call_scoped(&call, &cx);
+    assert!(o.is_error && o.content.contains("the fake share"), "{}", o.content);
+    assert!(port.hits() > 0);
+    let o = s.tools.call_scoped(&call, &cx);
+    assert!(o.content.contains("was not opened"), "a clearance is spent once: {}", o.content);
+
+    // A device path asks with no host to allow.
+    let pipe = ToolCall { id: "c".into(), name: "read".into(), args: json!({"path": r"\\.\pipe\marlowe-test"}) };
+    match s.tools.consequence(&pipe) {
+        Consequence::Ask { summary } => assert!(summary.contains("device or namespace `pipe`"), "{summary}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(s.tools.egress_host(&pipe), None);
 }
 
 // ---------------------------------------------------------------- donor: codex scenarios
@@ -714,4 +942,14 @@ fn codex_apply_patch_scenarios_as_tool_calls() {
         assert_eq!(tree(&s.root), want, "{} ({})", sc.id, sc.divergence);
     }
     assert_eq!(applicable, 21);
+}
+
+/// The files group's schemas, pinned. `specs_m46_files.json` is the reviewed M4.6 surface (the
+/// M4.5 `read`/`write`/`edit` are frozen in `tests/fixtures/specs_m45.rs`); a schema or
+/// description change must show up as a deliberate edit of it, never a regeneration.
+#[test]
+fn the_files_group_declares_the_reviewed_m46_schemas() {
+    let specs: Vec<marlowe_model::ToolSpec> = super::tools().into_iter().map(|d| d.spec).collect();
+    let pinned: Vec<marlowe_model::ToolSpec> = serde_json::from_str(include_str!("specs_m46_files.json")).unwrap();
+    assert_eq!(specs, pinned);
 }

@@ -17,7 +17,7 @@ pub const READ_WINDOW_BYTES: usize = 32 * 1024;
 /// The most one text window takes on a large context window.
 pub const READ_WINDOW_BYTES_MAX: usize = 100 * 1024;
 
-/// How much of a file `read`/`grep` hold in memory.
+/// How much of a file `grep` holds in memory. `read` windows any offset of a larger file.
 pub const MAX_READ_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Consecutive numbered lines in `content` that make it a pasted `read` window.
@@ -107,6 +107,18 @@ pub fn cut_to_whole_lines(text: &str, cap: usize) -> (String, usize) {
 /// `first-last`, 1-based inclusive. Every malformed range is an error, never "the whole file".
 /// Returns the text and the first line's absolute number.
 pub fn slice_lines(text: &str, range: &str) -> Result<(String, usize), String> {
+    let (a, b) = parse_range(range)?;
+    Ok((
+        text.split_inclusive('\n')
+            .skip(a - 1)
+            .take((b - a).saturating_add(1))
+            .collect::<String>(),
+        a,
+    ))
+}
+
+/// `first-last` as two 1-based inclusive line numbers, or why it is malformed.
+pub fn parse_range(range: &str) -> Result<(usize, usize), String> {
     let malformed = |detail: &str| {
         Err(format!(
             "`range` must be `first-last`, 1-based and inclusive, e.g. \"20-60\" — {detail}. Omit \
@@ -125,13 +137,7 @@ pub fn slice_lines(text: &str, range: &str) -> Result<(String, usize), String> {
     if b < a {
         return malformed(&format!("\"{range}\" runs backwards; did you mean \"{b}-{a}\"?"));
     }
-    Ok((
-        text.split_inclusive('\n')
-            .skip(a - 1)
-            .take((b - a).saturating_add(1))
-            .collect::<String>(),
-        a,
-    ))
+    Ok((a, b))
 }
 
 /// Case-insensitive glob over `/`-separated paths. `*` and `?` stay inside one segment; `**`
@@ -269,11 +275,32 @@ pub fn replacing_miss(existing: &str, replacing: &str) -> String {
     )
 }
 
+/// `path` as Win32 opens it, lower-cased with `/` separators: each component loses an NTFS
+/// stream suffix (`.env::$DATA`, `a.pem:x`) and trailing dots and spaces (`.env `, `id_rsa.`),
+/// and `.` and empty components go, so the secret check judges the file actually written.
+fn win32_spelling(path: &str) -> String {
+    let norm = path.trim().replace('\\', "/").to_ascii_lowercase();
+    let mut out: Vec<String> = Vec::new();
+    for (i, seg) in norm.split('/').enumerate() {
+        let b = seg.as_bytes();
+        // `c:` and the drive-relative `c:.env` keep their drive; any other `:` starts a stream.
+        let (drive, rest) =
+            if i == 0 && b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' { seg.split_at(2) } else { ("", seg) };
+        let rest = rest.split(':').next().unwrap_or(rest).trim_end_matches(['.', ' ']);
+        for part in [drive, rest] {
+            if !part.is_empty() {
+                out.push(part.to_string());
+            }
+        }
+    }
+    out.join("/")
+}
+
 /// Why a path looks like it holds secrets (`.env`, private keys, credential stores), if it does.
 /// Writing one needs approval in every mode (design 2.1 B6). Templates (`.env.example`) do not
 /// count.
 pub fn secret_path(path: &str) -> Option<&'static str> {
-    let norm = path.replace('\\', "/").to_ascii_lowercase();
+    let norm = win32_spelling(path);
     let name = norm.rsplit('/').next().unwrap_or(&norm);
     let template =
         name.split('.').skip(1).any(|seg| ["example", "sample", "template", "dist", "defaults"].contains(&seg));
@@ -325,6 +352,73 @@ pub fn secret_content(content: &str) -> Option<&'static str> {
     pats.iter().find(|(r, _)| r.is_match(content)).map(|(_, why)| *why)
 }
 
+/// A path that leaves this machine's own disks, judged on the string alone: no filesystem call,
+/// because for a UNC path that call is already an SMB connection (and an NTLM handshake).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OffMachine {
+    /// `\\host\share`, `//host/share`, `\\?\UNC\host\share`: the network host, lower-cased.
+    Host(String),
+    /// `\\.\pipe\x`, `\\?\GLOBALROOT\..`, `\??\..`, a bare `\\.\C:` volume, or a DOS device name
+    /// (`CON`, `NUL`, `COM1`) on Windows: the namespace or device.
+    Device(String),
+}
+
+impl OffMachine {
+    /// The network host, for egress approval.
+    pub fn host(&self) -> Option<&str> {
+        match self {
+            OffMachine::Host(h) => Some(h),
+            OffMachine::Device(_) => None,
+        }
+    }
+
+    /// How an approval prompt or a refusal names it.
+    pub fn describe(&self) -> String {
+        match self {
+            OffMachine::Host(h) => format!("reaches network host {h}"),
+            OffMachine::Device(d) => format!("opens the device or namespace `{d}`"),
+        }
+    }
+}
+
+const DOS_DEVICES: [&str; 22] = [
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2",
+    "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// Whether `raw` names something other than a file on a local disk (see [`OffMachine`]). Both
+/// separators count on every platform. A mapped network drive letter cannot be told from the
+/// string and is not caught here.
+pub fn off_machine(raw: &str) -> Option<OffMachine> {
+    let b = raw.trim().replace('/', "\\");
+    let first = |rest: &str| rest.split('\\').next().unwrap_or("").to_ascii_lowercase();
+    for prefix in [r"\\?\", r"\\.\", r"\??\"] {
+        let Some(rest) = b.strip_prefix(prefix) else { continue };
+        if rest.get(..4).is_some_and(|p| p.eq_ignore_ascii_case(r"UNC\")) {
+            let host = first(&rest[4..]);
+            return Some(if host.is_empty() { OffMachine::Device("UNC".into()) } else { OffMachine::Host(host) });
+        }
+        // `\\?\C:\x` and `\\.\C:\x` are files on a local disk; `\\.\C:` alone is the raw volume.
+        let d = rest.as_bytes();
+        if d.len() > 3 && d[0].is_ascii_alphabetic() && d[1] == b':' && d[2] == b'\\' {
+            return None;
+        }
+        return Some(OffMachine::Device(first(rest)));
+    }
+    if let Some(rest) = b.strip_prefix(r"\\") {
+        let host = first(rest);
+        return Some(if host.is_empty() { OffMachine::Device(r"\\".into()) } else { OffMachine::Host(host) });
+    }
+    if cfg!(windows) {
+        let name = b.rsplit('\\').next().unwrap_or("");
+        let stem = name.split(['.', ':']).next().unwrap_or("").trim_end_matches(' ').to_ascii_lowercase();
+        if DOS_DEVICES.contains(&stem.as_str()) {
+            return Some(OffMachine::Device(stem.to_ascii_uppercase()));
+        }
+    }
+    None
+}
+
 /// Keeps at most [`MAX_LINE_CHARS`] characters of each line, marking the cut.
 pub fn clip_long_lines(text: &str) -> (String, usize) {
     let mut clipped = 0usize;
@@ -360,6 +454,40 @@ mod secret_tests {
         assert_eq!(secret_content("-----BEGIN OPENSSH PRIVATE KEY-----\nabc"), Some("a private key"));
         assert!(secret_content(&format!("token: ghp_{}", "a".repeat(36))).is_some());
         assert!(secret_content("let sk = compute_key();").is_none());
+    }
+
+    /// Win32 drops trailing dots and spaces and reads `name:stream` as `name`, so these spellings
+    /// write the secret file itself and must be judged as it.
+    #[test]
+    fn secret_paths_are_judged_as_win32_opens_them() {
+        for p in [".env ", "cfg/.env/.", "id_rsa.", "deploy/server.pem.", ".env::$DATA", "a/.env. . ", "C:.env", "x/.NPMRC:alt"] {
+            assert!(secret_path(p).is_some(), "{p:?}");
+        }
+        for p in [".env.example.", "notes.txt::$DATA", "src/env.rs "] {
+            assert!(secret_path(p).is_none(), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn off_machine_paths_are_told_from_the_string() {
+        let host = |h: &str| Some(OffMachine::Host(h.into()));
+        assert_eq!(off_machine(r"\\Files01\share\x.txt"), host("files01"));
+        assert_eq!(off_machine("//files01/share/x.txt"), host("files01"));
+        assert_eq!(off_machine(r"\\?\UNC\files01\share\x"), host("files01"));
+        assert_eq!(off_machine(r"\\.\unc\files01\share"), host("files01"));
+        assert_eq!(off_machine(r"\\.\pipe\x"), Some(OffMachine::Device("pipe".into())));
+        assert_eq!(off_machine(r"\\?\GLOBALROOT\Device\X"), Some(OffMachine::Device("globalroot".into())));
+        assert_eq!(off_machine(r"\\.\C:"), Some(OffMachine::Device("c:".into())));
+        assert_eq!(off_machine(r"\??\C:\x"), None);
+        assert_eq!(off_machine(r"\\?\C:\work\x.rs"), None);
+        assert_eq!(off_machine(r"C:\work\x.rs"), None);
+        assert_eq!(off_machine("src/main.rs"), None);
+        assert_eq!(off_machine("\\\\?\\\u{dc}x"), Some(OffMachine::Device("\u{dc}x".into())), "no panic on a multibyte prefix");
+        if cfg!(windows) {
+            assert_eq!(off_machine("logs/CON"), Some(OffMachine::Device("CON".into())));
+            assert_eq!(off_machine("nul.txt"), Some(OffMachine::Device("NUL".into())));
+            assert_eq!(off_machine("console.rs"), None);
+        }
     }
 
     #[test]
