@@ -183,7 +183,8 @@ impl Actor {
         let gate = FrozenGate::load().map_err(|e| MindError::Artifact(e.to_string()))?;
         let point = OperatingPoint::load().map_err(|e| MindError::Artifact(e.to_string()))?;
         let models_dir = cfg.models_dir.clone().unwrap_or_else(|| paths::resolve_models_dir(home));
-        let models = Models::new(models_dir, cfg.model_idle);
+        crate::models::use_home_gpu_runtime(home);
+        let models = Models::new(models_dir, cfg.model_idle, cfg.gpu.clone());
         // Pre-release builds kept an embedding cache here; it held vectors of forgotten text.
         let _ = std::fs::remove_dir_all(home.join("cache").join("embeddings"));
         let snapshot_seq = match boot {

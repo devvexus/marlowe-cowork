@@ -207,8 +207,8 @@ use marlowe_memory::cue::dense::{cosine, DIMENSIONS};
 /// implementation for being correct.
 ///
 /// 1e-4 leaves three orders of magnitude of headroom over that floor, which is deliberate: the
-/// reference runs ONNX Runtime 1.24.2 (Python) and this build links 1.22.0, and that version
-/// difference alone measures ~2.75e-6.
+/// reference runs ONNX Runtime 1.24.2 (Python) and this build links 1.28.0 (ort rc.13; it was
+/// 1.22.0 before M4.5). On 1.28.0 the measured max is 8.9e-8 over 41 cases.
 ///
 /// Contrast `the_tokenizer_reproduces_huggingface_exactly`, which has **no** tolerance. There is
 /// none on an integer, and there is one here, and the difference is the point.

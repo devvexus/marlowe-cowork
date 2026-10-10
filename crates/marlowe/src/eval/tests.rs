@@ -38,7 +38,8 @@ fn removed_and_malformed_flags_are_refused() {
     for extra in [
         &["--fit-mode"][..],
         &["--rerank-plan", "cascade"],
-        &["--rerank-provider", "cuda"],
+        &["--rerank-plan", "deep"],
+        &["--rerank-provider", "tpu"],
         &["--rerank-threads", "0"],
         &["--rerank-batch", "maybe"],
         &["--injection-coverage", "most"],
@@ -47,6 +48,21 @@ fn removed_and_malformed_flags_are_refused() {
         let mut v = base.to_vec();
         v.extend_from_slice(extra);
         assert!(parse(&args(&v)).is_err(), "{extra:?} should be refused");
+    }
+}
+
+#[test]
+fn provider_plan_and_runtime_flags() {
+    let base = ["--profile-root", "p", "--embedder-model", "m", "--reranking", "r"];
+    let a = parse(&args(&base)).unwrap();
+    assert_eq!((a.rerank_provider, a.rerank_plan, a.gpu_runtime), (RerankProvider::Cpu, RerankPlan::Shipped, None));
+    let mut v = base.to_vec();
+    v.extend_from_slice(&["--rerank-plan", "cascade"]);
+    assert_eq!(parse(&args(&v)).unwrap().rerank_plan, RerankPlan::Cascade);
+    for gpu in [&["--rerank-provider", "cuda"][..], &["--gpu-runtime", "g"]] {
+        let mut v = base.to_vec();
+        v.extend_from_slice(gpu);
+        assert_eq!(parse(&args(&v)).is_ok(), cfg!(feature = "cuda"), "{gpu:?}");
     }
 }
 
@@ -76,7 +92,7 @@ fn round_trip_over_the_wire_with_the_shipped_pipeline() {
     let mut adapter = Adapter::start(
         &root,
         embedder,
-        RerankSettings { encoder: Some(encoder), batched: false },
+        RerankSettings { encoder: Some(encoder), cascade: None, batched: false },
         Coverage::Declared,
         Some(&dump),
     )

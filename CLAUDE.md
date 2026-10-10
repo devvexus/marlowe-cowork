@@ -50,8 +50,10 @@ implementations (memory engine, journal, executors, renderers, theme) and replac
 - **Docs stay short.** Decisions go in a few lines of `docs/ARCHITECTURE.md` or a CHANGELOG entry,
   not essays. Inherited files carry long ADR-archaeology comments; trim them when you touch the
   surrounding code, and only there.
-- Windows is the primary platform; Windows ARM64 must keep building: no CUDA, no x86 intrinsics,
-  no new C toolchains without a reason. `ring` needs the VS clang component on ARM64.
+- Windows is the primary platform; Windows ARM64 must keep building: no x86 intrinsics, no new C
+  toolchains without a reason. `ring` needs the VS clang component on ARM64. **CUDA is a hard
+  requirement on x64 and ARM64 (GB10)** behind the `cuda` feature, with GPU-idle awareness and a
+  CPU fallback.
 
 ## Shape of the code
 

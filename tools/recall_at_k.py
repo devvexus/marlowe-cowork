@@ -8,9 +8,10 @@ Reads the pass's own `run.jsonl` (for the turn -> memory join, through the harne
 Population, as every published R@k was computed (old `tools/reach_pools.py`): non-abstention
 cases with at least one gold memory in the dump. On the held-out split that is n = 229.
 
-Ranking is `retrieve.rs`'s five-level key, read off the dump's own columns:
-survived pruning, reranked before unreranked, rerank logit desc, cue z desc, cue margin desc,
-memory id asc. R@k = fraction of cases whose best gold memory sits at rank <= k.
+Ranking is `retrieve.rs`'s key, read off the dump's own columns: survived pruning, the GPU
+cascade's fusion rank asc (null outside the cascade, so inert on the shipped path), reranked
+before unreranked, rerank logit desc, cue z desc, cue margin desc, memory id asc.
+R@k = fraction of cases whose best gold memory sits at rank <= k.
 
 Driver-side, not a harness metric.
 """
@@ -32,6 +33,8 @@ from marlowe_eval.metrics.records import Attributor  # noqa: E402
 KS = (1, 3, 5, 10)
 SPLIT_PATH = REPO / "tools" / "split.json"
 PUBLISHED_HELDOUT = {"n": 229, "R@1": 0.6725, "R@3": 0.8515, "R@5": 0.8865, "R@10": 0.9039}
+# Old harness, M0c Session M2 (tools/cascade_squeeze.py): six-graph RRF cascade, held-out.
+PUBLISHED_CASCADE_HELDOUT = {"n": 229, "R@3": 0.8908}
 
 
 def iter_ndjson(path: Path):
@@ -45,8 +48,11 @@ def iter_ndjson(path: Path):
 
 def shipped_key(row: dict) -> tuple:
     reranked = row.get("rerank_score") is not None
+    fused = row.get("fusion_rank") is not None
     return (
         0 if row["survived_pruning"] else 1,
+        0 if fused else 1,
+        row["fusion_rank"] if fused else 0,
         0 if reranked else 1,
         -(row["rerank_score"] if reranked else 0.0),
         -row["score"],
@@ -109,6 +115,7 @@ def main() -> int:
     result = recall_at_k(args.pass_dir, longmemeval.load(corpus_path))
     print(json.dumps(result, indent=2))
     print(f"published held-out: {PUBLISHED_HELDOUT}")
+    print(f"published cascade held-out: {PUBLISHED_CASCADE_HELDOUT}")
     return 0
 
 

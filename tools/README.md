@@ -56,6 +56,22 @@ Drop `--heldout-only` for the two-pass run, held-out plus all-500. It also write
 with the pre-registered Numbers 1, 2, 2b and 3, the power floor and the budget conditions. It
 takes about three times as long.
 
+## The GPU cascade (M4.5, `--features cuda`)
+
+Check the GPU is idle first (no compute-only process, util < 10%). Build into its own target dir,
+fetch the pinned runtime and the five extra graphs, then score:
+
+```
+powershell -NoProfile -File scripts/fetch-gpu-runtime.ps1
+powershell -NoProfile -File scripts/fetch-models.ps1 -Cascade
+powershell -NoProfile -File scripts/cargo-idle.ps1 build --release -p marlowe --features cuda --target-dir target/cuda -j 4
+python tools/score_longmemeval.py --heldout-only --reranking models/ms-marco-MiniLM-L-2-v2-ft-session-j --binary target/cuda/release/marlowe.exe --rerank-provider cuda --rerank-plan cascade --gpu-runtime gpu-runtime --out data/runs/longmemeval-m45-cascade-cuda
+```
+
+Read on 2026-10-09 (RTX 4080 SUPER): cascade R@1 0.6769, R@3 0.8908, R@5 0.9170, R@10 0.9563,
+p95 50 ms; `--rerank-plan shipped` on CUDA gives exactly the CPU headline at p95 16 ms. The
+cascade on CPU ranks identically but reads p95 3,514 ms, so the product only takes it on a GPU.
+
 ## Checking a small slice
 
 `--max-cases N` (it requires `--heldout-only`) scores only the first N held-out cases. Any R@k

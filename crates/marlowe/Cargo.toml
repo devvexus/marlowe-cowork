@@ -42,6 +42,11 @@ marlowe-memory.workspace = true
 # tests/context_live.rs: the planner against the real store, runner log and GPU (ignored by default).
 marlowe-hw.workspace = true
 
+[features]
+# GPU rerank (CUDA, then DirectML, then CPU, only while the GPU is idle) and the six-graph cascade.
+# Off by default; see crates/marlowe-memory/src/ep/mod.rs and scripts/fetch-gpu-runtime.ps1.
+cuda = ["marlowe-memory/cuda", "marlowe-mind/cuda"]
+
 # SetHandleInformation for the detached daemon spawn (daemon_ctl.rs).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation"] }

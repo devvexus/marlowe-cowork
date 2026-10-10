@@ -93,9 +93,14 @@ impl Actor {
         }
         let query_vector =
             self.models.embedder()?.embed(&q.text).map_err(|e| format!("query embedding failed: {e}"))?;
-        let encoder = self.models.reranker()?;
+        let reranker = self.models.reranker()?;
         let scoring = Scoring::Gated { gate: &self.gate, operating_point: &self.point, coverage: Coverage::Declared };
-        let mut rerank = Rerank::CrossEncoder { encoder, budget: RERANK_BUDGET, batched: false };
+        // Batching follows the provider: off on CPU (measured slower at one thread), on for GPU.
+        let batched = reranker.choice.provider.default_batching();
+        let mut rerank = match reranker.cascade.as_mut() {
+            Some(c) => Rerank::Cascade { encoder: &mut reranker.encoder, fusion: c.members_mut(), batched },
+            None => Rerank::CrossEncoder { encoder: &mut reranker.encoder, budget: RERANK_BUDGET, batched },
+        };
         let budget = q.budget_tokens.min(MAX_INJECT_TOKENS);
         let selection = select_for_injection_filtered(
             &self.beliefs,
@@ -120,7 +125,11 @@ impl Actor {
                 None => "nothing was eligible".into(),
             });
         }
+        // The workspace boost re-sorts by single-graph logit; under the cascade the fusion's order
+        // stands as measured.
+        let fused = selection.scored.iter().any(|c| c.fusion_rank.is_some());
         let slate = workspace
+            .filter(|_| !fused)
             .and_then(|ws| boosted_slate(&selection, budget, &self.workspaces, ws))
             .unwrap_or_else(|| selection.injected.iter().map(|m| (m.memory_id.clone(), m.score)).collect());
         let mut blocks = Vec::new();

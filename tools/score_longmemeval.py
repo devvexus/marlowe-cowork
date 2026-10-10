@@ -26,8 +26,9 @@ because they are not harness metrics and must not be mistaken for them:
                 not tuning; the shipped threshold is frozen at 0.95 and does not move.
 
 MarloweCowork port (M2): paths point at this repo (`target/release/marlowe.exe`, `models/` or
-$MARLOWE_MODELS, `data/` for the corpus and runs). The binary is CPU-only, so the old provider,
-cascade-plan, retrieval-profile and CUDA-forwarding switches are gone. Each pass now also writes
+$MARLOWE_MODELS, `data/` for the corpus and runs). M4.5 restores `--rerank-provider`,
+`--rerank-plan` and `--gpu-runtime` for a `--features cuda` binary (pass it with `--binary`);
+the shipped path is still CPU, depth 10, one graph. Each pass now also writes
 `recall.json` (driver-side R@k, see `tools/recall_at_k.py`); the reporting rules are unchanged.
 See tools/README.md for the exact commands.
 
@@ -83,6 +84,9 @@ _rerank_threads = None
 _rerank_batch = None
 _injection_coverage = None
 _embedder_workers = None
+_rerank_provider = None
+_rerank_plan = None
+_gpu_runtime = None
 
 CONTAMINATION = (
     "the frozen gate's weights and isotonic calibration were fit on the {fit_cases} cases of "
@@ -670,6 +674,9 @@ def score_one(
         + (f"--rerank-threads {_rerank_threads} " if _rerank_threads is not None else "")
         + (f"--rerank-batch {_rerank_batch} " if _rerank_batch is not None else "")
         + (f"--injection-coverage {_injection_coverage} " if _injection_coverage is not None else "")
+        + (f"--rerank-provider {_rerank_provider} " if _rerank_provider is not None else "")
+        + (f"--rerank-plan {_rerank_plan} " if _rerank_plan is not None else "")
+        + (f"--gpu-runtime {_gpu_runtime} " if _gpu_runtime is not None else "")
         + f"--dump-gate-features {dump}"
     )
     result = run(
@@ -951,6 +958,17 @@ def main() -> int:
         "--embedder-workers", type=int, default=None,
         help="ONNX sessions for batch embedding at ingest. Throughput only: a vector is a pure "
              "function of its text. Omit for the binary's default, min(cpus, 8).")
+    parser.add_argument(
+        "--rerank-provider", choices=["cpu", "cuda", "directml"], default=None,
+        help="cross-encoder device; GPU values need a `--features cuda` binary and are required, "
+             "never fallen back from. Omit for the binary's CPU default.")
+    parser.add_argument(
+        "--rerank-plan", choices=["shipped", "cascade"], default=None,
+        help="`cascade` = depth 30 -> 10 then six-graph RRF (crates/marlowe-memory/src/cascade.rs).")
+    parser.add_argument(
+        "--gpu-runtime", default=None,
+        help="root written by scripts/fetch-gpu-runtime.ps1 (the harness strips the environment, "
+             "so $MARLOWE_GPU_RUNTIME would not reach the binary).")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--clock", type=int, default=1_780_000_000_000)
     args = parser.parse_args()
@@ -977,7 +995,7 @@ def main() -> int:
         )
 
     global _cache_dir, _reranking, _rerank_threads, _rerank_batch, _injection_coverage
-    global _embedder_workers
+    global _embedder_workers, _rerank_provider, _rerank_plan, _gpu_runtime
     BINARY = Path(args.binary).resolve()
     _cache_dir = Path(args.embedding_cache)
     _reranking = args.reranking
@@ -985,6 +1003,9 @@ def main() -> int:
     _rerank_batch = args.rerank_batch
     _injection_coverage = args.injection_coverage
     _embedder_workers = args.embedder_workers
+    _rerank_provider = args.rerank_provider
+    _rerank_plan = args.rerank_plan
+    _gpu_runtime = str(Path(args.gpu_runtime).resolve()) if args.gpu_runtime else None
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -993,12 +1014,14 @@ def main() -> int:
         json.dumps(
             {
                 "_what": (
-                    "the scorer this run used. The binary is CPU-only; both ONNX graphs run on "
-                    "CPUExecutionProvider and the harness hands the target a minimal environment "
-                    "(section 4.0.9), so model paths travel on the command line."
+                    "the scorer this run used. The embedder is always CPU; the cross-encoder runs "
+                    "on rerank_provider (required, never fallen back from). The harness hands the "
+                    "target a minimal environment (section 4.0.9), so paths travel on the command line."
                 ),
                 "embedder_provider": "cpu",
-                "rerank_provider": "cpu",
+                "rerank_provider": args.rerank_provider or "cpu",
+                "rerank_plan": args.rerank_plan or "shipped",
+                "gpu_runtime": _gpu_runtime,
                 "models_dir": str(MODELS_DIR),
                 "reranking": args.reranking,
             },

@@ -38,6 +38,8 @@ members = [
     "crates/marlowe-typeset-helper",
     # M4.5: research sources (channels, identity dedup, corroboration, link tables, cache).
     "crates/marlowe-research",
+    # M4.5: GPU feature shim for ONNX Runtime (no code).
+    "crates/marlowe-ort-gpu",
     # M4.5: context and hardware planner (GGUF header, KV/state maths, VRAM budget).
     "crates/marlowe-hw",
 ]
@@ -76,6 +78,7 @@ marlowe-os = { path = "crates/marlowe-os" }
 marlowe-crew = { path = "crates/marlowe-crew" }
 marlowe-typeset = { path = "crates/marlowe-typeset" }
 marlowe-research = { path = "crates/marlowe-research" }
+marlowe-ort-gpu = { path = "crates/marlowe-ort-gpu" }
 marlowe-hw = { path = "crates/marlowe-hw" }
 
 # Terminal. crossterm, not termion: Windows is the primary platform.
@@ -96,9 +99,10 @@ thiserror = "2"
 unicode-normalization = "0.1"
 unicode-general-category = "1"
 # ONNX Runtime for the embedder and cross-encoder. EXACT version: ort-sys pins the runtime by
-# sha256 per target and links it statically. CPU only — the old `cuda` feature is gone, which is
-# what lets aarch64-pc-windows-msvc build (rc.10 ships a static ARM64-Windows runtime).
-ort = { version = "=2.0.0-rc.10", features = ["download-binaries"] }
+# sha256 per target and links it statically (rc.13 = ONNX Runtime 1.28.0; the Windows builds carry
+# DirectML on both x64 and ARM64). The default build is CPU. GPU is opt-in through
+# `marlowe-memory/cuda`, which adds per-target features via `crates/marlowe-ort-gpu`.
+ort = { version = "=2.0.0-rc.13", features = ["download-binaries"] }
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 getrandom = "0.2"
 

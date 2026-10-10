@@ -42,8 +42,8 @@ use marlowe_memory::rerank::{CrossEncoder, MAX_BATCH, MAX_SEQ_LEN, MODEL_FILE, T
 /// Absolute tolerance on one logit, and the reason it is not zero.
 ///
 /// The reference runs ONNX Runtime through Python; this runs the same graph through `ort`'s
-/// statically linked build of the same pinned 1.22.0. Identical weights and identical input ids,
-/// but not necessarily an identical arena or thread pool, so bit equality is not something to
+/// statically linked build (ort rc.13, ONNX Runtime 1.28.0). Identical weights and identical input
+/// ids, but not necessarily an identical arena or thread pool, so bit equality is not something to
 /// demand across the boundary.
 ///
 /// **1e-3 is small relative to the quantity that matters.** These logits span roughly −12 to +8 in
@@ -278,18 +278,59 @@ fn the_rust_graph_reproduces_the_reference_logits() {
         "CrossEncoder::load must stay CPU-fixed, or the row labelled `cpu` is measuring something          else"
     );
 
-    for case in fx["cases"].as_array().expect("cases") {
+    check_logits(&mut encoder, &fx, r.dir);
+}
+
+fn check_logits(encoder: &mut CrossEncoder, fx: &serde_json::Value, label: &str) {
+    let mut worst = 0f32;
+    let cases = fx["cases"].as_array().expect("cases");
+    for case in cases {
         let name = case["name"].as_str().unwrap();
         let expected = case["logit"].as_f64().unwrap() as f32;
         let got = encoder
             .score(case["query"].as_str().unwrap(), case["document"].as_str().unwrap())
             .expect("scoring succeeds");
+        worst = worst.max((got - expected).abs());
         assert!(
             (got - expected).abs() <= LOGIT_TOLERANCE,
             "{name:?}: Rust {got} vs reference {expected}, difference {} exceeds {LOGIT_TOLERANCE}",
             (got - expected).abs()
         );
     }
+    eprintln!("[{label}] n={} max |logit - reference| {worst:.3e}", cases.len());
+}
+
+/// The cascade's L-6 member has its own reference fixture, so its graph is checked too, loaded
+/// through the only path the cascade uses (`load_fusion_member`, digest from `FUSION_GRAPHS`).
+#[test]
+fn the_l6_fusion_member_reproduces_its_reference_logits() {
+    let r = REFERENCES.iter().find(|r| r.dir == "ms-marco-MiniLM-L-6-v2-ft-session-j").unwrap();
+    if !model_dir(r).join(MODEL_FILE).exists() {
+        eprintln!("SKIP: {} is absent (scripts/fetch-models.ps1 -Cascade).", model_dir(r).display());
+        return;
+    }
+    let fx = fixture(r);
+    let mut encoder = CrossEncoder::load_fusion_member(
+        &model_dir(r),
+        r.dir,
+        marlowe_memory::rerank::SHIPPED_THREADS,
+        marlowe_memory::rerank::RerankProvider::Cpu,
+    )
+    .expect("the pinned L-6 member loads");
+    check_logits(&mut encoder, &fx, r.dir);
+}
+
+#[test]
+fn a_graph_outside_the_fusion_rule_is_refused() {
+    let err = CrossEncoder::load_fusion_member(
+        &model_dir(shipped()),
+        "ms-marco-MiniLM-L-2-v2-ft-m-B",
+        1,
+        marlowe_memory::rerank::RerankProvider::Cpu,
+    )
+    .err()
+    .expect("refused");
+    assert!(err.to_string().contains("not a member"), "{err}");
 }
 
 #[test]

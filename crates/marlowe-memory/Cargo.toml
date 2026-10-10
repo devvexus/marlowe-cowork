@@ -16,3 +16,9 @@ unicode-normalization.workspace = true
 unicode-general-category.workspace = true
 ort.workspace = true
 sha2.workspace = true
+marlowe-ort-gpu = { workspace = true, optional = true }
+
+[features]
+# GPU execution for the cross-encoder cascade: CUDA, then DirectML, then CPU, taken only while the
+# GPU is idle. Off by default; the shipped, measured scorer is CPU. See src/ep.rs.
+cuda = ["dep:marlowe-ort-gpu"]

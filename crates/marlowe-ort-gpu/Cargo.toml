@@ -1,0 +1,20 @@
+[package]
+name = "marlowe-ort-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Feature shim: turns on the GPU features of `ort` per target. No code."
+
+# Cargo cannot add features to a dependency per target from a crate feature, and it refuses two
+# names for one package. So `marlowe-memory/cuda` pulls this crate in, and this crate's
+# target-specific sections unify extra features onto the workspace's single `ort`.
+#
+# x64: the pyke ORT 1.28 build with the CUDA 13 EP (+ DirectML), linked statically; the CUDA 13
+#      runtime and cuDNN 9 DLLs are preloaded at runtime (scripts/fetch-gpu-runtime.ps1).
+# ARM64: no prebuilt ORT CUDA exists, so ORT is loaded at runtime (`load-dynamic`) from the
+#      official onnxruntime-win-arm64 1.31.0 build, and CUDA comes from Microsoft's CUDA plugin EP.
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+ort = { workspace = true, features = ["cuda", "directml", "preload-dylibs", "api-22"] }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+ort = { workspace = true, features = ["load-dynamic", "directml", "api-22"] }

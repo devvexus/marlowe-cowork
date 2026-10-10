@@ -17,10 +17,12 @@
 
 #![forbid(unsafe_code)]
 
+pub mod cascade;
 pub mod claim;
 pub mod consolidate;
 pub mod cue;
 pub mod entry;
+pub mod ep;
 pub mod error;
 pub mod gate;
 pub mod ingest;

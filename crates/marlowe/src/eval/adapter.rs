@@ -4,7 +4,7 @@
 //! Ported from the old harness's adapter onto the current `marlowe-memory` API. The pipeline is
 //! the shipped one: lexical + dense cues, frozen gate, session pruning, CrossEncoder rerank at
 //! `RERANK_BUDGET`, the declared operating point, `ADMIT_TOP_K`, and frozen consolidation at
-//! the end of every ingest. CPU only. The old fit-dump, cascade and CUDA paths no longer exist.
+//! the end of every ingest. `RerankSettings::cascade` swaps in the GPU cascade for measurement.
 
 use std::io::{BufRead, Write};
 use std::path::Path;
@@ -19,6 +19,7 @@ use marlowe_journal::{Journal, Profile};
 use marlowe_memory::consolidate::{self, Policy};
 use marlowe_memory::cue::dense::embedder::Embedder;
 use marlowe_memory::cue::dense::vectors::VectorStore;
+use marlowe_memory::cascade::Cascade;
 use marlowe_memory::rerank::CrossEncoder;
 use marlowe_memory::retrieve::{
     debug_assert_injection_valid, select_for_injection, Rerank, RetrievalScope, Scoring,
@@ -35,6 +36,8 @@ const ANSWER_BUDGET: RetrievalBudget = RetrievalBudget { max_tokens: 7000, max_l
 /// How the rerank stage runs. `encoder: None` is an explicit `--reranking off`.
 pub struct RerankSettings {
     pub encoder: Option<CrossEncoder>,
+    /// The fusion members; `Some` runs `Rerank::Cascade` with `encoder` as the narrower.
+    pub cascade: Option<Cascade>,
     /// Shipped value `false` on CPU (`RerankProvider::default_batching`).
     pub batched: bool,
 }
@@ -194,13 +197,13 @@ impl Adapter {
             operating_point: &self.operating_point,
             coverage: self.coverage,
         };
-        let mut rerank = match self.rerank.encoder.as_mut() {
-            None => Rerank::Off,
-            Some(encoder) => Rerank::CrossEncoder {
-                encoder,
-                budget: RERANK_BUDGET,
-                batched: self.rerank.batched,
-            },
+        let batched = self.rerank.batched;
+        let mut rerank = match (self.rerank.encoder.as_mut(), self.rerank.cascade.as_mut()) {
+            (None, _) => Rerank::Off,
+            (Some(encoder), Some(cascade)) => {
+                Rerank::Cascade { encoder, fusion: cascade.members_mut(), batched }
+            }
+            (Some(encoder), None) => Rerank::CrossEncoder { encoder, budget: RERANK_BUDGET, batched },
         };
         let selection = select_for_injection(
             &self.beliefs,
