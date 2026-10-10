@@ -383,3 +383,80 @@ fn a_newline_inside_an_unfinished_display_keeps_it_held() {
     println!("after the newline:\n{at_newline}\nafter the next token:\n{next_token}");
     assert!(at_newline.contains('…'), "the unfinished matrix was drawn as finished:\n{at_newline}");
 }
+
+/// Reasoning collapsed with Ctrl+T while a reply streams: the pane follows the new, shorter tail
+/// at once rather than hold a line index from the open layout over an almost empty pane.
+#[test]
+fn collapsing_reasoning_mid_stream_follows_the_new_tail() {
+    let mut s = in_session();
+    s.on_key(ctrl('t'));
+    assert!(s.show_thinking, "reasoning opened");
+    let step = "Weighing the Jacobian's diagonal against its off-diagonal terms before writing. ";
+    let mut seq = 7;
+    for _ in 0..300 {
+        feed(&mut s, seq, Event::ReasoningDelta { session: sid(), turn: 2, text: step.into(), tokens: 12 });
+        seq += 1;
+        render(&s, W, H);
+    }
+    let open = s.viewport.get();
+    assert!(open.total > 200, "a few hundred lines of reasoning: {}", open.total);
+    s.on_key(ctrl('t'));
+    assert!(!s.show_thinking);
+    let pane = marlowe_tui::render::geometry(Rect::new(0, 0, W, H), &s).conversation;
+    let check = |s: &State, when: &str| {
+        let buf = render(s, W, H);
+        let v = s.viewport.get();
+        let rows = pane_rows(&buf, pane);
+        assert!(v.total < open.total, "{when}: collapsed");
+        assert_eq!(v.top + pane.height as usize, v.total.max(pane.height as usize), "{when}: not at the tail");
+        assert!(rows.last().is_some_and(|r| !without_tag(r).is_empty()), "{when}: the last row is blank:\n{}", rows.join("\n"));
+    };
+    check(&s, "collapsed");
+    // Reasoning goes on, collapsed: nothing is added to the transcript, and the view stays put.
+    feed(&mut s, seq, Event::ReasoningDelta { session: sid(), turn: 2, text: step.into(), tokens: 12 });
+    check(&s, "more reasoning");
+}
+
+/// Scrolled up while a reply streams, then the pane changes height (a multi-line paste grows the
+/// composer; the window is made shorter) and width: the reader stays on the text they were
+/// reading, not at the stale count of lines from the bottom they scrolled to.
+#[test]
+fn a_scrolled_up_view_keeps_its_place_through_a_paste_and_a_resize() {
+    let mut s = in_session();
+    let toks = tokens(REPLY);
+    for (k, t) in toks.iter().enumerate().take(toks.len() * 3 / 4) {
+        feed(&mut s, 7 + k as u64, Event::TextDelta { session: sid(), turn: 2, text: t.clone() });
+        if k == 200 {
+            s.scroll = 12;
+        }
+        render(&s, W, H);
+    }
+    let pane_of = |s: &State, w: u16, h: u16| marlowe_tui::render::geometry(Rect::new(0, 0, w, h), s).conversation;
+    // The top rows on screen, as the reader sees them.
+    let top_rows = |s: &State, w: u16, h: u16| {
+        let rows = pane_rows(&render(s, w, h), pane_of(s, w, h));
+        rows.into_iter().take(6).map(|r| without_tag(&r).to_string()).collect::<Vec<_>>()
+    };
+    let reading = top_rows(&s, W, H);
+    let before = s.viewport.get();
+    assert!(before.top + (before.size.1 as usize) + 12 < before.total, "the reply grew below the reader");
+    assert!(reading.iter().any(|r| !r.trim().is_empty()), "nothing to read: {reading:?}");
+
+    let tall = pane_of(&s, W, H).height;
+    s.on_paste("first pasted line\nsecond\nthird\nfourth");
+    assert!(pane_of(&s, W, H).height < tall, "the paste grew the composer");
+    assert_eq!(top_rows(&s, W, H), reading, "a paste moved the reader");
+
+    assert_eq!(top_rows(&s, W, H - 6), reading, "a shorter window moved the reader");
+
+    // A narrower window wraps every line again: the reader's text is still on screen.
+    let buf = render(&s, 120, H);
+    let rows = pane_rows(&buf, pane_of(&s, 120, H));
+    let line = reading.iter().find(|r| r.split_whitespace().count() >= 3).expect("a line of words on screen");
+    let words: String = line.split_whitespace().take(3).collect::<Vec<_>>().join(" ");
+    assert!(
+        rows.iter().any(|r| r.contains(&words)),
+        "after a resize {words:?} is off screen:\n{}",
+        rows.join("\n")
+    );
+}

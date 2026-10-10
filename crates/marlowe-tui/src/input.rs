@@ -549,7 +549,12 @@ impl State {
                 self.view = View::Conversation;
                 self.open_onboarding(false, out);
             }
-            Command::ToggleThinking => self.show_thinking = !self.show_thinking,
+            Command::ToggleThinking => {
+                self.show_thinking = !self.show_thinking;
+                // Every reasoning block opens or closes: the pane starts again from the tail, or
+                // from the same distance above it, rather than hold a line index from before.
+                self.epoch = self.epoch.wrapping_add(1);
+            }
             Command::Interrupt => {
                 if let (Some(s), true) = (self.session.clone(), self.is_busy()) {
                     out.push(Request::Interrupt { session: s });

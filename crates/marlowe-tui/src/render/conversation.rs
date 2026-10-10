@@ -51,26 +51,39 @@ pub fn draw(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     }
 }
 
+/// Lines the transcript may lose from one frame to the next while the pane following a reply
+/// holds its place. A bigger loss is a real change of layout, and the view goes to the tail.
+const HOLD_LINES: usize = 3;
+
 /// The transcript line at the top of the pane, and the record of it for the next frame.
 ///
 /// **Steady while a reply streams.** Following the tail, the view moves down with new text and
-/// never back up: if the transcript ever got shorter mid-reply, the pane would keep its place and
-/// leave the rows below empty until text fills them, rather than pull every line on screen down.
+/// never back up: if the transcript got a few lines shorter mid-reply, the pane would keep its
+/// place and leave the rows below empty until text fills them, rather than pull every line on
+/// screen down. A larger loss (reasoning collapsed, a reflow) is followed to the new tail.
 /// Scrolled up, the view stays on the lines it shows while the reply grows below them, until the
-/// reader scrolls again. `tests/stream_replay.rs` replays a streamed maths reply against both.
+/// reader scrolls again, and through a pane that changes height (a resize, a composer grown by a
+/// paste). After a width change it keeps the same fraction of the transcript above it, since
+/// every line has wrapped again. `tests/stream_replay.rs` replays a streamed maths reply.
 fn view_top(state: &State, size: (u16, u16), total: usize, max: usize) -> usize {
     let prev = state.viewport.get();
     let turn = state.live.as_ref().map(|l| l.turn);
     let same = prev.size == size && prev.epoch == state.epoch;
     let top = if state.scroll == 0 {
         let streaming = turn.is_some() && prev.turn == turn && prev.scroll == 0;
-        if same && streaming {
+        let held = prev.total.saturating_sub(total) <= HOLD_LINES;
+        if same && streaming && held {
             max.max(prev.top.min(total.saturating_sub(1)))
         } else {
             max
         }
-    } else if same && prev.scroll == state.scroll {
-        prev.top.min(max)
+    } else if prev.scroll == state.scroll && prev.epoch == state.epoch && prev.total > 0 {
+        // The reader's place as last drawn: `state.scroll` has gone stale while text arrived.
+        if prev.size.0 == size.0 {
+            prev.top.min(max)
+        } else {
+            (prev.top * total / prev.total).min(max)
+        }
     } else {
         max - state.scroll.min(max)
     };
@@ -125,6 +138,7 @@ fn typeset_images(
         }
         // The grid's rows, and the text column's width from the block's column: a display block
         // is alone on its rows, so the image may run wider than the grid did rather than shrink.
+        // The cache is not keyed on this width: a resize re-renders only an image it no longer fits.
         let cols = tw.saturating_sub(b.col);
         let job = Job { markup: markup.clone(), fg, cols: cols as u16, rows: b.rows as u16 };
         match svc.get(&job) {

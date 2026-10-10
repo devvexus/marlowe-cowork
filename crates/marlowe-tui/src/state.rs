@@ -466,8 +466,9 @@ pub struct State {
     pub scroll_max: Cell<usize>,
     /// The conversation pane as last drawn, written back by the renderer.
     pub viewport: Cell<Viewport>,
-    /// Bumped whenever the transcript is replaced wholesale (a new or reopened session), so the
-    /// renderer does not hold a view from the old one.
+    /// Bumped whenever the transcript is replaced wholesale (a new or reopened session) or laid
+    /// out anew by the reader (reasoning shown or hidden), so the renderer does not hold a view
+    /// from the old layout.
     pub epoch: u32,
     pub flash: Option<Flash>,
     /// What the pointer is over, as of the last mouse event.

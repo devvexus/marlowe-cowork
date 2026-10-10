@@ -10,9 +10,13 @@
 //!   License) are the fallback for the symbols it lacks.
 //! - **Pixel-snapped.** The em is nudged so the x-height is a whole number of pixels, and the
 //!   page is shifted so the equation's baseline falls on a pixel boundary: lowercase tops and
-//!   bottoms land on whole pixels instead of smearing over two grey rows. Windows Terminal lays
-//!   Sixel out on a fixed 10×20 cell and scales it to the real one, so a crisp edge at 10×20 is
-//!   what survives the scale-up.
+//!   bottoms land on whole pixels instead of smearing over two grey rows. Every other glyph run
+//!   (numerators, denominators, scripts, braces) moves under half a pixel onto a whole-pixel
+//!   baseline of its own, and every rule (fraction bars, radical vinculums, over- and underlines)
+//!   is a whole number of pixels thick, at least one, with both edges on pixel boundaries
+//!   ([`snap`]). Windows Terminal lays Sixel out on a fixed 10×20 cell and scales it to the real
+//!   one, so a crisp edge at 10×20 is what survives the scale-up. Stems are not hinted sideways:
+//!   Typst draws outlines unhinted.
 //! - **Weight.** Every stroke is widened by [`WEIGHT`] supersampled pixels on each side,
 //!   horizontally only (so the snapped baseline and x-height stay crisp): at a 17-pixel em Fira
 //!   Math's stems are thinner than a terminal font's, and read as grey hairlines.
@@ -24,10 +28,11 @@ use std::sync::OnceLock;
 
 use typst::diag::{FileError, FileResult};
 use typst::foundations::{Bytes, Datetime};
-use typst::layout::{Abs, Frame, FrameItem, Page, PagedDocument, Point};
+use typst::layout::{Abs, Frame, FrameItem, Page, PagedDocument, Point, Size};
 use typst::syntax::{FileId, Source, VirtualPath};
 use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
+use typst::visualize::{Geometry, Shape};
 use typst::{Library, LibraryExt, World};
 
 use marlowe_typeset::sixel::Coverage;
@@ -101,7 +106,7 @@ impl Engine {
     }
 
     /// The one page of the formula, shifted down (by under a pixel) so the equation's baseline is
-    /// on a pixel boundary.
+    /// on a pixel boundary, then every other run and rule [`snap`]ped.
     fn page(&self, markup: &str, em_px: f32, fg: [u8; 3]) -> Result<Page, String> {
         let doc = self.compile(markup, em_px, fg)?;
         if doc.pages.len() > 1 {
@@ -118,6 +123,7 @@ impl Engine {
                 page.frame.translate(Point::with_y(Abs::pt(dy)));
             }
         }
+        page.frame = snap(&page.frame, Point::zero());
         Ok(page)
     }
 
@@ -163,6 +169,68 @@ fn baseline(frame: &Frame) -> Option<Abs> {
         }
     }
     lines.into_iter().max_by_key(|(_, n)| *n).map(|(y, _)| y)
+}
+
+/// `frame`, which sits at `at` on the page, with every glyph run's baseline and every rule's edges
+/// on whole pixels (one point is one output pixel).
+///
+/// A run moves by at most half a pixel, a rule by at most a pixel. A vertical glyph assembly (a
+/// tall bracket) is one run, so its parts move together. A group with a transform is left as is.
+fn snap(frame: &Frame, at: Point) -> Frame {
+    let mut out = Frame::new(frame.size(), frame.kind());
+    if frame.has_baseline() {
+        out.set_baseline(frame.baseline());
+    }
+    for (pos, item) in frame.items() {
+        let here = at + *pos;
+        let (shift, item) = match item {
+            FrameItem::Group(g) if g.transform.is_identity() => {
+                let mut g = g.clone();
+                g.frame = snap(&g.frame, here);
+                (Point::zero(), FrameItem::Group(g))
+            }
+            FrameItem::Text(_) => {
+                let y = here.y.to_pt();
+                (Point::with_y(Abs::pt(y.round() - y)), item.clone())
+            }
+            FrameItem::Shape(shape, span) => {
+                let (shift, shape) = snap_rule(shape, here);
+                (shift, FrameItem::Shape(shape, *span))
+            }
+            other => (Point::zero(), other.clone()),
+        };
+        out.push(*pos + shift, item);
+    }
+    out
+}
+
+/// A horizontal or vertical stroked line made a whole number of pixels thick, at least one, with
+/// both edges on pixel boundaries; a filled rectangle with its top and bottom on them. Anything
+/// else as it is. Returns the shift and the shape.
+fn snap_rule(shape: &Shape, at: Point) -> (Point, Shape) {
+    let flat = |v: Abs| v.to_pt().abs() < 1e-6;
+    // How far to move the centre `c` of a stroke `t` thick so its edge `c - t/2` is whole.
+    let centre = |c: f64, t: f64| (c - t / 2.0).round() + t / 2.0 - c;
+    let mut s = shape.clone();
+    match (&shape.geometry, s.stroke.as_mut()) {
+        (Geometry::Line(d), Some(stroke)) if flat(d.y) || flat(d.x) => {
+            let t = stroke.thickness.to_pt().round().max(1.0);
+            stroke.thickness = Abs::pt(t);
+            let shift = if flat(d.y) {
+                Point::with_y(Abs::pt(centre(at.y.to_pt(), t)))
+            } else {
+                Point::with_x(Abs::pt(centre(at.x.to_pt(), t)))
+            };
+            (shift, s)
+        }
+        (Geometry::Rect(size), None) if shape.fill.is_some() && size.y.to_pt() > 0.0 => {
+            let y = at.y.to_pt();
+            let h = size.y.to_pt().round().max(1.0);
+            s.geometry = Geometry::Rect(Size::new(size.x, Abs::pt(h)));
+            (Point::with_y(Abs::pt(y.round() - y)), s)
+        }
+        _ => (Point::zero(), s),
+    }
 }
 
 /// `cov` with every covered run widened by `r` pixels to the left and right: each pixel the
@@ -303,6 +371,61 @@ mod tests {
         let doc = e.compile("z", em + 0.37, fg).unwrap();
         let soft = plain(&doc.pages[0]);
         assert!(soft.h > xh, "unsnapped, `z` was {} rows: it fit by luck; pick another offset", soft.h);
+    }
+
+    /// Every glyph run's baseline and every horizontal rule's (top, bottom) in `frame`, on the page.
+    fn edges(frame: &Frame, at: Point, runs: &mut Vec<f64>, rules: &mut Vec<(f64, f64)>) {
+        for (pos, item) in frame.items() {
+            let here = at + *pos;
+            match item {
+                FrameItem::Group(g) => edges(&g.frame, here, runs, rules),
+                FrameItem::Text(_) => runs.push(here.y.to_pt()),
+                FrameItem::Shape(s, _) => {
+                    if let (Geometry::Line(d), Some(st)) = (&s.geometry, &s.stroke) {
+                        if d.y.to_pt().abs() < 1e-6 {
+                            let (y, t) = (here.y.to_pt(), st.thickness.to_pt());
+                            rules.push((y - t / 2.0, y + t / 2.0));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn every_run_and_rule_lands_on_whole_pixels() {
+        // The KL formula from Matthew's first hands-on: two fraction bars with a numerator and a
+        // denominator each, scripts, an underbrace and a tall bracket.
+        let e = Engine::new();
+        let kl = r#"D_(K L)(p || q) = 1/2 [ underbrace("tr"(Sigma_2^(-1) Sigma_1), "trace term") + (mu_2 - mu_1)^T Sigma_2^(-1) (mu_2 - mu_1) - d + ln frac(det Sigma_2, det Sigma_1) ]"#;
+        let page = e.page(kl, e.snapped_em(0.86 * 20.0), [0xcd, 0xc9, 0xd6]).unwrap();
+        let (mut runs, mut rules) = (Vec::new(), Vec::new());
+        edges(&page.frame, Point::zero(), &mut runs, &mut rules);
+        let whole = |v: f64| (v - v.round()).abs() < 1e-3;
+        assert!(rules.len() >= 2, "two fraction bars at least: {rules:?}");
+        assert!(
+            rules.iter().all(|(a, b)| whole(*a) && whole(*b) && b - a >= 1.0 - 1e-3),
+            "rules off the pixel grid: {rules:?}"
+        );
+        assert!(runs.iter().all(|y| whole(*y)), "baselines off the pixel grid: {runs:?}");
+    }
+
+    #[test]
+    fn a_fraction_bar_is_one_solid_row() {
+        // At Windows Terminal's 20-pixel Sixel cell the bar of 1/2 is one row at full coverage,
+        // not two grey half rows.
+        let e = Engine::new();
+        let cov = e.render("frac(1, 2)", 0.86 * 20.0, [0xcd, 0xc9, 0xd6]).unwrap();
+        let row = |y: usize| &cov.alpha[y * cov.w..(y + 1) * cov.w];
+        // A bar row: inked across most of the formula's width, which no digit row is.
+        let bar: Vec<usize> =
+            (0..cov.h).filter(|&y| row(y).iter().filter(|a| **a > 32).count() * 10 >= cov.w * 8).collect();
+        let dump: Vec<Vec<u8>> = (0..cov.h).map(|y| row(y).to_vec()).collect();
+        assert_eq!(bar.len(), 1, "bar rows {bar:?} in {dump:?}");
+        // Its middle, clear of the anti-aliased ends, is solid.
+        let mid = &row(bar[0])[cov.w / 4..cov.w - cov.w / 4];
+        assert!(mid.iter().all(|a| *a >= 240), "the bar is grey: {mid:?}");
     }
 
     /// The font family of every glyph run in `frame`, groups included.
