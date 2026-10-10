@@ -1,0 +1,40 @@
+ * marlowe — gate work                                                                                                  0 runs · 0 need you
+╭ C╭ diff · changes in this session ────────────────────────────────────────────────────────────────────────────────────────────────────╮──╮
+│  │ src/gate.rs  new file  +1 −1                                                                                                       │m │
+│  │ @@ -10,4 +10,4 @@ fn gate                                                                                                          │d │
+│  │ 10 10   fn gate(x: f32) -> bool {                                                                                                  │ ─╯
+│  │ 11    −     x > 0.5                                                                                                                │──╮
+│  │    11 +     x > 0.62                                                                                                               │  │
+│  │ 12 12   }                                                                                                                          │ ─╯
+│  │ 13 13   diff --git a/notes.md b/notes.md                                                                                           │──╮
+│  │                                                                                                                                    │  │
+│  │ notes.md  new file  +2                                                                                                             │ ─╯
+│  │ @@ -0,0 +1,2 @@                                                                                                                    │──╮
+│  │     1 + threshold moved                                                                                                            │  │
+│  │     2 + see run 22                                                                                                                 │  │
+│  │                                                                                                                                    │  │
+│  │                                                                                                                                    │  │
+│  │                                                                                                                                    │  │
+│  │                                                                                                                                    │  │
+│  │                                                                                                                                    │  │
+│  │                                                                                                                                    │  │
+│  │                                                                                                                                    │  │
+│  │                                                                                                                                    │  │
+│  │                                                                                                                                    │  │
+│  │                                                                                                                                    │  │
+│  │                                                                                                                                    │  │
+│  │                                                                                                                                    │  │
+│  │                                                                                                                                    │  │
+│  │                                                                                                                                    │  │
+│  │                                                                                                                                    │  │
+│  │                                                                                                                                    │  │
+│  │                                                                                                                                    │  │
+│  │                                                                                                                                    │ ─╯
+│  │                                                                                                                                    │──╮
+│  │                                                                                                                                    │  │
+│  │                                                                                                                                    │ ─╯
+╰──│                                                                                                                                    │──╮
+╭ M│                                                                                                                                    │  │
+│ ›│                                                                                                                                    │  │
+╰──╰─────────────────────────────────────────────────────────────────────────────────── ↑↓ scroll · n p next/previous file · esc close ─╯ ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette       Friday 9 October · 21:40

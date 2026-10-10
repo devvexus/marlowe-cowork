@@ -35,6 +35,9 @@ mod crew;
 mod library;
 mod memory;
 mod overlay;
+mod panel;
+mod popup;
+mod transcript;
 mod watch;
 
 use marlowe_surface::chrome::Ink;
@@ -47,6 +50,7 @@ use ratatui::widgets::{Block, BorderType, Widget};
 use ratatui::Frame;
 
 use crate::composer::MAX_VISIBLE_LINES;
+use crate::links::{self, LinkConfig};
 use crate::state::{Activity, BoardTab, Command, Conn, Focus, NoteTone, Overlay, State, Target, View};
 use crate::text;
 
@@ -227,6 +231,7 @@ fn composer_text_width(cols: u16) -> usize {
 pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
     crate::images::begin_frame();
     state.hits.borrow_mut().clear();
+    state.code.link_plan.borrow_mut().clear();
     let area = frame.area();
     let g = geometry(area, state);
     if g.too_small {
@@ -258,6 +263,9 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
     draw_header(g.header, state, theme, buf);
     draw_footer(g.footer, state, theme, buf);
     let cursor = g.composer.and_then(|r| draw_composer(r, state, theme, buf));
+    if state.overlay.is_none() && state.view == View::Conversation && state.approvals.is_empty() && !state.booting() {
+        popup::draw(&g, state, theme, buf);
+    }
 
     // A floating panel takes the pointer: nothing under it reacts.
     if state.overlay.is_some() {
@@ -269,6 +277,7 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
         Some(Overlay::ImportOffer { sel }) => overlay::import_offer(area, state, *sel, theme, buf),
         Some(Overlay::Onboard) => overlay_cursor = overlay::onboard(area, state, theme, buf),
         Some(Overlay::Dispatch) => overlay_cursor = crew::dispatch(area, state, theme, buf),
+        Some(Overlay::Panel) => overlay_cursor = panel::draw(area, state, theme, buf),
         Some(Overlay::Sessions { sel }) => overlay::sessions(area, state, *sel, theme, buf),
         Some(Overlay::ContextPlan { .. }) => context::planner(area, state, theme, buf),
         Some(Overlay::ModelPicker { sel }) => {
@@ -291,6 +300,7 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
         overlay::approval(area, state, a, theme, buf);
         return;
     }
+    plan_links(&g, area, state, buf);
     if let Some(c) = overlay_cursor {
         frame.set_cursor_position(c);
     }
@@ -308,6 +318,19 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
     };
     if let Some(c) = view_cursor {
         frame.set_cursor_position(c);
+    }
+}
+
+/// Finds the file references and URLs on screen, for the run loop to link after the frame.
+fn plan_links(g: &Geometry, area: Rect, state: &State, buf: &Buffer) {
+    let region = match (&state.overlay, state.view) {
+        (None, View::Conversation) if !state.booting() => Some(g.conversation),
+        (Some(Overlay::Panel), _) if matches!(state.code.panel, Some(crate::panel::Panel::Transcript(_) | crate::panel::Panel::Diff(_))) => Some(area),
+        _ => None,
+    };
+    if let Some(r) = region {
+        let cfg = LinkConfig { editor_url: state.code.links.editor_url.clone(), workspace: state.shown_workspace().map(str::to_string) };
+        *state.code.link_plan.borrow_mut() = links::scan(buf, r, &cfg);
     }
 }
 
@@ -456,13 +479,15 @@ pub(crate) fn titled(label: &str, sub: Option<String>, focus: FocusLevel, theme:
 }
 
 /// Text on a box's top border, right-aligned, if it fits after `taken` columns of title.
-pub(crate) fn border_right(r: Rect, y: u16, line: &Line<'_>, taken: u16, buf: &mut Buffer) {
+pub(crate) fn border_right(r: Rect, y: u16, line: &Line<'_>, taken: u16, buf: &mut Buffer) -> Option<Rect> {
     let w = line.width() as u16 + 2;
     if taken + w + 4 > r.width {
-        return;
+        return None;
     }
     let l = Line::from([vec![Span::raw(" ")], line.spans.clone(), vec![Span::raw(" ")]].concat());
-    put(buf, r.right().saturating_sub(w + 2), y, &l, w);
+    let x = r.right().saturating_sub(w + 2);
+    put(buf, x, y, &l, w);
+    Some(Rect { x, y, width: w, height: 1 })
 }
 
 /// Text on a box's bottom border at the left, leaving room for the hotkey.
@@ -647,12 +672,14 @@ fn draw_footer(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     }
     items.extend([
         ("^n", "New", 8, key, chord(Command::NewSession)),
-        ("^o", "Sessions", 7, key, chord(Command::Sessions)),
+        ("alt-s", "Sessions", 7, key, chord(Command::Sessions)),
         ("^d", "Dispatch", 7, key, chord(Command::Dispatch)),
-        ("^r", "Crew", 6, key, chord(Command::Crew)),
+        ("alt-r", "Crew", 6, key, chord(Command::Crew)),
         ("^w", "Watch", 5, key, chord(Command::Watch)),
         ("^g", "Memory", 5, key, chord(Command::Memory)),
         ("^l", "Library", 4, key, chord(Command::Library)),
+        ("^o", "Transcript", 3, key, chord(Command::Transcript)),
+        ("⇧tab", "Mode", 3, key, chord(Command::CycleMode)),
         ("^t", "Thinking", 2, key, chord(Command::ToggleThinking)),
         ("alt-v", "Voice", 1, key, chord(Command::ToggleVoice)),
         ("^k", "palette", 10, key, Target::Palette),
@@ -725,12 +752,66 @@ fn draw_footer(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     put(buf, r.right().saturating_sub(rw + 1), r.y, &right, rw);
 }
 
+/// What the Message box's top border says about the next message: the permission mode (when it is
+/// not the default), what is queued and what is attached.
+fn composer_chips(state: &State, theme: &Theme) -> Line<'static> {
+    use marlowe_proto::PermissionMode;
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let push = |s: Span<'static>, spans: &mut Vec<Span<'static>>| {
+        if !spans.is_empty() {
+            spans.push(Span::styled(" · ", ink(Ink::Dimmer, theme)));
+        }
+        spans.push(s);
+    };
+    let mode = state.code.mode;
+    if mode != PermissionMode::Default {
+        let (label, i) = match mode {
+            PermissionMode::Plan => ("plan mode", Ink::Accent),
+            PermissionMode::AcceptEdits => ("accept edits", Ink::Green),
+            PermissionMode::Bypass => ("bypass", Ink::Red),
+            PermissionMode::DontAsk => ("don't ask", Ink::Amber),
+            PermissionMode::Default => ("", Ink::Dim),
+        };
+        push(Span::styled(label, ink(i, theme).add_modifier(Modifier::BOLD)), &mut spans);
+        spans.push(Span::styled(" ⇧tab", ink(Ink::Dimmer, theme)));
+    }
+    let q = state.code.queue_len();
+    if q > 0 {
+        push(Span::styled(format!("{q} queued"), ink(Ink::Dim, theme)), &mut spans);
+    }
+    let n = state.code.attachments.len();
+    if n > 0 {
+        push(Span::styled(format!("{n} image{}", if n == 1 { "" } else { "s" }), ink(Ink::Speech, theme)), &mut spans);
+    }
+    Line::from(spans)
+}
+
+/// The status line when the user has not set a command: spend and background jobs, if any.
+fn builtin_status(state: &State) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if state.code.totals.usd > 0.0 {
+        parts.push(text::cost(state.code.totals.usd));
+    }
+    let jobs = state.code.running_jobs();
+    if jobs > 0 {
+        parts.push(format!("{jobs} job{}", if jobs == 1 { "" } else { "s" }));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 /// Draws the Message box. Returns the cursor position.
 fn draw_composer(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) -> Option<(u16, u16)> {
     let reg = region(RegionId::Message);
     let focus = focus_level(state, Focus::Message);
     let title = titled(reg.label(), None, focus, theme);
+    let taken = Line::from(title.clone()).width() as u16 + 3;
     region_box(r, title, &reg.hotkey_label(), focus, theme, buf);
+    let chips = composer_chips(state, theme);
+    if !chips.spans.is_empty() {
+        if let Some(rect) = border_right(r, r.y, &chips, taken, buf) {
+            hit(state, rect, Target::Chord(Command::CycleMode));
+        }
+    }
 
     let tw = composer_text_width(r.width);
     let x0 = r.x + 4;
@@ -745,7 +826,7 @@ fn draw_composer(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) -> Opt
         } else if state.library.known && !state.library.has_models() {
             "press ↵ to add a model"
         } else if state.is_busy() {
-            "steer the running turn…"
+            "queue a message — it goes in at the next step…"
         } else {
             "message Marlowe…"
         };
@@ -755,8 +836,8 @@ fn draw_composer(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) -> Opt
             Line::from(vec![
                 Span::styled("esc", ink(Ink::Amber, theme)),
                 Span::styled(" interrupt · ", ink(Ink::Dimmer, theme)),
-                Span::styled("⇧↵", ink(Ink::Dim, theme)),
-                Span::styled(" newline", ink(Ink::Dimmer, theme)),
+                Span::styled("↵", ink(Ink::Dim, theme)),
+                Span::styled(" queue", ink(Ink::Dimmer, theme)),
             ])
         } else {
             hints(&[("⇧↵", "newline"), ("esc", "boxes")], theme)
@@ -782,8 +863,11 @@ fn draw_composer(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) -> Opt
         )))
     } else if let Conn::Refused(msg) = &state.conn {
         Some(Line::from(Span::styled(format!("refused · {}", text::clean(msg)), ink(Ink::Red, theme))))
+    } else if let Some(t) = state.code.statusline.text.as_deref().filter(|_| state.code.statusline_command().is_some()) {
+        // The user's own status line, with its colours removed: the palette is fixed.
+        Some(Line::from(Span::styled(text::clean(t), ink(Ink::Dim, theme))))
     } else {
-        None
+        builtin_status(state).map(|t| Line::from(Span::styled(t, ink(Ink::Dimmer, theme))))
     };
     if let Some(l) = status {
         let max = r.width.saturating_sub(14) as usize;

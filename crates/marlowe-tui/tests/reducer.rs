@@ -68,9 +68,11 @@ fn the_new_session_is_adopted_and_the_turn_streams() {
     assert_eq!(s.entries.last(), Some(&Entry::Prose { text: "Hi there.".into() }));
     assert_eq!(s.activity(), Activity::Writing);
 
-    // A later ask in a busy session is a steer, shown at once.
+    // A later message in a busy session is held, then goes in as a steer at the next step boundary.
     type_str(&mut s, "also check CI");
-    let reqs = s.on_key(key(KeyCode::Enter));
+    assert!(s.on_key(key(KeyCode::Enter)).is_empty());
+    feed(&mut s, 6, Event::ToolStarted { session: sid(), turn: 1, call_id: "c1".into(), tool: "read".into(), summary: "read a".into() });
+    let reqs = feed(&mut s, 7, Event::ToolFinished { session: sid(), turn: 1, call_id: "c1".into(), ok: true, summary: "ok".into() });
     assert_eq!(reqs, vec![Request::Ask { session: Some(sid()), text: "also check CI".into(), workspace: None, images: Vec::new(), options: None }]);
     assert_eq!(s.entries.last(), Some(&Entry::User { text: "also check CI".into(), steer: true }));
 }

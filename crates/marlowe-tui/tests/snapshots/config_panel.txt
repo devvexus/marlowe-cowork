@@ -1,0 +1,40 @@
+ * marlowe — gate work                                                                                                  0 runs · 0 need you
+╭ Conversation · gate work ──────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ Claude Sonnet 4.5 ▾             medium │
+│                                                                                                ││ ctx ────────────┊──── 0 / 200k · cloud │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
+│                                                                                                │╭ Workspace ─────────────────────────────╮
+│                     ╭ config ──────────────────────────────────────────────────────────────────────────────────────╮                     │
+│                     │ changes are written to the user settings                                                     │─────────────── (w) ─╯
+│                     │                                                                                              │─────────────────────╮
+│                     │ › editor_url                  vscode://file/{path}:{line}                              user  │                     │
+│                     │   where file links open: vscode://file/{path}:{line}:{col}                                   │─────────────── (1) ─╯
+│                     │   statusline.command          echo hi                                               project  │─────────────────────╮
+│                     │   a command whose first output line becomes the status line                                  │                     │
+│                     │   permissions.default_mode    not set                                                        │                     │
+│                     │   plan, default, accept_edits, bypass or dont_ask                                            │                     │
+│                     │   network.allow_hosts         not set                                                        │                     │
+│                     │   hosts the agent may reach without asking                                                   │                     │
+│                ask a│   thinking.show               on                                                       user  │                     │
+│                     │                                                                                              │                     │
+│                     │                                                                                              │                     │
+│                     ╰───────────────────────────────────────────────── ↵ change · x unset · tab layer · esc close ─╯                     │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                                                                                                │╭ Threads ───────────────────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette       Friday 9 October · 21:40

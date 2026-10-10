@@ -1,4 +1,4 @@
-//! The crew as the client knows it: runs for the CREW rail, the Run view (^r), the dispatch
+//! The crew as the client knows it: runs for the CREW rail, the Run view (alt-r), the dispatch
 //! prompt (^d), and toasts when a run needs the user or finishes.
 //!
 //! Plain state advanced by daemon events and keys, like the rest of the client. The one read from
@@ -148,6 +148,8 @@ pub struct Crew {
     pub research: Vec<(RunId, ResearchTrack)>,
     /// Research plans waiting for the user's answer, by run.
     pub plans: Vec<(RunId, ResearchPlan, CostQuote)>,
+    /// Build runs' task graphs, by run: the latest `dag` report each sent.
+    pub dags: Vec<(RunId, crate::dag::BuildDag)>,
 }
 
 impl Crew {
@@ -194,6 +196,10 @@ impl Crew {
     }
 
     /// A research run's progress, if it has reported any.
+    pub fn dag(&self, id: &RunId) -> Option<&crate::dag::BuildDag> {
+        self.dags.iter().find(|(r, _)| r == id).map(|(_, d)| d)
+    }
+
     pub fn research(&self, id: &RunId) -> Option<&ResearchTrack> {
         self.research.iter().find(|(r, _)| r == id).map(|(_, t)| t)
     }
@@ -395,7 +401,7 @@ impl State {
         self.crew.plans.push((run.clone(), plan.clone(), quote.clone()));
         if fresh {
             if let Some(info) = self.crew.get(run).cloned() {
-                let detail = format!("{} sub-questions · about {} tokens · ^r to answer", plan.sub_questions.len(), quote.model_tokens);
+                let detail = format!("{} sub-questions · about {} tokens · alt-r to answer", plan.sub_questions.len(), quote.model_tokens);
                 self.crew_toast(&info, Severity::Attention, "plan ready", detail);
             }
         }
@@ -403,6 +409,19 @@ impl State {
 
     /// A live step: the rail's current action, and the Run view's transcript if it is open.
     pub(crate) fn on_run_step(&mut self, run: &RunId, step: u32, action: &str, delta: Option<&str>) {
+        // A build run's progress report is the strip's, not a line of the transcript.
+        if let Some(d) = crate::dag::parse(action) {
+            let now = format!("build · {} · {}", d.stage.as_deref().unwrap_or("working"), d.summary());
+            if let Some(r) = self.crew.runs.iter_mut().find(|r| &r.id == run) {
+                r.current_action = Some(now);
+                r.step = r.step.max(step);
+            }
+            match self.crew.dags.iter_mut().find(|(r, _)| r == run) {
+                Some((_, slot)) => *slot = d,
+                None => self.crew.dags.push((run.clone(), d)),
+            }
+            return;
+        }
         let role = match self.crew.runs.iter_mut().find(|r| &r.id == run) {
             Some(r) => {
                 r.current_action = Some(action.to_string()).filter(|a| !a.is_empty());
@@ -506,7 +525,7 @@ impl State {
         self.crew.toasts.drain(..extra);
     }
 
-    /// ^r: the Run view of the most urgent run, or the empty list.
+    /// alt-r: the Run view of the most urgent run, or the empty list.
     pub(crate) fn open_crew(&mut self, out: &mut Vec<Request>) {
         self.view = View::Crew;
         out.push(Request::ListRuns { limit: RUN_LIMIT });
@@ -614,7 +633,7 @@ impl State {
         self.crew.prompt = None;
         self.overlay = None;
         let how = playbook.map(|p| format!(" · {}", p.as_str())).unwrap_or_default();
-        self.flash(format!("dispatched {role}{how} — ^r to watch"), NoteTone::Dim);
+        self.flash(format!("dispatched {role}{how} — alt-r to watch"), NoteTone::Dim);
     }
 
     /// Keys in the crew view: the run list, or the open Run view.

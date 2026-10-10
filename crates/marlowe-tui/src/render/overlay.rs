@@ -11,11 +11,11 @@ use ratatui::widgets::{Block, BorderType, Clear, Widget};
 
 use super::{hit, hovered, ink, put, put_row};
 use crate::input::palette_matches;
-use crate::state::{Approval, State, Target, APPROVAL_CHOICES, APPROVAL_DETAIL_ROWS};
+use crate::state::{Approval, State, Target, APPROVAL_DETAIL_ROWS};
 use crate::text;
 
 /// `› ` on the cursor's row (accent) or under the pointer (hover tone).
-fn row_marker(selected: bool, over: bool, theme: &Theme) -> Span<'static> {
+pub(super) fn row_marker(selected: bool, over: bool, theme: &Theme) -> Span<'static> {
     match (selected, over) {
         (true, _) => Span::styled("› ", ink(Ink::Accent, theme)),
         (false, true) => Span::styled("› ", ink(Ink::Hover, theme)),
@@ -23,7 +23,7 @@ fn row_marker(selected: bool, over: bool, theme: &Theme) -> Span<'static> {
     }
 }
 
-fn centred(area: Rect, w: u16, h: u16, top_bias: bool) -> Rect {
+pub(super) fn centred(area: Rect, w: u16, h: u16, top_bias: bool) -> Rect {
     let w = w.min(area.width.saturating_sub(4));
     let h = h.min(area.height.saturating_sub(2));
     let y = if top_bias {
@@ -35,7 +35,7 @@ fn centred(area: Rect, w: u16, h: u16, top_bias: bool) -> Rect {
 }
 
 /// Key hints on a panel's bottom border, at the right.
-fn panel_hints(r: Rect, items: &[(&str, &str)], theme: &Theme, buf: &mut Buffer) {
+pub(super) fn panel_hints(r: Rect, items: &[(&str, &str)], theme: &Theme, buf: &mut Buffer) {
     let l = super::hints(items, theme);
     let l = Line::from([vec![Span::raw(" ")], l.spans, vec![Span::raw(" ")]].concat());
     let w = l.width() as u16;
@@ -44,7 +44,7 @@ fn panel_hints(r: Rect, items: &[(&str, &str)], theme: &Theme, buf: &mut Buffer)
     }
 }
 
-fn panel(r: Rect, title: &str, border: ratatui::style::Style, double: bool, buf: &mut Buffer) -> Rect {
+pub(super) fn panel(r: Rect, title: &str, border: ratatui::style::Style, double: bool, buf: &mut Buffer) -> Rect {
     Clear.render(r, buf);
     let bt = if double { BorderType::Double } else { BorderType::Rounded };
     Block::bordered()
@@ -78,26 +78,32 @@ pub fn approval(area: Rect, state: &State, a: &Approval, theme: &Theme, buf: &mu
     // A server restart is allowed once or denied: never "for this session".
     let once_only = a.tool == marlowe_proto::SERVER_RESTART_TOOL;
 
-    let detail = a.detail_lines();
+    // An edit shows as the diff it makes; anything else as its arguments.
+    let body: Vec<Line<'static>> = match &a.diff {
+        Some(d) => crate::diff::render(d, crate::diff::Layout::full(crate::state::APPROVAL_DETAIL_WIDTH), theme).lines,
+        None => a.detail_lines().into_iter().map(|l| Line::from(Span::styled(l, theme.normal()))).collect(),
+    };
     let top = state.approval_scroll.min(a.detail_scroll_max());
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(vec![
         Span::styled(text::clean(&a.tool), amber.add_modifier(Modifier::BOLD)),
-        Span::styled("  wants to act", dim),
+        Span::styled(if a.tool == "exit_plan" { "  has a plan" } else { "  wants to act" }, dim),
     ]));
     lines.push(Line::from(""));
     for l in text::wrap(&text::clean(&a.summary), tw) {
         lines.push(Line::from(Span::styled(l, theme.bright())));
     }
-    if !detail.is_empty() {
+    if !body.is_empty() {
         lines.push(Line::from(""));
         if top > 0 {
             lines.push(Line::from(Span::styled(format!("  ↑ {top} lines above"), dimmer)));
         }
-        for l in detail.iter().skip(top).take(APPROVAL_DETAIL_ROWS) {
-            lines.push(Line::from(vec![Span::styled("▏ ", dimmer), Span::styled(l.clone(), theme.normal())]));
+        for l in body.iter().skip(top).take(APPROVAL_DETAIL_ROWS) {
+            let mut spans = vec![Span::styled("▏ ", dimmer)];
+            spans.extend(l.spans.iter().cloned());
+            lines.push(Line::from(spans));
         }
-        let below = detail.len().saturating_sub(top + APPROVAL_DETAIL_ROWS);
+        let below = body.len().saturating_sub(top + APPROVAL_DETAIL_ROWS);
         if below > 0 {
             lines.push(Line::from(Span::styled(format!("  ↓ {below} more lines"), dimmer)));
         }
@@ -118,8 +124,23 @@ pub fn approval(area: Rect, state: &State, a: &Approval, theme: &Theme, buf: &mu
         lines.push(Line::from(Span::styled("from another session", dimmer)));
     }
     lines.push(Line::from(""));
-    let labels = ["allow", "allow for session", "deny"];
-    let keys = ["y", "a", "n"];
+    // With a proposed rule: allow once, allow the rule for the session, allow it for the project.
+    let choices = a.choices();
+    if let (Some(rule), 4) = (&a.proposed_rule, choices.len()) {
+        lines.push(Line::from(vec![
+            Span::styled("always allow  ", dimmer),
+            Span::styled(text::truncate(&text::clean(rule), tw.saturating_sub(14)), ink(Ink::Accent, theme)),
+        ]));
+        lines.push(Line::from(""));
+    }
+    let (labels, keys): (&[&str], &[&str]) = if choices.len() == 4 {
+        (&["allow", "always · session", "always · project", "deny"], &["y", "a", "p", "n"])
+    } else if choices.len() == 2 {
+        (&["approve the plan", "keep planning"], &["y", "n"])
+    } else {
+        (&["allow", "allow for session", "deny"], &["y", "a", "n"])
+    };
+    let gap = if choices.len() == 4 { 4 } else { 6 };
     let mut choice = Vec::new();
     // Each button's column span in the row, for the mouse.
     let mut buttons: Vec<(usize, u16, u16)> = Vec::new();
@@ -129,7 +150,7 @@ pub fn approval(area: Rect, state: &State, a: &Approval, theme: &Theme, buf: &mu
             continue;
         }
         let sel = i == state.approval_sel;
-        let allowed = APPROVAL_CHOICES[i].is_allowed();
+        let allowed = choices[i].is_allowed();
         let over = hovered(state, &Target::Button(i)) && !(allowed && !state.approval_read);
         let marker = if sel || over { "› " } else { "  " };
         let marker_style = if sel { ink(Ink::Accent, theme) } else { ink(Ink::Hover, theme) };
@@ -142,11 +163,11 @@ pub fn approval(area: Rect, state: &State, a: &Approval, theme: &Theme, buf: &mu
         };
         let w = (2 + key.len() + 1 + text::width(label)) as u16;
         buttons.push((i, x, w));
-        x += w + 6;
+        x += w + gap;
         choice.push(Span::styled(marker, marker_style));
         choice.push(Span::styled(format!("{key} "), dimmer));
         choice.push(Span::styled(*label, style));
-        choice.push(Span::raw("      "));
+        choice.push(Span::raw(" ".repeat(gap as usize)));
     }
     let buttons_row = lines.len();
     lines.push(Line::from(choice));
@@ -208,21 +229,27 @@ pub fn palette(area: Rect, state: &State, query: &str, sel: usize, theme: &Theme
 }
 
 pub fn sessions(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut Buffer) {
-    let n = state.sessions.as_ref().map_or(1, |s| s.len().max(1));
-    let r = centred(area, 96, n as u16 + 4, true);
+    let list = state.session_rows();
+    let n = list.len().max(1);
+    let r = centred(area, 96, n as u16 + 5, true);
     let inner = panel(r, "sessions", ink(Ink::Accent, theme), false, buf);
-    panel_hints(r, &[("↑↓", "select"), ("↵", "open"), ("esc/⌫", "close")], theme, buf);
+    panel_hints(r, &[("type", "to search"), ("↑↓", "select"), ("↵", "open"), ("esc", "close")], theme, buf);
     let dim = ink(Ink::Dim, theme);
     let dimmer = ink(Ink::Dimmer, theme);
-    let Some(list) = &state.sessions else {
-        put(buf, inner.x, inner.y, &Line::from(Span::styled("loading…", dim)), inner.width);
-        return;
-    };
-    if list.is_empty() {
-        put(buf, inner.x, inner.y, &Line::from(Span::styled("no sessions yet", dim)), inner.width);
+    let q = &state.code.sessions_query;
+    let field = if q.is_empty() { Span::styled("search sessions", dimmer) } else { Span::styled(text::clean(q), theme.normal()) };
+    put(buf, inner.x, inner.y, &Line::from(vec![Span::styled("› ", ink(Ink::Accent, theme)), field]), inner.width);
+    let top = inner.y + 2;
+    if state.sessions.is_none() {
+        put(buf, inner.x, top, &Line::from(Span::styled("loading…", dim)), inner.width);
         return;
     }
-    let rows = inner.height.saturating_sub(1) as usize;
+    if list.is_empty() {
+        let msg = if q.is_empty() { "no sessions yet" } else { "no session matches" };
+        put(buf, inner.x, top, &Line::from(Span::styled(msg, dim)), inner.width);
+        return;
+    }
+    let rows = inner.height.saturating_sub(2) as usize;
     let first = sel.saturating_sub(rows.saturating_sub(1));
     for (i, s) in list.iter().enumerate().skip(first).take(rows) {
         let selected = i == sel;
@@ -241,7 +268,7 @@ pub fn sessions(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut 
         if current {
             spans.push(Span::styled("  open", ink(Ink::Speech, theme)));
         }
-        put_row(state, buf, (inner.x, inner.y + (i - first) as u16, inner.width), Line::from(spans), Target::Row(i), theme);
+        put_row(state, buf, (inner.x, top + (i - first) as u16, inner.width), Line::from(spans), Target::Row(i), theme);
     }
 }
 

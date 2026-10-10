@@ -37,4 +37,4 @@
 │  steer › s to steer: a note the run reads at its next step                                                                               │
 │                                                                                                                                          │
 ╰────────────────────────────────────────────────────────────────────────── s steer  ·  p pause  ·  c cancel  ·  ↑↓ scroll  ·  esc/⌫ runs ─╯
- ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^k palette        Friday 9 October · quiet 23:00–07:00 · 21:40
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette      quiet 23:00–07:00 · 21:40

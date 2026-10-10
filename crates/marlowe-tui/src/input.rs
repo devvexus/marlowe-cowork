@@ -1,7 +1,7 @@
 //! Keys, paste and mouse: the input half of the reducer.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use marlowe_proto::{Request, Slot};
+use marlowe_proto::Request;
 use ratatui::layout::{Position, Rect};
 
 use crate::library::LibStep;
@@ -66,10 +66,19 @@ impl State {
                     }
                     'q' => Some(Command::Quit),
                     'n' => Some(Command::NewSession),
-                    'o' => Some(Command::Sessions),
+                    // ^o: every tool call in full, as Claude Code's transcript view.
+                    'o' => Some(Command::Transcript),
                     'l' => Some(Command::Library),
                     'g' => Some(Command::Memory),
+                    // ^r searches the prompt history in the conversation; the other views keep
+                    // it as the way to the crew and back.
+                    'r' if self.view == View::Conversation => Some(Command::HistorySearch),
                     'r' => Some(Command::Crew),
+                    'b' => Some(Command::Background),
+                    'v' if self.view == View::Conversation => {
+                        self.paste_clipboard_image();
+                        return out;
+                    }
                     // ^d is forget in the memory view.
                     'd' if self.view != View::Memory => Some(Command::Dispatch),
                     // ^w deletes a word while there is text in the composer, as ^c clears it.
@@ -90,10 +99,24 @@ impl State {
                 }
             }
         }
-        // The footer's one Alt key. Ctrl+Alt is AltGr on many layouts and is a character.
-        if alt && !ctrl && matches!(k.code, KeyCode::Char('v' | 'V')) {
-            self.run_command(Command::ToggleVoice, &mut out);
-            return out;
+        // Alt chords. Ctrl+Alt is AltGr on many layouts and is a character.
+        if alt && !ctrl {
+            let cmd = match k.code {
+                KeyCode::Char('v' | 'V') => Some(Command::ToggleVoice),
+                KeyCode::Char('s' | 'S') => Some(Command::Sessions),
+                KeyCode::Char('r' | 'R') => Some(Command::Crew),
+                KeyCode::Char('t' | 'T') => Some(Command::CycleEffort),
+                // Windows Terminal keeps ^v for itself: the other way to paste an image.
+                KeyCode::Char('p' | 'P') if self.view == View::Conversation => {
+                    self.paste_clipboard_image();
+                    return out;
+                }
+                _ => None,
+            };
+            if let Some(cmd) = cmd {
+                self.run_command(cmd, &mut out);
+                return out;
+            }
         }
         match self.view {
             View::Library if k.code == KeyCode::Char('c') && self.library_model_row().is_some() => {
@@ -131,6 +154,7 @@ impl State {
             }
             (Some(Overlay::Onboard), _) => self.onboard_paste(text),
             (Some(Overlay::Dispatch), _) => self.dispatch_paste(text),
+            (Some(Overlay::Panel), _) => self.panel_paste(text),
             (Some(_), _) => {}
             (None, View::Library) => {
                 for c in text.trim().chars() {
@@ -153,10 +177,7 @@ impl State {
                     v.steer.insert_str(&text.replace(['\r', '\n'], " "));
                 }
             }
-            (None, View::Conversation) => {
-                self.focus = Focus::Message;
-                self.composer.insert_str(text);
-            }
+            (None, View::Conversation) => self.paste_into_composer(text),
         }
     }
 
@@ -191,6 +212,10 @@ impl State {
             if self.approval_scroll >= max {
                 self.approval_read = true;
             }
+            return;
+        }
+        if self.overlay == Some(Overlay::Panel) {
+            self.panel_wheel(up);
             return;
         }
         if self.overlay.is_some() {
@@ -241,7 +266,8 @@ impl State {
         if !self.approvals.is_empty() {
             if let Some(Target::Button(i)) = self.target_at(at) {
                 if self.now_ms.saturating_sub(self.approval_since_ms) >= APPROVAL_GUARD_MS {
-                    self.approval_sel = i.min(APPROVAL_CHOICES.len() - 1);
+                    let n = self.approvals.first().map_or(APPROVAL_CHOICES.len(), |a| a.choices().len());
+                    self.approval_sel = i.min(n - 1);
                     self.approval_key(KeyEvent::from(KeyCode::Enter), out);
                 }
             }
@@ -418,7 +444,7 @@ impl State {
         }
     }
 
-    fn open_model_picker(&mut self) {
+    pub(crate) fn open_model_picker(&mut self) {
         if !self.library.has_models() {
             self.focus = Focus::Message;
             self.view = View::Library;
@@ -446,7 +472,7 @@ impl State {
     }
 
     /// New sessions start in `path`. A session is tied to its workspace, so choosing another one
-    /// while a session is open starts a new session (the old one stays under ^o).
+    /// while a session is open starts a new session (the old one stays under alt-s).
     fn choose_workspace(&mut self, path: String) {
         let path = path.trim().trim_matches('"').trim().to_string();
         let same = self.shown_workspace().map(crate::wake::norm) == Some(crate::wake::norm(&path));
@@ -457,7 +483,7 @@ impl State {
         let shown = crate::text::short_path(&path);
         if self.session.is_some() {
             self.reset_conversation();
-            self.flash(format!("new session in {shown} · the last one is under ^o"), NoteTone::Dim);
+            self.flash(format!("new session in {shown} · the last one is under alt-s"), NoteTone::Dim);
         } else {
             self.workspace = None;
             self.flash(format!("new sessions start in {shown}"), NoteTone::Dim);
@@ -489,6 +515,7 @@ impl State {
             }
             Command::Sessions => {
                 self.sessions = None;
+                self.code.sessions_query.clear();
                 self.overlay = Some(Overlay::Sessions { sel: 0 });
                 out.push(Request::ListSessions { limit: 30 });
             }
@@ -554,6 +581,30 @@ impl State {
                 }
             }
             Command::Quit => self.quit = true,
+            Command::Transcript => self.open_transcript(out),
+            Command::HistorySearch => {
+                self.view = View::Conversation;
+                self.focus = Focus::Message;
+                self.open_search();
+            }
+            Command::CycleMode => self.cycle_mode(out),
+            Command::CycleEffort => self.slash_effort_cycle(out),
+            Command::Background => self.background_running(out),
+            Command::Config => self.open_config(out),
+            Command::Permissions => self.open_permissions(out),
+            Command::Hooks => self.open_hooks(out),
+            Command::Agents => self.open_agents(out),
+            Command::Mcp => self.open_mcp(out),
+            Command::Instructions => self.open_instructions(out),
+            Command::ContextUsage => self.open_context_view(out),
+            Command::Cost => self.open_cost(out),
+            Command::Diff => self.open_diff(None, out),
+            Command::Rewind => self.open_rewind(out),
+            Command::Jobs => self.open_jobs(out),
+            Command::Todos => {
+                self.code.todos_hidden = !self.code.todos_hidden;
+            }
+            Command::Help => self.open_help(out),
         }
     }
 
@@ -584,13 +635,15 @@ impl State {
         }
         // A server restart is allowed once or denied: never "for this session".
         let once_only = self.approvals.first().is_some_and(|a| a.tool == marlowe_proto::SERVER_RESTART_TOOL);
+        let choices = self.approvals.first().map(|a| a.choices()).unwrap_or_else(|| APPROVAL_CHOICES.to_vec());
+        let last = choices.len() - 1;
         let decision = match k.code {
             KeyCode::Left | KeyCode::BackTab if once_only => {
                 self.approval_sel = 0;
                 None
             }
             KeyCode::Right | KeyCode::Tab if once_only => {
-                self.approval_sel = APPROVAL_CHOICES.len() - 1;
+                self.approval_sel = last;
                 None
             }
             KeyCode::Left | KeyCode::BackTab => {
@@ -598,14 +651,16 @@ impl State {
                 None
             }
             KeyCode::Right | KeyCode::Tab => {
-                self.approval_sel = (self.approval_sel + 1).min(APPROVAL_CHOICES.len() - 1);
+                self.approval_sel = (self.approval_sel + 1).min(last);
                 None
             }
-            KeyCode::Enter => Some(APPROVAL_CHOICES[self.approval_sel]),
-            KeyCode::Char('y') => Some(APPROVAL_CHOICES[0]),
-            KeyCode::Char('a') if once_only => None,
-            KeyCode::Char('a') => Some(APPROVAL_CHOICES[1]),
-            KeyCode::Char('n') | KeyCode::Esc => Some(APPROVAL_CHOICES[2]),
+            KeyCode::Enter => Some(choices[self.approval_sel.min(last)]),
+            KeyCode::Char('y') => Some(choices[0]),
+            KeyCode::Char('a') if once_only || choices.len() == 2 => None,
+            KeyCode::Char('a') => Some(choices[1]),
+            // "Always for this project": the rule goes to settings.local.toml.
+            KeyCode::Char('p') if choices.len() == 4 => Some(choices[2]),
+            KeyCode::Char('n') | KeyCode::Esc => Some(choices[last]),
             _ => None,
         };
         if let Some(decision) = decision {
@@ -622,6 +677,10 @@ impl State {
     fn overlay_key(&mut self, k: KeyEvent, out: &mut Vec<Request>) {
         if matches!(self.overlay, Some(Overlay::ContextPlan { .. })) {
             self.context_key(k, out);
+            return;
+        }
+        if self.overlay == Some(Overlay::Panel) {
+            self.panel_key(k, out);
             return;
         }
         if self.overlay == Some(Overlay::Onboard) {
@@ -703,19 +762,21 @@ impl State {
                 }
             }
             Overlay::ImportOffer { sel } => self.offer_key(k, sel, out),
-            Overlay::Onboard | Overlay::Dispatch | Overlay::ContextPlan { .. } => {}
+            Overlay::Onboard | Overlay::Dispatch | Overlay::Panel | Overlay::ContextPlan { .. } => {}
             Overlay::Sessions { sel } => {
-                let n = self.sessions.as_ref().map_or(0, Vec::len);
+                let n = self.session_rows().len();
                 match k.code {
-                    KeyCode::Backspace => self.overlay = None,
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        self.overlay = Some(Overlay::Sessions { sel: sel.saturating_sub(1) })
+                    KeyCode::Backspace if self.code.sessions_query.is_empty() => self.overlay = None,
+                    KeyCode::Backspace => {
+                        self.code.sessions_query.pop();
+                        self.overlay = Some(Overlay::Sessions { sel: 0 });
                     }
-                    KeyCode::Down | KeyCode::Tab | KeyCode::Char('j') => {
+                    KeyCode::Up => self.overlay = Some(Overlay::Sessions { sel: sel.saturating_sub(1) }),
+                    KeyCode::Down | KeyCode::Tab => {
                         self.overlay = Some(Overlay::Sessions { sel: (sel + 1).min(n.saturating_sub(1)) })
                     }
                     KeyCode::Enter => {
-                        let pick = self.sessions.as_ref().and_then(|s| s.get(sel)).map(|s| s.id.clone());
+                        let pick = self.session_rows().get(sel).map(|s| s.id.clone());
                         if let Some(id) = pick {
                             self.overlay = None;
                             self.reset_conversation();
@@ -723,6 +784,11 @@ impl State {
                             self.view = View::Conversation;
                             out.push(Request::OpenSession { session: id });
                         }
+                    }
+                    // Typing narrows the list: the picker's search, as `/resume` has in Claude Code.
+                    KeyCode::Char(c) if !ctrl => {
+                        self.code.sessions_query.push(c);
+                        self.overlay = Some(Overlay::Sessions { sel: 0 });
                     }
                     _ => {}
                 }
@@ -754,25 +820,10 @@ impl State {
                             self.run_command(Command::Library, out);
                             return;
                         }
+                        // The slot, and in an open session the conversation's model too: the history
+                        // is kept. The choice shows at once; the LibraryState reply confirms it.
                         let model = self.library.models[sel].model.clone();
-                        let effort = self.library.slot_rows()[0].effort;
-                        out.push(Request::SetSlot {
-                            slot: Slot::Conductor,
-                            model: Some(model.clone()),
-                            effort,
-                        });
-                        out.push(Request::LibraryState);
-                        // Show the choice at once; the LibraryState reply confirms it.
-                        let row = marlowe_proto::SlotAssignment {
-                            slot: Slot::Conductor,
-                            model: Some(model),
-                            effort,
-                            inherited: false,
-                        };
-                        match self.library.slots.iter_mut().find(|s| s.slot == Slot::Conductor) {
-                            Some(s) => *s = row,
-                            None => self.library.slots.push(row),
-                        }
+                        self.switch_model(model, out);
                     }
                     _ => {}
                 }
@@ -785,14 +836,27 @@ impl State {
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
         let alt = k.modifiers.contains(KeyModifiers::ALT);
         self.flash = None;
+        // Ctrl+R search owns every key until it ends.
+        if self.code.search.is_some() {
+            if let Some(p) = self.popup() {
+                self.popup_key(&p, k, out);
+            }
+            return;
+        }
         // Focus moves the same way from every box.
         match k.code {
-            KeyCode::Tab if !ctrl && !alt => {
+            KeyCode::Tab if !ctrl && !alt && self.popup().is_none_or(|p| p.is_empty()) => {
                 self.focus = self.focus.next();
                 return;
             }
+            // Shift+Tab cycles the permission mode from the Message box, as Claude Code does;
+            // from the other boxes it still walks the focus back.
             KeyCode::BackTab => {
-                self.focus = self.focus.prev();
+                if self.focus == Focus::Message {
+                    self.cycle_mode(out);
+                } else {
+                    self.focus = self.focus.prev();
+                }
                 return;
             }
             // Alt-1..4 picks a board section without leaving the Message box.
@@ -808,6 +872,35 @@ impl State {
             self.region_key(k, out);
             return;
         }
+        if let Some(p) = self.popup() {
+            if self.popup_key(&p, k, out) {
+                return;
+            }
+        }
+        // History and the queue come first: they replace the buffer without counting as typing.
+        match k.code {
+            KeyCode::Up if !ctrl && !alt && !self.composer.up() => {
+                if self.unqueue() {
+                    return;
+                }
+                let cur = self.composer.text().to_string();
+                match self.code.history.older(&cur).map(str::to_string) {
+                    Some(t) => self.composer.set(&t),
+                    None => self.scroll = (self.scroll + 1).min(self.scroll_max.get()),
+                }
+                return;
+            }
+            KeyCode::Down if !ctrl && !alt && !self.composer.down() => {
+                match self.code.history.newer().map(str::to_string) {
+                    Some(t) => self.composer.set(&t),
+                    None => self.scroll = self.scroll.saturating_sub(1),
+                }
+                return;
+            }
+            KeyCode::Up | KeyCode::Down if !ctrl && !alt => return,
+            _ => {}
+        }
+        let before = self.composer.text().to_string();
         match k.code {
             KeyCode::Enter if shift || alt => self.composer.insert('\n'),
             KeyCode::Char('j') if ctrl => self.composer.insert('\n'),
@@ -835,18 +928,11 @@ impl State {
             KeyCode::Right => self.composer.right(),
             KeyCode::Home => self.composer.home(),
             KeyCode::End => self.composer.end(),
-            KeyCode::Up => {
-                if !self.composer.up() {
-                    self.scroll = (self.scroll + 1).min(self.scroll_max.get());
-                }
-            }
-            KeyCode::Down => {
-                if !self.composer.down() {
-                    self.scroll = self.scroll.saturating_sub(1);
-                }
-            }
             KeyCode::Char(c) if !ctrl => self.composer.insert(c),
             _ => {}
+        }
+        if self.composer.text() != before {
+            self.composer_edited();
         }
     }
 
@@ -895,6 +981,7 @@ impl State {
             KeyCode::Char(c) if !ctrl => {
                 self.focus = Focus::Message;
                 self.composer.insert(c);
+                self.composer_edited();
             }
             _ => {}
         }
@@ -902,46 +989,6 @@ impl State {
 
     fn page(&self) -> usize {
         10
-    }
-
-    fn send(&mut self, out: &mut Vec<Request>) {
-        if self.composer.is_blank() {
-            if self.library.known && !self.library.has_models() {
-                self.view = View::Library;
-                self.library.start_add();
-            }
-            return;
-        }
-        if !self.conn.is_online() {
-            self.flash("offline — your message is still here; it will send once reconnected", NoteTone::Amber);
-            return;
-        }
-        if self.library.known && !self.library.has_models() {
-            self.flash("add a model first — opening the library", NoteTone::Amber);
-            self.view = View::Library;
-            self.library.start_add();
-            return;
-        }
-        let text = self.composer.take().trim_end().to_string();
-        match self.session.clone() {
-            Some(s) => {
-                if self.is_busy() {
-                    self.entries.push(crate::state::Entry::User { text: text.clone(), steer: true });
-                }
-                out.push(Request::Ask { session: Some(s), text, workspace: None, images: Vec::new(), options: None });
-            }
-            None => {
-                self.expect_new_session(&text);
-                out.push(Request::Ask {
-                    session: None,
-                    text,
-                    workspace: self.default_workspace.clone(),
-                    images: Vec::new(),
-                    options: None,
-                });
-            }
-        }
-        self.scroll = 0;
     }
 }
 

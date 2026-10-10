@@ -5,10 +5,11 @@
 //! console closing — puts both back.
 
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{never, select, unbounded, Receiver};
+use crossbeam_channel::{never, select, unbounded, Receiver, Sender};
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
     Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyboardEnhancementFlags, MouseEvent, MouseEventKind,
@@ -21,11 +22,17 @@ use ratatui::layout::Rect;
 use ratatui::Terminal;
 
 use crate::client::Client;
+use crate::coding::{Effect, LocalEvent};
 use crate::images::Emitter;
+use crate::links::LinkEmitter;
+use crate::local;
 use crate::osc;
 use crate::render;
-use crate::state::State;
+use crate::state::{ClientEvent, State};
 use crate::TuiError;
+
+/// Set while an editor owns the terminal: the input thread leaves the console alone.
+static INPUT_PAUSED: AtomicBool = AtomicBool::new(false);
 
 /// What the input thread delivers.
 enum Input {
@@ -131,9 +138,11 @@ fn event_loop(
     let mut term = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     term.clear()?;
     let input = spawn_input();
+    let (local_tx, local_rx) = unbounded::<ClientEvent>();
     let typeset = images.is_some();
     let images = images.unwrap_or_else(never);
     let mut emitter = Emitter::default();
+    let mut links = LinkEmitter::default();
     let mut title = String::new();
     // Pointer motion that lands on the same target as before changes nothing on screen: it is
     // applied without a frame. Anything else, or the frame interval running out, draws.
@@ -142,6 +151,8 @@ fn event_loop(
     loop {
         tick(state);
         send_all(client, state.on_tick());
+        send_all(client, state.on_idle());
+        run_effects(state, &local_tx, &mut term)?;
         // The boot and the voice meter move at ~30 fps; a turn at ~11; otherwise once a second.
         let wait = if state.booting() || state.wake.speaking() {
             33
@@ -151,7 +162,7 @@ fn event_loop(
             1_000
         };
         if dirty || drawn.elapsed() >= Duration::from_millis(wait) {
-            draw(&mut term, state, theme, typeset, &mut emitter)?;
+            draw(&mut term, state, theme, typeset, &mut emitter, &mut links, ansi)?;
             drawn = Instant::now();
             dirty = false;
         }
@@ -184,6 +195,13 @@ fn event_loop(
                 }
                 Err(_) => return Err(TuiError::Protocol("the input thread stopped".into())),
             },
+            recv(local_rx) -> ev => {
+                if let Ok(ev) = ev {
+                    tick(state);
+                    send_all(client, state.on_client(ev));
+                    dirty = true;
+                }
+            },
             recv(images) -> _ => dirty = true,
             default(left) => {}
         }
@@ -192,6 +210,10 @@ fn event_loop(
         }
         // Apply everything already queued before the next frame.
         while let Ok(ev) = client.events().try_recv() {
+            send_all(client, state.on_client(ev));
+            dirty = true;
+        }
+        while let Ok(ev) = local_rx.try_recv() {
             send_all(client, state.on_client(ev));
             dirty = true;
         }
@@ -207,20 +229,74 @@ fn draw(
     theme: &Theme,
     typeset: bool,
     emitter: &mut Emitter,
+    links: &mut LinkEmitter,
+    ansi: bool,
 ) -> Result<(), TuiError> {
-    if typeset {
-        // One synchronised update for the frame and its images, where the terminal supports
-        // it (DEC mode 2026); elsewhere these are ignored.
-        let _ = io::stdout().write_all(b"\x1b[?2026h");
-        let frame = term.draw(|f| render::draw(f, state, theme))?;
-        let mut out = io::stdout();
-        emitter.flush(frame.buffer, &mut out)?;
-        out.write_all(b"\x1b[?2026l")?;
-        out.flush()?;
-    } else {
+    if !(typeset || ansi) {
         term.draw(|f| render::draw(f, state, theme))?;
+        return Ok(());
+    }
+    // One synchronised update for the frame, its images and its links, where the terminal
+    // supports it (DEC mode 2026); elsewhere these are ignored.
+    let _ = io::stdout().write_all(b"\x1b[?2026h");
+    let frame = term.draw(|f| render::draw(f, state, theme))?;
+    let mut out = io::stdout();
+    if typeset {
+        emitter.flush(frame.buffer, &mut out)?;
+    }
+    if ansi {
+        let plan = state.code.link_plan.borrow().clone();
+        let bytes = links.frame(frame.buffer, &plan);
+        if !bytes.is_empty() {
+            out.write_all(&bytes)?;
+        }
+    }
+    out.write_all(b"\x1b[?2026l")?;
+    out.flush()?;
+    Ok(())
+}
+
+/// Starts what the state asked for. The editor is run here, with the terminal handed over; the
+/// rest go to worker threads.
+fn run_effects(
+    state: &mut State,
+    tx: &Sender<ClientEvent>,
+    term: &mut Terminal<CrosstermBackend<io::Stdout>>,
+) -> Result<(), TuiError> {
+    for e in state.take_effects() {
+        match e {
+            Effect::OpenEditor { path } => {
+                let result = with_terminal_released(term, || local::run_editor(&path))?;
+                let _ = tx.send(ClientEvent::Local(LocalEvent::EditorClosed { path, result }));
+            }
+            other => local::spawn(other, tx.clone()),
+        }
     }
     Ok(())
+}
+
+/// Gives the terminal back (normal screen, cooked input, the cursor) while `f` runs, then takes it
+/// again. The input thread stops reading so the editor gets every key.
+fn with_terminal_released<T>(
+    term: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    f: impl FnOnce() -> T,
+) -> Result<T, TuiError> {
+    INPUT_PAUSED.store(true, Ordering::SeqCst);
+    // The input thread polls in 50 ms slices; let it notice.
+    thread::sleep(Duration::from_millis(80));
+    let mut out = io::stdout();
+    execute!(out, DisableMouseCapture, DisableBracketedPaste, terminal::LeaveAlternateScreen, cursor::Show)?;
+    terminal::disable_raw_mode()?;
+    let r = f();
+    terminal::enable_raw_mode()?;
+    execute!(out, terminal::EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
+    // Whatever was typed into the editor's last moments is not for us.
+    while event::poll(Duration::ZERO).unwrap_or(false) {
+        let _ = event::read();
+    }
+    INPUT_PAUSED.store(false, Ordering::SeqCst);
+    term.clear()?;
+    Ok(r)
 }
 
 fn tick(state: &mut State) {
@@ -269,6 +345,15 @@ fn spawn_input() -> Receiver<Input> {
     thread::Builder::new()
         .name("marlowe-tui-input".into())
         .spawn(move || loop {
+            if INPUT_PAUSED.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            match event::poll(Duration::from_millis(50)) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(_) => return,
+            }
             let ev = match event::read() {
                 Ok(ev) => ev,
                 Err(_) => return,

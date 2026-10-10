@@ -1,0 +1,40 @@
+ * marlowe — gate work  ╭ help ────────────────────────────────────────────────────────────────────────────────────╮    0 runs · 0 need you
+╭ Conversation · gate wo│ Keys                                                                                     │───────────────────────╮
+│                       │ enter                   send · shift+enter or ctrl+j for a new line                      │5 ▾             medium │
+│                       │ esc                     interrupt the turn · or move between the boxes                   │┊──── 0 / 200k · cloud │
+│                       │ shift+tab               permission mode: default, accept edits, plan                     │───────────────── (m) ─╯
+│                       │ alt+t                   thinking effort, next level                                      │───────────────────────╮
+│                       │ up / down               earlier prompts, at the edge of the box · ctrl+r searches them   │ ▾                     │
+│                       │ ctrl+o                  transcript: every tool call in full                              │───────────────── (w) ─╯
+│                       │ ctrl+b                  move the running command to the background                       │───────────────────────╮
+│                       │ @                       mention a file · an image becomes an attachment                  │                       │
+│                       │ !                       run a command yourself; its output goes into the context         │───────────────── (1) ─╯
+│                       │ ctrl+v / alt+p          paste an image from the clipboard                                │───────────────────────╮
+│                       │ /                       commands                                                         │                       │
+│                       │ ctrl+k                  palette                                                          │                       │
+│                       │ ctrl+n  alt+s           new session · earlier sessions                                   │                       │
+│                       │ alt+r  ctrl+w  ctrl+g   crew · watch · memory                                            │                       │
+│                       │ ctrl+l  ctrl+d          library · dispatch a crew run                                    │                       │
+│                ask any│ ctrl+t  alt+v           show thinking · voice                                            │                       │
+│                       │                                                                                          │                       │
+│                       │ Commands                                                                                 │                       │
+│                       │ /help                         keys and commands                                          │                       │
+│                       │ /config                       settings, written to the layer you pick                    │                       │
+│                       │ /context                      how full the context is, and what fills it                 │                       │
+│                       │ /permissions                  allow, ask and deny rules                                  │                       │
+│                       │ /hooks                        configured hooks and whether they are trusted              │                       │
+│                       │ /agents                       agent types the agent tool can start                       │                       │
+│                       │ /mcp                          MCP servers: add, remove, status                           │                       │
+│                       │ /memory                       open the instruction files in your editor and reload them  │                       │
+│                       │ /model [model]                switch the conductor's model, keeping the conversation     │                       │
+│                       │ /effort [off|low|medium|high|…reasoning effort for the next turns                        │                       │
+│                       │ /mode [plan|default|accept_ed…permission mode (Shift+Tab cycles)                         │                       │
+│                       │ /plan                         plan mode: read-only until you approve the plan            │───────────────── (2) ─╯
+│                       │ /resume                       pick an earlier session                                    │───────────────────────╮
+│                       │ /clear                        start a new session; memory is kept                        │                       │
+│                       │ /compact [focus]              summarise older turns now, optionally keeping a focus      │───────────────── (3) ─╯
+╰───────────────────────│ /cost                         tokens and cost for this session                           │───────────────────────╮
+╭ Message ──────────────│ /diff [turn]                  what changed in this session, or in one turn               │stats…                 │
+│ › message Marlowe…    ╰────────────────────────────────────────────────────────────────── ↑↓ scroll · esc close ─╯ this session          │
+╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette       Friday 9 October · 21:40
