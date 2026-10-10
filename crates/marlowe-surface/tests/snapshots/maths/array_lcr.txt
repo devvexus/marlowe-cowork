@@ -1,0 +1,5 @@
+\begin{array}{lcr} \text{left} & \text{centre} & \text{right} \\ a & b & c \\ aaaa & bbbb & cccc \end{array}
+--------------------------------------------------------------------------------
+  left  centre  right
+  a       b         c
+  aaaa   bbbb    cccc

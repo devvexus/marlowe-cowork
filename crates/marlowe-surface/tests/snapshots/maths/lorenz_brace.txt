@@ -1,0 +1,5 @@
+\left\{ \begin{aligned} \dot{x} &= \sigma (y - x) \\ \dot{y} &= x(\rho - z) - y \\ \dot{z} &= xy - \beta z \end{aligned} \right.
+--------------------------------------------------------------------------------
+  ⎧ẋ = σ(y − x)
+  ⎨ẏ = x(ρ − z) − y
+  ⎩ż = xy − βz

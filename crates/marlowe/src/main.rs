@@ -10,6 +10,7 @@ mod daemon_ctl;
 mod doctor;
 mod eval;
 mod launcher;
+mod math_cmd;
 mod me_cmd;
 mod memory_cmd;
 #[cfg(debug_assertions)]
@@ -42,6 +43,9 @@ marlowe crew [list [N] | show <run> | roles | dispatch <role> <goal> [--playbook
                                           crew runs; merge and discard ask for approval
 marlowe me [--name N] [--address sir|name|none]
                                           what Marlowe calls you (prints it with no flags)
+marlowe math [--grid | --images] [--width N]
+                                          a sheet of hard equations and matrices, drawn as the
+                                          conversation pane draws them (grid, and Sixel images)
 marlowe status | shutdown | doctor
 
 ask streams the reply to stdout. A tool that needs approval prompts on stdin; --yes allows
@@ -80,6 +84,7 @@ fn dispatch(home: &std::path::Path, args: &[String]) -> Result<i32, String> {
         Some("status") => commands::status(home),
         Some("shutdown") => commands::shutdown(home),
         Some("doctor") => Ok(doctor::run(home)),
+        Some("math") => math_cmd::run(rest),
         Some("--eval-adapter") => eval::run(rest),
         Some("-h" | "--help" | "help") => {
             print!("{USAGE}");

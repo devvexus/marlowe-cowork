@@ -1,0 +1,11 @@
+\begin{align} \nabla \cdot \mathbf{E} &= \frac{\rho}{\varepsilon_0} \tag{1} \\ \nabla \cdot \mathbf{B} &= 0 \tag{2} \\ \nabla \times \mathbf{E} &= -\frac{\partial \mathbf{B}}{\partial t} \tag{3} \end{align}
+--------------------------------------------------------------------------------
+          ρ
+  ∇ ⋅ 𝐄 = ⎯⎯     (1)
+          ε₀
+
+  ∇ ⋅ 𝐁 = 0      (2)
+
+           ∂𝐁
+  ∇ × 𝐄 = −⎯⎯    (3)
+           ∂t

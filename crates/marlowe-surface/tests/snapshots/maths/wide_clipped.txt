@@ -1,0 +1,5 @@
+F_8 = \frac{1}{\sqrt{8}} \begin{bmatrix} 1 & 1 & 1 & 1 & 1 & 1 & 1 & 1 \\ 1 & \omega & \omega^2 & \omega^3 & \omega^4 & \omega^5 & \omega^6 & \omega^7 \\ 1 & \omega^2 & \omega^4 & \omega^6 & 1 & \omega^2 & \omega^4 & \omega^6 \end{bmatrix}
+----------------------------------------
+       1  ⎡1  1   1   1   1   1   1
+  F₈ = ⎯⎯ ⎢1  ω   ω²  ω³  ω⁴  ω⁵  ω⁶   ⋯
+       √8 ⎣1  ω²  ω⁴  ω⁶  1   ω²  ω⁴

@@ -26,6 +26,11 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 crossterm.workspace = true
+# `marlowe math`: the maths gallery, drawn through the same grid and image paths as the TUI.
+marlowe-surface.workspace = true
+marlowe-typeset.workspace = true
+marlowe-os.workspace = true
+ratatui.workspace = true
 # `--eval-adapter` (src/eval/): the §4.0 NDJSON target the LongMemEval reproduction drives.
 marlowe-contract.workspace = true
 marlowe-journal.workspace = true

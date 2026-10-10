@@ -12,6 +12,64 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - **Added.** The terminal's default background is set to `#0f0e14` (OSC 11) at start and reset (OSC 111) on every exit: quit, error, panic hook, and console close/Ctrl-Break via `marlowe-os::console::on_interrupt`. Cells still carry no background. `MARLOWE_KEEP_TERMINAL_BG=1` leaves it alone. It is set before the maths image probe, so images blend onto it.
 - **Added.** The Run view's research stage strip (Plan → Explore → Compress → Corroborate → Verify → Synthesise) with source, claim, root and citation counts from `ResearchProgress`; runs without progress show the plain transcript.
 
+### Maths for engineers and researchers
+
+- **Changed.** Typst runs in a helper process, `marlowe-typeset.exe` (crate `marlowe-typeset-helper`), built by default and shipped beside `marlowe.exe`. Images are on by default; the `typeset-images` feature is gone.
+  - `marlowe.exe` no longer links Typst. The TUI probes for Sixel as before. Where the terminal has it and the helper is present, the helper starts on the first display formula.
+  - Each formula is one JSON line each way over stdio. The request carries the Typst markup from the parse, the colour, the background, the cell size and the reserved box; the reply carries one Sixel strip per row, or an error.
+  - Every strip is checked before it reaches the terminal: `ESC P … ESC \` with printable ASCII only. The helper's environment is cleared and its stderr discarded.
+  - An error reply, a death, a timeout (20 s for the first formula, 10 s after) or a malformed reply leaves that formula on the grid. A dead helper is restarted once; after a second death the session stays on the grid. `MARLOWE_MATH_IMAGES=0` still turns images off.
+- **Added.** Matrices and alignments on the grid:
+  - Array specs are read fully: `l`/`c`/`r`, `p{…}`, `@{…}`, `*{n}{…}`, and `|` as the augmented matrix's rule. `\hline` between rows is a horizontal rule, and rules run the full height and width of the block. `pmatrix*[r]` aligns. `\substack` under a big operator stacks.
+  - A blank row separates rows only where one is three or more rows tall (a fraction). A dropped script (`f_y`) no longer doubles a row's height.
+  - `\tag` sets a right-aligned column after the widest row, in `align`, `gather` and `equation`. `eqnarray` columns are set tight. `T^{\mu}{}_{\nu}` and `{T^{ab}}_c` stagger their indices.
+  - A matrix wider than the pane is clipped at the pane's edge, with a dim `⋯` on its middle row, instead of being wrapped as `[a, b; c, d]`. The rows reserved while it streams match. Other wide displays still go to one line per row. There is no horizontal pan yet.
+- **Added.** On the image path: `cases(delim: none)` for nested `aligned`, `mat(augment: …)` for rules, alignment points for mixed column alignment, a `quad` between `align` column pairs, tags in their own column, and the `Vmatrix` delimiter `‖` (Typst refused `||` before).
+- **Added.** `marlowe math [--grid | --images] [--width N]`: 31 hard equations and matrices (`math::GALLERY`), each drawn as the conversation pane draws it, grid and then image. It says why images are off when they are.
+- **Added.** `tests/data/maths_engineering.rs`: 214 formulas in 20 categories, written the way engineers and ML researchers write them. Matrices of every bracket, block and augmented matrices, 8×8 to 10×2 numeric matrices, determinants, tagged derivations, `gather`, `cases`/`dcases`/`rcases`, Jacobians and Hessians, `\nabla`, mixed-index tensors, norms, `\mathbb E`/`\Pr`/`\operatorname{Var}`, argmin with `\substack`, multiple and contour integrals, attention/LayerNorm/KL/DPO/InfoNCE, fonts, units, `\left\{ … \right.`, and vector accents. `tests/maths_matrices.rs` adds 14 matrix snapshots.
+- **Measured** (x64, release with thin LTO, unless marked debug):
+  - `marlowe.exe` was 76.20 MB without images and 110.22 MB with `typeset-images`. It is now 76.49 MB with images on. `marlowe-typeset.exe` is 36.65 MB.
+  - Corpus: 289 formulas (75 general + 214 engineering). Every category is 289/289 on the grid (strict parse, nothing raw at 160 and 60 columns) and 289/289 through Typst. All 236 display formulas fit their grid box as images.
+  - Grid layout per formula: p50 0.043 ms, p95 0.13 ms, cold 0.1 ms (debug: 0.26 / 0.75 ms).
+  - Through the helper process, over all 236 displays: the first formula takes 19–22 ms, including the process start (290 ms when the exe is not in the disk cache). After that, p50 is 0.8 ms, p95 1.8 ms and max 4.4 ms. A debug helper takes 460 ms for the first formula, then p50 5.8 ms.
+- **Known.** Sixel on a real Windows Terminal is still not verified, and neither is the helper running beside an installed `marlowe.exe` there. Everything above was measured headless.
+
+### Typeset maths
+
+Matthew's rule: full LaTeX in the terminal, smooth, and never raw.
+
+- **Changed.** `marlowe-surface::latex` is replaced by `marlowe-surface::math`, which never shows source. A span renders only after its closing delimiter arrives. A closed span that does not parse gets one repair pass (stray `$`, an unbalanced brace, `\left` without `\right`, an unclosed environment, a dangling `^`), and anything still broken is paraphrased (`\foo{x}` reads `foo(x)`).
+  - Display maths is laid out in 2D on the character grid: stacked fractions with a `⎯` vinculum (not chrome's `─`), big operators with limits, radicals with indices, matrices, `cases`/`aligned`/`align`, brackets that scale, accents, over/underbraces, `\boxed`, `\xrightarrow`.
+  - Inline maths stays on one line, using Unicode scripts and precomposed or combining accents.
+  - A formula wider than the pane falls back to its one-line form.
+- **Changed.** Streaming:
+  - An unclosed span shows a dim `…` in the prose colour. It is not `⋯`, which marks tool lines.
+  - A display block reserves its rows as it streams, so the rows around it do not move when it lands.
+  - The streaming entry renders live (`render_prose_live`); the finished entry re-lays out identically.
+- **Changed.** User messages, reasoning, and session and run titles also typeset their maths and leave other markup as typed. `$5 and $10` is still currency.
+- **Fixed (review).** Paths that put source on screen, each now a case in `tests/maths_adversarial.rs`:
+  - A finished `$` that never closed before a command (`Let $\alpha be…`) is maths up to where prose resumes. Before, it was shown as written.
+  - A table too wide to lay out shows its lines with maths typeset, not as code. A `|` inside `$…$` no longer splits a cell, and the row still streaming holds its formula.
+  - `\tag{\alpha}`, `$\$5$`, `\begin{pmatrix}…` mid-paragraph, `\begin{array}` on its own line, and bare symbol commands in prose (`the rate \eta`; paths like `C:\theta` are left alone).
+  - The user's own backtick code and fences keep their `$` as typed.
+  - `$$…` mid-paragraph reserves its rows while it streams. A display block's reservation is counted the way the landed block is drawn.
+- **Added.** `marlowe-typeset`, off by default (`--features typeset-images` on `marlowe`). Where DA1 reports Sixel, display formulas are drawn as images:
+  - Typst 0.14.2 lays out the same parse the grid uses (`Formula::typst`). Every character with Typst meaning is escaped, and text goes in strings.
+  - The image is fitted into the box the grid reserved. It is sent as one transparent-background Sixel strip per cell row (`P2=1`), with edges blended onto the background reported by OSC 11, so there is never a filled box. Glyphs take the terminal's foreground (OSC 10) or the formula's colour.
+  - A worker thread renders and encodes once per (markup, colour, box). The pane shows the placeholder until the image is ready, then the strips. Strips are re-sent only when moved or uncovered, never into a cell something is drawn over, and stale ones are erased.
+  - `marlowe-os::console::query` reads the terminal's replies with VT input switched on for the exchange. `MARLOWE_MATH_IMAGES=0` turns images off; `=1` skips the DA1 check.
+- **Measured.**
+  - The corpus is 75 model-written formulas (30 inline, 45 display). The grid parses all 75 strictly (100%). The Typst path converts and typesets all 75 (100%), and all 45 display formulas fit their grid box.
+  - 33 malformed sources render to 132 frames with no `\`, `$` or source brace on screen.
+  - A token-by-token stream produces 329 frames with 0 raw and 0 settled rows moved. The same holds through the TUI reducer (97 frames).
+  - Grid layout p95 is 0.54 ms (debug). Typst typeset plus encode in release: p50 0.30 ms, p95 0.68 ms, first render about 5 ms.
+  - Binary size, release: the default build adds only the worker and encoder. `typst` adds 36.5 MB, measured as a size probe going from 0.13 MB to 36.6 MB. Most of that is Typst's library (syntax highlighting, bibliography styles, wasm, ICU data); the two vendored New Computer Modern fonts are 1.7 MB. That cost is why the feature is opt-in.
+- **Known.**
+  - Sixel behaviour on a real Windows Terminal is untested, on x64 and ARM64. That covers transparency (`P2=1`), whether spaces erase image cells, the `CSI 16 t` cell size, and the conpty path for query replies.
+  - Inline maths is never an image.
+  - Display formulas inside lists or quotes stay on the grid.
+  - Typst 0.15 conflicts with `rust-trafilatura`'s `icu_properties =2.1.2` pin.
+
 ### TUI layout: the old harness's boxes
 
 - **Changed.** The conversation screen is drawn in titled, rounded boxes — Conversation `(c)`, Message `(i)`, Model `(m)`, Workspace `(w)` and the Situation Board — with the hotkey on each bottom border and an accent border on the box that has the keys (`Theme::region_styles`, no fills). The board takes 3/10 of the width (38–72 columns). When it has the height it stacks Crew `(1)`, Watch `(2)`, Threads `(3)` and Memory `(4)` in their own boxes. Otherwise it shows one box with a numbered tab strip. Today (date, quiet hours, clock) and the most-used chords share a one-line footer; a chord that does not fit is in the ^k palette. The presence meter sits on the Conversation box's top border, with the turn's elapsed time.

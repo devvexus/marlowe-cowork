@@ -138,7 +138,7 @@ Persona v2 is kept intact: anti-sycophancy, answer first, no emoji, never invent
 
 | Measure | Budget |
 |---|---|
-| Distribution | Single `marlowe.exe` (plus lazy `marlowe-voice.exe`) |
+| Distribution | Single `marlowe.exe` (plus lazy `marlowe-voice.exe` and `marlowe-typeset.exe`, the maths typesetter) |
 | Cold start to first frame | < 100 ms |
 | Idle daemon RAM, ORT unloaded | < 80 MB |
 | Harness overhead per turn, excluding model and retrieval | < 50 ms |

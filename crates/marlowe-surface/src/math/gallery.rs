@@ -1,0 +1,37 @@
+//! **The gallery**: hard equations and matrices for eye-checking a real terminal. `marlowe math`
+//! draws each one exactly as the conversation pane would, on the grid and as an image.
+
+/// (title, LaTeX as a model writes it in a display block).
+pub const GALLERY: &[(&str, &str)] = &[
+    ("Scaled dot-product attention", r"\operatorname{Attention}(Q, K, V) = \operatorname{softmax}\!\left( \frac{Q K^\top}{\sqrt{d_k}} + M \right) V"),
+    ("Multivariate normal density", r"\mathcal{N}(\mathbf{x} \mid \boldsymbol{\mu}, \boldsymbol{\Sigma}) = \frac{1}{(2\pi)^{d/2} |\boldsymbol{\Sigma}|^{1/2}} \exp\left( -\frac{1}{2} (\mathbf{x} - \boldsymbol{\mu})^\top \boldsymbol{\Sigma}^{-1} (\mathbf{x} - \boldsymbol{\mu}) \right)"),
+    ("Maxwell's equations, tagged", r"\begin{align} \nabla \cdot \mathbf{E} &= \frac{\rho}{\varepsilon_0} \tag{1} \\ \nabla \cdot \mathbf{B} &= 0 \tag{2} \\ \nabla \times \mathbf{E} &= -\frac{\partial \mathbf{B}}{\partial t} \tag{3} \\ \nabla \times \mathbf{B} &= \mu_0 \mathbf{J} + \mu_0\varepsilon_0 \frac{\partial \mathbf{E}}{\partial t} \tag{4} \end{align}"),
+    ("Augmented system", r"\left[\begin{array}{ccc|c} 2 & 1 & -1 & 8 \\ -3 & -1 & 2 & -11 \\ -2 & 1 & 2 & -3 \end{array}\right]"),
+    ("Block LU with rules", r"\left[\begin{array}{c|c} A & B \\ \hline C & D \end{array}\right] = \left[\begin{array}{c|c} I & 0 \\ \hline CA^{-1} & I \end{array}\right] \left[\begin{array}{c|c} A & B \\ \hline 0 & D - CA^{-1}B \end{array}\right]"),
+    ("Block inverse (wide: clipped in a narrow pane)", r"\begin{bmatrix} A & B \\ C & D \end{bmatrix}^{-1} = \begin{bmatrix} (A - BD^{-1}C)^{-1} & -(A - BD^{-1}C)^{-1}BD^{-1} \\ -D^{-1}C(A - BD^{-1}C)^{-1} & D^{-1} + D^{-1}C(A - BD^{-1}C)^{-1}BD^{-1} \end{bmatrix}"),
+    ("Hessian", r"\mathbf{H}(f) = \begin{bmatrix} \frac{\partial^2 f}{\partial x_1^2} & \frac{\partial^2 f}{\partial x_1 \partial x_2} & \cdots & \frac{\partial^2 f}{\partial x_1 \partial x_n} \\ \frac{\partial^2 f}{\partial x_2 \partial x_1} & \frac{\partial^2 f}{\partial x_2^2} & \cdots & \frac{\partial^2 f}{\partial x_2 \partial x_n} \\ \vdots & \vdots & \ddots & \vdots \\ \frac{\partial^2 f}{\partial x_n \partial x_1} & \frac{\partial^2 f}{\partial x_n \partial x_2} & \cdots & \frac{\partial^2 f}{\partial x_n^2} \end{bmatrix}"),
+    ("Jacobian", r"J = \frac{\partial (f_1, \ldots, f_m)}{\partial (x_1, \ldots, x_n)} = \begin{bmatrix} \frac{\partial f_1}{\partial x_1} & \cdots & \frac{\partial f_1}{\partial x_n} \\ \vdots & \ddots & \vdots \\ \frac{\partial f_m}{\partial x_1} & \cdots & \frac{\partial f_m}{\partial x_n} \end{bmatrix}"),
+    ("8-point DFT matrix", r"F_8 = \frac{1}{\sqrt{8}} \begin{bmatrix} 1 & 1 & 1 & 1 & 1 & 1 & 1 & 1 \\ 1 & \omega & \omega^2 & \omega^3 & \omega^4 & \omega^5 & \omega^6 & \omega^7 \\ 1 & \omega^2 & \omega^4 & \omega^6 & 1 & \omega^2 & \omega^4 & \omega^6 \\ 1 & \omega^3 & \omega^6 & \omega & \omega^4 & \omega^7 & \omega^2 & \omega^5 \\ 1 & \omega^4 & 1 & \omega^4 & 1 & \omega^4 & 1 & \omega^4 \\ 1 & \omega^5 & \omega^2 & \omega^7 & \omega^4 & \omega & \omega^6 & \omega^3 \\ 1 & \omega^6 & \omega^4 & \omega^2 & 1 & \omega^6 & \omega^4 & \omega^2 \\ 1 & \omega^7 & \omega^6 & \omega^5 & \omega^4 & \omega^3 & \omega^2 & \omega \end{bmatrix}"),
+    ("Tridiagonal", r"\begin{pmatrix} b_1 & c_1 & & & \\ a_2 & b_2 & c_2 & & \\ & \ddots & \ddots & \ddots & \\ & & a_{n-1} & b_{n-1} & c_{n-1} \\ & & & a_n & b_n \end{pmatrix}"),
+    ("Vandermonde", r"V = \begin{bmatrix} 1 & x_1 & x_1^2 & \cdots & x_1^{n-1} \\ 1 & x_2 & x_2^2 & \cdots & x_2^{n-1} \\ \vdots & \vdots & \vdots & \ddots & \vdots \\ 1 & x_n & x_n^2 & \cdots & x_n^{n-1} \end{bmatrix}"),
+    ("Cofactor expansion", r"\begin{vmatrix} a_{11} & a_{12} & a_{13} \\ a_{21} & a_{22} & a_{23} \\ a_{31} & a_{32} & a_{33} \end{vmatrix} = a_{11}\begin{vmatrix} a_{22} & a_{23} \\ a_{32} & a_{33} \end{vmatrix} - a_{12}\begin{vmatrix} a_{21} & a_{23} \\ a_{31} & a_{33} \end{vmatrix} + a_{13}\begin{vmatrix} a_{21} & a_{22} \\ a_{31} & a_{32} \end{vmatrix}"),
+    ("Curl as a determinant", r"\nabla \times \mathbf{F} = \begin{vmatrix} \hat{\mathbf{x}} & \hat{\mathbf{y}} & \hat{\mathbf{z}} \\ \frac{\partial}{\partial x} & \frac{\partial}{\partial y} & \frac{\partial}{\partial z} \\ F_x & F_y & F_z \end{vmatrix}"),
+    ("Linear state space", r"\begin{bmatrix} \dot{x} \\ \ddot{x} \end{bmatrix} = \begin{bmatrix} 0 & 1 \\ -\frac{k}{m} & -\frac{c}{m} \end{bmatrix} \begin{bmatrix} x \\ \dot{x} \end{bmatrix} + \begin{bmatrix} 0 \\ \frac{1}{m} \end{bmatrix} u"),
+    ("Christoffel symbols", r"\Gamma^{\lambda}_{\mu\nu} = \frac{1}{2} g^{\lambda\sigma} \left( \partial_\mu g_{\nu\sigma} + \partial_\nu g_{\mu\sigma} - \partial_\sigma g_{\mu\nu} \right)"),
+    ("Riemann tensor, mixed indices", r"R^{\rho}{}_{\sigma\mu\nu} = \partial_\mu \Gamma^\rho_{\nu\sigma} - \partial_\nu \Gamma^\rho_{\mu\sigma} + \Gamma^\rho_{\mu\lambda}\Gamma^\lambda_{\nu\sigma} - \Gamma^\rho_{\nu\lambda}\Gamma^\lambda_{\mu\sigma}"),
+    ("Navier-Stokes", r"\rho \left( \frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u} \cdot \nabla)\mathbf{u} \right) = -\nabla p + \mu \nabla^2 \mathbf{u} + \mathbf{f}"),
+    ("Divergence theorem", r"\iiint_V (\nabla \cdot \mathbf{F}) \, dV = \oiint_{\partial V} \mathbf{F} \cdot d\mathbf{S}"),
+    ("Cauchy's integral formula", r"f(z_0) = \frac{1}{2\pi i} \oint_C \frac{f(z)}{z - z_0} \, dz"),
+    ("KL between Gaussians", r"D_{\mathrm{KL}}\big(\mathcal{N}(\mu, \sigma^2) \,\|\, \mathcal{N}(0, 1)\big) = \frac{1}{2}\left( \sigma^2 + \mu^2 - 1 - \log \sigma^2 \right)"),
+    ("DPO loss", r"\mathcal{L}_{\text{DPO}} = -\mathbb{E}_{(x, y_w, y_l)}\left[ \log \sigma\left( \beta \log \frac{\pi_\theta(y_w \mid x)}{\pi_{\text{ref}}(y_w \mid x)} - \beta \log \frac{\pi_\theta(y_l \mid x)}{\pi_{\text{ref}}(y_l \mid x)} \right) \right]"),
+    ("InfoNCE", r"\mathcal{L}_{\text{InfoNCE}} = -\mathbb{E}\left[ \log \frac{\exp(\mathbf{z}_i^\top \mathbf{z}_j / \tau)}{\sum_{k=1}^{2N} \mathbb{1}_{[k \neq i]} \exp(\mathbf{z}_i^\top \mathbf{z}_k / \tau)} \right]"),
+    ("LayerNorm", r"\operatorname{LayerNorm}(\mathbf{x}) = \boldsymbol{\gamma} \odot \frac{\mathbf{x} - \mu}{\sqrt{\sigma^2 + \epsilon}} + \boldsymbol{\beta}"),
+    ("Adam", r"\begin{align} \mathbf{m}_t &= \beta_1 \mathbf{m}_{t-1} + (1 - \beta_1) \mathbf{g}_t \\ \mathbf{v}_t &= \beta_2 \mathbf{v}_{t-1} + (1 - \beta_2) \mathbf{g}_t^2 \\ \theta_t &= \theta_{t-1} - \frac{\eta\, \hat{\mathbf{m}}_t}{\sqrt{\hat{\mathbf{v}}_t} + \epsilon} \end{align}"),
+    ("ELBO derivation", r"\begin{aligned} \log p_\theta(x) &= \log \int p_\theta(x, z) \, dz \\ &\geq \mathbb{E}_{q}\left[\log p_\theta(x, z) - \log q(z)\right] \\ &= \operatorname{ELBO}(\theta, q) \end{aligned}"),
+    ("Huber loss", r"L_\delta(a) = \begin{cases} \frac{1}{2} a^2 & \text{for } |a| \le \delta, \\ \delta \left(|a| - \frac{1}{2}\delta\right) & \text{otherwise.} \end{cases}"),
+    ("Lorenz system", r"\left\{ \begin{aligned} \dot{x} &= \sigma (y - x) \\ \dot{y} &= x(\rho - z) - y \\ \dot{z} &= xy - \beta z \end{aligned} \right."),
+    ("Stacked limits", r"\hat{y} = \operatorname*{argmax}_{\substack{y \in \mathcal{Y} \\ |y| \leq L}} \; \sum_{\substack{1 \leq i \leq n \\ i \neq j}} \log p(y_i \mid x)"),
+    ("Linear program", r"\begin{alignat}{2} \min_{x} \quad & c^\top x \\ \text{s.t.} \quad & Ax \leq b \\ & x \geq 0 \end{alignat}"),
+    ("Continued fraction", r"\frac{1}{1 + \frac{1}{1 + \frac{1}{1 + \frac{1}{x}}}}"),
+    ("Units", r"k_B = 1.380649 \times 10^{-23}\,\mathrm{J\,K^{-1}}, \quad T = 300\,\mathrm{K} \approx 26.85\,^{\circ}\mathrm{C}"),
+];

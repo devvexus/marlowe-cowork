@@ -32,6 +32,10 @@ members = [
     # M4: the Crew — durable sandboxed runs, playbooks, and the Job Object wrapper.
     "crates/marlowe-os",
     "crates/marlowe-crew",
+    # Typeset maths: the image client (probe, Sixel, worker) and the Typst helper process
+    # (`marlowe-typeset.exe`), which `marlowe.exe` starts lazily and never links.
+    "crates/marlowe-typeset",
+    "crates/marlowe-typeset-helper",
 ]
 # Reference sources only; never built.
 exclude = ["legacy"]
@@ -66,6 +70,7 @@ marlowe-sentinel = { path = "crates/marlowe-sentinel" }
 marlowe-voice = { path = "crates/marlowe-voice" }
 marlowe-os = { path = "crates/marlowe-os" }
 marlowe-crew = { path = "crates/marlowe-crew" }
+marlowe-typeset = { path = "crates/marlowe-typeset" }
 
 # Terminal. crossterm, not termion: Windows is the primary platform.
 ratatui = "0.30"

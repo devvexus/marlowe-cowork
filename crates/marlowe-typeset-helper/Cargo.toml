@@ -1,0 +1,29 @@
+[package]
+name = "marlowe-typeset-helper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "marlowe-typeset.exe: the Typst maths typesetter as a helper process. Reads one formula per JSON line on stdin and answers with its Sixel strips."
+
+[[bin]]
+name = "marlowe-typeset"
+path = "src/main.rs"
+
+[dependencies]
+marlowe-typeset.workspace = true
+# Typst has the best maths layout available in pure Rust (OpenType MATH, stretchy delimiters,
+# matrices, cases) and it is large: the release size of this binary is in CHANGELOG.md under
+# "Typeset maths". That is why it is a separate process and `marlowe.exe` never links it.
+#
+# 0.14.2, not 0.15: 0.15 needs icu_properties ^2.2 and marlowe-extract's rust-trafilatura pins
+# icu_properties =2.1.2. 0.14 uses icu 1.x, which resolves alongside it. No `typst-assets/fonts`:
+# that feature embeds 17 fonts (8.5 MB) and the maths needs two, vendored in `fonts/`.
+typst = "=0.14.2"
+typst-render = "=0.14.2"
+# Already in the tree through typst-render; named for the `Pixmap` type and its PNG export.
+tiny-skia = "0.11"
+
+[dev-dependencies]
+marlowe-surface.workspace = true
+crossbeam-channel.workspace = true
+serde_json.workspace = true
