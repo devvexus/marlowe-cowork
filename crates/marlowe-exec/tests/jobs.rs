@@ -540,3 +540,75 @@ fn reading_a_job_log_back_does_not_taint_the_session() {
     let elsewhere = ToolCallReq { id: "c3".into(), name: "read".into(), args: json!({"path": home.root.join("other.txt").to_string_lossy()}) };
     assert!(tools.taints(&elsewhere), "the rest of the profile folder still is");
 }
+
+#[test]
+fn parity_t32_a_long_line_in_short_output_comes_back_whole_with_nothing_deleted() {
+    let rig = Rig::new("t32long");
+    // 5,000 bytes on one line: Claude Code returns it as it is.
+    let o = rig.run("c1", "bash", json!({"command": "printf '%05000d' 0"}));
+    assert!(!o.is_error, "{}", o.content);
+    assert_eq!(o.content.trim().len(), 5_000, "the line was clipped: {} bytes", o.content.len());
+    assert!(!o.content.contains("more bytes]") && !o.content.contains("[full output"), "{}", &o.content[..80]);
+    // Over the budget a clipped long line keeps its log.
+    let big = rig.run("c2", "bash", json!({"command": "for i in $(seq 1 40); do printf '%01500d %d\n' 0 $i; done"}));
+    let (log, _) = pointer_of(&big.content);
+    assert!(std::fs::read_to_string(log).unwrap().contains("00000000"), "the log holds the whole output");
+}
+
+#[test]
+fn a_crew_host_reads_its_job_log_back_without_tainting_the_run() {
+    use marlowe_exec::Leftovers;
+    let ws = Ws::new("crew-logs");
+    // Built the way `crew_tool_factory` does, with no `specs::configure`.
+    let tools = BuiltinTools::new_sandbox(ws.root.clone()).with_shell_dir(ws.root.clone()).with_leftovers(Leftovers::KillWithHost);
+    let cx = CallCtx::detached(ToolCtx {
+        session: SessionId::from("crew-logs"),
+        turn: 1,
+        workspace: Some(ws.root.clone()),
+        cancel: CancelToken::new(),
+        tainted: false,
+    });
+    let call = ToolCallReq { id: "c1".into(), name: "bash".into(), args: json!({"command": "seq 1 20000"}) };
+    let out = tools.call_scoped(&call, &cx);
+    let (log, _) = pointer_of(&out.content);
+    assert!(log.starts_with(posix(&ws.root)), "the log is in the sandbox, not %TEMP%: {}", log.display());
+    let read = ToolCallReq { id: "c2".into(), name: "read".into(), args: json!({"path": log.to_string_lossy()}) };
+    assert!(!tools.taints(&read), "following the pointer must not taint a crew run");
+    let found = ToolCallReq { id: "c3".into(), name: "grep".into(), args: json!({"pattern": "^19999$", "path": log.to_string_lossy()}) };
+    assert!(!tools.taints(&found));
+}
+
+#[test]
+fn the_user_bang_shell_works_in_a_session_that_has_run_no_turn() {
+    use marlowe_exec::specs::{configure, HostSetup};
+    let home = Ws::new("fresh-home");
+    let ws = Ws::new("fresh-ws");
+    let other = Ws::new("fresh-other");
+    // A configured host is registered at once; no middleware, no turn.
+    let tools = configure(ws.tools(), &HostSetup { home: &home.root, workspace: Some(&ws.root) });
+    let session = "fresh-session";
+    assert!(!bg_hub().serves(session));
+    assert!(bg_hub().user_shell(session, "echo hi").is_err(), "a session no host serves has no shell");
+    let root = ws.root.to_string_lossy().to_string();
+    assert!(!bg_hub().claim(session, Some(&other.root.to_string_lossy())), "another workspace's host is not taken");
+    assert!(bg_hub().claim(session, Some(&root)));
+    assert!(bg_hub().serves(session));
+    let events = bg_hub().subscribe();
+    let id = bg_hub().user_shell(session, "echo from the first input").expect("started");
+    let mut seen = String::new();
+    let end = Instant::now() + Duration::from_secs(30);
+    let mut done = false;
+    while Instant::now() < end && !done {
+        match events.recv_timeout(Duration::from_millis(200)) {
+            Ok(BgEvent::Output { id: i, text, .. }) if i == id => seen.push_str(&text),
+            Ok(BgEvent::Exited { id: i, .. }) if i == id => done = true,
+            _ => {}
+        }
+    }
+    assert!(done && seen.contains("from the first input"), "{seen:?}");
+    // The user's command counts as running work while it runs: the daemon keeps the session.
+    let long = bg_hub().user_shell(session, "sleep 30").expect("started");
+    assert_eq!(bg_hub().running(session), 1, "a running `!` command keeps its session from idling out");
+    assert!(bg_hub().kill(&long));
+    drop(tools);
+}

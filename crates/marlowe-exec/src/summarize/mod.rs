@@ -2,7 +2,8 @@
 //!
 //! A command's output reaches the model at most [`BUDGET`] bytes at a time. Within it:
 //!
-//! - Output that fits is returned as it is (progress-bar redraws and colour codes removed).
+//! - Output that fits is returned as it is, whatever its line lengths (progress-bar redraws and
+//!   colour codes removed).
 //! - Longer output keeps its head (what was run, versions), its tail (where failures and totals
 //!   print), and, for a failed command, the lines that say why: error, panic, traceback and test
 //!   failure blocks from the middle, each with its neighbours, in file order, until the budget is
@@ -20,7 +21,7 @@ use regex::Regex;
 /// Most bytes of command output one result carries.
 pub const BUDGET: usize = 30_000;
 
-/// A line longer than this is cut.
+/// A line longer than this is cut, but only in output that is over the budget anyway.
 const MAX_LINE: usize = 400;
 
 /// What [`summarize`] and [`middle_cut`] return.
@@ -147,7 +148,9 @@ fn collapse_repeats(lines: &[&str]) -> Vec<String> {
 pub fn summarize(text: &str, failed: bool, budget: usize) -> Summary {
     let all: Vec<&str> = text.split('\n').collect();
     let total_lines = if text.is_empty() { 0 } else { all.len() };
-    if text.len() <= budget && all.iter().all(|l| l.len() <= MAX_LINE) {
+    // Output that fits comes back whole, long lines included (a minified JSON file, a one-line
+    // compiler error): the log is deleted when nothing was cut, so nothing may be.
+    if text.len() <= budget {
         return Summary { text: text.to_string(), total_lines, cut: false };
     }
     let lines = collapse_repeats(&all);
@@ -155,7 +158,9 @@ pub fn summarize(text: &str, failed: bool, budget: usize) -> Summary {
     let total: usize = (0..lines.len()).map(size).sum();
     if total <= budget {
         let text = lines.iter().map(|l| clip(l)).collect::<Vec<_>>().join("\n");
-        return Summary { text, total_lines, cut: total_lines != lines.len() };
+        // A clipped line is a cut too: the log must stay for the bytes `clip` replaced.
+        let clipped = lines.iter().any(|l| l.len() > MAX_LINE);
+        return Summary { text, total_lines, cut: clipped || total_lines != lines.len() };
     }
 
     // Reserve room for the gap markers, then split the rest: a failure wants its tail and its

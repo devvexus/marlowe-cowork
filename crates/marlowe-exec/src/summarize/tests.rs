@@ -28,6 +28,29 @@ fn output_that_fits_is_returned_untouched() {
 }
 
 #[test]
+fn parity_t32_a_long_line_in_short_output_comes_back_whole() {
+    // Claude Code returns any output under 30 KB as it is; a clipped line with no pointer and no
+    // log on disk would lose the rest of it for good.
+    let one = format!("{{\"data\":\"{}\"}}", "x".repeat(5_000));
+    let s = summarize(&one, false, BUDGET);
+    assert_eq!((s.text.as_str(), s.cut), (one.as_str(), false));
+    let mixed = format!("head
+{one}
+tail");
+    assert_eq!(summarize(&mixed, true, BUDGET).text, mixed);
+}
+
+#[test]
+fn a_clipped_line_in_over_budget_output_is_marked_as_cut() {
+    // Over the budget the lines are clipped, and then the log must be kept.
+    let long = "y".repeat(2_000);
+    let text = (0..20).map(|i| format!("{i} {long}")).collect::<Vec<_>>().join("
+");
+    let s = summarize(&text, false, BUDGET);
+    assert!(s.cut && s.text.contains("more bytes]"), "{}", s.text.len());
+}
+
+#[test]
 fn identical_runs_collapse() {
     let text = format!("start\n{}end", "same\n".repeat(50_000));
     let s = summarize(&text, false, BUDGET);

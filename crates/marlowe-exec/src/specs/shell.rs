@@ -438,6 +438,7 @@ fn job_kill_spec() -> ToolSpec {
 pub fn middleware(tools: &crate::BuiltinTools) -> Vec<Arc<dyn ToolMiddleware>> {
     let jobs = tools.state::<HostJobs>();
     jobs.bind(tools);
+    jobs.note_delivering();
     vec![Arc::new(JobsMiddleware { jobs })]
 }
 
@@ -451,7 +452,10 @@ pub fn persona_block() -> Option<&'static str> {
 pub fn configure(tools: crate::BuiltinTools, setup: &super::HostSetup<'_>) -> crate::BuiltinTools {
     // The logs are the harness's own files: reading one back to see what a summary left out is not an untrusted read.
     let jobs = setup.home.join("jobs");
-    tools.with_read_root(jobs.clone()).with_state(HostJobs::new(jobs))
+    let tools = tools.with_read_root(jobs.clone()).with_state(HostJobs::new(jobs));
+    // Registered now, not at the first turn: the user's `!` works in a session that has not run one.
+    tools.state::<HostJobs>().bind(&tools);
+    tools
 }
 
 /// Whether a local model gets this group in `root`. Always exposed to local models (a core group).

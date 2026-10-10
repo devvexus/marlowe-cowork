@@ -364,10 +364,8 @@ pub struct BgNotice {
 /// Whether a table runs the commands of a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Serves {
-    /// It has run a turn or a command for the session.
+    /// It has run a turn or a command for the session, or was given the session ([`BgOwner::bg_claim`]).
     Yes,
-    /// It has served no session yet, so it may be the one a fresh session will use.
-    Maybe,
     No,
 }
 
@@ -386,6 +384,11 @@ pub trait BgOwner: Send + Sync {
     fn bg_take(&self, session: &str) -> Vec<BgNotice>;
     /// Whether this table serves `session` (see [`Serves`]).
     fn bg_serves(&self, session: &str) -> Serves;
+    /// A table that has served no session and runs commands in `workspace` takes `session` as its
+    /// own (a session that has not run a turn yet, whose runner has just built this host).
+    fn bg_claim(&self, _session: &str, _workspace: Option<&str>) -> bool {
+        false
+    }
     /// Runs the user's `!` command in `session`'s workspace as a job; returns its id. `None`:
     /// this table does not serve `session`.
     fn bg_user_shell(&self, session: &str, command: &str) -> Option<Result<String, String>>;
@@ -466,13 +469,24 @@ impl BgHub {
         self.live().iter().flat_map(|o| o.bg_take(session)).collect()
     }
 
-    /// Runs the user's `!` command for `session`; the job id, or why not. A table that has served
-    /// the session runs it; failing that, one that has served nobody yet.
-    pub fn user_shell(&self, session: &str, command: &str) -> Result<String, String> {
+    /// Whether some table serves `session`.
+    pub fn serves(&self, session: &str) -> bool {
+        self.live().iter().any(|o| o.bg_serves(session) == Serves::Yes)
+    }
+
+    /// Gives a session that no table serves yet to the idle table that runs commands in
+    /// `workspace`; true when some table serves it afterwards.
+    pub fn claim(&self, session: &str, workspace: Option<&str>) -> bool {
         let owners = self.live();
-        let by = |want: Serves| owners.iter().find(|o| o.bg_serves(session) == want);
-        by(Serves::Yes)
-            .or_else(|| by(Serves::Maybe))
+        owners.iter().any(|o| o.bg_serves(session) == Serves::Yes) || owners.iter().any(|o| o.bg_claim(session, workspace))
+    }
+
+    /// Runs the user's `!` command for `session`; the job id, or why not. Only a table that serves
+    /// the session runs it: [`BgHub::claim`] first for a session that has not run a turn.
+    pub fn user_shell(&self, session: &str, command: &str) -> Result<String, String> {
+        self.live()
+            .iter()
+            .find(|o| o.bg_serves(session) == Serves::Yes)
             .and_then(|o| o.bg_user_shell(session, command))
             .unwrap_or_else(|| Err("this session has no shell to run it in".to_string()))
     }

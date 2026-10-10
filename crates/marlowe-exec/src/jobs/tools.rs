@@ -157,9 +157,13 @@ pub(crate) fn run_background(
             text.push_str(&format!("it has already exited with code {code}:\n{}", if body.text.is_empty() { "(no output)" } else { &body.text }));
             return Ok(ToolOutcome { content: text, is_error: code != 0, summary: format!("{id} · exit {code}"), parts: Vec::new() });
         }
-        None => text.push_str(&format!(
+        None if jobs.delivers_notices() => text.push_str(&format!(
             "you will be told when it exits. job_output {{\"id\":\"{id}\"}} reads its output, job_watch {{\"id\":\"{id}\",\"until_regex\":\"...\"}} \
              tells you when a line appears, job_kill {{\"id\":\"{id}\"}} stops it."
+        )),
+        None => text.push_str(&format!(
+            "you will NOT be told when it exits in this session: poll with job_output {{\"id\":\"{id}\"}}. job_kill \
+             {{\"id\":\"{id}\"}} stops it."
         )),
     }
     Ok(ToolOutcome::ok(text, format!("{id} running")))
@@ -192,6 +196,8 @@ fn own_job(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> Result<(Arc<Host
         }
     }
 }
+
+const NO_NOTICES: &str = "this session does not receive job notices between steps; poll with job_output";
 
 fn status(job: &Job, next: u64) -> String {
     let len = job.len();
@@ -282,7 +288,7 @@ pub fn job_output(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutco
 
 /// Starts `job_watch {id, until_regex, filter}`.
 pub fn job_watch(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
-    let (_, job) = match own_job(tools, args, cx) {
+    let (jobs, job) = match own_job(tools, args, cx) {
         Ok(j) => j,
         Err(e) => return e,
     };
@@ -303,6 +309,9 @@ pub fn job_watch(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcom
             format!("job {} has already exited with code {code}; job_output {{\"id\":\"{}\"}} reads what it wrote.", job.id, job.id),
             format!("{} · exited", job.id),
         );
+    }
+    if !jobs.delivers_notices() {
+        return ToolOutcome::error(format!("job_watch cannot work here: {NO_NOTICES} {{\"id\":\"{}\"}}", job.id));
     }
     let until_src = until.as_ref().map(|(_, s)| s.clone()).unwrap_or_default();
     job.watch(filter.map(|(r, _)| r), until.map(|(r, _)| r), until_src.clone(), true);

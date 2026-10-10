@@ -40,6 +40,61 @@ struct Fake {
     killed: std::sync::Mutex<Vec<String>>,
 }
 
+/// A table that has served nobody and runs commands in no workspace, as a host built for a new
+/// session before its first turn.
+struct Idle {
+    served: std::sync::Mutex<Vec<String>>,
+}
+
+impl BgOwner for Idle {
+    fn bg_list(&self, _: Option<&str>) -> Vec<BgInfo> {
+        Vec::new()
+    }
+    fn bg_kill(&self, _: &str) -> Option<bool> {
+        None
+    }
+    fn bg_detach(&self, _: &str, _: Option<&str>) -> Option<String> {
+        None
+    }
+    fn bg_waking(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn bg_take(&self, _: &str) -> Vec<BgNotice> {
+        Vec::new()
+    }
+    fn bg_serves(&self, session: &str) -> Serves {
+        if self.served.lock().unwrap().iter().any(|s| s == session) {
+            Serves::Yes
+        } else {
+            Serves::No
+        }
+    }
+    fn bg_claim(&self, session: &str, workspace: Option<&str>) -> bool {
+        let mut served = self.served.lock().unwrap();
+        if workspace.is_none() && served.is_empty() {
+            served.push(session.to_string());
+        }
+        served.iter().any(|s| s == session)
+    }
+    fn bg_user_shell(&self, session: &str, command: &str) -> Option<Result<String, String>> {
+        self.served.lock().unwrap().iter().any(|s| s == session).then(|| {
+            bg_hub().publish(BgEvent::Started(BgInfo {
+                id: "jfresh".into(),
+                session: session.into(),
+                command: command.into(),
+                started_ms: 8,
+                exit_code: None,
+                foreground: false,
+                log: None,
+            }));
+            Ok("jfresh".to_string())
+        })
+    }
+    fn bg_running(&self, _: &str) -> usize {
+        0
+    }
+}
+
 impl BgOwner for Fake {
     fn bg_list(&self, session: Option<&str>) -> Vec<BgInfo> {
         let job = |id: &str, exit: Option<i32>| BgInfo {
@@ -99,6 +154,8 @@ impl BgOwner for Fake {
 fn job_requests_are_answered_and_registry_events_reach_clients() {
     let owner: Arc<dyn BgOwner> = Arc::new(Fake { killed: Default::default() });
     bg_hub().register(Arc::downgrade(&owner));
+    let idle: Arc<dyn BgOwner> = Arc::new(Idle { served: Default::default() });
+    bg_hub().register(Arc::downgrade(&idle));
 
     let home = temp_home();
     let deps = DaemonDeps {
@@ -178,13 +235,32 @@ fn job_requests_are_answered_and_registry_events_reach_clients() {
             break;
         }
     }
-    // A session no table serves gets an error, and an empty command is refused.
+    // A session the daemon does not know gets an error, and an empty command is refused.
     write_line(&mut w, &Request::UserShell { session: SessionId("elsewhere".into()), command: "ls".into() }).unwrap();
     loop {
         if let Event::Error { message, session } = next() {
-            assert!(message.contains("no shell"), "{message}");
+            assert!(message.contains("unknown session"), "{message}");
             assert_eq!(session, Some(SessionId("elsewhere".into())));
             break;
+        }
+    }
+    // `!` as the first input of a new session: no turn has run, so no table serves it yet. The
+    // daemon loads the session and the idle table for its workspace takes it.
+    write_line(&mut w, &Request::NewSession { workspace: None }).unwrap();
+    let fresh = loop {
+        if let Event::SessionOpened { session, .. } = next() {
+            break session;
+        }
+    };
+    write_line(&mut w, &Request::UserShell { session: fresh.clone(), command: "echo first".into() }).unwrap();
+    loop {
+        match next() {
+            Event::JobStarted { job } if job.id == "jfresh" => {
+                assert_eq!(job.command, "echo first");
+                break;
+            }
+            Event::Error { message, .. } => panic!("the first `!` of a new session failed: {message}"),
+            _ => {}
         }
     }
     write_line(&mut w, &Request::UserShell { session: s1(), command: "  ".into() }).unwrap();

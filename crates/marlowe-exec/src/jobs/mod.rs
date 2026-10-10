@@ -44,8 +44,15 @@ use proc::Proc;
 pub(crate) use tools::{run_background, run_foreground, FgEnd, FgRun, JobsMiddleware};
 pub use tools::{job_kill, job_output, job_watch};
 
-/// Output a background job may write before it is stopped.
+/// Output a background job may write before it is stopped (the monitor kills it at the cap; the
+/// exit notice says so).
 pub(crate) const BG_LOG_CAP: u64 = 256 << 20;
+
+/// Most of a log an exit notice reads: the end of it, where failures print.
+const SUMMARY_WINDOW: usize = 64 << 20;
+
+/// The folder in a crew sandbox that holds its job logs.
+const SANDBOX_LOGS: &str = ".marlowe-jobs";
 
 /// Finished jobs kept in a table (their logs stay on disk).
 const KEEP_FINISHED: usize = 50;
@@ -251,6 +258,23 @@ impl Job {
         self.read_range(0, 64 << 20)
     }
 
+    /// The last `max` bytes of the log (from a line start when that cuts one), and how many bytes
+    /// came before them.
+    pub(crate) fn read_tail(&self, max: usize) -> (Vec<u8>, u64) {
+        let len = std::fs::metadata(&self.log).map(|m| m.len()).unwrap_or(0);
+        if len <= max as u64 {
+            return (self.read_range(0, max), 0);
+        }
+        let from = len - max as u64;
+        let mut bytes = self.read_range(from, max);
+        let mut skipped = from;
+        if let Some(nl) = bytes.iter().position(|b| *b == b'\n') {
+            bytes.drain(..=nl);
+            skipped += nl as u64 + 1;
+        }
+        (bytes, skipped)
+    }
+
     /// Output from a reader thread: to the log, to the watch.
     fn ingest(&self, bytes: &[u8]) {
         let mut emitted: Vec<String> = Vec::new();
@@ -383,14 +407,24 @@ impl Job {
     }
 
     fn exit_text(&self, code: i32) -> (NoticeKind, String) {
-        let (killed, timed_out, flooded) = {
+        self.exit_text_in(code, SUMMARY_WINDOW)
+    }
+
+    /// The notice for the exit, summarising the last `window` bytes of the log.
+    fn exit_text_in(&self, code: i32, window: usize) -> (NoticeKind, String) {
+        let (killed, timed_out, flooded, cap) = {
             let st = lock(&self.st);
-            (st.killed, st.timed_out, st.flooded)
+            (st.killed, st.timed_out, st.flooded, st.cap)
         };
         let took = fmt_secs(self.started.elapsed());
-        let raw = String::from_utf8_lossy(&self.read_all()).into_owned();
+        let (tail_bytes, skipped) = self.read_tail(window);
+        let raw = String::from_utf8_lossy(&tail_bytes).into_owned();
         let out = summarize::clean(&raw);
-        let lines = if out.is_empty() { 0 } else { out.split('\n').count() };
+        let lines = if skipped == 0 {
+            if out.is_empty() { 0 } else { out.split('\n').count() }
+        } else {
+            count_lines(&self.log)
+        };
         if self.user {
             let body = summarize::summarize(&out, code != 0, 8_000);
             let shown = if body.text.is_empty() { "(no output)".to_string() } else { body.text };
@@ -404,16 +438,19 @@ impl Job {
         }
         let head = if timed_out {
             format!("[job {} was stopped after {took} at its timeout: `{}`]", self.id, self.command)
+        } else if flooded {
+            format!("[job {} was stopped after {took}: its output passed the {} cap: `{}`]", self.id, fmt_bytes(cap), self.command)
         } else if killed {
             format!("[job {} was stopped after {took}: `{}`]", self.id, self.command)
-        } else if flooded {
-            format!("[job {} was stopped after {took}: its output passed the {} MiB cap: `{}`]", self.id, BG_LOG_CAP >> 20, self.command)
         } else {
             format!("[job {} exited with code {code} after {took}: `{}`]", self.id, self.command)
         };
         let budget = if code == 0 { 1_200 } else { 3_000 };
         let tail = summarize::summarize(&out, code != 0, budget);
         let mut text = head;
+        if skipped > 0 {
+            text.push_str(&format!("\n(the first {} of the log are not summarised here; they are in the log)", fmt_bytes(skipped)));
+        }
         if !tail.text.is_empty() {
             text.push('\n');
             if tail.cut {
@@ -469,6 +506,33 @@ impl Job {
     }
 }
 
+/// Lines in the file, counted a chunk at a time.
+fn count_lines(path: &Path) -> usize {
+    let Ok(mut f) = File::open(path) else { return 0 };
+    let (mut n, mut last, mut buf) = (0usize, b'\n', vec![0u8; 1 << 20]);
+    while let Ok(got) = f.read(&mut buf) {
+        if got == 0 {
+            break;
+        }
+        n += buf[..got].iter().filter(|b| **b == b'\n').count();
+        last = buf[got - 1];
+    }
+    if last != b'\n' {
+        n += 1;
+    }
+    n
+}
+
+fn fmt_bytes(n: u64) -> String {
+    if n >= 1 << 20 {
+        format!("{} MiB", n >> 20)
+    } else if n >= 1 << 10 {
+        format!("{} KiB", n >> 10)
+    } else {
+        format!("{n} bytes")
+    }
+}
+
 fn read_range(path: &Path, from: u64, max: usize) -> Vec<u8> {
     let Ok(mut f) = File::open(path) else { return Vec::new() };
     if f.seek(SeekFrom::Start(from)).is_err() {
@@ -515,11 +579,21 @@ pub struct HostJobs {
     /// Sessions this host serves (seen in a turn, or given a `!` command).
     sessions: Mutex<BTreeSet<String>>,
     registered: AtomicBool,
+    /// The log folder was chosen by the host's setup (not the temp-folder default).
+    placed: bool,
+    /// The default folder has been moved into the sandbox, if it was going to be.
+    relocated: AtomicBool,
+    /// The loop's middleware has been asked for: notices reach the model between steps.
+    delivering: AtomicBool,
 }
 
 impl Default for HostJobs {
+    /// A host nobody set up (a crew sandbox): logs go to the temp folder until [`HostJobs::bind`]
+    /// finds a sandbox to keep them in.
     fn default() -> Self {
-        Self::new(std::env::temp_dir().join("marlowe-jobs"))
+        let mut jobs = Self::new(std::env::temp_dir().join("marlowe-jobs"));
+        jobs.placed = false;
+        jobs
     }
 }
 
@@ -534,28 +608,55 @@ impl HostJobs {
             bound: Mutex::new(None),
             sessions: Mutex::new(BTreeSet::new()),
             registered: AtomicBool::new(false),
+            placed: true,
+            relocated: AtomicBool::new(false),
+            delivering: AtomicBool::new(false),
         }
+    }
+
+    /// The loop asked this host for its middleware, so job notices will be delivered.
+    pub(crate) fn note_delivering(&self) {
+        self.delivering.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether notices reach the model between its steps in this host.
+    pub(crate) fn delivers_notices(&self) -> bool {
+        self.delivering.load(Ordering::Relaxed)
     }
 
     /// Records how the host runs commands and registers the table in the process-wide registry.
     /// Idempotent.
     pub(crate) fn bind(self: &Arc<Self>, tools: &crate::BuiltinTools) {
-        {
-            let mut b = lock(&self.bound);
-            if b.is_none() {
-                *b = Some(Bound {
-                    root: tools.root.clone(),
-                    shell_dir: tools.shell_dir.clone(),
-                    scrub: tools.scrub.clone(),
-                    child_env: tools.child_env.clone(),
-                    port: Arc::clone(&tools.port),
-                    leftovers: tools.leftovers,
-                });
-            }
-        }
+        *lock(&self.bound) = Some(Bound {
+            root: tools.root.clone(),
+            shell_dir: tools.shell_dir.clone(),
+            scrub: tools.scrub.clone(),
+            child_env: tools.child_env.clone(),
+            port: Arc::clone(&tools.port),
+            leftovers: tools.leftovers,
+        });
+        self.place_logs(tools);
         if !self.registered.swap(true, Ordering::SeqCst) {
             let weak: Weak<dyn BgOwner> = Arc::downgrade(self) as Weak<HostJobs>;
             bg_hub().register(weak);
+        }
+    }
+
+    /// A host nobody set up keeps its logs where the model may read them back without an untrusted
+    /// read: in a pinned sandbox, in a folder git ignores. (A configured host's folder is a read
+    /// root already.)
+    fn place_logs(&self, tools: &crate::BuiltinTools) {
+        if self.placed || self.relocated.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let Some(sandbox) = tools.shell_dir.as_deref() else { return };
+        let dir = sandbox.join(SANDBOX_LOGS);
+        if !tools.trusted_read(&dir.to_string_lossy()) {
+            return;
+        }
+        if std::fs::create_dir_all(&dir).is_ok() {
+            let _ = std::fs::write(dir.join(".gitignore"), "*\n");
+            *lock(&self.dir) = dir;
         }
     }
 
@@ -667,9 +768,10 @@ impl HostJobs {
         self.notices.take(session)
     }
 
-    /// Whether any job of `session` still runs.
+    /// Jobs of `session` that still run, the user's `!` commands included: a session that has any
+    /// must not be idled out, or its tool host would take them with it.
     pub(crate) fn running(&self, session: &str) -> usize {
-        self.all().iter().filter(|j| j.session == session && j.is_running() && !j.user).count()
+        self.all().iter().filter(|j| j.session == session && j.is_running()).count()
     }
 }
 
@@ -692,6 +794,10 @@ fn monitor(job: Arc<Job>, pumps: Vec<JoinHandle<()>>) {
                 lock(&job.st).timed_out = true;
                 job.kill();
             }
+        }
+        // A background job past its output cap is stopped; a foreground call does that itself.
+        if job.flooded() && job.is_running() && !lock(&job.st).foreground {
+            job.kill();
         }
         let step = {
             let mut proc = lock(&job.proc);
@@ -767,25 +873,39 @@ impl BgOwner for HostJobs {
     }
 
     fn bg_serves(&self, session: &str) -> Serves {
-        if lock(&self.bound).is_none() {
-            return Serves::No;
-        }
-        let s = lock(&self.sessions);
-        if s.contains(session) {
+        if lock(&self.bound).is_some() && lock(&self.sessions).contains(session) {
             Serves::Yes
-        } else if s.is_empty() {
-            // A host that has not run a turn yet: the first `!` of a fresh session lands here.
-            Serves::Maybe
         } else {
             Serves::No
         }
     }
 
+    fn bg_claim(&self, session: &str, workspace: Option<&str>) -> bool {
+        let bound = lock(&self.bound);
+        // A crew host (a pinned sandbox) never serves a user session.
+        let Some(b) = bound.as_ref().filter(|b| b.shell_dir.is_none() && b.leftovers == Leftovers::Release) else {
+            return false;
+        };
+        let same = match (b.root.as_deref(), workspace) {
+            (None, None) => true,
+            (Some(root), Some(ws)) => {
+                let ws = Path::new(ws);
+                crate::paths::inside(root, ws) && crate::paths::inside(ws, root)
+            }
+            _ => false,
+        };
+        let mut sessions = lock(&self.sessions);
+        if !same || !sessions.is_empty() {
+            return false;
+        }
+        sessions.insert(session.to_string());
+        true
+    }
+
     fn bg_user_shell(&self, session: &str, command: &str) -> Option<Result<String, String>> {
-        if self.bg_serves(session) == Serves::No {
+        if self.bg_serves(session) != Serves::Yes {
             return None;
         }
-        self.note_session(session);
         Some(self.start_user_shell(session, command))
     }
 
