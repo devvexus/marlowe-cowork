@@ -6,8 +6,13 @@ const LCS_MAX_LINES: usize = 600;
 
 /// The diff from `old` to `new`, at most `max_lines` body lines, then "… N more changed lines".
 pub fn short_diff(old: &str, new: &str, max_lines: usize) -> String {
+    short_diff_cut(old, new, max_lines).0
+}
+
+/// [`short_diff`], and whether it was cut (some changed lines are not in it).
+pub fn short_diff_cut(old: &str, new: &str, max_lines: usize) -> (String, bool) {
     if old == new {
-        return String::new();
+        return (String::new(), false);
     }
     let a: Vec<&str> = old.split_inclusive('\n').collect();
     let b: Vec<&str> = new.split_inclusive('\n').collect();
@@ -50,10 +55,11 @@ pub fn short_diff(old: &str, new: &str, max_lines: usize) -> String {
             }
         }
     }
-    if total > max_lines {
+    let cut = total > max_lines;
+    if cut {
         out.push(format!("… {} more changed lines", total - max_lines));
     }
-    out.join("\n")
+    (out.join("\n"), cut)
 }
 
 fn floor(s: &str, mut i: usize) -> usize {

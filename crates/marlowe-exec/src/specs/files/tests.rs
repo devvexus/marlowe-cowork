@@ -503,6 +503,66 @@ fn parity_t7_a_change_between_turns_is_reported_when_the_next_turn_starts() {
     assert_eq!(convo.messages.len(), 1);
 }
 
+/// T7 with a change the reminder cannot show whole (a data file over the 256 KB snapshot, a diff
+/// over 40 lines): the reminder says so, and a `write` from the agent's old view is refused until
+/// it reads the file again, so changes it never saw are not overwritten.
+#[test]
+fn parity_t7_a_change_not_shown_whole_needs_a_reread_before_a_write() {
+    let mut s = Session::new("t7big");
+    let rows = |tag: &str, n: usize| -> String { (0..n).map(|i| format!("{{\"{tag}\": {i}}}\n")).collect() };
+    s.put("data.jsonl", rows("a", 30_000));
+    s.put("cfg.yaml", rows("k", 100));
+    s.ok("read", json!({"path": "data.jsonl", "limit": 10}));
+    s.read("cfg.yaml");
+    s.put("data.jsonl", rows("b", 30_000)); // Matthew regenerates it
+    s.put("cfg.yaml", rows("v", 100));
+    let text = s.step_end()[0].joined_text();
+    assert!(text.contains("data.jsonl: modified (") && text.contains("too large to diff), read it again before editing it."), "{text}");
+    assert!(text.contains("cfg.yaml: modified; only part of the change is shown"), "{text}");
+    assert!(s.step_end().is_empty(), "reported once");
+    for rel in ["data.jsonl", "cfg.yaml"] {
+        let e = s.err("write", json!({"path": rel, "content": "{}\n"}));
+        assert!(e.content.contains("changed since you last read it"), "{rel}: {}", e.content);
+    }
+    assert_eq!(s.text("cfg.yaml"), rows("v", 100), "Matthew's change survives");
+    s.read("cfg.yaml");
+    s.ok("write", json!({"path": "cfg.yaml", "content": "k: 1\n"}));
+}
+
+/// T7 for a log something keeps appending to (`runs/x/train.log`): one line per turn saying it
+/// grew, never its new lines every step.
+#[test]
+fn parity_t7_an_appended_log_is_noted_once_per_turn() {
+    let mut s = Session::new("t7log");
+    s.put("runs/x/train.log", "step 0 loss 2.3\n");
+    s.read("runs/x/train.log");
+    let append = |s: &Session, n: usize| {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(s.p("runs/x/train.log")).unwrap();
+        for i in 0..n {
+            writeln!(f, "step {i} loss 1.{i}").unwrap();
+        }
+    };
+    append(&s, 3);
+    let msgs = s.step_end();
+    let text = msgs[0].joined_text();
+    assert!(text.contains("train.log: 3 lines (") && text.contains("appended, earlier content unchanged"), "{text}");
+    assert!(!text.contains("loss 1."), "the new lines are not pasted in: {text}");
+    for _ in 0..10 {
+        append(&s, 50);
+        assert!(s.step_end().is_empty(), "at most once per turn");
+    }
+    // The next turn hears about it once more.
+    let mut convo = Conversation::new(SessionId::from("s"), Some(s.root.clone()));
+    convo.ext = std::mem::take(&mut *s.scope.ext.lock().unwrap());
+    let mut text = "how is it going?".to_string();
+    for m in &s.mw {
+        m.before_turn(&mut convo, &mut text);
+    }
+    let [note] = convo.messages.as_slice() else { panic!("{:?}", convo.messages) };
+    assert!(note.joined_text().contains("train.log: 503 lines ("), "{}", note.joined_text());
+}
+
 /// B1: an existing file must be read before it is edited or overwritten, and an edit of a file
 /// that changed since the read is refused with what changed (before the approval gate asks).
 #[test]

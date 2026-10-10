@@ -7,9 +7,10 @@
 //! edit tools record what they wrote. [`FileGuard`] (this group's middleware) refuses an edit of
 //! an existing file the agent has not read, or that changed since, before the approval gate asks;
 //! the tools re-check staleness under the write lock; after every step, and before each new user
-//! turn, it polls the files the agent knows and adds a reminder with a short diff for any changed
-//! by something else. Calls outside a session (no middleware, empty extensions) keep the old
-//! free-form behaviour.
+//! turn, it polls the files the agent knows and adds a reminder for any changed by something else
+//! (a short diff; a one-line note for an append or a change too large to show, which then needs a
+//! re-read before an edit; each file at most once per turn). Calls outside a session (no
+//! middleware, empty extensions) keep the old free-form behaviour.
 //!
 //! Off this machine (UNC hosts, device paths; [`crate::text::off_machine`]) nothing touches the
 //! filesystem before approval: `read` and the writers ask, naming the host as egress, the
@@ -17,8 +18,12 @@
 //! cleared it, which happens only after the gate.
 //!
 //! Secret hygiene (B6): writing a secret-shaped file (`.env`, keys, credential stores, judged as
-//! Win32 spells the name) or content that looks like a credential asks. The crew's own consequence
-//! (`CrewTools`) does not consult this group yet, so in crew runs it is not live (seam-crew).
+//! Win32 spells the name) or content that looks like a credential asks.
+//!
+//! Not yet sound outside this file (integrator, see the track report): a session allow for a tool
+//! name frees every later ask of that tool, these off-machine and secret asks included (needs a
+//! fixed ask in `run_tools`); `CrewTools` does not consult `consequence_in_sandbox` nor forward
+//! `call_scoped`/`middleware`, so crew runs have no secret asks on `write`/`edit` and no FileState.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1254,6 +1259,9 @@ impl ToolMiddleware for FileGuard {
     /// step (the user edited them between turns). The reminder goes in as its own message ahead
     /// of the user's, never into `text`: the user's words are what memory ingests at user trust.
     fn before_turn(&self, convo: &mut Conversation, _text: &mut String) -> TurnFlow {
+        if let Some(states) = convo.ext.get_mut::<FileStates>() {
+            states.begin_turn();
+        }
         if let Some(m) = self.reminder(convo) {
             convo.push(m);
         }
