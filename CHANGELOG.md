@@ -4,6 +4,50 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Context and hardware planner
+
+Matthew's rule: the user sets each model's maximum context up front; agents get that or less, never more; and the cost on this GPU is shown before anything loads.
+
+- **Added.** `marlowe-hw`, pure: a header-only GGUF reader (a 10 GiB blob's header in about 150 ms), the ggml type table, `ArchProfile` and the VRAM budget.
+  - `ArchProfile` gives layer roles (recurrent flags, `full_attention_interval`, per-layer `head_count_kv`, state tensors, MTP blocks), KV per token, sliding windows (the GGUF pattern or llama.cpp's per-architecture default), MLA, recurrent state (Mamba-1/2, Gated DeltaNet, RWKV, short conv), and where the weights sit (GPU, host embeddings, a tied copy, vision).
+  - The budget is `free + Σ runner dedicated − 1 GiB`. `fixed(c) + n·per_agent(c, kv)` is shared with the client as `PlanModel`, so the popup and the daemon do the same arithmetic. It also gives partial-offload layer counts and the decode slowdown (`W_gpu/BW_gpu + W_cpu/BW_ram`).
+  - `log` parses Ollama's `server.log`: the runner's argv, and every buffer per device per context. The planner is calibrated against it.
+- **Measured** with dusk-super loaded (32k, q8_0, 1 slot, MTP draft n=3). Each buffer of the runner log matches to 0.00%: main weights 10,019.96/397.85, KV 1,088.00, state 598.50 (×4 copies with the draft), and draft 774.71/128.00 MiB. The uncalibrated whole-runner prediction is 13,529.2 MiB, which is **+0.32%** against PDH's 13,485.7 MiB. Ollama's `/api/ps` says 1,631.2 MiB (**−87.9%**), so nothing reads its sizes. The measured driver overhead is 506.2 MiB. `cargo test -p marlowe --test context_live -- --ignored --nocapture` repeats this on whatever is loaded, and never loads anything.
+- **Added.** A context policy per model (`context_policy` and `hw_calibration` in `cowork.db`; removing a model removes its policy) and `Brains::context()`.
+  - `allowed_ctx` = `min(requested, max_ctx)`, with a property test that it never exceeds `max_ctx`.
+  - `slots` and `lease` provide per-model agent slots, released on drop, for the crew to call.
+  - `set_policy` refuses anything above the model's trained context, under 2,048, or with 0 or more than 16 agents.
+  - The conductor's window is the policy's. Every Ollama request for a model sends `num_ctx = max_ctx` through the shared `ContextAllocations`, a constant per model so the runner never reloads per agent, and the provider clamps anything above the model's maximum.
+  - Nothing is applied silently. Without a saved policy, requests keep the 32k default, and `a` in the popup fills in the automatic choice.
+- **Added.** Ollama runtime readers in `marlowe-provider::ollama_runtime`:
+  - the main and DRAFT GGUF headers from the store, falling back to `/api/show`;
+  - `/api/ps` for the model list and context, never sizes;
+  - the runner's `/slots`;
+  - the saved user environment, read with `reg query`.
+- **Added.** `marlowe-sentinel::vram::SentinelGpu`: NVML totals, per-runner dedicated and shared memory from the `GPU Process Memory` PDH counters (NVML reports N/A under WDDM), peak bandwidth (bus width × max memory clock × 2: 736 GB/s here), and system RAM.
+- **Added.** The server change: `OLLAMA_KV_CACHE_TYPE` / `OLLAMA_NUM_PARALLEL` / `OLLAMA_FLASH_ATTENTION` are set with `setx`, then the tray app is quit and relaunched. `ApplyOllamaServer` always raises an approval that offers only Allow and Deny. The approval says that every Ollama model is affected, and how many models and requests the restart stops. A Deny returns the manual steps. Tests use a recording fake.
+- **Added.** On the wire:
+  - requests `ContextPlan`, `ContextPolicies`, `SetContextPolicy` and `ApplyOllamaServer`;
+  - events `ContextPlan`, `ContextPolicies`, `ContextPolicySaved`, `ServerApplied`, and `ContextUsage`: one per model call, prompt plus output, out of the agent's window.
+- **Added.** The context meter, on the Model box's second row (the box is 4 rows; the board gives up one): `ctx ━━━━┊──── 12.4k / 32k · kv q8 · 1 slot`.
+  - The bar is accent up to the 70% compaction mark `┊`, amber to 90%, then red.
+  - It adds amber `57/65 on GPU` and `q4 pending`, and `not loaded` or `cloud`.
+  - When narrow it drops the bar, then the slot count, then the KV type.
+  - Hovering lights it; clicking opens the planner.
+- **Added.** The "Context & hardware" popup, opened from the meter, the model picker (`c`), the Library (`c`, or the new `window` column), and ^k "Context & hardware".
+  - It shows the GPU, the fixed load, the architecture with a layer strip (`┃` KV, `·` recurrent), the state per agent, KV per token for each type, and host RAM.
+  - A table gives per-agent cost and agents that fit at 8k–256k for f16, q8_0 and q4_0, with partial-offload layers and slowdown, or "does not fit".
+  - It shows the largest single agent, with and without the draft.
+  - ←/→ change the context, the KV type and the number of agents. A usage bar (`━` fixed, `╍` agents, `─` spare, red over the budget) and a one-line verdict follow every change.
+  - ↵ shows exactly what saving changes now and what waits for an Ollama restart. `s` saves; `r` saves and asks to restart.
+- **Known.** Still to verify on first use, each from the runner's log or `/slots` and never assumed:
+  - Ollama's `-c` value when `np > 1`;
+  - whether `prompt_eval_count` counts the cached part of the prompt (the meter uses per-call `input + output`);
+  - MLA V-cache and DSA indexer sizes (the MLA fixture is constructed, not log-validated);
+  - the vision compute buffer (an estimate until a load is measured).
+
+  The crew does not call `allowed_ctx`/`lease` yet; that wiring belongs to `marlowe-crew`. `--kv-unified` pooling and the local GGUF provider's per-model launch flags are v2.
+
 ### TUI polish after first use
 
 - **Fixed.** The Library with one model said nothing about what to do: the cursor now runs down the slots, the models and a new "+ add another model" row; the border hints name what ↵ does on the row (`effort medium → high`, `keep as conductor`, `add another model`); Esc, and Backspace where nothing is typed, go back one level in every view and picker; j/k move in plain lists.

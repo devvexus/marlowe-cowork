@@ -165,5 +165,9 @@ fn dispatch(core: &Arc<Core>, client: u64, client_name: &str, req: Request) {
         | Request::MergeRun { .. }
         | Request::DiscardRun { .. }
         | Request::ListRoles) => crate::crew_ops::dispatch(core, client, crew),
+        ctx @ (Request::ContextPlan { .. }
+        | Request::ContextPolicies
+        | Request::SetContextPolicy { .. }
+        | Request::ApplyOllamaServer { .. }) => crate::context_ops::dispatch(core, client, ctx),
     }
 }

@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod auth;
+mod context;
 mod crew;
 mod event;
 mod frame;
@@ -18,6 +19,11 @@ mod request;
 mod user;
 mod watch;
 
+pub use context::{
+    ctx_label, planned_changes, policy_label, server_change, ArchSummary, ChangeWhen, ContextPlan, ContextPolicy, Engine, EngineSettings, Fit, GpuBudget,
+    KvType, LayerRole, ModelContext, PlanModel, PlanRow, PlannedChange, PolicySource, RunnerSlot, MAX_AGENTS, MIN_CTX,
+    SERVER_RESTART_TOOL,
+};
 pub use crew::{
     Citation, Confidence, CrewBudget, CrewRunInfo, CrewRunStatus, CrewSpent, CrewStep, DiffSummary, Dispatch, Playbook,
     PlaybookParseError, RoleInfo, RunId, SandboxInfo, SandboxKind,

@@ -61,10 +61,10 @@ pub fn started_ms(_pid: u32) -> Option<i64> {
     None
 }
 
-/// The executable's file name (`python.exe`) for `pid`, when readable.
+/// The executable's full path for `pid`, when readable.
 #[cfg(windows)]
 #[allow(unsafe_code)]
-pub fn name(pid: u32) -> Option<String> {
+pub fn image_path(pid: u32) -> Option<String> {
     use windows::core::PWSTR;
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
@@ -80,10 +80,18 @@ pub fn name(pid: u32) -> Option<String> {
         let _ = CloseHandle(h);
         ok
     };
-    if !ok {
-        return None;
-    }
-    let path = String::from_utf16_lossy(&buf[..len as usize]);
+    ok.then(|| String::from_utf16_lossy(&buf[..len as usize])).filter(|p| !p.is_empty())
+}
+
+#[cfg(not(windows))]
+pub fn image_path(pid: u32) -> Option<String> {
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok().map(|p| p.display().to_string())
+}
+
+/// The executable's file name (`python.exe`) for `pid`, when readable.
+#[cfg(windows)]
+pub fn name(pid: u32) -> Option<String> {
+    let path = image_path(pid)?;
     path.rsplit(['\\', '/']).next().map(str::to_string).filter(|n| !n.is_empty())
 }
 

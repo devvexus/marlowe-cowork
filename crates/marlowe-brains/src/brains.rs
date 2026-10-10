@@ -15,11 +15,16 @@ use crate::library::Library;
 pub struct Brains {
     library: Mutex<Library>,
     factory: ProviderFactory,
+    pub(crate) ctx: crate::context::ContextState,
 }
 
 impl Brains {
+    /// Saved context policies go into the providers' allocations at once, so the first request
+    /// already uses each model's window.
     pub fn new(library: Library, factory: ProviderFactory) -> Self {
-        Self { library: Mutex::new(library), factory }
+        let b = Self { library: Mutex::new(library), factory, ctx: Default::default() };
+        b.sync_allocations();
+        b
     }
 
     /// Opens the library in `cowork_db`.
@@ -60,11 +65,16 @@ impl Brains {
             .find(|m| m.id == model_id)
             .unwrap_or_else(|| ModelInfo::bare(kind, model_id));
         let model = self.with_library(|l| l.add(&info))?;
+        self.forget_files();
         self.with_library(|l| l.get(&model))?.ok_or(BrainsError::UnknownModel(model))
     }
 
     pub fn remove_model(&self, model: &ModelRef) -> Result<(), BrainsError> {
         self.with_library(|l| l.remove(model))?;
+        self.forget_files();
+        if model.provider == ProviderKind::Ollama {
+            self.factory.allocations().remove(&model.model_id);
+        }
         Ok(())
     }
 
@@ -104,10 +114,20 @@ impl Brains {
         self.factory.provider(model.provider)
     }
 
-    /// Everything an agent needs for `slot`: provider, model info, effort.
+    /// Everything an agent needs for `slot`: provider, model info, effort. The info's window is
+    /// the context gate's (the policy's `max_ctx`, or less when the runner's slots are smaller),
+    /// so the agent compacts against it.
     pub fn agent_parts(&self, slot: &Slot) -> Result<(Arc<dyn Provider>, ModelInfo, Effort), BrainsError> {
         let (model, effort) = self.resolve(slot)?;
-        Ok((self.provider_for(&model)?, self.model_info(&model)?, effort))
+        let mut info = self.model_info(&model)?;
+        // A model with no known window and no policy keeps the agent's own default.
+        let saved = self.with_library(|l| l.policy(&model))?.is_some();
+        if saved || info.context_window.is_some() {
+            if let Ok(window) = self.context().allowed_ctx(&model, None) {
+                info.context_window = Some(window);
+            }
+        }
+        Ok((self.provider_for(&model)?, info, effort))
     }
 }
 

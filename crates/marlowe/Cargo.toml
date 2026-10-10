@@ -36,6 +36,10 @@ marlowe-contract.workspace = true
 marlowe-journal.workspace = true
 marlowe-memory.workspace = true
 
+[dev-dependencies]
+# tests/context_live.rs: the planner against the real store, runner log and GPU (ignored by default).
+marlowe-hw.workspace = true
+
 # SetHandleInformation for the detached daemon spawn (daemon_ctl.rs).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation"] }

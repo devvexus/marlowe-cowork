@@ -7,6 +7,7 @@ description = "Client <-> daemon wire protocol: JSON lines over loopback TCP wit
 
 [dependencies]
 marlowe-model.workspace = true
+marlowe-hw.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -364,6 +364,7 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
         None => Arc::new(NoMemory),
     };
     agent.approvals = Arc::new(Gate { core: core.clone(), cancel: cancel.clone() });
+    let window = agent.context.window_tokens;
 
     core.bus.publish(Event::TurnStarted { session: session.clone(), turn, model, user: text.to_string() });
     let before_len = convo.messages.len();
@@ -376,7 +377,7 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
                 steered.push(text.clone());
             }
         }
-        if let Some(e) = to_event(&session, turn, ev) {
+        if let Some(e) = to_event(&session, turn, window, ev) {
             core.bus.publish(e);
         }
     };
@@ -427,15 +428,19 @@ fn new_messages(convo: &Conversation, before_len: usize, before_summary: Option<
     }
 }
 
-fn to_event(session: &SessionId, turn: u32, ev: AgentEvent) -> Option<Event> {
+fn to_event(session: &SessionId, turn: u32, window: u32, ev: AgentEvent) -> Option<Event> {
     let session = session.clone();
     Some(match ev {
+        // One model call's prompt plus its output: what the context holds now.
+        AgentEvent::Usage(u) => Event::ContextUsage { session, turn, tokens: u.input + u.output, window },
+        // Compaction shrinks the context before the next call: the meter drops now, not then.
+        AgentEvent::Compacted { after_tokens, .. } => Event::ContextUsage { session, turn, tokens: u64::from(after_tokens), window },
         AgentEvent::TextDelta(text) => Event::TextDelta { session, turn, text },
         AgentEvent::ReasoningDelta { text, tokens } => Event::ReasoningDelta { session, turn, text, tokens },
         AgentEvent::TextRetracted { tokens } => Event::TextRetracted { session, turn, tokens },
         AgentEvent::ToolStarted { call_id, tool, summary } => Event::ToolStarted { session, turn, call_id, tool, summary },
         AgentEvent::ToolFinished { call_id, ok, summary } => Event::ToolFinished { session, turn, call_id, ok, summary },
-        AgentEvent::Usage(_) | AgentEvent::Compacted { .. } | AgentEvent::SteerApplied { .. } => return None,
+        AgentEvent::SteerApplied { .. } => return None,
     })
 }
 

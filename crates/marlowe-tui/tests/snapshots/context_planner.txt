@@ -1,0 +1,40 @@
+ * marlowe — kv planning                                                                                                0 runs · 0 need you
+╭ Conversation · kv planning ────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ marlowe-dusk:27b-super ▾        medium │
+│                                                                                                ││ ctx 12.4k / 32k · kv q8 · 1 slot       │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
+│                 ╭─ Context & hardware · marlowe-dusk:27b-super ────────────────────────────────────────────────── esc ─╮─────────────────╮
+│                 │ GPU    RTX 4080 SUPER 16.0 GiB · other apps 1.3 · free for Marlowe 14.7 · keep 1.0                   │                 │
+│                 │ Load   weights 9.8 (IQ3_XXS 27.3B) · draft MTP 0.8 · compute 0.4 · driver 0.5 = 11.4 fixed           │─────────── (w) ─╯
+│                 │ Arch   64 layers, 16 keep a KV cache, 48 Gated DeltaNet, 1 MTP                                       │─────────────────╮
+│                 │        ···┃···┃···┃···┃···┃···┃···┃···┃···┃···┃···┃···┃···┃···┃···┃···┃ +MTP                         │                 │
+│                 │ State  150 MiB per agent, fixed at any context (Gated DeltaNet); ×4 with the draft = 598 MiB         │─────────── (1) ─╯
+│                 │ KV     per token  f16 64 KiB · q8_0 34 KiB · q4_0 18 KiB  (+ draft 4 KiB f16)                        │─────────────────╮
+│                 │ RAM    pinned 1.0 · checkpoints ≤4.7 · prompt cache ≤8.0 · 12.0 of 31.2 GiB free                     │                 │
+│                 │                                                                                                      │                 │
+│                 │    context   per agent (q8_0)    f16  q8_0  q4_0   ← agents that fit                                 │                 │
+│                 │         8k   0.9 GiB               2     2     3                                                     │                 │
+│                 │        16k   1.2 GiB               1     1     2                                                     │                 │
+│                a│ ›      32k   1.8 GiB               –     1     1                                                     │                 │
+│                 │        64k   3.0 GiB               –     –     1   partial offload · 62/66 on GPU · ~2× slower       │                 │
+│                 │       128k   5.3 GiB               –     –     –   partial offload · 51/66 on GPU · ~3× slower       │                 │
+│                 │       256k   10.1 GiB              –     –     –   does not fit                                      │                 │
+│                 │   max one agent: 45k (q8_0) · 77k (q4_0) · without the draft: 89k · 165k                             │                 │
+│                 │                                                                                                      │                 │
+│                 │ max context ◂ 32k ▸   kv ◂ q8_0 ▸   agents at once ◂ 1 ▸ (you + crew)   a auto                       │                 │
+│                 │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╍╍╍╍╍╍──  13.2 of 13.7 GiB · 0.5 spare                       │                 │
+│                 │ Loads fully on the GPU with 2.3 GiB for agents: one at 45k, two at 15k, or three at 5k (q8_0). This  │                 │
+│                 │ setting leaves 0.5 GiB spare.                                                                        │                 │
+│                 │                                                                                                      │                 │
+│                 │ ↵ review changes   ←→ adjust · ↑↓ context · tab field · esc close                                    │                 │
+│                 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯                 │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                                                                                                │╭ Threads ───────────────────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  alt-v Voice  ^k palette                     21:40

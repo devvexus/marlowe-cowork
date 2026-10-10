@@ -36,6 +36,8 @@ members = [
     # (`marlowe-typeset.exe`), which `marlowe.exe` starts lazily and never links.
     "crates/marlowe-typeset",
     "crates/marlowe-typeset-helper",
+    # M4.5: context and hardware planner (GGUF header, KV/state maths, VRAM budget).
+    "crates/marlowe-hw",
 ]
 # Reference sources only; never built.
 exclude = ["legacy"]
@@ -71,6 +73,7 @@ marlowe-voice = { path = "crates/marlowe-voice" }
 marlowe-os = { path = "crates/marlowe-os" }
 marlowe-crew = { path = "crates/marlowe-crew" }
 marlowe-typeset = { path = "crates/marlowe-typeset" }
+marlowe-hw = { path = "crates/marlowe-hw" }
 
 # Terminal. crossterm, not termion: Windows is the primary platform.
 ratatui = "0.30"
@@ -117,6 +120,8 @@ windows = { version = "=0.62.2", features = [
     "Media_SpeechSynthesis",
     "Storage_Streams",
     "Win32_Foundation",
+    "Win32_System_Performance",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ] }
 

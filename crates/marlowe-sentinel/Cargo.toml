@@ -7,6 +7,7 @@ description = "Read-only watchers (runs, logs, metrics, git, Ollama, GPU), notic
 
 [dependencies]
 marlowe-proto.workspace = true
+marlowe-hw.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

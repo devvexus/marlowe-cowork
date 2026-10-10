@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use marlowe_model::{Provider, ProviderError, ProviderKind};
+use marlowe_hw::{GpuSource, ModelSource, ServerControl};
+use marlowe_model::{ContextAllocations, Provider, ProviderError, ProviderKind};
 
 use crate::credentials::{api_key, CredentialStore};
 use crate::error::BrainsError;
@@ -16,6 +17,8 @@ pub struct ProviderConfig {
     pub api_key: Option<String>,
     /// Override of the provider's default endpoint (tests, remote Ollama).
     pub base_url: Option<String>,
+    /// Per-model context windows from the context policies (local providers send them).
+    pub context: ContextAllocations,
 }
 
 impl fmt::Debug for ProviderConfig {
@@ -32,12 +35,22 @@ impl fmt::Debug for ProviderConfig {
 pub type ProviderCtor =
     Box<dyn Fn(&ProviderConfig) -> Result<Arc<dyn Provider>, ProviderError> + Send + Sync>;
 
+/// What the context planner reads and the one thing it may change, injected by the binary.
+#[derive(Clone)]
+pub struct Hardware {
+    pub models: Arc<dyn ModelSource>,
+    pub gpu: Arc<dyn GpuSource>,
+    pub server: Arc<dyn ServerControl>,
+}
+
 /// Registered constructors plus a cache of live providers.
 pub struct ProviderFactory {
     ctors: HashMap<ProviderKind, ProviderCtor>,
     base_urls: HashMap<ProviderKind, String>,
     credentials: Arc<dyn CredentialStore>,
     cache: Mutex<HashMap<ProviderKind, Arc<dyn Provider>>>,
+    context: ContextAllocations,
+    hardware: Option<Hardware>,
 }
 
 impl ProviderFactory {
@@ -47,7 +60,24 @@ impl ProviderFactory {
             base_urls: HashMap::new(),
             credentials,
             cache: Mutex::new(HashMap::new()),
+            context: ContextAllocations::new(),
+            hardware: None,
         }
+    }
+
+    /// The context planner's sources (Ollama's store and logs, the GPU, the server control).
+    /// Without them the planner reports models as unmeasured.
+    pub fn set_hardware(&mut self, hw: Hardware) {
+        self.hardware = Some(hw);
+    }
+
+    pub fn hardware(&self) -> Option<&Hardware> {
+        self.hardware.as_ref()
+    }
+
+    /// The per-model context windows every provider built here shares.
+    pub fn allocations(&self) -> &ContextAllocations {
+        &self.context
     }
 
     /// Registers the constructor for `kind` (called by the binary).
@@ -88,6 +118,7 @@ impl ProviderFactory {
             kind,
             api_key: api_key(kind, self.credentials.as_ref()),
             base_url: self.base_urls.get(&kind).cloned(),
+            context: self.context.clone(),
         };
         let p = ctor(&cfg)?;
         cache.insert(kind, p.clone());

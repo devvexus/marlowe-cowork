@@ -23,3 +23,7 @@ serde_json.workspace = true
 chrono.workspace = true
 # Display widths for wrapping (already in the lock via ratatui).
 unicode-width = "0.2.2"
+
+[dev-dependencies]
+# The planner tests build a real plan from the GGUF-header fixtures marlowe-hw keeps.
+marlowe-hw.workspace = true

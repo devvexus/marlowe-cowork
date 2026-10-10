@@ -23,7 +23,9 @@ const SEARCH_MODEL_ENV: &str = "MARLOWE_SEARCH_MODEL";
 const SEARCH_TOOL: &str = "openrouter:web_search";
 
 fn make_ollama(cfg: &ProviderConfig) -> Result<Arc<dyn Provider>, ProviderError> {
-    let p = marlowe_provider::OllamaProvider::from_base_url(cfg.base_url.as_deref())?;
+    // Every request for a model sends that model's context policy window (one allocation per
+    // model), so Ollama never reloads a runner because two agents asked for different sizes.
+    let p = marlowe_provider::OllamaProvider::from_base_url(cfg.base_url.as_deref())?.with_allocations(cfg.context.clone());
     Ok(Arc::new(p))
 }
 
@@ -37,9 +39,23 @@ pub fn provider_factory(credentials: Arc<dyn CredentialStore>) -> ProviderFactor
     let mut f = ProviderFactory::new(credentials);
     f.register(ProviderKind::Ollama, make_ollama);
     f.register(ProviderKind::OpenRouter, make_openrouter);
-    if let Ok(url) = std::env::var("MARLOWE_OLLAMA_ADDR") {
-        f.set_base_url(ProviderKind::Ollama, url);
+    let ollama_url = std::env::var("MARLOWE_OLLAMA_ADDR").ok();
+    if let Some(url) = &ollama_url {
+        f.set_base_url(ProviderKind::Ollama, url.clone());
     }
+    // The context planner reads Ollama's store, its runner log and the GPU; it changes nothing
+    // but the server settings, and only after an approval.
+    let endpoint = ollama_url
+        .as_deref()
+        .and_then(marlowe_provider::LocalEndpoint::parse)
+        .unwrap_or_else(marlowe_provider::LocalEndpoint::default_ollama);
+    f.set_hardware(marlowe_brains::Hardware {
+        models: Arc::new(marlowe_provider::OllamaHw::new(endpoint.clone())),
+        gpu: Arc::new(marlowe_sentinel::vram::SentinelGpu::open()),
+        server: Arc::new(
+            marlowe_provider::OllamaServerControl::new(endpoint).with_scrub(marlowe_brains::scrubbed_env().iter().copied()),
+        ),
+    });
     #[cfg(debug_assertions)]
     crate::scripted::install(&mut f);
     f
