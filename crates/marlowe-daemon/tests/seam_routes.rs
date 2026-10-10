@@ -13,7 +13,6 @@ use marlowe_daemon::{Daemon, DaemonConfig, DaemonDeps};
 use marlowe_model::ToolSpec;
 use marlowe_proto::{
     write_line, Envelope, Event, ExportFormat, LineReader, PermissionMode, Request, RewindScope, RunId, SessionId,
-    SettingsScope,
 };
 
 struct NoTools;
@@ -72,7 +71,6 @@ fn every_m46_request_reaches_its_tracks_stub() {
         (Request::ExportSession { session: s(), format: ExportFormat::Json }, "export_session", "F2"),
         (Request::OpenPr { run: RunId("r".into()), title: None, body: None }, "open_pr", "J"),
         (Request::ListExperiments { limit: 5 }, "list_experiments", "J2"),
-        (Request::McpRemove { name: "x".into(), scope: SettingsScope::User, workspace: None }, "mcp_remove", "K"),
         (Request::PutBlob { mime: "image/png".into(), base64: "iVBORw0KGgo=".into() }, "put_blob", "G"),
         (Request::ListJobs { session: None }, "list_jobs", "B"),
         (Request::UserShell { session: s(), command: "git status".into() }, "user_shell", "B"),

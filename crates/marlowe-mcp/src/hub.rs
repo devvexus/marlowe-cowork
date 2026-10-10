@@ -118,6 +118,12 @@ pub struct ExposedTool {
 }
 
 impl ExposedTool {
+    /// Whether a call needs the user's approval: the server's declared consequence is external
+    /// writes or worse (the default).
+    pub fn asks(&self) -> bool {
+        self.consequence >= ConsequenceLevel::Consequential
+    }
+
     fn entry(&self) -> Entry {
         Entry {
             exposed: self.exposed.clone(),
@@ -149,6 +155,8 @@ pub struct ToolOutput {
 
 pub struct Hub {
     opts: HubOpts,
+    /// `--mcp-config` entries and servers added for this run only; replaced by [`Hub::set_session`].
+    session: Mutex<Vec<ServerConfig>>,
     slots: Mutex<Vec<Arc<Slot>>>,
     problems: Mutex<Vec<String>>,
 }
@@ -156,7 +164,8 @@ pub struct Hub {
 impl Hub {
     /// Loads the configuration and starts connecting. Returns at once.
     pub fn start(opts: HubOpts) -> Arc<Hub> {
-        let hub = Arc::new(Hub { opts, slots: Mutex::new(Vec::new()), problems: Mutex::new(Vec::new()) });
+        let session = Mutex::new(opts.session.clone());
+        let hub = Arc::new(Hub { opts, session, slots: Mutex::new(Vec::new()), problems: Mutex::new(Vec::new()) });
         hub.reload();
         hub
     }
@@ -169,10 +178,11 @@ impl Hub {
     /// connecting) are kept; everything else is replaced, so a retry after `marlowe mcp auth` or
     /// `trust` is just a reload.
     pub fn reload(self: &Arc<Self>) {
+        let session = lock(&self.session).clone();
         let loaded: Loaded = if self.opts.strict {
-            Loaded { servers: self.opts.session.clone(), problems: Vec::new() }
+            Loaded { servers: session, problems: Vec::new() }
         } else {
-            config::load_all(&self.opts.paths, &self.opts.session)
+            config::load_all(&self.opts.paths, &session)
         };
         *lock(&self.problems) = loaded.problems;
         let mut slots = lock(&self.slots);
@@ -204,6 +214,15 @@ impl Hub {
         *slots = fresh;
         // Servers dropped from the list close with their last Arc.
         drop(old);
+    }
+
+    /// Replaces the run-only servers; takes effect at the next [`Hub::reload`].
+    pub fn set_session(&self, servers: Vec<ServerConfig>) {
+        *lock(&self.session) = servers;
+    }
+
+    pub fn session_servers(&self) -> Vec<ServerConfig> {
+        lock(&self.session).clone()
     }
 
     /// Configuration problems found by the last load (a bad entry, a broken file).
@@ -362,10 +381,11 @@ impl Hub {
             };
             let held = lock(&slot.withheld).clone();
             for t in tools.into_iter().filter(|t| !held.contains(&t.name)) {
-                let mut exposed = names::exposed(&slot.cfg.name, &t.name);
+                let base = names::exposed(&slot.cfg.name, &t.name);
+                let mut exposed = base.clone();
                 let mut n = 2;
                 while out.contains_key(&exposed) {
-                    exposed = format!("{}_{n}", &names::exposed(&slot.cfg.name, &t.name)[..names::exposed(&slot.cfg.name, &t.name).len().min(names::MAX_NAME - 3)]);
+                    exposed = format!("{}_{n}", &base[..base.len().min(names::MAX_NAME - 3)]);
                     n += 1;
                 }
                 let consequence = slot.cfg.tool_consequences.get(&t.name).copied().unwrap_or(slot.cfg.consequence);

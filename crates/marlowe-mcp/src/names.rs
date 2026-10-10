@@ -6,6 +6,14 @@ use crate::util::sha256_hex;
 pub const PREFIX: &str = "mcp__";
 pub const MAX_NAME: usize = 64;
 
+/// Tools the MCP host serves besides `mcp__<server>__<tool>`. The first three are model-visible;
+/// the prompt tools are for the conductor's own commands and are callable but not listed.
+pub const TOOL_SEARCH: &str = "tool_search";
+pub const LIST_RESOURCES: &str = "list_mcp_resources";
+pub const READ_RESOURCE: &str = "read_mcp_resource";
+pub const LIST_PROMPTS: &str = "mcp_list_prompts";
+pub const GET_PROMPT: &str = "mcp_get_prompt";
+
 pub fn is_mcp(name: &str) -> bool {
     name.starts_with(PREFIX)
 }
