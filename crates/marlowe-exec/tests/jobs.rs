@@ -318,6 +318,64 @@ fn parity_t16_job_watch_reports_lines_until_the_pattern_appears() {
 }
 
 #[test]
+fn parity_t16_a_line_printed_before_job_watch_still_matches() {
+    let rig = Rig::new("t16d");
+    // The usual order: the server prints "ready" within a second, the model watches a step later.
+    let o = rig.run("c1", "bash", json!({"command": "echo boot; echo INFO ready on 8080; printf 'half a li'; sleep 30", "run_in_background": true}));
+    let id = job_id(&o);
+    wait_for("the ready line", Duration::from_secs(20), || {
+        rig.run("c0", "job_output", json!({"id": id, "since": 0})).content.contains("ready on 8080")
+    });
+    let w = rig.run("c2", "job_watch", json!({"id": id, "until_regex": "ready on \\d+"}));
+    assert!(!w.is_error && w.content.contains("already matched") && w.content.contains("INFO ready on 8080"), "{}", w.content);
+    assert!(w.content.contains("no watch was started"), "{}", w.content);
+    // Nothing was installed, so no notice follows.
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(hub_notices(&rig.session).is_empty());
+    // A pattern that has not printed yet installs a watch.
+    let w2 = rig.run("c3", "job_watch", json!({"id": id, "until_regex": "never printed"}));
+    assert!(!w2.is_error && w2.content.contains("watching job"), "{}", w2.content);
+    let k = rig.run("c4", "job_kill", json!({"id": id}));
+    assert!(!k.is_error, "{}", k.content);
+}
+
+#[test]
+fn a_watch_started_mid_line_sees_the_whole_next_line() {
+    let rig = Rig::new("t16e");
+    let marker = rig.ws.path("go.txt");
+    let cmd = format!("printf 'half a li'; while [ ! -e '{}' ]; do sleep 0.1; done; echo 'ne done'; sleep 30", posix(&marker));
+    let o = rig.run("c1", "bash", json!({"command": cmd, "run_in_background": true}));
+    let id = job_id(&o);
+    wait_for("the fragment", Duration::from_secs(20), || {
+        rig.run("c0", "job_output", json!({"id": id, "since": 0})).content.contains("half a li")
+    });
+    let w = rig.run("c2", "job_watch", json!({"id": id, "until_regex": "^half a line done$"}));
+    assert!(!w.is_error && w.content.contains("watching job"), "{}", w.content);
+    std::fs::write(&marker, "go").unwrap();
+    wait_for("the match", Duration::from_secs(20), || bg_hub().waking_sessions().contains(&rig.session));
+    let all = hub_notices(&rig.session).iter().map(|n| n.text.clone()).collect::<Vec<_>>().join("
+");
+    assert!(all.contains("half a line done"), "{all}");
+    rig.run("c3", "job_kill", json!({"id": id}));
+}
+
+#[test]
+fn parity_t32_a_flood_of_output_is_summarised_from_a_bounded_window() {
+    let rig = Rig::new("t32flood");
+    // About 20 MB of progress lines with one failure far from both ends.
+    let script = "echo 'starting'; seq 1 1200000 | sed 's/^/compiling unit /'; echo 'error[E0599]: no method named `x`'; \
+                  echo '  --> src/main.rs:7:9'; seq 1 1200000 | sed 's/^/linking object /'; echo 'build failed'; exit 1";
+    let o = rig.run("c1", "bash", json!({"command": script}));
+    assert!(o.is_error && o.summary == "exit 1", "{}", o.summary);
+    assert!(o.content.len() <= 30_000 + 600, "{} bytes", o.content.len());
+    assert!(o.content.contains("error[E0599]") && o.content.contains("src/main.rs:7:9"), "the failure in the middle was lost");
+    assert!(o.content.contains("starting") && o.content.contains("build failed") && o.content.contains("[exit 1]"));
+    let (log, lines) = pointer_of(&o.content);
+    assert_eq!(lines, 2_400_004, "the pointer counts the whole log, not the window");
+    assert!(std::fs::metadata(log).unwrap().len() > 20 << 20);
+}
+
+#[test]
 fn parity_t17_job_kill_takes_the_whole_tree() {
     let rig = Rig::new("t17");
     let marker = rig.ws.path("grandchild.txt");
@@ -611,4 +669,22 @@ fn the_user_bang_shell_works_in_a_session_that_has_run_no_turn() {
     assert_eq!(bg_hub().running(session), 1, "a running `!` command keeps its session from idling out");
     assert!(bg_hub().kill(&long));
     drop(tools);
+}
+
+#[test]
+fn two_unclaimed_hosts_in_one_workspace_are_not_guessed_between() {
+    use marlowe_exec::specs::{configure, HostSetup};
+    let home = Ws::new("amb-home");
+    let ws = Ws::new("amb-ws");
+    let setup = HostSetup { home: &home.root, workspace: Some(&ws.root) };
+    let first = configure(ws.tools(), &setup);
+    let second = configure(ws.tools(), &setup);
+    let root = ws.root.to_string_lossy().to_string();
+    // Another session's host built but not used yet looks the same as this session's own.
+    assert!(!bg_hub().claim("amb-session", Some(&root)), "which of two hosts is not known");
+    assert!(!bg_hub().serves("amb-session"));
+    drop(second);
+    assert!(bg_hub().claim("amb-session", Some(&root)), "the one left is the only candidate");
+    assert!(bg_hub().serves("amb-session"));
+    drop(first);
 }

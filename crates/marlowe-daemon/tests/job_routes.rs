@@ -69,6 +69,9 @@ impl BgOwner for Idle {
             Serves::No
         }
     }
+    fn bg_claimable(&self, workspace: Option<&str>) -> bool {
+        workspace.is_none() && self.served.lock().unwrap().is_empty()
+    }
     fn bg_claim(&self, session: &str, workspace: Option<&str>) -> bool {
         let mut served = self.served.lock().unwrap();
         if workspace.is_none() && served.is_empty() {

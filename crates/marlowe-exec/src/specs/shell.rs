@@ -76,6 +76,8 @@ struct OutputOpts {
     log: Option<std::path::PathBuf>,
     /// Where to write a log when the run has none and the output was cut.
     spill: Option<Arc<HostJobs>>,
+    /// The run's text is a condensed form of a big log; this is the log's true line count.
+    total_lines: Option<usize>,
 }
 
 /// Runs a bash, powershell or python call through the host's workspace port: to completion, in
@@ -176,7 +178,7 @@ fn foreground_outcome(
     limits: ShellLimits,
     raw: bool,
 ) -> ToolOutcome {
-    let FgRun { end, code, text, log, job, leftover } = fg;
+    let FgRun { end, code, text, total_lines, log, job, leftover } = fg;
     let mut run = ShellRun {
         code,
         text,
@@ -189,7 +191,7 @@ fn foreground_outcome(
     if end == FgEnd::Detached {
         let body = summarize::summarize(&summarize::clean(&run.text), false, 8_000);
         let shown = if body.text.is_empty() { "(no output yet)".to_string() } else { body.text };
-        let lines = run.text.lines().count();
+        let lines = total_lines.unwrap_or_else(|| run.text.lines().count());
         return ToolOutcome::ok(
             format!(
                 "[moved to the background by the user as job {job}: `{display}`. It keeps running and you will be told when it \
@@ -199,7 +201,7 @@ fn foreground_outcome(
             format!("detached · {job}"),
         );
     }
-    shell_outcome(run, limits, OutputOpts { raw, log: Some(log), spill: Some(Arc::clone(jobs)) })
+    shell_outcome(run, limits, OutputOpts { raw, log: Some(log), spill: Some(Arc::clone(jobs)), total_lines })
 }
 
 /// The pre-job path: `Workspace::exec` to completion (no detach, no live log).
@@ -217,7 +219,7 @@ fn run_to_completion(
         Ok(out) => {
             let mut run = ShellRun::from_exec(out);
             tools.held.settle(&mut run, tools.leftovers);
-            shell_outcome(run, limits, OutputOpts { raw, log: None, spill: Some(Arc::clone(jobs)) })
+            shell_outcome(run, limits, OutputOpts { raw, log: None, spill: Some(Arc::clone(jobs)), total_lines: None })
         }
     }
 }
@@ -234,10 +236,12 @@ fn shell_outcome(run: ShellRun, limits: ShellLimits, opts: OutputOpts) -> ToolOu
         summarize::summarize(&cleaned, failed, summarize::BUDGET)
     };
     let mut out = if cleaned.trim().is_empty() { "(no output)".to_string() } else { shown.text };
-    if shown.cut {
+    let total_lines = opts.total_lines.unwrap_or(shown.total_lines);
+    // A condensed log has had lines left out whatever the summary kept of it.
+    if shown.cut || opts.total_lines.is_some() {
         let log = opts.log.clone().or_else(|| opts.spill.as_ref().and_then(|j| j.spill_log(&run.text)));
         match log {
-            Some(path) => out.push_str(&format!("\n{}", summarize::pointer(&path, shown.total_lines))),
+            Some(path) => out.push_str(&format!("\n{}", summarize::pointer(&path, total_lines))),
             None => out.push_str("\n[the rest of the output was not kept]"),
         }
     } else if let Some(path) = &opts.log {
@@ -266,7 +270,7 @@ fn shell_outcome(run: ShellRun, limits: ShellLimits, opts: OutputOpts) -> ToolOu
         out.push_str(&format!("\n[exit {}]", run.code));
         summary = format!("exit {}", run.code);
     } else {
-        summary = format!("{} lines", run.text.lines().count());
+        summary = format!("{} lines", opts.total_lines.unwrap_or_else(|| run.text.lines().count()));
     }
     ToolOutcome { content: out, is_error: failed, summary, parts: Vec::new() }
 }

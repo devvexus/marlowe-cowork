@@ -310,5 +310,8 @@ pub fn pointer(path: &std::path::Path, total_lines: usize) -> String {
     format!("[full output: {}, {} lines]", path.display().to_string().replace('\\', "/"), total_lines)
 }
 
+mod window;
+pub use window::{condense, Condensed, WHOLE};
+
 #[cfg(test)]
 mod tests;

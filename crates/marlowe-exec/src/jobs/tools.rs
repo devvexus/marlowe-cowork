@@ -47,8 +47,10 @@ pub(crate) enum FgEnd {
 pub(crate) struct FgRun {
     pub end: FgEnd,
     pub code: i32,
-    /// The job's output so far, raw.
+    /// The job's output so far: raw, or (a big log) condensed to its head, tail and failure
+    /// blocks with `total_lines` giving the true line count.
     pub text: String,
+    pub total_lines: Option<usize>,
     pub log: std::path::PathBuf,
     pub job: String,
     /// Processes the command left running (settled by the caller per the host's policy).
@@ -106,7 +108,8 @@ pub(crate) fn run_foreground(
         job.kill();
     }
     let code = if end == FgEnd::Detached { -1 } else { job.wait_exit(Duration::from_secs(5)).unwrap_or(-1) };
-    let text = String::from_utf8_lossy(&job.read_all()).into_owned();
+    let failed = code != 0 || end != FgEnd::Exited;
+    let (text, total_lines) = job.summary_source(failed);
     let leftover = match end {
         FgEnd::Exited => job.take_proc().and_then(|p| p.into_leftover()),
         _ => None,
@@ -114,7 +117,7 @@ pub(crate) fn run_foreground(
     if end != FgEnd::Detached {
         jobs.remove(&job.id);
     }
-    Ok(FgRun { end, code, text, log: job.log.clone(), job: job.id.clone(), leftover })
+    Ok(FgRun { end, code, text, total_lines, log: job.log.clone(), job: job.id.clone(), leftover })
 }
 
 /// Starts the command as a background job and answers at once with its id.
@@ -152,7 +155,8 @@ pub(crate) fn run_background(
     match job.exit_code() {
         Some(code) => {
             jobs.forget_notices(id);
-            let out = summarize::clean(&String::from_utf8_lossy(&job.read_all()));
+            let (raw, _) = job.summary_source(code != 0);
+            let out = summarize::clean(&raw);
             let body = summarize::summarize(&out, code != 0, 3_000);
             text.push_str(&format!("it has already exited with code {code}:\n{}", if body.text.is_empty() { "(no output)" } else { &body.text }));
             return Ok(ToolOutcome { content: text, is_error: code != 0, summary: format!("{id} · exit {code}"), parts: Vec::new() });
@@ -314,7 +318,16 @@ pub fn job_watch(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcom
         return ToolOutcome::error(format!("job_watch cannot work here: {NO_NOTICES} {{\"id\":\"{}\"}}", job.id));
     }
     let until_src = until.as_ref().map(|(_, s)| s.clone()).unwrap_or_default();
-    job.watch(filter.map(|(r, _)| r), until.map(|(r, _)| r), until_src.clone(), true);
+    if let Some(line) = job.watch(filter.map(|(r, _)| r), until.map(|(r, _)| r), until_src.clone(), true) {
+        return ToolOutcome::ok(
+            format!(
+                "already matched /{until_src}/ in output you have not read: {line}
+no watch was started; job {} is still running.",
+                job.id
+            ),
+            format!("{} matched", job.id),
+        );
+    }
     let what = match (until_src.is_empty(), str_arg(args, "filter").filter(|f| !f.is_empty())) {
         (false, Some(f)) => format!("lines matching /{f}/, until a line matches /{until_src}/"),
         (false, None) => format!("every line, until one matches /{until_src}/"),

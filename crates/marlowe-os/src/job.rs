@@ -384,8 +384,14 @@ pub trait BgOwner: Send + Sync {
     fn bg_take(&self, session: &str) -> Vec<BgNotice>;
     /// Whether this table serves `session` (see [`Serves`]).
     fn bg_serves(&self, session: &str) -> Serves;
-    /// A table that has served no session and runs commands in `workspace` takes `session` as its
-    /// own (a session that has not run a turn yet, whose runner has just built this host).
+    /// Whether this table has served no session and runs commands in `workspace`: a candidate for
+    /// [`BgOwner::bg_claim`].
+    fn bg_claimable(&self, _workspace: Option<&str>) -> bool {
+        false
+    }
+    /// Takes `session` as the table's own when it is still a candidate (see
+    /// [`BgOwner::bg_claimable`]): a session that has not run a turn yet, whose runner has just
+    /// built this host.
     fn bg_claim(&self, _session: &str, _workspace: Option<&str>) -> bool {
         false
     }
@@ -475,10 +481,20 @@ impl BgHub {
     }
 
     /// Gives a session that no table serves yet to the idle table that runs commands in
-    /// `workspace`; true when some table serves it afterwards.
+    /// `workspace`; true when some table serves it afterwards. Only when exactly one table
+    /// qualifies: with several (another session's host built but not yet used) nothing says which
+    /// one belongs to `session`, and the wrong one would run the command out of the session's
+    /// sight, so it stays unclaimed until the host binds its session when it is built.
     pub fn claim(&self, session: &str, workspace: Option<&str>) -> bool {
         let owners = self.live();
-        owners.iter().any(|o| o.bg_serves(session) == Serves::Yes) || owners.iter().any(|o| o.bg_claim(session, workspace))
+        if owners.iter().any(|o| o.bg_serves(session) == Serves::Yes) {
+            return true;
+        }
+        let mut candidates = owners.iter().filter(|o| o.bg_claimable(workspace));
+        match (candidates.next(), candidates.next()) {
+            (Some(only), None) => only.bg_claim(session, workspace),
+            _ => false,
+        }
     }
 
     /// Runs the user's `!` command for `session`; the job id, or why not. Only a table that serves

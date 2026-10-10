@@ -49,7 +49,7 @@ pub use tools::{job_kill, job_output, job_watch};
 pub(crate) const BG_LOG_CAP: u64 = 256 << 20;
 
 /// Most of a log an exit notice reads: the end of it, where failures print.
-const SUMMARY_WINDOW: usize = 64 << 20;
+const SUMMARY_WINDOW: usize = 2 << 20;
 
 /// The folder in a crew sandbox that holds its job logs.
 const SANDBOX_LOGS: &str = ".marlowe-jobs";
@@ -140,6 +140,9 @@ struct Watch {
 
 /// Lines kept for one watch between hand-overs to the model.
 const WATCH_LINES: usize = 400;
+
+/// Most unseen log a new watch looks back over for a line that already matches.
+const WATCH_SCAN: u64 = 8 << 20;
 
 struct St {
     file: Option<File>,
@@ -253,9 +256,18 @@ impl Job {
         read_range(&self.log, from, max)
     }
 
-    /// The whole log (capped at 64 MiB).
-    pub(crate) fn read_all(&self) -> Vec<u8> {
-        self.read_range(0, 64 << 20)
+    /// The log as a summary reads it: the raw text when it is small, else the condensed text
+    /// (head, tail and failure blocks, already cleaned) and the true line count. Memory stays
+    /// bounded by a few MiB whatever the log's size (the log holds up to its cap on disk).
+    pub(crate) fn summary_source(&self, failed: bool) -> (String, Option<usize>) {
+        let len = std::fs::metadata(&self.log).map(|m| m.len()).unwrap_or(0);
+        if len <= summarize::WHOLE {
+            return (String::from_utf8_lossy(&self.read_range(0, summarize::WHOLE as usize)).into_owned(), None);
+        }
+        match summarize::condense(&self.log, failed) {
+            Some(c) => (c.text, Some(c.total_lines)),
+            None => (String::new(), None),
+        }
     }
 
     /// The last `max` bytes of the log (from a line start when that cuts one), and how many bytes
@@ -498,11 +510,33 @@ impl Job {
         }
     }
 
-    /// Starts following the job's output (replaces any earlier watch).
-    pub(crate) fn watch(&self, filter: Option<Regex>, until: Option<Regex>, until_src: String, notify: bool) {
+    /// Starts following the job's output (replaces any earlier watch). Output the model has not
+    /// seen yet (from the cursor) is checked first: when a line of it already matches `until`
+    /// that line is returned and no watch is installed. Otherwise the half line the log ends on
+    /// is carried over so the first live line is whole.
+    pub(crate) fn watch(&self, filter: Option<Regex>, until: Option<Regex>, until_src: String, notify: bool) -> Option<String> {
         let mut st = lock(&self.st);
-        st.partial.clear();
+        let len = st.len;
+        let from = st.cursor.min(len).max(len.saturating_sub(WATCH_SCAN));
+        // Under the lock: the reader threads write the log and count it with the lock held.
+        let seen = read_range(&self.log, from, (len - from) as usize);
+        let line_start = seen.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+        if let (Some(u), true) = (until.as_ref(), line_start > 0) {
+            for raw in seen[..line_start - 1].split(|b| *b == b'\n') {
+                let line = summarize::clean(&String::from_utf8_lossy(raw));
+                if filter.as_ref().is_some_and(|f| !f.is_match(&line)) {
+                    continue;
+                }
+                if u.is_match(&line) {
+                    return Some(line);
+                }
+            }
+        }
+        // When the scan began inside a line, the fragment is not a line start; with no newline
+        // seen the log is one unfinished line from `from` on.
+        st.partial = seen[line_start..].to_vec();
         st.watch = Some(Watch { filter, until, until_src, notify, buf: Vec::new(), dropped: 0 });
+        None
     }
 }
 
@@ -880,22 +914,16 @@ impl BgOwner for HostJobs {
         }
     }
 
+    fn bg_claimable(&self, workspace: Option<&str>) -> bool {
+        self.unclaimed_in(workspace) && lock(&self.sessions).is_empty()
+    }
+
     fn bg_claim(&self, session: &str, workspace: Option<&str>) -> bool {
-        let bound = lock(&self.bound);
-        // A crew host (a pinned sandbox) never serves a user session.
-        let Some(b) = bound.as_ref().filter(|b| b.shell_dir.is_none() && b.leftovers == Leftovers::Release) else {
+        if !self.unclaimed_in(workspace) {
             return false;
-        };
-        let same = match (b.root.as_deref(), workspace) {
-            (None, None) => true,
-            (Some(root), Some(ws)) => {
-                let ws = Path::new(ws);
-                crate::paths::inside(root, ws) && crate::paths::inside(ws, root)
-            }
-            _ => false,
-        };
+        }
         let mut sessions = lock(&self.sessions);
-        if !same || !sessions.is_empty() {
+        if !sessions.is_empty() {
             return false;
         }
         sessions.insert(session.to_string());
@@ -915,6 +943,22 @@ impl BgOwner for HostJobs {
 }
 
 impl HostJobs {
+    /// A user-session host (not a crew sandbox) whose workspace is `workspace`.
+    fn unclaimed_in(&self, workspace: Option<&str>) -> bool {
+        let bound = lock(&self.bound);
+        let Some(b) = bound.as_ref().filter(|b| b.shell_dir.is_none() && b.leftovers == Leftovers::Release) else {
+            return false;
+        };
+        match (b.root.as_deref(), workspace) {
+            (None, None) => true,
+            (Some(root), Some(ws)) => {
+                let ws = Path::new(ws);
+                crate::paths::inside(root, ws) && crate::paths::inside(ws, root)
+            }
+            _ => false,
+        }
+    }
+
     /// Runs the user's `!` command as a job whose output is broadcast and, when it ends, queued
     /// as context for the next turn.
     fn start_user_shell(&self, session: &str, command: &str) -> Result<String, String> {
