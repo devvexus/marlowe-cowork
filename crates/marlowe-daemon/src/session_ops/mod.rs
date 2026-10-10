@@ -10,7 +10,10 @@
 //!   memory from turns `N` on is retracted. `RewindScope` picks which of those happen. `/fork`
 //!   follows the same convention: `at_turn = N` keeps turns before `N`.
 //! - A rewind runs on the session's runner thread while the session is idle (a running turn
-//!   refuses it), so the conversation it edits is the one the loop will use next.
+//!   refuses it), so the conversation it edits is the one the loop will use next. A code rewind
+//!   also refuses while another live session of the same workspace is mid-turn, and puts back
+//!   only what this session's turns changed; edits made outside them stay (and are listed).
+//! - `/cost` counts rewound turns and calls without a row too.
 //! - Rewound conversation rows move to `rewound_turns`, rewound `pre` snapshots to
 //!   `refs/marlowe/<session>/rewound/`, and the working tree just before a rewind to
 //!   `refs/marlowe/<session>/undo/`: nothing a rewind removes is deleted until the 30-day prune.
@@ -71,7 +74,7 @@ fn run(core: &Arc<Core>, client: u64, req: Request) -> Result<(), String> {
         }
         Request::SessionCost { session } => {
             let rows = core.store.rows(&session)?;
-            core.bus.reply(client, Event::SessionCost { report: report(core, &rows), session });
+            core.bus.reply(client, Event::SessionCost { report: report(core, &session, &rows), session });
             Ok(())
         }
         Request::RenameSession { session, title } => rename(core, client, session, &title),
@@ -79,7 +82,7 @@ fn run(core: &Arc<Core>, client: u64, req: Request) -> Result<(), String> {
         Request::ExportSession { session, format } => {
             let summary = summary_of(core, &session)?;
             let rows = core.store.rows(&session)?;
-            let text = export::export(&summary, &rows, &report(core, &rows), format);
+            let text = export::export(&summary, &rows, &report(core, &session, &rows), format);
             core.bus.reply(client, Event::SessionExported { session, format, text });
             Ok(())
         }
@@ -91,9 +94,11 @@ fn summary_of(core: &Arc<Core>, session: &SessionId) -> Result<SessionSummary, S
     core.store.get(session)?.ok_or_else(|| format!("unknown session {session}"))
 }
 
-/// The session's tokens and cost, priced from the model library.
-fn report(core: &Arc<Core>, rows: &[RowOut]) -> marlowe_proto::CostReport {
-    cost::report(rows, &|m: &ModelRef| match core.brains.model_info(m) {
+/// The session's tokens and cost, priced from the model library. Rewound turns and calls that
+/// left no row are in it: the money was spent.
+fn report(core: &Arc<Core>, session: &SessionId, rows: &[RowOut]) -> marlowe_proto::CostReport {
+    let hidden = core.store.hidden_spend(session).unwrap_or_default();
+    cost::report(rows, &hidden, &|m: &ModelRef| match core.brains.model_info(m) {
         Ok(info) => cost::Price { pricing: info.pricing, local: info.local },
         Err(_) => cost::Price { pricing: None, local: m.provider.is_local() },
     })
@@ -140,9 +145,32 @@ fn apply_rewind(core: &Arc<Core>, convo: &mut Conversation, turn: u32, scope: Re
 
     if matches!(scope, RewindScope::Code | RewindScope::Both) {
         if let Some(repo) = &repo {
-            let r = repo.restore_to_turn(&session, turn).map_err(|e| format!("could not put the files back: {e}"))?;
+            if let Some(other) = busy_sibling(core, &session, convo.workspace.as_deref()) {
+                return Err(format!("session {other} is running a turn in this workspace; rewind the files when it is done"));
+            }
+            // When the turn began, so pre-images saved before it (by a turn number that was
+            // dropped and reused) do not count.
+            let started = core.store.rows(&session)?.iter().find(|r| r.turn == turn).map(|r| r.at_ms);
+            let r = repo.restore_to_turn_at(&session, turn, started).map_err(|e| format!("could not put the files back: {e}"))?;
+            // Where the files were before, for the user to take back (there is no request for it
+            // yet); said only when the rewind left something unexpected behind.
+            let undo = r.undo_ref.as_ref().map(|u| format!("; the files as they were before are kept as {u} in {}", repo.git_dir().display()));
             if !r.verified {
-                said("rewind: the files do not match the checkpoint exactly (a file changed while it was restored)".into());
+                said(format!(
+                    "rewind: the files do not match the checkpoint exactly (a file changed while it was restored){}",
+                    undo.clone().unwrap_or_default()
+                ));
+            }
+            if !r.kept.is_empty() {
+                let shown: Vec<&str> = r.kept.iter().take(8).map(String::as_str).collect();
+                let more = r.kept.len().saturating_sub(shown.len());
+                said(format!(
+                    "rewind: left {} file(s) as they are, changed outside this session's turns: {}{}{}",
+                    r.kept.len(),
+                    shown.join(", "),
+                    if more > 0 { format!(" and {more} more") } else { String::new() },
+                    undo.unwrap_or_default()
+                ));
             }
             for path in &r.preimages.skipped {
                 said(format!("rewind: {path} was too large to checkpoint and was not restored"));
@@ -185,6 +213,27 @@ fn apply_rewind(core: &Arc<Core>, convo: &mut Conversation, turn: u32, scope: Re
         }
     }
     Ok(())
+}
+
+/// Another live session of the same workspace that is mid-turn, if any: its edits would be
+/// reverted under it.
+fn busy_sibling(core: &Arc<Core>, session: &SessionId, workspace: Option<&std::path::Path>) -> Option<SessionId> {
+    let mine = same_dir_key(workspace?);
+    core.store.list(1000).ok()?.into_iter().find_map(|s| {
+        let theirs = s.workspace.as_deref().map(std::path::Path::new).map(same_dir_key)?;
+        (s.id != *session && theirs == mine && core.is_live(&s.id) && core.session(&s.id).is_ok_and(|h| h.is_busy())).then_some(s.id)
+    })
+}
+
+/// A directory spelled so that two names for it compare equal (case on Windows, links, `\?\`).
+fn same_dir_key(p: &std::path::Path) -> String {
+    let c = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let s = c.to_string_lossy().trim_start_matches(r"\\?\").replace('\\', "/");
+    if cfg!(windows) {
+        s.to_lowercase()
+    } else {
+        s
+    }
 }
 
 /// The shadow repository for a workspace, when there is a workspace and it has checkpoints.

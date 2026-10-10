@@ -1,6 +1,11 @@
 //! Pre-images of files the shadow tree cannot hold: ignored files and files outside the
 //! workspace that a tool is about to write. One directory per (session, turn) holds an index and
 //! the saved bytes; the first save of a path in a turn is the state the turn started with.
+//!
+//! A conversation rewind reuses turn numbers while the files stay as they are, so the directories
+//! of the dropped turns are retired (`<turn>-<stamp>`) rather than deleted: a later rewind to an
+//! older turn still undoes what they did, but a new turn with the same number saves its own
+//! starting state, and a rewind to that turn ignores everything saved before it began.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -57,6 +62,20 @@ impl Preimages {
         self.root.join(session).join(format!("{turn:08}"))
     }
 
+    /// Every directory of the session: `(turn, directory)`, live and retired.
+    fn all_dirs(&self, session: &str) -> Vec<(u32, PathBuf)> {
+        fs::read_dir(self.root.join(session))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let turn = name.split('-').next()?.parse().ok()?;
+                e.path().is_dir().then(|| (turn, e.path()))
+            })
+            .collect()
+    }
+
     fn read(dir: &Path) -> Index {
         fs::read(dir.join("index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
     }
@@ -94,7 +113,7 @@ impl Preimages {
         Ok(true)
     }
 
-    /// The turns that have saved pre-images, ascending.
+    /// The turns that have saved pre-images, ascending (retired ones are not turns any more).
     pub fn turns(&self, session: &str) -> Vec<u32> {
         let mut out: Vec<u32> = fs::read_dir(self.root.join(session))
             .into_iter()
@@ -108,17 +127,20 @@ impl Preimages {
 
     /// Puts back every file the turns `from..` saved, the earliest save of a path winning (the
     /// state before the first of those turns touched it), and deletes the files they created.
-    pub fn restore_from(&self, session: &str, from: u32) -> PreimageReport {
+    /// Retired turns count too, but only what was saved at or after `since_ms` (when the turn
+    /// being rewound to began): older saves belong to a branch the files had already passed.
+    pub fn restore_from(&self, session: &str, from: u32, since_ms: Option<i64>) -> PreimageReport {
         let mut report = PreimageReport::default();
         // (saved at, turn, position in its turn, entry): a reused turn number sorts by time.
         let mut all: Vec<(i64, u32, usize, PathBuf, Entry)> = Vec::new();
-        for turn in self.turns(session).into_iter().filter(|t| *t >= from) {
-            let dir = self.turn_dir(session, turn);
+        for (turn, dir) in self.all_dirs(session).into_iter().filter(|(t, _)| *t >= from) {
             for (i, e) in Self::read(&dir).entries.into_iter().enumerate() {
-                all.push((e.at_ms, turn, i, dir.clone(), e));
+                if since_ms.is_none_or(|s| e.at_ms >= s) {
+                    all.push((e.at_ms, turn, i, dir.clone(), e));
+                }
             }
         }
-        all.sort_by(|a, b| (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2)));
+        all.sort_by_key(|a| (a.0, a.1, a.2));
         let mut done: Vec<String> = Vec::new();
         for (_, _, _, dir, e) in all {
             if done.iter().any(|d| same_path(d, &e.path)) {
@@ -143,6 +165,20 @@ impl Preimages {
             }
         }
         report
+    }
+
+    /// When turn `turn` first saved something, if it did.
+    pub fn first_save_ms(&self, session: &str, turn: u32) -> Option<i64> {
+        Self::read(&self.turn_dir(session, turn)).entries.iter().map(|e| e.at_ms).min()
+    }
+
+    /// The conversation moved back to `from` with the files left alone: the live directories of
+    /// `from..` are retired under `stamp`, so the turns that replace them start clean.
+    pub fn retire_from(&self, session: &str, from: u32, stamp: i64) {
+        for turn in self.turns(session).into_iter().filter(|t| *t >= from) {
+            let dir = self.turn_dir(session, turn);
+            let _ = fs::rename(&dir, self.root.join(session).join(format!("{turn:08}-{stamp}")));
+        }
     }
 
     /// Forgets the turns `from..` (their effects were undone, or the conversation moved on).
@@ -179,8 +215,8 @@ impl Preimages {
     /// When a session's pre-images last changed, Unix epoch ms.
     pub fn newest_ms(&self, session: &str) -> Option<i64> {
         let mut newest = None;
-        for t in self.turns(session) {
-            let m = fs::metadata(self.turn_dir(session, t).join("index.json")).and_then(|m| m.modified()).ok()?;
+        for (_, dir) in self.all_dirs(session) {
+            let m = fs::metadata(dir.join("index.json")).and_then(|m| m.modified()).ok()?;
             let ms = m.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64;
             newest = newest.max(Some(ms));
         }
@@ -262,10 +298,10 @@ mod tests {
         assert_eq!(store.turns("s"), vec![3, 5]);
 
         // Rewinding to turn 5 brings back v1; to turn 3, v0 and the created file is gone.
-        let r = store.restore_from("s", 5);
+        let r = store.restore_from("s", 5, None);
         assert_eq!((r.restored, r.deleted), (1, 0));
         assert_eq!(fs::read_to_string(&file).unwrap(), "v1");
-        let r = store.restore_from("s", 3);
+        let r = store.restore_from("s", 3, None);
         assert_eq!((r.restored, r.deleted), (1, 1));
         assert_eq!(fs::read_to_string(&file).unwrap(), "v0");
         assert!(!created.exists());
@@ -278,20 +314,33 @@ mod tests {
     }
 
     #[test]
-    fn a_reused_turn_number_does_not_put_a_later_state_ahead_of_an_earlier_one() {
+    fn a_reused_turn_number_starts_clean_and_a_rewind_to_it_ignores_what_came_before_it() {
         let d = tmp("reuse");
         let store = Preimages::new(d.join("pre"));
         let file = d.join("x.log");
-        fs::write(&file, "original").unwrap();
-        // An old turn 2 saves the original; after a conversation rewind the number 1 is reused
-        // and saves what turn 2 left behind.
-        store.save("s", 2, &file).unwrap();
-        fs::write(&file, "left by old turn 2").unwrap();
+        fs::write(&file, "v0").unwrap();
+        // Old turn 0 takes v0 to v1, old turn 2 takes v1 to v2.
+        store.save("s", 0, &file).unwrap();
+        fs::write(&file, "v1").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(3));
-        store.save("s", 1, &file).unwrap();
-        fs::write(&file, "left by the new turn 1").unwrap();
-        store.restore_from("s", 1);
-        assert_eq!(fs::read_to_string(&file).unwrap(), "original", "by time, not by turn number");
+        store.save("s", 2, &file).unwrap();
+        fs::write(&file, "v2").unwrap();
+        // A conversation rewind to 1 leaves the file at v2 and retires the dropped turns.
+        store.retire_from("s", 1, 99);
+        assert_eq!(store.turns("s"), vec![0], "a retired turn is not a turn");
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        let new_turn_began = crate::checkpoint::shadow::now_ms();
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        // The new turn 1 starts from v2 and records that, though old turn 2 saved the same path.
+        assert!(store.save("s", 1, &file).unwrap());
+        assert!(store.first_save_ms("s", 1).is_some_and(|ms| ms >= new_turn_began));
+        fs::write(&file, "v3").unwrap();
+
+        store.restore_from("s", 1, Some(new_turn_began));
+        assert_eq!(fs::read_to_string(&file).unwrap(), "v2", "the state the new turn 1 started with");
+        fs::write(&file, "v3").unwrap();
+        store.restore_from("s", 0, Some(0));
+        assert_eq!(fs::read_to_string(&file).unwrap(), "v0", "older turns still reach back through the retired ones");
         let _ = fs::remove_dir_all(&d);
     }
 }

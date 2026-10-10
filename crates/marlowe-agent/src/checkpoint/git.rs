@@ -52,11 +52,16 @@ impl GitOut {
 /// One git invocation: arguments, the directory it runs in, and extra environment.
 pub(crate) struct Git<'a> {
     pub git_dir: &'a Path,
+    /// The top of the tree git reads ignore files from: the workspace, or the user's repository
+    /// root above it.
     pub work_tree: &'a Path,
+    /// Where git runs, inside `work_tree`: paths in and out are relative to it, and it limits
+    /// what `add` and `ls-files` see.
+    pub cwd: &'a Path,
 }
 
 impl Git<'_> {
-    /// Runs `git --git-dir G --work-tree W --literal-pathspecs <args>` in the work tree, retrying
+    /// Runs `git --git-dir G --work-tree W --literal-pathspecs <args>` in `cwd`, retrying
     /// a few times while another process holds a lock. A non-zero exit is returned, not an error:
     /// callers decide (`rev-parse --verify` failing is an answer).
     pub fn run(&self, args: &[&str], env: &[(&str, &str)]) -> Result<GitOut, CheckpointError> {
@@ -128,7 +133,7 @@ impl Git<'_> {
 
     fn spec(&self, env: &[(&str, &str)]) -> ChildSpec {
         ChildSpec::new()
-            .with_cwd(self.work_tree)
+            .with_cwd(self.cwd)
             .with_env_remove(GIT_STEERING.iter().map(|s| s.to_string()))
             .with_env(
                 [("GIT_TERMINAL_PROMPT", "0"), ("GIT_OPTIONAL_LOCKS", "0"), ("GIT_EDITOR", "true")]

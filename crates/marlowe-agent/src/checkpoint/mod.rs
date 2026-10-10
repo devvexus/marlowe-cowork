@@ -4,6 +4,8 @@
 //!
 //! - [`ShadowRepo`] is the engine (snapshots, rewind, diff, fork, prune); [`CheckpointStore`]
 //!   hands out one per workspace.
+//!   A turn that took a snapshot is closed with [`ShadowRepo::end_turn`], so a rewind can tell the
+//!   session's own changes from edits made outside its turns and leave those alone.
 //! - [`CheckpointMiddleware`] is the `pre_mutation` hook: the first call that will change a file
 //!   in a turn takes the `pre` snapshot, and a file the tree cannot hold (ignored, or outside the
 //!   workspace) gets a saved pre-image. A failing snapshot never blocks the edit; it warns once

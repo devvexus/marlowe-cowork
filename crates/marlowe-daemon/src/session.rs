@@ -494,6 +494,7 @@ fn run_one(
         return;
     }
     convo.next_turn = convo.next_turn.max(turn + 1);
+    crate::checkpoint::end_turn(core, convo, turn);
 
     if convo.messages.len() == before_len {
         // Nothing was appended (the turn failed early): keep the user's words anyway.

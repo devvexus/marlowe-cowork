@@ -262,7 +262,7 @@ mod tests {
     }
 
     fn fixture_cost(rows: &[RowOut]) -> CostReport {
-        cost::report(rows, &|_: &ModelRef| cost::Price { pricing: None, local: true })
+        cost::report(rows, &[], &|_: &ModelRef| cost::Price { pricing: None, local: true })
     }
 
     #[test]

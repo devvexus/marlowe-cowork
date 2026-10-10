@@ -1075,3 +1075,144 @@ fn a7_a_conversation_rewind_keeps_the_older_checkpoints_reachable() {
     assert_eq!(files(&ws), t.states[0]);
     stop(d);
 }
+
+// ---------------------------------------------------------------- review fixes
+
+impl Client {
+    /// Rewinds and returns every event up to `Rewound`, the errors the rewind reported included.
+    fn rewind_events(&mut self, session: &SessionId, turn: u32, scope: RewindScope) -> Vec<Event> {
+        self.send(&Request::Rewind { session: session.clone(), turn, scope });
+        self.until(|e| matches!(e, Event::Rewound { .. })).into_iter().map(|e| e.event).collect()
+    }
+
+    fn cost(&mut self, session: &SessionId) -> marlowe_proto::CostReport {
+        match self.ask_for(&Request::SessionCost { session: session.clone() }, |e| matches!(e, Event::SessionCost { .. })) {
+            Event::SessionCost { report, .. } => report,
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn parity_s4_a_rewind_does_not_give_the_money_back_and_an_empty_answer_is_billed() {
+    let home = temp_dir("s4-rewind");
+    let ws = temp_dir("s4-rewind-ws");
+    seed_model(&home, Some(Pricing { input_per_mtok: 2.0, output_per_mtok: 10.0 }));
+    let p = Arc::new(Scripted::default());
+    p.push(tool_script(&[write("c1", "a.txt", "x")]));
+    p.push(say("done"));
+    p.push(say("second"));
+    // The third answer has no text and no tool calls: no row to store, but it was billed.
+    p.push(vec![usage(500, 0), Step::Ev(StreamEvent::Stop(StopReason::EndTurn))]);
+    let d = start(&home, p, None);
+    let mut c = Client::connect(&d.info);
+    let (id, _) = c.turn(None, "first", Some(&ws));
+    c.turn(Some(&id), "second", None);
+    c.turn(Some(&id), "third", None);
+
+    let before = c.cost(&id);
+    assert_eq!(before.calls, 4);
+    assert_eq!((before.usage.input, before.usage.output), (3_500, 600));
+    c.rewind(&id, 1, RewindScope::Both);
+    assert_eq!(user_texts(&c.transcript(&id)), vec!["first".to_string()], "the later turns are gone");
+    let after = c.cost(&id);
+    assert_eq!((after.calls, after.usage.input, after.usage.output), (4, 3_500, 600), "{after:?}");
+    assert_eq!(after.usage.cost_usd, before.usage.cost_usd);
+    assert!(before.usage.cost_usd.unwrap() > 0.0);
+    stop(d);
+}
+
+#[test]
+fn a_reused_turn_number_restores_ignored_files_to_what_the_new_turn_found() {
+    let base = temp_dir("reuse");
+    let home = base.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let ws = project(&base);
+    seed_model(&home, None);
+    let before = files(&ws);
+    let p = Arc::new(Scripted::default());
+    let d = start(&home, p.clone(), None);
+    let mut c = Client::connect(&d.info);
+    p.push(tool_script(&[write("a", "notes.txt", "turn zero\\n")]));
+    p.push(say("zero"));
+    let (id, _) = c.turn(None, "turn zero", Some(&ws));
+    // Turn 1 writes the ignored build log: v0 -> v1.
+    p.push(tool_script(&[write("b", "out/build.log", "build v1\\n")]));
+    p.push(say("one"));
+    c.turn(Some(&id), "turn one", None);
+    // The conversation goes back to turn 1; the files stay (v1). The reused turn 1 writes v2.
+    c.rewind(&id, 1, RewindScope::Conversation);
+    p.push(tool_script(&[write("c", "out/build.log", "build v2\\n")]));
+    p.push(say("one again"));
+    c.turn(Some(&id), "turn one, differently", None);
+    assert_eq!(std::fs::read(ws.join("out/build.log")).unwrap(), b"build v2\n");
+
+    c.rewind(&id, 1, RewindScope::Code);
+    assert_eq!(
+        std::fs::read(ws.join("out/build.log")).unwrap(),
+        b"build v1\n",
+        "the state the new turn 1 started with, not the older state of the turn it replaced"
+    );
+    // And all the way back, through the dropped turn too.
+    c.rewind(&id, 0, RewindScope::Code);
+    assert_eq!(files(&ws), before);
+    stop(d);
+}
+
+#[test]
+fn a_code_rewind_leaves_the_users_own_edits_alone_and_says_so() {
+    let base = temp_dir("foreign");
+    let home = base.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let ws = project(&base);
+    seed_model(&home, None);
+    let p = Arc::new(Scripted::default());
+    let d = start(&home, p.clone(), None);
+    let mut c = Client::connect(&d.info);
+    p.push(tool_script(&[write("a", "notes.txt", "turn zero\\n"), write("b", "src/new.rs", "pub fn new() {}\\n")]));
+    p.push(say("zero"));
+    let (id, _) = c.turn(None, "turn zero", Some(&ws));
+    // Between turns, in an editor: a new file, and an edit of a file the session never touched.
+    put(&ws, "scratch/by-hand.txt", b"mine\n");
+    put(&ws, "src/main.rs", b"fn main() { println!(\"mine\"); }\n");
+
+    let events = c.rewind_events(&id, 0, RewindScope::Code);
+    let said: Vec<String> = events.iter().filter_map(|e| if let Event::Error { message, .. } = e { Some(message.clone()) } else { None }).collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("scratch/by-hand.txt") && said[0].contains("src/main.rs"), "{}", said[0]);
+    assert!(said[0].contains("refs/marlowe/"), "the way back to the previous state is named: {}", said[0]);
+    assert_eq!(std::fs::read(ws.join("notes.txt")).unwrap(), b"first\n", "the session's own edit is undone");
+    assert!(!ws.join("src/new.rs").exists());
+    assert_eq!(std::fs::read(ws.join("scratch/by-hand.txt")).unwrap(), b"mine\n");
+    assert_eq!(std::fs::read(ws.join("src/main.rs")).unwrap(), b"fn main() { println!(\"mine\"); }\n");
+    stop(d);
+}
+
+#[test]
+fn a_code_rewind_refuses_while_another_session_is_running_in_the_workspace() {
+    let home = temp_dir("sibling");
+    let ws = temp_dir("sibling-ws");
+    seed_model(&home, None);
+    let p = Arc::new(Scripted::default());
+    let d = start(&home, p.clone(), None);
+    let mut c = Client::connect(&d.info);
+    p.push(tool_script(&[write("a", "a.txt", "one")]));
+    p.push(say("done"));
+    let (a, _) = c.turn(None, "session a", Some(&ws));
+    p.push(say("hello"));
+    let (b, _) = c.turn(None, "session b", Some(&ws));
+    assert_ne!(a, b);
+    // Session b is mid-turn (its model call waits at a gate) in the same workspace.
+    let (gate_tx, gate_rx) = crossbeam_channel::bounded::<()>(1);
+    p.push(vec![Step::Gate(gate_rx), text("late"), Step::Ev(StreamEvent::Stop(StopReason::EndTurn))]);
+    c.send(&Request::Ask { session: Some(b.clone()), text: "b again".into(), workspace: None, images: Vec::new(), options: None });
+    c.until(|e| matches!(e, Event::TurnStarted { .. }));
+    let msg = c.refused(&Request::Rewind { session: a.clone(), turn: 0, scope: RewindScope::Code });
+    assert!(msg.contains("running a turn in this workspace"), "{msg}");
+    assert!(ws.join("a.txt").exists(), "nothing was touched");
+    gate_tx.send(()).unwrap();
+    c.until(|e| matches!(e, Event::TurnFinished { .. }));
+    c.rewind(&a, 0, RewindScope::Code);
+    assert!(!ws.join("a.txt").exists());
+    stop(d);
+}

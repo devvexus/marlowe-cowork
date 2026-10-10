@@ -40,6 +40,16 @@ pub(crate) fn store(core: &Arc<Core>) -> Arc<CheckpointStore> {
     store
 }
 
+/// A turn ended: records where it left the workspace (only for a turn that took a `pre`
+/// snapshot), which tells a later rewind what changed outside the session's turns. Failure
+/// only means a rewind will treat that turn's end as unknown.
+pub(crate) fn end_turn(core: &Arc<Core>, convo: &Conversation, turn: u32) {
+    let Some(workspace) = convo.workspace.as_deref() else { return };
+    if let Ok(Some(repo)) = store(core).existing(workspace) {
+        let _ = repo.end_turn(&convo.session, turn);
+    }
+}
+
 /// Recorders by session, for the daemon's life.
 #[derive(Default)]
 struct Recorders(Mutex<HashMap<SessionId, Arc<SessionRecorder>>>);

@@ -8,7 +8,9 @@
 //! `turn` it belongs to, and a turn's first row the memory journal's `mem_seq` at that moment, so
 //! `/rewind` can drop a turn and `Retracted` can name what it wrote. A tool call that finished
 //! while its batch was still running is kept in `call_results`, so a daemon killed mid-batch
-//! loses no completed call. Rewound rows move to `rewound_turns`; nothing is deleted.
+//! loses no completed call. Rewound rows move to `rewound_turns` with their model, usage and
+//! latency; nothing is deleted. A model call that left no row (an empty answer) keeps its usage
+//! in `extra_calls`. Both still count in `/cost`: a rewind does not give the money back.
 
 use std::path::Path;
 use std::thread::JoinHandle;
@@ -49,6 +51,16 @@ CREATE TABLE IF NOT EXISTS call_results (
     at       INTEGER NOT NULL,
     PRIMARY KEY (session, call_id)
 );
+CREATE TABLE IF NOT EXISTS extra_calls (
+    session    TEXT NOT NULL,
+    turn       INTEGER NOT NULL,
+    step       INTEGER,
+    at         INTEGER NOT NULL,
+    provider   TEXT NOT NULL,
+    model      TEXT NOT NULL,
+    usage      TEXT NOT NULL,
+    latency_ms INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS rewound_turns (
     session     TEXT NOT NULL,
     idx         INTEGER NOT NULL,
@@ -72,6 +84,12 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("turns", "usage", "TEXT"),
     ("turns", "latency_ms", "INTEGER"),
     ("turns", "mem_seq", "INTEGER"),
+    ("rewound_turns", "step", "INTEGER"),
+    ("rewound_turns", "provider", "TEXT"),
+    ("rewound_turns", "model", "TEXT"),
+    ("rewound_turns", "usage", "TEXT"),
+    ("rewound_turns", "latency_ms", "INTEGER"),
+    ("rewound_turns", "mem_seq", "INTEGER"),
 ];
 
 pub(crate) type StoreResult<T> = Result<T, String>;
@@ -147,6 +165,8 @@ enum Cmd {
     AppendRows { session: SessionId, rows: Vec<RowIn>, next_turn: u32, tainted: bool, at: i64, reply: Sender<StoreResult<()>> },
     PutCallResult { session: SessionId, row: CallResultRow, at: i64, reply: Sender<StoreResult<()>> },
     CallResults(SessionId, Sender<StoreResult<Vec<CallResultRow>>>),
+    PutSpend { session: SessionId, turn: u32, step: Option<u32>, at: i64, meta: CallMeta, reply: Sender<StoreResult<()>> },
+    HiddenSpend(SessionId, Sender<StoreResult<Vec<CallMeta>>>),
     Rows(SessionId, Sender<StoreResult<Vec<RowOut>>>),
     ReplaceLast(SessionId, Message, Sender<StoreResult<()>>),
     DropFrom { session: SessionId, turn: u32, at: i64, reply: Sender<StoreResult<Dropped>> },
@@ -223,6 +243,20 @@ fn serve(conn: &mut Connection, cmd: Cmd) -> bool {
                 .map(|_| ())
                 .map_err(e);
             let _ = reply.send(r);
+        }
+        Cmd::PutSpend { session, turn, step, at, meta, reply } => {
+            let usage = serde_json::to_string(&meta.usage).unwrap_or_else(|_| "{}".into());
+            let r = conn
+                .execute(
+                    "INSERT INTO extra_calls (session, turn, step, at, provider, model, usage, latency_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![session.as_str(), turn, step, at, meta.provider, meta.model, usage, meta.latency_ms as i64],
+                )
+                .map(|_| ())
+                .map_err(e);
+            let _ = reply.send(r);
+        }
+        Cmd::HiddenSpend(session, reply) => {
+            let _ = reply.send(hidden_spend(conn, &session).map_err(e));
         }
         Cmd::CallResults(session, reply) => {
             let r = (|| {
@@ -435,6 +469,25 @@ fn rows(conn: &Connection, id: &SessionId) -> StoreResult<Vec<RowOut>> {
     Ok(out)
 }
 
+/// The model calls of a session that no longer show in its transcript: rows a rewind moved aside
+/// and calls that produced no row.
+fn hidden_spend(conn: &Connection, session: &SessionId) -> rusqlite::Result<Vec<CallMeta>> {
+    let mut st = conn.prepare(
+        "SELECT provider, model, usage, latency_ms FROM rewound_turns WHERE session = ?1 AND provider IS NOT NULL AND model IS NOT NULL
+         UNION ALL
+         SELECT provider, model, usage, latency_ms FROM extra_calls WHERE session = ?1",
+    )?;
+    let found = st.query_map([session.as_str()], |r| {
+        Ok(CallMeta {
+            provider: r.get(0)?,
+            model: r.get(1)?,
+            usage: r.get::<_, Option<String>>(2)?.and_then(|u| serde_json::from_str(&u).ok()).unwrap_or_default(),
+            latency_ms: r.get::<_, Option<i64>>(3)?.unwrap_or(0).max(0) as u64,
+        })
+    })?;
+    found.collect()
+}
+
 /// Moves every row of turns `turn..` to `rewound_turns` and sets the session's next turn back.
 fn drop_from(conn: &mut Connection, session: &SessionId, turn: u32, at: i64) -> rusqlite::Result<Dropped> {
     let tx = conn.transaction()?;
@@ -461,8 +514,8 @@ fn drop_from(conn: &mut Connection, session: &SessionId, turn: u32, at: i64) -> 
             )?
             .map(|s| s.max(0) as u64);
         out.removed = tx.execute(
-            "INSERT INTO rewound_turns (session, idx, role, content, at, turn, rewound_at)
-             SELECT session, idx, role, content, at, turn, ?3 FROM turns WHERE session = ?1 AND idx >= ?2",
+            "INSERT INTO rewound_turns (session, idx, role, content, at, turn, rewound_at, step, provider, model, usage, latency_ms, mem_seq)
+             SELECT session, idx, role, content, at, turn, ?3, step, provider, model, usage, latency_ms, mem_seq FROM turns WHERE session = ?1 AND idx >= ?2",
             params![session.as_str(), first_idx, at],
         )? as u32;
         tx.execute("DELETE FROM turns WHERE session = ?1 AND idx >= ?2", params![session.as_str(), first_idx])?;
@@ -599,6 +652,17 @@ impl Store {
     /// Outcomes of calls that finished in a batch that never completed.
     pub fn call_results(&self, session: &SessionId) -> StoreResult<Vec<CallResultRow>> {
         self.call(|r| Cmd::CallResults(session.clone(), r))
+    }
+
+    /// Keeps the usage of a model call that left no row (it answered with nothing).
+    pub fn put_spend(&self, session: &SessionId, turn: u32, step: Option<u32>, meta: CallMeta, at: i64) -> StoreResult<()> {
+        self.call(|reply| Cmd::PutSpend { session: session.clone(), turn, step, at, meta, reply })
+    }
+
+    /// Model calls that cost something but are not in [`Store::rows`]: rewound rows and calls
+    /// without one.
+    pub fn hidden_spend(&self, session: &SessionId) -> StoreResult<Vec<CallMeta>> {
+        self.call(|r| Cmd::HiddenSpend(session.clone(), r))
     }
 
     /// Every row of a session with its provenance.
@@ -747,6 +811,12 @@ mod tests {
         // New rows continue the numbering with no gap.
         store.append_rows(&id, vec![row(Message::user("two again"), 1, 40)], 2, false, 40).unwrap();
         assert_eq!(store.load(&id).unwrap().iter().map(|t| t.idx).collect::<Vec<_>>(), vec![0, 1, 2]);
+        // The spend of the dropped call is still on record, and so is a call that left no row.
+        assert_eq!(store.hidden_spend(&id).unwrap(), vec![meta.clone()]);
+        let rowless = CallMeta { latency_ms: 7, ..meta.clone() };
+        store.put_spend(&id, 1, Some(2), rowless.clone(), 45).unwrap();
+        assert_eq!(store.hidden_spend(&id).unwrap(), vec![meta.clone(), rowless]);
+        assert!(store.hidden_spend(&SessionId("other".into())).unwrap().is_empty());
         // Dropping past the end removes nothing.
         assert_eq!(store.drop_from(&id, 9, 50).unwrap(), Dropped::default());
         assert_eq!(store.get(&id).unwrap().unwrap().turns, 2);

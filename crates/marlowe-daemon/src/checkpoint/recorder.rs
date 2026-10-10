@@ -15,7 +15,7 @@
 use std::sync::Mutex;
 
 use marlowe_agent::{CallCtx, Conversation, ModelCall, StepInfo, ToolMiddleware, ToolOutcome, TurnFlow, TurnObserver};
-use marlowe_model::{Message, ModelRef, Role, ToolCall, ToolResult};
+use marlowe_model::{Message, ModelRef, Role, ToolCall, ToolResult, Usage};
 use marlowe_mind::Mind;
 use marlowe_proto::SessionId;
 
@@ -184,16 +184,21 @@ impl TurnObserver for SessionRecorder {
     fn on_model_call(&self, convo: &Conversation, call: &ModelCall<'_>) {
         let mut g = self.lock();
         let c = call.completion;
-        // The loop keeps an answer only when it has text or tool calls.
-        let extra = (!c.text.is_empty() || !c.tool_calls.is_empty()).then(|| {
-            let meta = CallMeta {
-                provider: g.provider.clone(),
-                model: call.request.model.clone(),
-                usage: c.usage,
-                latency_ms: call.latency_ms,
-            };
-            (c.to_message(), Some(meta), Some(call.info.step))
-        });
+        let meta = CallMeta {
+            provider: g.provider.clone(),
+            model: call.request.model.clone(),
+            usage: c.usage,
+            latency_ms: call.latency_ms,
+        };
+        // The loop keeps an answer only when it has text or tool calls; one with neither has no
+        // row to carry its usage, but it was billed all the same.
+        let kept = !c.text.is_empty() || !c.tool_calls.is_empty();
+        if !kept && meta.usage != Usage::default() {
+            if let Err(e) = self.store.put_spend(&self.session, g.turn, Some(call.info.step), meta.clone(), now_ms()) {
+                g.error = Some(format!("usage not saved: {e}"));
+            }
+        }
+        let extra = kept.then(|| (c.to_message(), Some(meta), Some(call.info.step)));
         self.write(&mut g, convo, extra);
     }
 

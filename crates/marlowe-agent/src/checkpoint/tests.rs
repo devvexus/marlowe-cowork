@@ -371,3 +371,202 @@ fn the_middleware_snapshots_in_pre_mutation_and_warns_once_when_it_cannot() {
     assert!(warnings[0].contains("cannot be rewound"));
     let _ = fs::remove_dir_all(&base);
 }
+
+/// A workspace whose `.gitignore` hides `.env`, with a turn that removes that line.
+fn gitignore_edit(name: &str, second_turn: bool) {
+    let base = tmp(name);
+    let ws = base.join("ws");
+    put(&ws, ".gitignore", b".env\n");
+    put(&ws, ".env", b"SECRET=1\n");
+    put(&ws, "a.txt", b"a\n");
+    let store = CheckpointStore::new(base.join("cp"));
+    let repo = store.repo(&ws).unwrap();
+    let s = sid(name);
+    let before = fingerprint(&ws);
+
+    repo.begin_turn(&s, 1, &Mutation::Paths(vec![ws.join(".gitignore")])).unwrap();
+    fs::write(ws.join(".gitignore"), b"").unwrap();
+    repo.end_turn(&s, 1).unwrap();
+    if second_turn {
+        // The shadow index now holds `.env`, and turn 2's snapshot lists it.
+        repo.begin_turn(&s, 2, &Mutation::Paths(vec![ws.join("a.txt")])).unwrap();
+        fs::write(ws.join("a.txt"), b"changed\n").unwrap();
+        repo.end_turn(&s, 2).unwrap();
+    }
+
+    let r = repo.restore_to_turn(&s, 1).unwrap();
+    assert!(r.verified, "{r:?}");
+    assert_eq!(fingerprint(&ws), before, "the ignored .env survived and the ignore file is back");
+    assert_eq!(r.deleted, 0, "{r:?}");
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn a_turn_that_drops_a_gitignore_line_cannot_make_a_rewind_delete_the_ignored_file() {
+    gitignore_edit("gi-one", false);
+    gitignore_edit("gi-two", true);
+}
+
+#[cfg(windows)]
+#[test]
+fn ignore_rules_follow_the_case_rules_git_detected_on_this_file_system() {
+    let base = tmp("case");
+    let ws = base.join("ws");
+    put(&ws, ".gitignore", b"Build/\n");
+    put(&ws, "build/out.bin", b"x");
+    put(&ws, "Foo.txt", b"f");
+    let store = CheckpointStore::new(base.join("cp"));
+    let repo = store.repo(&ws).unwrap();
+    let s = sid("case");
+    repo.begin_turn(&s, 0, &Mutation::Under(ws.clone())).unwrap();
+    let pre = repo.checkpoints(&s).unwrap().remove(0);
+    let listing = git_in_shadow(&repo, &["ls-tree", "-r", "--name-only", &pre.tree]);
+    assert!(listing.contains("Foo.txt") && !listing.contains("out.bin"), "Build/ ignores build/: {listing}");
+    // A case-only rename leaves one entry, not two that would collide on NTFS.
+    fs::rename(ws.join("Foo.txt"), ws.join("foo.txt")).unwrap();
+    let now = repo.current_tree().unwrap();
+    let listing = git_in_shadow(&repo, &["ls-tree", "-r", "--name-only", &now]);
+    assert_eq!(listing.lines().filter(|l| l.eq_ignore_ascii_case("foo.txt")).count(), 1, "{listing}");
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn a_workspace_inside_a_repository_honours_the_ignore_files_above_it() {
+    let base = tmp("sub");
+    let root = base.join("repo");
+    fs::create_dir_all(&root).unwrap();
+    git(&root, &["init", "-q"]);
+    put(&root, ".gitignore", b"node_modules/\n");
+    put(&root, "other.txt", b"outside the workspace\n");
+    let ws = root.join("frontend");
+    put(&ws, "src/a.js", b"a\n");
+    put(&ws, "node_modules/dep/index.js", b"ignored only at the repository root\n");
+    let store = CheckpointStore::new(base.join("cp"));
+    let repo = store.repo(&ws).unwrap();
+    let s = sid("sub");
+    let before = fingerprint(&ws);
+
+    repo.begin_turn(&s, 0, &Mutation::Paths(vec![ws.join("src/a.js")])).unwrap();
+    let pre = repo.checkpoints(&s).unwrap().remove(0);
+    let listing = git_in_shadow(&repo, &["ls-tree", "-r", "--name-only", &pre.tree]);
+    assert!(listing.contains("src/a.js"), "{listing}");
+    assert!(!listing.contains("node_modules") && !listing.contains("other.txt"), "{listing}");
+
+    fs::write(ws.join("src/a.js"), b"b\n").unwrap();
+    put(&ws, "src/new.js", b"new\n");
+    let now = repo.current_tree().unwrap();
+    assert_eq!(repo.changed(&pre.tree, &now).unwrap(), vec!["src/a.js".to_string(), "src/new.js".to_string()], "paths are relative to the workspace");
+    assert!(repo.diff(&pre.tree, &now).unwrap().contains("--- a/src/a.js"));
+
+    let r = repo.restore_to_turn(&s, 0).unwrap();
+    assert!(r.verified && r.kept.is_empty(), "{r:?}");
+    assert_eq!(fingerprint(&ws), before);
+    assert_eq!(fs::read(root.join("other.txt")).unwrap(), b"outside the workspace\n");
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn a_rewind_leaves_alone_what_changed_outside_the_sessions_turns() {
+    let base = tmp("foreign");
+    let ws = base.join("ws");
+    put(&ws, "a.txt", b"a0\n");
+    put(&ws, "b.txt", b"b0\n");
+    put(&ws, "c.txt", b"c0\n");
+    let store = CheckpointStore::new(base.join("cp"));
+    let repo = store.repo(&ws).unwrap();
+    let s = sid("foreign");
+
+    // Turn 1 edits a.txt and creates made.txt.
+    repo.begin_turn(&s, 1, &Mutation::Paths(vec![ws.join("a.txt"), ws.join("made.txt")])).unwrap();
+    fs::write(ws.join("a.txt"), b"a1\n").unwrap();
+    put(&ws, "made.txt", b"m\n");
+    assert!(repo.end_turn(&s, 1).unwrap());
+    // The user, between turns: a new file, an edit of a file no turn touched, and an edit of a.txt.
+    fs::write(ws.join("c.txt"), b"c-by-hand\n").unwrap();
+    fs::write(ws.join("a.txt"), b"a-by-hand\n").unwrap();
+    // Turn 2 edits b.txt.
+    repo.begin_turn(&s, 2, &Mutation::Paths(vec![ws.join("b.txt")])).unwrap();
+    fs::write(ws.join("b.txt"), b"b1\n").unwrap();
+    assert!(repo.end_turn(&s, 2).unwrap());
+    // And after the session went quiet: a file made in the editor, and one the turn made, edited.
+    put(&ws, "notes-from-the-editor.txt", b"mine\n");
+    fs::write(ws.join("made.txt"), b"m-by-hand\n").unwrap();
+
+    let r = repo.restore_to_turn(&s, 1).unwrap();
+    assert!(r.verified, "{r:?}");
+    let read = |f: &str| fs::read_to_string(ws.join(f)).unwrap();
+    assert_eq!(read("b.txt"), "b0\n", "the session's own edit is put back");
+    assert_eq!(read("a.txt"), "a-by-hand\n", "edited again outside the turns, so it stays");
+    assert_eq!(read("c.txt"), "c-by-hand\n");
+    assert_eq!(read("notes-from-the-editor.txt"), "mine\n");
+    assert_eq!(read("made.txt"), "m-by-hand\n");
+    assert_eq!(r.kept, vec!["a.txt", "c.txt", "made.txt", "notes-from-the-editor.txt"], "{r:?}");
+    // The state before is kept for the user to take back.
+    let undo = r.undo_ref.unwrap();
+    let tree = git_in_shadow(&repo, &["rev-parse", &format!("{undo}^{{tree}}")]);
+    assert!(git_in_shadow(&repo, &["ls-tree", "-r", "--name-only", tree.trim()]).contains("notes-from-the-editor.txt"));
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn after_a_conversation_rewind_the_dropped_turns_still_count_as_the_sessions_own() {
+    let base = tmp("archived");
+    let ws = base.join("ws");
+    put(&ws, "a.txt", b"a0\n");
+    put(&ws, "b.txt", b"b0\n");
+    put(&ws, "ignored.log", b"v0\n");
+    put(&ws, ".gitignore", b"*.log\n");
+    let store = CheckpointStore::new(base.join("cp"));
+    let repo = store.repo(&ws).unwrap();
+    let s = sid("archived");
+    repo.begin_turn(&s, 0, &Mutation::Paths(vec![ws.join("a.txt")])).unwrap();
+    fs::write(ws.join("a.txt"), b"a1\n").unwrap();
+    repo.end_turn(&s, 0).unwrap();
+    // Turn 1 is dropped from the conversation but its effects stay on disk.
+    repo.begin_turn(&s, 1, &Mutation::Paths(vec![ws.join("b.txt"), ws.join("ignored.log")])).unwrap();
+    fs::write(ws.join("b.txt"), b"b1\n").unwrap();
+    fs::write(ws.join("ignored.log"), b"v1\n").unwrap();
+    repo.end_turn(&s, 1).unwrap();
+    repo.discard_from(&s, 1, true).unwrap();
+    std::thread::sleep(Duration::from_millis(5));
+    let began = super::shadow::now_ms();
+    // A reused turn 1 changes the ignored file again, then the user edits a file outside the session.
+    repo.begin_turn(&s, 1, &Mutation::Paths(vec![ws.join("ignored.log")])).unwrap();
+    fs::write(ws.join("ignored.log"), b"v2\n").unwrap();
+    repo.end_turn(&s, 1).unwrap();
+    put(&ws, "by-hand.txt", b"mine\n");
+
+    // Back to the start of the new turn 1: the ignored file is what the new turn found.
+    let r = repo.restore_to_turn_at(&s, 1, Some(began)).unwrap();
+    assert!(r.verified, "{r:?}");
+    assert_eq!(fs::read_to_string(ws.join("ignored.log")).unwrap(), "v1\n");
+    assert_eq!(fs::read_to_string(ws.join("b.txt")).unwrap(), "b1\n");
+    // Back to the start of turn 0: the dropped turn 1 is undone too; the user's file is not.
+    let r = repo.restore_to_turn_at(&s, 0, Some(0)).unwrap();
+    assert!(r.verified, "{r:?}");
+    assert_eq!(r.kept, vec!["by-hand.txt"], "{r:?}");
+    assert_eq!(fs::read_to_string(ws.join("a.txt")).unwrap(), "a0\n");
+    assert_eq!(fs::read_to_string(ws.join("b.txt")).unwrap(), "b0\n");
+    assert_eq!(fs::read_to_string(ws.join("ignored.log")).unwrap(), "v0\n");
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn a_turn_without_an_end_is_all_the_sessions_own() {
+    // The daemon was killed mid-turn: no `post`, so the turn's changes are the session's.
+    let base = tmp("nopost");
+    let ws = base.join("ws");
+    put(&ws, "a.txt", b"a0\n");
+    let store = CheckpointStore::new(base.join("cp"));
+    let repo = store.repo(&ws).unwrap();
+    let s = sid("nopost");
+    assert!(!repo.end_turn(&s, 0).unwrap(), "no pre, no post");
+    repo.begin_turn(&s, 0, &Mutation::Under(ws.clone())).unwrap();
+    fs::write(ws.join("a.txt"), b"a1\n").unwrap();
+    put(&ws, "new.txt", b"n\n");
+    let r = repo.restore_to_turn(&s, 0).unwrap();
+    assert!(r.verified && r.kept.is_empty(), "{r:?}");
+    assert_eq!(fs::read_to_string(ws.join("a.txt")).unwrap(), "a0\n");
+    assert!(!ws.join("new.txt").exists());
+    let _ = fs::remove_dir_all(&base);
+}
