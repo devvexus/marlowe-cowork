@@ -3004,9 +3004,15 @@ dependencies = [
 name = "marlowe-settings"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "marlowe-permission",
+ "marlowe-proto",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
+ "toml",
+ "toml_edit",
 ]
 
 [[package]]

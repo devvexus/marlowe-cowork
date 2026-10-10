@@ -11,3 +11,12 @@ description = "Layered settings (user, project, local, CLI), permission rules an
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# Track E: the wire types (scopes, modes, rule and hook rows), rule validation, hook matchers
+# (finite-automata regex), the project trust digest, and TOML read/write (toml_edit keeps the
+# user's comments when a rule or key is written). Both TOML crates are already in Cargo.lock.
+marlowe-proto.workspace = true
+marlowe-permission.workspace = true
+regex.workspace = true
+blake3.workspace = true
+toml = "0.8"
+toml_edit = "0.22"
