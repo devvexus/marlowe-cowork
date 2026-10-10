@@ -3045,6 +3045,7 @@ name = "marlowe-voice"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "marlowe-os",
  "marlowe-proto",
  "serde",
  "serde_json",

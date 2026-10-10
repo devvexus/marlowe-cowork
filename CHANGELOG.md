@@ -4,6 +4,18 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Voice placeholder: Chatterbox clone
+
+A stand-in until the M6 voice: Marlowe can speak in a cloned voice now, with WinRT behind it.
+
+- **Added.** `engine: "chatterbox"` in `<home>oice.json` (or `MARLOWE_VOICE_ENGINE=chatterbox`) synthesises through a Chatterbox voice clone run as a Python sidecar, `tools/voice/chatterbox_sidecar.py` (built into the binary; `python`, `reference`, `device`, exaggeration, cfg weight, temperature, pause scale and timeouts are settings). WinRT stays the default engine.
+  - The sidecar starts lazily in its own kill-on-close Job Object with a scrubbed environment (no API key reaches it) and no console window. It stays alive across utterances and exits after `idle_timeout_s` without a request, which frees its VRAM. JSON lines each way; stderr goes to the daemon log, bounded.
+  - An utterance arrives clause by clause (a WAV per clause), so the first clause plays while the next is generated. WinRT plays every part, so barge-in and the presence envelope work as before.
+  - WinRT speaks instead while the model is still loading (after `ready_grace_s`), and whenever the sidecar fails: it would not start, died, hung, ran out of GPU memory, or refused two lines in a row. A failed sidecar is dropped and left alone for 10 minutes. The fallback is reported once per cause (`VoiceEvent::Degraded`) and shown as the speaking voice (`George (en-GB) - clone unavailable`).
+  - The brief's greeting prewarms the clone outside quiet hours. `marlowe doctor` checks the engine; `marlowe say` waits up to 120 s for a cold clone and names the voice that really spoke.
+- **Added.** `JobObject::contains(pid)` (`IsProcessInJob`) and `marlowe_voice::owns_process`. The crew's GPU gate and the reranker's GPU probe (`Gpu::compute_only_except`) leave the voice sidecar's process tree out of "another process computing on the GPU", so Marlowe's own voice never holds a crew run or moves the reranker to CPU.
+- **Known.** Not the M6 voice: no push-to-talk, no Kokoro, and the clone needs a Python environment with `chatterbox-tts` that the user installs.
+
 ### Context and hardware planner
 
 Matthew's rule: the user sets each model's maximum context up front; agents get that or less, never more; and the cost on this GPU is shown before anything loads.

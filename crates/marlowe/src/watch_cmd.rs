@@ -16,6 +16,10 @@ const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(120);
 /// A brief may wait on the Sentinel's first scan and a 6 s polish.
 const BRIEF_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// `say` waits this long for audio: a cold voice clone may load for the configured grace (60 s
+/// in the preview) before its first clause is generated.
+const PLAY_TIMEOUT: Duration = Duration::from_secs(120);
+
 pub const WATCH_USAGE: &str = "usage: marlowe watch [list | add <dir> | remove <dir> | candidates]";
 
 type CmdResult = Result<i32, String>;
@@ -215,7 +219,23 @@ pub fn say(home: &Path, args: &[String]) -> CmdResult {
         Event::VoiceState(v) if v.speaking => Some(v.voice.clone()),
         _ => None,
     }) {
-        Ok(Ok(voice)) => {
+        Ok(Ok(mut voice)) => {
+            // The voice reports an utterance before its audio exists (a cold clone loads for up
+            // to a minute); the voice that really speaks is known once audio plays. A notice that
+            // the clone fell back is passed on.
+            for _ in 0..2 {
+                match c.wait_for(PLAY_TIMEOUT, |e| match e {
+                    Event::VoiceState(v) if !v.envelope.is_empty() || !v.speaking => Some(v.voice.clone()),
+                    _ => None,
+                }) {
+                    Ok(Ok(v)) => {
+                        voice = v.or(voice);
+                        break;
+                    }
+                    Ok(Err(message)) => eprintln!("marlowe: {message}"),
+                    Err(_) => break,
+                }
+            }
             println!("speaking{}", voice.map(|v| format!(" · {v}")).unwrap_or_default());
             Ok(0)
         }

@@ -236,10 +236,10 @@ pub fn start_sentinel(home: &Path) -> Option<SentinelLink> {
 }
 
 /// Spoken voice. Without a speech backend the voice reports itself unavailable; only a panic
-/// leaves the daemon silent.
+/// leaves the daemon silent. A voice sidecar (the Chatterbox clone) never sees an API key.
 pub fn start_voice(home: &Path) -> Option<VoiceLink> {
     let (tx, events) = crossbeam_channel::bounded(VOICE_QUEUE);
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| marlowe_voice::Voice::start(home, tx))) {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| marlowe_voice::Voice::start_with(home, tx, marlowe_brains::scrubbed_env()))) {
         Ok(voice) => Some(VoiceLink { voice, events }),
         Err(_) => {
             eprintln!("marlowe: voice failed to start");
@@ -278,7 +278,7 @@ pub fn gpu_probe(sentinel: Option<marlowe_sentinel::Sentinel>) -> marlowe_mind::
         let state = s.state();
         let compute = {
             let mut g = nvml.lock().unwrap_or_else(|e| e.into_inner());
-            g.get_or_insert_with(marlowe_sentinel::gpu::Gpu::open).compute_only()
+            g.get_or_insert_with(marlowe_sentinel::gpu::Gpu::open).compute_only_except(&marlowe_voice::owns_process)
         };
         gpu_verdict(&state, &compute)
     })

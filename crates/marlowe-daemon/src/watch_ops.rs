@@ -94,13 +94,19 @@ pub(crate) fn forward_sentinel(core: Arc<Core>, events: Receiver<SentinelEvent>)
     })
 }
 
-/// Forwards Voice events to the bus as `VoiceState` until the voice's channel closes.
+/// Forwards Voice events to the bus as `VoiceState` until the voice's channel closes. A
+/// degraded engine (the Chatterbox clone falling back to WinRT) is said once as an error line;
+/// the voice logged it already.
 pub(crate) fn forward_voice(core: Arc<Core>, events: Receiver<VoiceEvent>) -> std::io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new().name("marlowe-voice-fwd".into()).spawn(move || {
         while let Ok(ev) = events.recv() {
             let Some(voice) = core.voice.as_ref() else { break };
             let mut status = voice.status();
             match ev {
+                VoiceEvent::Degraded { message } => {
+                    core.bus.publish(Event::Error { session: None, message: format!("voice: {message}") });
+                    continue;
+                }
                 VoiceEvent::Speaking { envelope, .. } => {
                     status.speaking = true;
                     status.envelope = envelope;

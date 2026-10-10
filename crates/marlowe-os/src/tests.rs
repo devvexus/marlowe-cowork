@@ -129,6 +129,34 @@ mod windows {
     }
 
     #[test]
+    fn contains_names_the_child_and_its_grandchildren_only() {
+        // cmd starts a grandchild ping and waits on its own ping.
+        let mut cmd = Command::new("cmd.exe");
+        cmd.raw_arg("/d /c start \"\" /b ping -n 30 127.0.0.1 >nul & ping -n 30 127.0.0.1 >nul");
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        let mut jc = spawn_in_job_with_flags(&mut cmd, CREATE_NO_WINDOW).unwrap();
+        assert!(wait_for(|| jc.job().active_processes().unwrap() >= 3, Duration::from_secs(10)));
+        assert!(jc.job().contains(jc.id()));
+        assert!(!jc.job().contains(std::process::id()), "the parent is outside the job");
+        assert!(!jc.job().contains(0));
+        // Every process in the job: the pids whose parent chain reaches the child.
+        let out = Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", &format!(
+                "Get-CimInstance Win32_Process -Filter 'ParentProcessId={}' | ForEach-Object {{ $_.ProcessId }}",
+                jc.id()
+            )])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .unwrap();
+        let kids: Vec<u32> = String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim().parse().ok()).collect();
+        assert!(!kids.is_empty(), "cmd's children were listed");
+        for k in &kids {
+            assert!(jc.job().contains(*k), "child {k} of the job's process is in the job");
+        }
+        jc.kill_tree().unwrap();
+    }
+
+    #[test]
     fn a_missing_program_is_an_io_error_not_a_leak() {
         let mut cmd = Command::new("definitely-not-a-program-marlowe.exe");
         assert!(matches!(spawn_in_job(&mut cmd), Err(crate::OsError::Io(_))));

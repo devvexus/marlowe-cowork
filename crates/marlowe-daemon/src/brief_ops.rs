@@ -109,6 +109,13 @@ pub(crate) fn on_hello(core: &Arc<Core>, client: u64, client_name: &str) {
     if !is_presence(client_name) {
         return;
     }
+    // Someone is here: a voice that loads a model (the Chatterbox clone) starts loading now, so
+    // the greeting does not wait for a cold start. Never blocks; WinRT ignores it.
+    if let Some(v) = &core.voice {
+        if !quiet_hours(core).contains(local_minute()) {
+            v.prewarm();
+        }
+    }
     // Decided under the lock so two interactive clients arriving together brief at most once.
     let decision = {
         let mut here = lock(&core.presence.here);

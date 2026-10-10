@@ -346,14 +346,17 @@ impl RunApprovals for RunGate {
 /// training job, another inference server: NVML's compute list minus its graphics list, the same
 /// signal the reranker's GPU gate reads), or when graphics load is heavy with no Ollama runner on
 /// the device. Ollama is Marlowe's own (crew steps check before every step and must not wait on
-/// the model a previous step left loaded). No Sentinel, or no GPU reported: not busy.
+/// the model a previous step left loaded), and so is the voice sidecar's process tree
+/// ([`marlowe_voice::owns_process`]). No Sentinel, or no GPU reported: not busy.
 fn gpu_probe(core: Weak<Core>) -> GpuBusy {
     let nvml = Mutex::new(None::<marlowe_sentinel::gpu::Gpu>);
     Arc::new(move || {
         let Some(core) = core.upgrade() else { return false };
         let Some(s) = core.sentinel.as_ref() else { return false };
         catch_unwind(AssertUnwindSafe(|| {
-            let compute = lock(&nvml).get_or_insert_with(marlowe_sentinel::gpu::Gpu::open).compute_only();
+            let compute = lock(&nvml)
+                .get_or_insert_with(marlowe_sentinel::gpu::Gpu::open)
+                .compute_only_except(&marlowe_voice::owns_process);
             // A device whose compute processes cannot be read may hold a training job: busy.
             // No NVML at all keeps the no-GPU rule above.
             let unreadable = compute.as_ref().is_ok_and(|c| c.iter().any(|(_, n)| n.is_none()));
