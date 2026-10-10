@@ -201,6 +201,11 @@ impl Preimages {
         let _ = fs::remove_dir_all(self.root.join(session));
     }
 
+    /// Deletes every session's pre-images (the whole root).
+    pub fn remove_all(&self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+
     /// Sessions that have pre-images.
     pub fn sessions(&self) -> Vec<String> {
         fs::read_dir(&self.root)

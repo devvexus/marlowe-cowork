@@ -282,6 +282,65 @@ fn oversized_untracked_files_stay_out_of_the_snapshot_with_a_warning() {
 }
 
 #[test]
+fn oversized_files_stay_out_when_the_workspace_is_inside_a_repository() {
+    let (base, repo_root) = project("bigsub");
+    let ws = repo_root.join("experiments");
+    put(&ws, "notes.txt", b"small
+");
+    let big = ws.join("data").join("blob.bin");
+    fs::create_dir_all(big.parent().unwrap()).unwrap();
+    let f = fs::File::create(&big).unwrap();
+    f.set_len(MAX_SNAPSHOT_FILE_BYTES + 1).unwrap();
+    drop(f);
+    let store = CheckpointStore::new(base.join("cp"));
+    let repo = store.repo(&ws).unwrap();
+    let st = repo.begin_turn(&sid("bigsub"), 0, &Mutation::Under(ws.clone())).unwrap();
+    assert!(st.warnings.iter().any(|w| w.contains("data/blob.bin")), "{:?}", st.warnings);
+    let cp = repo.checkpoints(&sid("bigsub")).unwrap().remove(0);
+    let listing = git_in_shadow(&repo, &["ls-tree", "-r", "--name-only", &cp.tree]);
+    assert!(listing.contains("notes.txt") && !listing.contains("blob.bin"), "{listing}");
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn an_interrupted_snapshot_stops_and_a_too_large_verdict_is_remembered() {
+    let (base, ws) = project("cancel");
+    let store = CheckpointStore::new(base.join("cp"));
+    let repo = store.repo(&ws).unwrap();
+    let token = marlowe_model::CancelToken::new();
+    token.cancel();
+    let m = Mutation::Under(ws.clone());
+    assert!(matches!(repo.begin_turn_cancellable(&sid("c"), 0, &m, Some(&token)), Err(CheckpointError::Cancelled)));
+    assert!(repo.checkpoints(&sid("c")).unwrap().is_empty(), "nothing half-taken");
+    // The interrupted turn is retried by the next call.
+    assert!(repo.begin_turn(&sid("c"), 0, &m).unwrap().snapshotted);
+    // A tree found too large is not walked again on every turn.
+    repo.mark_too_large();
+    assert!(matches!(repo.begin_turn(&sid("c"), 1, &m), Err(CheckpointError::TooLarge(_))));
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn a_deleted_workspace_is_pruned_once_its_checkpoints_are_old() {
+    let (base, ws) = project("orphan");
+    let root = base.join("cp");
+    let store = CheckpointStore::new(&root);
+    let repo = store.repo(&ws).unwrap();
+    repo.begin_turn(&sid("old"), 0, &Mutation::Under(ws.clone())).unwrap();
+    let git_dir = repo.git_dir().to_path_buf();
+    drop(repo);
+    drop(store);
+    fs::remove_dir_all(&ws).unwrap();
+    // A fresh store, as after a daemon restart: the workspace is gone.
+    let store = CheckpointStore::new(&root);
+    assert_eq!(store.prune_all_older_than(60_000), 0, "recent checkpoints stay, whether or not the project does");
+    assert!(git_dir.is_dir());
+    assert_eq!(store.prune_all_older_than(-1_000), 1);
+    assert!(!git_dir.exists(), "the repository goes with its last checkpoint");
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
 fn two_threads_in_one_turn_take_one_snapshot_before_either_proceeds() {
     let (base, ws) = project("race");
     let store = Arc::new(CheckpointStore::new(base.join("cp")));

@@ -52,6 +52,8 @@ pub enum CheckpointError {
     Workspace(String),
     #[error("{0} has too many files to checkpoint; open Marlowe in a project directory")]
     TooLarge(String),
+    #[error("interrupted")]
+    Cancelled,
 }
 
 /// Shadow repositories under one root, one per workspace.
@@ -108,8 +110,12 @@ impl CheckpointStore {
     }
 
     /// Prunes every workspace's repository: sessions idle for more than [`KEEP_DAYS`] lose their
-    /// checkpoints. Returns how many sessions were pruned. Slow (git gc): run it on a thread.
+    /// checkpoints. Returns how many sessions were pruned (an emptied repository of a vanished workspace counts one). Slow (git gc): run it on a thread.
     pub fn prune_all(&self) -> usize {
+        self.prune_all_older_than(KEEP_DAYS * 24 * 3600 * 1000)
+    }
+
+    fn prune_all_older_than(&self, max_age_ms: i64) -> usize {
         let Ok(rd) = std::fs::read_dir(&self.root) else { return 0 };
         let mut total = 0;
         for e in rd.flatten() {
@@ -118,8 +124,14 @@ impl CheckpointStore {
                 continue;
             }
             let Some(ws) = std::fs::read_to_string(p.join("workspace.txt")).ok().map(PathBuf::from) else { continue };
-            if let Ok(Some(repo)) = self.existing(&ws) {
-                total += repo.prune(KEEP_DAYS * 24 * 3600 * 1000).map(|v| v.len()).unwrap_or(0);
+            if !ws.is_dir() {
+                // The project was deleted, moved or renamed: its checkpoints age out all the
+                // same, and the repository goes with the last of them.
+                if let Some(repo) = ShadowRepo::orphan(&self.root, p.clone(), ws) {
+                    total += repo.prune_orphan(max_age_ms).map(usize::from).unwrap_or(0);
+                }
+            } else if let Ok(Some(repo)) = self.existing(&ws) {
+                total += repo.prune(max_age_ms).map(|v| v.len()).unwrap_or(0);
             }
         }
         total
@@ -159,7 +171,7 @@ impl ToolMiddleware for CheckpointMiddleware {
     fn pre_mutation(&self, _call: &ToolCall, cx: &CallCtx, mutation: &Mutation) -> Result<(), ToolOutcome> {
         let Some(workspace) = &cx.workspace else { return Ok(()) };
         let result = self.store.repo(workspace).and_then(|repo| {
-            let state = repo.begin_turn(&cx.session, cx.turn, mutation)?;
+            let state = repo.begin_turn_cancellable(&cx.session, cx.turn, mutation, Some(&cx.cancel))?;
             if state.snapshotted && repo.size_kib() > SIZE_WARN_KIB {
                 self.warn_once(
                     &cx.session,
@@ -172,6 +184,10 @@ impl ToolMiddleware for CheckpointMiddleware {
             }
             Ok(())
         });
+        if let Err(CheckpointError::Cancelled) = result {
+            // Interrupted: the edit must not run without its snapshot; the next turn retries.
+            return Err(ToolOutcome::error("interrupted"));
+        }
         if let Err(e) = result {
             // The edit still runs: a missing undo is worse than none being offered, but a
             // refused edit because git is absent would be worse than both.

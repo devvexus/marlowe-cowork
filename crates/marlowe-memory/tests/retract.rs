@@ -111,3 +111,67 @@ fn a_session_saved_before_seq_tracking_retracts_by_time() {
     drop(profile);
     let _ = fs::remove_dir_all(&dir);
 }
+
+fn belief<'a>(session: &'a str, text: &'a str, at: i64) -> BeliefWrite<'a> {
+    BeliefWrite {
+        session_id: session,
+        turn_id: "user",
+        run_id: None,
+        text,
+        author: Author::User,
+        derived_from: &[],
+        occurred_at_ms: at,
+        tags: Tags { kind: Some(BeliefKind::Note), ..Tags::default() },
+        maturation: MaturationPolicy::ByTrust,
+    }
+}
+
+#[test]
+fn rewinding_a_correction_brings_back_the_belief_it_replaced() {
+    let dir = tmp("correct");
+    let profile = Profile::init(&dir).unwrap();
+    let mut journal = Journal::open(&profile).unwrap();
+    let mut live = BeliefStore::default();
+
+    let blue = say(&mut journal, &mut live, "s", "my colour is blue", T0);
+    let began = journal.last_seq();
+    let teal = marlowe_memory::correct_belief(&mut journal, &mut live, Clock::new(T0 + 10), &belief("s", "my colour is teal", T0 + 10), &blue)
+        .unwrap()
+        .unwrap()
+        .id;
+    assert_eq!(candidates(&live), vec![teal.clone()], "the correction replaced the old belief");
+
+    let p = RetractedPayload { session: "s".into(), turns: vec![1], after_seq: Some(began), from_ms: None };
+    assert_eq!(append_retraction(&mut journal, &mut live, Clock::new(T0 + 20), &p).unwrap(), 1);
+    assert_eq!(candidates(&live), vec![blue.clone()], "the state before the turn is back");
+    assert!(live.get(&teal).unwrap().superseded_by.as_deref().unwrap().starts_with(RETRACTED_BY_PREFIX));
+    assert_eq!(entries(&BeliefStore::derive(&journal, DERIVATION_VERSION).unwrap()), entries(&live));
+
+    drop(journal);
+    drop(profile);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_belief_said_and_corrected_inside_the_rewound_turns_stays_gone() {
+    let dir = tmp("both");
+    let profile = Profile::init(&dir).unwrap();
+    let mut journal = Journal::open(&profile).unwrap();
+    let mut live = BeliefStore::default();
+
+    let began = journal.last_seq();
+    let first = say(&mut journal, &mut live, "s", "the box is heron", T0);
+    let second = marlowe_memory::correct_belief(&mut journal, &mut live, Clock::new(T0 + 10), &belief("s", "the box is osprey", T0 + 10), &first)
+        .unwrap()
+        .unwrap()
+        .id;
+    let p = RetractedPayload { session: "s".into(), turns: vec![0], after_seq: Some(began), from_ms: None };
+    assert_eq!(append_retraction(&mut journal, &mut live, Clock::new(T0 + 20), &p).unwrap(), 1);
+    assert!(candidates(&live).is_empty(), "neither {first} nor {second} comes back");
+    assert!(live.get(&first).unwrap().superseded_by.is_some());
+    assert_eq!(entries(&BeliefStore::derive(&journal, DERIVATION_VERSION).unwrap()), entries(&live));
+
+    drop(journal);
+    drop(profile);
+    let _ = fs::remove_dir_all(&dir);
+}

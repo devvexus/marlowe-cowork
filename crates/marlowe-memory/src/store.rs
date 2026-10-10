@@ -281,26 +281,53 @@ impl BeliefStore {
     /// path already excludes (injection, recall, profile, consolidation). The text stays: the
     /// journal is the audit spine and nothing was forgotten, only un-said. Returns how many
     /// entries were retracted. The live path and replay share this function.
+    ///
+    /// A belief a rewound turn had superseded (`correct`) is live again. A `forget` in a rewound
+    /// turn cannot be undone: a tombstone's text was cleared.
     pub fn retract(&mut self, p: &RetractedPayload, seq: Seq) -> usize {
         let marker = format!("{RETRACTED_BY_PREFIX}{seq}");
-        let mut n = 0;
-        for e in self.entries.values_mut() {
-            if e.source_session_id != p.session || e.superseded_by.is_some() || e.fidelity <= Fidelity::Tombstone {
-                continue;
-            }
-            // Journal order when the rewound turn recorded where it began; the wall clock only
-            // for sessions saved before that was recorded.
-            let hit = match (p.after_seq, p.from_ms) {
-                (Some(after), _) => e.origin_event > after,
-                (None, Some(from)) => e.occurred_at_ms >= from,
-                (None, None) => false,
-            };
-            if hit {
-                e.superseded_by = Some(marker.clone());
-                n += 1;
+        // Journal order when the rewound turn recorded where it began; the wall clock only for
+        // sessions saved before that was recorded.
+        let rewound = |e: &MemoryEntry| {
+            e.source_session_id == p.session
+                && match (p.after_seq, p.from_ms) {
+                    (Some(after), _) => e.origin_event > after,
+                    (None, Some(from)) => e.occurred_at_ms >= from,
+                    (None, None) => false,
+                }
+        };
+        let hit: Vec<String> = self
+            .entries
+            .values()
+            .filter(|e| rewound(e) && e.superseded_by.is_none() && e.fidelity > Fidelity::Tombstone)
+            .map(|e| e.id.clone())
+            .collect();
+        // A correction made inside the rewound turns had superseded an older belief: that belief
+        // is the live one again, as it was before the turn. (Unless it was itself said in the
+        // rewound turns.)
+        let mut revived = Vec::new();
+        for id in &hit {
+            if let Some(e) = self.entries.get(id) {
+                for loser in &e.supersedes {
+                    if self.entries.get(loser).is_some_and(|l| !rewound(l)) {
+                        revived.push((loser.clone(), id.clone()));
+                    }
+                }
             }
         }
-        n
+        for id in &hit {
+            if let Some(e) = self.entries.get_mut(id) {
+                e.superseded_by = Some(marker.clone());
+            }
+        }
+        for (loser, winner) in revived {
+            if let Some(e) = self.entries.get_mut(&loser) {
+                if e.superseded_by.as_deref() == Some(winner.as_str()) {
+                    e.superseded_by = None;
+                }
+            }
+        }
+        hit.len()
     }
 
     /// Section 4.3 — the auto-injection candidate set, live-only.

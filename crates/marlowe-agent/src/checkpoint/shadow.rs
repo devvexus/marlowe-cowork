@@ -25,6 +25,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use marlowe_model::CancelToken;
 use marlowe_proto::SessionId;
 use serde_json::json;
 
@@ -123,6 +124,8 @@ pub struct ShadowRepo {
     given: PathBuf,
     preimages: Preimages,
     ops: Mutex<HashSet<(String, u32)>>,
+    /// When a snapshot last found the workspace too large: asking again would walk it again.
+    too_large: Mutex<Option<std::time::Instant>>,
 }
 
 pub(crate) fn now_ms() -> i64 {
@@ -172,7 +175,46 @@ impl ShadowRepo {
             top,
             given,
             ops: Mutex::new(HashSet::new()),
+            too_large: Mutex::new(None),
         })
+    }
+
+    /// The repository at `git_dir` (`<stem>.git` under `root`) for a workspace that is gone:
+    /// deleted, moved or renamed. Only its history can be read, so it is good for pruning.
+    pub(crate) fn orphan(root: &Path, git_dir: PathBuf, workspace: PathBuf) -> Option<Self> {
+        if !git_dir.join("HEAD").is_file() {
+            return None;
+        }
+        let stem = git_dir.file_stem()?.to_string_lossy().into_owned();
+        Some(Self {
+            preimages: Preimages::new(root.join(format!("{stem}.pre"))),
+            top: workspace.clone(),
+            given: workspace.clone(),
+            git_dir,
+            workspace,
+            ops: Mutex::new(HashSet::new()),
+            too_large: Mutex::new(None),
+        })
+    }
+
+    /// Prunes a repository whose workspace is gone like [`ShadowRepo::prune`], and deletes the
+    /// repository and its pre-images once nothing is left to keep. Returns whether it was deleted.
+    pub(crate) fn prune_orphan(&self, max_age_ms: i64) -> Result<bool, CheckpointError> {
+        self.prune(max_age_ms)?;
+        let _g = self.lock();
+        let refs = self.git().must(&["for-each-ref", "--format=%(refname)", "refs/marlowe/"], &[])?;
+        let kept = refs.text().lines().any(|l| !l.trim().is_empty()) || !self.preimages.sessions().is_empty();
+        if kept {
+            return Ok(false);
+        }
+        let _ = fs::remove_dir_all(&self.git_dir);
+        self.preimages.remove_all();
+        Ok(true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_too_large(&self) {
+        *self.too_large.lock().unwrap() = Some(std::time::Instant::now());
     }
 
     pub fn workspace(&self) -> &Path {
@@ -184,7 +226,14 @@ impl ShadowRepo {
     }
 
     fn git(&self) -> Git<'_> {
-        Git { git_dir: &self.git_dir, work_tree: &self.top, cwd: &self.workspace }
+        self.git_c(None)
+    }
+
+    /// A git handle that stops its commands when `cancel` fires.
+    fn git_c<'a>(&'a self, cancel: Option<&'a CancelToken>) -> Git<'a> {
+        // A workspace that is gone leaves git running next to its own directory.
+        let cwd = if self.workspace.is_dir() { &self.workspace } else { &self.git_dir };
+        Git { git_dir: &self.git_dir, work_tree: &self.top, cwd, cancel }
     }
 
     fn init(&self) -> Result<(), CheckpointError> {
@@ -229,8 +278,12 @@ impl ShadowRepo {
                 text.push('\n');
             }
         }
+        // The listing is relative to the workspace, but git anchors `info/exclude` patterns at the
+        // work tree top, which is the user's repository root when the workspace sits inside one.
+        let prefix = relative_to(&self.top, &self.workspace).filter(|p| !p.is_empty());
         for rel in big {
-            text.push_str(&ignore_line(rel));
+            let anchored = prefix.as_ref().map_or_else(|| rel.clone(), |p| format!("{p}/{rel}"));
+            text.push_str(&ignore_line(&anchored));
             text.push('\n');
         }
         fs::create_dir_all(self.git_dir.join("info"))?;
@@ -240,34 +293,43 @@ impl ShadowRepo {
 
     /// Stages the whole workspace into the shadow index and returns the tree id, plus what could
     /// not be held. Caller holds the lock.
-    fn snapshot_tree(&self, warnings: &mut Vec<String>) -> Result<String, CheckpointError> {
-        let g = self.git();
+    fn snapshot_tree(&self, warnings: &mut Vec<String>, cancel: Option<&CancelToken>) -> Result<String, CheckpointError> {
+        const TOO_LARGE_FOR: std::time::Duration = std::time::Duration::from_secs(300);
+        let refused = || CheckpointError::TooLarge(self.workspace.display().to_string());
+        if self.too_large.lock().unwrap_or_else(|p| p.into_inner()).is_some_and(|at| at.elapsed() < TOO_LARGE_FOR) {
+            return Err(refused());
+        }
+        let g = self.git_c(cancel);
         self.write_exclude(&[])?;
-        // Untracked, non-ignored files too big to keep are excluded for this snapshot.
+        // Untracked, non-ignored files too big to keep are excluded for this snapshot. The
+        // listing is read as it is produced, so a huge tree is refused as soon as it is known to
+        // be one, and an interrupt stops the walk.
         let mut big = Vec::new();
-        let listing = g.run(&["ls-files", "-o", "--exclude-standard", "-z"], &[])?;
-        if listing.ok() {
-            let (mut files, mut bytes) = (0usize, 0u64);
-            for rel in listing.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()) {
-                let rel = String::from_utf8_lossy(rel).into_owned();
-                files += 1;
-                if let Ok(m) = fs::metadata(self.workspace.join(&rel)) {
-                    if m.is_file() && m.len() > MAX_SNAPSHOT_FILE_BYTES {
-                        warnings.push(format!("{rel} is over {} MiB and is not checkpointed", MAX_SNAPSHOT_FILE_BYTES >> 20));
-                        big.push(rel);
-                    } else if m.is_file() {
-                        bytes += m.len();
-                    }
-                }
-                if files > MAX_SNAPSHOT_FILES || bytes > MAX_SNAPSHOT_BYTES {
-                    return Err(CheckpointError::TooLarge(self.workspace.display().to_string()));
+        let (mut files, mut bytes) = (0usize, 0u64);
+        let mut over = false;
+        g.stream_nul(&["ls-files", "-o", "--exclude-standard", "-z"], &mut |item| {
+            let rel = String::from_utf8_lossy(item).into_owned();
+            files += 1;
+            if let Ok(m) = fs::metadata(self.workspace.join(&rel)) {
+                if m.is_file() && m.len() > MAX_SNAPSHOT_FILE_BYTES {
+                    warnings.push(format!("{rel} is over {} MiB and is not checkpointed", MAX_SNAPSHOT_FILE_BYTES >> 20));
+                    big.push(rel);
+                } else if m.is_file() {
+                    bytes += m.len();
                 }
             }
+            over = files > MAX_SNAPSHOT_FILES || bytes > MAX_SNAPSHOT_BYTES;
+            !over
+        })?;
+        if over {
+            *self.too_large.lock().unwrap_or_else(|p| p.into_inner()) = Some(std::time::Instant::now());
+            return Err(refused());
         }
+        *self.too_large.lock().unwrap_or_else(|p| p.into_inner()) = None;
         if !big.is_empty() {
             self.write_exclude(&big)?;
         }
-        self.drop_ignored_entries()?;
+        self.drop_ignored_entries(cancel)?;
         let add = g.run(&["add", "-A", "--ignore-errors", "--", "."], &[])?;
         if !add.ok() {
             let first = add.stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
@@ -279,8 +341,8 @@ impl ShadowRepo {
 
     /// The shadow index outlives its snapshots, and git keeps tracking a file after it becomes
     /// ignored: take those out, so a tree is always "what the ignore rules of now let in".
-    fn drop_ignored_entries(&self) -> Result<(), CheckpointError> {
-        let g = self.git();
+    fn drop_ignored_entries(&self, cancel: Option<&CancelToken>) -> Result<(), CheckpointError> {
+        let g = self.git_c(cancel);
         let listed = g.run(&["ls-files", "-c", "-i", "--exclude-standard", "-z"], &[])?;
         if listed.ok() && !listed.stdout.is_empty() {
             let out = g.run_stdin(&["update-index", "--force-remove", "-z", "--stdin"], &listed.stdout)?;
@@ -315,7 +377,7 @@ impl ShadowRepo {
         if !self.ref_exists(&Self::pre_ref(session, turn)) {
             return Ok(false);
         }
-        let tree = self.snapshot_tree(&mut Vec::new())?;
+        let tree = self.snapshot_tree(&mut Vec::new(), None)?;
         let commit = self.commit(&tree, json!({"kind": "post", "session": session.as_str(), "turn": turn, "at_ms": now_ms()}))?;
         self.git().must(&["update-ref", &Self::post_ref(session, turn), &commit], &[])?;
         Ok(true)
@@ -340,6 +402,18 @@ impl ShadowRepo {
     /// the tree cannot hold has a saved pre-image, before a tool changes anything. Idempotent per
     /// turn: the first call snapshots, later ones only save pre-images for new paths.
     pub fn begin_turn(&self, session: &SessionId, turn: u32, mutation: &Mutation) -> Result<TurnState, CheckpointError> {
+        self.begin_turn_cancellable(session, turn, mutation, None)
+    }
+
+    /// [`ShadowRepo::begin_turn`] that gives up with [`CheckpointError::Cancelled`] when `cancel`
+    /// fires, so an interrupt does not wait for a first snapshot of a large tree.
+    pub fn begin_turn_cancellable(
+        &self,
+        session: &SessionId,
+        turn: u32,
+        mutation: &Mutation,
+        cancel: Option<&CancelToken>,
+    ) -> Result<TurnState, CheckpointError> {
         let mut snapped = self.lock();
         let mut state = TurnState::default();
         let (tree_change, outside) = self.classify(mutation)?;
@@ -352,7 +426,7 @@ impl ShadowRepo {
         if tree_change && !snapped.contains(&key) {
             let name = Self::pre_ref(session, turn);
             if !self.ref_exists(&name) {
-                let tree = self.snapshot_tree(&mut state.warnings)?;
+                let tree = self.snapshot_tree(&mut state.warnings, cancel)?;
                 let commit = self.commit(
                     &tree,
                     json!({"kind": "pre", "session": session.as_str(), "turn": turn, "at_ms": now_ms()}),
@@ -465,7 +539,7 @@ impl ShadowRepo {
     /// The tree id of the workspace right now (stages it into the shadow index).
     pub fn current_tree(&self) -> Result<String, CheckpointError> {
         let _g = self.lock();
-        self.snapshot_tree(&mut Vec::new())
+        self.snapshot_tree(&mut Vec::new(), None)
     }
 
     /// A unified diff between two tree-ish ids, cut at [`MAX_DIFF_BYTES`].
@@ -548,7 +622,7 @@ impl ShadowRepo {
         if let Some(at) = checkpoints.iter().position(|c| c.turn >= turn) {
             let target = &checkpoints[at];
             let mut warnings = Vec::new();
-            let mut current = self.snapshot_tree(&mut warnings)?;
+            let mut current = self.snapshot_tree(&mut warnings, None)?;
             let undo = format!("refs/marlowe/{}/undo/{}", ref_part(session.as_str()), now_ms());
             let commit = self.commit(&current, json!({"kind": "undo", "session": session.as_str(), "to_turn": turn, "at_ms": now_ms()}))?;
             self.git().must(&["update-ref", &undo, &commit], &[])?;
@@ -562,14 +636,14 @@ impl ShadowRepo {
                 let (iw, id) = (ignore_files(&write), ignore_files(&delete));
                 if !iw.is_empty() || !id.is_empty() {
                     self.apply(&target.tree, iw, id, &ours, &mut kept, &mut report)?;
-                    current = self.snapshot_tree(&mut warnings)?;
+                    current = self.snapshot_tree(&mut warnings, None)?;
                 }
                 if current != target.tree {
                     let (write, delete) = self.plan(&current, &target.tree)?;
                     self.apply(&target.tree, write, delete, &ours, &mut kept, &mut report)?;
                 }
             }
-            let now = self.snapshot_tree(&mut warnings)?;
+            let now = self.snapshot_tree(&mut warnings, None)?;
             report.verified = now == target.tree || self.changed_locked(&now, &target.tree)?.iter().all(|p| kept.contains(p));
             // The turns being undone have no end any more.
             for c in checkpoints.iter().filter(|c| c.turn >= target.turn) {

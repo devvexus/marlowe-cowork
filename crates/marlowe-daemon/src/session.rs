@@ -24,8 +24,9 @@ use marlowe_proto::{ApprovalDecision, Event, SessionId, Slot};
 
 use crate::daemon::Core;
 use crate::mind::{ComposedTools, MindMemory, MindTools, RecallSink};
+use crate::checkpoint::SessionRecorder;
 use crate::stack::{self, Stack};
-use crate::{lock, now_ms, HostRequest};
+use crate::{lock, HostRequest};
 
 /// Share of the effective context window the memory tier may use (capped at
 /// `marlowe_mind::MAX_INJECT_TOKENS`).
@@ -260,12 +261,23 @@ pub(crate) fn spawn_runner(core: Arc<Core>, handle: Arc<SessionHandle>, convo: C
 }
 
 fn runner(core: Arc<Core>, handle: Arc<SessionHandle>, convo: Conversation, cmd_rx: Receiver<RunnerCmd>) {
-    serve(&core, &handle, convo, &cmd_rx);
-    crate::checkpoint::release(&core, &handle.id);
+    // This runner's own recorder, set once the stack is up. A later runner of the same session
+    // (after an idle eviction) has its own, so releasing must not take that one away.
+    let mut recorder = None;
+    serve(&core, &handle, convo, &cmd_rx, &mut recorder);
+    if let Some(r) = &recorder {
+        crate::checkpoint::release(&core, &handle.id, r);
+    }
     core.release(&handle);
 }
 
-fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation, cmd_rx: &Receiver<RunnerCmd>) {
+fn serve(
+    core: &Arc<Core>,
+    handle: &Arc<SessionHandle>,
+    mut convo: Conversation,
+    cmd_rx: &Receiver<RunnerCmd>,
+    mine: &mut Option<Arc<SessionRecorder>>,
+) {
     // The tool set is fixed for the session from the conductor's model as of now (prompt cache).
     let model = guard(|| conductor_model(core)).ok().flatten();
     let request = HostRequest { workspace: convo.workspace.clone(), model };
@@ -304,6 +316,8 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
         }
     }
     // Middleware, observers and services from every track, for this runner's lifetime.
+    let recorder = crate::checkpoint::start_runner(core, &convo);
+    *mine = Some(recorder.clone());
     let stack = Stack::build(core, &convo);
     for o in &stack.observers {
         let _ = guard(|| o.on_session_start(&convo));
@@ -333,7 +347,7 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
                 break;
             }
             let cancel = lock(&handle.state).cancel.clone();
-            run_one(core, handle, &mut convo, &tools, &stack, &input, &cancel);
+            run_one(core, handle, &mut convo, &tools, &stack, &recorder, &input, &cancel);
             turns_run += 1;
             settle(core, handle, &mut next);
         }
@@ -405,6 +419,7 @@ fn run_one(
     convo: &mut Conversation,
     tools: &Arc<dyn ToolHost>,
     stack: &Stack,
+    recorder: &SessionRecorder,
     input: &TurnInput,
     cancel: &CancelToken,
 ) {
@@ -459,10 +474,7 @@ fn run_one(
     core.bus.publish(Event::TurnStarted { session: session.clone(), turn, model, user: text.to_string() });
     let before_len = convo.messages.len();
     // Rows are written as the loop produces them; this turn's are told where it began.
-    let recorder = crate::checkpoint::recorder_of(core, &session);
-    if let Some(r) = &recorder {
-        r.begin_turn(convo, &model_ref);
-    }
+    recorder.begin_turn(convo, &model_ref);
     // Crew results folded in as steers during this turn; delivered once the turn is saved.
     let mut steered: Vec<String> = Vec::new();
     let mut sink = |ev: AgentEvent| {
@@ -486,9 +498,7 @@ fn run_one(
     if outcome.blocked {
         // A hook refused the prompt before anything ran: nothing to store, and it is not kept.
         let message = outcome.error.clone().unwrap_or_else(|| "the prompt was blocked".into());
-        if let Some(r) = &recorder {
-            r.discard_turn(turn);
-        }
+        recorder.discard_turn(turn);
         core.bus.publish(Event::Error { session: Some(session.clone()), message });
         core.bus.publish(Event::TurnFinished { session, turn, usage: outcome.usage, stop: outcome.stop });
         return;
@@ -500,16 +510,8 @@ fn run_one(
         // Nothing was appended (the turn failed early): keep the user's words anyway.
         convo.push(Message::user(text));
     }
-    let saved = match &recorder {
-        Some(r) => {
-            r.finish_turn(convo, text, before_len);
-            r.take_error().map_or(Ok(()), Err)
-        }
-        // A runner always has its recorder (the stack builds it); this keeps a turn if not.
-        None => core
-            .store
-            .append(&session, convo.messages[before_len.min(convo.messages.len())..].to_vec(), convo.next_turn, convo.exposure.tainted, now_ms()),
-    };
+    recorder.finish_turn(convo, text, before_len);
+    let saved = recorder.take_error().map_or(Ok(()), Err);
     match saved {
         // The crew results this turn carried are in the session's history now: a restart must
         // not relay them again.

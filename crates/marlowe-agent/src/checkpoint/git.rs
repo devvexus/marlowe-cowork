@@ -6,6 +6,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use marlowe_model::CancelToken;
 use marlowe_os::child::{run, spawn, ChildSpec, RunLimits};
 
 use super::CheckpointError;
@@ -58,6 +59,8 @@ pub(crate) struct Git<'a> {
     /// Where git runs, inside `work_tree`: paths in and out are relative to it, and it limits
     /// what `add` and `ls-files` see.
     pub cwd: &'a Path,
+    /// Stops the command (and its process tree) when the turn is interrupted.
+    pub cancel: Option<&'a CancelToken>,
 }
 
 impl Git<'_> {
@@ -120,6 +123,71 @@ impl Git<'_> {
         Ok(GitOut { stdout: out, stderr: String::from_utf8_lossy(&err).into_owned(), code, truncated: false })
     }
 
+    fn cancelled(&self) -> bool {
+        self.cancel.is_some_and(|c| c.is_cancelled())
+    }
+
+    /// Runs a command whose stdout is a NUL-separated list and hands each item to `each` as it
+    /// arrives, without buffering the output. `each` returning false stops the command early
+    /// (`Ok(false)`); an interrupt stops it with [`CheckpointError::Cancelled`]. `Ok(true)` means
+    /// the list ended and git exited cleanly.
+    pub fn stream_nul(&self, args: &[&str], each: &mut dyn FnMut(&[u8]) -> bool) -> Result<bool, CheckpointError> {
+        if self.cancelled() {
+            return Err(CheckpointError::Cancelled);
+        }
+        let mut cmd = self.command(args);
+        cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+        let mut proc = spawn(&mut cmd, &self.spec(&[])).map_err(|e| CheckpointError::Spawn(e.to_string()))?;
+        let stdout = proc.child_mut().stdout.take();
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let started = std::time::Instant::now();
+        let mut pending: Vec<u8> = Vec::new();
+        let mut outcome: Result<bool, CheckpointError> = Ok(true);
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                let Some(mut r) = stdout else { return };
+                let mut buf = vec![0u8; 64 * 1024];
+                while let Ok(n) = r.read(&mut buf) {
+                    if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            });
+            'read: loop {
+                if self.cancelled() {
+                    outcome = Err(CheckpointError::Cancelled);
+                    break;
+                }
+                if started.elapsed() > TIMEOUT {
+                    outcome = Err(CheckpointError::Git { args: args.first().copied().unwrap_or("").to_string(), message: "timed out".into() });
+                    break;
+                }
+                match rx.recv_timeout(Duration::from_millis(50)) {
+                    Ok(chunk) => {
+                        pending.extend_from_slice(&chunk);
+                        while let Some(at) = pending.iter().position(|b| *b == 0) {
+                            let item: Vec<u8> = pending.drain(..=at).collect();
+                            if !item[..at].is_empty() && !each(&item[..at]) {
+                                outcome = Ok(false);
+                                break 'read;
+                            }
+                        }
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            if !matches!(outcome, Ok(true)) {
+                proc.kill_tree();
+            }
+        });
+        let code = proc.child_mut().wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+        match outcome {
+            Ok(true) if code != 0 => Ok(false),
+            other => other,
+        }
+    }
+
     fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new("git");
         cmd.arg("--git-dir").arg(self.git_dir).arg("--work-tree").arg(self.work_tree);
@@ -147,7 +215,13 @@ impl Git<'_> {
         let cmd = self.command(args);
         let spec = self.spec(env);
         let limits = RunLimits { timeout: TIMEOUT, max_output_bytes: MAX_OUTPUT };
-        let r = run(cmd, &spec, limits, &|| false).map_err(|e| CheckpointError::Spawn(e.to_string()))?;
+        if self.cancelled() {
+            return Err(CheckpointError::Cancelled);
+        }
+        let r = run(cmd, &spec, limits, &|| self.cancelled()).map_err(|e| CheckpointError::Spawn(e.to_string()))?;
+        if r.cancelled {
+            return Err(CheckpointError::Cancelled);
+        }
         if r.timed_out {
             return Err(CheckpointError::Git { args: args.first().copied().unwrap_or("").to_string(), message: "timed out".into() });
         }
@@ -175,5 +249,51 @@ pub(crate) fn bare(cwd: &Path, args: &[&str]) -> Result<GitOut, CheckpointError>
         Ok(out)
     } else {
         Err(CheckpointError::Git { args: args.first().copied().unwrap_or("").to_string(), message: out.stderr.trim().to_string() })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo(name: &str, files: usize) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("marlowe-gitstream-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        bare(&dir, &["init", "-q"]).unwrap();
+        for i in 0..files {
+            std::fs::write(dir.join(format!("f{i}.txt")), b"x").unwrap();
+        }
+        dir
+    }
+
+    fn git_in<'a>(dir: &'a Path, git_dir: &'a Path, cancel: Option<&'a CancelToken>) -> Git<'a> {
+        Git { git_dir, work_tree: dir, cwd: dir, cancel }
+    }
+
+    #[test]
+    fn a_listing_is_read_as_it_arrives_and_can_stop_early() {
+        let dir = repo("early", 5);
+        let git_dir = dir.join(".git");
+        let g = git_in(&dir, &git_dir, None);
+        let mut seen = 0;
+        assert!(g.stream_nul(&["ls-files", "-o", "-z"], &mut |_| { seen += 1; true }).unwrap());
+        assert_eq!(seen, 5);
+        let mut seen = 0;
+        let finished = g.stream_nul(&["ls-files", "-o", "-z"], &mut |_| { seen += 1; seen < 2 }).unwrap();
+        assert!(!finished && seen == 2, "stopped at the second item");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_interrupt_stops_a_listing_and_a_command() {
+        let dir = repo("cancel", 2);
+        let git_dir = dir.join(".git");
+        let token = CancelToken::new();
+        token.cancel();
+        let g = git_in(&dir, &git_dir, Some(&token));
+        assert!(matches!(g.stream_nul(&["ls-files", "-o", "-z"], &mut |_| true), Err(CheckpointError::Cancelled)));
+        assert!(matches!(g.run(&["status"], &[]), Err(CheckpointError::Cancelled)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

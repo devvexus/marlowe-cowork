@@ -1216,3 +1216,35 @@ fn a_code_rewind_refuses_while_another_session_is_running_in_the_workspace() {
     assert!(!ws.join("a.txt").exists());
     stop(d);
 }
+
+#[test]
+fn a_session_asked_again_after_an_idle_eviction_records_each_turn_once() {
+    let home = temp_dir("evict");
+    seed_model(&home, None);
+    let p = Arc::new(Scripted::default());
+    p.push(say("first answer"));
+    p.push(say("second answer"));
+    let cfg = DaemonConfig { session_idle: Duration::from_millis(100), ..DaemonConfig::default() };
+    let d = Daemon::start(deps(p.clone(), None), &home, cfg).expect("daemon starts");
+    let info = d.info();
+    let join = std::thread::spawn(move || d.wait());
+    let mut c = Client::connect(&info);
+    let (id, _) = c.turn(None, "one", None);
+    // Long enough for the runner to be evicted and a new one to be built by the next ask.
+    std::thread::sleep(Duration::from_millis(800));
+    let (again, _) = c.turn(Some(&id), "two", None);
+    assert_eq!(again, id);
+    let conn = rusqlite::Connection::open(paths::cowork_db(&home)).unwrap();
+    let mut st = conn.prepare("SELECT role, turn FROM turns WHERE session = ?1 ORDER BY idx").unwrap();
+    let rows: Vec<(String, u32)> =
+        st.query_map([id.as_str()], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
+    assert_eq!(
+        rows,
+        [("user".to_string(), 0), ("assistant".to_string(), 0), ("user".to_string(), 1), ("assistant".to_string(), 1)],
+        "each turn once, numbered from where the stored history ends"
+    );
+    let mut c2 = Client::connect(&info);
+    c2.send(&Request::Shutdown);
+    c2.until(|e| matches!(e, Event::ShuttingDown));
+    join.join().unwrap().unwrap();
+}

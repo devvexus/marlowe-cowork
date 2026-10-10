@@ -23,7 +23,7 @@ use crate::daemon::Core;
 use crate::lock;
 
 /// The daemon's checkpoint store, created on first use. The first use also starts the 30-day
-/// prune on a thread, a minute later, so it never slows a session's start.
+/// prune on a thread, a minute later and then daily, so it never slows a session's start.
 pub(crate) fn store(core: &Arc<Core>) -> Arc<CheckpointStore> {
     let created = AtomicBool::new(false);
     let store = core.ext.get_or_init(|| {
@@ -34,7 +34,10 @@ pub(crate) fn store(core: &Arc<Core>) -> Arc<CheckpointStore> {
         let pruner = store.clone();
         let _ = std::thread::Builder::new().name("marlowe-checkpoint-prune".into()).spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(60));
-            pruner.prune_all();
+            loop {
+                pruner.prune_all();
+                std::thread::sleep(std::time::Duration::from_secs(24 * 3600));
+            }
         });
     }
     store
@@ -54,8 +57,18 @@ pub(crate) fn end_turn(core: &Arc<Core>, convo: &Conversation, turn: u32) {
 #[derive(Default)]
 struct Recorders(Mutex<HashMap<SessionId, Arc<SessionRecorder>>>);
 
-/// The recorder for `convo`'s session, created (positioned after the stored history) on first
-/// use by the session's runner.
+/// A runner is starting: it gets its own recorder, positioned after the stored history, which
+/// replaces any left by a previous runner of the session (one still winding down after an idle
+/// eviction keeps its handle, but the registry now answers with this one).
+pub(crate) fn start_runner(core: &Arc<Core>, convo: &Conversation) -> Arc<SessionRecorder> {
+    let all = core.ext.get_or_init(Recorders::default);
+    let fresh = Arc::new(SessionRecorder::new(convo.session.clone(), core.store.clone(), core.mind.clone(), convo.messages.len()));
+    lock(&all.0).insert(convo.session.clone(), fresh.clone());
+    fresh
+}
+
+/// The registered recorder for `convo`'s session, created if the runner has not registered one
+/// (the stack's constructors; `start_runner` runs before them in a daemon).
 pub(crate) fn recorder(core: &Arc<Core>, convo: &Conversation) -> Arc<SessionRecorder> {
     let all = core.ext.get_or_init(Recorders::default);
     let mut map = lock(&all.0);
@@ -71,10 +84,13 @@ pub(crate) fn recorder_of(core: &Arc<Core>, session: &SessionId) -> Option<Arc<S
     core.ext.get::<Recorders>().and_then(|all| lock(&all.0).get(session).cloned())
 }
 
-/// A runner is exiting: its recorder goes with it (a reload builds a new one).
-pub(crate) fn release(core: &Arc<Core>, session: &SessionId) {
+/// A runner is exiting: its recorder goes with it, unless a newer runner has replaced it.
+pub(crate) fn release(core: &Arc<Core>, session: &SessionId, mine: &Arc<SessionRecorder>) {
     if let Some(all) = core.ext.get::<Recorders>() {
-        lock(&all.0).remove(session);
+        let mut map = lock(&all.0);
+        if map.get(session).is_some_and(|r| Arc::ptr_eq(r, mine)) {
+            map.remove(session);
+        }
     }
 }
 
