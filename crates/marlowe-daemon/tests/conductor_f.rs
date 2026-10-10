@@ -22,16 +22,22 @@ use marlowe_proto::{paths, write_line, DaemonInfo, Envelope, Event, LineReader, 
 // ---------------------------------------------------------------- scripted provider
 
 /// The conductor's calls take the script in order; a subagent's (its system prompt carries the
-/// subagent frame) answer after a pause, so the conductor's turn has ended by then.
+/// subagent frame) take `sub` first, else answer after a pause, so the conductor's turn has ended
+/// by then.
 #[derive(Default)]
 struct Scripted {
     main: Mutex<VecDeque<Vec<StreamEvent>>>,
+    sub: Mutex<VecDeque<Vec<StreamEvent>>>,
     requests: Mutex<Vec<ChatRequest>>,
 }
 
 impl Scripted {
     fn push(&self, evs: Vec<StreamEvent>) {
         self.main.lock().unwrap().push_back(evs);
+    }
+
+    fn push_sub(&self, evs: Vec<StreamEvent>) {
+        self.sub.lock().unwrap().push_back(evs);
     }
 
     fn requests(&self) -> Vec<ChatRequest> {
@@ -64,7 +70,10 @@ impl Provider for Scripted {
     fn stream(&self, req: &ChatRequest, cancel: &CancelToken, on: &mut dyn FnMut(StreamEvent)) -> Result<Completion, ProviderError> {
         self.requests.lock().unwrap().push(req.clone());
         let sub = req.system.iter().any(|b| b.text.contains("<subagent>"));
-        let evs = if sub {
+        let scripted_sub = if sub { self.sub.lock().unwrap().pop_front() } else { None };
+        let evs = if let Some(evs) = scripted_sub {
+            evs
+        } else if sub {
             let end = Instant::now() + Duration::from_millis(1_500);
             while Instant::now() < end {
                 if cancel.is_cancelled() {
@@ -89,7 +98,7 @@ struct Tools;
 
 impl ToolHost for Tools {
     fn specs(&self) -> Vec<ToolSpec> {
-        ["echo", "ask_user", "agent"]
+        ["echo", "ask_user", "agent", "danger"]
             .iter()
             .map(|n| ToolSpec { name: n.to_string(), description: n.to_string(), input_schema: serde_json::json!({"type": "object"}) })
             .collect()
@@ -104,12 +113,17 @@ impl ToolHost for Tools {
             "echo" => ToolOutcome::ok(call.args.to_string(), "echoed"),
             "ask_user" => marlowe_agent::todo::ask_user_call(&call.args, cx),
             "agent" => marlowe_agent::subagent::agent_call(&call.args, cx),
+            "danger" => ToolOutcome::ok("DANGER-RAN", "ran"),
             other => ToolOutcome::error(format!("unknown tool {other}")),
         }
     }
 
-    fn consequence(&self, _call: &ToolCallReq) -> Consequence {
-        Consequence::Free
+    fn consequence(&self, call: &ToolCallReq) -> Consequence {
+        if call.name == "danger" {
+            Consequence::Ask { summary: "do something dangerous".into() }
+        } else {
+            Consequence::Free
+        }
     }
 }
 
@@ -416,6 +430,102 @@ fn parity_x10_a1_commands_and_agent_types_are_listed() {
     }
     let auditor = types.iter().find(|t| t.name == "auditor").unwrap();
     assert_eq!((auditor.model.as_deref(), auditor.tools.clone()), (Some("haiku"), vec!["read".to_string(), "grep".into()]));
+    drop(c);
+    stop(r);
+}
+
+#[test]
+fn parity_a4_a_background_agent_lost_to_a_restart_is_reported_on_the_next_turn() {
+    let home = temp_home("a4lost");
+    seed_models(&home);
+    let p = Arc::new(Scripted::default());
+    p.push(call("agent", serde_json::json!({"type": "general", "description": "long job", "prompt": "do the long job", "background": true})));
+    p.push(answer("Started it."));
+    let r = start(&home, p.clone());
+    let mut c = Client::connect(&r.info);
+    let sid = c.ask(None, "kick it off");
+    // Shut down while the agent is still working (it takes 1.5 s): it is stopped, not reported.
+    drop(c);
+    stop(r);
+
+    let r = start(&home, p.clone());
+    let mut c = Client::connect(&r.info);
+    p.push(answer("Noted; I will start it again."));
+    c.ask(Some(sid.clone()), "anything new?");
+    let last = p.requests().into_iter().filter(|r| !r.system.iter().any(|b| b.text.contains("<subagent>"))).last().unwrap();
+    let text = messages_text(&last);
+    assert!(text.contains("background agent agent-1") && text.contains("was stopped when Marlowe restarted"), "{text}");
+    assert!(!text.contains("BG-REPORT"), "the stopped agent never reported");
+    // Told once.
+    p.push(answer("ok"));
+    c.ask(Some(sid), "and now?");
+    let last = p.requests().into_iter().filter(|r| !r.system.iter().any(|b| b.text.contains("<subagent>"))).last().unwrap();
+    assert_eq!(messages_text(&last).matches("was stopped when Marlowe restarted").count(), 1);
+    drop(c);
+    stop(r);
+}
+
+/// Review fix: an interrupt ends a foreground subagent's pending approval at once (the default
+/// approval timeout is ten minutes), and the conductor's turn finishes.
+#[test]
+fn an_interrupt_ends_a_pending_subagent_approval_at_once() {
+    let home = temp_home("subcancel");
+    seed_models(&home);
+    let p = Arc::new(Scripted::default());
+    p.push(call("agent", serde_json::json!({"type": "general", "description": "risky", "prompt": "do the risky thing"})));
+    p.push_sub(call("danger", serde_json::json!({})));
+    let r = start(&home, p.clone());
+    let mut c = Client::connect(&r.info);
+    c.send(&Request::Ask { session: None, text: "go".into(), workspace: None, images: Vec::new(), options: None });
+    let (session, summary) = match c.until(|e| matches!(e, Event::ApprovalRequested { .. })).pop().unwrap().event {
+        Event::ApprovalRequested { session, summary, .. } => (session, summary),
+        _ => unreachable!(),
+    };
+    assert!(summary.contains("subagent agent-1") && summary.contains("dangerous"), "{summary}");
+    let asked = Instant::now();
+    c.send(&Request::Interrupt { session });
+    c.until(|e| matches!(e, Event::TurnFinished { .. }));
+    let took = asked.elapsed();
+    eprintln!("interrupt to turn end: {took:?}");
+    assert!(took < Duration::from_millis(1_500), "the pending approval held the turn for {took:?}");
+    drop(c);
+    stop(r);
+}
+
+/// C15: a model chosen with `/model` gets the context gate's window, not its advertised one:
+/// `big` advertises 262k but its policy holds the runner to 32k, so a 26k-token turn compacts.
+#[test]
+fn parity_c15_a_switched_model_works_against_the_gated_window() {
+    use marlowe_proto::{ContextPolicy, KvType, PolicySource};
+
+    let home = temp_home("c15w");
+    seed_models(&home);
+    let big = ModelRef::new(ProviderKind::Ollama, "big");
+    {
+        let lib = Library::open(&paths::cowork_db(&home)).unwrap();
+        let mut info = ModelInfo::bare(ProviderKind::Ollama, "big");
+        info.supports_tools = true;
+        info.context_window = Some(262_144);
+        lib.add(&info).unwrap();
+        let policy = ContextPolicy { max_ctx: 32_768, kv_type: KvType::F16, parallel: 1, source: PolicySource::User, updated_ms: 0 };
+        lib.set_policy(&big, &policy).unwrap();
+    }
+    let p = Arc::new(Scripted::default());
+    let r = start(&home, p.clone());
+    let mut c = Client::connect(&r.info);
+    let sid = c.ask(None, "first question");
+    c.send(&Request::SwitchModel { session: sid.clone(), model: big, effort: None });
+    p.push(answer("SUMMARY-OF-EARLIER"));
+    p.push(answer("after"));
+    // About 26k tokens (chars/3): over 70% of 32k, far under 70% of 262k.
+    let long = "The quick brown fox checks one more line of the log. ".repeat(1_500);
+    c.ask(Some(sid), &long);
+    let last = p.requests().pop().unwrap();
+    assert_eq!(last.model, "big");
+    assert!(
+        last.system.iter().any(|b| b.text.contains("SUMMARY-OF-EARLIER")),
+        "the turn was not compacted, so the agent sized it against the advertised 262k window"
+    );
     drop(c);
     stop(r);
 }

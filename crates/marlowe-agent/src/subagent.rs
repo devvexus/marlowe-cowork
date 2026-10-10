@@ -12,13 +12,16 @@
 //! the caller's tools minus the ones a subagent never gets (depth 1: no `agent`), filtered by its
 //! type; read-only types lose every tool that writes or runs. Calls in one step run in parallel,
 //! bounded by slots (one local model stream, several cloud ones). `background: true` returns at
-//! once and wakes the conductor when the agent finishes ([`SessionWake`]); `isolation: worktree`
-//! runs it in a git worktree from the [`WorktreeProvider`]. A finished subagent's transcript is
-//! kept, so `send_message` continues it with its context.
+//! once and wakes the conductor when the agent finishes ([`SessionWake`]); it has its own local
+//! slot (a foreground agent never waits behind it), and the daemon's [`BackgroundLedger`] records
+//! it while it runs (a restart tells the session it was lost) and stops it at shutdown.
+//! `isolation: worktree` runs it in a git worktree from the [`WorktreeProvider`]. A finished
+//! subagent's transcript is kept, so `send_message` continues it with its context. A subagent
+//! that read untrusted content taints its caller ([`ReportTainted`]).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use marlowe_model::{Effort, ModelInfo, Provider, ToolSpec};
@@ -45,8 +48,12 @@ pub const NEVER_FOR_SUBAGENTS: &[&str] =
 /// Read-only tools by name, for hosts that do not publish manifests.
 const READ_ONLY_NAMES: &[&str] = &[
     "read", "glob", "grep", "symbols", "definition", "references", "hover", "diagnostics", "web_fetch", "web_search",
-    "arxiv", "paper", "recall", "skill", "todo", "job_output",
+    "arxiv", "paper", "recall", "todo", "job_output",
 ];
+
+/// Tools a read-only agent never gets, whatever their manifest says: a skill can run its
+/// pre-exec shell commands and fork an agent with the full toolset.
+const NEVER_READ_ONLY: &[&str] = &["skill"];
 
 /// Model calls a subagent may make in one task unless its type says otherwise.
 pub const SUBAGENT_MAX_STEPS: u32 = 200;
@@ -277,7 +284,12 @@ fn type_dirs(src: &Sources) -> Vec<PathBuf> {
     v
 }
 
-/// Built-ins, then files (later replaces earlier by name), then plugins' agents (namespaced).
+/// Built-in types that are read-only by construction. A file may replace one (its prompt, its
+/// model), but never makes it able to write or run: plan mode and the permission gate rely on it.
+pub const READ_ONLY_BUILTINS: &[&str] = &["explore", "plan"];
+
+/// Built-ins, then files (later replaces earlier by name), then plugins' agents (namespaced). A
+/// file named after a read-only built-in stays read-only, with a warning when it asked for more.
 pub fn discover_types(src: &Sources) -> (Vec<AgentType>, Vec<String>) {
     let mut types = builtin_types();
     let mut warnings = Vec::new();
@@ -285,7 +297,16 @@ pub fn discover_types(src: &Sources) -> (Vec<AgentType>, Vec<String>) {
         let Some(text) = instructions::read_file(path, warnings) else { return };
         let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         match parse_agent(&text, &stem, &path.display().to_string(), ns) {
-            Ok(t) => {
+            Ok(mut t) => {
+                if let Some(b) = READ_ONLY_BUILTINS.iter().find(|b| t.name.eq_ignore_ascii_case(b)) {
+                    if !t.read_only {
+                        t.warnings.push(format!(
+                            "{}: replaces the built-in read-only `{b}` agent, which stays read-only (its write and shell tools are not offered)",
+                            path.display()
+                        ));
+                        t.read_only = true;
+                    }
+                }
                 warnings.extend(t.warnings.iter().cloned());
                 types.retain(|x| x.name != t.name && !(t.name == "general" && x.name == "general-purpose"));
                 types.push(t);
@@ -316,6 +337,20 @@ pub fn discover_types(src: &Sources) -> (Vec<AgentType>, Vec<String>) {
         }
     }
     (types, warnings)
+}
+
+/// The agent type `name` resolves to in a session with profile `home` and `workspace`, as
+/// [`Subagents::types`] resolves it. The permission gate decides on its `read_only`, never on the
+/// name (a repository may define its own `explore`).
+pub fn resolve_type(name: &str, home: Option<&Path>, workspace: Option<&Path>) -> Option<AgentType> {
+    let (types, _) = discover_types(&Sources::for_session(home, workspace));
+    find_type(&types, name).cloned()
+}
+
+/// Whether running agent type `name` only reads (plan mode may allow it; track E). An unknown
+/// type is refused by the tool, so it changes nothing.
+pub fn read_only_type(name: &str, home: Option<&Path>, workspace: Option<&Path>) -> bool {
+    resolve_type(name, home, workspace).is_none_or(|t| t.read_only)
 }
 
 /// Finds `name` among `types`: exact (case-insensitive), `general-purpose` for `general`, or the
@@ -363,6 +398,9 @@ impl FilteredTools {
             }
         }
         if self.read_only {
+            if NEVER_READ_ONLY.contains(&name) {
+                return false;
+            }
             return match self.inner.manifest(name) {
                 Some(m) => !m.effects.writes && !m.effects.runs,
                 None => READ_ONLY_NAMES.contains(&name),
@@ -452,6 +490,21 @@ pub trait ModelResolver: Send + Sync {
 #[derive(Clone)]
 pub struct SessionWake(pub Arc<dyn Fn(&SessionId, String, bool) + Send + Sync>);
 
+/// Left in the caller's `Conversation::ext` by a call whose subagent read untrusted content; the
+/// loop taints the caller when the batch ends (the report carries that content).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ReportTainted;
+
+/// Background agents as the daemon keeps them: recorded while they run, so a restart can tell
+/// the session one was lost, and stopped when the daemon shuts down.
+pub trait BackgroundLedger: Send + Sync {
+    fn started(&self, session: &SessionId, id: &str, label: &str);
+    /// It finished or failed on its own; the record goes.
+    fn finished(&self, session: &SessionId, id: &str);
+    /// True once background agents must stop (shutdown). The record stays for the restart.
+    fn stopping(&self) -> bool;
+}
+
 /// What an agent's `model:` names (design A10).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelTarget {
@@ -503,12 +556,22 @@ pub fn read_aliases(text: &str) -> HashMap<String, String> {
 /// Builds the tool host a subagent starts from (the caller's tools for a workspace).
 pub type HostFactory = Arc<dyn Fn(Option<&Path>) -> Arc<dyn ToolHost> + Send + Sync>;
 
+/// Builds the approval gate for one subagent run, given that run's cancel token: an interrupt
+/// (or shutdown, for a background agent) must end a pending approval at once, as the
+/// conductor's own gate does.
+pub type ApprovalFactory = Arc<dyn Fn(&marlowe_model::CancelToken) -> Arc<dyn ApprovalGate> + Send + Sync>;
+
+/// One gate for every run (tests, and gates that never wait).
+pub fn same_gate(gate: Arc<dyn ApprovalGate>) -> ApprovalFactory {
+    Arc::new(move |_: &marlowe_model::CancelToken| gate.clone())
+}
+
 /// What the subagent service is built with.
 #[derive(Clone)]
 pub struct SubagentConfig {
     pub resolver: Arc<dyn ModelResolver>,
     pub tools: HostFactory,
-    pub approvals: Arc<dyn ApprovalGate>,
+    pub approvals: ApprovalFactory,
     pub worktrees: Arc<dyn WorktreeProvider>,
     /// Where types and instructions come from (roots are replaced by the call's workspace).
     pub sources: Sources,
@@ -516,6 +579,7 @@ pub struct SubagentConfig {
     /// Middleware every subagent runs with (hooks, the working set).
     pub middleware: Vec<Arc<dyn ToolMiddleware>>,
     pub cloud_slots: usize,
+    pub ledger: Option<Arc<dyn BackgroundLedger>>,
 }
 
 /// One `agent` call.
@@ -550,24 +614,42 @@ struct Finished {
     model: Option<String>,
 }
 
+/// Which pool a run takes its slot from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Lane {
+    /// One foreground local stream at a time.
+    Local,
+    /// One background local agent at a time, apart from the foreground one.
+    LocalBackground,
+    /// `cap` cloud streams.
+    Cloud,
+}
+
+impl Lane {
+    fn of(model: &ModelInfo, background: bool) -> Lane {
+        match (model.local || model.provider.is_local(), background) {
+            (true, false) => Lane::Local,
+            (true, true) => Lane::LocalBackground,
+            (false, _) => Lane::Cloud,
+        }
+    }
+}
+
 #[derive(Default)]
 struct Slots {
-    used: Mutex<(usize, usize)>,
+    used: Mutex<HashMap<Lane, usize>>,
     cv: Condvar,
 }
 
 impl Slots {
-    /// Waits for a slot (local: one at a time; cloud: `cap`). False when cancelled first.
-    fn acquire(&self, local: bool, cap: usize, cancelled: &dyn Fn() -> bool) -> bool {
+    /// Waits for a slot in `lane` (`cap` for cloud, one otherwise). False when cancelled first.
+    fn acquire(&self, lane: Lane, cap: usize, cancelled: &dyn Fn() -> bool) -> bool {
+        let limit = if lane == Lane::Cloud { cap.max(1) } else { 1 };
         let mut g = self.used.lock().unwrap_or_else(|p| p.into_inner());
         loop {
-            let (l, c) = *g;
-            if local && l < 1 {
-                g.0 += 1;
-                return true;
-            }
-            if !local && c < cap.max(1) {
-                g.1 += 1;
+            let n = g.entry(lane).or_insert(0);
+            if *n < limit {
+                *n += 1;
                 return true;
             }
             if cancelled() {
@@ -577,12 +659,10 @@ impl Slots {
         }
     }
 
-    fn release(&self, local: bool) {
+    fn release(&self, lane: Lane) {
         let mut g = self.used.lock().unwrap_or_else(|p| p.into_inner());
-        if local {
-            g.0 = g.0.saturating_sub(1);
-        } else {
-            g.1 = g.1.saturating_sub(1);
+        if let Some(n) = g.get_mut(&lane) {
+            *n = n.saturating_sub(1);
         }
         self.cv.notify_all();
     }
@@ -593,6 +673,8 @@ struct State {
     slots: Slots,
     finished: Mutex<HashMap<String, Finished>>,
     running: Mutex<HashSet<String>>,
+    /// Background agents' cancel tokens, by id.
+    background: Mutex<HashMap<String, marlowe_model::CancelToken>>,
     next: AtomicU64,
 }
 
@@ -619,6 +701,11 @@ impl Subagents {
         discover_types(&self.sources_for(workspace)).0
     }
 
+    /// The type `name` resolves to for `workspace` (see [`resolve_type`]).
+    pub fn resolve(&self, name: &str, workspace: Option<&Path>) -> Option<AgentType> {
+        find_type(&self.types(workspace), name).cloned()
+    }
+
     fn sources_for(&self, workspace: Option<&Path>) -> Sources {
         let mut s = self.cfg.sources.clone();
         if let Some(w) = workspace {
@@ -630,7 +717,13 @@ impl Subagents {
         s
     }
 
-    fn build_agent(&self, ty: &AgentType, model: Option<&str>, workspace: Option<&Path>) -> Result<Agent, String> {
+    fn build_agent(
+        &self,
+        ty: &AgentType,
+        model: Option<&str>,
+        workspace: Option<&Path>,
+        cancel: &marlowe_model::CancelToken,
+    ) -> Result<Agent, String> {
         let m = self.cfg.resolver.resolve(model.or(ty.model.as_deref()))?;
         let host: Arc<dyn ToolHost> = Arc::new(FilteredTools::new((self.cfg.tools)(workspace), ty));
         let instructions = instructions::Instructions::load(&self.sources_for(workspace)).render();
@@ -639,21 +732,28 @@ impl Subagents {
         let system = SystemPrompt::with_core(core).sections(PromptSections { instructions, ..Default::default() }).environment(env);
         let mut agent = Agent::new(m.provider, m.info, host, system);
         agent.effort = ty.effort.unwrap_or(m.effort);
-        agent.approvals = self.cfg.approvals.clone();
+        agent.approvals = (self.cfg.approvals)(cancel);
         agent.budget.max_steps = ty.max_turns.unwrap_or(SUBAGENT_MAX_STEPS);
         agent.middleware.extend(self.cfg.middleware.iter().cloned());
         Ok(agent)
     }
 
-    fn run_agent(&self, agent: &Agent, convo: &mut Conversation, prompt: &str, cancel: &marlowe_model::CancelToken) -> Result<String, String> {
-        let local = agent.model.local || agent.model.provider.is_local();
+    fn run_agent(
+        &self,
+        agent: &Agent,
+        convo: &mut Conversation,
+        prompt: &str,
+        cancel: &marlowe_model::CancelToken,
+        background: bool,
+    ) -> Result<String, String> {
+        let lane = Lane::of(&agent.model, background);
         let c = cancel.clone();
-        if !self.state.slots.acquire(local, self.cfg.cloud_slots, &|| c.is_cancelled()) {
+        if !self.state.slots.acquire(lane, self.cfg.cloud_slots, &|| c.is_cancelled()) {
             return Err("interrupted before the agent started".into());
         }
         let (_tx, rx) = crossbeam_channel::unbounded();
         let out = agent.run_turn(convo, prompt, cancel, &rx, &mut |_| {});
-        self.state.slots.release(local);
+        self.state.slots.release(lane);
         match out.stop {
             TurnStop::Done => Ok(out.text),
             TurnStop::StepLimit | TurnStop::Budget => Ok(format!("{}\n\n[the agent stopped at its step budget]", out.text.trim())),
@@ -686,7 +786,10 @@ impl Subagents {
                 Err(e) => return ToolOutcome::error(format!("could not create a worktree: {e}")),
             }
         }
-        let agent = match self.build_agent(&ty, req.model.as_deref(), workspace.as_deref()) {
+        // A background agent has its own token (the caller's turn ends at once); a foreground one
+        // stops with the caller's.
+        let cancel = if req.background { marlowe_model::CancelToken::new() } else { cx.cancel.clone() };
+        let agent = match self.build_agent(&ty, req.model.as_deref(), workspace.as_deref(), &cancel) {
             Ok(a) => a,
             Err(e) => return ToolOutcome::error(format!("could not start the {} agent: {e}", ty.name)),
         };
@@ -705,12 +808,37 @@ impl Subagents {
             let label2 = label.clone();
             let note = worktree_note.clone();
             self.state.running.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone());
+            self.state.background.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), cancel.clone());
+            if let Some(l) = &self.cfg.ledger {
+                l.started(&parent, &id, &label);
+            }
             let spawned = std::thread::Builder::new().name(format!("marlowe-{id}")).spawn(move || {
-                let cancel = marlowe_model::CancelToken::new();
-                let result = me.run_agent(&agent, &mut convo, &prompt, &cancel);
+                let done = Arc::new(AtomicBool::new(false));
+                // Shutdown stops the agent; the ledger keeps its record for the restart.
+                if let Some(l) = me.cfg.ledger.clone() {
+                    let (done, cancel) = (done.clone(), cancel.clone());
+                    let _ = std::thread::Builder::new().name(format!("marlowe-{id2}-watch")).spawn(move || {
+                        while !done.load(Ordering::SeqCst) && !cancel.is_cancelled() {
+                            if l.stopping() {
+                                cancel.cancel();
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+                    });
+                }
+                let result = me.run_agent(&agent, &mut convo, &prompt, &cancel, true);
+                done.store(true, Ordering::SeqCst);
                 let tainted = convo.exposure.tainted;
+                me.state.background.lock().unwrap_or_else(|p| p.into_inner()).remove(&id2);
                 me.state.running.lock().unwrap_or_else(|p| p.into_inner()).remove(&id2);
                 me.state.finished.lock().unwrap_or_else(|p| p.into_inner()).insert(id2.clone(), Finished { convo, ty: ty2, model });
+                if me.cfg.ledger.as_ref().is_some_and(|l| l.stopping()) {
+                    return;
+                }
+                if let Some(l) = &me.cfg.ledger {
+                    l.finished(&parent, &id2);
+                }
                 let text = match result {
                     Ok(t) => format!("[agent {id2} · {label2} finished]\n{}{note}", t.trim()),
                     Err(e) => format!("[agent {id2} · {label2} failed] {e}"),
@@ -721,6 +849,10 @@ impl Subagents {
             });
             if let Err(e) = spawned {
                 self.state.running.lock().unwrap_or_else(|p| p.into_inner()).remove(&id);
+                self.state.background.lock().unwrap_or_else(|p| p.into_inner()).remove(&id);
+                if let Some(l) = &self.cfg.ledger {
+                    l.finished(&cx.session, &id);
+                }
                 return ToolOutcome::error(format!("could not start the agent: {e}"));
             }
             return ToolOutcome::ok(
@@ -729,7 +861,10 @@ impl Subagents {
             );
         }
 
-        let result = self.run_agent(&agent, &mut convo, &req.prompt, &cx.cancel);
+        let result = self.run_agent(&agent, &mut convo, &req.prompt, &cancel, false);
+        if convo.exposure.tainted {
+            cx.scope.with_ext(|e| e.insert(ReportTainted));
+        }
         self.state.finished.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), Finished { convo, ty, model: req.model });
         match result {
             Ok(text) => ToolOutcome::ok(
@@ -749,15 +884,34 @@ impl Subagents {
             return ToolOutcome::error(format!("no finished agent `{agent_id}` in this session"));
         };
         let workspace = f.convo.workspace.clone();
-        let result = match self.build_agent(&f.ty, f.model.as_deref(), workspace.as_deref()) {
-            Ok(agent) => self.run_agent(&agent, &mut f.convo, text, &cx.cancel),
+        let result = match self.build_agent(&f.ty, f.model.as_deref(), workspace.as_deref(), &cx.cancel) {
+            Ok(agent) => self.run_agent(&agent, &mut f.convo, text, &cx.cancel, false),
             Err(e) => Err(e),
         };
+        if f.convo.exposure.tainted {
+            cx.scope.with_ext(|e| e.insert(ReportTainted));
+        }
         self.state.finished.lock().unwrap_or_else(|p| p.into_inner()).insert(agent_id.to_string(), f);
         match result {
             Ok(t) => ToolOutcome::ok(format!("{}\n\n[agent_id: {agent_id}]", t.trim()), format!("{agent_id} replied")),
             Err(e) => ToolOutcome::error(format!("{agent_id} did not finish: {e}")),
         }
+    }
+}
+
+impl Subagents {
+    /// The background agents still running.
+    pub fn background_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.state.background.lock().unwrap_or_else(|p| p.into_inner()).keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    /// Cancels every running background agent; each still reports, as interrupted.
+    pub fn cancel_background(&self) -> usize {
+        let map = self.state.background.lock().unwrap_or_else(|p| p.into_inner());
+        map.values().for_each(|c| c.cancel());
+        map.len()
     }
 }
 
@@ -787,9 +941,11 @@ pub fn send_message_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
 }
 
 /// Whether running agent type `name` may bring untrusted content back (its tools reach the
-/// web or MCP), so the caller is tainted by its report.
-pub fn may_taint(name: &str, workspace: Option<&Path>) -> bool {
-    let (types, _) = discover_types(&Sources::for_session(None, workspace));
+/// web or MCP), so the caller is tainted by its report. Types resolve as [`Subagents::types`]
+/// does for a daemon with profile `home` (its agents, roles and plugins included). A run that
+/// did read untrusted content also taints the caller afterwards ([`ReportTainted`]).
+pub fn may_taint(name: &str, home: Option<&Path>, workspace: Option<&Path>) -> bool {
+    let (types, _) = discover_types(&Sources::for_session(home, workspace));
     match find_type(&types, name) {
         Some(t) => match &t.tools {
             None => true,

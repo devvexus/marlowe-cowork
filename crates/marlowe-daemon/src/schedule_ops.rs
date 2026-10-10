@@ -147,8 +147,10 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
     }
 }
 
-/// Re-arms stored schedules at daemon start (`boot.rs`). Must not block.
+/// Re-arms stored schedules at daemon start (`boot.rs`), and marks the background agents the
+/// last daemon was running as lost (`conductor_ops::on_boot`). Must not block.
 pub(crate) fn on_boot(core: &Arc<Core>) {
+    crate::conductor_ops::on_boot(core);
     match load(core) {
         Ok(rows) if !rows.is_empty() => {
             *lock(&schedules(core).rows) = rows;

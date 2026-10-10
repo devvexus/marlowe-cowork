@@ -9,8 +9,15 @@
 //! [`InstructionsMiddleware`] owns the session's prompt sections: instructions, the skills index
 //! and the output style ([`crate::commands`]), built at the first turn and on [`refresh`]
 //! (`/memory`, `/add-dir`).
+//!
+//! Imports are confined: a user-level file (profile home, `~/.claude`, `~/.marlowe`) imports
+//! anything, but a project, local, directory or added-root file only imports from the workspace
+//! roots, the profile home and the user's `~/.claude` and `~/.marlowe`. Anything else is skipped
+//! with a warning until the user trusts it once ([`trust`]): a cloned repository must not pull
+//! `~/.ssh/config` into the prompt.
 
 pub mod glob;
+pub mod trust;
 pub mod yaml;
 
 use std::collections::BTreeSet;
@@ -97,6 +104,8 @@ pub struct Sources {
     pub stop_at: Option<PathBuf>,
     /// Extra local plugin bundles (`--plugin-dir`, settings).
     pub plugin_roots: Vec<PathBuf>,
+    /// Import targets outside the trusted areas that the user allowed (see the module docs).
+    pub approved_imports: Vec<PathBuf>,
 }
 
 impl Sources {
@@ -111,6 +120,7 @@ impl Sources {
             cwd: workspace.map(Path::to_path_buf),
             stop_at: None,
             plugin_roots: Vec::new(),
+            approved_imports: Vec::new(),
         }
     }
 
@@ -133,8 +143,21 @@ pub struct Instructions {
     pub seen_files: BTreeSet<String>,
     pub roots: Vec<PathBuf>,
     pub user_home: Option<PathBuf>,
+    /// Where a project file's imports may point without asking, and the targets allowed beyond.
+    pub trusted_areas: Vec<PathBuf>,
+    pub approved_imports: Vec<PathBuf>,
+    /// Imports skipped because they point outside the trusted areas (asked about by [`refresh`]).
+    pub blocked_imports: Vec<BlockedImport>,
     /// Refusals and oddities, shown with the prefix report (never silent).
     pub warnings: Vec<String>,
+}
+
+/// An `@` import a project file made of a file outside the workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockedImport {
+    pub importer: PathBuf,
+    pub raw: String,
+    pub target: PathBuf,
 }
 
 fn key(p: &Path) -> String {
@@ -190,16 +213,23 @@ impl Instructions {
     /// always-on rules, and added roots' own files. Path-scoped rules wait for a matching touch.
     pub fn load(src: &Sources) -> Self {
         let mut me = Instructions { roots: src.roots.clone(), user_home: src.user_home.clone(), ..Default::default() };
+        me.trusted_areas = src.roots.iter().map(|r| normalize(r)).collect();
+        me.trusted_areas.extend(src.home.iter().map(|h| normalize(h)));
+        if let Some(u) = &src.user_home {
+            me.trusted_areas.push(normalize(&u.join(".claude")));
+            me.trusted_areas.push(normalize(&u.join(".marlowe")));
+        }
+        me.approved_imports = src.approved_imports.iter().map(|p| normalize(p)).collect();
         if let Some(h) = &src.home {
             for n in ["MARLOWE.md", "AGENTS.md"] {
                 me.add_file(&h.join(n), Origin::User, 0);
             }
-            me.load_rules_in(&h.join("rules"), h);
+            me.load_rules_in(&h.join("rules"), h, true);
         }
         if let Some(u) = &src.user_home {
             me.add_file(&u.join(".claude").join("CLAUDE.md"), Origin::User, 0);
             me.add_file(&u.join(".marlowe").join("MARLOWE.md"), Origin::User, 0);
-            me.load_rules_in(&u.join(".claude").join("rules"), u);
+            me.load_rules_in(&u.join(".claude").join("rules"), u, true);
         }
         if let Some(cwd) = src.cwd() {
             let cwd = normalize(cwd);
@@ -241,12 +271,13 @@ impl Instructions {
     }
 
     fn load_project_rules(&mut self, root: &Path) {
-        self.load_rules_in(&root.join(".marlowe").join("rules"), root);
-        self.load_rules_in(&root.join(".claude").join("rules"), root);
+        self.load_rules_in(&root.join(".marlowe").join("rules"), root, false);
+        self.load_rules_in(&root.join(".claude").join("rules"), root, false);
     }
 
-    /// Every `*.md` under `dir` (recursively): rules with `paths:` wait, others load now.
-    fn load_rules_in(&mut self, dir: &Path, base: &Path) {
+    /// Every `*.md` under `dir` (recursively): rules with `paths:` wait, others load now. `user`:
+    /// the user's own rules, whose imports are not confined.
+    fn load_rules_in(&mut self, dir: &Path, base: &Path, user: bool) {
         let mut files = Vec::new();
         md_files(dir, &mut files);
         for f in files {
@@ -264,7 +295,7 @@ impl Instructions {
                     let body = body.trim().to_string();
                     self.files.push(InstructionFile { path: f.clone(), origin: Origin::Rule, text: body.clone() });
                     let dir = f.parent().unwrap_or(base).to_path_buf();
-                    self.expand_imports(&dir, &body, 1);
+                    self.expand_imports(&f, &dir, &body, 1, user);
                 }
             } else if !self.rules.iter().any(|r| r.path == f) {
                 self.rules.push(PathRule { path: f, base: base.to_path_buf(), globs, body: body.trim().to_string() });
@@ -274,17 +305,27 @@ impl Instructions {
 
     /// Adds one file (and its imports) if it exists and was not seen.
     fn add_file(&mut self, path: &Path, origin: Origin, depth: usize) -> bool {
+        self.add_file_as(path, origin, depth, origin == Origin::User)
+    }
+
+    /// [`Self::add_file`]; `user`: the file is the user's own, so its imports are not confined.
+    fn add_file_as(&mut self, path: &Path, origin: Origin, depth: usize, user: bool) -> bool {
         if !path.is_file() || !self.seen_files.insert(key(path)) {
             return false;
         }
         let Some(text) = read_file(path, &mut self.warnings) else { return false };
         self.files.push(InstructionFile { path: path.to_path_buf(), origin, text: text.trim().to_string() });
         let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
-        self.expand_imports(&dir, &text, depth + 1);
+        self.expand_imports(path, &dir, &text, depth + 1, user);
         true
     }
 
-    fn expand_imports(&mut self, dir: &Path, text: &str, depth: usize) {
+    /// Whether a project file may import `target` without asking.
+    fn import_allowed(&self, target: &Path) -> bool {
+        self.trusted_areas.iter().any(|a| inside(a, target)) || self.approved_imports.iter().any(|a| key(a) == key(target))
+    }
+
+    fn expand_imports(&mut self, importer: &Path, dir: &Path, text: &str, depth: usize, user: bool) {
         for raw in find_imports(text) {
             let target = resolve_import(&raw, dir, self.user_home.as_deref());
             if !target.is_file() {
@@ -294,7 +335,18 @@ impl Instructions {
                 self.warnings.push(format!("@{raw}: imports nest deeper than {MAX_IMPORT_DEPTH}; not loaded"));
                 continue;
             }
-            self.add_file(&target, Origin::Import, depth);
+            if !user && !self.import_allowed(&target) {
+                if !self.blocked_imports.iter().any(|b| key(&b.target) == key(&target)) {
+                    self.warnings.push(format!(
+                        "@{raw} in {} points outside the workspace ({}); not loaded until you allow it",
+                        importer.display(),
+                        target.display()
+                    ));
+                    self.blocked_imports.push(BlockedImport { importer: importer.to_path_buf(), raw, target });
+                }
+                continue;
+            }
+            self.add_file_as(&target, Origin::Import, depth, user);
         }
     }
 
@@ -449,7 +501,9 @@ fn resolve_import(raw: &str, dir: &Path, user_home: Option<&Path>) -> PathBuf {
 }
 
 /// Workspace roots beyond the session's own (`/add-dir`, `--add-dir`), kept in
-/// `Conversation::ext`. File tools and rules consult [`WorkspaceRoots::contains`].
+/// `Conversation::ext`. Their instruction files load, and the loop runs a call whose paths are
+/// all under an added root on tools rooted there ([`crate::worktree::step_host`]), so its writes
+/// are workspace writes and its reads do not taint.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkspaceRoots {
     pub extra: Vec<PathBuf>,
@@ -487,27 +541,29 @@ pub struct Touched(pub Vec<PathBuf>);
 /// Argument names that carry a path a call reads or writes.
 const PATH_KEYS: [&str; 5] = ["path", "file_path", "notebook_path", "cwd", "dir"];
 
-/// The paths in a call's arguments (resolved against the workspace).
-pub fn call_paths(args: &Value, workspace: Option<&Path>) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut push = |s: &str| {
-        let p = Path::new(s);
-        let abs = if p.is_absolute() { p.to_path_buf() } else { workspace.map(|w| w.join(p)).unwrap_or_else(|| p.to_path_buf()) };
-        out.push(normalize(&abs));
-    };
-    for k in PATH_KEYS {
-        if let Some(s) = args.get(k).and_then(Value::as_str) {
-            push(s);
-        }
-    }
+/// The path strings in a call's arguments, as the model gave them.
+pub fn path_values(args: &Value) -> Vec<String> {
+    let mut out: Vec<String> = PATH_KEYS.iter().filter_map(|k| args.get(*k).and_then(Value::as_str)).map(str::to_string).collect();
     if let Some(edits) = args.get("edits").and_then(Value::as_array) {
         for e in edits {
             if let Some(s) = e.get("path").or_else(|| e.get("file_path")).and_then(Value::as_str) {
-                push(s);
+                out.push(s.to_string());
             }
         }
     }
     out
+}
+
+/// The paths in a call's arguments (resolved against the workspace).
+pub fn call_paths(args: &Value, workspace: Option<&Path>) -> Vec<PathBuf> {
+    path_values(args)
+        .iter()
+        .map(|s| {
+            let p = Path::new(s);
+            let abs = if p.is_absolute() { p.to_path_buf() } else { workspace.map(|w| w.join(p)).unwrap_or_else(|| p.to_path_buf()) };
+            normalize(&abs)
+        })
+        .collect()
 }
 
 /// Rebuilds the session's prompt sections from its sources (first turn, `/memory`, `/add-dir`).
@@ -524,6 +580,10 @@ pub fn refresh(convo: &mut Conversation) -> PromptSections {
         state.loaded.files.iter().filter(|f| f.origin == Origin::Subdir).map(|f| f.path.clone()).collect();
     let fired = state.loaded.fired_rules.clone();
     let mut loaded = Instructions::load(&state.sources);
+    if let Some(approved) = ask_imports(convo, &state.sources, &loaded.blocked_imports) {
+        state.sources.approved_imports.extend(approved);
+        loaded = Instructions::load(&state.sources);
+    }
     for p in touched {
         loaded.touch(&p);
     }
@@ -549,15 +609,54 @@ pub fn refresh(convo: &mut Conversation) -> PromptSections {
     sections
 }
 
+/// Import digests the user declined this session (not asked again until the next one).
+#[derive(Debug, Clone, Default)]
+struct DeclinedImports(BTreeSet<String>);
+
+/// Asks the session's [`trust::Trust`] once about `blocked` imports. `Some(targets)` when the
+/// user allowed them (now or before, by digest of the project and each file).
+fn ask_imports(convo: &mut Conversation, sources: &Sources, blocked: &[BlockedImport]) -> Option<Vec<PathBuf>> {
+    if blocked.is_empty() {
+        return None;
+    }
+    let svc = convo.ext.get::<trust::TrustService>()?.0.clone();
+    let project = sources.roots.first().map(|r| key(r)).unwrap_or_default();
+    let digests: Vec<String> =
+        blocked.iter().filter_map(|b| trust::file_digest(&format!("import into {project}"), &b.target)).collect();
+    if digests.len() != blocked.len() {
+        return None;
+    }
+    let all = digests.join(",");
+    if convo.ext.get::<DeclinedImports>().is_some_and(|d| d.0.contains(&all)) {
+        return None;
+    }
+    let lines: Vec<String> =
+        blocked.iter().map(|b| format!("{} imports {} (outside the workspace)", b.importer.display(), b.target.display())).collect();
+    let subject =
+        format!("instruction imports from outside {}", sources.roots.first().map(|r| r.display().to_string()).unwrap_or_default());
+    if svc.trust(&convo.session, &subject, &lines, &digests) {
+        Some(blocked.iter().map(|b| b.target.clone()).collect())
+    } else {
+        convo.ext.get_or_default::<DeclinedImports>().0.insert(all);
+        None
+    }
+}
+
 /// Loads the session's instructions, skills index and output style at its first turn, and
 /// delivers lazily loaded files after the step that touched them.
 pub struct InstructionsMiddleware {
     sources: Sources,
+    trust: Option<Arc<dyn trust::Trust>>,
 }
 
 impl InstructionsMiddleware {
     pub fn new(sources: Sources) -> Arc<Self> {
-        Arc::new(Self { sources })
+        Arc::new(Self { sources, trust: None })
+    }
+
+    /// With `trust` asking about imports from outside the workspace (the daemon's).
+    pub fn with_trust(sources: Sources, trust: Arc<dyn trust::Trust>) -> Arc<Self> {
+        Arc::new(Self { sources, trust: Some(trust) })
     }
 }
 
@@ -576,6 +675,9 @@ impl ToolMiddleware for InstructionsMiddleware {
                 }
             }
             convo.ext.insert(InstructionState { sources, loaded: Instructions::default() });
+            if let Some(t) = &self.trust {
+                convo.ext.insert(trust::TrustService(t.clone()));
+            }
             refresh(convo);
         }
         TurnFlow::Continue

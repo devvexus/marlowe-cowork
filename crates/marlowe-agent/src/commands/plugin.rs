@@ -6,6 +6,10 @@
 //! `<plugin>:<name>`; `${CLAUDE_PLUGIN_ROOT}` (and `${MARLOWE_PLUGIN_ROOT}`) expand to its root.
 //! Hooks and MCP servers are parsed here and handed to their owners (hooks: track E; MCP: K).
 //! Marketplaces are not supported (design 9.3-b): bundles load from local paths only.
+//!
+//! A bundle found inside a workspace (`<root>/.marlowe/plugins`) is repository content
+//! ([`PluginOrigin::Project`]): its commands ask before they act ([`super::repository_actions`]),
+//! and its hooks and MCP servers must not start until the user trusts [`Plugin::digest`].
 
 use std::path::{Path, PathBuf};
 
@@ -13,10 +17,20 @@ use serde_json::Value;
 
 use crate::instructions::Sources;
 
+/// Where a bundle was found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginOrigin {
+    /// The profile home's `plugins`, or a root the user named (`--plugin-dir`, settings).
+    User,
+    /// A workspace's `.marlowe/plugins`: it came with the repository.
+    Project,
+}
+
 /// One loaded bundle.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plugin {
     pub name: String,
+    pub origin: PluginOrigin,
     pub version: Option<String>,
     pub description: String,
     pub root: PathBuf,
@@ -133,6 +147,7 @@ pub fn load(root: &Path) -> Result<Plugin, String> {
 
     Ok(Plugin {
         name,
+        origin: PluginOrigin::User,
         version: manifest.get("version").and_then(Value::as_str).map(str::to_string),
         description: manifest.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
         root: root.to_path_buf(),
@@ -146,29 +161,40 @@ pub fn load(root: &Path) -> Result<Plugin, String> {
     })
 }
 
-/// Bundles for a session: every subdirectory of `<home>/plugins` and of each root's
-/// `.marlowe/plugins`, plus the explicit `plugin_roots`. A bundle that fails to load is a
-/// warning; a second bundle with a name already loaded is skipped with a warning.
+impl Plugin {
+    /// What the user trusts when they trust this bundle's hooks and MCP servers: its name, root,
+    /// hooks and server definitions. A change to any is a new digest (ask again).
+    pub fn digest(&self) -> String {
+        let hooks = self.hooks.as_ref().map(Value::to_string).unwrap_or_default();
+        let mcp = self.mcp_servers.as_ref().map(Value::to_string).unwrap_or_default();
+        let root = self.root.display().to_string();
+        crate::instructions::trust::digest(&[b"plugin", self.name.as_bytes(), root.as_bytes(), hooks.as_bytes(), mcp.as_bytes()])
+    }
+}
+
+/// Bundles for a session: every subdirectory of `<home>/plugins` (user) and of each root's
+/// `.marlowe/plugins` (project), plus the explicit `plugin_roots` (user). A bundle that fails to
+/// load is a warning; a second bundle with a name already loaded is skipped with a warning.
 pub fn discover(src: &Sources) -> (Vec<Plugin>, Vec<String>) {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    let mut scan = |dir: PathBuf| {
+    let mut candidates: Vec<(PathBuf, PluginOrigin)> = Vec::new();
+    let mut scan = |dir: PathBuf, origin: PluginOrigin| {
         if let Ok(rd) = std::fs::read_dir(&dir) {
             let mut v: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
             v.sort();
-            candidates.extend(v);
+            candidates.extend(v.into_iter().map(|p| (p, origin)));
         }
     };
     if let Some(h) = &src.home {
-        scan(h.join("plugins"));
+        scan(h.join("plugins"), PluginOrigin::User);
     }
     for r in &src.roots {
-        scan(r.join(".marlowe").join("plugins"));
+        scan(r.join(".marlowe").join("plugins"), PluginOrigin::Project);
     }
-    candidates.extend(src.plugin_roots.iter().cloned());
+    candidates.extend(src.plugin_roots.iter().cloned().map(|p| (p, PluginOrigin::User)));
     let mut plugins: Vec<Plugin> = Vec::new();
     let mut warnings = Vec::new();
-    for c in candidates {
-        match load(&c) {
+    for (c, origin) in candidates {
+        match load(&c).map(|p| Plugin { origin, ..p }) {
             Ok(p) if plugins.iter().any(|q| q.name == p.name) => {
                 warnings.push(format!("plugin `{}` at {} skipped: a plugin of that name is already loaded", p.name, c.display()));
             }

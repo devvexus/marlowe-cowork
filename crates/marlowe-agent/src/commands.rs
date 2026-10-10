@@ -6,7 +6,15 @@
 //!   `description`, `argument-hint`, `allowed-tools`, `model`, `arguments` (named positionals),
 //!   `disable-model-invocation`. The body takes `$ARGUMENTS`, `$ARGUMENTS[N]` (0-based), `$1..$N`,
 //!   named `$arg`s, `${CLAUDE_PLUGIN_ROOT}`; `` !`cmd` `` and ```` ```! ```` blocks run first, only
-//!   when `allowed-tools` grants `Bash(...)` for them; `@file` references attach the file.
+//!   when `allowed-tools` grants `Bash(...)` for them (or they are read-only queries); `@file`
+//!   references attach the file when it is inside the workspace or the command's own directory.
+//!   Only the template's own pre-exec and `@` references act: when the model invokes a skill,
+//!   its arguments are inserted after both, as text ([`Invoker::Model`]), and the `skill` tool
+//!   asks before a skill whose template runs commands ([`skill_consequence`]).
+//! - Repository content is not the user's: on a name clash the user's own command or skill wins
+//!   (the project's is reported, not used), and a project's (or a project plugin's) command that
+//!   runs shell commands or grants tools asks the user once per file digest before either takes
+//!   effect ([`crate::instructions::trust`]); untrusted, only its read-only queries run.
 //! - Skills: `<dir>/SKILL.md` under the same roots' `skills/`. Also slash commands (unless
 //!   `user-invocable: false`), indexed for the model (unless `disable-model-invocation`), loaded
 //!   on use through the `skill` tool; `context: fork` runs one in a subagent; `${CLAUDE_SKILL_DIR}`
@@ -29,6 +37,7 @@ use serde_json::Value;
 
 use crate::convo::Conversation;
 use crate::instructions::yaml::{self, Yaml};
+use crate::instructions::trust::Trust;
 use crate::instructions::{self, InstructionState, Sources};
 use crate::middleware::{ToolMiddleware, TurnFlow};
 use crate::tools::{CallCtx, ToolOutcome};
@@ -68,6 +77,9 @@ pub struct Command {
     pub plugin_root: Option<PathBuf>,
     /// `user`, `project` or `plugin:<name>`.
     pub scope: String,
+    /// From a repository (a root's `.claude`/`.marlowe`, or a plugin bundle found there): its
+    /// pre-exec commands and tool grants need the user's trust.
+    pub repository: bool,
 }
 
 /// An output style.
@@ -165,9 +177,9 @@ fn md_files_flat(dir: &Path) -> Vec<PathBuf> {
 }
 
 impl Catalog {
-    /// Discovers commands, skills, plugins and output styles for `src`. User-level entries come
-    /// first; project entries (`.claude`, then `.marlowe`) override them by name; plugin entries
-    /// are namespaced.
+    /// Discovers commands, skills, plugins and output styles for `src`. User-level entries win a
+    /// name clash with project ones (`.claude`, then `.marlowe`), which are reported; plugin
+    /// entries are namespaced.
     pub fn load(src: &Sources) -> Self {
         let mut me = Catalog::default();
         let (plugins, pw) = plugin::discover(src);
@@ -184,24 +196,26 @@ impl Catalog {
             src.roots.iter().flat_map(|r| [r.join(".claude"), r.join(".marlowe")]).collect();
 
         for (dirs, scope) in [(&user_dirs, "user"), (&project_dirs, "project")] {
+            let repo = scope == "project";
             for d in dirs {
                 for f in md_files_flat(&d.join("commands")) {
-                    me.add_command_file(&f, scope, None, None);
+                    me.add_command_file(&f, scope, None, None, repo);
                 }
-                me.add_skills_in(&d.join("skills"), scope, None, None);
+                me.add_skills_in(&d.join("skills"), scope, None, None, repo);
                 me.add_styles_in(&d.join("output-styles"), scope);
             }
         }
         for p in &plugins {
             let scope = format!("plugin:{}", p.name);
+            let repo = p.origin == plugin::PluginOrigin::Project;
             for c in &p.command_paths {
                 let files = if c.is_dir() { md_files_flat(c) } else { vec![c.clone()] };
                 for f in files {
-                    me.add_command_file(&f, &scope, Some(&p.name), Some(&p.root));
+                    me.add_command_file(&f, &scope, Some(&p.name), Some(&p.root), repo);
                 }
             }
             for s in &p.skill_paths {
-                me.add_skills_in(s, &scope, Some(&p.name), Some(&p.root));
+                me.add_skills_in(s, &scope, Some(&p.name), Some(&p.root), repo);
             }
             for s in &p.output_style_paths {
                 me.add_styles_in(s, &scope);
@@ -213,7 +227,18 @@ impl Catalog {
 
     fn push(&mut self, c: Command) {
         if let Some(i) = self.entries.iter().position(|e| e.name == c.name) {
-            if self.entries[i].scope == c.scope {
+            let old = &self.entries[i];
+            if old.scope == "user" && c.scope == "project" {
+                self.warnings.push(format!(
+                    "/{} in {} is not used: your own /{} ({}) takes precedence",
+                    c.name,
+                    c.path.display(),
+                    c.name,
+                    old.path.display()
+                ));
+                return;
+            }
+            if old.scope == c.scope {
                 self.warnings.push(format!("/{} is defined twice in {}; {} wins", c.name, c.scope, c.path.display()));
             }
             self.entries.remove(i);
@@ -221,16 +246,16 @@ impl Catalog {
         self.entries.push(c);
     }
 
-    fn add_command_file(&mut self, f: &Path, scope: &str, plugin: Option<&str>, plugin_root: Option<&Path>) {
+    fn add_command_file(&mut self, f: &Path, scope: &str, plugin: Option<&str>, plugin_root: Option<&Path>, repo: bool) {
         let Some(text) = instructions::read_file(f, &mut self.warnings) else { return };
         let stem = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        match parse_entry(&text, Kind::Command, &stem, f, scope, plugin, plugin_root) {
+        match parse_entry(&text, Kind::Command, &stem, f, scope, plugin, plugin_root).map(|c| Command { repository: repo, ..c }) {
             Ok(c) => self.push(c),
             Err(e) => self.warnings.push(format!("{}: {e}", f.display())),
         }
     }
 
-    fn add_skills_in(&mut self, dir: &Path, scope: &str, plugin: Option<&str>, plugin_root: Option<&Path>) {
+    fn add_skills_in(&mut self, dir: &Path, scope: &str, plugin: Option<&str>, plugin_root: Option<&Path>, repo: bool) {
         let Ok(rd) = std::fs::read_dir(dir) else { return };
         let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
         dirs.sort();
@@ -238,7 +263,7 @@ impl Catalog {
             let f = d.join("SKILL.md");
             let Some(text) = instructions::read_file(&f, &mut self.warnings) else { continue };
             let stem = d.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-            match parse_entry(&text, Kind::Skill, &stem, &f, scope, plugin, plugin_root) {
+            match parse_entry(&text, Kind::Skill, &stem, &f, scope, plugin, plugin_root).map(|c| Command { repository: repo, ..c }) {
                 Ok(c) => self.push(c),
                 Err(e) => self.warnings.push(format!("{}: {e}", f.display())),
             }
@@ -359,6 +384,7 @@ fn parse_entry(
         dir: path.parent().map(Path::to_path_buf).unwrap_or_default(),
         plugin_root: plugin_root.map(Path::to_path_buf),
         scope: scope.to_string(),
+        repository: false,
     })
 }
 
@@ -446,6 +472,45 @@ pub fn split_args(s: &str) -> Vec<String> {
 /// Substitutes `$ARGUMENTS[N]`, `$ARGUMENTS`, `$1..$N` and named `$arg`s. Returns the text and
 /// whether any placeholder was present.
 pub fn substitute_args(body: &str, args: &str, names: &[String]) -> (String, bool) {
+    substitute_with(body, args, names, &mut |v, out| out.push_str(v))
+}
+
+/// Marks an inserted argument while the template's pre-exec and `@` references are processed.
+const MARK: char = '\u{1}';
+
+/// [`substitute_args`] with every inserted value replaced by a marker; the values come back in
+/// order for [`unmark`].
+fn substitute_marked(body: &str, args: &str, names: &[String]) -> (String, bool, Vec<String>) {
+    let mut values = Vec::new();
+    let (text, used) = substitute_with(body, args, names, &mut |v, out| {
+        out.push(MARK);
+        out.push_str(&values.len().to_string());
+        out.push(MARK);
+        values.push(v.to_string());
+    });
+    (text, used, values)
+}
+
+/// Puts the marked values back.
+fn unmark(text: &str, values: &[String]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut parts = text.split(MARK);
+    if let Some(first) = parts.next() {
+        out.push_str(first);
+    }
+    while let Some(idx) = parts.next() {
+        match idx.parse::<usize>().ok().and_then(|i| values.get(i)) {
+            Some(v) => out.push_str(v),
+            None => out.push_str(idx),
+        }
+        if let Some(rest) = parts.next() {
+            out.push_str(rest);
+        }
+    }
+    out
+}
+
+fn substitute_with(body: &str, args: &str, names: &[String], emit: &mut dyn FnMut(&str, &mut String)) -> (String, bool) {
     let positional = split_args(args);
     let get = |i: usize| positional.get(i).cloned().unwrap_or_default();
     let mut out = String::with_capacity(body.len());
@@ -458,13 +523,13 @@ pub fn substitute_args(body: &str, args: &str, names: &[String]) -> (String, boo
             if let Some(after) = rest.strip_prefix("ARGUMENTS") {
                 if let Some(idx_end) = after.strip_prefix('[').and_then(|a| a.find(']').map(|e| (e, &a[..e]))) {
                     if let Ok(n) = idx_end.1.trim().parse::<usize>() {
-                        out.push_str(&get(n));
+                        emit(&get(n), &mut out);
                         used = true;
                         i += 1 + "ARGUMENTS".len() + 1 + idx_end.0 + 1;
                         continue;
                     }
                 }
-                out.push_str(args.trim());
+                emit(args.trim(), &mut out);
                 used = true;
                 i += 1 + "ARGUMENTS".len();
                 continue;
@@ -473,7 +538,7 @@ pub fn substitute_args(body: &str, args: &str, names: &[String]) -> (String, boo
             if !digits.is_empty() {
                 let n: usize = digits.parse().unwrap_or(0);
                 if n >= 1 {
-                    out.push_str(&get(n - 1));
+                    emit(&get(n - 1), &mut out);
                     used = true;
                     i += 1 + digits.len();
                     continue;
@@ -481,7 +546,7 @@ pub fn substitute_args(body: &str, args: &str, names: &[String]) -> (String, boo
             }
             let ident: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').collect();
             if let Some(pos) = names.iter().position(|n| *n == ident) {
-                out.push_str(&get(pos));
+                emit(&get(pos), &mut out);
                 used = true;
                 i += 1 + ident.len();
                 continue;
@@ -516,7 +581,8 @@ fn read_only(part: &str) -> bool {
 /// Whether `allowed` (Claude Code patterns) lets a pre-exec run `cmd`: `Bash` allows anything;
 /// `Bash(git add:*)` a prefix; `Bash(ls *)` a glob; `Bash(git status)` exactly; read-only git
 /// queries and listings need no grant. Every part of a compound command must be allowed;
-/// command substitution needs a bare `Bash`.
+/// command substitution needs a bare `Bash`. What this splitter cannot see through (a lone `&`,
+/// redirection, process substitution, backticks, a carriage return) is not allowed.
 pub fn shell_allowed(cmd: &str, allowed: &[String]) -> bool {
     let specs: Vec<&str> = allowed
         .iter()
@@ -532,15 +598,17 @@ pub fn shell_allowed(cmd: &str, allowed: &[String]) -> bool {
     if specs.contains(&"*") {
         return true;
     }
-    if cmd.contains("$(") || cmd.contains('`') {
+    if cmd.contains("$(") || cmd.contains('`') || cmd.contains('\r') {
         return false;
     }
     let mut parts: Vec<&str> = vec![cmd];
-    for sep in ["&&", "||", ";", "|", "
-"] {
+    for sep in ["&&", "||", ";", "|", "\n"] {
         parts = parts.into_iter().flat_map(|p| p.split(sep)).collect();
     }
     parts.iter().map(|p| p.trim()).filter(|p| !p.is_empty()).all(|part| {
+        if part.contains(['&', '<', '>']) {
+            return false;
+        }
         read_only(part)
             || specs.iter().any(|spec| {
                 let spec = spec.trim();
@@ -580,26 +648,75 @@ fn wildcard(pat: &str, s: &str) -> bool {
 const PREEXEC_MAX_CHARS: usize = 20_000;
 const ATTACH_MAX_CHARS: usize = 50_000;
 
-/// Prepares `cmd` with `args`: arguments, roots, pre-exec output, attached files.
-pub fn expand(cmd: &Command, args: &str, workspace: Option<&Path>, run: ShellRunner<'_>) -> Expanded {
+/// Who invoked a command or skill, which decides what its arguments may do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Invoker {
+    /// The user typed `/name args`: the arguments are the user's own and reach the template's
+    /// pre-exec commands and `@` references, as in Claude Code.
+    User,
+    /// The model called the `skill` tool: its arguments are inserted as text after the template's
+    /// pre-exec and `@` references ran, so they can neither run a command nor attach a file.
+    Model,
+}
+
+/// The template with roots expanded, before arguments.
+fn template(cmd: &Command) -> String {
     let mut text = cmd.body.clone();
     if let Some(root) = &cmd.plugin_root {
         text = plugin::expand_root(&text, root);
     }
     let dir = cmd.dir.display().to_string();
-    text = text.replace("${CLAUDE_SKILL_DIR}", &dir).replace("${SKILL_DIR}", &dir);
-    let (mut text, used) = substitute_args(&text, args, &cmd.arguments);
-    if !used && !args.trim().is_empty() {
-        text.push_str(&format!("\n\nARGUMENTS: {}", args.trim()));
-    }
-    let allowed: Vec<String> = cmd
-        .allowed_tools
-        .iter()
-        .map(|a| cmd.plugin_root.as_ref().map_or_else(|| a.clone(), |r| plugin::expand_root(a, r)))
-        .collect();
+    text.replace("${CLAUDE_SKILL_DIR}", &dir).replace("${SKILL_DIR}", &dir)
+}
+
+fn allowed_of(cmd: &Command) -> Vec<String> {
+    cmd.allowed_tools.iter().map(|a| cmd.plugin_root.as_ref().map_or_else(|| a.clone(), |r| plugin::expand_root(a, r))).collect()
+}
+
+/// The pre-exec commands a model-invoked run of `cmd` would run: the template's own, granted
+/// (or read-only), and not built from arguments (those never run for the model).
+pub fn preexec_commands(cmd: &Command) -> Vec<String> {
+    let allowed = allowed_of(cmd);
+    let (text, _, _) = substitute_marked(&template(cmd), "", &cmd.arguments);
+    let mut found = Vec::new();
+    scan_preexec(&text, &mut |c| found.push(c.trim().to_string()));
+    found.retain(|c| !c.is_empty() && !c.contains(MARK) && shell_allowed(c, &allowed));
+    found
+}
+
+/// Prepares `cmd` with `args`: arguments, roots, pre-exec output, attached files.
+pub fn expand(cmd: &Command, args: &str, workspace: Option<&Path>, run: ShellRunner<'_>, invoker: Invoker) -> Expanded {
+    let text = template(cmd);
+    let allowed = allowed_of(cmd);
     let mut warnings = Vec::new();
-    let text = preexec(&text, &allowed, workspace, run, &mut warnings);
-    let text = attach_files(&text, workspace);
+    let roots: Vec<&Path> = workspace.into_iter().chain([cmd.dir.as_path()]).chain(cmd.plugin_root.as_deref()).collect();
+    let text = match invoker {
+        Invoker::User => {
+            let (mut text, used) = substitute_args(&text, args, &cmd.arguments);
+            if !used && !args.trim().is_empty() {
+                text.push_str(&format!("\n\nARGUMENTS: {}", args.trim()));
+            }
+            let text = preexec(&text, &allowed, workspace, run, &mut warnings);
+            attach_files(&text, workspace, &roots)
+        }
+        Invoker::Model => {
+            let (mut text, used, mut values) = substitute_marked(&text, args, &cmd.arguments);
+            if !used && !args.trim().is_empty() {
+                text.push_str(&format!("\n\nARGUMENTS: {MARK}{}{MARK}", values.len()));
+                values.push(args.trim().to_string());
+            }
+            let guarded = |c: &str, d: Option<&Path>| -> Result<String, String> {
+                if c.contains(MARK) {
+                    Err("not run: it would take the model's arguments".into())
+                } else {
+                    run(c, d)
+                }
+            };
+            let text = preexec(&text, &allowed, workspace, &guarded, &mut warnings);
+            let text = attach_files(&text, workspace, &roots);
+            unmark(&text, &values)
+        }
+    };
     Expanded { prompt: text, allowed_tools: allowed, model: cmd.model.clone(), fork: cmd.fork, agent: cmd.agent.clone(), warnings }
 }
 
@@ -620,6 +737,31 @@ fn run_one(cmd: &str, allowed: &[String], workspace: Option<&Path>, run: ShellRu
             }
         }
         Err(e) => format!("[`{cmd}` failed: {e}]"),
+    }
+}
+
+/// Calls `found` with every `` !`cmd` `` span and ```` ```! ```` block in `text`.
+fn scan_preexec(text: &str, found: &mut dyn FnMut(&str)) {
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        if line.trim_start().starts_with("```!") {
+            let mut block = Vec::new();
+            for l in lines.by_ref() {
+                if l.trim_start().starts_with("```") {
+                    break;
+                }
+                block.push(l);
+            }
+            found(&block.join("\n"));
+            continue;
+        }
+        let mut rest = line;
+        while let Some(at) = rest.find("!`") {
+            let after = &rest[at + 2..];
+            let Some(end) = after.find('`') else { break };
+            found(&after[..end]);
+            rest = &after[end + 1..];
+        }
     }
 }
 
@@ -657,15 +799,20 @@ fn preexec(text: &str, allowed: &[String], workspace: Option<&Path>, run: ShellR
     out
 }
 
-/// Appends the contents of every `@file` the text names that exists in the workspace.
-fn attach_files(text: &str, workspace: Option<&Path>) -> String {
+/// Appends the contents of every `@file` the text names that exists inside one of `roots` (the
+/// workspace, the command's directory, its plugin). A reference carrying a marked argument, or
+/// leading outside the roots (an absolute path elsewhere, `..`), attaches nothing.
+fn attach_files(text: &str, workspace: Option<&Path>, roots: &[&Path]) -> String {
     let Some(ws) = workspace else { return text.to_string() };
     let mut out = text.to_string();
     let mut seen = std::collections::BTreeSet::new();
     for raw in instructions::find_imports(text) {
+        if raw.contains(MARK) {
+            continue;
+        }
         let p = if Path::new(&raw).is_absolute() { PathBuf::from(&raw) } else { ws.join(&raw) };
         let p = instructions::normalize(&p);
-        if !p.is_file() || !seen.insert(p.clone()) {
+        if !roots.iter().any(|r| instructions::inside(r, &p)) || !p.is_file() || !seen.insert(p.clone()) {
             continue;
         }
         if let Ok(body) = std::fs::read_to_string(&p) {
@@ -820,22 +967,46 @@ pub struct CommandsMiddleware {
     sources: Sources,
     run: Arc<dyn Fn(&str, Option<&Path>) -> Result<String, String> + Send + Sync>,
     schedule: Option<ScheduleFn>,
+    trust: Option<Arc<dyn Trust>>,
 }
 
 impl CommandsMiddleware {
-    /// `run` executes pre-exec commands (the daemon passes [`run_bash`]).
+    /// `run` executes pre-exec commands (the daemon passes [`run_bash`]). Without a [`Trust`],
+    /// a repository command's shell commands (other than read-only queries) and grants never act.
     pub fn new(sources: Sources, run: Arc<dyn Fn(&str, Option<&Path>) -> Result<String, String> + Send + Sync>) -> Arc<Self> {
-        Arc::new(Self { sources, run, schedule: None })
+        Arc::new(Self { sources, run, schedule: None, trust: None })
     }
 
-    /// With `/loop` (design X19): `schedule` stores the schedule; the prompt also runs now.
+    /// With `/loop` (design X19): `schedule` stores the schedule; the prompt also runs now. With
+    /// `trust`, a repository command that runs commands or grants tools asks once per digest.
     pub fn with_schedule(
         sources: Sources,
         run: Arc<dyn Fn(&str, Option<&Path>) -> Result<String, String> + Send + Sync>,
-        schedule: ScheduleFn,
+        schedule: Option<ScheduleFn>,
+        trust: Option<Arc<dyn Trust>>,
     ) -> Arc<Self> {
-        Arc::new(Self { sources, run, schedule: Some(schedule) })
+        Arc::new(Self { sources, run, schedule, trust })
     }
+}
+
+/// What a repository command would do on its own when the user types it: its granted pre-exec
+/// commands that are not read-only queries, and its tool grants. Empty: nothing to trust.
+pub fn repository_actions(cmd: &Command) -> Vec<String> {
+    if !cmd.repository {
+        return Vec::new();
+    }
+    let allowed = allowed_of(cmd);
+    let mut out = Vec::new();
+    scan_preexec(&template(cmd), &mut |c| {
+        let c = c.trim();
+        if !c.is_empty() && shell_allowed(c, &allowed) && !shell_allowed(c, &[]) {
+            out.push(format!("runs: {}", c.lines().next().unwrap_or("").chars().take(120).collect::<String>()));
+        }
+    });
+    if !cmd.allowed_tools.is_empty() {
+        out.push(format!("grants: {}", allowed.join(", ")));
+    }
+    out
 }
 
 /// `5m` / `2h` / `90s` for a schedule's interval.
@@ -905,8 +1076,29 @@ impl ToolMiddleware for CommandsMiddleware {
             s
         };
         let catalog = Catalog::load(&sources);
-        let Some(cmd) = catalog.find(&name).filter(|c| c.user_invocable) else { return TurnFlow::Continue };
-        let ex = expand(cmd, &args, ws.as_deref(), &run);
+        let Some(found) = catalog.find(&name).filter(|c| c.user_invocable) else { return TurnFlow::Continue };
+        let mut cmd = found.clone();
+        let mut untrusted = None;
+        let actions = repository_actions(&cmd);
+        if !actions.is_empty() {
+            let digest = crate::instructions::trust::file_digest("command", &cmd.path);
+            let subject = format!("/{} from the repository ({})", cmd.name, cmd.path.display());
+            let trusted = match (&self.trust, digest) {
+                (Some(t), Some(d)) => t.trust(&convo.session, &subject, &actions, &[d]),
+                _ => false,
+            };
+            if !trusted {
+                // Untrusted: no grants, so only read-only queries run.
+                cmd.allowed_tools.clear();
+                untrusted = Some(format!(
+                    "/{} comes from the repository and is not trusted: its other shell commands did not run and it grants no tools",
+                    cmd.name
+                ));
+            }
+        }
+        let cmd = &cmd;
+        let mut ex = expand(cmd, &args, ws.as_deref(), &run, Invoker::User);
+        ex.warnings.extend(untrusted);
         let mut out = format!("<command-name>/{}</command-name>\n", cmd.name);
         if !args.is_empty() {
             out.push_str(&format!("<command-args>{args}</command-args>\n"));
@@ -929,9 +1121,72 @@ impl ToolMiddleware for CommandsMiddleware {
     }
 }
 
+/// The skill a `skill` call names, from the catalog for `sources`.
+fn named_skill(args: &Value, sources: &Sources) -> Option<Command> {
+    let name = args.get("name").or_else(|| args.get("skill")).and_then(Value::as_str).map(str::trim)?;
+    Catalog::load(sources).find(name).filter(|c| c.kind == Kind::Skill).cloned()
+}
+
+/// The `skill` tool's consequence: a skill whose template runs commands asks first, naming them
+/// (the model chose to run it; the user did not type it).
+pub fn skill_consequence(args: &Value, sources: &Sources) -> crate::tools::Consequence {
+    let Some(skill) = named_skill(args, sources).filter(|s| !s.disable_model_invocation) else {
+        return crate::tools::Consequence::Free;
+    };
+    let cmds = preexec_commands(&skill);
+    if cmds.is_empty() {
+        return crate::tools::Consequence::Free;
+    }
+    let shown: Vec<String> = cmds.iter().map(|c| c.lines().next().unwrap_or("").chars().take(60).collect()).collect();
+    crate::tools::Consequence::Ask { summary: format!("skill {} runs: {}", skill.name, shown.join("; ")) }
+}
+
+/// The agent type a `skill` call runs as, when the skill forks.
+pub fn skill_fork_agent(args: &Value, sources: &Sources) -> Option<String> {
+    named_skill(args, sources).filter(|s| s.fork).map(|s| s.agent.unwrap_or_else(|| "general".into()))
+}
+
+/// Whether a `skill` call only reads: the skill's pre-exec commands are read-only queries, and
+/// it either loads as text or forks into an agent type that resolves read-only (decided on the
+/// resolved type, never its name). The `skill` tool is declared as running (a forked skill gets
+/// an agent with the caller's tools), so plan mode refuses it; track E may allow a call for which
+/// this holds. A skill the tool would refuse (unknown, user-only) changes nothing.
+pub fn skill_read_only(args: &Value, sources: &Sources) -> bool {
+    let Some(skill) = named_skill(args, sources).filter(|s| !s.disable_model_invocation) else { return true };
+    if preexec_commands(&skill).iter().any(|c| !shell_allowed(c, &[])) {
+        return false;
+    }
+    if !skill.fork {
+        return true;
+    }
+    let ty = skill.agent.clone().unwrap_or_else(|| "general".into());
+    let (types, _) = crate::subagent::discover_types(sources);
+    crate::subagent::find_type(&types, &ty).is_some_and(|t| t.read_only)
+}
+
 /// The `skill` tool: loads a skill's instructions into the conversation (or, for `context:
-/// fork`, runs it in a subagent and returns the result).
+/// fork`, runs it in a subagent and returns the result). Pre-exec commands run under Git Bash.
 pub fn skill_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
+    skill_call_with(args, cx, &run_bash)
+}
+
+/// The `skill` tool as a host that gates it with [`skill_consequence`] runs it: only the
+/// pre-exec commands the approval showed (the skill as `gate` resolves it) may run.
+pub fn skill_call_gated(args: &Value, cx: &CallCtx, gate: &Sources) -> ToolOutcome {
+    let approved: Vec<String> =
+        named_skill(args, gate).filter(|s| !s.disable_model_invocation).map(|s| preexec_commands(&s)).unwrap_or_default();
+    let run = move |c: &str, d: Option<&Path>| -> Result<String, String> {
+        if approved.iter().any(|a| a == c.trim()) {
+            run_bash(c, d)
+        } else {
+            Err("not run: the approval for this skill did not show it".into())
+        }
+    };
+    skill_call_with(args, cx, &run)
+}
+
+/// [`skill_call`] with `run` for its pre-exec commands.
+pub fn skill_call_with(args: &Value, cx: &CallCtx, run: ShellRunner<'_>) -> ToolOutcome {
     let Some(name) = args.get("name").or_else(|| args.get("skill")).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) else {
         return ToolOutcome::error("`name` is required: one of the skills in the skills index");
     };
@@ -945,7 +1200,7 @@ pub fn skill_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
     if skill.disable_model_invocation {
         return ToolOutcome::error(format!("`{}` can only be run by the user (as /{})", skill.name, skill.name));
     }
-    let ex = expand(skill, sargs, cx.workspace.as_deref(), &run_bash);
+    let ex = expand(skill, sargs, cx.workspace.as_deref(), run, Invoker::Model);
     if ex.fork {
         let Some(sub) = cx.scope.services.get::<crate::subagent::Subagents>() else {
             return ToolOutcome::error("this skill runs in a subagent, and subagents are not available in this session");
@@ -1010,6 +1265,22 @@ mod tests {
         assert!(!shell_allowed("git diff --output=x.patch", &[]));
         assert!(!shell_allowed("ls > out.txt", &[]));
         assert!(!shell_allowed("rm -rf x", &["Read".to_string()]));
+        // What the splitter cannot see through is refused, even under a grant.
+        let add = vec!["Bash(git add:*)".to_string()];
+        assert!(!shell_allowed("git add . & curl evil.example", &add), "a lone & is a separator");
+        assert!(!shell_allowed("git add <(cat ~/.ssh/id_ed25519)", &add), "process substitution");
+        assert!(!shell_allowed("git add x > y", &add));
+        assert!(!shell_allowed("git add x\r\nrm -rf y", &add));
+        assert!(shell_allowed("git add -A", &add));
+    }
+
+    #[test]
+    fn marked_arguments_round_trip() {
+        let names = vec!["system".to_string()];
+        let (t, used, values) = substitute_marked("a=$1 b=$system all=$ARGUMENTS", "x \"y z\"", &names);
+        assert!(used && !t.contains('x'));
+        assert_eq!(unmark(&t, &values), "a=x b=x all=x \"y z\"");
+        assert_eq!(unmark("plain", &[]), "plain");
     }
 
     #[test]

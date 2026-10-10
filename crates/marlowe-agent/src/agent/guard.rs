@@ -10,7 +10,7 @@
 //! Test cases follow FlashAgent's (`crates/core/src/repetition.rs`, `loop_.rs`, MIT); the code
 //! is Marlowe's.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use marlowe_model::{Message, Part, Role};
@@ -23,10 +23,17 @@ use crate::tools::{CallCtx, ToolCallReq, ToolOutcome};
 const MIN_TEXT: usize = 24;
 /// Shorter lines (braces, list markers) repeat legitimately.
 const MIN_LINE: usize = 6;
-/// A sentence this long that comes back three times is a loop.
+/// A sentence this long that comes back three times close together is a loop.
 const MIN_CLAUSE: usize = 25;
 /// Finished prose lines remembered for the line checks.
 const RECENT_LINES: usize = 6;
+/// Sentences (of at least [`MIN_CLAUSE`]) a repeat must fall within: a sentence said again
+/// further apart is a recap or a template, not a loop.
+const CLAUSE_WINDOW: usize = 12;
+/// Copies within the window that make a loop: a reply's, and reasoning's (thinking circles back
+/// to the same check legitimately, so only a tighter spin counts).
+const REPLY_COPIES: u32 = 3;
+const REASONING_COPIES: u32 = 5;
 
 /// Told to the model after its reply was cut for repeating itself.
 pub const REPEATING: &str = "<system-reminder>\nYour last reply started repeating itself and was cut off by the \
@@ -35,6 +42,10 @@ call, or give the final answer.\n</system-reminder>";
 
 /// Watches one streamed text (reply or reasoning) for degenerate repetition. Feed it the whole
 /// text so far after every delta; each byte is examined a bounded number of times.
+///
+/// A sentence ends at `.`, `!`, `?` or `;` followed by whitespace (so `a.rs`, `1.5` and `e.g.x`
+/// do not split one), and counts toward a loop only while it is among the last
+/// [`CLAUSE_WINDOW`] sentences.
 #[derive(Debug, Default)]
 pub struct RepetitionWatch {
     /// Bytes of finished lines already folded in.
@@ -44,10 +55,13 @@ pub struct RepetitionWatch {
     in_fence: bool,
     prose_lines: usize,
     recent: Vec<String>,
-    /// Sentences of finished prose, counted at most once per line run.
+    /// The last [`CLAUSE_WINDOW`] sentences of finished prose and their counts.
+    window: VecDeque<String>,
     clauses: HashMap<String, u32>,
     clause_lengths: HashSet<usize>,
-    thrice: bool,
+    /// Copies in the window that make a loop (0: [`REPLY_COPIES`]).
+    copies: u32,
+    repeated: bool,
     /// Byte offset in the current line where its next sentence starts, and the last sentence
     /// counted in it (an immediate repeat inside one line counts once).
     line_clause_start: usize,
@@ -56,10 +70,24 @@ pub struct RepetitionWatch {
 }
 
 impl RepetitionWatch {
+    /// A watch for a model's reasoning: the line and tail checks as for a reply, but a sentence
+    /// must come back [`REASONING_COPIES`] times within the window.
+    pub fn for_reasoning() -> Self {
+        Self { copies: REASONING_COPIES, ..Self::default() }
+    }
+
+    fn copies(&self) -> u32 {
+        if self.copies == 0 {
+            REPLY_COPIES
+        } else {
+            self.copies
+        }
+    }
+
     /// True once `text` (the previous text plus a delta) is looping.
     pub fn is_looping(&mut self, text: &str) -> bool {
         if text.len() < self.scanned {
-            *self = Self::default();
+            *self = Self { copies: self.copies, ..Self::default() };
         }
         self.fold(text);
         if text.len() < MIN_TEXT {
@@ -71,14 +99,17 @@ impl RepetitionWatch {
         if partial_prose {
             lines.push(partial);
         }
-        if same_line_thrice(&lines) || alternating_pair(&lines) || tail_repeats(text.as_bytes()) {
+        // Inside a code fence (or one being opened) repetition is often the code itself.
+        let code = self.in_fence || (!partial.is_empty() && !partial_prose);
+        if same_line_thrice(&lines) || alternating_pair(&lines) || tail_repeats(text.as_bytes(), code) {
             return true;
         }
         let prose = self.prose_lines + usize::from(partial_prose);
-        prose >= 4 && (self.thrice || (partial_prose && self.open_clause_is_third(text)))
+        prose >= 4 && (self.repeated || (partial_prose && self.open_clause_completes_a_loop(text)))
     }
 
-    /// Folds every finished sentence and line of `text` past what was seen.
+    /// Folds every finished sentence and line of `text` past what was seen. A terminator at the
+    /// very end waits for the next byte (it may be `a.` of `a.rs`).
     fn fold(&mut self, text: &str) {
         let bytes = text.as_bytes();
         let mut i = self.scanned.max(self.done + self.line_clause_start);
@@ -89,14 +120,17 @@ impl RepetitionWatch {
                     self.end_line(text, i);
                 }
                 b'.' | b'!' | b'?' | b';' => {
-                    self.end_clause(text, self.done + self.line_clause_start, i);
-                    self.line_clause_start = i + 1 - self.done;
+                    let Some(&next) = bytes.get(i + 1) else { break };
+                    if next.is_ascii_whitespace() || b"\"')*_".contains(&next) {
+                        self.end_clause(text, self.done + self.line_clause_start, i);
+                        self.line_clause_start = i + 1 - self.done;
+                    }
                 }
                 _ => {}
             }
             i += 1;
         }
-        self.scanned = bytes.len();
+        self.scanned = i;
     }
 
     fn line_prose(&mut self, text: &str) -> bool {
@@ -110,9 +144,21 @@ impl RepetitionWatch {
             return;
         }
         self.line_last = Some(clause.to_string());
+        if self.window.len() == CLAUSE_WINDOW {
+            if let Some(old) = self.window.pop_front() {
+                if let Some(n) = self.clauses.get_mut(&old) {
+                    *n -= 1;
+                    if *n == 0 {
+                        self.clauses.remove(&old);
+                    }
+                }
+            }
+        }
+        self.window.push_back(clause.to_string());
+        let copies = self.copies();
         let n = self.clauses.entry(clause.to_string()).or_insert(0);
         *n += 1;
-        self.thrice |= *n >= 3;
+        self.repeated |= *n >= copies;
         self.clause_lengths.insert(clause.len());
     }
 
@@ -133,13 +179,16 @@ impl RepetitionWatch {
         self.line_is_prose = None;
     }
 
-    /// The sentence still being written would be the third copy.
-    fn open_clause_is_third(&self, text: &str) -> bool {
+    /// The sentence still being written would be the copy that makes a loop. When it is about
+    /// to end the oldest window entry leaves first, as it will when the sentence is counted.
+    fn open_clause_completes_a_loop(&self, text: &str) -> bool {
         let open = text[self.done + self.line_clause_start..].trim();
-        open.len() >= MIN_CLAUSE
-            && self.clause_lengths.contains(&open.len())
-            && self.line_last.as_deref() != Some(open)
-            && self.clauses.get(open).is_some_and(|n| n + 1 >= 3)
+        let open = open.strip_suffix(['.', '!', '?', ';']).unwrap_or(open).trim_end();
+        if open.len() < MIN_CLAUSE || !self.clause_lengths.contains(&open.len()) || self.line_last.as_deref() == Some(open) {
+            return false;
+        }
+        let leaving = (self.window.len() == CLAUSE_WINDOW && self.window.front().map(String::as_str) == Some(open)) as u32;
+        self.clauses.get(open).is_some_and(|n| n - leaving + 1 >= self.copies())
     }
 }
 
@@ -160,18 +209,30 @@ fn alternating_pair(lines: &[&str]) -> bool {
         && (4..=6).step_by(2).all(|k| lines[n - k] == b)
 }
 
-/// The text ends in four copies of one 8-80 byte chunk (48 bytes at least). A chunk of one
-/// byte, or of table and rule characters, is decoration.
-fn tail_repeats(bytes: &[u8]) -> bool {
+/// Copies of a chunk that make prose a loop, and the least they must cover.
+const PROSE_COPIES: usize = 4;
+const PROSE_SPAN: usize = 48;
+/// Code (inside a fence, or a chunk with no letters: a numeric array, a matrix row) repeats
+/// legitimately: only a run this long is a loop.
+const CODE_COPIES: usize = 32;
+const CODE_SPAN: usize = 2_048;
+
+/// The text ends in repeated copies of one 8-80 byte chunk: four covering 48 bytes in prose; for
+/// code, at least 32 covering 2 KB. A chunk of one byte, or of table and rule characters, is
+/// decoration.
+fn tail_repeats(bytes: &[u8], in_code: bool) -> bool {
     let len = bytes.len();
     (8..=80usize).any(|w| {
-        if len < w * 4 || w * 4 < 48 {
+        if len < w * PROSE_COPIES || w * PROSE_COPIES < PROSE_SPAN {
             return false;
         }
         let last = &bytes[len - w..];
-        (2..=4).all(|k| &bytes[len - w * k..len - w * (k - 1)] == last)
-            && !last.iter().all(|&b| b == last[0])
-            && !last.iter().all(|b| b"|-:=*#_~. \n".contains(b))
+        if last.iter().all(|&b| b == last[0]) || last.iter().all(|b| b"|-:=*#_~. \n".contains(b)) {
+            return false;
+        }
+        let code = in_code || !last.iter().any(u8::is_ascii_alphabetic);
+        let copies = if code { CODE_COPIES.max(CODE_SPAN.div_ceil(w)) } else { PROSE_COPIES };
+        len >= w * copies && (2..=copies).all(|k| &bytes[len - w * k..len - w * (k - 1)] == last)
     })
 }
 
@@ -438,6 +499,65 @@ mod tests {
             assert!(!looping(t), "false alarm: {t:?}");
             assert!(!looping_streamed(t), "false alarm when streamed: {t:?}");
         }
+    }
+
+    /// Review finding: a structured answer that says one thing about several files, and long
+    /// reasoning that circles back to one check now and then, are not loops.
+    #[test]
+    fn a_sentence_said_again_in_places_is_not_a_loop() {
+        let review = "src/a.rs: No changes were needed in this file.\nsrc/b.rs: No changes were needed in this file.\n\
+                      src/c.rs: No changes were needed in this file.\nsrc/d.rs: No changes were needed in this file.\nDone.";
+        assert!(!looping_streamed(review), "a per-file review was cut");
+        let summary = "Module A. All of its tests pass on the first run.\nModule B is unchanged.\nModule C. All of its tests \
+                       pass on the first run.\nModule D is unchanged.\nModule E. All of its tests pass on the first run.\n\
+                       Nothing else to report.";
+        // Three copies close together is still a reply loop; reasoning needs a tighter spin.
+        assert!(looping_streamed(summary));
+        assert!(!RepetitionWatch::for_reasoning().is_looping(summary));
+
+        let mut reasoning = String::new();
+        for i in 0..400 {
+            reasoning.push_str(&format!(
+                "Step {i}: the value of field_{i} flows into parse_{} and comes back as {} bytes. ",
+                i * 7 % 13,
+                i * 31 % 97
+            ));
+            if i % 60 == 0 {
+                reasoning.push_str("Wait, let me re-read the code.\n");
+            }
+            if i % 9 == 0 {
+                reasoning.push('\n');
+            }
+        }
+        assert!(reasoning.len() > 15_000, "about 5k tokens");
+        assert!(reasoning.matches("Wait, let me re-read the code.").count() >= 3);
+        for mut w in [RepetitionWatch::default(), RepetitionWatch::for_reasoning()] {
+            let mut text = String::new();
+            for piece in reasoning.split_inclusive(' ') {
+                text.push_str(piece);
+                assert!(!w.is_looping(&text), "varied reasoning that rechecks now and then was cut at {}", text.len());
+            }
+        }
+        // A real spin in reasoning is still caught.
+        let spin = "I should verify the import path once more. Let me check the import path again now.\n".repeat(4);
+        assert!(RepetitionWatch::for_reasoning().is_looping(&spin));
+    }
+
+    #[test]
+    fn repeated_code_lines_and_numeric_arrays_are_not_cut() {
+        for n in 4..=8 {
+            let fenced = format!("Call it in a loop:\n```c\n{}```\nThat drains the queue.", "    next();\n".repeat(n));
+            assert!(!looping_streamed(&fenced), "{n} repeated lines in a fence were cut");
+            let rows = format!("The identity's zero block:\n```python\n{}```\n", "    [0, 0, 0, 0, 0, 0, 0, 0],\n".repeat(n));
+            assert!(!looping_streamed(&rows), "{n} matrix rows were cut");
+        }
+        let array = format!("Initialise the weights to `[{}0]` before the first step.", "0, ".repeat(64));
+        assert!(!looping_streamed(&array), "a zero-filled array in prose was cut");
+        let still_open = format!("```\n{}", "x = x + 1;\n".repeat(12));
+        assert!(!looping_streamed(&still_open), "an open fence with twelve identical lines was cut");
+        // A fence that never stops repeating is still a loop, once it runs past the code limit.
+        let endless = format!("```\n{}", "    next();\n".repeat(200));
+        assert!(looping_streamed(&endless), "a degenerate fenced loop was never cut");
     }
 
     #[test]

@@ -4,10 +4,16 @@
 //! - [`middleware`]: instruction files and lazy rules, slash commands and `/loop`, the working
 //!   set (todos, stop check, pinned set), worktree switches, loop guards.
 //! - [`services`]: `ask_user` (a `QuestionAsked` / `AnswerQuestion` round trip), the subagent
-//!   runner, worktrees, the todo broadcast, the control queue (`/compact`, `/add-dir`,
-//!   `/memory`, applied at the session's next step boundary), the `/model` switch, model aliases
-//!   for commands and agents, the session wake (a background agent's report starts a turn), and
-//!   the cache-stable context policy.
+//!   runner, worktrees and the session's tools rebuilt for a worktree or an added root, the todo
+//!   broadcast, the control queue (`/compact`, `/add-dir`, `/memory`, applied at the session's
+//!   next step boundary), the `/model` switch, model aliases for commands and agents, the session
+//!   wake (a background agent's report starts a turn), and the cache-stable context policy.
+//! - Background agents are recorded in `cowork.db` while they run; one still recorded at the
+//!   next start was lost, and its session is told so on its next turn ([`on_boot`]).
+//! - Trust for repository content ([`TrustPrompt`]): a project command that runs commands or
+//!   grants tools, and instruction imports from outside the workspace, ask once (an approval
+//!   round trip); the yes is kept by digest in `cowork.db`.
+//! - Subagents' approvals end at once when their run is interrupted or the daemon stops.
 //!
 //! Nothing here blocks the client reader: controls are queued, questions wait on the turn's own
 //! tool thread.
@@ -19,24 +25,28 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Sender};
+use rusqlite::{params, Connection};
 use marlowe_agent::agent::guard::LoopGuard;
 use marlowe_agent::agent::{ContextPolicy, Control, Controls, ModelSwitch, Resolver};
 use marlowe_agent::commands::{self, Catalog, CommandsMiddleware};
 use marlowe_agent::instructions::{InstructionsMiddleware, Sources};
+use marlowe_agent::instructions::trust::Trust;
 use marlowe_agent::subagent::{
-    discover_types, model_target, read_aliases, HostFactory, ModelResolver, ModelTarget, ResolvedModel, SessionWake,
-    SubagentConfig, Subagents, CLOUD_SLOTS,
+    discover_types, model_target, read_aliases, ApprovalFactory, BackgroundLedger, HostFactory, ModelResolver, ModelTarget,
+    ResolvedModel, SessionWake, SubagentConfig, Subagents, CLOUD_SLOTS,
 };
 use marlowe_agent::todo::{QuestionAsker, Questions, TodoSink, WorkingSet};
-use marlowe_agent::worktree::{NoWorktrees, WorktreeMiddleware, WorktreeProvider, Worktrees};
+use marlowe_agent::worktree::{NoWorktrees, WorkspaceHosts, WorktreeMiddleware, WorktreeProvider, Worktrees};
 use marlowe_agent::context::PrefixFit;
-use marlowe_agent::{ApprovalGate, ApprovalReq, Conversation, FinalFlow, Services, StepInfo, ToolHost, ToolMiddleware};
+use marlowe_agent::{
+    ApprovalGate, ApprovalReq, Conversation, FinalFlow, Services, StepInfo, ToolHost, ToolMiddleware, TurnFlow,
+};
 use marlowe_model::{CancelToken, Effort, ModelRef};
-use marlowe_proto::{ApprovalDecision, Event, Question, Request, SessionId, Slot, TodoItem};
+use marlowe_proto::{paths, ApprovalDecision, Event, Question, Request, SessionId, Slot, TodoItem};
 
 use crate::daemon::Core;
 use crate::session::RELAY_PREFIX;
-use crate::{lock, HostRequest};
+use crate::{lock, now_ms, HostRequest};
 
 /// The worktree provider the conductor uses. Track I installs the crew sandbox's provider with
 /// [`install_worktrees`]; until then worktrees are unavailable and say so.
@@ -60,6 +70,8 @@ struct ConductorState {
     switches: Mutex<HashMap<SessionId, ResolvedModel>>,
     questions: Mutex<HashMap<String, Sender<Vec<String>>>>,
     next_question: AtomicU64,
+    /// The prefix-budget cuts already reported (once per daemon, not once per session).
+    prefix_reported: Mutex<Vec<String>>,
 }
 
 fn state(core: &Core) -> Arc<ConductorState> {
@@ -162,9 +174,17 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
     }
 }
 
-/// A library model ready to call, for `/model` and agents' model ids.
+/// A library model ready to call, for `/model` and agents' model ids. Its window is the context
+/// gate's, as `Brains::agent_parts` gives the conductor's: compaction and the prefix budget work
+/// against what the runner really holds, not the model's advertised window.
 fn resolve_model(core: &Core, model: &ModelRef, effort: Option<Effort>) -> Result<ResolvedModel, String> {
-    let info = core.brains.model_info(model).map_err(|e| e.to_string())?;
+    let mut info = core.brains.model_info(model).map_err(|e| e.to_string())?;
+    let saved = core.brains.with_library(|l| l.policy(model)).map_err(|e| e.to_string())?.is_some();
+    if saved || info.context_window.is_some() {
+        if let Ok(window) = core.brains.context().allowed_ctx(model, None) {
+            info.context_window = Some(window);
+        }
+    }
     let provider = core.brains.provider_for(model).map_err(|e| e.to_string())?;
     let effort = effort.unwrap_or_else(|| core.brains.resolve(&Slot::Conductor).map(|(_, e)| e).unwrap_or_default());
     Ok(ResolvedModel { provider, info, effort })
@@ -248,30 +268,117 @@ impl QuestionAsker for BusQuestions {
     }
 }
 
-/// Approvals for subagents' calls: the same round trip as the conductor's.
+/// Approvals for subagents' calls: the same round trip as the conductor's, published under the
+/// parent session (a subagent's id is `<parent>/agent-N`), so clients that answer by session see
+/// it; the agent is named in the summary. One per run: the run's cancel token (the caller's turn,
+/// or a background agent's own) denies a pending approval at once, as does shutdown.
 struct SubagentGate {
     core: Arc<Core>,
+    cancel: CancelToken,
+}
+
+/// Builds a [`SubagentGate`] for each subagent run.
+fn subagent_approvals(core: &Arc<Core>) -> ApprovalFactory {
+    let core = core.clone();
+    Arc::new(move |cancel: &CancelToken| -> Arc<dyn ApprovalGate> { Arc::new(SubagentGate { core: core.clone(), cancel: cancel.clone() }) })
+}
+
+/// Waits for an approval's answer: denied on cancel, shutdown or timeout.
+fn wait_decision(core: &Core, rx: &crossbeam_channel::Receiver<ApprovalDecision>, cancel: Option<&CancelToken>) -> ApprovalDecision {
+    let deadline = Instant::now() + core.cfg.approval_timeout;
+    loop {
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(d) => return d,
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return ApprovalDecision::Deny,
+            Err(_) if cancel.is_some_and(CancelToken::is_cancelled) || core.is_shutting_down() => return ApprovalDecision::Deny,
+            Err(_) if Instant::now() >= deadline => return ApprovalDecision::Deny,
+            Err(_) => {}
+        }
+    }
+}
+
+/// `(parent session, agent id)` of a subagent's composite session id.
+fn subagent_of(session: &SessionId) -> (SessionId, &str) {
+    match session.as_str().split_once('/') {
+        Some((parent, agent)) => (SessionId(parent.to_string()), agent),
+        None => (session.clone(), "agent"),
+    }
 }
 
 impl ApprovalGate for SubagentGate {
     fn ask(&self, req: ApprovalReq) -> ApprovalDecision {
-        if self.core.is_shutting_down() {
+        if self.core.is_shutting_down() || self.cancel.is_cancelled() {
             return ApprovalDecision::Deny;
         }
-        let (id, _tx, rx) = self.core.approvals.register();
+        let (id, tx, rx) = self.core.approvals.register();
+        let _hook = self.cancel.on_cancel(move || {
+            let _ = tx.try_send(ApprovalDecision::Deny);
+        });
+        let (parent, agent) = subagent_of(&req.session);
+        let summary = format!("(subagent {agent}) {}", req.summary);
         self.core.bus.publish(Event::ApprovalRequested {
             approval: id,
-            session: req.session,
+            session: parent,
             tool: req.tool,
-            summary: format!("(subagent) {}", req.summary),
+            summary,
             detail: req.detail,
             run: None,
             proposed_rule: None,
         });
-        let decision = rx.recv_timeout(self.core.cfg.approval_timeout).unwrap_or(ApprovalDecision::Deny);
+        let decision = wait_decision(&self.core, &rx, Some(&self.cancel));
         self.core.approvals.remove(id);
         self.core.bus.publish(Event::ApprovalResolved { approval: id, decision });
         decision
+    }
+}
+
+/// Trust for repository content (see the module docs): a digest the user allowed before is
+/// trusted; otherwise one approval round trip, refused when no client is connected to answer.
+struct TrustPrompt {
+    core: Arc<Core>,
+}
+
+fn trusted(core: &Core, digest: &str) -> bool {
+    f_rows(core, |c| c.query_row("SELECT COUNT(*) FROM trusted_content WHERE digest = ?1", params![digest], |r| r.get::<_, i64>(0)))
+        .is_ok_and(|n| n > 0)
+}
+
+impl Trust for TrustPrompt {
+    fn trust(&self, session: &SessionId, subject: &str, lines: &[String], digests: &[String]) -> bool {
+        if !digests.is_empty() && digests.iter().all(|d| trusted(&self.core, d)) {
+            return true;
+        }
+        if self.core.is_shutting_down() || self.core.bus.client_count() == 0 {
+            return false;
+        }
+        let (id, _tx, rx) = self.core.approvals.register();
+        self.core.bus.publish(Event::ApprovalRequested {
+            approval: id,
+            session: session.clone(),
+            tool: "trust".into(),
+            summary: format!("trust {subject}"),
+            detail: lines.join("\n"),
+            run: None,
+            proposed_rule: None,
+        });
+        let decision = wait_decision(&self.core, &rx, None);
+        self.core.approvals.remove(id);
+        self.core.bus.publish(Event::ApprovalResolved { approval: id, decision });
+        if !decision.is_allowed() {
+            return false;
+        }
+        for d in digests {
+            let r = f_rows(&self.core, |c| {
+                c.execute(
+                    "INSERT OR REPLACE INTO trusted_content (digest, subject, at_ms) VALUES (?1, ?2, ?3)",
+                    params![d, subject, now_ms()],
+                )
+            });
+            if let Err(e) = r {
+                eprintln!("marlowe: trust for {subject} not kept: {e}");
+            }
+        }
+        true
     }
 }
 
@@ -294,22 +401,28 @@ fn wake(core: &Arc<Core>) -> SessionWake {
     }))
 }
 
-/// Tells the user when the prefix budget cut something (design 3.4: never silent), once per
-/// change: the instruction files, repo map or skills index that did not fit.
+/// Tells the user when the prefix budget cut something (design 3.4: never silent): the
+/// instruction files, repo map or skills index that did not fit. Each distinct cut is said once
+/// per daemon (every session on one model cuts alike); `/context` shows it any time. The wire has
+/// no notice kind for this yet, so it goes out as an error line.
 struct PrefixNotice {
     core: Arc<Core>,
-    last: Mutex<Vec<String>>,
 }
 
 impl PrefixNotice {
     fn check(&self, convo: &Conversation) {
         let warnings = convo.ext.get::<PrefixFit>().map(|f| f.warnings.clone()).unwrap_or_default();
-        let mut last = lock(&self.last);
-        if warnings.is_empty() || *last == warnings {
+        if warnings.is_empty() {
             return;
         }
-        *last = warnings.clone();
-        let message = format!("context: {} (see /context)", warnings.join("; "));
+        let st = state(&self.core);
+        let mut reported = lock(&st.prefix_reported);
+        let fresh: Vec<String> = warnings.into_iter().filter(|w| !reported.contains(w)).collect();
+        if fresh.is_empty() {
+            return;
+        }
+        reported.extend(fresh.iter().cloned());
+        let message = format!("context: {} (see /context)", fresh.join("; "));
         self.core.bus.publish(Event::Error { session: Some(convo.session.clone()), message });
     }
 }
@@ -330,6 +443,112 @@ impl ToolMiddleware for PrefixNotice {
     }
 }
 
+// ---------------------------------------------------------------- background agents
+
+/// F's tables in `cowork.db`: `background_agents` and `trusted_content`.
+#[derive(Default)]
+struct FRows(Mutex<Option<Connection>>);
+
+fn f_rows<T>(core: &Core, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, String> {
+    let rows = core.ext.get_or_init(FRows::default);
+    let mut db = lock(&rows.0);
+    if db.is_none() {
+        let conn = Connection::open(paths::cowork_db(&core.home)).map_err(|e| e.to_string())?;
+        conn.busy_timeout(Duration::from_secs(5)).map_err(|e| e.to_string())?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS background_agents (
+                session TEXT NOT NULL,
+                id TEXT NOT NULL,
+                label TEXT NOT NULL,
+                started_ms INTEGER NOT NULL,
+                lost INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS trusted_content (
+                digest TEXT PRIMARY KEY,
+                subject TEXT NOT NULL,
+                at_ms INTEGER NOT NULL
+            );",
+        )
+        .map_err(|e| e.to_string())?;
+        *db = Some(conn);
+    }
+    f(db.as_ref().expect("opened")).map_err(|e| e.to_string())
+}
+
+/// Records background agents while they run; stops them when the daemon shuts down.
+struct Ledger {
+    core: Arc<Core>,
+}
+
+impl BackgroundLedger for Ledger {
+    fn started(&self, session: &SessionId, id: &str, label: &str) {
+        let r = f_rows(&self.core, |c| {
+            c.execute(
+                "INSERT INTO background_agents (session, id, label, started_ms, lost) VALUES (?1, ?2, ?3, ?4, 0)",
+                params![session.as_str(), id, label, now_ms()],
+            )
+        });
+        if let Err(e) = r {
+            eprintln!("marlowe: background agent {id} not recorded: {e}");
+        }
+    }
+
+    fn finished(&self, session: &SessionId, id: &str) {
+        let _ = f_rows(&self.core, |c| {
+            c.execute("DELETE FROM background_agents WHERE session = ?1 AND id = ?2 AND lost = 0", params![session.as_str(), id])
+        });
+    }
+
+    fn stopping(&self) -> bool {
+        self.core.is_shutting_down()
+    }
+}
+
+/// At start (from `schedule_ops::on_boot`): every background agent still recorded was running
+/// when the last daemon stopped, so it was lost. Must not block.
+pub(crate) fn on_boot(core: &Arc<Core>) {
+    if let Err(e) = f_rows(core, |c| c.execute("UPDATE background_agents SET lost = 1", [])) {
+        eprintln!("marlowe: background agents not checked: {e}");
+    }
+}
+
+/// The lost background agents of `session`, removed from the table.
+fn take_lost(core: &Core, session: &SessionId) -> Vec<(String, String)> {
+    f_rows(core, |c| {
+        let mut st = c.prepare("SELECT id, label FROM background_agents WHERE session = ?1 AND lost = 1 ORDER BY started_ms")?;
+        let rows: rusqlite::Result<Vec<(String, String)>> =
+            st.query_map(params![session.as_str()], |r| Ok((r.get(0)?, r.get(1)?)))?.collect();
+        let rows = rows?;
+        if !rows.is_empty() {
+            c.execute("DELETE FROM background_agents WHERE session = ?1 AND lost = 1", params![session.as_str()])?;
+        }
+        Ok(rows)
+    })
+    .unwrap_or_default()
+}
+
+/// Tells a session, on its next turn, about background agents a restart lost (it was told it
+/// would hear when they finished). The note rides on the turn's text, not in memory.
+struct LostAgents {
+    core: Arc<Core>,
+}
+
+impl ToolMiddleware for LostAgents {
+    fn name(&self) -> &str {
+        "lost-agents"
+    }
+
+    fn before_turn(&self, convo: &mut Conversation, text: &mut String) -> TurnFlow {
+        for (id, label) in take_lost(&self.core, &convo.session) {
+            text.push_str(&format!(
+                "\n\n[harness: background agent {id} ({label}) was stopped when Marlowe restarted; it did not finish and \
+                 no report will come. Start it again if it is still needed.]"
+            ));
+        }
+        TurnFlow::Continue
+    }
+}
+
 /// F's loop middleware for one session, added by `stack.rs`.
 pub(crate) fn middleware(core: &Arc<Core>, convo: &Conversation) -> Vec<Arc<dyn ToolMiddleware>> {
     let src = sources(core, convo.workspace.as_deref());
@@ -338,13 +557,15 @@ pub(crate) fn middleware(core: &Arc<Core>, convo: &Conversation) -> Vec<Arc<dyn 
     let schedule: commands::ScheduleFn = Arc::new(move |session: &SessionId, secs: u64, text: &str| {
         crate::schedule_ops::add(&c, Some(session.clone()), secs, text).map(|s| s.id)
     });
+    let trust: Arc<dyn Trust> = Arc::new(TrustPrompt { core: core.clone() });
     vec![
-        InstructionsMiddleware::new(src.clone()),
-        CommandsMiddleware::with_schedule(src, run, schedule),
+        InstructionsMiddleware::with_trust(src.clone(), trust.clone()),
+        CommandsMiddleware::with_schedule(src, run, Some(schedule), Some(trust)),
         WorkingSet::new(),
         WorktreeMiddleware::new(),
         LoopGuard::new(),
-        Arc::new(PrefixNotice { core: core.clone(), last: Mutex::new(Vec::new()) }),
+        Arc::new(PrefixNotice { core: core.clone() }),
+        Arc::new(LostAgents { core: core.clone() }),
     ]
 }
 
@@ -357,16 +578,21 @@ pub(crate) fn services(core: &Arc<Core>, convo: &Conversation, services: Service
     let tools: HostFactory = Arc::new(move |workspace: Option<&Path>| -> Arc<dyn ToolHost> {
         (tools_core.tools)(&HostRequest { workspace: workspace.map(Path::to_path_buf), model: model.clone() })
     });
+    // The session's own tools for a worktree it entered or a root it added (built as session.rs
+    // builds them, from the conductor's model).
+    let rooted = tools.clone();
+    let hosts = WorkspaceHosts::new(move |root: &Path| rooted(Some(root)));
     let worktree_provider = worktrees(core);
     let sub = Subagents::new(SubagentConfig {
         resolver: resolver.clone(),
         tools,
-        approvals: Arc::new(SubagentGate { core: core.clone() }),
+        approvals: subagent_approvals(core),
         worktrees: worktree_provider.clone(),
         sources: sources(core, None),
         wake: Some(wake(core)),
         middleware: vec![WorkingSet::new(), LoopGuard::new()],
         cloud_slots: CLOUD_SLOTS,
+        ledger: Some(Arc::new(Ledger { core: core.clone() })),
     });
     let todo_core = core.clone();
     let todos = TodoSink(Arc::new(move |s: &SessionId, items: &[TodoItem]| {
@@ -379,6 +605,7 @@ pub(crate) fn services(core: &Arc<Core>, convo: &Conversation, services: Service
         .with(Questions(Arc::new(BusQuestions { core: core.clone() })))
         .with(sub)
         .with(Worktrees(worktree_provider))
+        .with(hosts)
         .with(todos)
         .with(controls_for(core, &session))
         .with(switch)
@@ -388,5 +615,19 @@ pub(crate) fn services(core: &Arc<Core>, convo: &Conversation, services: Service
         services.with(ContextPolicy::CACHE_STABLE)
     } else {
         services
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_subagent_approval_goes_to_its_parent_session() {
+        let id = SessionId("abc123/agent-2".into());
+        let (parent, agent) = subagent_of(&id);
+        assert_eq!((parent.as_str(), agent), ("abc123", "agent-2"));
+        let (parent, _) = subagent_of(&SessionId("plain".into()));
+        assert_eq!(parent.as_str(), "plain");
     }
 }

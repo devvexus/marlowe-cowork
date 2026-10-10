@@ -193,7 +193,9 @@ impl Agent {
     /// `budget` or `max_wall`, or on `cancel`. Assigns ids to tool calls that lack one.
     ///
     /// Middleware's `before_turn` runs first: it may rewrite the text, or block the turn (then
-    /// nothing is appended, no model is called, and the outcome is `blocked`).
+    /// nothing is appended, no model is called, and the outcome is `blocked`). Memory always sees
+    /// the user's own words, never the rewrite: a slash command's expansion (plugin text, pre-exec
+    /// output, attached files) is not the user speaking.
     pub fn run_turn(
         &self,
         convo: &mut Conversation,
@@ -216,13 +218,15 @@ impl Agent {
                 };
             }
         }
+        let said = user_text;
         let user_text = text_in.as_str();
         let turn = convo.next_turn;
         convo.next_turn += 1;
         let user_index = convo.messages.len();
         convo.push(Message::user(user_text));
+        convo.ext.insert(context::TurnQuery(user_index));
 
-        let recollection = self.memory.before_turn(&convo.session, user_text);
+        let recollection = self.memory.before_turn(&convo.session, said);
         // Untrusted text entering the context taints the run before any tool runs.
         if recollection.untrusted {
             convo.exposure.tainted = true;
@@ -417,8 +421,10 @@ impl Agent {
                 break TurnStop::Done;
             }
 
+            // A session in a worktree or with added roots runs its calls on tools rooted there.
+            let host = crate::worktree::step_host(&self.tools, &self.services, convo);
             let results = run_tools::run_calls(
-                self.tools.as_ref(),
+                host.as_ref(),
                 &self.middleware,
                 &self.services,
                 self.approvals.as_ref(),
@@ -428,6 +434,10 @@ impl Agent {
                 cancel,
                 sink,
             );
+            // A subagent that read untrusted content taints its caller through its report.
+            if convo.ext.remove::<crate::subagent::ReportTainted>() {
+                convo.exposure.tainted = true;
+            }
             for o in &self.observers {
                 o.on_tools_done(convo, info, &c.tool_calls, &results);
             }
@@ -443,7 +453,7 @@ impl Agent {
         convo.ext.remove::<CommandGrant>();
         let text = texts.join("\n\n");
         if stop != TurnStop::Error {
-            self.memory.after_turn(&convo.session, user_text, &text);
+            self.memory.after_turn(&convo.session, said, &text);
         }
         TurnOutcome { stop, usage: spent.usage, steps: spent.steps, text, error, blocked: false }
     }
@@ -472,7 +482,7 @@ fn call_model(provider: &dyn Provider, req: &ChatRequest, cancel: &CancelToken, 
             cancel.on_cancel(move || c.cancel())
         };
         let (mut text, mut reasoning) = (String::new(), String::new());
-        let (mut text_watch, mut reasoning_watch) = (guard::RepetitionWatch::default(), guard::RepetitionWatch::default());
+        let (mut text_watch, mut reasoning_watch) = (guard::RepetitionWatch::default(), guard::RepetitionWatch::for_reasoning());
         let mut looped: Option<String> = None;
         let result = provider.stream(req, &call_cancel, &mut |ev| {
             if looped.is_some() {

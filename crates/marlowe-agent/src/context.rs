@@ -170,6 +170,13 @@ pub struct PinnedSnapshot(pub String);
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TailReminders(pub Vec<(usize, String)>);
 
+/// The index of the running turn's own user message (its query) in `Conversation::ext`. Thinking
+/// is kept on every assistant message after it: the loop's mid-turn reminders (todos, lazy rules,
+/// guard nudges) are user-role messages too, and must not strip the turn's reasoning, or each
+/// request would stop extending the last one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TurnQuery(pub usize);
+
 /// The per-turn tail text: retrieved memory blocks and the environment.
 pub fn tail_text(system: &SystemPrompt, memory: &[String]) -> String {
     let mut parts: Vec<String> = memory.iter().filter(|m| !m.trim().is_empty()).map(|m| m.trim().to_string()).collect();
@@ -192,7 +199,7 @@ pub fn assemble(system: &SystemPrompt, memory: &[String], convo: &Conversation, 
 /// System: stable tier (core, blocks, project sections, user, output style), the profile
 /// (cached), the compaction summary, then (unless `volatile_tail`) retrieved memory blocks and
 /// the environment. Messages: the history with thinking dropped from assistant messages before
-/// the last user message; with `volatile_tail`, each turn's recorded tail prefixed to its user
+/// the turn's query ([`TurnQuery`], else the last user message); with `volatile_tail`, each turn's recorded tail prefixed to its user
 /// message; with [`Masking::Rolling`], all but the last `keep_tool_results` results masked.
 pub fn assemble_with(
     system: &SystemPrompt,
@@ -231,7 +238,8 @@ pub fn assemble_with(
             }
         }
     }
-    if let Some(last_user) = messages.iter().rposition(|m| m.role == Role::User) {
+    let query = convo.ext.get::<TurnQuery>().map(|q| q.0).filter(|&i| messages.get(i).is_some_and(|m| m.role == Role::User));
+    if let Some(last_user) = query.or_else(|| messages.iter().rposition(|m| m.role == Role::User)) {
         for m in &mut messages[..last_user] {
             if m.role == Role::Assistant {
                 m.content.retain(|p| !matches!(p, Part::Thinking(_)));
@@ -370,7 +378,16 @@ pub fn compact_with(
     }
 
     let live_user = keep.first().copied();
+    let query = convo.ext.get::<TurnQuery>().and_then(|q| keep.iter().position(|&i| i == q.0));
     convo.messages = keep.iter().map(|&i| convo.messages[i].clone()).collect();
+    match query {
+        Some(i) => {
+            convo.ext.insert(TurnQuery(i));
+        }
+        None => {
+            convo.ext.remove::<TurnQuery>();
+        }
+    }
     convo.summary = Some(summary.to_string());
     convo.ext.insert(PinnedSnapshot(pinned.trim().to_string()));
     // Indices moved: the live turn's tail (if any) is now at 0; older turns' tails are gone.
