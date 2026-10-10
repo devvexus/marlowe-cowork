@@ -507,3 +507,214 @@ fn codex_powershell_parser_child_protocol() {
     }
     assert_eq!(p.parse("Get-Content 'unclosed"), AstOutcome::ParseErrors);
 }
+
+// ---------------------------------------------------------------- review fixes
+
+fn user_home() -> PathBuf {
+    PathBuf::from(std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).expect("a home"))
+}
+
+/// Runs `calls` in one batch with `p`, nobody answering; what each came to, by the host's record.
+fn run_with(p: &Permissions, root: &Path, tainted: bool, calls: &[ToolCall]) -> Vec<&'static str> {
+    let host = FakeHost::new(root);
+    let services = Services::new().with(p.clone());
+    let gate = Recording::new(&[]);
+    let mut convo = Conversation::new(SessionId("s".into()), Some(root.to_path_buf()));
+    convo.exposure.tainted = tainted;
+    let r = batch(&*host, &[], &services, &*gate, calls, &mut convo);
+    let ran = host.ran();
+    calls
+        .iter()
+        .zip(&r)
+        .map(|(c, r)| {
+            if r.content.starts_with("Not run:") {
+                "refused"
+            } else if r.content.starts_with("The user denied") {
+                "ask"
+            } else if ran.iter().any(|l| {
+                let key = [arg(c, "command"), arg(c, "path"), arg(c, "url")].into_iter().find(|s| !s.is_empty()).unwrap_or("");
+                l.starts_with(c.name.as_str()) && l.ends_with(key)
+            }) {
+                "ran"
+            } else {
+                "?"
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn parity_m7_home_rules_apply_through_decide() {
+    let w = virtual_ws("home");
+    std::fs::create_dir_all(&w.home).unwrap();
+    std::fs::write(w.home.join("settings.toml"), "[permissions]\ndeny = [\"Read(~/.ssh/**)\", \"Edit(~/.bashrc)\"]\n").unwrap();
+    let home = user_home();
+    let p = perms(&w, PermissionMode::Bypass);
+    let path = |rel: &str| home.join(rel).display().to_string();
+    let got = run_with(
+        &p,
+        &w.root,
+        false,
+        &[
+            call("1", "read", json!({"path": path(".ssh/id_rsa")})),
+            call("2", "edit", json!({"path": path(".bashrc")})),
+            call("3", "read", json!({"path": path("notes.txt")})),
+        ],
+    );
+    assert_eq!(got, ["refused", "refused", "ran"], "`~/` rules name the user's home");
+}
+
+#[test]
+fn exit_plan_only_leaves_plan_and_another_mode_change_forgets_it() {
+    let w = virtual_ws("plan");
+    let p = perms(&w, PermissionMode::Bypass);
+    p.set_mode(PermissionMode::Plan);
+    p.set_mode(PermissionMode::Default);
+    assert_eq!(p.exit_plan(), PermissionMode::Default, "bypass is not restored after the user left plan");
+    assert_eq!(p.mode(), PermissionMode::Default);
+    let p = perms(&w, PermissionMode::AcceptEdits);
+    assert_eq!(p.exit_plan(), PermissionMode::AcceptEdits, "never in plan: nothing changes");
+    p.set_mode(PermissionMode::Plan);
+    p.set_mode(PermissionMode::Plan);
+    assert_eq!(p.exit_plan(), PermissionMode::AcceptEdits);
+}
+
+#[test]
+fn parity_a16_the_temp_dir_is_outside_and_only_the_session_scratch_is_free() {
+    let w = virtual_ws("tmpdir");
+    let p = perms(&w, PermissionMode::Bypass);
+    let temp = std::env::temp_dir().display().to_string().replace('\\', "/");
+    let temp = temp.trim_end_matches('/');
+    let scratch = p.scratch_dir().display().to_string().replace('\\', "/");
+    assert!(p.scratch_dir().starts_with(std::env::temp_dir()) && p.scratch_dir() != std::env::temp_dir());
+    let rows: Vec<(String, &str)> = vec![
+        (format!("rm -rf \"{temp}\""), "ask"),
+        (format!("rm -rf \"{temp}/claude\""), "ask"),
+        (format!("echo x > \"{temp}/x.txt\""), "ask"),
+        (format!("rm -rf \"{scratch}/build\""), "ran"),
+        (format!("echo x > \"{scratch}/x.txt\""), "ran"),
+    ];
+    let calls: Vec<ToolCall> = rows.iter().enumerate().map(|(i, (c, _))| sh(&i.to_string(), c)).collect();
+    let got = run_with(&p, &w.root, false, &calls);
+    for ((cmd, want), got) in rows.iter().zip(got) {
+        assert_eq!(got, *want, "{cmd}");
+    }
+}
+
+#[test]
+fn settings_lift_a_tools_own_ask_for_allowed_hosts_and_added_roots() {
+    let w = virtual_ws("lift");
+    std::fs::create_dir_all(&w.home).unwrap();
+    std::fs::write(w.home.join("settings.toml"), "[network]\nallow_hosts = [\"docs.rs\"]\n\n[permissions]\nallow = [\"WebFetch(domain:crates.io)\"]\n").unwrap();
+    let p = perms(&w, PermissionMode::Default);
+    let extra = w._t.0.join("extra");
+    p.add_root(extra.clone());
+    let calls = [
+        call("1", "web_fetch", json!({"url": "https://docs.rs/serde"})),
+        call("2", "web_fetch", json!({"url": "https://static.crates.io/x"})),
+        call("3", "web_fetch", json!({"url": "https://evil.example/x"})),
+        call("4", "edit", json!({"path": extra.join("src").join("x.rs").display().to_string()})),
+        call("5", "edit", json!({"path": w._t.0.join("elsewhere").join("x.rs").display().to_string()})),
+    ];
+    let got = run_with(&p, &w.root, true, &calls);
+    assert_eq!(got, ["ran", "ran", "ask", "ran", "ask"], "tainted session; allow_hosts, a domain rule and /add-dir answer the tools' asks");
+}
+
+#[test]
+fn parity_m11_always_for_project_survives_restart_in_an_untrusted_project() {
+    let w = ws("m11u");
+    std::fs::create_dir_all(w.root.join(".claude")).unwrap();
+    std::fs::write(
+        w.root.join(".claude").join("settings.json"),
+        r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo hi"}]}]}}"#,
+    )
+    .unwrap();
+    let p = perms(&w, PermissionMode::Default);
+    assert!(!p.settings().trusted, "a repository's hook is untrusted until the user trusts it");
+    let host = FakeHost::new(&w.root);
+    let mut convo = Conversation::new(SessionId("s".into()), Some(w.root.clone()));
+    let gate = Recording::new(&[ApprovalDecision::AllowPattern { scope: SettingsScope::Local }]);
+    batch(&*host, &[], &Services::new().with(p.clone()), &*gate, &[sh("1", "make check")], &mut convo);
+    let local = std::fs::read_to_string(w.root.join(".marlowe/settings.local.toml")).unwrap();
+    assert!(local.contains("bash(make check:*)"), "{local}");
+
+    let restarted = perms(&w, PermissionMode::Default);
+    let s = restarted.settings();
+    assert!(!s.trusted, "granting a rule trusts nothing else");
+    assert!(s.hooks().is_empty(), "the untrusted hook still does not run");
+    assert!(s.rules().iter().any(|r| r.pattern == "bash(make check:*)"), "/permissions shows the rule the user added");
+    let got = run_with(&restarted, &w.root, false, &[sh("2", "make check -j4"), sh("3", "cargo publish")]);
+    assert_eq!(got, ["ran", "ask"]);
+
+    // A rule the repository wrote itself is not the user's grant.
+    std::fs::write(w.root.join(".marlowe/settings.local.toml"), "[permissions]\nallow = [\"bash(make check:*)\", \"bash(cargo:*)\"]\n").unwrap();
+    let again = perms(&w, PermissionMode::Default);
+    assert_eq!(run_with(&again, &w.root, false, &[sh("4", "cargo build")]), ["ask"]);
+}
+
+/// Makes `link` a directory link to `target` (a junction on Windows, which needs no rights).
+fn dir_link(link: &Path, target: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.arg("/c").arg("mklink").arg("/J").arg(link).arg(target);
+        let limits = marlowe_os::child::RunLimits { timeout: std::time::Duration::from_secs(20), max_output_bytes: 1 << 16 };
+        marlowe_os::child::run(cmd, &marlowe_os::child::ChildSpec::new(), limits, &|| false).is_ok_and(|o| o.code() == 0)
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = (link, target);
+        false
+    }
+}
+
+#[test]
+fn a_link_out_of_the_workspace_is_seen_through() {
+    let w = ws("link");
+    let outside = w._t.0.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("notes.txt"), "keep me").unwrap();
+    assert!(dir_link(&w.root.join("esc"), &outside), "could not make a directory link");
+    let p = perms(&w, PermissionMode::Bypass);
+    let rows: &[(&str, &str)] = &[
+        ("rm esc/notes.txt", "ask"),
+        ("echo x > esc/new.txt", "ask"),
+        ("rm -rf esc", "ask"),
+        ("touch inside.txt", "ran"),
+        ("ln -s ../outside esc2", "ask"),
+    ];
+    let calls: Vec<ToolCall> = rows.iter().enumerate().map(|(i, (c, _))| sh(&i.to_string(), c)).collect();
+    let got = run_with(&p, &w.root, false, &calls);
+    for ((cmd, want), got) in rows.iter().zip(got) {
+        assert_eq!(got, *want, "{cmd}");
+    }
+    assert_eq!(std::fs::read_to_string(outside.join("notes.txt")).unwrap(), "keep me");
+}
+
+#[test]
+fn parity_m9_the_projects_permission_files_ask_in_every_mode() {
+    let w = ws("m9g");
+    let rel = |p: &str| w.root.join(p).display().to_string();
+    for mode in [PermissionMode::Default, PermissionMode::AcceptEdits, PermissionMode::Bypass] {
+        let p = perms(&w, mode);
+        let calls = [
+            call("1", "edit", json!({"path": rel(".claude/settings.json")})),
+            call("2", "edit", json!({"path": rel(".marlowe/settings.local.toml")})),
+            call("3", "edit", json!({"path": rel(".claude/hooks/guard.sh")})),
+            sh("4", "echo '{}' > .claude/settings.local.json"),
+            sh("5", "rm -rf .marlowe"),
+            call("6", "edit", json!({"path": rel("src/lib.rs")})),
+            call("7", "edit", json!({"path": rel(".claude/commands/review.md")})),
+        ];
+        let got = run_with(&p, &w.root, false, &calls);
+        assert_eq!(got[..5], ["ask"; 5], "{mode:?}: changes the permission settings");
+        assert_eq!(got[5..], ["ran", "ran"], "{mode:?}: other edits in the workspace stay free");
+    }
+    // dont_ask refuses it with the reason; the user may still approve it when asked.
+    let p = perms(&w, PermissionMode::DontAsk);
+    assert_eq!(run_with(&p, &w.root, false, &[call("1", "edit", json!({"path": rel(".claude/settings.json")}))]), ["refused"]);
+}

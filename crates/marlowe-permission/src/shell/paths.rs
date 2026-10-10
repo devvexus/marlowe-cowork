@@ -1,4 +1,5 @@
-//! Lexical path handling for shell arguments: no filesystem access, no symlink resolution.
+//! Path handling for shell arguments: lexical, except [`through_links`], which asks the
+//! filesystem whether an existing part of a path is a symlink or junction.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -20,6 +21,42 @@ pub fn lexical_join(base: &Path, path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// Where `path` really leads when an existing part of it is a symlink or junction: its deepest
+/// existing ancestor resolved by the filesystem, with the rest joined on. `None` when no
+/// existing part is a link (the lexical path is where it is).
+pub(crate) fn through_links(path: &Path) -> Option<PathBuf> {
+    let mut existing = path.to_path_buf();
+    let mut rest = Vec::new();
+    while std::fs::symlink_metadata(&existing).is_err() {
+        rest.push(existing.file_name()?.to_os_string());
+        if !existing.pop() {
+            return None;
+        }
+    }
+    // A Windows junction is a symlink to `FileType` too (a name-surrogate reparse point).
+    let linked = existing.ancestors().any(|a| std::fs::symlink_metadata(a).is_ok_and(|m| m.file_type().is_symlink()));
+    if !linked {
+        return None;
+    }
+    let mut out = plain(std::fs::canonicalize(&existing).ok()?);
+    for name in rest.iter().rev() {
+        out.push(name);
+    }
+    Some(out)
+}
+
+/// A canonical Windows path without its verbatim prefix (`\\?\C:\x` -> `C:\x`).
+pub(crate) fn plain(p: PathBuf) -> PathBuf {
+    let s = p.to_string_lossy().into_owned();
+    if let Some(unc) = s.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{unc}"));
+    }
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => p,
+    }
 }
 
 /// Whether `path` is `root` or below it. Case-insensitive and separator-agnostic on Windows.

@@ -35,6 +35,7 @@ fn analyze_ws(d: Dialect, cmd: &str) -> Analysis {
         protected: &prot,
         protected_branches: &[],
         scratch: &[],
+        guarded: &[],
         read_script: &no_scripts,
     };
     analyze(d, cmd, &ctx)
@@ -153,6 +154,17 @@ fn corpus() -> Vec<(Dialect, String, Want)> {
         (C, "del /q build\\out.txt", Free),
         (C, "echo hi > out.txt", Free),
         (C, "cargo test && echo ok", Free),
+        // ---- git running code that stays inside; PowerShell naming its paths
+        (B, "git rebase -x 'cargo test' main", Free),
+        (B, "git rebase -Xtheirs main", Free),
+        (B, "git bisect run cargo test", Free),
+        (P, "Remove-Item -Path:build -Recurse", Free),
+        (P, "Move-Item -Path build/a.txt -Destination out", Free),
+        // ---- links that stay inside
+        (B, "ln -s src/lib.rs alias.rs", Free),
+        (B, "ln src/a.txt b.txt", Free),
+        (P, "New-Item -ItemType SymbolicLink -Path link -Value src", Free),
+        (C, "mklink /D link src", Free),
         // ---- bash, ask
         (B, "git push", Ask),
         (B, "git push origin main", Ask),
@@ -276,6 +288,41 @@ fn corpus() -> Vec<(Dialect, String, Want)> {
         (C, "set GIT_DIR=x && git status", Ask),
         (C, "echo x > %USERPROFILE%\\x.txt", Ask),
         (C, "powershell -c \"git push\"", Ask),
+        // ---- shell code git runs: walked, so its tripwires apply (review fix)
+        (B, "git rebase --exec 'rm -rf ~' main", Ask),
+        (B, "git rebase -x 'rm -rf ~' main", Ask),
+        (B, "git rebase --exec='rm -rf ~' main", Ask),
+        (B, "git rebase -ix 'rm -rf ~' main", Ask),
+        (B, "git rebase -x \"$CMD\" main", Ask),
+        (B, "git bisect run sh -c 'rm -rf ~'", Ask),
+        (B, "git bisect run rm -rf ~", Ask),
+        (B, "git submodule foreach 'rm -rf ~'", Ask),
+        (B, "git submodule foreach --recursive rm -rf ~", Ask),
+        (B, "git filter-branch --tree-filter 'rm -rf ~' HEAD", Ask),
+        (B, "git filter-branch --index-filter='rm -rf ~' HEAD", Ask),
+        (B, "git difftool -x 'rm -rf ~' HEAD~1", Ask),
+        (B, "git clone --upload-pack='rm -rf ~' ../other copy", Ask),
+        (P, "git rebase -x 'Remove-Item -Recurse C:/Users/matth/Documents' main", Ask),
+        // ---- PowerShell deletes and writes whose paths come from the pipeline (review fix)
+        (P, "Get-ChildItem C:/Users/matth/Documents | Remove-Item -Recurse -Force", Ask),
+        (P, "gci ../.. -Recurse | ri -Force", Ask),
+        (P, "'C:/Users/matth/Documents' | Remove-Item -Recurse", Ask),
+        (P, "Get-Item C:/Users/matth/.ssh/config | Clear-Content", Ask),
+        (P, "gci C:/Users/matth/Documents | Move-Item -Destination .", Ask),
+        (P, "gci *.log | Rename-Item -NewName { $_.Name + '.bak' }", Ask),
+        (P, "Remove-Item -Path:C:/Users/matth/Documents -Recurse", Ask),
+        // ---- links that lead out of the workspace (a later write through them would look inside)
+        (B, "ln -s ../../outside esc", Ask),
+        (B, "ln -sf /c/Users esc", Ask),
+        (B, "ln -s -t links ../../x", Ask),
+        (B, "ln ../other/secret.txt here.txt", Ask),
+        (P, "New-Item -ItemType Junction -Path esc -Target ..\\..\\x", Ask),
+        (P, "New-Item -ItemType SymbolicLink -Path esc -Value C:\\Users", Ask),
+        (P, "ni -ItemType:HardLink h -Va ..\\x", Ask),
+        (P, "New-Item -Type Junction esc -Target:..\\..\\x", Ask),
+        (P, "New-Item -ItemType $t -Path esc -Value ..\\..\\x", Ask),
+        (C, "mklink /J esc ..\\..\\x", Ask),
+        (C, "mklink /D esc C:\\Users", Ask),
         // ---- deny (G7, A16)
         (B, "git push --force", Deny),
         (B, "git push -f origin main", Deny),
@@ -297,6 +344,15 @@ fn corpus() -> Vec<(Dialect, String, Want)> {
         (P, "iex 'git push --force'", Deny),
         (C, "git push --force-with-lease", Deny),
         (C, "cmd /c git push --mirror", Deny),
+        // git takes any unambiguous prefix of a long option
+        (B, "git commit --no-verif -m x", Deny),
+        (B, "git commit --no-ver -m x", Deny),
+        (B, "git push --force-w", Deny),
+        (B, "git push --forc origin x", Deny),
+        (B, "git push --force-if origin x", Deny),
+        (B, "git push --mirr", Deny),
+        (B, "git push origin --del main", Deny),
+        (P, "git merge --no-verif feature", Deny),
     ]
     .into_iter()
     .map(|(d, c, w)| (d, c.to_string(), w))
@@ -333,6 +389,53 @@ fn parity_a16_bypass_tripwires() {
         assert_eq!(got(&analyze_ws(Dialect::PowerShell, cmd)), Deny, "{cmd}");
     }
     assert_eq!(analyze_ws(Dialect::Bash, "curl https://new.host").hosts, vec!["new.host".to_string()]);
+    // Review fixes: shell code inside git, and PowerShell deletes and writes fed by a pipeline,
+    // ask in bypass too.
+    use crate::rules::policy::{decide, Facts, Mode, ToolSays, Verdict as V};
+    let bypass = |d: Dialect, cmd: &str| {
+        let a = analyze_ws(d, cmd);
+        let mut f = Facts::new(Mode::Bypass, ToolSays::Ask("runs a command".into()));
+        f.runs = true;
+        f.shell = Some(&a);
+        decide(&f)
+    };
+    for (d, cmd) in [
+        (Dialect::Bash, "git rebase -x 'rm -rf ~' main"),
+        (Dialect::Bash, "git bisect run sh -c 'rm -rf ~'"),
+        (Dialect::Bash, "git submodule foreach 'rm -rf ~'"),
+        (Dialect::Bash, "git filter-branch --tree-filter 'rm -rf ~' HEAD"),
+        (Dialect::PowerShell, "Get-ChildItem C:/Users/matth/Documents | Remove-Item -Recurse -Force"),
+        (Dialect::PowerShell, "gci ../.. -Recurse | ri -Force"),
+        (Dialect::PowerShell, "'C:/Users/matth/Documents' | Remove-Item -Recurse"),
+        (Dialect::PowerShell, "Get-Item C:/Users/matth/.ssh/config | Clear-Content"),
+    ] {
+        assert!(matches!(bypass(d, cmd), V::Ask { tripwire: true, .. }), "{cmd}");
+    }
+    assert_eq!(bypass(Dialect::Bash, "git rebase -x 'cargo test' main"), V::Free);
+}
+
+#[test]
+fn permission_settings_files_are_guarded() {
+    let roots = [root()];
+    let guarded = [root().join(".claude").join("settings.json"), root().join(".marlowe").join("settings.toml"), root().join(".claude").join("hooks")];
+    let ctx = ShellCtx { guarded: &guarded, read_script: &no_scripts, ..ShellCtx::workspace(root(), &roots) };
+    for (d, cmd) in [
+        (Dialect::Bash, "echo '{}' > .claude/settings.json"),
+        (Dialect::Bash, "rm -rf .claude"),
+        (Dialect::Bash, "cp evil.json .claude"),
+        (Dialect::Bash, "sed -i s/deny/x/ .marlowe/settings.toml"),
+        (Dialect::Bash, "mv .marlowe/settings.toml old.toml"),
+        (Dialect::Bash, "echo 'exit 0' > .claude/hooks/guard.sh"),
+        (Dialect::PowerShell, "Set-Content .claude/settings.json '{}'"),
+        (Dialect::PowerShell, "Remove-Item .marlowe -Recurse"),
+        (Dialect::Cmd, "del .claude\\settings.json"),
+    ] {
+        let a = analyze(d, cmd, &ctx);
+        assert!(a.asks.iter().any(|w| w.contains("permission settings")), "{cmd}: {a:?}");
+    }
+    for cmd in ["touch .claude/commands/x.md", "cat .claude/settings.json", "rm -rf build", "cp a.txt ."] {
+        assert_eq!(got(&analyze(Dialect::Bash, cmd, &ctx)), Free, "{cmd}");
+    }
 }
 
 #[test]
@@ -348,6 +451,9 @@ fn parity_g7_force_push_denied_in_every_scope() {
 
 #[test]
 fn parity_g9_other_git_stays_allowed() {
+    for cmd in ["git push --follow-tags", "git commit --no-edit", "git push --verbose", "git push origin --delete feature/x"] {
+        assert_ne!(got(&analyze_ws(Dialect::Bash, cmd)), Deny, "{cmd}");
+    }
     for cmd in ["git rebase main", "git rebase -i HEAD~3", "git cherry-pick abc", "git merge --no-ff topic", "git reset --soft HEAD~1", "git tag -a v1 -m x", "git worktree add wt -b topic"] {
         assert_eq!(got(&analyze_ws(Dialect::Bash, cmd)), Free, "{cmd}");
     }
@@ -383,7 +489,7 @@ fn scripts_are_read_and_parsed() {
             _ => None,
         }
     };
-    let ctx = ShellCtx { cwd: root(), scope: Scope::Workspace { roots: &roots }, protected: &[], protected_branches: &[], scratch: &[], read_script: &read };
+    let ctx = ShellCtx { cwd: root(), scope: Scope::Workspace { roots: &roots }, protected: &[], protected_branches: &[], scratch: &[], guarded: &[], read_script: &read };
     assert_eq!(got(&analyze(Dialect::Bash, "bash ship.sh", &ctx)), Deny);
     assert_eq!(got(&analyze(Dialect::Bash, "./ship.sh", &ctx)), Deny);
     assert_eq!(got(&analyze(Dialect::Bash, "bash build.sh", &ctx)), Free);

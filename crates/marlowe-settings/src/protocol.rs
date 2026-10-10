@@ -115,6 +115,68 @@ impl EventData {
     }
 }
 
+/// Marlowe argument names and Claude Code's for the same tool (`path` is `file_path` for
+/// `Edit`), so a `.claude` hook reading `.tool_input.file_path` works unchanged.
+fn cc_arg_names(tool: &str) -> &'static [(&'static str, &'static str)] {
+    match tool {
+        "read" | "write" | "edit" | "multi_edit" => &[("path", "file_path")],
+        "notebook_edit" => &[("path", "notebook_path")],
+        _ => &[],
+    }
+}
+
+/// `tool_input` as a hook sees it: Marlowe's arguments plus Claude Code's spelling of each.
+pub fn cc_tool_input(tool: &str, input: &Value) -> Value {
+    let mut out = input.clone();
+    if let Value::Object(m) = &mut out {
+        for (ours, theirs) in cc_arg_names(tool) {
+            if let Some(v) = m.get(*ours).cloned() {
+                m.entry(theirs.to_string()).or_insert(v);
+            }
+        }
+    }
+    out
+}
+
+/// A hook's `updatedInput` back in Marlowe's names: a Claude Code name the hook changed wins
+/// over ours (`file_path` rewrites `path`), and the Claude Code spellings are dropped.
+pub fn from_cc_input(tool: &str, original: &Value, updated: &Value) -> Value {
+    let mut out = updated.clone();
+    if let Value::Object(m) = &mut out {
+        for (ours, theirs) in cc_arg_names(tool) {
+            let Some(v) = m.remove(*theirs) else { continue };
+            let changed = original.get(*ours) != Some(&v);
+            if changed || !m.contains_key(*ours) {
+                m.insert(ours.to_string(), v);
+            }
+        }
+    }
+    out
+}
+
+/// `tool_response` for PostToolUse: an object, as Claude Code sends (`stdout` for shells,
+/// `filePath` for file tools), always with Marlowe's own text as `output`.
+pub fn cc_tool_response(tool: &str, input: &Value, output: &str) -> Value {
+    let mut m = Map::new();
+    match tool {
+        "bash" | "powershell" => {
+            m.insert("stdout".into(), json!(output));
+            m.insert("stderr".into(), json!(""));
+            m.insert("interrupted".into(), json!(false));
+            m.insert("isImage".into(), json!(false));
+        }
+        "read" | "write" | "edit" | "multi_edit" | "notebook_edit" => {
+            if let Some(p) = input.get("path") {
+                m.insert("filePath".into(), p.clone());
+            }
+            m.insert("success".into(), json!(true));
+        }
+        _ => {}
+    }
+    m.insert("output".into(), json!(output));
+    Value::Object(m)
+}
+
 /// The JSON a hook reads on stdin. Fields follow Claude Code (and Codex's schemas): every event
 /// carries `session_id`, `transcript_path`, `cwd`, `hook_event_name`; most carry `model`,
 /// `permission_mode` and `turn_id`.
@@ -149,24 +211,24 @@ pub fn input_json(ctx: &HookContext, data: &EventData) -> Value {
     match data {
         EventData::PreToolUse { tool_name, tool_input, tool_use_id } => {
             m.insert("tool_name".into(), json!(EventData::told_tool(tool_name)));
-            m.insert("tool_input".into(), tool_input.clone());
+            m.insert("tool_input".into(), cc_tool_input(tool_name, tool_input));
             m.insert("tool_use_id".into(), json!(tool_use_id));
         }
         EventData::PostToolUse { tool_name, tool_input, tool_response, tool_use_id } => {
             m.insert("tool_name".into(), json!(EventData::told_tool(tool_name)));
-            m.insert("tool_input".into(), tool_input.clone());
+            m.insert("tool_input".into(), cc_tool_input(tool_name, tool_input));
             m.insert("tool_response".into(), tool_response.clone());
             m.insert("tool_use_id".into(), json!(tool_use_id));
         }
         EventData::PostToolUseFailure { tool_name, tool_input, tool_use_id, error } => {
             m.insert("tool_name".into(), json!(EventData::told_tool(tool_name)));
-            m.insert("tool_input".into(), tool_input.clone());
+            m.insert("tool_input".into(), cc_tool_input(tool_name, tool_input));
             m.insert("tool_use_id".into(), json!(tool_use_id));
             m.insert("error".into(), json!(error));
         }
         EventData::PermissionRequest { tool_name, tool_input } => {
             m.insert("tool_name".into(), json!(EventData::told_tool(tool_name)));
-            m.insert("tool_input".into(), tool_input.clone());
+            m.insert("tool_input".into(), cc_tool_input(tool_name, tool_input));
         }
         EventData::UserPromptSubmit { prompt } => {
             m.insert("prompt".into(), json!(prompt));

@@ -12,8 +12,8 @@
 //! layer's: mode, rules, tripwires, hooks; a denial's reason goes back to the model and the turn
 //! goes on. "Don't ask again" grants the proposed rule (tool plus command prefix, path glob or
 //! domain, never a bare tool) for the session or into a settings file. PermissionRequest hooks
-//! may answer an approval before the user sees it. Without the service (the crew, tests) the
-//! tool's own consequence decides, as before.
+//! may answer an approval before the user sees it, but only the user allows a tripwire. Without
+//! the service (the crew, tests) the tool's own consequence decides, as before.
 
 use std::collections::HashSet;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -62,6 +62,8 @@ struct Pending {
     summary: String,
     proposal: Vec<String>,
     hosts: Vec<String>,
+    /// Only the user may allow it (a PermissionRequest hook may still deny it).
+    tripwire: bool,
 }
 
 /// Runs `calls` and returns one result per call, in call order. Emits `ToolStarted` for every
@@ -112,13 +114,13 @@ pub(crate) fn run_calls(
                 match p.decide(host, c, &convo.exposure, hook) {
                     Gate::Free => free.push(i),
                     Gate::Deny(why) => outcomes[i] = Some(refused(&why)),
-                    Gate::Ask { summary, proposal, hosts } => ask.push(Pending { i, summary, proposal, hosts }),
+                    Gate::Ask { summary, proposal, hosts, tripwire } => ask.push(Pending { i, summary, proposal, hosts, tripwire }),
                 }
             }
             None => match host.consequence_exposed(c, &convo.exposure) {
                 Consequence::Free => free.push(i),
                 Consequence::Ask { .. } if convo.is_allowed_for_session(&c.name) => free.push(i),
-                Consequence::Ask { summary } => ask.push(Pending { i, summary, proposal: Vec::new(), hosts: Vec::new() }),
+                Consequence::Ask { summary } => ask.push(Pending { i, summary, proposal: Vec::new(), hosts: Vec::new(), tripwire: false }),
             },
         }
     }
@@ -145,7 +147,7 @@ pub(crate) fn run_calls(
             let tx = tx.clone();
             s.spawn(move || {
                 let mut allowed: HashSet<String> = allowed;
-                for Pending { i, summary, proposal, hosts } in ask {
+                for Pending { i, summary, proposal, hosts, tripwire } in ask {
                     let c = &calls[i];
                     if cancel.is_cancelled() {
                         let _ = tx.send(Msg::Done { i, out: interrupted(), ran: false });
@@ -155,15 +157,17 @@ pub(crate) fn run_calls(
                         // A rule granted earlier in this batch already covers it.
                         Some(p) if p.granted(&proposal) => ApprovalDecision::Allow,
                         Some(p) => {
-                            // PermissionRequest hooks may answer before the user is asked.
+                            // PermissionRequest hooks may answer before the user is asked; a
+                            // tripwire (push, delete outside, new host, after taint) only the
+                            // user may allow, so a hook's `allow` there still asks.
                             match hooks.and_then(|h| h.permission_request(&c.name, &c.args, ctx, p.mode())) {
-                                Some((true, _)) => ApprovalDecision::Allow,
+                                Some((true, _)) if !tripwire => ApprovalDecision::Allow,
                                 Some((false, why)) => {
                                     let out = refused(&why.unwrap_or_else(|| "a PermissionRequest hook denied it".into()));
                                     let _ = tx.send(Msg::Done { i, out, ran: false });
                                     continue;
                                 }
-                                None => gate.ask_with(req(ctx, c, summary), (!proposal.is_empty()).then(|| proposal.join("\n"))),
+                                _ => gate.ask_with(req(ctx, c, summary), (!proposal.is_empty()).then(|| proposal.join("\n"))),
                             }
                         }
                         None if allowed.contains(&c.name) => ApprovalDecision::Allow,

@@ -129,7 +129,91 @@ fn script(path_arg: &Word, dialect: Option<Dialect>, cwd: &Option<PathBuf>, ctx:
     }
 }
 
+/// What a Python command line runs, read as Python reads it: options up to `-c <code>`,
+/// `-m <module>` or the script (`-uc code` is `-u -c code`; `-X dev` takes a value).
+enum PyStart {
+    /// `-c`: the code (attached or the next word).
+    Code(Option<Word>),
+    /// `-m`: the module (attached or the next word) and where its arguments start.
+    Module(Option<Word>, usize),
+    /// The index of the script.
+    Script(usize),
+    Neither,
+}
+
+fn python_start(args: &[Word]) -> PyStart {
+    let mut i = 0;
+    while let Some(w) = args.get(i) {
+        let t = w.text.as_str();
+        if t == "--" {
+            return if i + 1 < args.len() { PyStart::Script(i + 1) } else { PyStart::Neither };
+        }
+        if t == "-" || !t.starts_with('-') {
+            return if t == "-" { PyStart::Neither } else { PyStart::Script(i) };
+        }
+        if t.starts_with("--") {
+            i += 1 + usize::from(t == "--check-hash-based-pycs");
+            continue;
+        }
+        let mut skip_next = false;
+        for (k, ch) in t[1..].char_indices() {
+            let rest = &t[1 + k + ch.len_utf8()..];
+            match ch {
+                'c' => {
+                    let code = if rest.is_empty() { args.get(i + 1).cloned() } else { Some(Word { text: rest.to_string(), ..w.clone() }) };
+                    return PyStart::Code(code);
+                }
+                'm' if rest.is_empty() => return PyStart::Module(args.get(i + 1).cloned(), i + 2),
+                'm' => return PyStart::Module(Some(Word { text: rest.to_string(), ..w.clone() }), i + 1),
+                'X' | 'W' => {
+                    skip_next = rest.is_empty();
+                    break;
+                }
+                _ => {}
+            }
+        }
+        i += 1 + usize::from(skip_next);
+    }
+    PyStart::Neither
+}
+
+/// Code an interpreter is handed on its command line (`node -pe code`, `perl -ne code`,
+/// `--eval=code`), `Some(None)` when the flag has no value. Any short-option cluster holding
+/// one of `letters` counts, wherever it stands: a false hit only stops a prefix rule covering it.
+fn inline_code(args: &[Word], letters: &str) -> Option<Option<Word>> {
+    for (i, w) in args.iter().enumerate() {
+        let t = w.text.as_str();
+        if let Some(long) = t.strip_prefix("--") {
+            match long.split_once('=') {
+                Some(("eval" | "print", v)) => return Some(Some(Word { text: v.to_string(), ..w.clone() })),
+                None if matches!(long, "eval" | "print") => return Some(args.get(i + 1).cloned()),
+                _ => continue,
+            }
+        }
+        if matches!(t, "-e" | "-p" | "-E" | "-r") {
+            return Some(args.get(i + 1).cloned());
+        }
+        let Some(cluster) = t.strip_prefix('-') else { continue };
+        if let Some((k, ch)) = cluster.char_indices().find(|(_, ch)| letters.contains(*ch)) {
+            let rest = &cluster[k + ch.len_utf8()..];
+            return Some(if rest.is_empty() { args.get(i + 1).cloned() } else { Some(Word { text: rest.to_string(), ..w.clone() }) });
+        }
+    }
+    None
+}
+
 const DELETES: &[&str] = &["rm", "rmdir", "rd", "del", "erase", "remove-item", "ri", "unlink", "shred", "srm", "trash"];
+
+/// PowerShell writers that take the paths they change from the pipeline when none is named.
+const PIPELINE_WRITERS: &[&str] = &[
+    "set-content", "sc", "add-content", "ac", "clear-content", "clc", "rename-item", "rni", "ren", "set-item",
+    "set-itemproperty", "new-itemproperty", "remove-itemproperty",
+];
+
+/// Whether a PowerShell `Move-Item` names what it moves (`-Path`, or a positional source).
+fn moves_named_sources(args: &[Word], pos: &[&Word]) -> bool {
+    param_word(args, &["-path", "-literalpath", "-lp"]).is_some() || pos.len() >= 2 || (pos.len() == 1 && param_word(args, &["-destination"]).is_some())
+}
 
 /// Programs whose path arguments are written (created, moved, copied to, overwritten, re-moded).
 const WRITERS: &[&str] = &[
@@ -204,6 +288,13 @@ fn command(c: &Cmd, words: &[Word], cwd: &mut Option<PathBuf>, ctx: &ShellCtx<'_
         ..Simple::default()
     };
     simple.line = std::iter::once(prog.as_str()).chain(simple.args.iter().map(String::as_str)).collect::<Vec<_>>().join(" ");
+    if raw.contains(['/', '\\']) && !is_system_path(raw) {
+        simple.typed_line = Some(std::iter::once(raw).chain(simple.args.iter().map(String::as_str)).collect::<Vec<_>>().join(" "));
+    }
+    if d == Dialect::PowerShell {
+        simple.canonical = super::pwsh::cmdlet_of_alias(&prog)
+            .map(|cmdlet| std::iter::once(cmdlet).chain(simple.args.iter().map(String::as_str)).collect::<Vec<_>>().join(" "));
+    }
     simple.dangerous = danger::simple_danger(d, raw, args);
     if danger::url_launch(d, raw, args) {
         a.ask("opens a URL in another program (its host is not checked)");
@@ -219,6 +310,7 @@ fn command(c: &Cmd, words: &[Word], cwd: &mut Option<PathBuf>, ctx: &ShellCtx<'_
         if raw.contains(['/', '\\']) || raw.starts_with('.') {
             script(first, Some(kind), cwd, ctx, depth, a);
             simple.opaque = true;
+            simple.script_file = true;
             a.commands.push(simple);
             return;
         }
@@ -458,16 +550,17 @@ fn command(c: &Cmd, words: &[Word], cwd: &mut Option<PathBuf>, ctx: &ShellCtx<'_
             simple.opaque = true;
         }
         "python" | "python3" | "py" | "pythonw" | "python2" => {
-            if let Some(i) = args.iter().position(|w| w.text == "-c") {
+            let start = python_start(args);
+            if let PyStart::Code(code) = &start {
                 simple.opaque = true;
-                match args.get(i + 1) {
+                match code {
                     Some(s) if s.dynamic => a.ask("python code built at run time"),
                     Some(s) => code_scan(&s.text, a, true),
                     None => {}
                 }
-            } else if let Some(i) = args.iter().position(|w| w.text == "-m") {
-                if let Some(m) = args.get(i + 1) {
-                    let rest: Vec<String> = args[i + 2..].iter().map(|w| w.text.clone()).collect();
+            } else if let PyStart::Module(m, from) = &start {
+                if let Some(m) = m {
+                    let rest: Vec<String> = args.get(*from..).unwrap_or_default().iter().map(|w| w.text.clone()).collect();
                     let module = m.text.to_ascii_lowercase();
                     for h in registry_hosts(module.as_str(), &rest) {
                         a.host(h.to_string());
@@ -477,8 +570,8 @@ fn command(c: &Cmd, words: &[Word], cwd: &mut Option<PathBuf>, ctx: &ShellCtx<'_
                     }
                     simple.read_only = module == "pip" && rest.first().is_some_and(|s| matches!(s.as_str(), "list" | "show" | "freeze"));
                 }
-            } else if let Some(f) = args.iter().find(|w| !w.text.starts_with('-')) {
-                script(f, None, cwd, ctx, depth, a);
+            } else if let PyStart::Script(f) = &start {
+                script(&args[*f], None, cwd, ctx, depth, a);
             } else if let Some(stdin) = &c.stdin {
                 code_scan(stdin, a, true);
             } else if args.iter().any(|w| w.text == "--version" || w.text == "-V") {
@@ -488,10 +581,15 @@ fn command(c: &Cmd, words: &[Word], cwd: &mut Option<PathBuf>, ctx: &ShellCtx<'_
             }
         }
         "node" | "deno" | "perl" | "ruby" | "php" | "lua" | "osascript" | "Rscript" | "rscript" => {
-            let flag = args.iter().position(|w| matches!(w.text.as_str(), "-e" | "--eval" | "-p" | "--print" | "-E" | "-r"));
-            if let Some(i) = flag {
+            let letters = match prog.as_str() {
+                "node" => "ep",
+                "perl" | "ruby" => "eE",
+                "php" => "r",
+                _ => "e",
+            };
+            if let Some(code) = inline_code(args, letters) {
                 simple.opaque = true;
-                match args.get(i + 1) {
+                match code {
                     Some(s) if s.dynamic => a.ask("code built at run time"),
                     Some(s) => code_scan(&s.text, a, true),
                     None => {}
@@ -515,6 +613,21 @@ fn command(c: &Cmd, words: &[Word], cwd: &mut Option<PathBuf>, ctx: &ShellCtx<'_
         "git" => {
             let facts = git::examine(d, args, cwd.as_deref(), ctx, a);
             simple.read_only = facts.read_only && attached_values_inside(d, args, cwd, ctx);
+            // Shell code git runs (`rebase -x`, `bisect run`, `submodule foreach`, filters):
+            // walked like `bash -c`, so its tripwires apply; never covered by a prefix rule.
+            if !facts.code.is_empty() || !facts.argv.is_empty() {
+                simple.opaque = true;
+            }
+            for code in &facts.code {
+                if code.dynamic {
+                    a.ask("git runs shell code built at run time");
+                } else {
+                    nested(Dialect::Bash, &code.text, cwd, ctx, depth, a);
+                }
+            }
+            for argv in &facts.argv {
+                command(c, argv, cwd, ctx, depth, a);
+            }
         }
         "gh" => {
             let sub: Vec<String> = pos.iter().take(2).map(|w| w.text.to_ascii_lowercase()).collect();
@@ -642,6 +755,11 @@ fn command(c: &Cmd, words: &[Word], cwd: &mut Option<PathBuf>, ctx: &ShellCtx<'_
         // ---- deletes and writes
         p if DELETES.contains(&p) => {
             let targets = path_targets(d, &prog, args, &pos);
+            if targets.is_empty() && d == Dialect::PowerShell {
+                // `Get-ChildItem C:/x | Remove-Item`: the paths come from the pipeline.
+                a.ask("deletes paths it reads from the pipeline");
+                simple.dangerous.get_or_insert_with(|| "deletes paths it reads from the pipeline".into());
+            }
             let mut inside = !targets.is_empty();
             for t in &targets {
                 inside &= delete_target(d, t, cwd, ctx, a);
@@ -719,12 +837,45 @@ fn command(c: &Cmd, words: &[Word], cwd: &mut Option<PathBuf>, ctx: &ShellCtx<'_
                 }
             }
         }
+        "mklink" if d == Dialect::Cmd => {
+            // `mklink [/D | /H | /J] link target`
+            let asks = a.asks.len();
+            let mut inside = pos.len() == 2;
+            if let Some(link) = pos.first() {
+                inside &= write_target(d, link, cwd, ctx, a, "writes");
+            }
+            if let Some(target) = pos.get(1) {
+                link_target(d, target, &[cwd.clone(), pos.first().and_then(|l| link_dir(d, l, cwd))], ctx, a);
+            }
+            simple.fs_inside = inside && a.asks.len() == asks;
+        }
         p if WRITERS.contains(&p) || (p == "sc" && d == Dialect::PowerShell) => {
             let targets = write_targets(d, &prog, args, &pos);
+            if d == Dialect::PowerShell {
+                // `Get-Item x | Clear-Content`, `gci C:/x | Move-Item -Destination .`: the paths
+                // come from the pipeline.
+                let why = if targets.is_empty() && PIPELINE_WRITERS.contains(&p) {
+                    Some("writes paths it reads from the pipeline")
+                } else if matches!(p, "move-item" | "mi" | "move" | "mv") && !moves_named_sources(args, &pos) {
+                    Some("moves paths it reads from the pipeline")
+                } else {
+                    None
+                };
+                if let Some(why) = why {
+                    a.ask(why);
+                    simple.dangerous.get_or_insert_with(|| why.into());
+                }
+            }
             let mut inside = !targets.is_empty();
             for t in &targets {
                 inside &= write_target(d, t, cwd, ctx, a, "writes");
             }
+            // A link made inside the workspace must not lead out of it.
+            let asks = a.asks.len();
+            for (target, bases) in link_sources(d, &prog, args, &pos, cwd) {
+                link_target(d, &target, &bases, ctx, a);
+            }
+            inside &= a.asks.len() == asks;
             // `mv` also removes its sources.
             if matches!(prog.as_str(), "mv" | "move" | "move-item" | "mi") {
                 for s in &pos[..pos.len().saturating_sub(1)] {
@@ -1025,11 +1176,15 @@ fn write_target(d: Dialect, w: &Word, cwd: &Option<PathBuf>, ctx: &ShellCtx<'_>,
         return false;
     }
     match cwd.as_deref().and_then(|c| resolve_scratch(d, c, &w.text)) {
-        Some(p) if ctx.is_protected(&p) => {
+        Some(p) if ctx.is_protected(&p) || super::paths::through_links(&p).is_some_and(|r| ctx.is_protected(&r)) => {
             a.deny(format!("{what} into a protected path ({})", p.display()));
             false
         }
-        Some(p) if ctx.writable(&p) => true,
+        Some(p) if guarded(ctx, &p) => {
+            a.ask(format!("changes the permission settings ({})", p.display()));
+            false
+        }
+        Some(p) if ctx.writable_real(&p) => true,
         _ => {
             a.ask(format!("{what} outside the {}", place(ctx)));
             false
@@ -1044,11 +1199,15 @@ fn delete_target(d: Dialect, w: &Word, cwd: &Option<PathBuf>, ctx: &ShellCtx<'_>
         return false;
     }
     match cwd.as_deref().and_then(|c| resolve_scratch(d, c, &w.text)) {
-        Some(p) if ctx.is_protected(&p) => {
+        Some(p) if ctx.is_protected(&p) || super::paths::through_links(&p).is_some_and(|r| ctx.is_protected(&r)) => {
             a.deny(format!("delete in a protected path ({})", p.display()));
             false
         }
-        Some(p) if ctx.writable(&p) => {
+        Some(p) if guarded(ctx, &p) => {
+            a.ask(format!("changes the permission settings ({})", p.display()));
+            false
+        }
+        Some(p) if ctx.writable_real(&p) => {
             // Deleting a root itself is allowed where it is writable, but is not "inside".
             !is_root(ctx, &p)
         }
@@ -1057,6 +1216,113 @@ fn delete_target(d: Dialect, w: &Word, cwd: &Option<PathBuf>, ctx: &ShellCtx<'_>
             false
         }
     }
+}
+
+/// A link's target: asks unless it stays inside the writable roots, read from every base a
+/// relative target may be taken from (the working directory, the link's own directory).
+fn link_target(d: Dialect, w: &Word, bases: &[Option<PathBuf>], ctx: &ShellCtx<'_>, a: &mut Analysis) {
+    if w.dynamic {
+        a.ask("a link to a path chosen at run time");
+        return;
+    }
+    let inside = |b: &Option<PathBuf>| {
+        b.as_deref().and_then(|b| resolve_scratch(d, b, &w.text)).is_some_and(|p| ctx.writable_real(&p) && !ctx.is_protected(&p))
+    };
+    if !bases.iter().filter(|b| b.is_some()).all(inside) || bases.iter().all(Option::is_none) {
+        a.ask("links to a place outside the workspace");
+    }
+}
+
+/// The directory a link is made in (its own directory, or itself when it names an existing one).
+fn link_dir(d: Dialect, link: &Word, cwd: &Option<PathBuf>) -> Option<PathBuf> {
+    let p = cwd.as_deref().and_then(|c| resolve_scratch(d, c, &link.text))?;
+    if p.is_dir() {
+        Some(p)
+    } else {
+        p.parent().map(Path::to_path_buf)
+    }
+}
+
+/// What `ln` and `New-Item -ItemType SymbolicLink|Junction|HardLink` link to, each with the
+/// bases a relative target is read from: the link's own directory for a symlink, the working
+/// directory for a hard link, both when the tool's rule is unclear.
+fn link_sources(d: Dialect, prog: &str, args: &[Word], pos: &[&Word], cwd: &Option<PathBuf>) -> Vec<(Word, Vec<Option<PathBuf>>)> {
+    match prog {
+        "ln" => {
+            let symbolic = args.iter().any(|w| w.text == "--symbolic" || (w.text.starts_with('-') && !w.text.starts_with("--") && w.text.contains('s')));
+            let base = |link_dir: Option<PathBuf>| if symbolic { vec![link_dir] } else { vec![cwd.clone()] };
+            if let Some(i) = args.iter().position(|w| w.text == "-t" || w.text == "--target-directory") {
+                let dir = args.get(i + 1);
+                let b = base(dir.and_then(|w| cwd.as_deref().and_then(|c| resolve_scratch(d, c, &w.text))));
+                return pos.iter().filter(|w| dir.is_none_or(|t| !std::ptr::eq(**w, t))).map(|w| ((*w).clone(), b.clone())).collect();
+            }
+            if let Some(dir) = args.iter().find_map(|w| w.text.strip_prefix("--target-directory=")) {
+                let b = base(cwd.as_deref().and_then(|c| resolve_scratch(d, c, dir)));
+                return pos.iter().map(|w| ((*w).clone(), b.clone())).collect();
+            }
+            match pos.len() {
+                0 => Vec::new(),
+                1 => vec![(pos[0].clone(), base(cwd.clone()))],
+                n => {
+                    let b = base(link_dir(d, pos[n - 1], cwd));
+                    pos[..n - 1].iter().map(|w| ((*w).clone(), b.clone())).collect()
+                }
+            }
+        }
+        "new-item" | "ni" if d == Dialect::PowerShell => {
+            // A parameter by any prefix PowerShell accepts (`-Ta`, `-va`, `-ItemType:x`).
+            let param = |w: &Word, full: &str, min: usize| {
+                let t = w.text.to_ascii_lowercase();
+                let name = t.split_once(':').map_or(t.as_str(), |(n, _)| n).to_string();
+                name.len() >= min && full.starts_with(name.as_str())
+            };
+            let link_type = |t: &str| {
+                matches!(t.trim_matches(['\'', '"']).to_ascii_lowercase().as_str(), "symboliclink" | "junction" | "hardlink")
+            };
+            let mut is_link = false;
+            let mut targets: Vec<Word> = Vec::new();
+            let mut i = 0;
+            while i < args.len() {
+                let w = &args[i];
+                let typ = param(w, "-itemtype", 3) || param(w, "-type", 3);
+                let val = param(w, "-value", 3) || param(w, "-target", 3);
+                if !(typ || val) {
+                    i += 1;
+                    continue;
+                }
+                let value = match w.text.split_once(':') {
+                    Some((_, v)) => {
+                        i += 1;
+                        Some(Word { text: v.to_string(), dynamic: w.dynamic, quoted: w.quoted })
+                    }
+                    None => {
+                        i += 2;
+                        args.get(i - 1).cloned()
+                    }
+                };
+                match value {
+                    Some(v) if typ => is_link |= v.dynamic || link_type(&v.text),
+                    Some(v) => targets.push(v),
+                    None => {}
+                }
+            }
+            if !is_link {
+                return Vec::new();
+            }
+            // Anything positional past the link's own path may be its target too.
+            targets.extend(pos.iter().skip(1).map(|w| (*w).clone()));
+            let link = pos.first().copied().or_else(|| param_value(args, &["-path", "-literalpath"]));
+            let bases = vec![cwd.clone(), link.and_then(|l| link_dir(d, l, cwd))];
+            targets.into_iter().map(|w| (w, bases.clone())).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// `p` is a permission-settings file or hook script, or a directory below a root that holds
+/// one (`.claude`).
+fn guarded(ctx: &ShellCtx<'_>, p: &Path) -> bool {
+    ctx.guarded.iter().any(|g| super::within(g, p) || (super::within(p, g) && !is_root(ctx, p)))
 }
 
 fn is_root(ctx: &ShellCtx<'_>, p: &Path) -> bool {
@@ -1179,54 +1445,68 @@ fn param_value<'w>(args: &'w [Word], names: &[&str]) -> Option<&'w Word> {
     None
 }
 
+/// A PowerShell parameter's value as written, `-Path x` or `-Path:x`.
+fn param_word(args: &[Word], names: &[&str]) -> Option<Word> {
+    for (i, w) in args.iter().enumerate() {
+        let lower = w.text.to_ascii_lowercase();
+        match lower.split_once(':') {
+            Some((n, _)) if names.contains(&n) => {
+                let value = &w.text[n.len() + 1..];
+                return Some(Word { text: value.to_string(), dynamic: w.dynamic, quoted: w.quoted });
+            }
+            None if names.contains(&lower.as_str()) => return args.get(i + 1).cloned(),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Delete targets: positionals, plus `-Path`/`-LiteralPath` values.
-fn path_targets<'w>(d: Dialect, _prog: &str, args: &'w [Word], pos: &[&'w Word]) -> Vec<&'w Word> {
-    let mut out: Vec<&Word> = pos.to_vec();
+fn path_targets(d: Dialect, _prog: &str, args: &[Word], pos: &[&Word]) -> Vec<Word> {
+    let mut out: Vec<Word> = pos.iter().map(|w| (*w).clone()).collect();
     if d == Dialect::PowerShell {
         for name in ["-path", "-literalpath", "-lp"] {
-            if let Some(v) = param_value(args, &[name]) {
-                out.push(v);
-            }
+            out.extend(param_word(args, &[name]));
         }
     }
     out
 }
 
 /// The paths a writer writes.
-fn write_targets<'w>(d: Dialect, prog: &str, args: &'w [Word], pos: &[&'w Word]) -> Vec<&'w Word> {
-    let mut out: Vec<&Word> = Vec::new();
-    let flag_value = |names: &[&str]| -> Option<&'w Word> {
-        args.iter().position(|w| names.contains(&w.text.as_str())).and_then(|i| args.get(i + 1))
+fn write_targets(d: Dialect, prog: &str, args: &[Word], pos: &[&Word]) -> Vec<Word> {
+    let mut out: Vec<Word> = Vec::new();
+    let flag_value = |names: &[&str]| -> Option<Word> {
+        args.iter().position(|w| names.contains(&w.text.as_str())).and_then(|i| args.get(i + 1)).cloned()
     };
     match prog {
         "cp" | "copy" | "xcopy" | "ln" | "install" => {
             if let Some(t) = flag_value(&["-t", "--target-directory"]) {
                 out.push(t);
             } else if let Some(last) = pos.last() {
-                out.push(last);
+                out.push((*last).clone());
             }
         }
-        "robocopy" => out.extend(pos.get(1).copied()),
-        "mv" | "move" => out.extend(pos.last().copied()),
+        "robocopy" => out.extend(pos.get(1).map(|w| (*w).clone())),
+        "mv" | "move" => out.extend(pos.last().map(|w| (*w).clone())),
         "copy-item" | "cpi" => {
-            out.extend(param_value(args, &["-destination"]).or(pos.get(1).copied()));
+            out.extend(param_word(args, &["-destination"]).or(pos.get(1).map(|w| (*w).clone())));
         }
         "move-item" | "mi" => {
-            out.extend(pos.iter().copied());
-            out.extend(param_value(args, &["-destination"]));
-            out.extend(param_value(args, &["-path", "-literalpath"]));
+            out.extend(pos.iter().map(|w| (*w).clone()));
+            out.extend(param_word(args, &["-destination"]));
+            out.extend(param_word(args, &["-path", "-literalpath"]));
         }
-        "chmod" | "chown" | "chgrp" => out.extend(pos.iter().skip(1).copied()),
-        "icacls" | "takeown" | "attrib" => out.extend(pos.first().copied()),
+        "chmod" | "chown" | "chgrp" => out.extend(pos.iter().skip(1).map(|w| (*w).clone())),
+        "icacls" | "takeown" | "attrib" => out.extend(pos.first().map(|w| (*w).clone())),
         "new-item" | "ni" | "set-content" | "add-content" | "ac" | "out-file" | "clear-content" | "clc" | "tee-object" | "rename-item" | "rni" | "set-itemproperty" | "new-itemproperty" | "remove-itemproperty" | "set-item" | "export-csv" | "sc" => {
-            let named = param_value(args, &["-path", "-literalpath", "-filepath", "-lp"]);
+            let named = param_word(args, &["-path", "-literalpath", "-filepath", "-lp"]);
             match named {
                 Some(v) => out.push(v),
-                None => out.extend(pos.first().copied()),
+                None => out.extend(pos.first().map(|w| (*w).clone())),
             }
         }
-        "ren" | "rename" => out.extend(pos.first().copied()),
-        _ => out.extend(pos.iter().copied()),
+        "ren" | "rename" => out.extend(pos.first().map(|w| (*w).clone())),
+        _ => out.extend(pos.iter().map(|w| (*w).clone())),
     }
     let _ = d;
     out

@@ -320,7 +320,9 @@ fn has_force_delete_cmdlet(tokens: &[String]) -> bool {
         let (mut del, mut force) = (false, false);
         for a in atoms {
             del |= DELETE.iter().any(|d| a.eq_ignore_ascii_case(d));
-            force |= a.eq_ignore_ascii_case("-force") || a.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("-force:"));
+            // `-Force`, `-Force:$true`, or any abbreviation PowerShell accepts (`-Fo`, `-forc`).
+            let name = a.split_once(':').map_or(a, |(n, _)| n).to_ascii_lowercase();
+            force |= name.len() >= 3 && "-force".starts_with(name.as_str());
         }
         del && force
     })

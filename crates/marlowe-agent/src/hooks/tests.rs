@@ -368,7 +368,81 @@ fn parity_x8_permission_request_hook_answers_the_modal() {
     assert!(gate.asked().is_empty());
 }
 
+#[test]
+fn parity_x8_a_permission_request_allow_never_answers_a_tripwire() {
+    let allow = json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}});
+    for mode in [PermissionMode::Default, PermissionMode::Bypass] {
+        let s = setup("x8t", mode, vec![json_hook(HookEvent::PermissionRequest, None, allow.clone())]);
+        let gate = Recording::new(&[]);
+        let (r, host) = run_pre(&s, &gate, &[sh("1", "git push origin main"), sh("2", "rm -rf ../outside")]);
+        assert_eq!(gate.asked().len(), 2, "{mode:?}: the user is asked for each tripwire");
+        assert!(host.ran().is_empty(), "{mode:?}: nobody allowed them: {r:?}");
+    }
+    // Its deny still stops a tripwire before the user is bothered.
+    let deny = json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "deny", "message": "no pushes"}}});
+    let s = setup("x8u", PermissionMode::Default, vec![json_hook(HookEvent::PermissionRequest, None, deny)]);
+    let gate = Recording::new(&[]);
+    let (r, _) = run_pre(&s, &gate, &[sh("1", "git push origin main")]);
+    assert!(gate.asked().is_empty() && r[0].content.contains("no pushes"));
+}
+
 // ---- X9 environment and input
+
+#[test]
+fn parity_x9_claude_code_argument_names_both_ways() {
+    let out = json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": {"file_path": "b.rs"}}});
+    let s = setup(
+        "x9n",
+        PermissionMode::Bypass,
+        vec![json_hook(HookEvent::PreToolUse, Some("Edit"), out), hook(HookEvent::PostToolUse, Some("Bash"), "cat > post.json")],
+    );
+    let (_, host) = run_pre(&s, &Recording::new(&[]), &[call("1", "edit", json!({"path": "a.rs"})), sh("2", "ls")]);
+    assert_eq!(host.ran(), ["edit b.rs", "bash ls"], "`file_path` from a Claude Code hook rewrites `path`");
+    let v: Value = serde_json::from_str(&s.read("post.json")).unwrap();
+    assert_eq!(v["tool_response"]["stdout"], "done", "tool_response is an object, as Claude Code sends");
+    assert_eq!(v["tool_response"]["output"], "done");
+}
+
+#[test]
+fn a_hook_that_leaves_a_background_process_does_not_hold_the_turn() {
+    let s = setup("bg", PermissionMode::Default, vec![hook(HookEvent::PreToolUse, None, "sleep 30 & echo ok")]);
+    let start = Instant::now();
+    let o = s.runner.run(&pre("bash", json!({"command": "ls"})), &ctx(), &|| false);
+    assert!(start.elapsed() < Duration::from_secs(10), "took {:?}", start.elapsed());
+    assert_eq!(o.notes, ["ok"], "output written before it exited is kept");
+}
+
+/// Records what the memory engine is asked with.
+struct Mem(std::sync::Mutex<Vec<String>>);
+
+impl crate::MemoryHook for Mem {
+    fn before_turn(&self, _session: &SessionId, query: &str) -> crate::Recollection {
+        self.0.lock().unwrap().push(query.to_string());
+        crate::Recollection::default()
+    }
+    fn after_turn(&self, _session: &SessionId, _user: &str, _assistant: &str) {}
+}
+
+#[test]
+fn hook_context_reaches_the_model_but_never_the_memory_as_user_words() {
+    let s = setup(
+        "x3m",
+        PermissionMode::Default,
+        vec![hook(HookEvent::UserPromptSubmit, None, "echo 'HOOKX from git log'"), hook(HookEvent::SessionStart, None, "echo 'HOOKY on branch'")],
+    );
+    let provider = Script::new(vec![text_step("ok")]);
+    let mut a = agent(provider.clone(), FakeHost::new(&s.root()), Recording::new(&[]), s.services());
+    a.middleware.push(s.mw.clone());
+    let mem = Arc::new(Mem(std::sync::Mutex::new(Vec::new())));
+    a.memory = mem.clone();
+    let mut convo = s.convo();
+    s.mw.on_session_start(&convo);
+    run_turn(&a, &mut convo, "ship it");
+    assert_eq!(*mem.0.lock().unwrap(), ["ship it"], "the memory engine ingests the user's own text only");
+    let sent = format!("{:?}", provider.requests.lock().unwrap()[0].messages);
+    assert!(sent.contains("HOOKX") && sent.contains("HOOKY"), "{sent}");
+    assert!(convo.pending_context.is_empty());
+}
 
 #[test]
 fn parity_x9_project_dir_env_and_stdin_input() {
@@ -379,7 +453,8 @@ fn parity_x9_project_dir_env_and_stdin_input() {
     assert_eq!(o.notes, [format!("{root}|{root}")]);
     let v: Value = serde_json::from_str(&s.read("in.json")).unwrap();
     assert_eq!(v["tool_name"], "Edit", "Claude Code's tool name");
-    assert_eq!(v["tool_input"]["path"], "a.rs");
+    assert_eq!(v["tool_input"]["file_path"], "a.rs", "Claude Code's argument name");
+    assert_eq!(v["tool_input"]["path"], "a.rs", "and Marlowe's");
     assert_eq!(v["permission_mode"], "acceptEdits");
     assert_eq!(v["turn_id"], "3");
     assert_eq!(v["cwd"], root.as_str());

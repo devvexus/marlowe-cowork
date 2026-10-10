@@ -163,11 +163,16 @@ pub fn matcher_matches(matcher: Option<&str>, target: &str) -> bool {
     false
 }
 
-/// Which workspaces' hooks the user trusted, and at what digest.
+/// Which workspaces' hooks the user trusted, and at what digest; and the allow rules the user
+/// granted through Marlowe ("always for this project", `/permissions add`) per workspace. A
+/// granted rule found in a project file applies without trust and stays out of the digest: the
+/// ledger lives in the user's home, so a repository cannot forge it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustStore {
     #[serde(default)]
     pub projects: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub granted: BTreeMap<String, Vec<String>>,
 }
 
 impl TrustStore {
@@ -187,9 +192,43 @@ impl TrustStore {
     pub fn trust(home: &Path, workspace: &Path, digest: &str) -> std::io::Result<()> {
         let mut store = Self::load(home);
         store.projects.insert(key(workspace), digest.to_string());
+        store.save(home)
+    }
+
+    /// The allow rules the user granted for `workspace`.
+    pub fn granted_for(&self, workspace: &Path) -> Vec<String> {
+        self.granted.get(&key(workspace)).cloned().unwrap_or_default()
+    }
+
+    /// Records `rules` as the user's own grants for `workspace`.
+    pub fn grant(home: &Path, workspace: &Path, rules: &[String]) -> std::io::Result<()> {
+        let mut store = Self::load(home);
+        let list = store.granted.entry(key(workspace)).or_default();
+        for r in rules {
+            let r = r.trim().to_string();
+            if !list.contains(&r) {
+                list.push(r);
+            }
+        }
+        store.save(home)
+    }
+
+    /// Forgets a grant (the rule was removed from the project's file).
+    pub fn revoke(home: &Path, workspace: &Path, rule: &str) -> std::io::Result<()> {
+        let mut store = Self::load(home);
+        let k = key(workspace);
+        let Some(list) = store.granted.get_mut(&k) else { return Ok(()) };
+        list.retain(|r| r != rule.trim());
+        if list.is_empty() {
+            store.granted.remove(&k);
+        }
+        store.save(home)
+    }
+
+    fn save(&self, home: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(home)?;
         let tmp = home.join("trust.json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(&store).unwrap_or_default())?;
+        std::fs::write(&tmp, serde_json::to_vec_pretty(self).unwrap_or_default())?;
         std::fs::rename(tmp, Self::path(home))
     }
 }

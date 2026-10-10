@@ -32,7 +32,7 @@ use marlowe_model::ToolCall;
 use marlowe_permission::rules::policy::HookPermission;
 use marlowe_proto::{PermissionMode, SessionId};
 use marlowe_settings::hooks::{HookEntry, HookEvent, HookKind};
-use marlowe_settings::protocol::{cc_mode, input_json, interpret, EventData, HookContext, HookOutcome, HookRun};
+use marlowe_settings::protocol::{cc_mode, cc_tool_response, from_cc_input, input_json, interpret, EventData, HookContext, HookOutcome, HookRun};
 use serde_json::Value;
 
 use crate::approval::{HookVerdicts, Permissions};
@@ -45,6 +45,10 @@ pub const MAX_FORCED_CONTINUES: u32 = 8;
 
 /// Bytes kept of a hook's stdout and stderr each.
 const OUTPUT_CAP: usize = 1 << 20;
+
+/// How long a hook's output may keep arriving after it exits before processes it left behind
+/// are killed (they would otherwise hold its pipes, and the turn, open).
+const READER_GRACE: Duration = Duration::from_millis(500);
 
 /// Evaluates a `type: "prompt"` hook: an LLM reads the prompt (with `$ARGUMENTS` replaced by the
 /// event's JSON) and answers with hook output JSON. The daemon supplies one (its quick slot).
@@ -250,26 +254,32 @@ impl HookRunner {
             child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
             child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
         ];
-        let readers: Vec<_> = pipes
+        // Each reader fills a shared buffer and reports EOF on the channel, so output read so
+        // far is kept even when a background process the hook started holds a pipe open.
+        let (done_tx, done_rx) = crossbeam_channel::unbounded::<()>();
+        let bufs: Vec<Arc<Mutex<Vec<u8>>>> = pipes
             .into_iter()
             .map(|pipe| {
+                let buf = Arc::new(Mutex::new(Vec::new()));
+                let (fill, done) = (buf.clone(), done_tx.clone());
                 std::thread::spawn(move || {
-                    let mut buf = Vec::new();
                     if let Some(mut p) = pipe {
                         let mut chunk = [0u8; 8192];
                         while let Ok(n) = p.read(&mut chunk) {
                             if n == 0 {
                                 break;
                             }
-                            if buf.len() < OUTPUT_CAP {
-                                buf.extend_from_slice(&chunk[..n.min(OUTPUT_CAP - buf.len())]);
-                            }
+                            let mut b = fill.lock().unwrap_or_else(|e| e.into_inner());
+                            let room = OUTPUT_CAP.saturating_sub(b.len());
+                            b.extend_from_slice(&chunk[..n.min(room)]);
                         }
                     }
-                    String::from_utf8_lossy(&buf).into_owned()
-                })
+                    let _ = done.send(());
+                });
+                buf
             })
             .collect();
+        drop(done_tx);
         let started = Instant::now();
         let status = loop {
             match proc.child_mut().try_wait() {
@@ -289,9 +299,15 @@ impl HookRunner {
             let _ = proc.child_mut().wait();
             break None;
         };
-        let mut outs = readers.into_iter().map(|r| r.join().unwrap_or_default());
-        run.stdout = outs.next().unwrap_or_default();
-        run.stderr = outs.next().unwrap_or_default();
+        // The hook is done; what it left running (`npm run dev &`) must not hold the turn.
+        let drained = |grace: Duration| (0..2).all(|_| done_rx.recv_timeout(grace).is_ok());
+        if !drained(READER_GRACE) {
+            proc.kill_tree();
+            let _ = drained(READER_GRACE);
+        }
+        let text = |b: &Arc<Mutex<Vec<u8>>>| String::from_utf8_lossy(&b.lock().unwrap_or_else(|e| e.into_inner())).into_owned();
+        run.stdout = text(&bufs[0]);
+        run.stderr = text(&bufs[1]);
         run.exit = status.and_then(|s| s.code());
         run
     }
@@ -426,23 +442,25 @@ impl ToolMiddleware for HookMiddleware {
         "hooks"
     }
 
+    /// Hook context never joins the user's text (the memory engine ingests that at user trust,
+    /// and hook output is not the user's words): it waits in `Conversation::pending_context`
+    /// and rides along as its own part of the user message.
     fn before_turn(&self, convo: &mut Conversation, text: &mut String) -> TurnFlow {
+        let mut context = Vec::new();
+        if self.runner.has(HookEvent::UserPromptSubmit) {
+            let o = self.runner.run(&EventData::UserPromptSubmit { prompt: text.clone() }, &self.ctx(Some(convo.next_turn)), &|| false);
+            if let Some(why) = o.stop.clone().or_else(|| o.block.clone()) {
+                return TurnFlow::Block(why);
+            }
+            if let Some(c) = o.context_text() {
+                context.push(wrap_context("user-prompt-submit", &c));
+            }
+        }
         let pending = std::mem::take(&mut *self.pending_context.lock().unwrap_or_else(|p| p.into_inner()));
         if !pending.is_empty() {
-            text.push_str("\n\n");
-            text.push_str(&wrap_context("session-start", &pending.join("\n")));
+            context.insert(0, wrap_context("session-start", &pending.join("\n")));
         }
-        if !self.runner.has(HookEvent::UserPromptSubmit) {
-            return TurnFlow::Continue;
-        }
-        let o = self.runner.run(&EventData::UserPromptSubmit { prompt: text.clone() }, &self.ctx(Some(convo.next_turn)), &|| false);
-        if let Some(why) = o.stop.clone().or_else(|| o.block.clone()) {
-            return TurnFlow::Block(why);
-        }
-        if let Some(c) = o.context_text() {
-            text.push_str("\n\n");
-            text.push_str(&wrap_context("user-prompt-submit", &c));
-        }
+        convo.pending_context.extend(context);
         TurnFlow::Continue
     }
 
@@ -463,9 +481,12 @@ impl ToolMiddleware for HookMiddleware {
                 ..ToolOutcome::error(format!("Not run: a PreToolUse hook blocked it: {why}"))
             });
         }
-        if let (Some(Value::Object(new)), Value::Object(old)) = (&o.updated_input, &mut call.args) {
-            for (k, v) in new {
-                old.insert(k.clone(), v.clone());
+        if let Some(updated) = &o.updated_input {
+            let new = from_cc_input(&call.name, &call.args, updated);
+            if let (Value::Object(new), Value::Object(old)) = (new, &mut call.args) {
+                for (k, v) in new {
+                    old.insert(k, v);
+                }
             }
         }
         if let Some(c) = o.context_text() {
@@ -501,7 +522,7 @@ impl ToolMiddleware for HookMiddleware {
             EventData::PostToolUse {
                 tool_name: call.name.clone(),
                 tool_input: call.args.clone(),
-                tool_response: Value::String(outcome.content.clone()),
+                tool_response: cc_tool_response(&call.name, &call.args, &outcome.content),
                 tool_use_id: call.id.clone(),
             }
         };

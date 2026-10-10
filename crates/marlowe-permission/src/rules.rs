@@ -286,7 +286,8 @@ fn matches_any_part(rule: &Rule, call: &Subject<'_>) -> bool {
     match &rule.spec {
         Spec::Any => true,
         Spec::Command(p) => match (call.shell, call.code) {
-            (Some(a), _) => a.commands.iter().any(|c| command_matches(p, &c.line)),
+            // As typed or, for a PowerShell alias, as its cmdlet (`del x` is `Remove-Item x`).
+            (Some(a), _) => a.commands.iter().any(|c| c.lines().any(|l| command_matches(p, l))),
             (None, Some(code)) => command_matches(p, code.trim()),
             _ => false,
         },
@@ -313,8 +314,12 @@ fn covered_by(allows: &[&Rule], call: &Subject<'_>) -> Option<String> {
                 if c.writes_redirect {
                     return None;
                 }
-                // A destructive command is allowed only by a rule that names it exactly.
-                let fits = |p: &str| command_matches(p, &c.line) && (c.dangerous.is_none() || is_exact(p));
+                // A destructive command, or code handed to an interpreter or wrapper, is allowed
+                // only by a rule that names it exactly. A program spelled with a directory
+                // (`./npm`) is matched as typed: `bash(npm test:*)` is the system `npm`.
+                let line = c.typed_line.as_deref().unwrap_or(&c.line);
+                let wide_ok = c.dangerous.is_none() && (!c.opaque || c.script_file);
+                let fits = |p: &str| command_matches(p, line) && (wide_ok || is_exact(p));
                 let r = allows.iter().find(|r| matches!(&r.spec, Spec::Command(p) if fits(p)))?;
                 first.get_or_insert_with(|| r.text.clone());
             }
@@ -521,12 +526,20 @@ pub fn propose(call: &Subject<'_>) -> Vec<String> {
                 if c.opaque || c.dynamic || c.writes_redirect {
                     return Vec::new();
                 }
+                let line = c.typed_line.as_deref().unwrap_or(&c.line);
                 if c.dangerous.is_some() || DANGEROUS_PREFIX.contains(&c.program.as_str()) {
                     // Only this exact command, never its neighbours (`rm -rf build ~`).
-                    push(format!("{}({})", call.tool, c.line));
+                    push(format!("{}({line})", call.tool));
                     continue;
                 }
-                push(format!("{}({}:*)", call.tool, command_prefix(&c.program, &c.args)));
+                let prefix = command_prefix(&c.program, &c.args);
+                if prefix == c.program || c.typed_line.is_some() {
+                    // Nothing narrower than the bare program (`python -X dev x.py`, `git -C sub
+                    // status`), or a program in the workspace: this exact line, never `prog:*`.
+                    push(format!("{}({line})", call.tool));
+                } else {
+                    push(format!("{}({prefix}:*)", call.tool));
+                }
             }
         }
         Kind::FileWrite | Kind::FileRead => {
@@ -566,13 +579,40 @@ const DANGEROUS_PREFIX: &[&str] = &[
 ];
 
 /// `cargo test --release -p x` -> `cargo test`; `npm run build` -> `npm run build`;
-/// `python -m pytest -q` -> `python -m pytest`; `ls -la` -> `ls`.
+/// `python -m pytest -q` -> `python -m pytest`; `python -u train.py --lr 3` -> `python -u
+/// train.py`; `cargo +nightly build` -> `cargo +nightly build`; `ls -la` -> `ls` (which
+/// [`propose`] turns into the exact line).
 pub fn command_prefix(program: &str, args: &[String]) -> String {
     let word = |s: &str| !s.is_empty() && !s.starts_with('-') && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.:@".contains(c)) && !s.contains("..");
     let mut parts = vec![program.to_string()];
     let runner = matches!(program, "npm" | "pnpm" | "yarn" | "bun" | "uv" | "poetry" | "pdm" | "hatch" | "dotnet" | "go" | "cargo" | "deno");
+    let python = matches!(program, "python" | "python3" | "py" | "pythonw");
+    let mut args = args;
+    // `cargo +nightly build`, `py -3.12 x.py`: a toolchain or version pick stays in the prefix.
+    if let Some(pick) = args.first().filter(|a| {
+        (program == "cargo" || program == "rustup") && a.starts_with('+') && word(&a[1..])
+            || program == "py" && a.starts_with('-') && a[1..].chars().all(|c| c.is_ascii_digit() || c == '.') && a.len() > 1
+    }) {
+        parts.push(pick.clone());
+        args = &args[1..];
+    }
+    // Python's own switches that change no code (`-u` unbuffered, `-O`, `-B`, `-X dev`):
+    // `python -u train.py:*` rather than the bare program.
+    if python {
+        while let Some(a) = args.first() {
+            if matches!(a.as_str(), "-u" | "-B" | "-O" | "-OO" | "-s" | "-S" | "-E" | "-I" | "-P" | "-q" | "-b" | "-bb" | "-v" | "-d") {
+                parts.push(a.clone());
+                args = &args[1..];
+            } else if matches!(a.as_str(), "-X" | "-W") && args.get(1).is_some_and(|v| word(v)) {
+                parts.extend(args[..2].iter().cloned());
+                args = &args[2..];
+            } else {
+                break;
+            }
+        }
+    }
     match args.first() {
-        Some(m) if m == "-m" && matches!(program, "python" | "python3" | "py") => {
+        Some(m) if m == "-m" && python => {
             parts.push("-m".into());
             if let Some(module) = args.get(1).filter(|s| word(s)) {
                 parts.push(module.clone());
@@ -586,7 +626,7 @@ pub fn command_prefix(program: &str, args: &[String]) -> String {
                 }
             }
         }
-        Some(script) if matches!(program, "python" | "python3" | "py" | "node" | "ruby" | "perl") && !script.starts_with('-') => {
+        Some(script) if (python || matches!(program, "node" | "ruby" | "perl")) && !script.starts_with('-') && !script.contains("..") => {
             parts.push(script.clone());
         }
         _ => {}
@@ -677,6 +717,107 @@ mod tests {
         assert_eq!(mcp("mcp__github__list_issues"), Some(Allow));
         assert_eq!(mcp("mcp__github__delete_repo"), Some(Deny));
         assert_eq!(mcp("mcp__gitlab__list"), None);
+    }
+
+    #[test]
+    fn parity_m7_a_program_spelled_with_a_directory_is_not_the_system_one() {
+        use Action::*;
+        let r = set(&[(Allow, "bash(npm test:*)"), (Allow, "bash(git status:*)"), (Allow, "bash(./tools/lint:*)")]);
+        let table: &[(&str, Option<Action>)] = &[
+            ("npm test", Some(Allow)),
+            ("./npm test", None),
+            ("/c/Users/matth/AppData/Local/Temp/x/npm test", None),
+            ("./git status", None),
+            ("/tmp/x/git status", None),
+            ("/usr/bin/git status", Some(Allow)),
+            ("./tools/lint --fix", Some(Allow)),
+            ("tools/lint --fix", None),
+        ];
+        for (cmd, want) in table {
+            assert_eq!(shell_eval(&r, cmd), *want, "{cmd}");
+        }
+        // Deny and ask rules still read the program's own name: they only get stricter.
+        assert_eq!(shell_eval(&set(&[(Deny, "bash(npm:*)")]), "./npm test"), Some(Deny));
+        assert_eq!(shell_eval(&set(&[(Deny, "bash(./npm:*)")]), "./npm test"), Some(Deny));
+    }
+
+    #[test]
+    fn parity_m11_proposals_never_widen_to_the_bare_program() {
+        let roots = [root()];
+        let ctx = ShellCtx::workspace(root(), &roots);
+        let prop = |cmd: &str| {
+            let a = analyze(Dialect::Bash, cmd, &ctx);
+            let mut s = Subject::new("bash", Kind::Shell);
+            s.shell = Some(&a);
+            propose(&s)
+        };
+        let table: &[(&str, &str)] = &[
+            ("python -u train.py --lr 3e-4", "bash(python -u train.py:*)"),
+            ("python -X dev -u train.py", "bash(python -X dev -u train.py:*)"),
+            ("python train.py", "bash(python train.py:*)"),
+            ("cargo +nightly build --release", "bash(cargo +nightly build:*)"),
+            ("git -C sub status", "bash(git -C sub status)"),
+            ("npm --prefix web install", "bash(npm --prefix web install)"),
+            ("node --inspect x.js", "bash(node --inspect x.js)"),
+            ("make", "bash(make)"),
+            ("./npm test", "bash(./npm test)"),
+        ];
+        for (cmd, want) in table {
+            let got = prop(cmd);
+            assert_eq!(got, [want.to_string()], "{cmd}");
+            for program in ["python", "git", "npm", "node", "cargo", "make"] {
+                assert!(!got.contains(&format!("bash({program}:*)")), "{cmd}: {got:?}");
+            }
+        }
+        // A wide rule the user wrote never covers code handed to the interpreter.
+        let wide = set(&[(Action::Allow, "bash(python:*)"), (Action::Allow, "bash(node:*)"), (Action::Allow, "bash(bash:*)")]);
+        for cmd in [
+            "python -c \"import shutil; shutil.rmtree('C:/Users/matth/Documents')\"",
+            "node -e \"require('fs').rmSync('C:/x', {recursive: true})\"",
+            "bash -c 'cargo test'",
+            // Option clusters and attached values, as the interpreters read them.
+            "python -uc \"import os; os.remove('x')\"",
+            "python -c'import os'",
+            "python -X dev -c 'print(1)'",
+            "node -pe \"require('fs').rmSync('C:/x')\"",
+            "node --eval=\"process.exit(1)\"",
+        ] {
+            assert_eq!(shell_eval(&wide, cmd), None, "{cmd}");
+        }
+        assert_eq!(shell_eval(&wide, "python train.py"), Some(Action::Allow));
+        let mut exact = RuleSet::new();
+        exact.add_text(Action::Allow, "bash(python -c print(1))").unwrap();
+        assert_eq!(shell_eval(&exact, "python -c 'print(1)'"), Some(Action::Allow), "an exact rule still allows it");
+        // The narrow proposal covers the next run, not code.
+        let mut granted = RuleSet::new();
+        granted.add_text(Action::Allow, &prop("python -u train.py --lr 3e-4")[0]).unwrap();
+        assert_eq!(shell_eval(&granted, "python -u train.py --lr 1e-3 --epochs 2"), Some(Action::Allow));
+        assert_eq!(shell_eval(&granted, "python -u other.py"), None);
+        // After the script, `-c` is the script's own argument (Python reads no code from it).
+        assert_eq!(shell_eval(&granted, "python -u train.py -c configs/a.yaml"), Some(Action::Allow));
+        assert_eq!(shell_eval(&granted, "python -u -c 'import os' train.py"), None);
+    }
+
+    #[test]
+    fn parity_m7_deny_rules_read_powershell_aliases() {
+        let r = set(&[(Action::Deny, "PowerShell(Remove-Item:*)"), (Action::Ask, "powershell(Invoke-WebRequest:*)"), (Action::Allow, "PowerShell(Get-Content:*)")]);
+        let roots = [root()];
+        let ps = |cmd: &str| {
+            let a = analyze(Dialect::PowerShell, cmd, &ShellCtx::workspace(root(), &roots));
+            let mut s = Subject::new("powershell", Kind::Shell);
+            s.shell = Some(&a);
+            r.evaluate(&s).map(|m| m.action)
+        };
+        for cmd in ["Remove-Item x", "del x", "ri x -Recurse", "rm x", "erase x", "rd build", "rmdir build"] {
+            assert_eq!(ps(cmd), Some(Action::Deny), "{cmd}");
+        }
+        for cmd in ["iwr http://localhost:1", "curl http://localhost:1", "wget http://localhost:1"] {
+            assert_eq!(ps(cmd), Some(Action::Ask), "{cmd}");
+        }
+        assert_eq!(ps("Get-Content a.txt"), Some(Action::Allow));
+        assert_eq!(ps("gc a.txt"), None, "an alias is never allowed by its cmdlet's rule (pwsh 7 differs)");
+        // Bash has no PowerShell aliases.
+        assert_eq!(shell_eval(&set(&[(Action::Deny, "bash(remove-item:*)")]), "rm x"), None);
     }
 
     #[test]

@@ -18,6 +18,11 @@ const RISKY_CONFIG: &[&str] = &[
 /// Facts about one `git` command that the caller folds into its [`super::Simple`].
 pub(crate) struct GitFacts {
     pub read_only: bool,
+    /// Shell code git hands to `sh -c` (`rebase -x`, `submodule foreach`, filter-branch's
+    /// filters, `difftool -x`, `--upload-pack`): the caller walks it as bash.
+    pub code: Vec<Word>,
+    /// Commands git runs as given (`bisect run <cmd...>`): the caller walks each.
+    pub argv: Vec<Vec<Word>>,
 }
 
 /// Examines `git <args>` run in `cwd`, recording denies, asks and hosts in `a`.
@@ -76,20 +81,20 @@ pub(crate) fn examine(dialect: Dialect, args: &[Word], cwd: Option<&Path>, ctx: 
         }
     }
     let Some(sub_word) = args.get(i) else {
-        return GitFacts { read_only: true };
+        return GitFacts { read_only: true, code: Vec::new(), argv: Vec::new() };
     };
     if sub_word.dynamic {
         a.ask("git subcommand chosen at run time");
-        return GitFacts { read_only: false };
+        return GitFacts { read_only: false, code: Vec::new(), argv: Vec::new() };
     }
     let sub = sub_word.text.to_ascii_lowercase();
     let flags: Vec<&str> = args[i + 1..].iter().map(|w| w.text.as_str()).collect();
     let pos: Vec<&str> = flags.iter().copied().filter(|f| !f.starts_with('-')).collect();
-    let has = |f: &str| flags.iter().any(|x| *x == f || x.starts_with(&format!("{f}=")));
     let short = |c: char| flags.iter().any(|f| f.starts_with('-') && !f.starts_with("--") && f[1..].contains(c));
 
-    // Never skip hooks (G7), in any subcommand.
-    if has("--no-verify") || (sub == "commit" && short('n')) || (matches!(sub.as_str(), "merge" | "pull") && has("--no-verify")) {
+    // Never skip hooks (G7), in any subcommand. `--no-ver` is as far as git abbreviates it
+    // (`--no-verbose` shares `--no-ve`); a shorter ambiguous spelling is git's own error.
+    if long_prefix(&flags, "--no-verify", 8) || (sub == "commit" && short('n')) {
         a.deny("git --no-verify (skips the repository's hooks)");
     }
 
@@ -105,7 +110,7 @@ pub(crate) fn examine(dialect: Dialect, args: &[Word], cwd: Option<&Path>, ctx: 
                 }
             }
         }
-        "config" if config_writes(&flags) && (has("--global") || has("--system")) => {
+        "config" if config_writes(&flags) && (long_prefix(&flags, "--global", 4) || long_prefix(&flags, "--system", 4)) => {
             a.ask("git config --global/--system (outside the workspace)");
         }
         "config" if config_writes(&flags) => {
@@ -123,22 +128,108 @@ pub(crate) fn examine(dialect: Dialect, args: &[Word], cwd: Option<&Path>, ctx: 
         }
     }
 
-    let read_only = !overrides && read_only(&sub, &flags, &pos);
+    let (code, argv) = embedded(&sub, &args[i + 1..]);
+    let read_only = !overrides && code.is_empty() && argv.is_empty() && read_only(&sub, &flags, &pos);
     if let Scope::Sandbox { root, kind, .. } = ctx.scope {
         sandbox_rules(&sub, &flags, &pos, root, kind, dir.as_deref(), elsewhere, read_only, a);
     } else if !read_only && (elsewhere || dir.as_deref().is_none_or(|d| !ctx.writable(d))) {
         a.ask("git writes outside the workspace");
     }
-    GitFacts { read_only }
+    GitFacts { read_only, code, argv }
+}
+
+/// The shell code and commands a git subcommand runs from its arguments.
+fn embedded(sub: &str, rest: &[Word]) -> (Vec<Word>, Vec<Vec<Word>>) {
+    let mut code = Vec::new();
+    let mut argv = Vec::new();
+    // `--name value`, `--name=value` or, for a short option, `-xvalue` / `-ix value` (a
+    // cluster ending in the letter takes the next word). `stops` are the other short options
+    // that take a value: the rest of a cluster after one of them is that value.
+    let values = |longs: &[(&str, usize)], short: Option<(char, &str)>| -> Vec<Word> {
+        let mut out = Vec::new();
+        let mut j = 0;
+        while j < rest.len() {
+            let w = &rest[j];
+            let t = w.text.as_str();
+            if t == "--" {
+                break;
+            }
+            let next = || rest.get(j + 1).cloned();
+            let (name, inline) = match t.split_once('=') {
+                Some((n, v)) if n.starts_with("--") => (n, Some(v)),
+                _ => (t, None),
+            };
+            if name.starts_with("--") && longs.iter().any(|(full, min)| name.len() >= *min && full.starts_with(name)) {
+                match inline {
+                    Some(v) => out.push(Word { text: v.to_string(), dynamic: w.dynamic, quoted: w.quoted }),
+                    None => out.extend(next()),
+                }
+            } else if let (Some((c, stops)), true) = (short, t.starts_with('-') && !t.starts_with("--")) {
+                let cluster = t[1..].char_indices().take_while(|(_, ch)| !stops.contains(*ch) || *ch == c);
+                if let Some(at) = cluster.map(|(k, _)| k).find(|&k| t[1 + k..].starts_with(c)) {
+                    let attached = &t[1 + at + c.len_utf8()..];
+                    if attached.is_empty() {
+                        out.extend(next());
+                    } else {
+                        out.push(Word { text: attached.to_string(), dynamic: w.dynamic, quoted: w.quoted });
+                    }
+                }
+            }
+            j += 1;
+        }
+        out
+    };
+    match sub {
+        "rebase" => code.extend(values(&[("--exec", 4)], Some(('x', "sXCS")))),
+        "difftool" | "mergetool" => code.extend(values(&[("--extcmd", 5), ("--tool-cmd", 7)], Some(('x', "tO")))),
+        "filter-branch" => code.extend(values(
+            &[
+                ("--setup", 7),
+                ("--env-filter", 12),
+                ("--tree-filter", 13),
+                ("--index-filter", 14),
+                ("--parent-filter", 15),
+                ("--msg-filter", 12),
+                ("--commit-filter", 15),
+                ("--tag-name-filter", 17),
+            ],
+            None,
+        )),
+        "clone" | "fetch" | "pull" | "ls-remote" | "archive" => {
+            code.extend(values(&[("--upload-pack", 5), ("--exec", 4)], (sub == "clone").then_some(('u', "obcj"))))
+        }
+        "push" | "send-pack" => code.extend(values(&[("--receive-pack", 6), ("--exec", 4)], None)),
+        "bisect" => {
+            if let Some(at) = rest.iter().position(|w| !w.text.starts_with('-')) {
+                if rest[at].text == "run" && at + 1 < rest.len() {
+                    argv.push(rest[at + 1..].to_vec());
+                }
+            }
+        }
+        "submodule" => {
+            if let Some(at) = rest.iter().position(|w| w.text == "foreach") {
+                let cmd: Vec<&Word> = rest[at + 1..].iter().skip_while(|w| matches!(w.text.as_str(), "--recursive" | "-q" | "--quiet")).collect();
+                if !cmd.is_empty() {
+                    // `foreach` runs its arguments joined, as shell code.
+                    let text = cmd.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+                    code.push(Word { text, dynamic: cmd.iter().any(|w| w.dynamic), quoted: false });
+                }
+            }
+        }
+        _ => {}
+    }
+    (code, argv)
 }
 
 fn push(flags: &[&str], pos: &[&str], ctx: &ShellCtx<'_>, a: &mut Analysis) {
-    let has = |f: &str| flags.iter().any(|x| *x == f || x.starts_with(&format!("{f}=")));
     let short = |c: char| flags.iter().any(|f| f.starts_with('-') && !f.starts_with("--") && f[1..].contains(c));
-    if short('f') || has("--force") || has("--force-with-lease") || has("--force-if-includes") {
+    // Git takes any unambiguous prefix of a long option (`--force-w`, `--mirr`, `--del`).
+    // `--for` is ambiguous between the force options (git refuses it), so denying it costs
+    // nothing; `--fo` also matches `--follow-tags`.
+    if short('f') || ["--force", "--force-with-lease", "--force-if-includes"].iter().any(|full| long_prefix(flags, full, 5)) {
         a.deny("git push --force (rewrites remote history)");
     }
-    if has("--mirror") {
+    if long_prefix(flags, "--mirror", 3) {
         a.deny("git push --mirror");
     }
     // Refspecs after the remote: `+main`, `+HEAD:main` force; `:main` deletes.
@@ -152,7 +243,7 @@ fn push(flags: &[&str], pos: &[&str], ctx: &ShellCtx<'_>, a: &mut Analysis) {
             || b.starts_with("release")
             || ctx.protected_branches.iter().any(|p| p == b)
     };
-    let deletes: Vec<&str> = if has("--delete") || short('d') {
+    let deletes: Vec<&str> = if long_prefix(flags, "--delete", 4) || short('d') {
         refspecs.to_vec()
     } else {
         refspecs.iter().filter_map(|r| r.strip_prefix(':')).collect()
@@ -161,6 +252,15 @@ fn push(flags: &[&str], pos: &[&str], ctx: &ShellCtx<'_>, a: &mut Analysis) {
         a.deny("git push deleting a protected branch");
     }
     a.ask("git push");
+}
+
+/// Whether a flag (before `--`) is `full` as git reads long options: the whole name or a prefix
+/// of at least `min` characters, with any `=value` stripped.
+fn long_prefix(flags: &[&str], full: &str, min: usize) -> bool {
+    flags.iter().take_while(|f| **f != "--").any(|f| {
+        let name = f.split_once('=').map_or(*f, |(n, _)| n);
+        name.starts_with("--") && name.len() >= min && full.starts_with(name)
+    })
 }
 
 /// `git -c key=value`: asks when the key runs programs or redirects git.
@@ -270,7 +370,7 @@ fn sandbox_rules(
     read_only: bool,
     a: &mut Analysis,
 ) {
-    let has = |f: &str| flags.iter().any(|x| *x == f);
+    let has = |f: &str| long_prefix(flags, f, 5.min(f.len()));
     let short = |c: char| flags.iter().any(|f| f.starts_with('-') && !f.starts_with("--") && f[1..].contains(c));
     let inside = !elsewhere && kind != SandboxKind::None && dir.is_some_and(|d| super::within(root, d));
     if !inside && !read_only {

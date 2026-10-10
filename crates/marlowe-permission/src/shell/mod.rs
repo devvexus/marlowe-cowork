@@ -186,8 +186,11 @@ pub struct ShellCtx<'a> {
     pub protected: &'a [PathBuf],
     /// Branch names a push may never delete (besides `main`, `master`).
     pub protected_branches: &'a [String],
-    /// Extra writable places (the temp dir).
+    /// Extra writable places (the session's scratch dir).
     pub scratch: &'a [PathBuf],
+    /// Files and directories that hold the permission settings (`.claude/settings.json`, hook
+    /// scripts): writing or deleting them, or a directory that holds them, always asks.
+    pub guarded: &'a [PathBuf],
     /// Reads a script file an interpreter is handed, to look inside; `None` when unreadable.
     pub read_script: &'a dyn Fn(&Path) -> Option<String>,
 }
@@ -201,6 +204,7 @@ impl<'a> ShellCtx<'a> {
             protected: &[],
             protected_branches: &[],
             scratch: &[],
+            guarded: &[],
             read_script: &read_script_file,
         }
     }
@@ -218,6 +222,30 @@ impl<'a> ShellCtx<'a> {
 
     pub fn is_protected(&self, path: &Path) -> bool {
         self.protected.iter().any(|p| within(p, path))
+    }
+
+    /// [`ShellCtx::writable`] for where `path` really is: when an existing part of it is a
+    /// symlink or junction, the place it leads to must be writable too (checked against the
+    /// roots as the filesystem names them).
+    pub fn writable_real(&self, path: &Path) -> bool {
+        if !self.writable(path) {
+            return false;
+        }
+        match paths::through_links(path) {
+            None => true,
+            Some(real) => self.writable(&real) || self.real_roots().iter().any(|r| within(r, &real)),
+        }
+    }
+
+    /// The writable roots with their own links resolved.
+    fn real_roots(&self) -> Vec<PathBuf> {
+        let mut roots: Vec<&Path> = self.scratch.iter().map(PathBuf::as_path).collect();
+        match self.scope {
+            Scope::Workspace { roots: r } => roots.extend(r.iter().map(PathBuf::as_path)),
+            Scope::Sandbox { root, kind, .. } if kind != SandboxKind::None => roots.push(root),
+            Scope::Sandbox { .. } => {}
+        }
+        roots.into_iter().filter_map(|r| std::fs::canonicalize(r).ok().map(paths::plain)).collect()
     }
 }
 
@@ -238,6 +266,16 @@ pub struct Simple {
     pub args: Vec<String>,
     /// `program args...` joined by single spaces: what `bash(git push:*)` is matched against.
     pub line: String,
+    /// The same line with a PowerShell alias spelled as its cmdlet (`del x` ->
+    /// `remove-item x`); deny and ask rules match either.
+    pub canonical: Option<String>,
+    /// The line with the program word as typed, when that word names a directory that is not a
+    /// system one (`./npm test`): an allow rule must name that path (`bash(npm test:*)` is the
+    /// system `npm`, not a workspace file that the model may have written).
+    pub typed_line: Option<String>,
+    /// A script file run directly (`./build.sh`): its contents were read, so a prefix rule may
+    /// cover it although it is `opaque`.
+    pub script_file: bool,
     /// Any word was only known at run time.
     pub dynamic: bool,
     /// Only reads (ls, cat, git status, Get-ChildItem, ...).
@@ -258,6 +296,12 @@ pub struct Simple {
 }
 
 impl Simple {
+    /// The line as rules see it, then as its cmdlet when it is an alias, then with the program
+    /// word as typed when that names a directory (deny and ask rules match any of them).
+    pub fn lines(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.line.as_str()).chain(self.canonical.as_deref()).chain(self.typed_line.as_deref())
+    }
+
     /// Commands that never need a rule of their own (cd, echo, true): skipped when every command
     /// of a line must be allowed.
     pub fn trivial(&self) -> bool {
@@ -366,6 +410,7 @@ pub fn classify_sandbox_shell(
         protected: &[],
         protected_branches: &[],
         scratch: &[],
+        guarded: &[],
         read_script: &read_script_file,
     };
     let a = analyze(dialect, command, &ctx);

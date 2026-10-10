@@ -9,6 +9,54 @@
 
 use super::{parse_at, Cmd, Dialect, Redirect, Unparseable, Word};
 
+/// The cmdlet a built-in alias of Windows PowerShell stands for (`del` -> `remove-item`), lower
+/// case, so a rule written for the cmdlet also reads its aliases. Some (`curl`, `wget`, `sc`)
+/// are gone in pwsh 7, where they run other programs: only deny and ask rules use this.
+pub fn cmdlet_of_alias(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "ac" => "add-content",
+        "cat" | "gc" | "type" => "get-content",
+        "cd" | "chdir" | "sl" => "set-location",
+        "clc" => "clear-content",
+        "copy" | "cp" | "cpi" => "copy-item",
+        "cpp" => "copy-itemproperty",
+        "curl" | "iwr" | "wget" => "invoke-webrequest",
+        "del" | "erase" | "rd" | "ri" | "rm" | "rmdir" => "remove-item",
+        "dir" | "gci" | "ls" => "get-childitem",
+        "echo" | "write" => "write-output",
+        "epcsv" => "export-csv",
+        "gcm" => "get-command",
+        "gi" => "get-item",
+        "gl" | "pwd" => "get-location",
+        "gp" => "get-itemproperty",
+        "icm" => "invoke-command",
+        "iex" => "invoke-expression",
+        "ii" => "invoke-item",
+        "ipmo" => "import-module",
+        "irm" => "invoke-restmethod",
+        "kill" | "spps" => "stop-process",
+        "mi" | "move" | "mv" => "move-item",
+        "mp" => "move-itemproperty",
+        "nal" => "new-alias",
+        "ni" => "new-item",
+        "popd" => "pop-location",
+        "pushd" => "push-location",
+        "r" | "ihy" => "invoke-history",
+        "ren" | "rni" => "rename-item",
+        "rp" => "remove-itemproperty",
+        "rv" => "remove-variable",
+        "sal" => "set-alias",
+        "saps" | "start" => "start-process",
+        "sc" => "set-content",
+        "set" | "sv" => "set-variable",
+        "si" => "set-item",
+        "sls" => "select-string",
+        "sp" => "set-itemproperty",
+        "tee" => "tee-object",
+        _ => return None,
+    })
+}
+
 pub(crate) fn parse(src: &str, depth: u8) -> Result<Vec<Cmd>, Unparseable> {
     let mut p = Parser { s: src.chars().collect(), i: 0, depth, out: Vec::new(), cur: Cmd::new(Dialect::PowerShell), word: None, redirect: None };
     p.run()?;

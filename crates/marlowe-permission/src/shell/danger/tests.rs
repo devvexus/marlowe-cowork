@@ -287,6 +287,16 @@ fn powershell_rm_alias_force_is_dangerous() {
     assert!(win(&["powershell", "-Command", "rm test -Force"]));
 }
 
+/// PowerShell takes any unambiguous prefix of a parameter (`-Fo` is `-Force`; `-F` alone is
+/// ambiguous with `-Filter`). Not in Codex's suite.
+#[test]
+fn powershell_abbreviated_force_is_dangerous() {
+    for line in ["Remove-Item test -Fo", "del test -forc -Recurse", "ri test -Force:$true", "Remove-Item -FOR test"] {
+        assert!(win(&["powershell", "-Command", line]), "{line}");
+    }
+    assert!(!win(&["powershell", "-Command", "Remove-Item test -Filter *.tmp"]));
+}
+
 #[test]
 fn powershell_benign_force_separate_command_is_not_dangerous() {
     assert!(!win(&["powershell", "-Command", "Get-ChildItem -Force; Remove-Item test"]));

@@ -24,7 +24,7 @@ use marlowe_permission::rules::{self, command_matches, domain_matches, Kind, Rul
 use marlowe_permission::shell::pwsh_ast::{self, AstOutcome, PwshAst};
 use marlowe_permission::shell::{self, lexical_join, Analysis, Dialect, ShellCtx};
 use marlowe_proto::{ApprovalDecision, PermissionMode, SessionId, SettingsScope};
-use marlowe_settings::{edit, Settings, SettingsFile};
+use marlowe_settings::{Settings, SettingsFile};
 use serde_json::Value;
 
 use crate::tools::{Consequence, Exposure, ToolGroup, ToolHost};
@@ -86,6 +86,9 @@ pub enum Gate {
         proposal: Vec<String>,
         /// Hosts recorded as approved when the user allows it.
         hosts: Vec<String>,
+        /// A tripwire or fixed approval (a push, a delete outside the workspace, a new host,
+        /// a side effect after untrusted content): only the user answers it, never a hook.
+        tripwire: bool,
     },
     Deny(String),
 }
@@ -114,7 +117,13 @@ struct Loaded {
 
 struct Inner {
     home: PathBuf,
+    /// The user's own home (`USERPROFILE`/`HOME`), for `~/` rules.
+    user_home: Option<PathBuf>,
     workspace: Option<PathBuf>,
+    /// This session's scratch directory: the one place outside the roots shells write freely
+    /// (created on first use, removed at the end when empty).
+    scratch: PathBuf,
+    scratch_made: std::sync::Once,
     cli: Option<SettingsFile>,
     mode: Mutex<PermissionMode>,
     /// The mode before `plan`, restored by `exit_plan`.
@@ -154,7 +163,10 @@ impl Permissions {
         Permissions {
             inner: Arc::new(Inner {
                 home: home.to_path_buf(),
+                user_home: std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from),
                 workspace: workspace.map(Path::to_path_buf),
+                scratch: default_scratch(),
+                scratch_made: std::sync::Once::new(),
                 cli,
                 mode: Mutex::new(mode),
                 before_plan: Mutex::new(None),
@@ -166,23 +178,48 @@ impl Permissions {
         }
     }
 
+    /// This session's scratch directory instead of the default one (the daemon passes
+    /// `<temp>\marlowe\<session>`). Call before the value is shared.
+    pub fn with_scratch(mut self, dir: PathBuf) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.scratch = dir;
+        }
+        self
+    }
+
+    /// Where shells may write outside the roots without asking (not the whole temp dir).
+    pub fn scratch_dir(&self) -> &Path {
+        &self.inner.scratch
+    }
+
     pub fn mode(&self) -> PermissionMode {
         *lock(&self.inner.mode)
     }
 
-    /// Sets the mode. Entering `plan` remembers the mode to return to.
+    /// Sets the mode. Entering `plan` remembers the mode to return to; any other change forgets
+    /// it.
     pub fn set_mode(&self, mode: PermissionMode) {
         let mut m = lock(&self.inner.mode);
-        if mode == PermissionMode::Plan && *m != PermissionMode::Plan {
-            *lock(&self.inner.before_plan) = Some(*m);
+        let mut before = lock(&self.inner.before_plan);
+        if mode == PermissionMode::Plan {
+            if *m != PermissionMode::Plan {
+                *before = Some(*m);
+            }
+        } else {
+            *before = None;
         }
         *m = mode;
     }
 
     /// Leaves plan mode for the mode it was entered from (the `exit_plan` tool, once approved).
+    /// Outside plan mode it changes nothing.
     pub fn exit_plan(&self) -> PermissionMode {
+        let mut m = lock(&self.inner.mode);
+        if *m != PermissionMode::Plan {
+            return *m;
+        }
         let back = lock(&self.inner.before_plan).take().unwrap_or_default();
-        *lock(&self.inner.mode) = back;
+        *m = back;
         back
     }
 
@@ -222,8 +259,9 @@ impl Permissions {
     }
 
     /// Grants `rules` ("don't ask again") at `scope`: for this session, or written to the
-    /// settings file of that scope (`Local` is "always for this project"), keeping a trusted
-    /// project trusted.
+    /// settings file of that scope (`Local` is "always for this project") and recorded as the
+    /// user's own grant, so it applies after a restart even in a project whose other settings
+    /// are untrusted ([`Settings::grant`]).
     pub fn grant(&self, rules: &[String], scope: SettingsScope) -> Result<(), String> {
         {
             let mut s = lock(&self.inner.session);
@@ -234,16 +272,8 @@ impl Permissions {
         if scope == SettingsScope::Session {
             return Ok(());
         }
-        let was_trusted = self.inner.loaded.read().unwrap_or_else(|p| p.into_inner()).settings.trusted;
-        let path = marlowe_settings::layers::Paths::new(&self.inner.home, self.inner.workspace.as_deref())
-            .for_scope(scope)
-            .ok_or_else(|| "no workspace to save the rule in".to_string())?;
-        for r in rules {
-            edit::add_rule(&path, marlowe_proto::RuleAction::Allow, r).map_err(|e| e.to_string())?;
-        }
-        if let (Some(ws), true) = (self.inner.workspace.as_deref(), scope != SettingsScope::User) {
-            Settings::retrust_after_edit(&self.inner.home, ws, was_trusted).map_err(|e| e.to_string())?;
-        }
+        Settings::grant(&self.inner.home, self.inner.workspace.as_deref(), scope, marlowe_proto::RuleAction::Allow, rules)
+            .map_err(|e| e.to_string())?;
         self.reload();
         Ok(())
     }
@@ -278,7 +308,14 @@ impl Permissions {
         // Shell lines are analysed in their own dialect from their working directory.
         let dialect = Dialect::of_tool(&call.name);
         let command = call.args.get("command").and_then(Value::as_str).unwrap_or("");
-        let scratch = [std::env::temp_dir()];
+        let scratch = [self.inner.scratch.clone()];
+        let guarded = self.inner.workspace.as_deref().map(guarded_paths).unwrap_or_default();
+        if dialect.is_some() {
+            let dir = self.inner.scratch.clone();
+            self.inner.scratch_made.call_once(move || {
+                let _ = std::fs::create_dir_all(dir);
+            });
+        }
         let analysis: Option<Analysis> = dialect.map(|d| {
             let cwd = match (call.args.get("cwd").and_then(Value::as_str), root.as_deref()) {
                 (Some(c), Some(r)) => lexical_join(r, Path::new(c)),
@@ -292,6 +329,7 @@ impl Permissions {
                 protected: &loaded.protected,
                 protected_branches: &loaded.protected_branches,
                 scratch: &scratch,
+                guarded: &guarded,
                 read_script: &shell::read_script_file,
             };
             shell::analyze(d, command, &ctx)
@@ -315,6 +353,7 @@ impl Permissions {
         subject.shell = analysis.as_ref();
         subject.code = code;
         subject.root = root.as_deref();
+        subject.home = self.inner.user_home.as_deref();
         subject.domain = host.egress_host(call).or_else(|| web_host(call));
         if let Some(m) = &manifest {
             for a in m.path_args {
@@ -329,6 +368,32 @@ impl Permissions {
         let mut rules = loaded.rules.clone();
         rules.extend(&lock(&self.inner.session));
         let rule = rules.evaluate(&subject);
+
+        // The tool's own Ask, lifted where settings already answer it: a web call to a host the
+        // settings allow (`network.allow_hosts`, a `domain:` allow rule), a file call whose every
+        // path is inside a root (`additional_directories`, `/add-dir`) and not protected.
+        let says = match (&says, kind) {
+            (ToolSays::Ask(_), Kind::Web)
+                if subject.domain.as_deref().is_some_and(|h| {
+                    loaded.allow_hosts.iter().any(|d| domain_matches(d, h))
+                        || rule.as_ref().is_some_and(|m| {
+                            m.action == rules::Action::Allow
+                                && rules::Rule::parse(&m.rule).is_ok_and(|r| matches!(r.spec, rules::Spec::Domain(_)))
+                        })
+                }) =>
+            {
+                ToolSays::Free
+            }
+            (ToolSays::Ask(_), Kind::FileWrite | Kind::FileRead)
+                if !subject.paths.is_empty()
+                    && subject.paths.iter().all(|p| {
+                        roots.iter().any(|r| shell::within(r, p)) && !loaded.protected.iter().any(|x| shell::within(x, p))
+                    }) =>
+            {
+                ToolSays::Free
+            }
+            _ => says,
+        };
 
         let new_hosts: Vec<String> = analysis
             .as_ref()
@@ -346,12 +411,23 @@ impl Permissions {
                 && cmds.iter().all(|c| {
                     c.dangerous.is_none()
                         && !c.writes_redirect
-                        && loaded.project_commands.iter().any(|p| project_pattern(p).is_some_and(|pat| command_matches(&pat, &c.line)))
+                        && loaded.project_commands.iter().any(|p| {
+                            project_pattern(p).is_some_and(|pat| command_matches(&pat, c.typed_line.as_deref().unwrap_or(&c.line)))
+                        })
                 })
         });
         let extra_ask = code.and_then(|c| match shell::classify_code(c) {
             shell::Verdict::Ask(why) => Some(why),
             _ => None,
+        });
+        // The workspace's own permission files and hook scripts: editing them could drop its
+        // deny rules or its guard hooks, so a file tool asks in every mode (the shell analysis
+        // asks the same through `guarded`).
+        let extra_ask = extra_ask.or_else(|| {
+            (kind == Kind::FileWrite)
+                .then(|| subject.paths.iter().find(|p| guarded.iter().any(|g| shell::within(g, p))))
+                .flatten()
+                .map(|p| format!("changes the permission settings ({})", p.display()))
         });
 
         let mut facts = Facts::new(policy_mode(self.mode()), says.clone());
@@ -388,7 +464,7 @@ impl Permissions {
                 };
                 let summary = if base.contains(&reason) { base } else { format!("{base} ({reason})") };
                 let proposal = if tripwire { Vec::new() } else { rules::propose(&subject) };
-                Gate::Ask { summary, proposal, hosts: analysis.as_ref().map(|a| a.hosts.clone()).unwrap_or_default() }
+                Gate::Ask { summary, proposal, hosts: analysis.as_ref().map(|a| a.hosts.clone()).unwrap_or_default(), tripwire }
             }
         }
     }
@@ -424,6 +500,19 @@ fn load(home: &Path, workspace: Option<&Path>, cli: Option<SettingsFile>) -> Loa
     }
 }
 
+/// The files that hold `workspace`'s permission settings, and its hook script directories.
+pub fn guarded_paths(workspace: &Path) -> Vec<PathBuf> {
+    let (claude, marlowe) = (workspace.join(".claude"), workspace.join(".marlowe"));
+    vec![
+        claude.join("settings.json"),
+        claude.join("settings.local.json"),
+        claude.join("hooks"),
+        marlowe.join("settings.toml"),
+        marlowe.join("settings.local.toml"),
+        marlowe.join("hooks"),
+    ]
+}
+
 /// Paths no command may write (CLAUDE.md non-negotiable 6): the old harness and its profile.
 fn default_protected() -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -434,6 +523,20 @@ fn default_protected() -> Vec<PathBuf> {
         out.push(PathBuf::from(home).join("Projects").join("Marlowe_Harness"));
     }
     out
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        // Only an empty scratch dir is removed; anything left in it is the user's to keep.
+        let _ = std::fs::remove_dir(&self.scratch);
+    }
+}
+
+/// `<temp>\marlowe\scratch-<pid>-<n>`: a session's own scratch when the daemon names none.
+fn default_scratch() -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join("marlowe").join(format!("scratch-{}-{n}", std::process::id()))
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -514,8 +617,12 @@ impl PwshAst for PwshAstChild {
     }
 }
 
+/// PowerShell's parser as [`Permissions::with_parser`] takes it.
+pub type PwshParser = Arc<dyn PwshAst>;
+
 /// Windows PowerShell's parser on Windows; none elsewhere (the `powershell` tool is Windows').
-fn default_pwsh() -> Option<Arc<dyn PwshAst>> {
+/// The daemon makes one and shares it between sessions, so one `powershell.exe` serves them all.
+pub fn default_pwsh() -> Option<PwshParser> {
     if cfg!(windows) {
         Some(Arc::new(PwshAstChild::new("powershell.exe")))
     } else {

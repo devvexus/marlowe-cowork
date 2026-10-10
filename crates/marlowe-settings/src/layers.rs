@@ -123,6 +123,9 @@ pub struct Settings {
     pub digest: String,
     /// The user trusted this digest for this workspace (or there is nothing to trust).
     pub trusted: bool,
+    /// Allow rules the user granted for this workspace through Marlowe ([`TrustStore::grant`]):
+    /// in a project file they apply without trust and are not part of the digest.
+    pub granted: Vec<String>,
     /// Files that could not be read or parsed, and invalid rules or hooks.
     pub errors: Vec<String>,
 }
@@ -170,6 +173,7 @@ impl Settings {
             layers,
             digest: String::new(),
             trusted: false,
+            granted: workspace.map(|w| trust.granted_for(w)).unwrap_or_default(),
             errors,
         };
         s.digest = s.compute_digest();
@@ -201,7 +205,7 @@ impl Settings {
         self.project_layers().all(|l| {
             let p = &l.file.permissions;
             l.file.hooks.values().all(Vec::is_empty)
-                && p.allow.is_empty()
+                && p.allow.iter().all(|a| self.granted.contains(a))
                 && p.additional_directories.is_empty()
                 && p.project_commands.is_empty()
                 && p.default_mode.is_none()
@@ -217,7 +221,7 @@ impl Settings {
         let mut mode = None;
         for l in self.project_layers() {
             hooks.extend(layer_hooks(l, &mut Vec::new()));
-            allows.extend(l.file.permissions.allow.iter().cloned());
+            allows.extend(l.file.permissions.allow.iter().filter(|a| !self.granted.contains(a)).cloned());
             allows.extend(l.file.network.allow_hosts.iter().map(|h| format!("host:{h}")));
             dirs.extend(l.file.permissions.additional_directories.iter().cloned());
             commands.extend(l.file.permissions.project_commands.iter().cloned());
@@ -237,10 +241,10 @@ impl Settings {
         for l in &self.layers {
             let p = &l.file.permissions;
             for (action, list) in [(RuleAction::Deny, &p.deny), (RuleAction::Ask, &p.ask), (RuleAction::Allow, &p.allow)] {
-                if in_force && action == RuleAction::Allow && !self.applies(l) {
-                    continue;
-                }
                 for pattern in list {
+                    if in_force && action == RuleAction::Allow && !self.applies(l) && !self.granted.contains(pattern) {
+                        continue;
+                    }
                     out.push(RuleEntry { action, pattern: pattern.clone(), source: l.source, path: l.path.clone() });
                 }
             }
@@ -351,6 +355,40 @@ impl Settings {
             .iter()
             .map(|l| SettingsLayer { scope: l.source.scope(), path: l.path.as_ref().map(|p| p.display().to_string()), text: l.text.clone() })
             .collect()
+    }
+
+    /// Writes `rules` with `action` to the settings file of `scope` (not `Session`). An allow
+    /// written to a project file is recorded as the user's own grant ([`TrustStore::grant`]), so
+    /// it applies after a restart even while the project's other settings are untrusted; a
+    /// trusted project stays trusted.
+    pub fn grant(home: &Path, workspace: Option<&Path>, scope: SettingsScope, action: RuleAction, rules: &[String]) -> Result<(), crate::SettingsError> {
+        let path = Paths::new(home, workspace)
+            .for_scope(scope)
+            .ok_or_else(|| crate::SettingsError::Invalid("no settings file for that scope (a workspace is needed for project and local)".into()))?;
+        let was_trusted = workspace.is_some_and(|w| Settings::load(home, Some(w), None).trusted);
+        for r in rules {
+            crate::edit::add_rule(&path, action, r)?;
+        }
+        if let (Some(ws), true) = (workspace, scope != SettingsScope::User) {
+            if action == RuleAction::Allow {
+                TrustStore::grant(home, ws, rules)?;
+            }
+            Settings::retrust_after_edit(home, ws, was_trusted)?;
+        }
+        Ok(())
+    }
+
+    /// Removes `pattern` from the settings file of `scope` (and the user's grants); whether it
+    /// was there.
+    pub fn remove_rule(home: &Path, workspace: Option<&Path>, scope: SettingsScope, pattern: &str) -> Result<bool, crate::SettingsError> {
+        let path = Paths::new(home, workspace)
+            .for_scope(scope)
+            .ok_or_else(|| crate::SettingsError::Invalid("session rules end with the session; there is no file to remove it from".into()))?;
+        let removed = crate::edit::remove_rule(&path, pattern)?;
+        if let (Some(ws), true) = (workspace, scope != SettingsScope::User) {
+            TrustStore::revoke(home, ws, pattern)?;
+        }
+        Ok(removed)
     }
 
     /// After the user changed a project file through Marlowe (an "always for this project"

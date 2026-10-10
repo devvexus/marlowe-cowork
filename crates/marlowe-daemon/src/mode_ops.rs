@@ -4,14 +4,16 @@
 //! Every session gets one [`Permissions`] (mode, layered settings, granted rules) and one
 //! [`HookRunner`] as services, and one [`HookMiddleware`] as middleware and observer. They are kept
 //! per session in [`Registry`] (in `Core::ext`) so a mode change or a settings edit reaches a
-//! running session at once. Prompt hooks are judged on the Quick slot (else the Conductor's).
+//! running session at once, until [`forget`] drops them when the session closes. One PowerShell
+//! parser child serves every session. Prompt hooks are judged on the Quick slot (else the
+//! Conductor's).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use marlowe_agent::approval::Permissions;
+use marlowe_agent::approval::{default_pwsh, Permissions, PwshParser};
 use marlowe_agent::hooks::{HookMiddleware, HookRunner, PromptHookEvaluator};
 use marlowe_agent::{Conversation, Services, ToolMiddleware, TurnObserver};
 use marlowe_model::{CancelToken, ChatRequest, Message};
@@ -29,14 +31,26 @@ struct Entry {
     hooks: Arc<HookMiddleware>,
 }
 
-/// Live sessions' entries, by session.
-#[derive(Default)]
+/// Live sessions' entries, by session, and the PowerShell parser they share.
 struct Registry {
     sessions: Mutex<HashMap<SessionId, Entry>>,
+    pwsh: Option<PwshParser>,
 }
 
 fn registry(core: &Arc<Core>) -> Arc<Registry> {
-    core.ext.get_or_init(Registry::default)
+    core.ext.get_or_init(|| Registry { sessions: Mutex::new(HashMap::new()), pwsh: default_pwsh() })
+}
+
+/// Drops a closed session's entry: its SessionEnd hooks run (`reason`: `clear`, `logout`,
+/// `prompt_input_exit`, `other`), and its scratch dir goes once the last clone is dropped.
+/// The session close path calls this; the next use of the session builds a fresh entry.
+#[allow(dead_code)] // called from session.rs's close path (integrator)
+pub(crate) fn forget(core: &Arc<Core>, session: &SessionId, reason: &str) {
+    let reg = registry(core);
+    let gone = reg.sessions.lock().unwrap_or_else(|p| p.into_inner()).remove(session);
+    if let Some(e) = gone {
+        let _ = e.runner.session_end(reason);
+    }
 }
 
 /// The entry of `convo`'s session, created on first use.
@@ -46,13 +60,16 @@ fn entry(core: &Arc<Core>, convo: &Conversation) -> Entry {
     if let Some(e) = map.get(&convo.session) {
         return e.clone();
     }
-    let e = build(core, convo.session.clone(), convo.workspace.as_deref());
+    let e = build(core, &reg, convo.session.clone(), convo.workspace.as_deref());
     map.insert(convo.session.clone(), e.clone());
     e
 }
 
-fn build(core: &Arc<Core>, session: SessionId, workspace: Option<&Path>) -> Entry {
-    let perms = Permissions::new(&core.home, workspace, None);
+fn build(core: &Arc<Core>, reg: &Registry, session: SessionId, workspace: Option<&Path>) -> Entry {
+    // The session's own scratch dir, not the whole temp dir (deletes there are outside).
+    let name: String = session.0.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+    let scratch = std::env::temp_dir().join("marlowe").join(name);
+    let perms = Permissions::with_parser(&core.home, workspace, None, reg.pwsh.clone()).with_scratch(scratch);
     let hooks = perms.settings().hooks();
     let runner = HookRunner::new(hooks, workspace.map(Path::to_path_buf), session)
         .with_permissions(perms.clone())
@@ -88,7 +105,7 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
                         // Loading the session may have started its runner, which made the entry.
                         let mut map = reg.sessions.lock().unwrap_or_else(|p| p.into_inner());
                         map.entry(session.clone())
-                            .or_insert_with(|| build(core, session.clone(), h.workspace.as_deref().map(Path::new)))
+                            .or_insert_with(|| build(core, &reg, session.clone(), h.workspace.as_deref().map(Path::new)))
                             .clone()
                     }
                     Err((s, m)) => return fail(s, m),
@@ -107,15 +124,13 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
         }
         Request::RemoveRule { pattern, scope, workspace } => {
             let ws = workspace.as_deref().map(PathBuf::from);
-            let path = marlowe_settings::layers::Paths::new(&core.home, ws.as_deref()).for_scope(scope);
-            match path.map(|p| edit::remove_rule(&p, &pattern)) {
-                Some(Ok(true)) => {
+            match Settings::remove_rule(&core.home, ws.as_deref(), scope, &pattern) {
+                Ok(true) => {
                     reload(core, ws.as_deref());
                     reply(rules_event(core, workspace.as_deref()))
                 }
-                Some(Ok(false)) => fail(None, format!("`{pattern}` is not in the {scope:?} settings")),
-                Some(Err(e)) => fail(None, e.to_string()),
-                None => fail(None, "session rules end with the session; there is no file to remove it from".into()),
+                Ok(false) => fail(None, format!("`{pattern}` is not in the {scope:?} settings")),
+                Err(e) => fail(None, e.to_string()),
             }
         }
         Request::ListHooks { workspace } => reply(hooks_event(core, workspace.as_deref())),
@@ -170,12 +185,8 @@ fn add_rule(core: &Arc<Core>, action: RuleAction, pattern: &str, scope: Settings
         }
         return if any { Ok(()) } else { Err("no live session to add the rule to".into()) };
     }
-    let path = marlowe_settings::layers::Paths::new(&core.home, ws).for_scope(scope).ok_or("no workspace for that scope")?;
-    let was_trusted = ws.is_some_and(|w| Settings::load(&core.home, Some(w), None).trusted);
-    edit::add_rule(&path, action, pattern).map_err(|e| e.to_string())?;
-    if let (Some(w), true) = (ws, scope != SettingsScope::User) {
-        Settings::retrust_after_edit(&core.home, w, was_trusted).map_err(|e| e.to_string())?;
-    }
+    // A user's allow in a project file is recorded as theirs, so it applies untrusted too.
+    Settings::grant(&core.home, ws, scope, action, &[pattern.to_string()]).map_err(|e| e.to_string())?;
     reload(core, ws);
     Ok(())
 }
