@@ -31,8 +31,14 @@ use crate::{lock, now_ms, HostRequest};
 /// `marlowe_mind::MAX_INJECT_TOKENS`).
 const MEMORY_TIER_DIVISOR: u32 = 8;
 
+/// Work for the runner thread that is not a turn (a rewind): runs with the conversation while no
+/// turn does.
+pub(crate) type AdminJob = Box<dyn FnOnce(&mut Conversation) + Send>;
+
 pub(crate) enum RunnerCmd {
     Turn(TurnInput),
+    /// See [`SessionHandle::run_admin`].
+    Admin(AdminJob),
     Stop,
 }
 
@@ -125,6 +131,28 @@ impl SessionHandle {
         }
         *t = title_from(text, max_chars);
         Some(t.clone())
+    }
+
+    /// Renames the session as far as the runner is concerned (the first message no longer titles
+    /// it).
+    pub fn set_title(&self, title: &str) {
+        *lock(&self.title) = title.to_string();
+    }
+
+    /// Runs `job` on the runner thread with the conversation, while the session is idle. The
+    /// session counts as busy until it returns, so asks that arrive meanwhile queue behind it.
+    /// Refused while a turn runs or after the runner has exited.
+    pub fn run_admin(&self, job: AdminJob) -> Result<(), Enqueue> {
+        let mut st = lock(&self.state);
+        if st.closed {
+            return Err(Enqueue::Closed);
+        }
+        if st.busy {
+            return Err(Enqueue::Refused("a turn is running; interrupt it first".into()));
+        }
+        st.busy = true;
+        st.cancel = CancelToken::new();
+        self.cmd_tx.send(RunnerCmd::Admin(job)).map_err(|_| Enqueue::Closed)
     }
 
     /// Starts a turn, or queues `text` behind the running one.
@@ -233,6 +261,7 @@ pub(crate) fn spawn_runner(core: Arc<Core>, handle: Arc<SessionHandle>, convo: C
 
 fn runner(core: Arc<Core>, handle: Arc<SessionHandle>, convo: Conversation, cmd_rx: Receiver<RunnerCmd>) {
     serve(&core, &handle, convo, &cmd_rx);
+    crate::checkpoint::release(&core, &handle.id);
     core.release(&handle);
 }
 
@@ -263,14 +292,26 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
     // A session loaded from the store keeps the taint of what it read before: the stored flag
     // (set by `Core::session`) plus anything its history shows.
     convo.recompute_exposure(tools.as_ref());
+    // A daemon killed while tools ran left an assistant message with calls and no results.
+    match crate::checkpoint::repair_dangling(&core.store, &mut convo) {
+        Ok(0) => {}
+        Ok(n) => {
+            let message = format!("{n} tool call(s) were running when the daemon last stopped; they are marked as not finished");
+            core.bus.publish(Event::Error { session: Some(handle.id.clone()), message });
+        }
+        Err(e) => {
+            core.bus.publish(Event::Error { session: Some(handle.id.clone()), message: format!("session not repaired: {e}") });
+        }
+    }
     // Middleware, observers and services from every track, for this runner's lifetime.
     let stack = Stack::build(core, &convo);
     for o in &stack.observers {
         let _ = guard(|| o.on_session_start(&convo));
     }
     loop {
-        let first = match cmd_rx.recv_timeout(core.cfg.session_idle) {
-            Ok(RunnerCmd::Turn(input)) => input,
+        let work = match cmd_rx.recv_timeout(core.cfg.session_idle) {
+            Ok(RunnerCmd::Turn(input)) => Work::Turn(input),
+            Ok(RunnerCmd::Admin(job)) => Work::Admin(job),
             Ok(RunnerCmd::Stop) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) if core.evict_if_idle(handle) => {
                 evicted = true;
@@ -278,7 +319,14 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
             }
             Err(RecvTimeoutError::Timeout) => continue,
         };
-        let mut next = VecDeque::from([first]);
+        let mut next = VecDeque::new();
+        match work {
+            Work::Turn(input) => next.push_back(input),
+            Work::Admin(job) => {
+                let _ = guard(|| job(&mut convo));
+                settle(core, handle, &mut next);
+            }
+        }
         while let Some(input) = next.pop_front() {
             if core.is_shutting_down() {
                 lock(&handle.state).busy = false;
@@ -287,24 +335,7 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
             let cancel = lock(&handle.state).cancel.clone();
             run_one(core, handle, &mut convo, &tools, &stack, &input, &cancel);
             turns_run += 1;
-            // Decide under the lock so an ask arriving now either lands in `left` or starts a
-            // fresh turn through the command channel.
-            let mut st = lock(&handle.state);
-            let (relayed, mut left): (Vec<String>, Vec<String>) =
-                handle.inbox_rx.try_iter().map(|s| s.text).partition(|t| is_relay(t));
-            left.append(&mut st.queued);
-            let mut relays: Vec<TurnInput> = relayed.into_iter().map(|t| TurnInput::relay(t, false)).collect();
-            relays.append(&mut st.relays);
-            if !left.is_empty() {
-                next.push_back(TurnInput::user(left.join("\n\n")));
-            }
-            next.extend(relays);
-            if !next.is_empty() && !core.is_shutting_down() {
-                st.cancel = CancelToken::new();
-            } else {
-                next.clear();
-                st.busy = false;
-            }
+            settle(core, handle, &mut next);
         }
         if core.is_shutting_down() {
             break;
@@ -312,6 +343,33 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
     }
     if let (true, Some(mind)) = (evicted && turns_run > 0 && !core.is_shutting_down(), &core.mind) {
         let _ = guard(|| crate::mind_ops::write_episode(core, mind, &convo));
+    }
+}
+
+enum Work {
+    Turn(TurnInput),
+    Admin(AdminJob),
+}
+
+/// After a turn or an admin job: decides, under the state lock, what runs next. An ask arriving
+/// now either lands in `next` or starts a fresh turn through the command channel. The session
+/// stays busy while `next` is not empty.
+fn settle(core: &Arc<Core>, handle: &Arc<SessionHandle>, next: &mut VecDeque<TurnInput>) {
+    let mut st = lock(&handle.state);
+    let (relayed, mut left): (Vec<String>, Vec<String>) =
+        handle.inbox_rx.try_iter().map(|s| s.text).partition(|t| is_relay(t));
+    left.append(&mut st.queued);
+    let mut relays: Vec<TurnInput> = relayed.into_iter().map(|t| TurnInput::relay(t, false)).collect();
+    relays.append(&mut st.relays);
+    if !left.is_empty() {
+        next.push_back(TurnInput::user(left.join("\n\n")));
+    }
+    next.extend(relays);
+    if !next.is_empty() && !core.is_shutting_down() {
+        st.cancel = CancelToken::new();
+    } else {
+        next.clear();
+        st.busy = false;
     }
 }
 
@@ -365,6 +423,7 @@ fn run_one(
         }
     };
     let model = info.model_ref();
+    let model_ref = model.clone();
     let workspace = workspace_of(convo);
     let mut system = SystemPrompt::new();
     // The memory block describes the profile and memory tools, so only when a Mind is attached.
@@ -399,7 +458,11 @@ fn run_one(
 
     core.bus.publish(Event::TurnStarted { session: session.clone(), turn, model, user: text.to_string() });
     let before_len = convo.messages.len();
-    let before_summary = convo.summary.clone();
+    // Rows are written as the loop produces them; this turn's are told where it began.
+    let recorder = crate::checkpoint::recorder_of(core, &session);
+    if let Some(r) = &recorder {
+        r.begin_turn(convo, &model_ref);
+    }
     // Crew results folded in as steers during this turn; delivered once the turn is saved.
     let mut steered: Vec<String> = Vec::new();
     let mut sink = |ev: AgentEvent| {
@@ -423,48 +486,45 @@ fn run_one(
     if outcome.blocked {
         // A hook refused the prompt before anything ran: nothing to store, and it is not kept.
         let message = outcome.error.clone().unwrap_or_else(|| "the prompt was blocked".into());
+        if let Some(r) = &recorder {
+            r.discard_turn(turn);
+        }
         core.bus.publish(Event::Error { session: Some(session.clone()), message });
         core.bus.publish(Event::TurnFinished { session, turn, usage: outcome.usage, stop: outcome.stop });
         return;
     }
     convo.next_turn = convo.next_turn.max(turn + 1);
 
-    let mut fresh = new_messages(convo, before_len, before_summary.as_deref(), text);
-    if fresh.is_empty() {
+    if convo.messages.len() == before_len {
         // Nothing was appended (the turn failed early): keep the user's words anyway.
-        let m = Message::user(text);
-        convo.push(m.clone());
-        fresh.push(m);
+        convo.push(Message::user(text));
     }
-    match core.store.append(&session, fresh, convo.next_turn, convo.exposure.tainted, now_ms()) {
+    let saved = match &recorder {
+        Some(r) => {
+            r.finish_turn(convo, text, before_len);
+            r.take_error().map_or(Ok(()), Err)
+        }
+        // A runner always has its recorder (the stack builds it); this keeps a turn if not.
+        None => core
+            .store
+            .append(&session, convo.messages[before_len.min(convo.messages.len())..].to_vec(), convo.next_turn, convo.exposure.tainted, now_ms()),
+    };
+    match saved {
         // The crew results this turn carried are in the session's history now: a restart must
         // not relay them again.
-        Ok(_) => {
+        Ok(()) => {
             for relay in input.relay.then_some(&input.text).into_iter().chain(&steered) {
                 crate::crew::delivered(core, relay);
             }
         }
         Err(e) => {
-            core.bus.publish(Event::Error { session: Some(session.clone()), message: format!("turn not saved: {e}") });
+            core.bus.publish(Event::Error { session: Some(session.clone()), message: e });
         }
     }
     if let Some(message) = outcome.error.clone().or_else(|| (outcome.stop == TurnStop::Error).then(|| "the turn failed".into())) {
         core.bus.publish(Event::Error { session: Some(session.clone()), message });
     }
     core.bus.publish(Event::TurnFinished { session, turn, usage: outcome.usage, stop: outcome.stop });
-}
-
-/// Messages appended during the turn. If history was compacted mid-turn the prefix shifted, so
-/// fall back to everything from the turn's user message (or all that remains).
-fn new_messages(convo: &Conversation, before_len: usize, before_summary: Option<&str>, user_text: &str) -> Vec<Message> {
-    if convo.summary.as_deref() == before_summary && convo.messages.len() >= before_len {
-        return convo.messages[before_len..].to_vec();
-    }
-    let user = Message::user(user_text);
-    match convo.messages.iter().rposition(|m| *m == user) {
-        Some(i) => convo.messages[i..].to_vec(),
-        None => std::iter::once(user).chain(convo.messages.iter().cloned()).collect(),
-    }
 }
 
 fn to_event(session: &SessionId, turn: u32, window: u32, ev: AgentEvent) -> Option<Event> {
@@ -539,22 +599,6 @@ mod tests {
         assert_eq!(title_from("\n  fix the build  \nplease", 60), "fix the build");
         assert_eq!(title_from("abcdefgh", 4), "abcd…");
         assert_eq!(title_from("", 4), "");
-    }
-
-    #[test]
-    fn new_messages_survive_compaction() {
-        let mut c = Conversation::new(SessionId("s".into()), None);
-        c.push(Message::user("old"));
-        c.push(Message::assistant("old reply"));
-        let before = c.messages.len();
-        c.push(Message::user("new"));
-        c.push(Message::assistant("new reply"));
-        assert_eq!(new_messages(&c, before, None, "new").len(), 2);
-        // Compaction dropped the prefix and set a summary.
-        c.messages.drain(..2);
-        c.summary = Some("sum".into());
-        let got = new_messages(&c, before, None, "new");
-        assert_eq!(got, vec![Message::user("new"), Message::assistant("new reply")]);
     }
 
     #[test]

@@ -1,0 +1,631 @@
+//! The shadow repository: a bare git directory under `<home>\checkpoints` whose work tree is the
+//! session's workspace. The user's own repository is never opened, written or linked (no
+//! alternates: a `gc` there could drop objects the shadow still reads); its `info/exclude` is
+//! only read. Git's own ignore rules (`.gitignore`, `info/exclude`, the global excludes) decide
+//! what a snapshot holds; line-ending, filter and encoding conversion are switched off so a
+//! restore is byte for byte.
+//!
+//! Refs, per session `S` and turn `T`:
+//! - `refs/marlowe/S/T/pre`: the workspace as it was when `T` first changed a file;
+//! - `refs/marlowe/S/undo/<ms>`: the workspace as it was just before a rewind put an older state
+//!   back, so a rewind is itself undoable (until pruned);
+//! - `refs/marlowe/S/rewound/<ms>/T/pre`: the `pre` refs of turns a conversation rewind dropped.
+//!
+//! Every snapshot is a flat commit (no parents) whose subject line is a JSON record
+//! (`kind, session, turn, at_ms`), so the ledger is the refs themselves and survives any crash.
+
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use marlowe_proto::SessionId;
+use serde_json::json;
+
+use super::git::{bare, Git};
+use super::paths::{canonical, ignore_line, lexical_clean, ref_part, relative_to, repo_stem, strip_verbatim};
+use super::preimage::{remove_file, PreimageReport, Preimages};
+use super::CheckpointError;
+use crate::tools::Mutation;
+
+/// Untracked files bigger than this stay out of snapshots (datasets, checkpoints, build blobs
+/// nobody ignored). A rewind cannot restore them.
+pub const MAX_SNAPSHOT_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The shadow repository grows past this and the daemon warns; pruning is by age.
+pub const SIZE_WARN_KIB: u64 = 2 * 1024 * 1024;
+
+/// A workspace with more untracked, non-ignored files than this (a home directory, a drive root)
+/// is not snapshotted: `add -A` over it would take minutes and fill the disk.
+pub const MAX_SNAPSHOT_FILES: usize = 200_000;
+
+/// ... or more bytes than this.
+pub const MAX_SNAPSHOT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+/// Diffs longer than this are cut (a `/diff` of a vendored dependency drop).
+pub const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
+
+const CONFIG: &str = "[core]
+\trepositoryformatversion = 0
+\tbare = true
+\tlogallrefupdates = false
+\tautocrlf = false
+\tsafecrlf = false
+\tlongpaths = true
+\tfsmonitor = false
+\tquotepath = false
+\tuntrackedCache = false
+[gc]
+\tauto = 0
+[commit]
+\tgpgsign = false
+[user]
+\tname = Marlowe checkpoints
+\temail = checkpoints@marlowe.invalid
+[advice]
+\taddIgnoredFile = false
+\taddEmbeddedRepo = false
+";
+
+const ATTRIBUTES: &str = "* -text -filter -ident -working-tree-encoding\n";
+
+/// One `pre` snapshot of a session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnCheckpoint {
+    pub turn: u32,
+    pub at_ms: i64,
+    pub commit: String,
+    pub tree: String,
+}
+
+/// What a snapshot call did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TurnState {
+    /// A `pre` snapshot was taken by this call.
+    pub snapshotted: bool,
+    /// Files saved as pre-images by this call.
+    pub preimages: usize,
+    /// Files the snapshot could not hold (too large, or git could not read them).
+    pub warnings: Vec<String>,
+}
+
+/// What a rewind of the working tree did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RestoreReport {
+    /// The turn whose `pre` state was put back (the earliest turn at or after the one asked for).
+    pub from_turn: Option<u32>,
+    pub restored: usize,
+    pub deleted: usize,
+    /// The working tree equals the target state after the restore.
+    pub verified: bool,
+    /// The ref holding the state just before the rewind.
+    pub undo_ref: Option<String>,
+    pub preimages: PreimageReport,
+}
+
+/// One session's shadow repository access for one workspace.
+pub struct ShadowRepo {
+    git_dir: PathBuf,
+    workspace: PathBuf,
+    /// The workspace as the session spelled it (a junction or symlink may differ from the
+    /// canonical form); tool paths are matched against both.
+    given: PathBuf,
+    preimages: Preimages,
+    ops: Mutex<HashSet<(String, u32)>>,
+}
+
+pub(crate) fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+impl ShadowRepo {
+    /// Opens the shadow repository for `workspace` under `root`, creating it on first use.
+    pub fn open(root: &Path, workspace: &Path) -> Result<Self, CheckpointError> {
+        let repo = Self::locate(root, workspace)?;
+        repo.init()?;
+        Ok(repo)
+    }
+
+    /// The repository for `workspace` if one exists; never creates one.
+    pub fn open_existing(root: &Path, workspace: &Path) -> Result<Option<Self>, CheckpointError> {
+        let repo = Self::locate(root, workspace)?;
+        Ok(repo.git_dir.join("HEAD").is_file().then_some(repo))
+    }
+
+    fn locate(root: &Path, workspace: &Path) -> Result<Self, CheckpointError> {
+        let given = lexical_clean(&strip_verbatim(workspace));
+        let workspace = canonical(workspace);
+        if !workspace.is_dir() {
+            return Err(CheckpointError::Workspace(format!("{} is not a directory", workspace.display())));
+        }
+        let stem = repo_stem(&workspace);
+        Ok(Self {
+            git_dir: root.join(format!("{stem}.git")),
+            preimages: Preimages::new(root.join(format!("{stem}.pre"))),
+            workspace,
+            given,
+            ops: Mutex::new(HashSet::new()),
+        })
+    }
+
+    pub fn workspace(&self) -> &Path {
+        &self.workspace
+    }
+
+    pub fn git_dir(&self) -> &Path {
+        &self.git_dir
+    }
+
+    fn git(&self) -> Git<'_> {
+        Git { git_dir: &self.git_dir, work_tree: &self.workspace }
+    }
+
+    fn init(&self) -> Result<(), CheckpointError> {
+        if self.git_dir.join("HEAD").is_file() {
+            return Ok(());
+        }
+        let parent = self.git_dir.parent().unwrap_or(Path::new("."));
+        fs::create_dir_all(parent)?;
+        bare(parent, &["init", "--bare", "--quiet", &self.git_dir.to_string_lossy()])?;
+        fs::write(self.git_dir.join("config"), CONFIG)?;
+        fs::create_dir_all(self.git_dir.join("info"))?;
+        fs::write(self.git_dir.join("info").join("attributes"), ATTRIBUTES)?;
+        fs::write(self.git_dir.join("workspace.txt"), self.workspace.to_string_lossy().as_bytes())?;
+        Ok(())
+    }
+
+    /// `path` relative to the workspace (canonical spelling, else the session's), `/` separated.
+    fn rel(&self, path: &Path) -> Option<String> {
+        relative_to(&self.workspace, path).or_else(|| relative_to(&self.given, path))
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashSet<(String, u32)>> {
+        self.ops.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    // ---- snapshots ------------------------------------------------------------------------
+
+    /// The user repository's `info/exclude`, found by walking up from the workspace.
+    fn user_exclude(&self) -> Option<PathBuf> {
+        let mut dir = Some(self.workspace.as_path());
+        while let Some(d) = dir {
+            let dot = d.join(".git");
+            if dot.is_dir() {
+                return Some(dot.join("info").join("exclude"));
+            }
+            if dot.is_file() {
+                // A linked worktree or submodule: `gitdir: <path>`; excludes live in the common dir.
+                let text = fs::read_to_string(&dot).ok()?;
+                let gitdir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
+                let gitdir = if gitdir.is_absolute() { gitdir } else { d.join(gitdir) };
+                let common = fs::read_to_string(gitdir.join("commondir"))
+                    .ok()
+                    .map(|c| gitdir.join(c.trim()))
+                    .unwrap_or(gitdir);
+                return Some(common.join("info").join("exclude"));
+            }
+            dir = d.parent();
+        }
+        None
+    }
+
+    fn write_exclude(&self, big: &[String]) -> Result<(), CheckpointError> {
+        let mut text = String::from("# generated for each snapshot: the repository's info/exclude, then oversized files\n");
+        if let Some(user) = self.user_exclude() {
+            if let Ok(t) = fs::read_to_string(user) {
+                text.push_str(&t);
+                text.push('\n');
+            }
+        }
+        for rel in big {
+            text.push_str(&ignore_line(rel));
+            text.push('\n');
+        }
+        fs::create_dir_all(self.git_dir.join("info"))?;
+        fs::write(self.git_dir.join("info").join("exclude"), text)?;
+        Ok(())
+    }
+
+    /// Stages the whole workspace into the shadow index and returns the tree id, plus what could
+    /// not be held. Caller holds the lock.
+    fn snapshot_tree(&self, warnings: &mut Vec<String>) -> Result<String, CheckpointError> {
+        let g = self.git();
+        self.write_exclude(&[])?;
+        // Untracked, non-ignored files too big to keep are excluded for this snapshot.
+        let mut big = Vec::new();
+        let listing = g.run(&["ls-files", "-o", "--exclude-standard", "-z"], &[])?;
+        if listing.ok() {
+            let (mut files, mut bytes) = (0usize, 0u64);
+            for rel in listing.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+                let rel = String::from_utf8_lossy(rel).into_owned();
+                files += 1;
+                if let Ok(m) = fs::metadata(self.workspace.join(&rel)) {
+                    if m.is_file() && m.len() > MAX_SNAPSHOT_FILE_BYTES {
+                        warnings.push(format!("{rel} is over {} MiB and is not checkpointed", MAX_SNAPSHOT_FILE_BYTES >> 20));
+                        big.push(rel);
+                    } else if m.is_file() {
+                        bytes += m.len();
+                    }
+                }
+                if files > MAX_SNAPSHOT_FILES || bytes > MAX_SNAPSHOT_BYTES {
+                    return Err(CheckpointError::TooLarge(self.workspace.display().to_string()));
+                }
+            }
+        }
+        if !big.is_empty() {
+            self.write_exclude(&big)?;
+        }
+        let add = g.run(&["add", "-A", "--ignore-errors", "--", "."], &[])?;
+        if !add.ok() {
+            let first = add.stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
+            warnings.push(format!("some files could not be read for the checkpoint: {first}"));
+        }
+        let tree = g.must(&["write-tree"], &[])?.text().trim().to_string();
+        Ok(tree)
+    }
+
+    fn commit(&self, tree: &str, record: serde_json::Value) -> Result<String, CheckpointError> {
+        let subject = record.to_string();
+        Ok(self.git().must(&["commit-tree", tree, "-m", &subject], &[])?.text().trim().to_string())
+    }
+
+    fn ref_exists(&self, name: &str) -> bool {
+        self.git().run(&["rev-parse", "--verify", "-q", &format!("{name}^{{commit}}")], &[]).is_ok_and(|o| o.ok())
+    }
+
+    fn pre_ref(session: &SessionId, turn: u32) -> String {
+        format!("refs/marlowe/{}/{turn}/pre", ref_part(session.as_str()))
+    }
+
+    /// Makes sure `turn` of `session` has its `pre` snapshot and that every path in `mutation`
+    /// the tree cannot hold has a saved pre-image, before a tool changes anything. Idempotent per
+    /// turn: the first call snapshots, later ones only save pre-images for new paths.
+    pub fn begin_turn(&self, session: &SessionId, turn: u32, mutation: &Mutation) -> Result<TurnState, CheckpointError> {
+        let mut snapped = self.lock();
+        let mut state = TurnState::default();
+        let (tree_change, outside) = self.classify(mutation)?;
+        for path in &outside {
+            if self.preimages.save(&ref_part(session.as_str()), turn, path)? {
+                state.preimages += 1;
+            }
+        }
+        let key = (session.as_str().to_string(), turn);
+        if tree_change && !snapped.contains(&key) {
+            let name = Self::pre_ref(session, turn);
+            if !self.ref_exists(&name) {
+                let tree = self.snapshot_tree(&mut state.warnings)?;
+                let commit = self.commit(
+                    &tree,
+                    json!({"kind": "pre", "session": session.as_str(), "turn": turn, "at_ms": now_ms()}),
+                )?;
+                self.git().must(&["update-ref", &name, &commit], &[])?;
+                state.snapshotted = true;
+            }
+            snapped.insert(key);
+        }
+        Ok(state)
+    }
+
+    /// Splits a mutation into "changes the tree" and the absolute paths that need a pre-image.
+    fn classify(&self, mutation: &Mutation) -> Result<(bool, Vec<PathBuf>), CheckpointError> {
+        match mutation {
+            Mutation::None => Ok((false, Vec::new())),
+            Mutation::Under(dir) => Ok((self.rel(dir).is_some(), Vec::new())),
+            Mutation::Paths(paths) => {
+                let mut inside: Vec<(PathBuf, String)> = Vec::new();
+                let mut outside = Vec::new();
+                for p in paths {
+                    let abs = if p.is_absolute() { p.clone() } else { self.workspace.join(p) };
+                    match self.rel(&abs) {
+                        // `.git` is never in a snapshot, nor is anything inside a nested repository.
+                        Some(rel) if rel.split('/').any(|c| c == ".git") || self.in_nested_repo(&rel) => outside.push(abs),
+                        Some(rel) if !rel.is_empty() => inside.push((abs, rel)),
+                        _ => outside.push(abs),
+                    }
+                }
+                let mut tree_change = false;
+                if !inside.is_empty() {
+                    let ignored = self.ignored(&inside.iter().map(|(_, r)| r.as_str()).collect::<Vec<_>>())?;
+                    for (abs, rel) in inside {
+                        if ignored.contains(&rel) {
+                            outside.push(abs);
+                        } else {
+                            tree_change = true;
+                        }
+                    }
+                }
+                Ok((tree_change, outside))
+            }
+        }
+    }
+
+    /// Whether `rel` lies inside a repository nested in the workspace (a submodule, a clone): its
+    /// files are not in the tree, so they get pre-images.
+    fn in_nested_repo(&self, rel: &str) -> bool {
+        let parts: Vec<&str> = rel.split('/').collect();
+        let mut dir = self.workspace.clone();
+        for c in &parts[..parts.len().saturating_sub(1)] {
+            dir.push(c);
+            if dir.join(".git").exists() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Which of `rels` (workspace-relative, `/` separated) the ignore rules exclude.
+    fn ignored(&self, rels: &[&str]) -> Result<HashSet<String>, CheckpointError> {
+        self.write_exclude(&[])?;
+        let mut input = Vec::new();
+        for r in rels {
+            input.extend_from_slice(r.as_bytes());
+            input.push(0);
+        }
+        let out = self.git().run_stdin(&["check-ignore", "-z", "--no-index", "--stdin"], &input)?;
+        // Exit 1 means none matched; anything above is a real failure.
+        if out.code > 1 {
+            return Err(CheckpointError::Git { args: "check-ignore".into(), message: out.stderr.trim().to_string() });
+        }
+        Ok(out.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).into_owned()).collect())
+    }
+
+    // ---- the ledger ------------------------------------------------------------------------
+
+    /// The session's `pre` snapshots, by turn.
+    pub fn checkpoints(&self, session: &SessionId) -> Result<Vec<TurnCheckpoint>, CheckpointError> {
+        let _g = self.lock();
+        self.checkpoints_locked(session)
+    }
+
+    fn checkpoints_locked(&self, session: &SessionId) -> Result<Vec<TurnCheckpoint>, CheckpointError> {
+        let prefix = format!("refs/marlowe/{}/", ref_part(session.as_str()));
+        let out = self.git().must(
+            &["for-each-ref", "--format=%(refname)%09%(objectname)%09%(tree)%09%(contents:subject)", &prefix],
+            &[],
+        )?;
+        let mut list: Vec<TurnCheckpoint> = out
+            .text()
+            .lines()
+            .filter_map(|line| {
+                let mut f = line.splitn(4, '\t');
+                let (name, commit, tree, subject) = (f.next()?, f.next()?, f.next()?, f.next()?);
+                let turn: u32 = name.strip_prefix(&prefix)?.strip_suffix("/pre")?.parse().ok()?;
+                let at_ms = serde_json::from_str::<serde_json::Value>(subject).ok()?.get("at_ms")?.as_i64()?;
+                Some(TurnCheckpoint { turn, at_ms, commit: commit.to_string(), tree: tree.to_string() })
+            })
+            .collect();
+        list.sort_by_key(|c| c.turn);
+        Ok(list)
+    }
+
+    /// Turns that saved pre-images only (no tree change), ascending.
+    pub fn preimage_turns(&self, session: &SessionId) -> Vec<u32> {
+        self.preimages.turns(&ref_part(session.as_str()))
+    }
+
+    /// The tree id of the workspace right now (stages it into the shadow index).
+    pub fn current_tree(&self) -> Result<String, CheckpointError> {
+        let _g = self.lock();
+        self.snapshot_tree(&mut Vec::new())
+    }
+
+    /// A unified diff between two tree-ish ids, cut at [`MAX_DIFF_BYTES`].
+    pub fn diff(&self, from: &str, to: &str) -> Result<String, CheckpointError> {
+        let _g = self.lock();
+        let out = self.git().must(
+            &[
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-renames",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+                from,
+                to,
+            ],
+            &[],
+        )?;
+        let mut text = out.text();
+        if text.len() > MAX_DIFF_BYTES || out.truncated {
+            let mut cut = MAX_DIFF_BYTES.min(text.len());
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            text.truncate(cut);
+            text.push_str("\n... diff cut here; it is larger than the viewer shows ...\n");
+        }
+        Ok(text)
+    }
+
+    /// Paths that differ between two tree-ish ids.
+    pub fn changed(&self, from: &str, to: &str) -> Result<Vec<String>, CheckpointError> {
+        let _g = self.lock();
+        let out = self.git().must(&["diff-tree", "-r", "--name-only", "--no-renames", "-z", from, to], &[])?;
+        Ok(out.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).into_owned()).collect())
+    }
+
+    /// Repository size in KiB (loose and packed objects).
+    pub fn size_kib(&self) -> u64 {
+        let _g = self.lock();
+        let Ok(out) = self.git().run(&["count-objects", "-v"], &[]) else { return 0 };
+        out.text()
+            .lines()
+            .filter_map(|l| {
+                let (k, v) = l.split_once(':')?;
+                matches!(k.trim(), "size" | "size-pack" | "size-garbage").then(|| v.trim().parse::<u64>().ok()).flatten()
+            })
+            .sum()
+    }
+
+    // ---- rewind ----------------------------------------------------------------------------
+
+    /// Puts the workspace back to how it was when `turn` began: the earliest `pre` snapshot of
+    /// `turn` or later is restored (files that differ are rewritten, files that did not exist
+    /// then are deleted), then the pre-images of those turns. The state just before is kept as an
+    /// `undo` ref first. A session with nothing at or after `turn` changes nothing.
+    pub fn restore_to_turn(&self, session: &SessionId, turn: u32) -> Result<RestoreReport, CheckpointError> {
+        let mut guard = self.lock();
+        let mut report = RestoreReport::default();
+        let checkpoints = self.checkpoints_locked(session)?;
+        if let Some(target) = checkpoints.iter().find(|c| c.turn >= turn) {
+            let mut warnings = Vec::new();
+            let current = self.snapshot_tree(&mut warnings)?;
+            let undo = format!("refs/marlowe/{}/undo/{}", ref_part(session.as_str()), now_ms());
+            let commit = self.commit(&current, json!({"kind": "undo", "session": session.as_str(), "to_turn": turn, "at_ms": now_ms()}))?;
+            self.git().must(&["update-ref", &undo, &commit], &[])?;
+            report.undo_ref = Some(undo);
+            report.from_turn = Some(target.turn);
+            if current != target.tree {
+                let (write, delete) = self.plan(&current, &target.tree)?;
+                for rel in &delete {
+                    let p = self.workspace.join(rel);
+                    if remove_file(&p) {
+                        report.deleted += 1;
+                    }
+                    self.prune_empty_dirs(&p);
+                }
+                if !write.is_empty() {
+                    self.checkout(&target.tree, &write)?;
+                    report.restored = write.len();
+                }
+            }
+            report.verified = self.snapshot_tree(&mut warnings)? == target.tree;
+        } else {
+            report.verified = true;
+        }
+        report.preimages = self.preimages.restore_from(&ref_part(session.as_str()), turn);
+        // The turns are being replayed: their snapshots must be retaken.
+        guard.retain(|(s, t)| s != session.as_str() || *t < turn);
+        Ok(report)
+    }
+
+    /// Files to rewrite and files to delete to turn tree `current` into `target`.
+    fn plan(&self, current: &str, target: &str) -> Result<(Vec<String>, Vec<String>), CheckpointError> {
+        let out = self.git().must(&["diff-tree", "-r", "-z", "--raw", "--no-renames", "--no-abbrev", current, target], &[])?;
+        let mut write = Vec::new();
+        let mut delete = Vec::new();
+        let mut fields = out.stdout.split(|b| *b == 0).filter(|f| !f.is_empty());
+        while let Some(meta) = fields.next() {
+            let Some(path) = fields.next() else { break };
+            let meta = String::from_utf8_lossy(meta);
+            let path = String::from_utf8_lossy(path).into_owned();
+            // ":<src mode> <dst mode> <src sha> <dst sha> <status>"
+            let mut m = meta.trim_start_matches(':').split(' ');
+            let (src_mode, dst_mode) = (m.next().unwrap_or(""), m.next().unwrap_or(""));
+            if src_mode == "160000" || dst_mode == "160000" {
+                continue; // an embedded repository: not ours to restore
+            }
+            if dst_mode != "000000" {
+                if src_mode != "000000" && is_symlink(src_mode) != is_symlink(dst_mode) {
+                    delete.push(path.clone());
+                }
+                write.push(path);
+            } else {
+                delete.push(path);
+            }
+        }
+        Ok((write, delete))
+    }
+
+    fn checkout(&self, tree: &str, rels: &[String]) -> Result<(), CheckpointError> {
+        let list = self.git_dir.join("restore.list");
+        let mut bytes = Vec::new();
+        for r in rels {
+            bytes.extend_from_slice(r.as_bytes());
+            bytes.push(0);
+        }
+        fs::write(&list, bytes)?;
+        let source = format!("--source={tree}");
+        let from = format!("--pathspec-from-file={}", list.to_string_lossy());
+        let r = self.git().must(&["restore", &source, "--worktree", &from, "--pathspec-file-nul"], &[]);
+        let _ = fs::remove_file(&list);
+        r.map(|_| ())
+    }
+
+    fn prune_empty_dirs(&self, file: &Path) {
+        let mut dir = file.parent();
+        while let Some(d) = dir {
+            if self.rel(d).is_none_or(|r| r.is_empty()) || fs::remove_dir(d).is_err() {
+                break;
+            }
+            dir = d.parent();
+        }
+    }
+
+    /// Drops the refs and pre-images of `from..`: they were replayed or the conversation moved
+    /// past them. With `archive` the `pre` refs are kept under `rewound/` (a conversation rewind
+    /// that left the code alone keeps the older states reachable).
+    pub fn discard_from(&self, session: &SessionId, from: u32, archive: bool) -> Result<(), CheckpointError> {
+        let mut guard = self.lock();
+        let sid = ref_part(session.as_str());
+        let stamp = now_ms();
+        for c in self.checkpoints_locked(session)?.into_iter().filter(|c| c.turn >= from) {
+            let name = Self::pre_ref(session, c.turn);
+            if archive {
+                self.git().must(&["update-ref", &format!("refs/marlowe/{sid}/rewound/{stamp}/{}/pre", c.turn), &c.commit], &[])?;
+            }
+            self.git().must(&["update-ref", "-d", &name], &[])?;
+        }
+        // Pre-images stay while the files do: they are what a later rewind to an older turn needs.
+        if !archive {
+            self.preimages.discard_from(&sid, from);
+        }
+        guard.retain(|(s, t)| s != session.as_str() || *t < from);
+        Ok(())
+    }
+
+    /// Copies the ledger of turns before `before` to another session (a fork).
+    pub fn fork(&self, from: &SessionId, to: &SessionId, before: u32) -> Result<(), CheckpointError> {
+        let _g = self.lock();
+        for c in self.checkpoints_locked(from)?.into_iter().filter(|c| c.turn < before) {
+            self.git().must(&["update-ref", &Self::pre_ref(to, c.turn), &c.commit], &[])?;
+        }
+        self.preimages.copy_before(&ref_part(from.as_str()), &ref_part(to.as_str()), before)
+    }
+
+    /// Deletes every checkpoint of sessions whose newest snapshot is older than `max_age_ms` and
+    /// collects the unreachable objects. Returns the sessions pruned.
+    pub fn prune(&self, max_age_ms: i64) -> Result<Vec<String>, CheckpointError> {
+        let _g = self.lock();
+        let out = self.git().must(&["for-each-ref", "--format=%(refname)%09%(contents:subject)", "refs/marlowe/"], &[])?;
+        let mut newest: std::collections::BTreeMap<String, (i64, Vec<String>)> = Default::default();
+        for line in out.text().lines() {
+            let Some((name, subject)) = line.split_once('\t') else { continue };
+            let Some(sid) = name.strip_prefix("refs/marlowe/").and_then(|r| r.split('/').next()) else { continue };
+            let at = serde_json::from_str::<serde_json::Value>(subject).ok().and_then(|v| v.get("at_ms")?.as_i64()).unwrap_or(0);
+            let e = newest.entry(sid.to_string()).or_insert((0, Vec::new()));
+            e.0 = e.0.max(at);
+            e.1.push(name.to_string());
+        }
+        for sid in self.preimages.sessions() {
+            if let Some(ms) = self.preimages.newest_ms(&sid) {
+                let e = newest.entry(sid).or_insert((0, Vec::new()));
+                e.0 = e.0.max(ms);
+            }
+        }
+        let cutoff = now_ms() - max_age_ms;
+        let mut pruned = Vec::new();
+        for (sid, (at, refs)) in newest {
+            if at >= cutoff {
+                continue;
+            }
+            for r in refs {
+                self.git().must(&["update-ref", "-d", &r], &[])?;
+            }
+            self.preimages.discard_session(&sid);
+            pruned.push(sid);
+        }
+        if !pruned.is_empty() {
+            let _ = self.git().run(&["gc", "--prune=now", "--quiet"], &[]);
+        }
+        Ok(pruned)
+    }
+}
+
+fn is_symlink(mode: &str) -> bool {
+    mode == "120000"
+}

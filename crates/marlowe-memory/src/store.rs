@@ -195,6 +195,10 @@ impl BeliefStore {
                 self.known(seq, &p.id)?;
                 self.tombstone(&p.id);
             }
+            EventKind::Retracted => {
+                let p: RetractedPayload = decode(seq, payload)?;
+                self.retract(&p, seq);
+            }
             // Not belief-store inputs. Ignored by kind rather than by a catch-all on shape, so a
             // new memory-affecting kind has to be handled here on purpose.
             _ => {}
@@ -270,6 +274,33 @@ impl BeliefStore {
             e.text.clear();
             self.lexicon.upsert(id, "");
         }
+    }
+
+    /// Apply a `Retracted` event (a `/rewind` dropped turns): every live entry the session wrote
+    /// from the rewound turns is marked superseded by `retracted@<seq>`, which every retrieval
+    /// path already excludes (injection, recall, profile, consolidation). The text stays: the
+    /// journal is the audit spine and nothing was forgotten, only un-said. Returns how many
+    /// entries were retracted. The live path and replay share this function.
+    pub fn retract(&mut self, p: &RetractedPayload, seq: Seq) -> usize {
+        let marker = format!("{RETRACTED_BY_PREFIX}{seq}");
+        let mut n = 0;
+        for e in self.entries.values_mut() {
+            if e.source_session_id != p.session || e.superseded_by.is_some() || e.fidelity <= Fidelity::Tombstone {
+                continue;
+            }
+            // Journal order when the rewound turn recorded where it began; the wall clock only
+            // for sessions saved before that was recorded.
+            let hit = match (p.after_seq, p.from_ms) {
+                (Some(after), _) => e.origin_event > after,
+                (None, Some(from)) => e.occurred_at_ms >= from,
+                (None, None) => false,
+            };
+            if hit {
+                e.superseded_by = Some(marker.clone());
+                n += 1;
+            }
+        }
+        n
     }
 
     /// Section 4.3 — the auto-injection candidate set, live-only.
@@ -388,4 +419,48 @@ pub struct SupersededPayload {
 #[serde(deny_unknown_fields)]
 pub struct TombstonedPayload {
     pub id: MemoryId,
+}
+
+/// Journals a `Retracted` event for `p` and folds it into `beliefs` (journal first, as every
+/// write is). Returns how many entries it retracted. The harness acts here, on the user's
+/// `/rewind`; the model is never an actor.
+pub fn append_retraction(
+    journal: &mut Journal,
+    beliefs: &mut BeliefStore,
+    clock: marlowe_contract::Clock,
+    p: &RetractedPayload,
+) -> Result<usize, MemoryError> {
+    use marlowe_journal::{Actor, AppendRequest, TraceId};
+    let event = journal.append(
+        clock,
+        AppendRequest {
+            trace_id: TraceId::new_v5(&TraceId::NAMESPACE_OID, p.session.as_bytes()),
+            session_id: Some(p.session.clone()),
+            run_id: None,
+            actor: Actor::Harness,
+            kind: EventKind::Retracted,
+            payload: serde_json::to_value(p)?,
+        },
+    )?;
+    Ok(beliefs.retract(p, event.seq))
+}
+
+/// `superseded_by` of an entry a `/rewind` retracted is this prefix plus the event's seq.
+pub const RETRACTED_BY_PREFIX: &str = "retracted@";
+
+/// The payload of a `Retracted` event: a session's turns from `turns[0]` on were rewound.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetractedPayload {
+    pub session: String,
+    /// The rewound turn indices, ascending.
+    pub turns: Vec<u32>,
+    /// The journal's last seq when the first rewound turn began: entries the session wrote after
+    /// it are retracted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_seq: Option<Seq>,
+    /// For a turn stored before `after_seq` was recorded: entries that occurred at or after this
+    /// instant (Unix epoch ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_ms: Option<i64>,
 }

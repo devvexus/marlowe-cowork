@@ -960,3 +960,42 @@ fn a_forgotten_imported_turn_stays_forgotten_on_reimport() {
     let _ = fs::remove_dir_all(&home);
     let _ = fs::remove_dir_all(old.parent().unwrap());
 }
+
+#[test]
+fn a_retraction_hides_the_rewound_turns_from_every_path_and_survives_a_reopen() {
+    let home = temp_home("retract");
+    let said = |mind: &Mind, text: &str, at: i64| {
+        mind.ingest_turn(TurnIn { session: "s1".into(), workspace: None, role: TurnRole::User, text: text.into(), at_ms: at })
+            .unwrap();
+    };
+    let recalled = |mind: &Mind, q: &str| -> Vec<String> {
+        mind.recall(RecallQuery { text: q.into(), scope: None, limit: 10 }).unwrap().into_iter().map(|h| h.text).collect()
+    };
+    let began = {
+        let mind = Mind::open_with(&home, without_models(&home)).unwrap();
+        said(&mind, "My sister lives in Porto.", 1);
+        let began = mind.journal_seq().unwrap();
+        said(&mind, "My favourite colour is teal.", 2);
+        said(&mind, "The staging box is called heron.", 3);
+        assert_eq!(recalled(&mind, "teal colour").len(), 1);
+
+        let r = Retraction { session: "s1".into(), turns: vec![1], after_seq: Some(began), from_ms: None };
+        assert_eq!(mind.retract(r).unwrap(), 2);
+        assert!(recalled(&mind, "teal colour").is_empty(), "retracted words are not recalled");
+        assert!(recalled(&mind, "heron staging").is_empty());
+        assert_eq!(recalled(&mind, "sister Porto").len(), 1, "what came before the rewound turn stays");
+        assert_eq!(mind.stats().unwrap().beliefs, 1);
+        began
+    };
+    // A reopen boots from the post-retract snapshot; deleting the snapshot forces a full replay.
+    for replay in [false, true] {
+        if replay {
+            let _ = fs::remove_file(profile_dir(&home).join(store::SNAPSHOT_FILE));
+        }
+        let mind = Mind::open_with(&home, without_models(&home)).unwrap();
+        assert!(recalled(&mind, "teal colour").is_empty(), "replay={replay}");
+        assert_eq!(recalled(&mind, "sister Porto").len(), 1, "replay={replay}");
+        assert!(mind.journal_seq().unwrap() > began);
+    }
+    let _ = fs::remove_dir_all(&home);
+}
