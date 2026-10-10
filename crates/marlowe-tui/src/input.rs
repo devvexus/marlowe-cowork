@@ -18,6 +18,7 @@ const WHEEL_LINES: usize = 3;
 impl State {
     /// Handles a key press. Returns requests to send.
     pub fn on_key(&mut self, k: KeyEvent) -> Vec<Request> {
+        self.settle_scroll();
         let mut out = Vec::new();
         if k.kind == KeyEventKind::Release {
             return out;
@@ -184,6 +185,7 @@ impl State {
 
     /// The wheel scrolls whatever is reading: the conversation, a run's transcript, an approval.
     fn wheel(&mut self, up: bool) {
+        self.settle_scroll();
         if let Some(a) = self.approvals.first() {
             let max = a.detail_scroll_max();
             self.approval_scroll =

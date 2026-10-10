@@ -177,8 +177,9 @@ mod tests {
         let Slot::Ready(img) = wait(&s, &j) else { panic!("not rendered") };
         assert!(wake.try_recv().is_ok(), "the UI was not woken");
         assert_eq!(img.strips.len(), 3, "one strip per reserved row");
-        assert_eq!(img.cols, 3);
-        // Vertically centred: 30 px in a 60 px box leaves the first and last 15 px empty.
+        // 30 px at a 16 px em is 32 px at the 17.2 px em of a 20 px cell: four 10 px columns.
+        assert_eq!(img.cols, 4);
+        // Vertically centred: 32 px in a 60 px box leaves the first and last 14 px empty.
         assert!(!img.strips[0].is_empty() && !img.strips[1].is_empty() && !img.strips[2].is_empty());
         // The second ask is the same image, not a re-render.
         let Slot::Ready(again) = s.get(&j) else { panic!() };
@@ -199,9 +200,12 @@ mod tests {
         let (wake_tx, _wake) = unbounded();
         let s = Service::start(caps(), block(400, 30), wake_tx);
         assert!(matches!(wait(&s, &job(10, 3)), Slot::Failed));
-        // Slightly too wide is shrunk to fit instead.
-        let s = Service::start(caps(), block(110, 30), unbounded().0);
+        // Slightly too wide is shrunk to fit instead (107 px into 100), down to 0.9x.
+        let s = Service::start(caps(), block(100, 30), unbounded().0);
         let Slot::Ready(img) = wait(&s, &job(10, 3)) else { panic!("should have been shrunk") };
         assert!(img.cols <= 10);
+        // Needing more than that, it stays on the grid rather than set smaller than the text.
+        let s = Service::start(caps(), block(110, 30), unbounded().0);
+        assert!(matches!(wait(&s, &job(10, 3)), Slot::Failed));
     }
 }

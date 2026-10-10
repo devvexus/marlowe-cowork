@@ -60,10 +60,10 @@
 //! # Maths while a reply streams
 //!
 //! [`render_prose_live`] is the streaming form. An unclosed maths span at the tail of the reply is
-//! **held**: inline it shows a dim `…` in the prose colour, display it reserves the rows the
-//! formula will need (laid out from what has arrived) with the `…` on the first. Neither shows a
-//! delimiter or a command. When the closer arrives the formula is typeset once, in place. A closed
-//! span never changes again, so nothing above or below it moves.
+//! **held** behind one dim `…` in the prose colour, inline or display, and shows no delimiter or
+//! command. The hold is one row whatever has arrived: the streaming tail only ever grows, so a
+//! reader following it is never pulled back. When the closer arrives the formula is typeset once,
+//! in place, and a closed span never changes again.
 //!
 //! # The model authors this text
 //!
@@ -567,6 +567,12 @@ fn display_block_at(lines: &[&str], i: usize) -> Option<(Block, usize, Option<St
     while j < lines.len() {
         let l = lines[j];
         if l.trim().is_empty() {
+            // The reply's last line, empty because the newest token ended in a newline, is the next
+            // line still arriving, not a blank line ending the block. Read as blank, an unfinished
+            // matrix would be drawn as finished for one frame and held again on the next.
+            if j + 1 == lines.len() {
+                return Some((Block::DisplayMath { src: body, end: MathEnd::Eof }, j - i + 1, None));
+            }
             return Some((Block::DisplayMath { src: body, end: MathEnd::Blank }, j - i, None));
         }
         body.push('\n');
@@ -1054,17 +1060,15 @@ fn layout_block(block: &Block, ctx: &Ctx, width: usize, live: bool) -> Vec<Line<
         Block::DisplayMath { src, end } => {
             let inner = width.saturating_sub(2).max(MIN_WIDTH);
             if *end == MathEnd::Eof && live {
-                // Still arriving. Reserve the rows the formula will take, so nothing below it moves
-                // when it lands, and show only the placeholder.
-                // Counted the way the landed block will be drawn (2D rows, or its one-line form
-                // word-wrapped), so the estimate and the final height agree for the same source.
-                let rows = display_lines(&math::typeset_uncached(src, true), inner, ctx.maths()).len().max(1);
-                let mut out = vec![Line::from(vec![
+                // Still arriving: one placeholder row, whatever has arrived. Nothing is below the
+                // streaming tail, so when the block lands it only grows the reply downward, which a
+                // reader following it sees as more text. A height estimated from the partial source
+                // rose and fell token by token (a partial ending in `\frac` or `\end` repairs to
+                // fewer rows than the token before), and every fall pulled the whole pane back.
+                return vec![Line::from(vec![
                     Span::raw("  "),
                     Span::styled(MATHS_PLACEHOLDER, ctx.placeholder()),
                 ])];
-                out.extend((1..rows).map(|_| Line::from("")));
-                return out;
             }
             display_lines(&math::display(src), inner, ctx.maths())
         }
@@ -1671,25 +1675,8 @@ fn maths(chars: &[char], i: usize, ctx: &Ctx, style: Style, live: bool) -> Optio
             if !still_maths {
                 return None;
             }
-            if display {
-                // Reserve the rows the formula will take when it lands, as a block does, so the
-                // paragraph does not grow under the reader when the closer arrives.
-                let rows = math::typeset_uncached(&content, true).rows.len().max(1);
-                if rows > 1 {
-                    let mut held = vec![MATHS_PLACEHOLDER.to_string()];
-                    held.resize(rows, String::new());
-                    let f = Formula {
-                        rows: held,
-                        width: 1,
-                        linear: vec![MATHS_PLACEHOLDER.to_string()],
-                        fidelity: math::Fidelity::Paraphrased,
-                        typst: None,
-                        clip_row: None,
-                    };
-                    let run = Run { text: MATHS_PLACEHOLDER.into(), style: ctx.placeholder(), block: Some(Arc::new(f)), atomic: false };
-                    return Some((vec![run], chars.len()));
-                }
-            }
+            // One placeholder, display or inline: a held span never reserves rows from a partial
+            // parse, which changes height token by token (see the display block in `layout_block`).
             return Some((vec![Run::plain(MATHS_PLACEHOLDER, ctx.placeholder())], chars.len()));
         }
         // Finished, and never closed. A lone `$` before prose or a number was a dollar sign; one
@@ -1724,18 +1711,27 @@ fn maths(chars: &[char], i: usize, ctx: &Ctx, style: Style, live: bool) -> Optio
 }
 
 /// Whether an unclosed `\(`, `\[` or `$$` has turned out to be prose, which means it was never a
-/// delimiter: three or more words of four letters or more, outside commands and braces.
+/// delimiter: three or more words of four letters or more, outside commands, braces and
+/// environments. A matrix's cells (`aaaa & bbbb & cccc`) are not prose: read as prose, a held
+/// `$$ \begin{array}…` turned to literal text a token before it closed, and the paragraph shrank
+/// when it did close.
 fn prose_like(s: &str) -> bool {
     let chars: Vec<char> = s.chars().collect();
-    let (mut i, mut depth, mut words) = (0, 0usize, 0);
+    let (mut i, mut depth, mut env, mut words) = (0, 0usize, 0usize, 0);
     while i < chars.len() {
         match chars[i] {
             '{' => depth += 1,
             '}' => depth = depth.saturating_sub(1),
             '\\' => {
                 i += 1;
+                let st = i;
                 while i < chars.len() && chars[i].is_ascii_alphabetic() {
                     i += 1;
+                }
+                match chars[st..i].iter().collect::<String>().as_str() {
+                    "begin" => env += 1,
+                    "end" => env = env.saturating_sub(1),
+                    _ => {}
                 }
                 continue;
             }
@@ -1744,7 +1740,7 @@ fn prose_like(s: &str) -> bool {
                 while i < chars.len() && chars[i].is_ascii_alphabetic() {
                     i += 1;
                 }
-                if depth == 0 && i - st >= 4 {
+                if depth == 0 && env == 0 && i - st >= 4 {
                     words += 1;
                 }
                 continue;

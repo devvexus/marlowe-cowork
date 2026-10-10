@@ -86,6 +86,26 @@ pub struct LiveTurn {
     pub started_ms: i64,
 }
 
+/// Where the last frame put the conversation pane. Written by the renderer, which needs the
+/// previous frame to keep the view steady while a reply streams.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Viewport {
+    /// The transcript line at the top of the pane.
+    pub top: usize,
+    /// The transcript's length in lines.
+    pub total: usize,
+    /// The pane's size: a resize lays everything out again, so a line index from another size
+    /// means nothing.
+    pub size: (u16, u16),
+    /// [`State::scroll`] when this frame was drawn. While it is unchanged and non-zero, the view
+    /// stays on [`Self::top`] however much arrives below.
+    pub scroll: usize,
+    /// The turn streaming when it was drawn.
+    pub turn: Option<u32>,
+    /// [`State::epoch`] when it was drawn.
+    pub epoch: u32,
+}
+
 /// A pending approval.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Approval {
@@ -438,10 +458,17 @@ pub struct State {
     pub overlay: Option<Overlay>,
     pub composer: Composer,
     pub show_thinking: bool,
-    /// Lines scrolled up from the bottom of the conversation; 0 follows the stream.
+    /// Lines scrolled up from the bottom of the conversation; 0 follows the stream. Scrolled up,
+    /// the pane stays on the lines it shows while text arrives below ([`Viewport`]), so the lines
+    /// from the bottom grow; [`State::settle_scroll`] brings this back in step before input uses it.
     pub scroll: usize,
     /// Largest useful scroll, written back by the renderer.
     pub scroll_max: Cell<usize>,
+    /// The conversation pane as last drawn, written back by the renderer.
+    pub viewport: Cell<Viewport>,
+    /// Bumped whenever the transcript is replaced wholesale (a new or reopened session), so the
+    /// renderer does not hold a view from the old one.
+    pub epoch: u32,
     pub flash: Option<Flash>,
     /// What the pointer is over, as of the last mouse event.
     pub hover: Option<Target>,
@@ -505,6 +532,8 @@ impl State {
             show_thinking: false,
             scroll: 0,
             scroll_max: Cell::new(0),
+            viewport: Cell::new(Viewport::default()),
+            epoch: 0,
             flash: None,
             hover: None,
             hits: RefCell::new(Vec::new()),
@@ -624,12 +653,26 @@ impl State {
         self.session.as_ref() == Some(s)
     }
 
+    /// Brings [`Self::scroll`] in step with what is on screen. Scrolled up, the renderer keeps the
+    /// pane on the same lines while text arrives below, so the lines from the bottom have grown
+    /// since `scroll` was set; input adjusts from what the reader sees, not from the stale count.
+    pub(crate) fn settle_scroll(&mut self) {
+        let mut v = self.viewport.get();
+        if self.scroll == 0 || v.scroll != self.scroll {
+            return;
+        }
+        self.scroll = self.scroll_max.get().saturating_sub(v.top);
+        v.scroll = self.scroll;
+        self.viewport.set(v);
+    }
+
     /// Clears the conversation for a new session.
     pub(crate) fn reset_conversation(&mut self) {
         self.session = None;
         self.title = None;
         self.workspace = None;
         self.entries.clear();
+        self.epoch = self.epoch.wrapping_add(1);
         self.live = None;
         self.pending_user = None;
         self.awaiting_new = false;
@@ -739,6 +782,7 @@ impl State {
                     self.pending_open = None;
                     self.session = Some(session.clone());
                     self.entries = entries_from_transcript(turns);
+                    self.epoch = self.epoch.wrapping_add(1);
                     self.live = None;
                     self.pending_user = None;
                     self.scroll = 0;

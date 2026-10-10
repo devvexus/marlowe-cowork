@@ -11,8 +11,7 @@
 //!    paraphrase from the lenient parser: `\foo{x}` reads `foo(x)`. No path returns the source.
 //! 3. **Smooth.** Rendering is a pure function of the source, memoised by it, so a formula is laid
 //!    out once and every later frame (scrolling included) is a lookup. Holding an unclosed span
-//!    back until it closes is the caller's job (`markdown.rs`); [`reserve_rows`] tells it how many
-//!    rows a display block will need, so the rows below do not move when the block lands.
+//!    back until it closes is the caller's job (`markdown.rs`), behind a one-row placeholder.
 //!
 //! # The grid first, images on top
 //!
@@ -177,8 +176,9 @@ pub fn display(src: &str) -> Arc<Formula> {
     cached(src, true)
 }
 
-/// How many rows a display block still being streamed will need, from what has arrived so far.
-/// Not memoised: a partial source changes every token and would only evict real formulas.
+/// The rows a display laid out from `partial` takes in `avail` columns. Not memoised. Not a height
+/// to reserve while a block streams: a partial's height rises and falls token by token, which is
+/// why a held block is one placeholder row (`tests/stream_replay.rs` in `marlowe-tui`).
 pub fn reserve_rows(partial: &str, avail: usize) -> usize {
     build(partial, true).rows_in(avail)
 }

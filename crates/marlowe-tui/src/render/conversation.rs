@@ -32,8 +32,8 @@ pub fn draw(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     let total = lines.len();
     let max = total.saturating_sub(h);
     state.scroll_max.set(max);
-    let scroll = state.scroll.min(max);
-    let start = total.saturating_sub(h + scroll);
+    let start = view_top(state, (r.width, r.height), total, max);
+    let scroll = max.saturating_sub(start);
     if let Some(svc) = marlowe_typeset::installed() {
         let origin = (r.x + PAD, r.y);
         typeset_images(&mut lines, &maths, svc, origin, start, h, tw, theme);
@@ -42,13 +42,40 @@ pub fn draw(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
         put(buf, r.x + PAD, r.y + i as u16, l, tw as u16);
     }
     if total > h {
-        scrollbar(r, total, h, start, max, theme, buf);
+        scrollbar(r, total, h, start.min(max), max, theme, buf);
     }
     if scroll > 0 {
         let tag = Line::from(Span::styled(format!(" ↓ {scroll} more "), ink(Ink::Dim, theme)));
         let w = tag.width() as u16;
         put(buf, r.right().saturating_sub(w + 2), r.bottom() - 1, &tag, w);
     }
+}
+
+/// The transcript line at the top of the pane, and the record of it for the next frame.
+///
+/// **Steady while a reply streams.** Following the tail, the view moves down with new text and
+/// never back up: if the transcript ever got shorter mid-reply, the pane would keep its place and
+/// leave the rows below empty until text fills them, rather than pull every line on screen down.
+/// Scrolled up, the view stays on the lines it shows while the reply grows below them, until the
+/// reader scrolls again. `tests/stream_replay.rs` replays a streamed maths reply against both.
+fn view_top(state: &State, size: (u16, u16), total: usize, max: usize) -> usize {
+    let prev = state.viewport.get();
+    let turn = state.live.as_ref().map(|l| l.turn);
+    let same = prev.size == size && prev.epoch == state.epoch;
+    let top = if state.scroll == 0 {
+        let streaming = turn.is_some() && prev.turn == turn && prev.scroll == 0;
+        if same && streaming {
+            max.max(prev.top.min(total.saturating_sub(1)))
+        } else {
+            max
+        }
+    } else if same && prev.scroll == state.scroll {
+        prev.top.min(max)
+    } else {
+        max - state.scroll.min(max)
+    };
+    state.viewport.set(crate::state::Viewport { top, total, size, scroll: state.scroll, turn, epoch: state.epoch });
+    top
 }
 
 fn scrollbar(r: Rect, total: usize, h: usize, start: usize, max: usize, theme: &Theme, buf: &mut Buffer) {
@@ -69,9 +96,9 @@ fn scrollbar(r: Rect, total: usize, h: usize, start: usize, max: usize, theme: &
 
 /// Display formulas on screen that have a typeset image: the grid rows give way to it.
 ///
-/// The image fills exactly the rows and columns the grid layout reserved, so nothing moves when
-/// it lands. Until it does, the block shows the held-maths placeholder over the same rows rather
-/// than the grid, so a formula appears once. One Typst refuses keeps its grid rows.
+/// The image fills exactly the rows the grid layout reserved, so nothing moves when it lands.
+/// Until it does, the block shows the held-maths placeholder over the same rows rather than the
+/// grid, so a formula appears once. One Typst refuses keeps its grid rows.
 #[allow(clippy::too_many_arguments)]
 fn typeset_images(
     lines: &mut [Line<'static>],
@@ -96,7 +123,9 @@ fn typeset_images(
         if end <= start || b.line >= start + h || end > lines.len() {
             continue;
         }
-        let cols = b.cols.min(tw.saturating_sub(b.col));
+        // The grid's rows, and the text column's width from the block's column: a display block
+        // is alone on its rows, so the image may run wider than the grid did rather than shrink.
+        let cols = tw.saturating_sub(b.col);
         let job = Job { markup: markup.clone(), fg, cols: cols as u16, rows: b.rows as u16 };
         match svc.get(&job) {
             Slot::Failed => {}

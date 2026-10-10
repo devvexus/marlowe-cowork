@@ -1,17 +1,22 @@
-//! **What the terminal can show**, read from its answers to four queries.
+//! **What the terminal can show**, read from its answers to six queries.
 //!
 //! | query | answer | used for |
 //! |---|---|---|
 //! | `OSC 10 ; ?` | the default foreground | maths drawn in the terminal's own foreground weight |
 //! | `OSC 11 ; ?` | the background colour | blending glyph edges, so the image reads as transparent |
-//! | `CSI 16 t` | the cell size in pixels | sizing the image to whole cells |
+//! | `CSI 16 t` | the cell size in pixels | rendering at the terminal's own pixel size |
+//! | `CSI 14 t`, `CSI 18 t` | the text area in pixels and in cells | the cell size when `16 t` has no answer |
 //! | `CSI c` (DA1) | attribute `4` if Sixel is supported | whether images are possible at all |
+//!
+//! Windows Terminal answers `16 t` with the VT340's 10×20, the cell it lays Sixel out on whatever
+//! the font, and scales each image to the real cell. A terminal that reports its real cell gets
+//! images rendered at that size, as sharp as its screen.
 //!
 //! DA1 goes last because every terminal answers it: once its reply is in, nothing else is coming.
 //! The I/O is the caller's (`marlowe_os::console::query`); this module only writes and reads text.
 
 /// The queries, in the order they must be sent.
-pub const QUERIES: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[16t\x1b[c";
+pub const QUERIES: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[16t\x1b[14t\x1b[18t\x1b[c";
 
 /// The background Marlowe configures for its Windows Terminal profile, used when the terminal
 /// does not say.
@@ -40,7 +45,7 @@ pub fn parse(s: &str) -> Reply {
         sixel: da1(s).is_some_and(|attrs| attrs.iter().skip(1).any(|a| *a == "4")),
         fg: osc_colour(s, "10"),
         bg: osc_colour(s, "11"),
-        cell: cell_size(s),
+        cell: cell_size(s).or_else(|| cell_from_area(s)),
     }
 }
 
@@ -92,13 +97,36 @@ fn osc_colour(s: &str, which: &str) -> Option<[u8; 3]> {
 
 /// `ESC [ 6 ; height ; width t`.
 fn cell_size(s: &str) -> Option<(u16, u16)> {
-    let start = s.find("\x1b[6;")? + 4;
+    let (h, w) = report(s, "6")?;
+    plausible_cell(w, h)
+}
+
+/// The text area in pixels (`ESC [ 4 ; height ; width t`) over the text area in cells
+/// (`ESC [ 8 ; rows ; cols t`).
+fn cell_from_area(s: &str) -> Option<(u16, u16)> {
+    let (ph, pw) = report(s, "4")?;
+    let (rows, cols) = report(s, "8")?;
+    if rows == 0 || cols == 0 {
+        return None;
+    }
+    plausible_cell(pw / cols, ph / rows)
+}
+
+/// The two numbers of an `ESC [ kind ; a ; b t` report.
+fn report(s: &str, kind: &str) -> Option<(u32, u32)> {
+    let head = format!("\x1b[{kind};");
+    let start = s.find(&head)? + head.len();
     let rest = &s[start..];
     let end = rest.find('t')?;
     let mut it = rest[..end].split(';');
-    let h: u16 = it.next()?.parse().ok()?;
-    let w: u16 = it.next()?.parse().ok()?;
-    (w >= 4 && h >= 6 && w <= 200 && h <= 400).then_some((w, h))
+    let a: u32 = it.next()?.parse().ok()?;
+    let b: u32 = it.next()?.parse().ok()?;
+    Some((a, b))
+}
+
+fn plausible_cell(w: u32, h: u32) -> Option<(u16, u16)> {
+    (4..=200).contains(&w).then_some(())?;
+    (6..=400).contains(&h).then_some((w as u16, h as u16))
 }
 
 #[cfg(test)]
@@ -120,6 +148,19 @@ mod tests {
         // `4` as the device class is not the Sixel attribute.
         assert!(!parse("\x1b[?4;22c").sixel);
         assert!(!complete("\x1b]11;rgb:00/00/00\x07"));
+    }
+
+    #[test]
+    fn the_cell_comes_from_its_own_report_or_from_the_text_area() {
+        // A terminal that reports its real cell (14×28 at a large font).
+        assert_eq!(parse("\x1b[6;28;14t\x1b[?62;4c").cell, Some((14, 28)));
+        // No `16 t`: 1400×840 pixels over 100 columns and 30 rows.
+        assert_eq!(parse("\x1b[4;840;1400t\x1b[8;30;100t\x1b[?62;4c").cell, Some((14, 28)));
+        // `16 t` wins when both are there.
+        assert_eq!(parse("\x1b[6;20;10t\x1b[4;840;1400t\x1b[8;30;100t\x1b[?62;4c").cell, Some((10, 20)));
+        // Nonsense is no answer, and the default cell stands.
+        assert_eq!(parse("\x1b[4;0;0t\x1b[8;0;0t\x1b[?62;4c").cell, None);
+        assert_eq!(caps("\x1b[?62;4c", false).map(|c| (c.cell_w, c.cell_h)), Some(DEFAULT_CELL));
     }
 
     #[test]

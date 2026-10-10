@@ -11,7 +11,7 @@
 //! Every frame where it shrinks is the whole screen jumping back. Scrolled up, the rows on screen
 //! must not change at all.
 //!
-//! What it found (the two ignored tests fail until the fix lands):
+//! What it found, and what fixed it:
 //! - A held display block reserves the rows of whatever its partial source parses to, and a
 //!   partial ending in `\frac`, `\left`, `\end`, `\text`… repairs or paraphrases to fewer rows
 //!   than the token before it. The tail shrinks and grows by 1–3 rows on consecutive tokens.
@@ -19,6 +19,10 @@
 //!   frame the unfinished formula is drawn as finished, then held again on the next token.
 //! - Scrolled up, `State::scroll` counts lines from the bottom, so every new line moves the
 //!   reader's rows.
+//!
+//! The fix: a held display is one placeholder row whatever has arrived, a trailing newline keeps
+//! it held, and the pane keeps its top line (`render/conversation.rs`, `view_top`) whether it is
+//! following the tail or scrolled up.
 //!
 //! `MARLOWE_TRACE=<file>` writes every frame's numbers there; `MARLOWE_SHOW=<frame>` prints that
 //! frame's pane and the one before it; the jumps always print.
@@ -171,11 +175,19 @@ fn replay(w: u16, h: u16, per_frame: usize, scroll: usize, scroll_from: usize) -
 
 fn frame(s: &State, w: u16, h: u16, pane: Rect, tok: String) -> Frame {
     let buf = render(s, w, h);
-    let max = s.scroll_max.get();
-    let ph = pane.height as usize;
-    let total = max + ph;
-    let start = total.saturating_sub(ph + s.scroll.min(max));
-    Frame { tok, start, total, rows: pane_rows(&buf, pane) }
+    let v = s.viewport.get();
+    Frame { tok, start: v.top, total: v.total, rows: pane_rows(&buf, pane) }
+}
+
+/// Frames where the transcript got shorter while the reply streamed: (frame, rows lost). Each is
+/// a frame the pane would have jumped back on, had it not held its place.
+fn shrinks(r: &Replay) -> Vec<(usize, usize)> {
+    r.frames
+        .windows(2)
+        .enumerate()
+        .filter(|(_, p)| p[1].total < p[0].total)
+        .map(|(k, p)| (k + 1, p[0].total - p[1].total))
+        .collect()
 }
 
 /// Frames where the view went back up while following the tail: (frame, rows it jumped).
@@ -249,32 +261,69 @@ fn the_replay_records_every_frame_and_the_reply_scrolls() {
     report(&replay(120, 30, 1, 0, 0), "120x30, one token per frame");
 }
 
-/// Following the stream, the view only ever moves on with the text.
+/// Following the stream, the view only ever moves on with the text, and the transcript under it
+/// only ever grows (so the pane's hold on its place is never what keeps it still).
 #[test]
-#[ignore = "M4.6 streaming jitter: fails until held maths keeps a fixed height"]
 fn following_the_stream_never_moves_the_view_back() {
-    for (w, h, per) in [(W, H, 1), (W, H, 3), (120, 30, 1)] {
+    for (w, h, per) in [(W, H, 1), (W, H, 3), (120, 30, 1), (80, 24, 1), (W, H, 7)] {
         let r = replay(w, h, per, 0, 0);
         let n = report(&r, &format!("{w}x{h}, {per}/frame"));
         assert_eq!(n, 0, "{w}x{h}: the view jumped back {n} times while following the stream");
+        let lost = shrinks(&r);
+        assert!(lost.is_empty(), "{w}x{h}: the transcript got shorter at (frame, rows) {lost:?}");
+        // And it kept up: the last frame shows the end of the reply.
+        let last = r.frames.last().unwrap();
+        assert_eq!(last.start + r.pane.height as usize, last.total, "{w}x{h}: the view fell behind the tail");
     }
+}
+
+/// A resize mid-stream lays everything out again at the new width, and the view follows the tail
+/// at once rather than holding a line index from the old layout.
+#[test]
+fn a_resize_mid_stream_follows_the_tail_at_the_new_size() {
+    let mut s = in_session();
+    let toks = tokens(REPLY);
+    let (half, rest) = toks.split_at(toks.len() / 2);
+    let mut seq = 7;
+    let mut push = |s: &mut State, ts: &[String]| {
+        for t in ts {
+            feed(s, seq, Event::TextDelta { session: sid(), turn: 2, text: t.clone() });
+            seq += 1;
+            render(s, W, H);
+        }
+    };
+    push(&mut s, half);
+    let wide = s.viewport.get();
+    let _ = render(&s, 120, 30);
+    let narrow = s.viewport.get();
+    assert_eq!(narrow.top + narrow.size.1 as usize, narrow.total, "followed at the new size");
+    assert_ne!(wide.size, narrow.size);
+    push(&mut s, rest);
+    let back = s.viewport.get();
+    assert_eq!(back.top + back.size.1 as usize, back.total, "following the tail after resizing back");
+}
+
+/// A pane row without the `↓ N more` tag, whose count rightly grows as the reply does.
+fn without_tag(row: &str) -> &str {
+    row.split(" ↓ ").next().unwrap_or(row).trim_end()
 }
 
 /// Scrolled up to read, the rows on screen do not move while the reply streams on below.
 #[test]
-#[ignore = "M4.6 streaming jitter: fails until a scrolled-up view is anchored to its top line"]
 fn a_scrolled_up_view_stays_put_while_the_reply_streams() {
     let r = replay(W, H, 1, 12, 200);
     let from = r.frames.iter().position(|f| f.start + f.rows.len() + 12 <= f.total).expect("scrolled");
-    let pinned = &r.frames[from].rows;
-    let moved = r.frames[from..r.frames.len() - 1].iter().filter(|f| &f.rows != pinned).count();
+    let strip = |f: &Frame| f.rows.iter().map(|l| without_tag(l).to_string()).collect::<Vec<_>>();
+    let pinned = strip(&r.frames[from]);
+    let moved = r.frames[from..].iter().filter(|f| strip(f) != pinned).count();
     println!("== scrolled up 12 at token 200: {moved} of {} frames changed the rows on screen", r.frames.len() - from - 1);
     assert_eq!(moved, 0, "the reader's rows moved under them");
 }
 
-/// The held rows of each display formula in [`REPLY`], laid out from every prefix a token stream
-/// delivers, at the pane's formula width. Any fall is the tail shrinking under a reader who is
-/// following it: the screen jumps back by that many rows.
+/// The rows each display formula in [`REPLY`] lays out to from every prefix a token stream
+/// delivers, at the pane's formula width. This is why a held block does not reserve rows from
+/// what has arrived: every fall was the tail shrinking under a reader following it, and the screen
+/// jumping back by that many rows. A held block is one placeholder row instead.
 fn reservation_falls(inner: usize) -> Vec<(String, Vec<usize>)> {
     let mut out = Vec::new();
     for (open, close) in [("$$\n", "\n$$"), ("\\[\n", "\n\\]")] {
@@ -318,7 +367,6 @@ fn the_held_rows_of_a_partial_formula_rise_and_fall_token_by_token() {
 /// A token ending in a newline inside an unfinished display is not a blank line: the block stays
 /// held rather than being drawn as finished for one frame.
 #[test]
-#[ignore = "M4.6 streaming jitter: fails until a trailing newline no longer ends a live display"]
 fn a_newline_inside_an_unfinished_display_keeps_it_held() {
     let th = theme();
     let base = ratatui::style::Style::default().fg(th.speech());

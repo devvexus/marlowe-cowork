@@ -3032,6 +3032,7 @@ dependencies = [
  "marlowe-typeset",
  "serde_json",
  "tiny-skia",
+ "ttf-parser",
  "typst",
  "typst-render",
 ]

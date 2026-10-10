@@ -75,6 +75,16 @@ fn a_display_formula_is_held_then_drawn_as_an_image_in_its_reserved_rows() {
     assert_eq!(plan.len(), after - 1 - (before + 2), "one strip per reserved row: {plan:?}");
     assert!(plan.iter().all(|p| p.strip.starts_with(b"\x1bP0;1;0q")), "transparent-background Sixel");
     assert_eq!(plan[0].y as usize, before + 2);
+    // The image is in the grid maths' colour. Grid maths is drawn in the terminal's own
+    // foreground (`Reset`), which the probe read as `caps.fg`, Marlowe's profile's #cdc9d6. The
+    // stand-in covers every pixel fully, so each strip has exactly one colour, that one (80%, 79%,
+    // 84% in Sixel's units), and no register for the background: nothing is filled.
+    for p in &plan {
+        let strip = String::from_utf8_lossy(&p.strip).into_owned();
+        let want = format!("#{};2;80;79;84", marlowe_typeset::sixel::LEVELS);
+        assert!(strip.contains(&want), "not the grid's colour: {strip:?}");
+        assert_eq!(strip.matches(";2;").count(), 1, "a colour besides the text's: {strip:?}");
+    }
 
     // Sent once; a still frame sends nothing; a frame drawn on top is not painted over.
     let mut e = Emitter::default();

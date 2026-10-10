@@ -2,7 +2,10 @@
 //!
 //! A typeset formula is one colour on nothing, so the image is a coverage plane: how much of each
 //! pixel the glyphs cover. Each coverage level becomes one palette register, the glyph colour
-//! blended onto the terminal's background by that much. A pixel the glyphs do not touch is not
+//! blended onto the terminal's background by that much **in linear light**, so a glyph's edge is
+//! as bright as the share of the pixel it covers. Blended in sRGB values instead, every part-
+//! covered pixel came out darker than it should, and thin strokes, which are mostly edge, read
+//! grey rather than the colour of the text around them. A pixel the glyphs do not touch is not
 //! drawn at all: the image is sent with Sixel's transparent-background mode (`P2 = 1`), so the
 //! terminal's own background shows through and there is never a filled box. Only the
 //! anti-aliased edges depend on knowing the background colour.
@@ -46,9 +49,9 @@ impl Coverage {
     }
 }
 
-/// Coverage levels, one palette register each. Sixteen is past what the eye separates on a glyph
-/// edge at terminal sizes, and keeps every band to a handful of colour passes.
-pub const LEVELS: u32 = 16;
+/// Coverage levels, one palette register each. Sixty-four keeps a supersampled edge's gradation
+/// (sixteen banded it), and only the levels an image uses are defined or sent.
+pub const LEVELS: u32 = 64;
 
 fn level(a: u8) -> usize {
     ((u32::from(a) * LEVELS + 127) / 255) as usize
@@ -57,6 +60,33 @@ fn level(a: u8) -> usize {
 /// A colour channel as a Sixel percentage.
 fn pct(c: f32) -> u32 {
     (c / 255.0 * 100.0).round().clamp(0.0, 100.0) as u32
+}
+
+/// An sRGB channel in linear light, 0 to 1.
+fn linear(c: u8) -> f32 {
+    let c = f32::from(c) / 255.0;
+    if c <= 0.040_45 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// A linear-light channel back to sRGB, 0 to 255.
+fn srgb(l: f32) -> f32 {
+    let l = l.clamp(0.0, 1.0);
+    let c = if l <= 0.003_130_8 { l * 12.92 } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 };
+    c * 255.0
+}
+
+/// The colour of a pixel the glyphs cover `t` of (0 to 1): `fg` over `bg`, blended in linear light.
+/// Full coverage is exactly `fg`.
+pub fn blend(fg: [u8; 3], bg: [u8; 3], t: f32) -> [f32; 3] {
+    let mut out = [0.0; 3];
+    for (i, o) in out.iter_mut().enumerate() {
+        *o = srgb(linear(bg[i]) + (linear(fg[i]) - linear(bg[i])) * t);
+    }
+    out
 }
 
 /// Encodes rows `top .. top + h` of `cov` (rows outside it are transparent) as one Sixel image.
@@ -82,9 +112,8 @@ pub fn encode(cov: &Coverage, top: isize, h: usize, fg: [u8; 3], bg: [u8; 3]) ->
         if !*u {
             continue;
         }
-        let t = lvl as f32 / LEVELS as f32;
-        let mix = |i: usize| f32::from(bg[i]) + (f32::from(fg[i]) - f32::from(bg[i])) * t;
-        out.extend_from_slice(format!("#{lvl};2;{};{};{}", pct(mix(0)), pct(mix(1)), pct(mix(2))).as_bytes());
+        let [r, g, b] = blend(fg, bg, lvl as f32 / LEVELS as f32);
+        out.extend_from_slice(format!("#{lvl};2;{};{};{}", pct(r), pct(g), pct(b)).as_bytes());
     }
     let bands = h.div_ceil(6);
     let mut bits = vec![0u8; w];
@@ -246,7 +275,52 @@ mod tests {
         let cov = Coverage { w: 1, h: 1, alpha: vec![255] };
         let s = String::from_utf8(encode(&cov, 0, 1, [0xb3, 0x9a, 0xe8], [0x0f, 0x0e, 0x14])).unwrap();
         // #b39ae8 = (70%, 60%, 91%).
-        assert!(s.contains("#16;2;70;60;91"), "{s:?}");
+        assert!(s.contains(&format!("#{LEVELS};2;70;60;91")), "{s:?}");
+    }
+
+    /// Every register an image defines, as (level, [r, g, b] percent).
+    fn registers(s: &[u8]) -> Vec<(usize, [u32; 3])> {
+        let text = std::str::from_utf8(s).unwrap();
+        let mut out = Vec::new();
+        for part in text.split('#').skip(1) {
+            let nums: Vec<&str> = part.split(|c: char| !c.is_ascii_digit()).take(5).collect();
+            if part[nums[0].len()..].starts_with(";2;") {
+                let n = |k: usize| nums[k].parse::<u32>().unwrap();
+                out.push((n(0) as usize, [n(2), n(3), n(4)]));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn an_image_is_only_the_text_colour_and_its_edges_never_a_fill() {
+        // Marlowe's terminal profile: foreground #cdc9d6 (weight 1, the colour grid maths is
+        // drawn in), background #0f0e14.
+        let (fg, bg) = ([0xcd, 0xc9, 0xd6], [0x0f, 0x0e, 0x14]);
+        let w = 256;
+        let cov = Coverage { w, h: 1, alpha: (0..=255).collect() };
+        let s = encode(&cov, 0, 1, fg, bg);
+        assert!(s.starts_with(b"\x1bP0;1;0q"), "transparent background: uncovered pixels are not drawn");
+        let regs = registers(&s);
+        assert_eq!(regs.len(), LEVELS as usize, "one register per coverage level, none for nothing");
+        let fg_pct = fg.map(|c| pct(f32::from(c)));
+        let bg_pct = bg.map(|c| pct(f32::from(c)));
+        let mut prev = bg_pct;
+        for (lvl, c) in &regs {
+            for i in 0..3 {
+                // On the line from the background to the text colour, moving toward the text.
+                assert!(c[i] >= prev[i] && c[i] <= fg_pct[i], "level {lvl} channel {i}: {c:?} after {prev:?}");
+            }
+            assert_ne!(*c, bg_pct, "level {lvl} is the background: a fill");
+            prev = *c;
+        }
+        // Full coverage is the text colour itself.
+        assert_eq!(regs.last().unwrap(), &(LEVELS as usize, fg_pct));
+        // Half coverage is half the light (linear-light blending), brighter than the sRGB midpoint
+        // that made thin strokes read grey.
+        let half = blend(fg, bg, 0.5);
+        let naive = (f32::from(fg[0]) + f32::from(bg[0])) / 2.0;
+        assert!(half[0] > naive + 20.0, "{half:?} vs {naive}");
     }
 
     #[test]

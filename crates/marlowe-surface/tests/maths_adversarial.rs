@@ -122,9 +122,12 @@ fn code_stays_exactly_as_written() {
 }
 
 #[test]
-fn display_maths_mid_paragraph_reserves_its_rows_while_it_streams() {
+fn display_maths_mid_paragraph_is_held_on_one_row_while_it_streams() {
+    // One row whatever has arrived: a height estimated from the partial rose and fell token by
+    // token, and the pane jumped with it. Landing only grows the reply downward.
     let live = prose("so that $$\\frac{a}{b", true, 60);
     let done = prose("so that $$\\frac{a}{b}$$", false, 60);
-    assert_eq!(live.lines().count(), done.lines().count(), "live:\n{live}\ndone:\n{done}");
+    assert_eq!(live.lines().count(), 1, "live:\n{live}");
+    assert!(done.lines().count() > 1, "done:\n{done}");
     assert!(live.contains('…'));
 }

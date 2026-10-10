@@ -16,6 +16,8 @@ include!("../../marlowe-surface/tests/data/maths_engineering.rs");
 
 /// Marlowe's `bright` weight, the colour display maths is drawn in.
 const FG: [u8; 3] = [0xcd, 0xc9, 0xd6];
+/// The text column a display block's image may use in a 140-column terminal.
+const PANE_COLS: u16 = 90;
 
 fn caps() -> Caps {
     Caps { cell_w: probe::DEFAULT_CELL.0, cell_h: probe::DEFAULT_CELL.1, fg: probe::DEFAULT_FG, bg: probe::DEFAULT_BG }
@@ -91,7 +93,9 @@ fn every_display_formula_fits_the_box_its_grid_layout_reserved() {
         let job = Job {
             markup: f.typst.clone().expect("display maths has a Typst form"),
             fg: FG,
-            cols: f.width as u16,
+            // The pane's box: the grid's rows, and the text column from the block's column (90
+            // cells in a 140-column terminal). A display block is alone on its rows.
+            cols: PANE_COLS,
             rows: f.rows.len() as u16,
         };
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -104,7 +108,7 @@ fn every_display_formula_fits_the_box_its_grid_layout_reserved() {
         match slot {
             Slot::Ready(img) => {
                 assert_eq!(img.strips.len(), f.rows.len(), "{src}: one strip per reserved row");
-                assert!(img.cols as usize <= f.width, "{src}: wider than its box");
+                assert!(img.cols <= PANE_COLS, "{src}: wider than its box");
                 assert!(img.strips.iter().any(|s| !s.is_empty()), "{src}: an empty image");
                 for s in img.strips.iter().filter(|s| !s.is_empty()) {
                     assert!(s.starts_with(b"\x1bP0;1;0q"), "{src}: not transparent-background Sixel");
@@ -117,12 +121,13 @@ fn every_display_formula_fits_the_box_its_grid_layout_reserved() {
         }
     }
     println!(
-        "typst images: {ready}/{} display formulas fit their grid box; on the grid: {on_grid:#?}",
+        "typst images: {ready}/{} display formulas fit their box at 0.9x or more; on the grid: {on_grid:#?}",
         displays.len()
     );
-    // A formula that would need shrinking below 60% stays on the grid, which is correct, but it
-    // should be the exception.
-    assert!(ready * 10 >= displays.len() * 9, "only {ready}/{} fit", displays.len());
+    // A formula that would need shrinking below 90% stays on the grid, which is correct, but it
+    // should be the exception. Most that do are matrices and `cases`, which the grid sets a row
+    // per line, tighter than Typst's leading. (202/236 when the floor went from 0.6x to 0.9x.)
+    assert!(ready * 10 >= displays.len() * 8, "only {ready}/{} fit", displays.len());
 }
 
 #[test]

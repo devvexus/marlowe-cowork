@@ -4,6 +4,18 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Steady streaming and one maths style
+
+Matthew's first hands-on (dusk-27b, Windows Terminal): the pane bounced while maths streamed, and typeset images looked like grey serif renders beside the grid maths.
+
+- **Fixed.** A held display formula (`$$`, `\[`, mid-paragraph or block) is one dim `…` row until it closes, never rows estimated from the partial source, which rose and fell token by token (a partial ending in `\frac` or `\end` repairs to fewer rows). A token ending in a newline inside an open display keeps it held. While a reply streams the transcript only grows.
+- **Fixed.** The conversation pane keeps its top line (`Viewport`): following the tail it only moves down, and scrolled up the reader's rows stay put while the reply grows below. `scroll` is resettled from what is on screen before input uses it. Every frame is a DEC 2026 synchronised update.
+- **Changed.** Maths images stay on (Windows Terminal included; `MARLOWE_MATH_IMAGES=0` turns them off, `=1` skips the DA1 check) and are drawn to match the grid maths beside them: the grid's colour (the terminal foreground, `#cdc9d6` when it does not say), edges blended in linear light over 64 levels, no fill; Fira Math (OFL, a sans with a MATH table; New Computer Modern as fallback) at the terminal font's x-height (em 0.86 of a cell, nudged so the x-height is whole pixels); the main baseline shifted onto a pixel boundary; strokes widened half a pixel sideways only; rendered at 4× and area-averaged down to the cell the terminal reports. Windows Terminal lays Sixel on a fixed 10×20 cell (its parser's `CellSizeForLevel`) and scales it, so the image is snapped to that cell and the scale-up keeps whole-pixel edges. A formula needing less than 0.9× stays on the grid (203 of 236 corpus displays fit). The cell size comes from `CSI 16 t`, else `CSI 14 t` over `CSI 18 t`, else 10×20.
+- **Added.** `marlowe math` prints the terminal's raw probe reply and the cell, foreground and background read from it, to confirm Windows Terminal's 10×20 answer on a real machine.
+- **Visual check.** `marlowe-typeset-helper/tests/side_by_side.rs` (ignored; reads system fonts) draws each formula's grid rows in Cascadia Mono at a 28 px cell above its exact Sixel strips decoded and scaled from 10×20 as Windows Terminal would, into `target/maths-compare/`.
+- **Checked.** The model's "I keep getting worded poorly" was dusk's own text. Repair and paraphrase output lives in `marlowe-surface`, which only the TUI, the typeset helper and `marlowe math` link; nothing of it reaches the model.
+- **Tests.** `marlowe-tui/tests/stream_replay.rs` replays a scripted dusk answer token by token at five sizes: the view never moves back, the transcript never shrinks, a scrolled-up view never changes, a resize re-follows. Every corpus formula streamed four ways never shortens the reply. A palette test pins image registers to the text colour with no fill; a raster test pins a lowercase letter to whole-pixel baseline and x-height.
+
 ### Voice placeholder: Chatterbox clone
 
 A stand-in until the M6 voice: Marlowe can speak in a cloned voice now, with WinRT behind it.

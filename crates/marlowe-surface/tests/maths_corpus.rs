@@ -209,7 +209,9 @@ fn streaming_shows_no_raw_frame_and_nothing_moves_once_a_block_lands() {
         if joined.contains(markdown::MATHS_PLACEHOLDER) {
             placeholder_frames += 1;
         }
-        // Nothing that had settled may change.
+        // Nothing that had settled may change, and the tail only grows: a reader following it is
+        // never pulled back.
+        assert!(now.len() >= previous.len(), "frame {k}: the reply got shorter ({} -> {} rows)", previous.len(), now.len());
         assert!(now.len() >= settled, "frame {k} lost settled rows");
         assert_eq!(
             &now[..settled],
@@ -220,8 +222,8 @@ fn streaming_shows_no_raw_frame_and_nothing_moves_once_a_block_lands() {
         if prefix.ends_with("$$") && prefix.matches("$$").count().is_multiple_of(2) || prefix.ends_with("\\]") {
             // The block's last row is the last non-empty row now on screen.
             settled = now.iter().rposition(|l| !l.trim().is_empty()).map_or(0, |r| r + 1);
-            // The rows reserved one frame earlier were exactly the rows it needed: no jump.
-            assert_eq!(previous.len(), now.len(), "frame {k}: the block landed taller or shorter than reserved");
+            // Held behind one row, it lands by growing downward from it.
+            assert_eq!(previous.last().map(String::as_str).map(str::trim), Some(markdown::MATHS_PLACEHOLDER), "frame {k}: the block was not held");
         }
         previous = now;
     }
@@ -233,6 +235,78 @@ fn streaming_shows_no_raw_frame_and_nothing_moves_once_a_block_lands() {
         "streaming maths: {} frames, {placeholder_frames} held behind the placeholder, 0 raw, 0 settled rows moved",
         chars.len()
     );
+}
+
+/// Tokens the way a BPE model emits them: a command with its backslash, a word with the space
+/// before it, every other character alone.
+fn tokens(s: &str) -> Vec<String> {
+    let cs: Vec<char> = s.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < cs.len() {
+        let start = i;
+        if cs[i] == '\\' && cs.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic()) {
+            i += 1;
+            while i < cs.len() && cs[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+        } else if cs[i] == ' ' && cs.get(i + 1).is_some_and(|c| c.is_alphabetic()) {
+            i += 1;
+            while i < cs.len() && cs[i].is_alphabetic() {
+                i += 1;
+            }
+        } else if cs[i].is_alphabetic() {
+            while i < cs.len() && cs[i].is_alphabetic() {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+        out.push(cs[start..i].iter().collect());
+    }
+    out
+}
+
+/// Every corpus formula streamed token by token in each way a reply carries maths: a `$$` block,
+/// a `\[` block with each matrix row on its own line, `$$` mid-paragraph, and inline. While it
+/// streams the reply may only grow: a frame with fewer rows than the one before pulls a reader who
+/// is following the tail back up the screen, which is the jitter Matthew saw.
+#[test]
+fn every_corpus_formula_streams_without_the_reply_ever_getting_shorter() {
+    let width = 90;
+    let mut frames = 0;
+    let mut falls: Vec<String> = Vec::new();
+    for (_, src, display) in all_formulas() {
+        let forms = if display {
+            vec![
+                format!("Before it.\n\n$$\n{src}\n$$\n\nAfter it, with $x$ inline."),
+                format!("Before it.\n\n\\[\n{}\n\\]\n\nAfter it.", src.replace("\\\\ ", "\\\\\n")),
+                format!("so that $$ {src} $$ holds, and then more words follow."),
+            ]
+        } else {
+            vec![format!("We have ${src}$ here, and some words after it.")]
+        };
+        for md in forms {
+            let mut so_far = String::new();
+            let mut prev = 0usize;
+            for t in tokens(&md) {
+                so_far.push_str(&t);
+                let n = lines(&so_far, true, width).len();
+                frames += 1;
+                if n < prev {
+                    falls.push(format!("{prev} -> {n} rows after {t:?} in:\n{so_far}"));
+                    break;
+                }
+                prev = n;
+            }
+            let done = lines(&md, false, width).len();
+            if done < prev {
+                falls.push(format!("{prev} -> {done} rows when it finished:\n{md}"));
+            }
+        }
+    }
+    println!("corpus streamed: {frames} frames, {} replies got shorter", falls.len());
+    assert!(falls.is_empty(), "{}", falls.join("\n\n"));
 }
 
 #[test]

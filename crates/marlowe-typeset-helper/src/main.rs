@@ -1,7 +1,9 @@
 //! `marlowe-typeset.exe`: one formula per JSON line on stdin, one reply per line on stdout, until
 //! stdin closes (which it does when `marlowe.exe` exits, however it exits).
 //!
-//! `marlowe-typeset --png <dir> <markup>…` writes renders as PNG files instead, for looking at.
+//! `marlowe-typeset --png <dir> <markup>…` writes renders as PNG files instead, for looking at:
+//! what a terminal with a 10×20 pixel cell (Windows Terminal's Sixel cell) is sent, on Marlowe's
+//! background.
 
 use std::io::{self, BufWriter};
 use std::process::ExitCode;
@@ -35,7 +37,8 @@ fn png(args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
     for (k, m) in sources.iter().enumerate() {
-        match marlowe_typeset_helper::typeset_png(m, 32.0, [0xcd, 0xc9, 0xd6]) {
+        let em = marlowe_typeset::fit::EM_PER_CELL * f32::from(marlowe_typeset::probe::DEFAULT_CELL.1);
+        match marlowe_typeset_helper::typeset_png(m, em, marlowe_typeset::probe::DEFAULT_FG) {
             Ok(bytes) => {
                 if let Err(e) = std::fs::write(format!("{dir}/{k:03}.png"), bytes) {
                     eprintln!("marlowe-typeset: {e}");

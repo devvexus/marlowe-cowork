@@ -7,10 +7,15 @@ use std::sync::Arc;
 use crate::service::{Caps, Image, Job};
 use crate::sixel::{self, Coverage};
 
-/// Smallest scale at which a formula squeezed into its box is still worth an image.
-pub const MIN_SCALE: f32 = 0.6;
-/// The em, as a fraction of the cell height: a terminal font's line is about 1.25 em.
-pub const EM_PER_CELL: f32 = 0.8;
+/// Smallest scale at which a formula squeezed into its box is still worth an image. Below it the
+/// formula stays on the grid: maths smaller than the text around it reads as an inset picture,
+/// and the box is already the text column's whole width.
+pub const MIN_SCALE: f32 = 0.9;
+/// The em, as a fraction of the cell height, so the maths' x-height is the terminal font's.
+/// Cascadia Mono sets a line at 1.162 em with an x-height of 0.518 em, 0.446 of the cell; Fira
+/// Math's x-height is 0.527 em, so 0.86 of the cell matches lowercase to lowercase (9 px at
+/// Windows Terminal's 20 px Sixel cell, after the helper snaps the x-height to whole pixels).
+pub const EM_PER_CELL: f32 = 0.86;
 
 /// Typesets a job and cuts it into strips, or `None` to leave it on the grid. `typeset` turns
 /// (markup, em in pixels, colour) into a coverage plane.
@@ -31,7 +36,14 @@ pub fn image(
         if s < MIN_SCALE {
             return Err(format!("needs {s:.2}x to fit its box"));
         }
-        cov = typeset(&job.markup, em * s * 0.98, job.fg)?;
+        // The typesetter may round the em to a whole-pixel x-height, a few percent either way,
+        // so a second, smaller try follows a near miss.
+        for k in [0.98, 0.93] {
+            cov = typeset(&job.markup, em * s * k, job.fg)?;
+            if cov.w <= box_w && cov.h <= box_h {
+                break;
+            }
+        }
         if cov.w > box_w || cov.h > box_h {
             return Err("does not fit its box".into());
         }
