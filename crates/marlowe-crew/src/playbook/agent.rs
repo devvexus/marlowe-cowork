@@ -228,7 +228,7 @@ impl AgentRunner {
             failed: failed.clone(),
         };
         let mut agent = Agent::new(Arc::new(metered), model.model, Arc::new(tools), self.system(card, spec, &allow));
-        agent.effort = card.effort;
+        agent.effort = spec.effort.unwrap_or(card.effort);
         agent.approvals = self.approvals.clone();
 
         let session = SessionId::from(format!("crew:{}", self.run).as_str());

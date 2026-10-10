@@ -71,6 +71,14 @@ impl ColorDepth {
             return (ColorDepth::TrueColor, "WT_SESSION (Windows Terminal)");
         }
         let term = env("TERM").unwrap_or_default();
+        // Windows sets no TERM at all. conhost and Windows Terminal both render 24-bit colour
+        // (Windows 10 1703+), and a cmd window handed to Windows Terminal by the default-terminal
+        // handoff carries no WT_SESSION — so the 16-colour floor would repaint the locked palette
+        // in the console's stock ANSI colours. A TERM set by a Unix-style shell (mintty, MSYS)
+        // still goes through the rules below.
+        if cfg!(windows) && term.is_empty() {
+            return (ColorDepth::TrueColor, "Windows console (24-bit colour; no TERM set)");
+        }
         // `-direct` terminfo entries are the standardised way to say 24-bit.
         if term.contains("direct") || term.contains("truecolor") {
             return (ColorDepth::TrueColor, "TERM names a direct-colour entry");
@@ -583,6 +591,15 @@ mod tests {
         assert_eq!(d, ColorDepth::Ansi256);
         let (d, _) = ColorDepth::detect(env_of(&[("TERM", "vt100")]));
         assert_eq!(d, ColorDepth::Ansi16);
+
+        // A cmd window handed to Windows Terminal (default-terminal handoff) has no WT_SESSION,
+        // no COLORTERM and no TERM. It must still get the real palette, not Campbell purple.
+        let (d, why) = ColorDepth::detect(env_of(&[]));
+        if cfg!(windows) {
+            assert_eq!(d, ColorDepth::TrueColor, "{why}");
+        } else {
+            assert_eq!(d, ColorDepth::Ansi16, "{why}");
+        }
     }
 
     #[test]

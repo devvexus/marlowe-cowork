@@ -26,11 +26,13 @@ use marlowe_brains::Brains;
 use marlowe_mind::{Kind, MemoryIn, Mind, Provenance};
 use marlowe_model::{CancelToken, ModelRef};
 use marlowe_proto::{
-    ApprovalDecision, Confidence, CrewBudget, CrewRunInfo, CrewRunStatus, CrewStep, Dispatch, MemoryScope, RoleInfo, RunId, SandboxKind, SessionId,
+    ApprovalDecision, Confidence, CostQuote, CrewBudget, CrewRunInfo, CrewRunStatus, CrewStep, Dispatch, MemoryScope, PlanDecision,
+    ResearchPlan, ResearchProgress, RoleInfo, RunId, SandboxKind, SessionId,
 };
 
 use crate::dispatch::{DispatchArgs, DispatchReceipt, Estimate};
-use crate::playbook::{slug, StepModel, REPORT_FILE};
+use crate::playbook::research_v2::apply_decision;
+use crate::playbook::{slug, ResearchIo, ResearchV2Config, StepModel, REPORT_FILE};
 use crate::role::{RoleCard, Roles};
 use crate::run::{clip, Run};
 use crate::sandbox::MergeOutcome;
@@ -62,11 +64,20 @@ pub struct CrewConfig {
     /// Raise applied to the exceeded dimension when the user approves a budget extension:
     /// the limit grows by this fraction of itself (0.5 = +50%).
     pub budget_extension: f64,
+    /// Deep research v2: plan auto-approval (off by default), fetch concurrency, bounds.
+    pub research: ResearchV2Config,
 }
 
 impl Default for CrewConfig {
     fn default() -> Self {
-        Self { per_provider: 2, per_local_provider: 1, max_scouts: 6, max_test_iterations: 4, budget_extension: 0.5 }
+        Self {
+            per_provider: 2,
+            per_local_provider: 1,
+            max_scouts: 6,
+            max_test_iterations: 4,
+            budget_extension: 0.5,
+            research: ResearchV2Config::default(),
+        }
     }
 }
 
@@ -75,6 +86,9 @@ impl Default for CrewConfig {
 pub struct CrewSetup {
     pub tools: CrewToolFactory,
     pub config: CrewConfig,
+    /// Research channels and the corpus fetcher ([`crate::playbook::research_v2::ChannelIo`]).
+    /// `None` keeps deep research on v1.
+    pub research: Option<Arc<dyn ResearchIo>>,
 }
 
 /// Everything a supervisor needs.
@@ -84,9 +98,13 @@ pub struct CrewDeps {
     /// Builds each run's inner tool host.
     pub tools: CrewToolFactory,
     pub approvals: Arc<dyn RunApprovals>,
-    /// Finished research runs write a Result memory; `None` skips it.
+    /// Finished research runs write a Result memory; `None` skips it. Deep research v2 also
+    /// recalls from it and reads the user's profile when it plans.
     pub mind: Option<Mind>,
     pub gpu_busy: GpuBusy,
+    /// Research channels and the corpus fetcher. With them deep research runs v2; without them,
+    /// v1 (scouts search with their own tools).
+    pub research: Option<Arc<dyn ResearchIo>>,
 }
 
 /// What the supervisor tells the daemon. The daemon maps these onto the bus.
@@ -99,6 +117,10 @@ pub enum CrewEvent {
     /// Done with a result. The daemon posts it to `session`'s inbox and, if the session is idle,
     /// runs a short relay turn.
     Finished { run: RunId, session: Option<SessionId>, dispatch: Dispatch },
+    /// A deep research run drafted its plan and waits for [`Supervisor::approve_plan`].
+    PlanProposed { run: RunId, session: Option<SessionId>, plan: ResearchPlan, quote: CostQuote },
+    /// A deep research run's stage moved.
+    Research { run: RunId, progress: ResearchProgress },
 }
 
 /// Handle to the supervisor. Clones share one.
@@ -116,6 +138,15 @@ pub(crate) struct Control {
     pub user_cancel: AtomicBool,
     pub pause: AtomicBool,
     pub stop: AtomicBool,
+    /// The note a cancelled run ends with (a rejected plan says so).
+    pub end_note: Mutex<Option<String>>,
+}
+
+/// A research plan waiting on the user.
+pub(crate) struct PendingPlan {
+    pub plan: ResearchPlan,
+    pub quote: CostQuote,
+    pub tx: Sender<PlanDecision>,
 }
 
 /// A run this process is responsible for: queued, running, paused or waiting on the user.
@@ -149,6 +180,8 @@ pub(crate) struct Inner {
     /// Local model streams in flight across every run, at most `cfg.per_local_provider`.
     pub local_streams: Mutex<usize>,
     pub local_free: Condvar,
+    /// Research plans waiting on the user, by run.
+    pub plans: Mutex<HashMap<RunId, PendingPlan>>,
     wake: Sender<()>,
 }
 
@@ -359,6 +392,7 @@ impl Control {
             user_cancel: AtomicBool::new(false),
             pause: AtomicBool::new(false),
             stop: AtomicBool::new(false),
+            end_note: Mutex::new(None),
         }
     }
 }
@@ -395,6 +429,7 @@ impl Supervisor {
             state: Mutex::new(State::default()),
             local_streams: Mutex::new(0),
             local_free: Condvar::new(),
+            plans: Mutex::new(HashMap::new()),
             wake: wake_tx,
         });
 
@@ -573,6 +608,39 @@ impl Supervisor {
         let mut due: Vec<Run> = self.inner.store().list(u32::MAX)?.into_iter().filter(|r| r.relay_due).collect();
         due.sort_by_key(|r| r.updated_ms);
         Ok(due.iter().map(Run::info).collect())
+    }
+
+    /// Answers a research run's proposed plan. An edit must validate (the run keeps waiting when
+    /// it does not); a rejection ends the run cancelled.
+    pub fn approve_plan(&self, run: &RunId, decision: PlanDecision) -> Result<(), CrewError> {
+        let mut plans = lock(&self.inner.plans);
+        let Some(pending) = plans.get(run) else {
+            drop(plans);
+            let status = self.inner.run(run)?.status;
+            return Err(bad_state(run, status, "it has no plan awaiting approval"));
+        };
+        if let PlanDecision::Edit { .. } = &decision {
+            if let Err(e) = apply_decision(pending.plan.clone(), decision.clone()) {
+                return Err(bad_state(run, CrewRunStatus::NeedsYou, &format!("the edited plan is not runnable: {e}")));
+            }
+        }
+        if let PlanDecision::Reject { reason } = &decision {
+            if let Some(live) = self.inner.state().live.get(run) {
+                let note = match reason.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+                    Some(r) => format!("plan rejected: {r}"),
+                    None => "plan rejected".to_string(),
+                };
+                *lock(&live.ctl.end_note) = Some(note);
+                live.ctl.user_cancel.store(true, Ordering::SeqCst);
+            }
+        }
+        let pending = plans.remove(run).ok_or_else(|| bad_state(run, CrewRunStatus::NeedsYou, "the plan was already answered"))?;
+        pending.tx.send(decision).map_err(|_| CrewError::Stopped)
+    }
+
+    /// The plan a research run is waiting on, with its quote.
+    pub fn pending_plan(&self, run: &RunId) -> Option<(ResearchPlan, CostQuote)> {
+        lock(&self.inner.plans).get(run).map(|p| (p.plan.clone(), p.quote.clone()))
     }
 
     /// Stops the run at its next step boundary, freeing its concurrency slot.

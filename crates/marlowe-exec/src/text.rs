@@ -183,19 +183,90 @@ pub fn slice_lines(text: &str, range: &str) -> Result<(String, usize), String> {
     ))
 }
 
-/// `*` and `?` only, case-insensitive. `*` does not cross `/`.
+/// Case-insensitive glob over `/`-separated paths. `*` and `?` stay inside one segment; `**`
+/// spans any number of segments, and `**/` also matches zero of them (so `**/Cargo.toml` matches
+/// `Cargo.toml`); `{a,b}` alternates (not nested). `\` in either side is read as `/`.
 pub fn glob_match(pattern: &str, subject: &str) -> bool {
-    fn go(p: &[char], s: &[char]) -> bool {
-        match p.first() {
-            None => s.is_empty(),
-            Some('*') => go(&p[1..], s) || (!s.is_empty() && s[0] != '/' && go(p, &s[1..])),
-            Some('?') => !s.is_empty() && go(&p[1..], &s[1..]),
-            Some(c) => !s.is_empty() && s[0] == *c && go(&p[1..], &s[1..]),
-        }
+    let s: Vec<char> = subject.to_lowercase().replace('\\', "/").chars().collect();
+    expand_braces(&pattern.to_lowercase().replace('\\', "/"))
+        .iter()
+        .any(|p| match_chars(&p.chars().collect::<Vec<_>>(), &s))
+}
+
+/// `a{b,c}d{e,f}` -> the four alternatives. An unclosed `{` is literal.
+fn expand_braces(p: &str) -> Vec<String> {
+    let Some(open) = p.find('{') else { return vec![p.to_string()] };
+    let Some(len) = p[open..].find('}') else { return vec![p.to_string()] };
+    let (head, body, tail) = (&p[..open], &p[open + 1..open + len], &p[open + len + 1..]);
+    let tails = expand_braces(tail);
+    body.split(',')
+        .flat_map(|alt| tails.iter().map(move |t| format!("{head}{alt}{t}")))
+        .take(256)
+        .collect()
+}
+
+/// One pattern token.
+#[derive(Clone, Copy, PartialEq)]
+enum Tok {
+    Lit(char),
+    /// `?`: one character other than `/`.
+    One,
+    /// `*`: any run without `/`.
+    Star,
+    /// `**`: any run, `/` included.
+    GlobStar,
+    /// `**/`: zero or more whole segments (empty, or any run ending in `/`).
+    Segments,
+}
+
+fn tokens(p: &[char]) -> Vec<Tok> {
+    let mut out = Vec::with_capacity(p.len());
+    let mut i = 0;
+    while i < p.len() {
+        out.push(match p[i] {
+            '*' if p.get(i + 1) == Some(&'*') => {
+                i += 1;
+                if p.get(i + 1) == Some(&'/') {
+                    i += 1;
+                    Tok::Segments
+                } else {
+                    Tok::GlobStar
+                }
+            }
+            '*' => Tok::Star,
+            '?' => Tok::One,
+            c => Tok::Lit(c),
+        });
+        i += 1;
     }
-    let p: Vec<char> = pattern.to_lowercase().chars().collect();
-    let s: Vec<char> = subject.to_lowercase().chars().collect();
-    go(&p, &s)
+    out
+}
+
+/// Dynamic programme over (token, subject) positions: O(|p|·|s|), no backtracking blowup.
+fn match_chars(p: &[char], s: &[char]) -> bool {
+    let n = s.len();
+    // `next[j]`: the tokens after the current one match `s[j..]`.
+    let mut next = vec![false; n + 1];
+    next[n] = true;
+    for tok in tokens(p).into_iter().rev() {
+        let mut cur = vec![false; n + 1];
+        let mut seg_tail = false;
+        for j in (0..=n).rev() {
+            cur[j] = match tok {
+                Tok::Lit(c) => j < n && s[j] == c && next[j + 1],
+                Tok::One => j < n && s[j] != '/' && next[j + 1],
+                Tok::Star => next[j] || (j < n && s[j] != '/' && cur[j + 1]),
+                Tok::GlobStar => next[j] || (j < n && cur[j + 1]),
+                Tok::Segments => {
+                    // Some k > j with s[k-1] == '/' and next[k].
+                    seg_tail = seg_tail || (j < n && s[j] == '/' && next[j + 1]);
+                    next[j] || seg_tail
+                }
+            };
+        }
+        next = cur;
+    }
+    next[0]
 }
 
 /// Why `replacing` did not match, phrased so the model can act on it.
@@ -245,4 +316,47 @@ pub fn replacing_miss(existing: &str, replacing: &str) -> String {
         existing.len(),
         count_lines(existing)
     )
+}
+
+#[cfg(test)]
+mod glob_tests {
+    use super::glob_match;
+
+    #[test]
+    fn globstar_spans_any_depth_including_none() {
+        for s in ["Cargo.toml", "crates/a/Cargo.toml", "crates/a/b/c/Cargo.toml"] {
+            assert!(glob_match("**/Cargo.toml", s), "{s}");
+        }
+        assert!(!glob_match("**/Cargo.toml", "crates/a/Cargo.toml.bak"));
+        assert!(!glob_match("**/Cargo.toml", "crates/aCargo.toml"));
+        assert!(glob_match("crates/**/*.rs", "crates/x.rs"));
+        assert!(glob_match("crates/**/*.rs", "crates/a/src/x.rs"));
+        assert!(glob_match("src/**", "src/a/b.rs"));
+        assert!(glob_match("**", "a/b/c"));
+        assert!(glob_match("a/**/b/**/c.txt", "a/x/b/y/z/c.txt"));
+        assert!(glob_match("a/**/b/**/c.txt", "a/b/c.txt"));
+    }
+
+    #[test]
+    fn star_and_question_stay_in_one_segment() {
+        assert!(glob_match("src/*.rs", "src/b.rs"));
+        assert!(!glob_match("src/*.rs", "src/deep/c.rs"));
+        assert!(glob_match("?.rs", "a.rs"));
+        assert!(!glob_match("?", "/"));
+        assert!(glob_match("*.MD", "readme.md"), "case-insensitive");
+        assert!(glob_match(r"crates\*\Cargo.toml", "crates/a/Cargo.toml"), "backslash is a separator");
+    }
+
+    #[test]
+    fn braces_alternate_and_pathological_patterns_stay_fast() {
+        assert!(glob_match("**/*.{ts,tsx}", "web/app.tsx"));
+        assert!(glob_match("**/*.{ts,tsx}", "app.ts"));
+        assert!(!glob_match("**/*.{ts,tsx}", "app.js"));
+        assert!(glob_match("a{", "a{"), "an unclosed brace is literal");
+        let subject = "a".repeat(200);
+        let t = std::time::Instant::now();
+        assert!(!glob_match(&format!("{}b", "**a".repeat(40)), &subject));
+        assert!(!glob_match(&format!("{}b", "*a".repeat(40)), &subject));
+        assert!(t.elapsed().as_millis() < 500, "no exponential backtracking");
+    }
 }

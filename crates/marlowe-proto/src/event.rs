@@ -3,10 +3,12 @@
 use marlowe_model::{Effort, ModelInfo, ModelRef, Part, ProviderKind, Role, Usage};
 use serde::{Deserialize, Serialize};
 
+use crate::context::{ContextPlan, ContextPolicy, ModelContext, PlannedChange};
 use crate::crew::{CrewRunInfo, CrewStep, Dispatch, RoleInfo, RunId};
 use crate::ids::{ApprovalId, SessionId};
 use crate::memory::{ImportReport, MemoryChange, MemoryHit, MemoryStatsReport};
 use crate::request::{ApprovalDecision, Slot};
+use crate::research::{CostQuote, ResearchPlan, ResearchProgress};
 use crate::watch::{BriefItem, Notice, VoiceStatus, WatchCandidate, WatchState};
 
 /// Every event on the wire. Broadcast events carry a daemon-wide, strictly increasing `seq` and
@@ -237,6 +239,23 @@ pub enum Event {
     RunTranscript { run: CrewRunInfo, steps: Vec<CrewStep> },
     /// Reply to `ListRoles`.
     Roles { list: Vec<RoleInfo> },
+    /// A deep research run drafted its plan and waits for `ApprovePlan` (broadcast; the run is
+    /// `needs_you` until then).
+    PlanProposed { run: RunId, plan: ResearchPlan, quote: CostQuote },
+    /// A deep research run's stage moved (broadcast).
+    ResearchProgress { run: RunId, progress: ResearchProgress },
+    /// One model call finished: `tokens` (prompt + output) is what the context holds now, out of
+    /// the agent's `window`. Drives the Model box's context meter.
+    ContextUsage { session: SessionId, turn: u32, tokens: u64, window: u32 },
+    /// Reply to `ContextPlan`.
+    ContextPlan(Box<ContextPlan>),
+    /// Reply to `ContextPolicies` (and broadcast after a policy is saved).
+    ContextPolicies { models: Vec<ModelContext> },
+    /// A policy was saved (broadcast). `pending_restart`: some changes wait for the server.
+    ContextPolicySaved { model: ModelRef, policy: ContextPolicy, changes: Vec<PlannedChange>, pending_restart: bool },
+    /// The outcome of `ApplyOllamaServer` (broadcast): restarted, refused, or failed, with what
+    /// to do by hand when it did not happen.
+    ServerApplied { ok: bool, message: String },
 }
 
 impl Event {
@@ -253,7 +272,8 @@ impl Event {
             | Event::ToolFinished { session, .. }
             | Event::TurnFinished { session, .. }
             | Event::ApprovalRequested { session, .. }
-            | Event::Recalled { session, .. } => Some(session),
+            | Event::Recalled { session, .. }
+            | Event::ContextUsage { session, .. } => Some(session),
             Event::Error { session, .. } => session.as_ref(),
             _ => None,
         }

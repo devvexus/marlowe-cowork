@@ -21,11 +21,13 @@ fn temp_home(name: &str) -> PathBuf {
 fn every_builtin_card_parses_with_its_intended_shape() {
     let roles = Roles::builtin();
     let names: Vec<&str> = roles.cards().map(|c| c.name.as_str()).collect();
-    assert_eq!(names, ["analyst", "engineer", "researcher", "reviewer", "scout"]);
+    assert_eq!(names, ["analyst", "compressor", "engineer", "researcher", "reviewer", "scout", "verifier"]);
     for card in roles.cards() {
         assert_eq!(card.source, RoleSource::Builtin);
-        assert_eq!(card.slot, Slot::Crew(card.name.clone()), "{}", card.name);
-        assert_eq!(card.slot_chain(), vec![Slot::Crew(card.name.clone()), Slot::Conductor]);
+        // The compression role is cheap work on the Quick slot; every other card has its own.
+        let slot = if card.name == "compressor" { Slot::Quick } else { Slot::Crew(card.name.clone()) };
+        assert_eq!(card.slot, slot, "{}", card.name);
+        assert_eq!(card.slot_chain(), vec![slot, Slot::Conductor]);
         assert!(!card.description.is_empty() && card.instructions.len() > 400, "{}", card.name);
         assert!(card.budget.tokens.is_some() && card.budget.steps.is_some() && card.budget.usd.is_some(), "{}", card.name);
         assert!(!card.tools.iter().any(|t| t == DISPATCH_TOOL), "{} must not dispatch", card.name);
@@ -40,7 +42,11 @@ fn every_builtin_card_parses_with_its_intended_shape() {
     assert_eq!(scout.budget, CrewBudget { tokens: Some(150_000), steps: Some(25), usd: Some(0.5) });
     assert!(scout.allows("arxiv") && scout.allows("paper") && !scout.allows("write"));
     assert_eq!(roles.get("researcher").unwrap().sandbox, SandboxKind::Scratch);
-    assert_eq!(roles.infos().len(), 5);
+    assert_eq!(roles.infos().len(), 7);
+    for name in ["compressor", "verifier"] {
+        let card = roles.get(name).unwrap();
+        assert!(card.tools.is_empty() && card.sandbox == SandboxKind::None, "{name} reads only what it is given");
+    }
 }
 
 #[test]
@@ -75,7 +81,7 @@ fn a_user_card_overrides_by_name_and_a_bad_one_is_reported_not_fatal() {
     assert_eq!(stat.tools, ["python", "read"]);
     assert_eq!(stat.budget, CrewBudget { tokens: None, steps: Some(30), usd: Some(1.25) });
     assert_eq!(stat.effort, Effort::Medium);
-    assert_eq!(roles.cards().count(), 6);
+    assert_eq!(roles.cards().count(), 8);
     assert_eq!(roles.problems().len(), 1);
     assert_eq!(roles.problems()[0].1, RoleError::NoFrontmatter);
     let _ = std::fs::remove_dir_all(&home);
@@ -106,7 +112,7 @@ fn the_dispatch_declaration_lists_roles_and_its_arguments_parse() {
     assert_eq!(spec.name, "dispatch");
     let schema = &spec.input_schema;
     assert_eq!(schema["required"], json!(["role", "goal"]));
-    assert_eq!(schema["properties"]["role"]["enum"], json!(["analyst", "engineer", "researcher", "reviewer", "scout"]));
+    assert_eq!(schema["properties"]["role"]["enum"], json!(["analyst", "compressor", "engineer", "researcher", "reviewer", "scout", "verifier"]));
     assert_eq!(schema["properties"]["playbook"]["enum"], json!(["deep_research", "build"]));
     assert_eq!(schema["additionalProperties"], json!(false));
 

@@ -32,6 +32,7 @@ pub mod process;
 pub mod run;
 pub mod store;
 pub mod trainer;
+pub mod vram;
 mod watcher;
 
 use std::net::{Ipv4Addr, SocketAddr};

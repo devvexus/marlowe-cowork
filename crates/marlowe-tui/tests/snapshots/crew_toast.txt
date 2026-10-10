@@ -1,40 +1,40 @@
-╭─ MARLOWE ───────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
-│                                                        ╭────────────────────────────────────────────╮ │  CREW                1 needs you │
-│                                                        │ ◐ engineer needs you · fix the gate thres… │ │  ◐ engineer · fix the gate thre… │
-│                                                        │ tests pass (412) — merge crew/ee55ff66 in… │ │    tests pass (412) — merge cre… │
-│                                                        ╰────────────────────────────────────────────╯ │  ● researcher · LoRA rank ablat… │
-│                                                                                                       │    step 6 · $0.0213 · scout 2/4… │
-│                                                                                                       │                                  │
-│                                                                                                       │  WATCH                           │
-│                                                                                                       │  nothing watched                 │
-│                                                                                                       │                                  │
-│                                                                                                       │  THREADS                         │
-│                                                                                                       │  no open threads                 │
-│                                              ⣿  MARLOWE                                               │                                  │
-│                                                                                                       │  TODAY                           │
-│                                                                                                       │  Friday 9 October                │
-│                                             Good evening.                                             │  quiet 23:00–07:00               │
-│                                                                                                       │  no routines                     │
-│                    ask anything  ·  ^o past sessions  ·  ^l library  ·  ^k palette                    │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────╯
-╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ › message Marlowe…                                                                                                                       │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────── ↵ send  ⇧↵ newline  ^k palette ─╯
+ * marlowe — new session                                                                                               2 runs · 1 needs you
+╭ Conversation ──────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
+│                                                 ╭────────────────────────────────────────────╮ ││ Claude Sonnet 4.5 ▾             medium │
+│                                                 │ ◐ engineer needs you · fix the gate thres… │ ││ ctx ────────────┊──── 0 / 200k · cloud │
+│                                                 │ tests pass (412) — merge crew/ee55ff66 in… │ │╰────────────────────────────────── (m) ─╯
+│                                                 ╰────────────────────────────────────────────╯ │╭ Workspace ─────────────────────────────╮
+│                                                                                                ││ C:/work/valiance ▾                     │
+│                                                                                                │╰────────────────────────────────── (w) ─╯
+│                                                                                                │╭ Crew ──────────────────── 1 needs you ─╮
+│                                                                                                ││ ◐ engineer · fix the gate threshold …  │
+│                                                                                                ││   tests pass (412) — merge crew/ee55…  │
+│                                                                                                ││ ● researcher · LoRA rank ablations f…  │
+│                                           ⣿  MARLOWE                                           ││   step 6 · $0.0213 · scout 2/4 · web…  │
+│                                                                                                │╰────────────────────────────────── (1) ─╯
+│                                                                                                │╭ Watch ─────────────────────────────────╮
+│                                         Good evening.                                          ││ nothing watched                        │
+│                                                                                                ││                                        │
+│                ask anything  ·  ^o past sessions  ·  ^l library  ·  ^k palette                 ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                                                                                                │╭ Threads ───────────────────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  ^k palette               Friday 9 October · 21:40

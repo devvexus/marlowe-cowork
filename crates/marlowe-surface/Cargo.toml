@@ -15,3 +15,8 @@ marlowe-view.workspace = true
 marlowe-contract.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
+# Maths. Both are already linked into the binary (ratatui pulls in unicode-width; marlowe-memory
+# uses unicode-normalization), so neither adds a byte: display widths for combining accents, and
+# NFC to find the precomposed form of an accented letter (`\hat{y}` is U+0177).
+unicode-width = "0.2.2"
+unicode-normalization.workspace = true

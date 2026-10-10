@@ -9,9 +9,9 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
-use super::{ink, note_style, put};
+use super::{hovered, ink, note_style, put, put_row};
 use crate::memory::{MemFilter, MemMode};
-use crate::state::State;
+use crate::state::{State, Target};
 use crate::text;
 
 /// Rows above the results: heading, status, blank, query, blank.
@@ -219,14 +219,21 @@ fn draw_profile(list: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
 fn draw_hits(list: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     let m = &state.memory;
     let tw = list.width.saturating_sub(2) as usize;
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut lines: Vec<(Line<'static>, usize)> = Vec::new();
     let (mut sel_start, mut sel_end) = (0, 0);
+    let browse = matches!(m.mode, MemMode::Browse);
     for (i, h) in m.shown().iter().enumerate() {
         let selected = i == m.sel;
         if selected {
             sel_start = lines.len();
         }
-        let marker = if selected { Span::styled("\u{203a} ", ink(Ink::Accent, theme)) } else { Span::raw("  ") };
+        let marker = if selected {
+            Span::styled("\u{203a} ", ink(Ink::Accent, theme))
+        } else if browse && hovered(state, &Target::Row(i)) {
+            Span::styled("\u{203a} ", ink(Ink::Hover, theme))
+        } else {
+            Span::raw("  ")
+        };
         let style = if selected { theme.bright() } else { theme.normal() };
         let body = text::clean(h.text.trim());
         if selected {
@@ -235,26 +242,32 @@ fn draw_hits(list: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
             for (j, l) in wrapped.into_iter().take(SELECTED_LINES).enumerate() {
                 let l = if more && j == SELECTED_LINES - 1 { text::truncate(&format!("{l}\u{2026}"), tw) } else { l };
                 let lead = if j == 0 { marker.clone() } else { Span::raw("  ") };
-                lines.push(Line::from(vec![lead, Span::styled(l, style)]));
+                lines.push((Line::from(vec![lead, Span::styled(l, style)]), i));
             }
         } else {
             let first = body.lines().next().unwrap_or("");
-            lines.push(Line::from(vec![marker, Span::styled(text::truncate(first, tw), style)]));
+            lines.push((Line::from(vec![marker, Span::styled(text::truncate(first, tw), style)]), i));
         }
-        lines.push(meta_line(h, tw, theme));
+        lines.push((meta_line(h, tw, theme), i));
         if selected {
             sel_end = lines.len();
         }
     }
     let h = list.height as usize;
     let first = sel_end.saturating_sub(h).min(sel_start);
-    for (i, l) in lines.iter().skip(first).take(h).enumerate() {
-        put(buf, list.x, list.y + i as u16, l, list.width);
+    let total = lines.len();
+    for (i, (l, hit)) in lines.into_iter().skip(first).take(h).enumerate() {
+        let y = list.y + i as u16;
+        if browse {
+            put_row(state, buf, (list.x, y, list.width), l, Target::Row(hit), theme);
+        } else {
+            put(buf, list.x, y, &l, list.width);
+        }
     }
     if first > 0 {
         mark(list, list.y, "\u{2191}", theme, buf);
     }
-    if lines.len() > first + h {
+    if total > first + h {
         mark(list, list.bottom() - 1, "\u{2193}", theme, buf);
     }
 }

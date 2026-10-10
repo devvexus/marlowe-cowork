@@ -39,6 +39,7 @@
 //! Returning a page with its nav bar attached is a small cost; returning an empty document that
 //! reads like a page with nothing on it is not.
 
+use crate::main_content::{BlockKind, BlockSpan};
 use crate::{charset, Document, ExtractError, Format, Heading, Link, Warning};
 
 /// Elements whose *contents* are not prose and are dropped whole.
@@ -73,6 +74,11 @@ struct TextBlock {
     content: bool,
     /// Characters of this block that were anchor text. High ratios are link farms.
     link_chars: usize,
+    kind: BlockKind,
+    /// Indices into `Parser::links` closed inside this block.
+    links: std::ops::Range<usize>,
+    /// Code blocks keep their line breaks here (`text` is collapsed like every other block).
+    raw: Option<String>,
 }
 
 pub fn extract(
@@ -80,10 +86,43 @@ pub fn extract(
     content_type: Option<&str>,
     url: Option<&str>,
 ) -> Result<Document, ExtractError> {
+    Ok(parse(bytes, content_type, url, false).0)
+}
+
+/// [`extract`] plus every text block with its structure (all blocks, chrome included, in document
+/// order) and the decoded source, for main-content selection and markdown rendering.
+pub fn extract_structured(
+    bytes: &[u8],
+    content_type: Option<&str>,
+    url: Option<&str>,
+) -> (Document, Vec<BlockSpan>, String) {
+    parse(bytes, content_type, url, true)
+}
+
+fn parse(
+    bytes: &[u8],
+    content_type: Option<&str>,
+    url: Option<&str>,
+    structured: bool,
+) -> (Document, Vec<BlockSpan>, String) {
     let mut warnings = Vec::new();
     let decoded = charset::decode(bytes, content_type, true, &mut warnings);
     let mut p = Parser::new(&decoded.text, url);
     p.run();
+    let spans: Vec<BlockSpan> = if structured {
+        p.blocks
+            .iter()
+            .map(|b| BlockSpan {
+                kind: b.kind,
+                text: b.raw.clone().unwrap_or_else(|| b.text.clone()),
+                links: b.links.clone().collect(),
+                boilerplate: b.boilerplate || is_link_farm(b),
+                content: b.content,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let script_chars = p.script_chars;
     let title = p.title.take().map(|t| collapse(&decode_entities(&t))).filter(|t| !t.is_empty());
@@ -108,7 +147,7 @@ pub fn extract(
         });
     }
 
-    Ok(Document {
+    let doc = Document {
         format: Format::Html,
         title,
         text,
@@ -119,7 +158,8 @@ pub fn extract(
         bytes_in: bytes.len(),
         encoding: decoded.encoding,
         warnings,
-    })
+    };
+    (doc, spans, if structured { decoded.text } else { String::new() })
 }
 
 /// Choose which blocks are the document.
@@ -204,6 +244,12 @@ struct Parser<'a> {
     /// Set while inside an `<a>`, so anchor text can be attributed for link-density scoring.
     anchor: Option<(String, usize)>,
     heading: Option<(u8, usize)>,
+    /// First link index not yet attributed to a block.
+    block_link_start: usize,
+    /// `<tr>` elements opened so far; table cells carry it as their row.
+    rows: u32,
+    /// Open `<pre>` elements: whitespace inside them is kept for code blocks.
+    pre_depth: u32,
 }
 
 const MAX_STACK: usize = 512;
@@ -236,6 +282,9 @@ impl<'a> Parser<'a> {
             script_chars: 0,
             anchor: None,
             heading: None,
+            block_link_start: 0,
+            rows: 0,
+            pre_depth: 0,
         }
     }
 
@@ -369,6 +418,17 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
+            "math" => {
+                // MathML bodies are skipped; LaTeXML and Wikipedia carry the TeX source here.
+                if let Some(alt) = attr(raw, "alttext") {
+                    let alt = collapse(&decode_entities(&alt));
+                    if !alt.is_empty() && self.skip_depth == 0 {
+                        self.current.push_str(" $");
+                        self.current.push_str(&alt);
+                        self.current.push_str("$ ");
+                    }
+                }
+            }
             _ => {}
         }
 
@@ -380,6 +440,12 @@ impl<'a> Parser<'a> {
 
         if is_block(name) {
             self.flush_block();
+        }
+        if name == "tr" {
+            self.rows += 1;
+        }
+        if name == "pre" && !self_closing {
+            self.pre_depth += 1;
         }
 
         // Raw-text elements: their contents are not markup. Scan to the literal close so that
@@ -472,6 +538,9 @@ impl<'a> Parser<'a> {
         if CONTENT.contains(&name) {
             self.content_depth = self.content_depth.saturating_sub(1);
         }
+        if name == "pre" {
+            self.pre_depth = self.pre_depth.saturating_sub(1);
+        }
 
         // Unwind to the matching open tag if there is one, tolerating misnesting. If the name is
         // not on the stack at all it was a stray close, and dropping it is the recovery.
@@ -498,6 +567,11 @@ impl<'a> Parser<'a> {
         }
         let raw = &self.text[from..to];
         if raw.trim().is_empty() {
+            if self.pre_depth > 0 {
+                // Line breaks between highlighted spans are code structure.
+                self.current.push_str(raw);
+                return;
+            }
             // Whitespace between elements is still a word separator.
             if !self.current.ends_with(' ') && !self.current.is_empty() {
                 self.current.push(' ');
@@ -507,10 +581,32 @@ impl<'a> Parser<'a> {
         push_decoded(&mut self.current, raw);
     }
 
+    /// The structural kind of the text being flushed: the innermost structural element open.
+    fn block_kind(&self) -> BlockKind {
+        for name in self.stack.iter().rev() {
+            let b = name.as_bytes();
+            match name.as_str() {
+                _ if b.len() == 2 && b[0] == b'h' && (b'1'..=b'6').contains(&b[1]) => {
+                    return BlockKind::Heading(b[1] - b'0')
+                }
+                "pre" => return BlockKind::Code,
+                "td" | "th" => return BlockKind::TableCell { row: self.rows, header: name == "th" },
+                "li" | "dt" | "dd" => return BlockKind::ListItem,
+                "blockquote" => return BlockKind::Quote,
+                _ => {}
+            }
+        }
+        BlockKind::Paragraph
+    }
+
     fn flush_block(&mut self) {
+        let kind = self.block_kind();
+        let raw = (kind == BlockKind::Code).then(|| code_text(&self.current));
         let text = collapse(&self.current);
         self.current.clear();
         let links = std::mem::take(&mut self.current_links);
+        let link_range = self.block_link_start..self.links.len();
+        self.block_link_start = self.links.len();
         if text.is_empty() {
             return;
         }
@@ -545,8 +641,19 @@ impl<'a> Parser<'a> {
             boilerplate: self.boiler_depth > 0,
             content: self.content_depth > 0,
             link_chars: links,
+            kind,
+            links: link_range,
+            raw,
         });
     }
+}
+
+/// Code text with its line breaks: trailing space trimmed per line, blank edges dropped.
+fn code_text(s: &str) -> String {
+    let lines: Vec<&str> = s.lines().map(str::trim_end).collect();
+    let start = lines.iter().position(|l| !l.trim().is_empty()).unwrap_or(lines.len());
+    let end = lines.iter().rposition(|l| !l.trim().is_empty()).map_or(start, |i| i + 1);
+    lines[start..end].join("\n")
 }
 
 /// Does this element end the current text block?

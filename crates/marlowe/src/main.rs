@@ -6,12 +6,15 @@
 mod client;
 mod commands;
 mod crew_cmd;
+mod crew_plan;
 mod daemon_ctl;
 mod doctor;
 mod eval;
 mod launcher;
+mod math_cmd;
 mod me_cmd;
 mod memory_cmd;
+mod research_wire;
 #[cfg(debug_assertions)]
 mod scripted;
 mod watch_cmd;
@@ -38,10 +41,15 @@ marlowe brief                             the brief now: what changed since you 
 marlowe say <text>                        speak through the daemon's voice
 marlowe crew [list [N] | show <run> | roles | dispatch <role> <goal> [--playbook P]
               [--workspace DIR] [--session ID] | steer <run> <text> | cancel <run>
-              | pause <run> | resume <run> | merge <run> [--yes] | discard <run> [--yes]]
-                                          crew runs; merge and discard ask for approval
+              | pause <run> | resume <run> | plan <run> [approve|edit <file>|reject]
+              | merge <run> [--yes] | discard <run> [--yes]]
+                                          crew runs; merge and discard ask for approval;
+                                          deep research waits for its plan to be approved
 marlowe me [--name N] [--address sir|name|none]
                                           what Marlowe calls you (prints it with no flags)
+marlowe math [--grid | --images] [--width N]
+                                          a sheet of hard equations and matrices, drawn as the
+                                          conversation pane draws them (grid, and Sixel images)
 marlowe status | shutdown | doctor
 
 ask streams the reply to stdout. A tool that needs approval prompts on stdin; --yes allows
@@ -80,6 +88,7 @@ fn dispatch(home: &std::path::Path, args: &[String]) -> Result<i32, String> {
         Some("status") => commands::status(home),
         Some("shutdown") => commands::shutdown(home),
         Some("doctor") => Ok(doctor::run(home)),
+        Some("math") => math_cmd::run(rest),
         Some("--eval-adapter") => eval::run(rest),
         Some("-h" | "--help" | "help") => {
             print!("{USAGE}");

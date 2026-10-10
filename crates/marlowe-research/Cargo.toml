@@ -1,0 +1,23 @@
+[package]
+name = "marlowe-research"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Research sources: the keyless channel registry, source identity and dedup, corroboration over independent roots, link tables for navigation by selection, and the on-disk research cache."
+
+[dependencies]
+marlowe-model.workspace = true
+marlowe-proto.workspace = true
+# Only `Link` is used: the main-content candidates stay out of this crate's build.
+marlowe-extract = { path = "../marlowe-extract", default-features = false }
+# https for channels and the host gate (pooled, public addresses only).
+marlowe-net.workspace = true
+# The loopback-only plaintext client, for a local SearXNG (ADR-035 §4.1).
+marlowe-provider.workspace = true
+# Already in the lockfile via marlowe-extract: zero new crates.
+quick-xml = "0.37"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+blake3.workspace = true
+unicode-normalization.workspace = true

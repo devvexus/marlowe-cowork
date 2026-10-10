@@ -1,0 +1,4 @@
+User-agent: *
+# Ensure all paths are crawled so their noindex tags/headers are respected.
+Allow: /
+Sitemap: https://lite.duckduckgo.com/sitemap.xml

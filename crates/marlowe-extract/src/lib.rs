@@ -43,7 +43,9 @@
 
 pub mod charset;
 pub mod html;
+pub mod main_content;
 pub mod office;
+pub mod paper;
 pub mod pdf;
 pub mod plain;
 pub mod sniff;

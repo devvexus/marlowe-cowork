@@ -49,14 +49,21 @@
 //!
 //! K4 makes zero repaint flicker a kill criterion, and `b13_rendering.rs` proves it by rendering
 //! frame N and frame N+1 and diffing the buffers cell by cell. That only works because rendering is
-//! pure. **There is no cache here and no memoisation keyed on anything.** Parsing happens on every
-//! frame, which is also what makes the scrollbar honest: `render::transcript_lines` is the only
-//! thing that knows how many wrapped lines a transcript produced, and it hands that count back to
-//! `App::scroll_max` (see `render::draw_conversation`). A cached line count and a freshly wrapped
-//! one would be two answers to that question.
+//! pure. Parsing happens on every frame, which is also what makes the scrollbar honest:
+//! `render::transcript_lines` is the only thing that knows how many wrapped lines a transcript
+//! produced. The one memo is [`crate::math`]'s, keyed on a formula's full source: a pure function
+//! memoised by its whole input returns what it would have computed, so purity holds.
 //!
 //! The cost is measured rather than argued: `tests/markdown_cost.rs` lays out a large transcript
 //! against K4's 150 ms first-frame budget.
+//!
+//! # Maths while a reply streams
+//!
+//! [`render_prose_live`] is the streaming form. An unclosed maths span at the tail of the reply is
+//! **held**: inline it shows a dim `…` in the prose colour, display it reserves the rows the
+//! formula will need (laid out from what has arrived) with the `…` on the first. Neither shows a
+//! delimiter or a command. When the closer arrives the formula is typeset once, in place. A closed
+//! span never changes again, so nothing above or below it moves.
 //!
 //! # The model authors this text
 //!
@@ -65,10 +72,23 @@
 //! drawn in a glyph the compaction marker does not use, and tables are laid out with no rules at
 //! all so that a §B2 border cannot be assembled out of one.
 
+use std::sync::Arc;
+
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::math::{self, Formula};
 use crate::theme::Theme;
+
+/// What an unclosed maths span shows while it streams. Not `⋯`: that is §B6's tool-line marker.
+pub const MATHS_PLACEHOLDER: &str = "…";
+
+/// Display columns. Combining marks are zero wide and CJK is two, so `chars().count()` is wrong
+/// for both, and maths now emits combining accents.
+fn cols(s: &str) -> usize {
+    UnicodeWidthStr::width(s)
+}
 
 /// How deep an inline construct may nest before the parser stops interpreting and takes the rest
 /// literally. Bounded so a pathological reply cannot turn one frame into a stack walk.
@@ -91,6 +111,57 @@ const MAX_BLOCK_DEPTH: usize = 6;
 /// `base` is the style the surrounding transcript would have used — `theme.speech()` for Marlowe's
 /// voice — so this module never decides what colour ordinary prose is.
 pub fn render_prose(raw: &str, width: usize, theme: &Theme, base: Style) -> Vec<Line<'static>> {
+    render(raw, width, theme, base, false)
+}
+
+/// [`render_prose`] for a reply that is **still streaming**. The only difference is the tail: an
+/// unclosed maths span there is held behind a placeholder instead of being read as finished.
+pub fn render_prose_live(raw: &str, width: usize, theme: &Theme, base: Style) -> Vec<Line<'static>> {
+    render(raw, width, theme, base, true)
+}
+
+/// A display formula laid out on its own rows at the top level of a reply: where it is, and the
+/// box of cells its grid layout fills. The image path (`marlowe-typeset`) draws into exactly this
+/// box, so the rows around it never move when an image replaces the grid.
+#[derive(Debug, Clone)]
+pub struct MathBlock {
+    /// Index of the block's first row in the returned lines.
+    pub line: usize,
+    /// Columns of indent before the formula.
+    pub col: usize,
+    pub rows: usize,
+    pub cols: usize,
+    pub formula: Arc<Formula>,
+    /// The colour its grid rows are drawn in.
+    pub fg: Color,
+}
+
+/// [`render_prose`] or [`render_prose_live`], and the display formulas in the result that an image
+/// could replace. Only top-level blocks: inside a list or a quote a formula stays on the grid.
+pub fn render_prose_blocks(
+    raw: &str,
+    width: usize,
+    theme: &Theme,
+    base: Style,
+    live: bool,
+) -> (Vec<Line<'static>>, Vec<MathBlock>) {
+    let mut blocks = Vec::new();
+    let lines = render_into(raw, width, theme, base, live, Some(&mut blocks));
+    (lines, blocks)
+}
+
+fn render(raw: &str, width: usize, theme: &Theme, base: Style, live: bool) -> Vec<Line<'static>> {
+    render_into(raw, width, theme, base, live, None)
+}
+
+fn render_into(
+    raw: &str,
+    width: usize,
+    theme: &Theme,
+    base: Style,
+    live: bool,
+    maths: Option<&mut Vec<MathBlock>>,
+) -> Vec<Line<'static>> {
     let prepared = crate::chrome::prepare_model_text(raw);
     // Tabs are expanded before block parsing, not during. Markdown's block structure is defined in
     // columns, and a `\t` inside a `Buffer` cell is neither one column nor four.
@@ -102,7 +173,193 @@ pub fn render_prose(raw: &str, width: usize, theme: &Theme, base: Style) -> Vec<
         base,
         budget: std::cell::Cell::new(scan_budget(expanded.len())),
     };
-    layout_blocks(&blocks, &ctx, width.max(MIN_WIDTH))
+    let width = width.max(MIN_WIDTH);
+    let Some(found) = maths else {
+        return layout_blocks(&blocks, &ctx, width, live);
+    };
+    // The top level, laid out block by block so each display formula's first row is known.
+    let mut out: Vec<Line<'static>> = Vec::new();
+    for (n, b) in blocks.iter().enumerate() {
+        let tail = live && n + 1 == blocks.len();
+        out.extend(block_gap(&blocks, n));
+        let at = out.len();
+        out.extend(layout_block(b, &ctx, width, tail));
+        if let Block::DisplayMath { src, end } = b {
+            let held = *end == MathEnd::Eof && tail;
+            let inner = width.saturating_sub(2).max(MIN_WIDTH);
+            let f = math::display(src);
+            // A matrix too wide for the pane is drawn clipped on the grid; its image is offered
+            // the same box, and is used if it fits there legibly.
+            let drawn_2d = f.width <= inner || f.clipped(inner).is_some();
+            if !held && f.rows.len() > 1 && drawn_2d && f.typst.is_some() {
+                found.push(MathBlock {
+                    line: at,
+                    col: 2,
+                    rows: f.rows.len(),
+                    cols: f.width.min(inner),
+                    fg: ctx.maths().fg.unwrap_or(Color::Reset),
+                    formula: f,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Whether `text` has anything [`render_text`] would typeset. Lets a caller keep its own wrapping
+/// for the text that has none.
+pub fn has_maths(text: &str) -> bool {
+    text.contains('$') || text.contains("\\(") || text.contains("\\[") || text.contains("\\begin{")
+}
+
+/// One line of text with each maths span replaced by its one-line form, for places that hold a
+/// single unstyled line: a session title, a run title. Display spans take their linear form here.
+pub fn maths_one_line(raw: &str) -> String {
+    if !has_maths(raw) {
+        return raw.to_string();
+    }
+    let theme = Theme::default_truecolor();
+    let ctx = Ctx {
+        theme: &theme,
+        base: Style::default(),
+        budget: std::cell::Cell::new(scan_budget(raw.len())),
+    };
+    inline_maths_only(raw, &ctx, Style::default(), false).into_iter().map(|r| r.text).collect()
+}
+
+/// **Plain text with its maths typeset, and nothing else interpreted.**
+///
+/// For the user's own words and for reasoning: showing someone's `**` back to them as bold would
+/// rewrite what they typed, but showing their `$\alpha$` as source would break the rule that maths
+/// never reaches the screen raw. Lines are kept as written; `$…$`, `\(…\)`, `$$…$$`, `\[…\]` and
+/// `\begin{…}` blocks are rendered exactly as in a reply.
+pub fn render_text(raw: &str, width: usize, theme: &Theme, base: Style, live: bool) -> Vec<Line<'static>> {
+    let prepared = crate::chrome::prepare_model_text(raw);
+    let expanded = expand_tabs(&prepared);
+    let lines: Vec<&str> = expanded.split('\n').collect();
+    let ctx = Ctx {
+        theme,
+        base,
+        budget: std::cell::Cell::new(scan_budget(expanded.len())),
+    };
+    let width = width.max(MIN_WIDTH);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        // A fenced code block is kept exactly as typed, `$` and all. ```` ```math ```` is maths.
+        if let Some(fence) = fence_open(lines[i]) {
+            if lines[i].trim_start()[fence.len()..].trim() == "math" {
+                let mut j = i + 1;
+                while j < lines.len() && !fence_closes(lines[j], &fence) {
+                    j += 1;
+                }
+                let end = if j < lines.len() { MathEnd::Closed } else { MathEnd::Eof };
+                let block = Block::DisplayMath { src: lines[i + 1..j].join("\n"), end };
+                out.extend(layout_block(&block, &ctx, width, live));
+                i = j + 1;
+                continue;
+            } else {
+                let mut j = i;
+                loop {
+                    let runs = [Run::plain(lines[j], base)];
+                    out.extend(wrap_runs(&runs, width).into_iter().map(Line::from));
+                    j += 1;
+                    if j >= lines.len() || (j > i + 1 && fence_closes(lines[j - 1], &fence)) {
+                        break;
+                    }
+                }
+                i = j;
+                continue;
+            }
+        }
+        if let Some((block, consumed, trailing)) = display_block_at(&lines, i) {
+            let tail = live && i + consumed >= lines.len() && trailing.is_none();
+            out.extend(layout_block(&block, &ctx, width, tail));
+            if let Some(t) = trailing {
+                let runs = inline_maths_only(&t, &ctx, base, live && i + consumed >= lines.len());
+                out.extend(wrap_runs(&runs, width).into_iter().map(Line::from));
+            }
+            i += consumed.max(1);
+            continue;
+        }
+        let line = lines[i];
+        if line.trim().is_empty() {
+            out.push(Line::from(""));
+        } else {
+            let runs = inline_maths_only(line, &ctx, base, live && i + 1 == lines.len());
+            out.extend(wrap_runs(&runs, width).into_iter().map(Line::from));
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Whether `chars[i]` may open a maths span: `$`, `\(`, `\[`, or a `\begin{…}` that
+/// [`maths`] checks is a maths environment.
+fn opens_maths(chars: &[char], i: usize) -> bool {
+    match (chars[i], chars.get(i + 1)) {
+        ('$', _) => true,
+        ('\\', Some('(' | '[')) => true,
+        ('\\', Some('b')) => chars[i..].starts_with(&['\\', 'b', 'e', 'g', 'i', 'n', '{']),
+        _ => false,
+    }
+}
+
+/// Literal text with only maths spans interpreted. A backtick code span is kept as typed, maths
+/// signs and all: `` `echo $A$B` `` is a command, not a formula.
+fn inline_maths_only(src: &str, ctx: &Ctx, style: Style, live: bool) -> Vec<Run> {
+    let chars: Vec<char> = src.chars().collect();
+    let end = if live { held_tail(&chars) } else { chars.len() };
+    let mut out: Vec<Run> = Vec::new();
+    let mut lit = String::new();
+    let mut i = 0;
+    while i < end {
+        let c = chars[i];
+        if c == '`' {
+            let ticks = chars[i..end].iter().take_while(|c| **c == '`').count();
+            let close = (i + ticks..end).find(|&j| {
+                chars[j..end].iter().take_while(|c| **c == '`').count() == ticks
+                    && (j == 0 || chars[j - 1] != '`')
+            });
+            let stop = close.map_or(i + ticks, |j| j + ticks);
+            lit.extend(&chars[i..stop]);
+            i = stop;
+            continue;
+        }
+        if opens_maths(&chars[..end], i) && !ctx.exhausted() {
+            if let Some((runs, next)) = maths(&chars[..end], i, ctx, style, live) {
+                if !lit.is_empty() {
+                    out.push(Run::plain(std::mem::take(&mut lit), style));
+                }
+                out.extend(runs);
+                i = next;
+                continue;
+            }
+        }
+        lit.push(c);
+        i += 1;
+    }
+    if !lit.is_empty() {
+        out.push(Run::plain(lit, style));
+    }
+    out
+}
+
+/// Where the shown part of a streaming tail ends. A lone trailing `\`, or the start of a
+/// `\begin{…}` that has not finished arriving, is the front of a delimiter and is held back.
+fn held_tail(chars: &[char]) -> usize {
+    let n = chars.len();
+    let Some(slash) = chars.iter().rposition(|c| *c == '\\') else { return n };
+    let tail: String = chars[slash..].iter().collect();
+    let begin_prefix = "\\begin".starts_with(&tail)
+        || (tail.starts_with("\\begin{") && !tail.contains('}'));
+    // `\et` may be the front of `\eta`, which will not be shown as source for a frame.
+    let command = tail.len() > 1 && tail[1..].chars().all(|c| c.is_ascii_alphabetic());
+    if begin_prefix || tail == "\\" || command {
+        slash
+    } else {
+        n
+    }
 }
 
 /// How much look-ahead one reply may spend finding closing delimiters.
@@ -159,6 +416,12 @@ impl Ctx<'_> {
             self.theme.bright()
         };
         Style::default().fg(lighter.fg.unwrap_or(Color::Reset))
+    }
+    /// The held-back maths placeholder: the prose colour, dimmed. Calm, and plainly not content.
+    fn placeholder(&self) -> Style {
+        Style::default()
+            .fg(self.base.fg.unwrap_or(self.theme.speech()))
+            .add_modifier(Modifier::DIM)
     }
     fn accent(&self) -> Style {
         Style::default().fg(self.theme.accent())
@@ -224,9 +487,96 @@ enum Block {
         /// rather than as a squashed grid. §B11's instinct, applied to a table.
         source: Vec<String>,
     },
-    /// Display maths on its own line — `$$…$$` or `\[…\]`. Held as source; the decision to render
-    /// or refuse is [`crate::latex`]'s and is made at layout.
-    DisplayMath(String),
+    /// Display maths: `$$…$$` or `\[…\]` from the start of a line, possibly over several lines, a
+    /// `\begin{align}`-style environment, or a ```` ```math ```` fence. Held without delimiters.
+    DisplayMath { src: String, end: MathEnd },
+}
+
+/// How a display block ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MathEnd {
+    Closed,
+    /// A blank line came before the closer: a slip, rendered as though closed.
+    Blank,
+    /// The input ran out first: still streaming if the reply is live.
+    Eof,
+}
+
+/// Environments that are display maths on their own, without `$$` around them.
+const MATH_ENVS: &[&str] = &[
+    "equation", "align", "aligned", "gather", "gathered", "multline", "eqnarray", "split",
+    "alignat", "alignedat", "flalign", "displaymath", "cases", "dcases", "rcases", "drcases",
+    "matrix", "pmatrix", "bmatrix", "Bmatrix", "vmatrix", "Vmatrix", "smallmatrix", "array",
+];
+
+/// `\begin{env}` at the start of `t`, for a maths environment. Returns the name, star included.
+fn math_env_open(t: &str) -> Option<String> {
+    let rest = t.strip_prefix("\\begin{")?;
+    let name = &rest[..rest.find('}')?];
+    MATH_ENVS.contains(&name.trim_end_matches('*')).then(|| name.to_string())
+}
+
+/// Whether a line opens a display block. Cheap: used to end a paragraph.
+fn opens_display(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with("$$") || t.starts_with("\\[") || math_env_open(t).is_some()
+}
+
+/// The first unescaped `close` in `s`, as a byte offset.
+fn find_closer(s: &str, close: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(p) = s[from..].find(close) {
+        let at = from + p;
+        let escaped = at > 0 && s.as_bytes()[at - 1] == b'\\' && close != "\\]";
+        if !escaped {
+            return Some(at);
+        }
+        from = at + close.len();
+    }
+    None
+}
+
+/// A display block starting at `lines[i]`: the block, the lines it used, and any text after the
+/// closer on its last line (which becomes a paragraph).
+fn display_block_at(lines: &[&str], i: usize) -> Option<(Block, usize, Option<String>)> {
+    let t = lines[i].trim_start();
+    // (the text after the opener, the closer, whether the closer belongs to the content)
+    let (first, close, keep_close): (&str, String, bool) = if let Some(r) = t.strip_prefix("$$") {
+        (r, "$$".into(), false)
+    } else if let Some(r) = t.strip_prefix("\\[") {
+        (r, "\\]".into(), false)
+    } else {
+        let env = math_env_open(t)?;
+        (t, format!("\\end{{{env}}}"), true)
+    };
+    let finish = |body: String, line: &str, at: usize, used: usize| {
+        let cut = if keep_close { at + close.len() } else { at };
+        let mut src = body;
+        src.push_str(&line[..cut]);
+        let rest = line[at + close.len()..].trim();
+        let trailing = (!rest.is_empty()).then(|| rest.to_string());
+        Some((Block::DisplayMath { src, end: MathEnd::Closed }, used, trailing))
+    };
+    // The closer is searched for after the opener, so `$$` does not close itself.
+    let search_from = if keep_close { "\\begin{".len() } else { 0 };
+    if let Some(at) = find_closer(&first[search_from..], &close) {
+        return finish(String::new(), first, at + search_from, 1);
+    }
+    let mut body = first.to_string();
+    let mut j = i + 1;
+    while j < lines.len() {
+        let l = lines[j];
+        if l.trim().is_empty() {
+            return Some((Block::DisplayMath { src: body, end: MathEnd::Blank }, j - i, None));
+        }
+        body.push('\n');
+        if let Some(at) = find_closer(l, &close) {
+            return finish(body, l, at, j - i + 1);
+        }
+        body.push_str(l);
+        j += 1;
+    }
+    Some((Block::DisplayMath { src: body, end: MathEnd::Eof }, j - i, None))
 }
 
 fn parse_blocks(lines: &[&str], depth: usize) -> Vec<Block> {
@@ -239,16 +589,24 @@ fn parse_blocks(lines: &[&str], depth: usize) -> Vec<Block> {
             continue;
         }
         if let Some(fence) = fence_open(line) {
+            // GitHub's ```` ```math ```` fence is display maths, not code.
+            let is_math = line.trim_start()[fence.len()..].trim() == "math";
             let mut body = Vec::new();
             i += 1;
             while i < lines.len() && !fence_closes(lines[i], &fence) {
                 body.push(lines[i].to_string());
                 i += 1;
             }
-            if i < lines.len() {
+            let closed = i < lines.len();
+            if closed {
                 i += 1; // the closing fence
             }
-            out.push(Block::Code(body));
+            if is_math {
+                let end = if closed { MathEnd::Closed } else { MathEnd::Eof };
+                out.push(Block::DisplayMath { src: body.join("\n"), end });
+            } else {
+                out.push(Block::Code(body));
+            }
             continue;
         }
         if is_thematic_break(line) {
@@ -261,9 +619,19 @@ fn parse_blocks(lines: &[&str], depth: usize) -> Vec<Block> {
             i += 1;
             continue;
         }
-        if let Some(inner) = display_math(line) {
-            out.push(Block::DisplayMath(inner));
-            i += 1;
+        if let Some((block, consumed, trailing)) = display_block_at(lines, i) {
+            out.push(block);
+            i += consumed.max(1);
+            if let Some(t) = trailing {
+                // Text after the closer starts a paragraph, which runs on through the lines after.
+                let mut para = vec![t];
+                while i < lines.len() && !lines[i].trim().is_empty() && !opens_display(lines[i]) {
+                    para.push(lines[i].to_string());
+                    i += 1;
+                }
+                let refs: Vec<&str> = para.iter().map(String::as_str).collect();
+                out.push(Block::Para(join_paragraph(&refs)));
+            }
             continue;
         }
         if line.trim_start().starts_with('>') && depth < MAX_BLOCK_DEPTH {
@@ -301,6 +669,7 @@ fn parse_blocks(lines: &[&str], depth: usize) -> Vec<Block> {
                 && (fence_open(l).is_some()
                     || is_thematic_break(l)
                     || atx_heading(l).is_some()
+                    || opens_display(l)
                     || l.trim_start().starts_with('>')
                     || marker_at(l).is_some()
                     || table_at(lines, i).is_some())
@@ -380,20 +749,6 @@ fn atx_heading(line: &str) -> Option<(u8, String)> {
         hashes as u8,
         rest.trim().trim_end_matches('#').trim_end().to_string(),
     ))
-}
-
-fn display_math(line: &str) -> Option<String> {
-    let t = line.trim();
-    for (open, close) in [("$$", "$$"), ("\\[", "\\]")] {
-        if let Some(rest) = t.strip_prefix(open) {
-            if let Some(inner) = rest.strip_suffix(close) {
-                if !inner.trim().is_empty() {
-                    return Some(t.to_string());
-                }
-            }
-        }
-    }
-    None
 }
 
 /// `(indent, marker width, ordered, number)` for a list item line.
@@ -526,31 +881,79 @@ fn table_at(lines: &[&str], i: usize) -> Option<(Block, usize)> {
     Some((Block::Table { head, rows, source }, n - i))
 }
 
+/// The cells of a table row. A `|` inside an inline formula (`$|x|$`, `$\|v\|$`) or escaped as
+/// `\|` does not split the row: cutting a formula in half would put its `$` on screen.
 fn split_row(line: &str) -> Vec<String> {
     let t = line.trim();
     let t = t.strip_prefix('|').unwrap_or(t);
-    let t = t.strip_suffix('|').unwrap_or(t);
-    t.split('|').map(|c| c.trim().to_string()).collect()
+    let t = t.strip_suffix('|').filter(|r| !r.ends_with('\\')).unwrap_or(t);
+    let chars: Vec<char> = t.chars().collect();
+    let mut cells = Vec::new();
+    let mut cell = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\\' && i + 1 < chars.len() {
+            cell.push(c);
+            cell.push(chars[i + 1]);
+            i += 2;
+            continue;
+        }
+        if c == '$' {
+            // The span to the next unescaped `$`, kept whole when it reads as maths.
+            let mut j = i + 1;
+            while j < chars.len() && !(chars[j] == '$' && chars[j - 1] != '\\') {
+                j += 1;
+            }
+            if j < chars.len() {
+                let content: String = chars[i + 1..j].iter().collect();
+                if content.contains('|') && math::looks_like_inline_maths(&content) {
+                    cell.extend(&chars[i..=j]);
+                    i = j + 1;
+                    continue;
+                }
+            } else if matches!(chars.get(i + 1), Some('|' | '\\')) {
+                // Unclosed, and `$|` or `$\` is never a price: a formula still arriving (or whose
+                // closer was dropped). The rest of the row stays with it rather than being cut.
+                cell.extend(&chars[i..]);
+                break;
+            }
+        }
+        if c == '|' {
+            cells.push(cell.trim().to_string());
+            cell.clear();
+        } else {
+            cell.push(c);
+        }
+        i += 1;
+    }
+    cells.push(cell.trim().to_string());
+    cells
 }
 
 // ── layout ──────────────────────────────────────────────────────────────────────────────────────
 
-fn layout_blocks(blocks: &[Block], ctx: &Ctx, width: usize) -> Vec<Line<'static>> {
+/// `live` reaches only the last block: an unclosed span anywhere else is not still arriving, the
+/// reply has moved past it.
+/// One blank line between blocks — except a list that follows its own lead-in sentence, which is
+/// one thing and reads as one thing. This is also what makes a nested list sit directly under its
+/// parent item instead of a row below it.
+fn block_gap(blocks: &[Block], n: usize) -> Option<Line<'static>> {
+    let tight = n > 0 && matches!(blocks[n], Block::List { .. }) && matches!(blocks[n - 1], Block::Para(_));
+    (n > 0 && !tight).then(|| Line::from(""))
+}
+
+fn layout_blocks(blocks: &[Block], ctx: &Ctx, width: usize, live: bool) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
     for (n, b) in blocks.iter().enumerate() {
-        // One blank line between blocks — except a list that follows its own lead-in sentence,
-        // which is one thing and reads as one thing. This is also what makes a nested list sit
-        // directly under its parent item instead of a row below it.
-        let tight = n > 0 && matches!(b, Block::List { .. }) && matches!(blocks[n - 1], Block::Para(_));
-        if n > 0 && !tight {
-            out.push(Line::from(""));
-        }
-        out.extend(layout_block(b, ctx, width));
+        let tail = live && n + 1 == blocks.len();
+        out.extend(block_gap(blocks, n));
+        out.extend(layout_block(b, ctx, width, tail));
     }
     out
 }
 
-fn layout_block(block: &Block, ctx: &Ctx, width: usize) -> Vec<Line<'static>> {
+fn layout_block(block: &Block, ctx: &Ctx, width: usize, live: bool) -> Vec<Line<'static>> {
     match block {
         Block::Heading { level, text } => {
             // Accent is §B2's structure role. Bold at the top two levels gives three visible ranks
@@ -559,7 +962,7 @@ fn layout_block(block: &Block, ctx: &Ctx, width: usize) -> Vec<Line<'static>> {
             if *level <= 2 {
                 style = style.add_modifier(Modifier::BOLD);
             }
-            let runs = inline(text, ctx, style, 0);
+            let runs = inline(text, ctx, style, 0, live);
             wrap_runs(&runs, width)
                 .into_iter()
                 .map(Line::from)
@@ -567,8 +970,9 @@ fn layout_block(block: &Block, ctx: &Ctx, width: usize) -> Vec<Line<'static>> {
         }
         Block::Para(text) => {
             let mut out = Vec::new();
-            for hard in text.split('\n') {
-                let runs = inline(hard, ctx, ctx.base, 0);
+            let hards: Vec<&str> = text.split('\n').collect();
+            for (k, hard) in hards.iter().enumerate() {
+                let runs = inline(hard, ctx, ctx.base, 0, live && k + 1 == hards.len());
                 out.extend(wrap_runs(&runs, width).into_iter().map(Line::from));
             }
             out
@@ -590,7 +994,7 @@ fn layout_block(block: &Block, ctx: &Ctx, width: usize) -> Vec<Line<'static>> {
             out
         }
         Block::Quote(inner) => {
-            let body = layout_blocks(inner, ctx, width.saturating_sub(2).max(MIN_WIDTH));
+            let body = layout_blocks(inner, ctx, width.saturating_sub(2).max(MIN_WIDTH), live);
             body.into_iter()
                 .map(|line| {
                     let mut spans = vec![Span::styled(
@@ -624,7 +1028,8 @@ fn layout_block(block: &Block, ctx: &Ctx, width: usize) -> Vec<Line<'static>> {
                     "• ".to_string()
                 };
                 let mw = marker.chars().count();
-                let body = layout_blocks(item, ctx, width.saturating_sub(mw).max(MIN_WIDTH));
+                let tail = live && n + 1 == items.len();
+                let body = layout_blocks(item, ctx, width.saturating_sub(mw).max(MIN_WIDTH), tail);
                 for (r, line) in body.into_iter().enumerate() {
                     let prefix = if r == 0 {
                         Span::styled(marker.clone(), ctx.accent())
@@ -646,25 +1051,69 @@ fn layout_block(block: &Block, ctx: &Ctx, width: usize) -> Vec<Line<'static>> {
             "·".repeat(width),
             ctx.theme.dimmer(),
         ))],
-        Block::DisplayMath(src) => {
-            let rendered = crate::latex::render_or_source(src);
-            let style = match &rendered {
-                // **`maths()`, not `base`** -- the same weight the INLINE path gives an equation.
-                // Display maths took the surrounding prose's style, so `$x$` stood out and
-                // `$$x$$` did not, which is backwards: the display form is the one the author
-                // decided was important enough to put on its own line.
-                std::borrow::Cow::Owned(_) => ctx.maths(),
-                // Refused: this is source, and it is styled as source so the reader can see that.
-                std::borrow::Cow::Borrowed(_) => ctx.code(),
-            };
+        Block::DisplayMath { src, end } => {
             let inner = width.saturating_sub(2).max(MIN_WIDTH);
-            hard_chunks(&rendered, inner)
-                .into_iter()
-                .map(|c| Line::from(vec![Span::raw("  "), Span::styled(c, style)]))
-                .collect()
+            if *end == MathEnd::Eof && live {
+                // Still arriving. Reserve the rows the formula will take, so nothing below it moves
+                // when it lands, and show only the placeholder.
+                // Counted the way the landed block will be drawn (2D rows, or its one-line form
+                // word-wrapped), so the estimate and the final height agree for the same source.
+                let rows = display_lines(&math::typeset_uncached(src, true), inner, ctx.maths()).len().max(1);
+                let mut out = vec![Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(MATHS_PLACEHOLDER, ctx.placeholder()),
+                ])];
+                out.extend((1..rows).map(|_| Line::from("")));
+                return out;
+            }
+            display_lines(&math::display(src), inner, ctx.maths())
         }
-        Block::Table { head, rows, source } => layout_table(head, rows, source, ctx, width),
+        Block::Table { head, rows, source } => layout_table(head, rows, source, ctx, width, live),
     }
+}
+
+/// A display formula as indented lines: its 2D rows when they fit, otherwise its one-line form
+/// word-wrapped. Never a hard chop through the middle of a 2D layout.
+fn display_lines(f: &Formula, inner: usize, style: Style) -> Vec<Line<'static>> {
+    if let Some(rows) = clipped_lines(f, inner, style, vec![Span::raw("  ")]) {
+        return rows.into_iter().map(Line::from).collect();
+    }
+    let (lines, two_d) = f.fit(inner);
+    let mut out = Vec::new();
+    for l in lines {
+        if two_d {
+            out.push(Line::from(vec![Span::raw("  "), Span::styled(l.clone(), style)]));
+            continue;
+        }
+        for row in wrap_runs(&[Run::plain(l.clone(), style)], inner) {
+            let mut spans = vec![Span::raw("  ")];
+            spans.extend(row);
+            out.push(Line::from(spans));
+        }
+    }
+    out
+}
+
+/// A matrix wider than `inner`, as rows cut at the pane's edge with the clip marker on its
+/// baseline row in the dim weight, each row after `lead`. `None` when it fits or is not a matrix.
+fn clipped_lines(f: &Formula, inner: usize, style: Style, lead: Vec<Span<'static>>) -> Option<Vec<Vec<Span<'static>>>> {
+    let (rows, mark) = f.clipped(inner)?;
+    let dim = style.add_modifier(Modifier::DIM);
+    Some(
+        rows.into_iter()
+            .enumerate()
+            .map(|(k, r)| {
+                let mut spans = lead.clone();
+                let w = r.width();
+                spans.push(Span::styled(r, style));
+                if k == mark {
+                    spans.push(Span::raw(" ".repeat(inner.saturating_sub(w + 1))));
+                    spans.push(Span::styled(math::CLIP_MARKER.to_string(), dim));
+                }
+                spans
+            })
+            .collect(),
+    )
 }
 
 /// Remove the foreground from a style, keeping its modifiers — so quoting a **bold** run keeps the
@@ -692,24 +1141,25 @@ fn layout_table(
     source: &[String],
     ctx: &Ctx,
     width: usize,
+    live: bool,
 ) -> Vec<Line<'static>> {
     const GAP: usize = 2;
     const MIN_COL: usize = 6;
-    let cols = head.len();
-    if cols == 0 || cols * (MIN_COL + GAP) > width + GAP {
-        return layout_block(&Block::Code(source.to_vec()), ctx, width);
+    let ncols = head.len();
+    if ncols == 0 || ncols * (MIN_COL + GAP) > width + GAP {
+        return table_source(source, ctx, width, live);
     }
-    let mut widths: Vec<usize> = head.iter().map(|h| h.chars().count()).collect();
+    let mut widths: Vec<usize> = head.iter().map(|h| cols(h)).collect();
     for r in rows {
-        for (i, c) in r.iter().take(cols).enumerate() {
-            widths[i] = widths[i].max(c.chars().count());
+        for (i, c) in r.iter().take(ncols).enumerate() {
+            widths[i] = widths[i].max(cols(c));
         }
     }
     // Shrink the widest column until it fits. Proportional scaling would round every column into
     // being slightly wrong; taking from the widest keeps narrow columns intact, which is what makes
     // a shrunken table still readable.
     let avail = width;
-    let total = |w: &[usize]| w.iter().sum::<usize>() + GAP * (cols - 1);
+    let total = |w: &[usize]| w.iter().sum::<usize>() + GAP * (ncols - 1);
     let mut guard = 0;
     while total(&widths) > avail && guard < 10_000 {
         guard += 1;
@@ -724,19 +1174,36 @@ fn layout_table(
         widths[i] -= 1;
     }
     if total(&widths) > avail {
-        return layout_block(&Block::Code(source.to_vec()), ctx, width);
+        return table_source(source, ctx, width, live);
     }
 
     let mut out = Vec::new();
     let header_style = ctx.base.add_modifier(Modifier::BOLD);
-    out.extend(table_row(head, &widths, ctx, header_style));
-    for r in rows {
-        out.extend(table_row(r, &widths, ctx, ctx.base));
+    // Only the row still arriving holds an unclosed formula back.
+    out.extend(table_row(head, &widths, ctx, header_style, live && rows.is_empty()));
+    for (n, r) in rows.iter().enumerate() {
+        out.extend(table_row(r, &widths, ctx, ctx.base, live && n + 1 == rows.len()));
     }
     out
 }
 
-fn table_row(cells: &[String], widths: &[usize], ctx: &Ctx, style: Style) -> Vec<Line<'static>> {
+/// A table too wide for the pane, as the lines the model wrote -- with its maths typeset, because
+/// LaTeX source never reaches the screen, even inside a table that could not be laid out.
+fn table_source(source: &[String], ctx: &Ctx, width: usize, live: bool) -> Vec<Line<'static>> {
+    let inner = width.saturating_sub(2).max(MIN_WIDTH);
+    let mut out = Vec::new();
+    for (n, l) in source.iter().enumerate() {
+        let runs = inline_maths_only(l, ctx, ctx.code(), live && n + 1 == source.len());
+        for row in wrap_runs(&runs, inner) {
+            let mut spans = vec![Span::raw("  ")];
+            spans.extend(row);
+            out.push(Line::from(spans));
+        }
+    }
+    out
+}
+
+fn table_row(cells: &[String], widths: &[usize], ctx: &Ctx, style: Style, live: bool) -> Vec<Line<'static>> {
     const GAP: usize = 2;
     // Each cell wraps inside its own column, so a long cell grows the row rather than the table.
     let wrapped: Vec<Vec<Vec<Span<'static>>>> = widths
@@ -744,7 +1211,7 @@ fn table_row(cells: &[String], widths: &[usize], ctx: &Ctx, style: Style) -> Vec
         .enumerate()
         .map(|(i, w)| {
             let text = cells.get(i).map(String::as_str).unwrap_or("");
-            let runs = inline(text, ctx, style, 0);
+            let runs = inline(text, ctx, style, 0, live && i + 1 == widths.len().min(cells.len().max(1)));
             wrap_runs(&runs, *w)
         })
         .collect();
@@ -758,7 +1225,7 @@ fn table_row(cells: &[String], widths: &[usize], ctx: &Ctx, style: Style) -> Vec
             }
             let row = col.get(r);
             let used: usize = row
-                .map(|s| s.iter().map(|sp| sp.content.chars().count()).sum())
+                .map(|s| s.iter().map(|sp| cols(&sp.content)).sum())
                 .unwrap_or(0);
             if let Some(s) = row {
                 spans.extend(s.iter().cloned());
@@ -789,33 +1256,47 @@ fn hard_chunks(s: &str, width: usize) -> Vec<String> {
 struct Run {
     text: String,
     style: Style,
+    /// A multi-row display formula met mid-paragraph. The wrapper breaks the paragraph around it
+    /// when it fits, and word-wraps `text` (its one-line form) when it does not.
+    block: Option<Arc<Formula>>,
+    /// Kept on one line when it fits: an inline formula.
+    atomic: bool,
+}
+
+impl Run {
+    fn plain(text: impl Into<String>, style: Style) -> Run {
+        Run { text: text.into(), style, block: None, atomic: false }
+    }
+
+    fn formula(text: impl Into<String>, style: Style) -> Run {
+        Run { text: text.into(), style, block: None, atomic: true }
+    }
 }
 
 /// Characters that can **begin** an inline construct. A paragraph containing none of them has no
 /// inline markup in it, which is the majority of the prose in any reply.
 const INLINE_TRIGGERS: [char; 8] = ['*', '_', '`', '[', '<', '$', '~', '\\'];
 
-fn inline(src: &str, ctx: &Ctx, style: Style, depth: usize) -> Vec<Run> {
+fn inline(src: &str, ctx: &Ctx, style: Style, depth: usize, live: bool) -> Vec<Run> {
     // **The fast path, and it is most of the text in most replies.** Without it every paragraph
     // pays for a `Vec<char>` — four bytes per character, allocated and copied — plus a per-
     // character match, on every frame, in order to discover that there was nothing to find.
     if !src.contains(INLINE_TRIGGERS) {
-        return vec![Run {
-            text: src.to_string(),
-            style,
-        }];
+        return vec![Run::plain(src, style)];
     }
     let mut out: Vec<Run> = Vec::new();
-    let chars: Vec<char> = src.chars().collect();
+    let mut chars: Vec<char> = src.chars().collect();
+    if live {
+        // The front of a `\(` or `\begin{` still arriving is held back, not shown as text.
+        let keep = held_tail(&chars);
+        chars.truncate(keep);
+    }
     let mut lit = String::new();
     let mut i = 0;
     macro_rules! flush {
         () => {
             if !lit.is_empty() {
-                out.push(Run {
-                    text: std::mem::take(&mut lit),
-                    style,
-                });
+                out.push(Run::plain(std::mem::take(&mut lit), style));
             }
         };
     }
@@ -825,11 +1306,28 @@ fn inline(src: &str, ctx: &Ctx, style: Style, depth: usize) -> Vec<Run> {
             // Maths is tried **before** the escape rule, because `\(` is a delimiter and `(` is
             // punctuation — reading it as an escaped paren would eat the opening of every
             // `\(…\)` expression and leave the closing one on screen.
-            if c == '$' || (c == '\\' && chars.get(i + 1) == Some(&'(')) {
-                if let Some((runs, next)) = maths(&chars, i, ctx, style) {
+            if opens_maths(&chars, i) {
+                if let Some((runs, next)) = maths(&chars, i, ctx, style, live) {
                     flush!();
                     out.extend(runs);
                     i = next;
+                    continue 'scan;
+                }
+            }
+        }
+        // A symbol command with no delimiters around it (`the rate \eta is small`) is still LaTeX,
+        // and LaTeX never reaches the screen as source. Only where a path could not be meant:
+        // `C:\theta`, `dir\alpha` and `./\beta` are left alone.
+        if c == '\\' && depth < MAX_INLINE_DEPTH {
+            let k = chars[i + 1..].iter().take_while(|c| c.is_ascii_alphabetic()).count();
+            let before_ok = i == 0 || !(chars[i - 1].is_alphanumeric() || matches!(chars[i - 1], ':' | '\\' | '/' | '.' | '~' | '_'));
+            let after_ok = chars.get(i + 1 + k).is_none_or(|c| !(c.is_alphanumeric() || matches!(c, '{' | '_' | '^' | '\\' | '/' | ':')));
+            if k > 0 && before_ok && after_ok {
+                let name: String = chars[i + 1..i + 1 + k].iter().collect();
+                if let Some(g) = math::bare_symbol(&name) {
+                    flush!();
+                    out.push(Run::formula(g, ctx.maths().add_modifier(style.add_modifier)));
+                    i += 1 + k;
                     continue 'scan;
                 }
             }
@@ -846,10 +1344,7 @@ fn inline(src: &str, ctx: &Ctx, style: Style, depth: usize) -> Vec<Run> {
                 match code_span(&chars, i, ctx) {
                     Ok((body, next)) => {
                         flush!();
-                        out.push(Run {
-                            text: body,
-                            style: ctx.code(),
-                        });
+                        out.push(Run::plain(body, ctx.code()));
                         i = next;
                         continue 'scan;
                     }
@@ -894,7 +1389,7 @@ fn inline(src: &str, ctx: &Ctx, style: Style, depth: usize) -> Vec<Run> {
                 }
                 if let Some((inner, next)) = delimited(&chars, i, delim, ctx) {
                     flush!();
-                    out.extend(inline(&inner, ctx, style.add_modifier(modifier), depth + 1));
+                    out.extend(inline(&inner, ctx, style.add_modifier(modifier), depth + 1, false));
                     i = next;
                     continue 'scan;
                 }
@@ -1065,24 +1560,16 @@ fn link(
             ctx,
             style.add_modifier(Modifier::UNDERLINED),
             depth + 1,
+            false,
         ));
     }
     if !target.is_empty() && target != text {
         if !runs.is_empty() {
-            runs.push(Run {
-                text: " ".into(),
-                style,
-            });
+            runs.push(Run::plain(" ", style));
         }
-        runs.push(Run {
-            text: format!("({target})"),
-            style: ctx.theme.dim(),
-        });
+        runs.push(Run::plain(format!("({target})"), ctx.theme.dim()));
     } else if runs.is_empty() {
-        runs.push(Run {
-            text: target,
-            style: ctx.theme.dim(),
-        });
+        runs.push(Run::plain(target, ctx.theme.dim()));
     }
     Some((runs, k + 1))
 }
@@ -1100,55 +1587,49 @@ fn autolink(chars: &[char], i: usize, ctx: &Ctx, style: Style) -> Option<(Vec<Ru
         return None;
     }
     Some((
-        vec![Run {
-            text: inner,
-            style: style.patch(ctx.theme.dim()).add_modifier(Modifier::UNDERLINED),
-        }],
+        vec![Run::plain(inner, style.patch(ctx.theme.dim()).add_modifier(Modifier::UNDERLINED))],
         close + 1,
     ))
 }
 
-/// `$…$` and `\(…\)`.
+/// `$…$`, `\(…\)`, and display spans met mid-paragraph: `$$…$$`, `\[…\]`.
 ///
-/// The refusal path is the important one: an expression [`crate::latex`] cannot represent is
-/// emitted **as its own source, delimiters included**, styled as verbatim text — so the reader can
-/// see that they are looking at LaTeX rather than at a formula somebody has quietly rearranged.
-fn maths(chars: &[char], i: usize, ctx: &Ctx, style: Style) -> Option<(Vec<Run>, usize)> {
-    // **`$$...$$` MID-LINE, and this is the bug it fixes.**
-    //
-    // `display_math` only recognises `$$` when it is the WHOLE line. A model writing
-    // `Policy gradient: $$...$$` -- a label, then display maths -- never matched it and fell
-    // through to here, where `open` was a single `$`: `start` landed on the SECOND `$`, the loop
-    // matched it immediately as the close, the content was empty, `looks_like_inline_maths("")`
-    // said no, and the whole expression was emitted as literal source with its delimiters. Three
-    // of four formulas in a real reply came out raw.
-    //
-    // Two dollars is the longer delimiter and must be tried FIRST: the single-`$` arm is a prefix
-    // of it and would otherwise always win.
-    let (open, close): (&[char], &[char]) = if chars[i] == '$' {
-        if chars.get(i + 1) == Some(&'$') {
-            (&['$', '$'], &['$', '$'])
-        } else {
-            (&['$'], &['$'])
-        }
+/// # Never the source
+///
+/// A closed span is typeset by [`crate::math`], which never returns source: it parses, or repairs
+/// and parses, or paraphrases. An **unclosed** span is decided here:
+///
+/// | unclosed span | streaming tail | finished reply |
+/// |---|---|---|
+/// | `$…` that could still be maths | placeholder | literal: it was a dollar sign |
+/// | `$…` that has turned into prose | literal | literal |
+/// | `\(…`, `$$…`, `\[…` | placeholder | typeset as if closed: the closer was the slip |
+///
+/// A span never crosses a hard line break, so an unpaired `$` cannot swallow the rest of a reply.
+fn maths(chars: &[char], i: usize, ctx: &Ctx, style: Style, live: bool) -> Option<(Vec<Run>, usize)> {
+    // A maths environment met mid-paragraph: `… we get \begin{pmatrix}…\end{pmatrix}.` The span
+    // keeps its `\begin`/`\end`, which are the formula.
+    let env_close: Vec<char>;
+    let begin_env = chars[i] == '\\' && chars.get(i + 1) == Some(&'b');
+    if begin_env {
+        let rest: String = chars[i..chars.len().min(i + 40)].iter().collect();
+        let env = math_env_open(&rest)?;
+        env_close = format!("\\end{{{env}}}").chars().collect();
     } else {
-        (&['\\', '('], &['\\', ')'])
+        env_close = Vec::new();
+    }
+    // Two dollars is the longer delimiter and must be tried first, or `$$x$$` reads as an empty
+    // `$$` span and then `x` between two stray dollars.
+    let (open_len, close, display): (usize, &[char], bool) = match (chars[i], chars.get(i + 1)) {
+        _ if begin_env => (0, &env_close, true),
+        ('$', Some('$')) => (2, &['$', '$'], true),
+        ('$', _) => (1, &['$'], false),
+        (_, Some('[')) => (2, &['\\', ']'], true),
+        _ => (2, &['\\', ')'], false),
     };
-    let start = i + open.len();
-    let mut j = start;
-    // **An expression still being streamed renders as though it were closed.**
-    //
-    // A reply arrives token by token, so `$$y = \sigma(Wx` is what the pane holds for as long as
-    // the model takes to finish the line. Requiring the closing delimiter meant the raw source sat
-    // there and then SNAPPED into a formula when the last two characters landed. Rendering the
-    // partial makes the equation appear to build, which is what the rest of the surface already
-    // does -- section B5s rule is that motion means Marlowe is working.
-    //
-    // **Unterminated at end-of-input only, never across a newline.** A `$` in ordinary prose with
-    // no partner would otherwise swallow the remainder of the reply, and the newline bail below is
-    // what stops it. A partial expression is also frequently mid-token (`ra`, `rac{1`), which
-    // `latex::render` refuses -- so it falls back to source, exactly as for anything else it
-    // cannot represent. That fallback is what makes this safe rather than clever.
+    let start = i + open_len;
+    // An environment's `\begin{…}` is skipped before its `\end` is looked for.
+    let mut j = if begin_env { start + 7 } else { start };
     let mut unterminated = false;
     let end = loop {
         if !ctx.spend(1) {
@@ -1159,67 +1640,120 @@ fn maths(chars: &[char], i: usize, ctx: &Ctx, style: Style) -> Option<(Vec<Run>,
             break chars.len();
         }
         if chars[j..j + close.len()] == *close {
-            break j;
+            // `\$` inside a span is an escaped dollar, not the closer: `$\$5$`.
+            let slashes = chars[start..j].iter().rev().take_while(|c| **c == '\\').count();
+            if close[0] != '$' || slashes % 2 == 0 {
+                break j;
+            }
         }
         if chars[j] == '\n' {
             return None;
         }
         j += 1;
     };
-    let mut content: String = chars[start..end].iter().collect();
-    // A `$$` span still arriving has seen the FIRST character of its own closing delimiter one
-    // frame before the second, so the equation would show a trailing `$` for exactly that frame.
-    // It is the close, not content.
+    let mut content: String = chars[start.min(end)..end].iter().collect();
+    if begin_env && !unterminated {
+        content.extend(close.iter());
+    }
+    let single_dollar = open_len == 1;
+    let mut consumed = if unterminated { chars.len() } else { end + close.len() };
     if unterminated {
-        while content.ends_with('$') {
+        // The first character of the closer arrives a token before the second.
+        while !begin_env && content.ends_with(close[0]) {
             content.pop();
         }
-    }
-    if open[0] == '$' && !crate::latex::looks_like_inline_maths(&content) {
-        return None;
-    }
-    // The delimiters are only consumed if they were actually there.
-    let consumed = if unterminated { chars.len() } else { end + close.len() };
-    let source: String = chars[i..consumed].iter().collect();
-    // **While it is still arriving, render the longest valid PREFIX rather than nothing.**
-    //
-    // Rendering only complete expressions was already the rule, and it flickered: a partial
-    // alternates between valid and invalid as each token completes, so the pane flipped between a
-    // typeset formula and raw source several times per equation. Both states were correct and the
-    // transition between them was the problem.
-    //
-    // Backing off to the longest prefix that renders makes the display MONOTONIC -- it only ever
-    // grows -- because a prefix that rendered a frame ago still renders now with more after it.
-    // `$$y = \s` shows `y = ` rather than reverting to source, and the half-typed command simply
-    // has not appeared yet.
-    //
-    // **Only for unterminated spans.** A CLOSED expression that will not render is a real refusal
-    // -- a matrix, an over-line -- and must stay visibly its source, not be silently truncated to
-    // the part that happened to work. That would be the "wrong and plausible" outcome this module
-    // exists to prevent, and it is why this is keyed on `unterminated` rather than on failure.
-    let rendered = crate::latex::render(&content).or_else(|| {
-        if !unterminated {
+        if live {
+            let still_maths = if single_dollar {
+                math::could_become_inline_maths(&content)
+            } else {
+                !prose_like(&content)
+            };
+            if !still_maths {
+                return None;
+            }
+            if display {
+                // Reserve the rows the formula will take when it lands, as a block does, so the
+                // paragraph does not grow under the reader when the closer arrives.
+                let rows = math::typeset_uncached(&content, true).rows.len().max(1);
+                if rows > 1 {
+                    let mut held = vec![MATHS_PLACEHOLDER.to_string()];
+                    held.resize(rows, String::new());
+                    let f = Formula {
+                        rows: held,
+                        width: 1,
+                        linear: vec![MATHS_PLACEHOLDER.to_string()],
+                        fidelity: math::Fidelity::Paraphrased,
+                        typst: None,
+                        clip_row: None,
+                    };
+                    let run = Run { text: MATHS_PLACEHOLDER.into(), style: ctx.placeholder(), block: Some(Arc::new(f)), atomic: false };
+                    return Some((vec![run], chars.len()));
+                }
+            }
+            return Some((vec![Run::plain(MATHS_PLACEHOLDER, ctx.placeholder())], chars.len()));
+        }
+        // Finished, and never closed. A lone `$` before prose or a number was a dollar sign; one
+        // before a command was maths whose closer went missing, and it runs to where the prose
+        // starts again. An unclosed `\[` with nothing after it was an escaped bracket, and an
+        // empty `$$` is dropped; anything else was maths whose closer went missing.
+        if single_dollar {
+            let n = math::unclosed_inline_extent(&content)?;
+            content = content.chars().take(n).collect();
+            consumed = start + n;
+        } else if content.trim().is_empty() {
+            if open_len == 2 && chars[i] == '$' {
+                return Some((Vec::new(), chars.len()));
+            }
             return None;
         }
-        let cs: Vec<char> = content.chars().collect();
-        (1..cs.len())
-            .rev()
-            .find_map(|n| crate::latex::render(&cs[..n].iter().collect::<String>()))
-    });
-    let runs = match rendered {
-        Some(rendered) => vec![Run {
-            text: rendered,
-            // Lighter than the prose around it — see `Ctx::maths`. The REFUSED arm below keeps the
-            // verbatim style, because unrendered source is not an equation standing out, it is
-            // source the reader should recognise as source.
-            style: ctx.maths().patch(style.sub_modifier),
-        }],
-        None => vec![Run {
-            text: source,
-            style: ctx.code(),
-        }],
-    };
-    Some((runs, consumed))
+    } else if single_dollar && !math::looks_like_inline_maths(&content) {
+        return None;
+    }
+    // Lighter than the prose around it -- see `Ctx::maths` -- and keeping any emphasis it sits in.
+    let st = ctx.maths().add_modifier(style.add_modifier);
+    if display {
+        let f = math::display(&content);
+        if f.rows.len() > 1 {
+            let text = f.linear.join("  ");
+            return Some((vec![Run { text, style: st, block: Some(f), atomic: false }], consumed));
+        }
+        return Some((vec![Run::formula(f.rows[0].clone(), st)], consumed));
+    }
+    let f = math::inline(&content);
+    Some((vec![Run::formula(f.rows[0].clone(), st)], consumed))
+}
+
+/// Whether an unclosed `\(`, `\[` or `$$` has turned out to be prose, which means it was never a
+/// delimiter: three or more words of four letters or more, outside commands and braces.
+fn prose_like(s: &str) -> bool {
+    let chars: Vec<char> = s.chars().collect();
+    let (mut i, mut depth, mut words) = (0, 0usize, 0);
+    while i < chars.len() {
+        match chars[i] {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            '\\' => {
+                i += 1;
+                while i < chars.len() && chars[i].is_ascii_alphabetic() {
+                    i += 1;
+                }
+                continue;
+            }
+            c if c.is_ascii_alphabetic() => {
+                let st = i;
+                while i < chars.len() && chars[i].is_ascii_alphabetic() {
+                    i += 1;
+                }
+                if depth == 0 && i - st >= 4 {
+                    words += 1;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    words >= 3
 }
 
 // ── wrapping ────────────────────────────────────────────────────────────────────────────────────
@@ -1236,7 +1770,36 @@ fn wrap_runs(runs: &[Run], width: usize) -> Vec<Vec<Span<'static>>> {
     let mut pending_space: Option<Style> = None;
 
     for run in runs {
-        for tok in tokenize(&run.text) {
+        // A multi-row formula mid-paragraph is set off on its own rows, as display maths is.
+        if let Some(f) = &run.block {
+            if let Some(clipped) = clipped_lines(f, width.saturating_sub(2), run.style, vec![Span::raw("  ")]) {
+                if row.col > 0 {
+                    rows.push(row.finish());
+                }
+                pending_space = None;
+                rows.extend(clipped);
+                continue;
+            }
+            let (lines, two_d) = f.fit(width.saturating_sub(2));
+            if two_d {
+                if row.col > 0 {
+                    rows.push(row.finish());
+                }
+                pending_space = None;
+                for l in lines {
+                    rows.push(vec![Span::raw("  "), Span::styled(l.clone(), run.style)]);
+                }
+                continue;
+            }
+        }
+        // Inline maths moves to the next line whole rather than breaking at its own spaces, unless
+        // it is wider than the pane.
+        let toks = if run.atomic && cols(&run.text) <= width {
+            vec![Token::Word(run.text.clone())]
+        } else {
+            tokenize(&run.text)
+        };
+        for tok in toks {
             match tok {
                 Token::Space => {
                     if row.col > 0 {
@@ -1246,7 +1809,7 @@ fn wrap_runs(runs: &[Run], width: usize) -> Vec<Vec<Span<'static>>> {
                 Token::Word(word) => {
                     let mut rest = word;
                     loop {
-                        let len = rest.chars().count();
+                        let len = cols(&rest);
                         let sp = usize::from(pending_space.is_some() && row.col > 0);
                         if row.col + sp + len <= width {
                             if let Some(st) = pending_space.take().filter(|_| sp == 1) {
@@ -1264,12 +1827,15 @@ fn wrap_runs(runs: &[Run], width: usize) -> Vec<Vec<Span<'static>>> {
                         // At column zero and still too long: a URL, a hash, a path. Hard-split
                         // rather than overflow the pane — the alternative is a line the renderer
                         // believes is `width` wide and the terminal truncates, which puts the
-                        // scrollbar's arithmetic and the screen out of agreement.
-                        let head: String = rest.chars().take(width).collect();
-                        let tail: String = rest.chars().skip(width).collect();
+                        // scrollbar's arithmetic and the screen out of agreement. Split by columns,
+                        // and never between a letter and the accent combined onto it.
+                        let (head, tail) = split_at_cols(&rest, width);
                         row.push(&head, run.style);
                         rows.push(row.finish());
                         rest = tail;
+                        if rest.is_empty() {
+                            break;
+                        }
                     }
                 }
             }
@@ -1280,6 +1846,21 @@ fn wrap_runs(runs: &[Run], width: usize) -> Vec<Vec<Span<'static>>> {
         rows.push(last);
     }
     rows
+}
+
+/// The longest prefix of `s` at most `width` columns wide (at least one character), and the rest.
+fn split_at_cols(s: &str, width: usize) -> (String, String) {
+    let mut w = 0;
+    let mut cut = s.len();
+    for (i, c) in s.char_indices() {
+        let cw = c.width().unwrap_or(0);
+        if cw > 0 && w + cw > width && w > 0 {
+            cut = i;
+            break;
+        }
+        w += cw;
+    }
+    (s[..cut].to_string(), s[cut..].to_string())
 }
 
 /// One wrapped row, **coalescing adjacent text of the same style into one `Span`**.
@@ -1310,7 +1891,7 @@ impl RowBuilder {
         }
         self.style = style;
         self.pending.push_str(text);
-        self.col += text.chars().count();
+        self.col += cols(text);
     }
 
     fn flush(&mut self) {
@@ -1517,19 +2098,26 @@ mod tests {
     }
 
     #[test]
-    fn maths_renders_when_it_can_and_stays_source_when_it_cannot() {
+    fn maths_always_renders_and_never_shows_its_source() {
         let a = text_of(&render(r"the area is $\pi r^2$ exactly", 60)).join("");
         assert!(a.contains("πr²"), "{a}");
-        // **The example changed on 2026-08-22, not the property.** It was
-        // `$\int_0^\infty e^{-x}dx$`, which now RENDERS: a script with no Unicode glyph degrades
-        // to explicit notation rather than being dropped, so the bound survives and there is
-        // nothing left to protect. `\hat{x}` is still genuinely unrenderable -- a combining mark
-        // occupies zero columns, so the accent would land on the wrong glyph or on none.
+        // **Inverted on 2026-10-09 by Matthew's requirement: LaTeX never renders raw.** This used
+        // to assert that `$\hat{x}$` stayed visibly its source, because a combining accent is zero
+        // columns wide. The wrap arithmetic now counts display columns, so the accent is drawn on
+        // its letter and no expression is left showing as source.
         let b = text_of(&render(r"consider $\hat{x}$ here", 80)).join("");
-        assert!(
-            b.contains(r"$\hat{x}$"),
-            "an expression that cannot be shown must stay visibly its source: {b}"
-        );
+        assert!(b.contains("x\u{302}"), "{b}");
+        assert!(!b.contains('$') && !b.contains('\\'), "source reached the pane: {b}");
+    }
+
+    #[test]
+    fn display_maths_over_several_lines_is_one_typeset_block() {
+        let src = "Then\n$$\n\\frac{a}{b}\n= c\n$$\nso.";
+        let text = text_of(&render(src, 60));
+        let joined = text.join("\n");
+        assert!(joined.contains('⎯'), "the fraction did not stack:\n{joined}");
+        assert!(!joined.contains('$') && !joined.contains('\\'), "{joined}");
+        assert!(text[0].contains("Then") && joined.contains("so."), "{joined}");
     }
 
     #[test]

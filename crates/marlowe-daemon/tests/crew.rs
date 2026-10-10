@@ -226,7 +226,7 @@ fn temp_home(name: &str) -> PathBuf {
 fn deps(provider: Arc<Routed>, crew: bool) -> DaemonDeps {
     let mut providers = ProviderFactory::new(Arc::new(MemoryStore::new()));
     providers.register(ProviderKind::Ollama, move |_| Ok(provider.clone() as Arc<dyn Provider>));
-    let setup = CrewSetup { tools: Arc::new(|_, _| Arc::new(FakeTools) as Arc<dyn ToolHost>), config: CrewConfig::default() };
+    let setup = CrewSetup { tools: Arc::new(|_, _| Arc::new(FakeTools) as Arc<dyn ToolHost>), config: CrewConfig::default(), research: None };
     DaemonDeps {
         providers,
         tools: Arc::new(|_| Arc::new(FakeTools) as Arc<dyn ToolHost>),

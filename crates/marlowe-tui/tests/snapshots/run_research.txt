@@ -1,4 +1,5 @@
-╭─ MARLOWE · run · LoRA rank ablations for 22B gates ─────────────────────── ⣀⣀⣀⣀⣀⣀ idle · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
+ * marlowe — new session                                                                                                1 run · 1 needs you
+╭ Run · LoRA rank ablations for 22B gates ─────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮
 │                                                                                                                                          │
 │  ◐ researcher · LoRA rank ablations for 22B gates                                                                             needs you  │
 │  step 6 of 40 · $0.0213 of $0.50 · 41.2k tokens of 400k · 1m ago                                                                         │
@@ -35,6 +36,5 @@
 │                                                                                                                                          │
 │                                                                                                                                          │
 │                                                                                                                                          │
-│                                                                                                                                          │
-│                                                                                                                                          │
-╰─────────────────────────────────────────────────────────────────────────────── m accept report  ·  d discard  ·  ↑↓ scroll  ·  esc runs ─╯
+╰───────────────────────────────────────────────────────────────────────────── m accept report  ·  d discard  ·  ↑↓ scroll  ·  esc/⌫ runs ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  ^k palette               Friday 9 October · 21:40

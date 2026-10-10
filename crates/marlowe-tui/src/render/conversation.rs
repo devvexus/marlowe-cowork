@@ -1,6 +1,7 @@
 //! The conversation pane.
 
 use marlowe_surface::chrome::{self, Ink};
+use marlowe_surface::markdown::MathBlock;
 use marlowe_surface::{markdown, Theme};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -22,7 +23,7 @@ pub fn draw(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     }
     // Text column: padding on the left, one blank column and the scrollbar on the right.
     let tw = r.width.saturating_sub(PAD + 2) as usize;
-    let lines = transcript_lines(state, tw, theme);
+    let (mut lines, maths) = transcript(state, tw, theme);
     if lines.is_empty() {
         empty_state(r, state, theme, buf);
         return;
@@ -33,6 +34,10 @@ pub fn draw(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     state.scroll_max.set(max);
     let scroll = state.scroll.min(max);
     let start = total.saturating_sub(h + scroll);
+    if let Some(svc) = marlowe_typeset::installed() {
+        let origin = (r.x + PAD, r.y);
+        typeset_images(&mut lines, &maths, svc, origin, start, h, tw, theme);
+    }
     for (i, l) in lines.iter().skip(start).take(h).enumerate() {
         put(buf, r.x + PAD, r.y + i as u16, l, tw as u16);
     }
@@ -62,11 +67,76 @@ fn scrollbar(r: Rect, total: usize, h: usize, start: usize, max: usize, theme: &
     }
 }
 
-/// The whole transcript as styled lines, wrapped to `width`.
-pub fn transcript_lines(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+/// Display formulas on screen that have a typeset image: the grid rows give way to it.
+///
+/// The image fills exactly the rows and columns the grid layout reserved, so nothing moves when
+/// it lands. Until it does, the block shows the held-maths placeholder over the same rows rather
+/// than the grid, so a formula appears once. One Typst refuses keeps its grid rows.
+#[allow(clippy::too_many_arguments)]
+fn typeset_images(
+    lines: &mut [Line<'static>],
+    maths: &[MathBlock],
+    svc: &marlowe_typeset::Service,
+    origin: (u16, u16),
+    start: usize,
+    h: usize,
+    tw: usize,
+    theme: &Theme,
+) {
+    use marlowe_typeset::{Job, Slot};
+    for b in maths {
+        let Some(markup) = &b.formula.typst else { continue };
+        // The grid's colour: an explicit one, or the terminal's own foreground for the default.
+        let fg = match b.fg {
+            ratatui::style::Color::Rgb(r, g, bl) => [r, g, bl],
+            ratatui::style::Color::Reset => svc.caps().fg,
+            _ => continue,
+        };
+        let end = b.line + b.rows;
+        if end <= start || b.line >= start + h || end > lines.len() {
+            continue;
+        }
+        let cols = b.cols.min(tw.saturating_sub(b.col));
+        let job = Job { markup: markup.clone(), fg, cols: cols as u16, rows: b.rows as u16 };
+        match svc.get(&job) {
+            Slot::Failed => {}
+            Slot::Pending => {
+                lines[b.line] = Line::from(vec![
+                    Span::raw(" ".repeat(b.col)),
+                    Span::styled(markdown::MATHS_PLACEHOLDER, Style::default().fg(theme.speech()).add_modifier(Modifier::DIM)),
+                ]);
+                for l in &mut lines[b.line + 1..end] {
+                    *l = Line::default();
+                }
+            }
+            Slot::Ready(img) => {
+                for (k, l) in lines[b.line..end].iter_mut().enumerate() {
+                    *l = Line::default();
+                    let at = b.line + k;
+                    let strip = &img.strips[k];
+                    if at >= start && at < start + h && !strip.is_empty() {
+                        crate::images::place(crate::images::Placed {
+                            x: origin.0 + b.col as u16,
+                            y: origin.1 + (at - start) as u16,
+                            cols: img.cols.min(cols as u16),
+                            strip: std::sync::Arc::clone(strip),
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The whole transcript as styled lines wrapped to `width`, and the display formulas in Marlowe's
+/// replies that an image may replace.
+fn transcript(state: &State, width: usize, theme: &Theme) -> (Vec<Line<'static>>, Vec<MathBlock>) {
+    let mut maths: Vec<MathBlock> = Vec::new();
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut prev: Option<&Entry> = None;
-    for e in &state.entries {
+    // The entry still being written: its unclosed maths is held behind a placeholder.
+    let streaming = state.live.as_ref().map(|_| state.entries.len().saturating_sub(1));
+    for (idx, e) in state.entries.iter().enumerate() {
         let gap = match (prev, e) {
             (None, _) => false,
             (Some(_), Entry::User { .. }) => true,
@@ -78,7 +148,19 @@ pub fn transcript_lines(state: &State, width: usize, theme: &Theme) -> Vec<Line<
         if gap {
             out.push(Line::default());
         }
-        entry_lines(e, state, width, theme, &mut out);
+        if let Entry::Prose { text } = e {
+            // Marlowe's prose, with the position of each display formula kept.
+            let base = Style::default().fg(theme.speech());
+            let (lines, found) = markdown::render_prose_blocks(text, width, theme, base, streaming == Some(idx));
+            let at = out.len();
+            maths.extend(found.into_iter().map(|mut b| {
+                b.line += at;
+                b
+            }));
+            out.extend(lines);
+        } else {
+            entry_lines(e, state, width, theme, streaming == Some(idx), &mut out);
+        }
         prev = Some(e);
     }
     if let Some(p) = &state.pending_user {
@@ -100,10 +182,10 @@ pub fn transcript_lines(state: &State, width: usize, theme: &Theme) -> Vec<Line<
             Span::styled("thinking…", ink(Ink::Dim, theme)),
         ]));
     }
-    out
+    (out, maths)
 }
 
-fn entry_lines(e: &Entry, state: &State, width: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
+fn entry_lines(e: &Entry, state: &State, width: usize, theme: &Theme, live: bool, out: &mut Vec<Line<'static>>) {
     match e {
         Entry::User { text, steer } => {
             let label = if *steer { "steer" } else { "you" };
@@ -111,7 +193,11 @@ fn entry_lines(e: &Entry, state: &State, width: usize, theme: &Theme, out: &mut 
         }
         Entry::Prose { text } => {
             let base = Style::default().fg(theme.speech());
-            out.extend(markdown::render_prose(text, width, theme, base));
+            if live {
+                out.extend(markdown::render_prose_live(text, width, theme, base));
+            } else {
+                out.extend(markdown::render_prose(text, width, theme, base));
+            }
         }
         Entry::Thinking { text, tokens, live } => {
             let n = if *tokens > 0 { *tokens } else { (text.chars().count() as u64).div_ceil(4) };
@@ -132,11 +218,21 @@ fn entry_lines(e: &Entry, state: &State, width: usize, theme: &Theme, out: &mut 
             out.push(Line::from(head));
             if open {
                 let rule = format!("{} ", chrome::QUOTE_RULE);
-                for l in text::wrap(&text::clean(text.trim()), width.saturating_sub(2)) {
-                    out.push(Line::from(vec![
-                        Span::styled(rule.clone(), ink(Ink::Dimmer, theme)),
-                        Span::styled(l, ink(Ink::Dim, theme)),
-                    ]));
+                let body = width.saturating_sub(2);
+                let rows: Vec<Line<'static>> = if markdown::has_maths(text) {
+                    // Reasoning is shown as written, except that its maths is typeset: LaTeX never
+                    // reaches the screen as source, here or anywhere.
+                    markdown::render_text(text.trim(), body, theme, ink(Ink::Dim, theme), *live)
+                } else {
+                    text::wrap(&text::clean(text.trim()), body)
+                        .into_iter()
+                        .map(|l| Line::from(Span::styled(l, ink(Ink::Dim, theme))))
+                        .collect()
+                };
+                for l in rows {
+                    let mut spans = vec![Span::styled(rule.clone(), ink(Ink::Dimmer, theme))];
+                    spans.extend(l.spans);
+                    out.push(Line::from(spans));
                 }
             }
         }
@@ -228,9 +324,21 @@ fn entry_lines(e: &Entry, state: &State, width: usize, theme: &Theme, out: &mut 
 
 fn user_lines(t: &str, label: &str, style: Style, width: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
     let body = width.saturating_sub(USER_LABEL);
-    for (i, l) in text::wrap(&text::clean(t.trim_end()), body).into_iter().enumerate() {
+    // The user's words are shown as typed. Only their maths is interpreted, so a `$\alpha$` reads
+    // as a formula and `**` stays two asterisks.
+    let rows: Vec<Line<'static>> = if markdown::has_maths(t) {
+        markdown::render_text(t.trim_end(), body, theme, style, false)
+    } else {
+        text::wrap(&text::clean(t.trim_end()), body)
+            .into_iter()
+            .map(|l| Line::from(Span::styled(l, style)))
+            .collect()
+    };
+    for (i, l) in rows.into_iter().enumerate() {
         let lead = if i == 0 { text::pad(label, USER_LABEL) } else { " ".repeat(USER_LABEL) };
-        out.push(Line::from(vec![Span::styled(lead, ink(Ink::Dim, theme)), Span::styled(l, style)]));
+        let mut spans = vec![Span::styled(lead, ink(Ink::Dim, theme))];
+        spans.extend(l.spans);
+        out.push(Line::from(spans));
     }
 }
 

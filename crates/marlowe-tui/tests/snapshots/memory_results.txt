@@ -1,4 +1,5 @@
-╭─ MARLOWE · memory ──────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
+ * marlowe — new session                                                                                                0 runs · 0 need you
+╭ Memory ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮
 │                                                                                                                                          │
 │  Memory  ·  1,204 memories · 37 episodes · 1,198 vectors                                                                                 │
 │  search models unloaded (they load on first use)                                                                                         │
@@ -35,6 +36,5 @@
 │                                                                                                                                          │
 │                                                                                                                                          │
 │                                                                                                                                          │
-│                                                                                                                                          │
-│                                                                                                                                          │
 ╰─────────────────────────────────────────────────────────────────────── ↵ search  ·  ↑↓ select  ·  ^e correct  ·  ^d forget  ·  esc back ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  alt-v Voice  ^k palette                     21:40

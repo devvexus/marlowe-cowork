@@ -1,40 +1,40 @@
-╭─ MARLOWE ───────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
-│                                                                                                       │  CREW                            │
-│                                                                                                       │  no runs                         │
-│                                                                                                       │                                  │
-│                                                                                                       │  WATCH                   1 alive │
-│                                                                                                       │  ✗ llama-8b-sweep-b              │
-│                                                                                                       │    torch.OutOfMemoryError: CUDA… │
-│                                                                                                       │  ◐ marlowe-valiance-22b-wnr3     │
-│                                                                                                       │    silent 23m · pid 51200 alive  │
-│                                                                                                       │  ● marlowe-valiance-22b-wnr5     │
-│                                                                                                       │    wnr-p5 · layer 9 · 40s ago    │
-│                                                                                                       │  ✓ marlowe-valiance-22b-wnr4     │
-│                                              ⣿  MARLOWE                                               │    [05:19:34] done · audit3_mar… │
-│                                                                                                       │  ▲ valiance: eval_loss plateau   │
-│                                                                                                       │  ✓ new model marlowe-valiance-2… │
-│                                             Good evening.                                             │                                  │
-│                                                                                                       │  THREADS                         │
-│                    ask anything  ·  ^o past sessions  ·  ^l library  ·  ^k palette                    │  no open threads                 │
-│                                                                                                       │                                  │
-│                                                                                                       │  TODAY                           │
-│                                                                                                       │  Friday 9 October                │
-│                                                                                                       │  quiet 23:00–07:00               │
-│                                                                                                       │  no routines                     │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────╯
-╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ › message Marlowe…                                                                                                                       │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────── ↵ send  ⇧↵ newline  ^k palette ─╯
+ * marlowe — new session                                                                                         1 run · 0 need you · 3 new
+╭ Conversation ──────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ Claude Sonnet 4.5 ▾             medium │
+│                                                                                                ││ ctx ────────────┊──── 0 / 200k · cloud │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
+│                                                                                                │╭ Workspace ─────────────────────────────╮
+│                                                                                                ││ C:/work/valiance ▾                     │
+│                                                                                                │╰────────────────────────────────── (w) ─╯
+│                                                                                                │╭ Crew ──────────────────────────────────╮
+│                                                                                                ││ no runs                                │
+│                                                                                                │╰────────────────────────────────── (1) ─╯
+│                                                                                                │╭ Watch ─────────────────────── 1 alive ─╮
+│                                           ⣿  MARLOWE                                           ││ ✗ llama-8b-sweep-b                     │
+│                                                                                                ││   torch.OutOfMemoryError: CUDA out o…  │
+│                                                                                                ││ ◐ marlowe-valiance-22b-wnr3            │
+│                                         Good evening.                                          ││   silent 23m · pid 51200 alive         │
+│                                                                                                ││ ● marlowe-valiance-22b-wnr5            │
+│                ask anything  ·  ^o past sessions  ·  ^l library  ·  ^k palette                 ││   wnr-p5 · layer 9 · 40s ago           │
+│                                                                                                ││ ✓ marlowe-valiance-22b-wnr4            │
+│                                                                                                ││   [05:19:34] done · audit3_marlowe-v…  │
+│                                                                                                ││ ▲ valiance: eval_loss plateau          │
+│                                                                                                ││ ✓ new model marlowe-valiance-22b-wnr…  │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                                                                                                │╭ Threads ───────────────────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ 390 memories · 41 episodes             │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^k palette        Friday 9 October · quiet 23:00–07:00 · 21:40

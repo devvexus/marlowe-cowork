@@ -1,6 +1,6 @@
 //! Headless commands: ask, models, status, shutdown.
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
 use std::time::Duration;
 
@@ -62,8 +62,8 @@ pub fn ask(home: &Path, a: AskArgs) -> CmdResult {
 
     let mut mine: Option<SessionId> = a.session.as_deref().map(SessionId::from);
     let mut stdout = std::io::stdout();
-    let mut thinking = false;
-    let mut thought: u64 = 0;
+    // Live per-token progress only on a terminal; piped output gets one line when thinking ends.
+    let mut thinking = Thinking::new(stdout.is_terminal() && std::io::stderr().is_terminal());
     loop {
         let env = match c.next_event(Duration::from_secs(5)) {
             Ok(Some(e)) => e,
@@ -96,19 +96,16 @@ pub fn ask(home: &Path, a: AskArgs) -> CmdResult {
         }
         match ev {
             Event::TextDelta { text, .. } => {
-                if thinking {
-                    eprintln!();
-                    thinking = false;
+                if let Some(line) = thinking.end() {
+                    eprintln!("{line}");
                 }
                 print!("{text}");
                 let _ = stdout.flush();
             }
             // `tokens` counts this delta; an empty delta after the answer only settles the count.
             Event::ReasoningDelta { tokens, text, .. } => {
-                thought += tokens;
-                if !text.is_empty() {
-                    thinking = true;
-                    eprint!("\r\x1b[2m▸ thinking… {thought} tokens\x1b[0m");
+                if let Some(progress) = thinking.delta(tokens, !text.is_empty()) {
+                    eprint!("{progress}");
                 }
             }
             Event::Recalled { count, summary, .. } => {
@@ -125,12 +122,48 @@ pub fn ask(home: &Path, a: AskArgs) -> CmdResult {
                 eprintln!("\x1b[2m  {} {summary}\x1b[0m", if ok { "ok" } else { "failed" })
             }
             Event::TurnFinished { stop, usage, .. } => {
+                if let Some(line) = thinking.end() {
+                    eprintln!("{line}");
+                }
                 println!();
                 eprintln!("\x1b[2m[{} in, {} out]\x1b[0m", usage.input, usage.output);
                 return Ok(if stop == TurnStop::Done { 0 } else { 1 });
             }
             _ => {}
         }
+    }
+}
+
+/// The `▸ thinking… N tokens` line. Live, it redraws per delta with `\r`; not live (stdout or
+/// stderr is not a terminal), it prints nothing until thinking ends and then one plain line.
+struct Thinking {
+    live: bool,
+    open: bool,
+    tokens: u64,
+}
+
+impl Thinking {
+    fn new(live: bool) -> Self {
+        Self { live, open: false, tokens: 0 }
+    }
+
+    /// Counts a reasoning delta and returns the redraw to print, if any. `visible` is false for
+    /// an empty delta that only settles the count.
+    fn delta(&mut self, tokens: u64, visible: bool) -> Option<String> {
+        self.tokens += tokens;
+        if !visible {
+            return None;
+        }
+        self.open = true;
+        self.live.then(|| format!("\r\x1b[2m▸ thinking… {} tokens\x1b[0m", self.tokens))
+    }
+
+    /// Closes an open thinking line: a bare newline when live, else the one summary line.
+    fn end(&mut self) -> Option<String> {
+        if !std::mem::take(&mut self.open) {
+            return None;
+        }
+        Some(if self.live { String::new() } else { format!("▸ thought for {} tokens", self.tokens) })
     }
 }
 
@@ -334,4 +367,32 @@ pub fn shutdown(home: &Path) -> CmdResult {
     }
     println!("daemon: shutting down");
     Ok(0)
+}
+
+#[cfg(test)]
+mod thinking_tests {
+    use super::Thinking;
+
+    #[test]
+    fn piped_output_gets_one_thinking_line_not_per_token_redraws() {
+        let mut t = Thinking::new(false);
+        for _ in 0..50 {
+            assert_eq!(t.delta(3, true), None);
+        }
+        assert_eq!(t.delta(2, false), None);
+        assert_eq!(t.end().as_deref(), Some("▸ thought for 152 tokens"));
+        assert_eq!(t.end(), None, "printed once");
+    }
+
+    #[test]
+    fn a_terminal_gets_live_redraws_and_a_closing_newline() {
+        let mut t = Thinking::new(true);
+        let p = t.delta(4, true).unwrap();
+        assert!(p.starts_with('\r') && p.contains("4 tokens"), "{p:?}");
+        assert_eq!(t.end().as_deref(), Some(""));
+        assert_eq!(t.end(), None);
+        let mut quiet = Thinking::new(true);
+        assert_eq!(quiet.delta(5, false), None);
+        assert_eq!(quiet.end(), None, "no visible thinking, nothing to close");
+    }
 }

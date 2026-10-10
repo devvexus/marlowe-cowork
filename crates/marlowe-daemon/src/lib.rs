@@ -16,6 +16,7 @@ pub mod brief;
 mod brief_ops;
 mod bus;
 mod client;
+mod context_ops;
 mod crew;
 mod crew_ops;
 mod daemon;

@@ -1,0 +1,13 @@
+[package]
+name = "marlowe-typeset"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Display maths as images, client side: the terminal probe, a Sixel encoder, the render worker and cache, and the helper process that runs Typst (marlowe-typeset.exe, crates/marlowe-typeset-helper)."
+
+# No Typst here, ever: `marlowe.exe` links this crate, and Typst is ~36 MB of release binary. It
+# lives in `marlowe-typeset-helper`, which builds `marlowe-typeset.exe`.
+[dependencies]
+crossbeam-channel.workspace = true
+serde.workspace = true
+serde_json.workspace = true

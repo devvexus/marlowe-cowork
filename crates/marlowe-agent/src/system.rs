@@ -236,6 +236,14 @@ mod tests {
     }
 
     #[test]
+    fn words_to_avoid_lists_the_transparency_qualifiers() {
+        let (_, rest) = PERSONA_CORE.split_once("<words_to_avoid>").unwrap();
+        let (section, _) = rest.split_once("</words_to_avoid>").unwrap();
+        assert!(section.contains("just to be transparent"), "{section}");
+        assert!(section.contains(", to be transparent,"), "{section}");
+    }
+
+    #[test]
     fn capability_blocks_appear_only_when_added() {
         let plain = SystemPrompt::new().render_text();
         assert!(!plain.contains("<voice_channel>"));

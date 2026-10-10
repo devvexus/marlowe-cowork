@@ -56,6 +56,22 @@ Drop `--heldout-only` for the two-pass run, held-out plus all-500. It also write
 with the pre-registered Numbers 1, 2, 2b and 3, the power floor and the budget conditions. It
 takes about three times as long.
 
+## The GPU cascade (M4.5, `--features cuda`)
+
+Check the GPU is idle first (no compute-only process, util < 10%). Build into its own target dir,
+fetch the pinned runtime and the five extra graphs, then score:
+
+```
+powershell -NoProfile -File scripts/fetch-gpu-runtime.ps1
+powershell -NoProfile -File scripts/fetch-models.ps1 -Cascade
+powershell -NoProfile -File scripts/cargo-idle.ps1 build --release -p marlowe --features cuda --target-dir target/cuda -j 4
+python tools/score_longmemeval.py --heldout-only --reranking models/ms-marco-MiniLM-L-2-v2-ft-session-j --binary target/cuda/release/marlowe.exe --rerank-provider cuda --rerank-plan cascade --gpu-runtime gpu-runtime --out data/runs/longmemeval-m45-cascade-cuda
+```
+
+Read on 2026-10-09 (RTX 4080 SUPER): cascade R@1 0.6769, R@3 0.8908, R@5 0.9170, R@10 0.9563,
+p95 50 ms; `--rerank-plan shipped` on CUDA gives exactly the CPU headline at p95 16 ms. The
+cascade on CPU ranks identically but reads p95 3,514 ms, so the product only takes it on a GPU.
+
 ## Checking a small slice
 
 `--max-cases N` (it requires `--heldout-only`) scores only the first N held-out cases. Any R@k
@@ -72,3 +88,24 @@ past 1024 tokens. For those turns `dense_cosine` moves (by up to 0.015 on the sl
 `dense_z`, `score` and sometimes `winning_cue` move for the other candidates of the same query.
 On the slice no gold rank changed. A full run is what shows whether R@1 still reads exactly
 0.6725.
+
+# tools/: M4.5 research evals
+
+| File | Role |
+|---|---|
+| `extraction_eval.py` | Fetches WCXB and the ScrapingHub benchmark into `data/extraction/` at pinned commits, drives the Rust harness `crates/marlowe-extract/examples/extract_eval.rs`, and scores token P/R/F1 per page type, WCXB with/without snippets, ScrapingHub shingle F1, link recall (anchor text, and URLs kept inline in the shipped path's markdown), thin/empty rate and p50/p95 ms. It prints the pass-bar verdict for switching the default extractor. |
+| `research_eval.py` | FACT-style citation accuracy (each cited sentence is judged against the reference's stored passage) and key-point coverage for deep-research reports. Its input is a bundle (`marlowe.research-bundle/1`). The judge is local Ollama; verdicts are cached by prompt digest. |
+| `research_questions.json` | The 10-question set (4 ML research, 3 engineering, 3 general) with the key points a reviewer wrote. |
+| `research_eval_fixtures/` | Hand-made bundles on q01 whose evidence is the verbatim arXiv abstracts. `good` has 11 supported citations. `bad` is the same report with one planted unsupported citation. `subtle` has three planted errors: a wrong number, a reversed direction and a misattributed source. |
+| `test_research_eval.py` | Offline tests for both scorers, using a fake judge. |
+
+```
+python tools/extraction_eval.py fetch                         # once; ~300 MB, git-ignored
+python tools/extraction_eval.py run --label <name>            # builds the harness (cargo-idle, -j 2), runs, scores
+python -m pytest tools/test_research_eval.py -q               # offline
+python tools/research_eval.py validate                        # live judge on the fixtures (GPU; checks it is free)
+python tools/research_eval.py run --bundles <dir> --label <name> [--produce "<cmd with {qid} {question} {bundle}>"]
+```
+
+Results are written to `data/runs/extraction-eval/<label>/` and `data/runs/research-eval/<label>/`.
+The summary is in `docs/research/deep-research-v2.md`.

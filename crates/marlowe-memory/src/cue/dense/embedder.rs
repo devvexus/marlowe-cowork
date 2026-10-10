@@ -13,7 +13,6 @@
 
 use std::path::{Path, PathBuf};
 
-use ort::execution_providers::CPUExecutionProvider;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::Value;
@@ -38,8 +37,9 @@ pub const VOCAB_FILE: &str = "vocab.txt";
 
 /// Which execution provider computed a vector.
 ///
-/// **A different execution provider is a DIFFERENT SCORER — ADR-015.** This build is CPU-only, so
-/// the enum has one variant; it is kept because its [`EmbedProvider::name`] reaches
+/// **A different execution provider is a DIFFERENT SCORER — ADR-015.** The embedder is CPU in every
+/// build, `cuda` included: belief vectors persist, so a GPU-computed vector would mix scorers in one
+/// store. The enum has one variant; it is kept because its [`EmbedProvider::name`] reaches
 /// [`crate::cue::dense::cache::CacheIdentity`], and it is reported by [`Embedder::provider`] so a
 /// run cannot be labelled with a provider it did not use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,7 +189,7 @@ impl Embedder {
         Ok(Self { sessions, vocab, cache, truncated: 0 })
     }
 
-    /// Which provider served this embedder. Always CPU in this build.
+    /// Which provider served this embedder. Always CPU (see [`EmbedProvider`]).
     pub fn provider(&self) -> EmbedProvider {
         EmbedProvider::Cpu
     }
@@ -205,23 +205,16 @@ impl Embedder {
     /// point: the point is that CPU is a decision with a line of code behind it rather than the
     /// absence of one.
     fn session(model_path: &Path) -> Result<Session, EmbedError> {
-        Session::builder()
-            .and_then(|b| {
-                b.with_execution_providers([CPUExecutionProvider::default()
-                    .build()
-                    .error_on_failure()])
-            })
-            .and_then(|b| b.with_intra_threads(1))
-            .and_then(|b| b.with_inter_threads(1))
+        let build = || -> ort::Result<Session> {
+            let b = crate::ep::register(crate::ep::session_builder()?, crate::ep::Provider::Cpu)?;
+            let b = b.with_intra_threads(1)?.with_inter_threads(1)?;
             // Pinned explicitly rather than left at the runtime's default: the default is a
             // property of the ONNX Runtime version, and a bump could re-fuse the graph and move
             // a published number with nothing in this repo changing.
-            .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level1))
-            .and_then(|b| b.commit_from_file(model_path))
-            .map_err(|source| EmbedError::Session {
-                path: model_path.to_path_buf(),
-                source: Box::new(source),
-            })
+            let mut b = b.with_optimization_level(GraphOptimizationLevel::Level1)?;
+            b.commit_from_file(model_path)
+        };
+        build().map_err(|source| EmbedError::Session { path: model_path.to_path_buf(), source: Box::new(source) })
     }
 
     pub fn workers(&self) -> usize {
@@ -327,7 +320,7 @@ impl Embedder {
         let mask: Vec<i64> = vec![1; tokens];
         let zeros: Vec<i64> = vec![0; tokens];
 
-        let names: Vec<String> = session.inputs.iter().map(|i| i.name.clone()).collect();
+        let names: Vec<String> = session.inputs().iter().map(|i| i.name().to_string()).collect();
         let mut inputs: Vec<(String, Value)> = Vec::with_capacity(names.len());
         for name in names {
             let data = if name.contains("attention") {

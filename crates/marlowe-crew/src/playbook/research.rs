@@ -1,3 +1,6 @@
+//! Deep research v1, the fallback when a run has no research channels wired (v2 is
+//! [`super::research_v2`]).
+//!
 //! deep_research: plan (Researcher: 3–6 sub-questions) → parallel scouts (one per sub-question,
 //! claims with citations) → verify (Reviewer tries to refute each load-bearing claim; refuted
 //! claims are dropped, contested ones flagged) → synthesize (Researcher writes a cited report to
@@ -48,6 +51,7 @@ pub fn deep_research(runner: &dyn StepRunner, goal: &str, cfg: &PlaybookConfig) 
         label: "plan".into(),
         prompt: plan_prompt(goal),
         tools: Some(LOOK.iter().map(|t| t.to_string()).collect()),
+        effort: None,
     })?;
     let mut subs: Vec<String> = list_items(&plan.text);
     subs.truncate(cfg.max_scouts.max(1));
@@ -66,6 +70,7 @@ pub fn deep_research(runner: &dyn StepRunner, goal: &str, cfg: &PlaybookConfig) 
             label: format!("scout {}/{n}", i + 1),
             prompt: scout_prompt(goal, q),
             tools: None,
+            effort: None,
         })
         .collect();
     let mut claims: Vec<Claim> = Vec::new();
@@ -104,6 +109,7 @@ pub fn deep_research(runner: &dyn StepRunner, goal: &str, cfg: &PlaybookConfig) 
             label: "verify".into(),
             prompt: verify_prompt(goal, &claims),
             tools: None,
+            effort: None,
         })?;
         parse_verdicts(&review.text)
     };
@@ -122,6 +128,7 @@ pub fn deep_research(runner: &dyn StepRunner, goal: &str, cfg: &PlaybookConfig) 
         label: "synthesize".into(),
         prompt: synth_prompt(goal, &subs, &kept, &dropped, &empty, &verdict_of),
         tools: Some(LOOK.iter().map(|t| t.to_string()).collect()),
+        effort: None,
     })?;
     let report = synth.text.trim().to_string();
     let root = &runner.sandbox().root;

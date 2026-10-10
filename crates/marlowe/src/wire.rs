@@ -23,7 +23,9 @@ const SEARCH_MODEL_ENV: &str = "MARLOWE_SEARCH_MODEL";
 const SEARCH_TOOL: &str = "openrouter:web_search";
 
 fn make_ollama(cfg: &ProviderConfig) -> Result<Arc<dyn Provider>, ProviderError> {
-    let p = marlowe_provider::OllamaProvider::from_base_url(cfg.base_url.as_deref())?;
+    // Every request for a model sends that model's context policy window (one allocation per
+    // model), so Ollama never reloads a runner because two agents asked for different sizes.
+    let p = marlowe_provider::OllamaProvider::from_base_url(cfg.base_url.as_deref())?.with_allocations(cfg.context.clone());
     Ok(Arc::new(p))
 }
 
@@ -37,9 +39,23 @@ pub fn provider_factory(credentials: Arc<dyn CredentialStore>) -> ProviderFactor
     let mut f = ProviderFactory::new(credentials);
     f.register(ProviderKind::Ollama, make_ollama);
     f.register(ProviderKind::OpenRouter, make_openrouter);
-    if let Ok(url) = std::env::var("MARLOWE_OLLAMA_ADDR") {
-        f.set_base_url(ProviderKind::Ollama, url);
+    let ollama_url = std::env::var("MARLOWE_OLLAMA_ADDR").ok();
+    if let Some(url) = &ollama_url {
+        f.set_base_url(ProviderKind::Ollama, url.clone());
     }
+    // The context planner reads Ollama's store, its runner log and the GPU; it changes nothing
+    // but the server settings, and only after an approval.
+    let endpoint = ollama_url
+        .as_deref()
+        .and_then(marlowe_provider::LocalEndpoint::parse)
+        .unwrap_or_else(marlowe_provider::LocalEndpoint::default_ollama);
+    f.set_hardware(marlowe_brains::Hardware {
+        models: Arc::new(marlowe_provider::OllamaHw::new(endpoint.clone())),
+        gpu: Arc::new(marlowe_sentinel::vram::SentinelGpu::open()),
+        server: Arc::new(
+            marlowe_provider::OllamaServerControl::new(endpoint).with_scrub(marlowe_brains::scrubbed_env().iter().copied()),
+        ),
+    });
     #[cfg(debug_assertions)]
     crate::scripted::install(&mut f);
     f
@@ -57,7 +73,7 @@ fn scripted() -> bool {
 }
 
 /// Web search through OpenRouter's server tool; errors when no key exists.
-fn web_search(
+pub(crate) fn web_search(
     credentials: &dyn CredentialStore,
     query: &str,
     cancel: &CancelToken,
@@ -175,6 +191,8 @@ pub fn user_info(home: &Path) -> UserInfo {
 }
 
 pub fn daemon_deps(home: &Path) -> DaemonDeps {
+    // First, so the memory service's GPU probe can read it.
+    let sentinel = start_sentinel(home);
     // A scripted run never reads Credential Manager.
     let credentials: Arc<dyn CredentialStore> =
         if scripted() { Arc::new(MemoryStore::new()) } else { Arc::new(KeyringStore::new()) };
@@ -182,12 +200,22 @@ pub fn daemon_deps(home: &Path) -> DaemonDeps {
         providers: provider_factory(credentials.clone()),
         tools: tool_factory(credentials.clone(), home),
         user: user_info(home),
-        mind: open_mind(home),
-        sentinel: start_sentinel(home),
+        mind: open_mind(home, sentinel.as_ref().map(|s| s.sentinel.clone())),
+        sentinel,
         voice: start_voice(home),
-        // The daemon starts the supervisor with its models, approvals, memory and GPU state.
-        crew: Some(CrewSetup { tools: crew_tool_factory(credentials, home), config: CrewConfig::default() }),
+        // The daemon starts the supervisor with its models, approvals, memory and GPU state; deep
+        // research runs v2 over the keyless channels and the corpus fetcher.
+        crew: Some(crew_setup(credentials, home)),
     }
+}
+
+/// The crew: tools, config, and deep research v2's I/O with `<home>\research.json` applied. A
+/// scripted run has no network, so it keeps deep research on v1.
+fn crew_setup(credentials: Arc<dyn CredentialStore>, home: &Path) -> CrewSetup {
+    let settings = crate::research_wire::ResearchSettings::load(home);
+    let config = CrewConfig { research: settings.v2(), ..CrewConfig::default() };
+    let research = (!scripted()).then(|| crate::research_wire::research_io(home, &settings, credentials.clone()));
+    CrewSetup { tools: crew_tool_factory(credentials, home), config, research }
 }
 
 /// The watchers over the persisted roots. A Sentinel that fails to start (or panics doing so)
@@ -222,8 +250,9 @@ pub fn start_voice(home: &Path) -> Option<VoiceLink> {
 
 /// The memory service for `home`. A profile that will not open leaves the daemon without memory,
 /// said on stderr (the daemon log) rather than silently.
-pub fn open_mind(home: &Path) -> Option<marlowe_mind::Mind> {
-    match marlowe_mind::Mind::open(home) {
+pub fn open_mind(home: &Path, sentinel: Option<marlowe_sentinel::Sentinel>) -> Option<marlowe_mind::Mind> {
+    let cfg = marlowe_mind::MindConfig { gpu: Some(gpu_probe(sentinel)), ..Default::default() };
+    match marlowe_mind::Mind::open_with(home, cfg) {
         Ok(mind) => {
             if let Ok(Some(reason)) = mind.stats().map(|s| s.degraded) {
                 eprintln!("marlowe: memory is degraded: {reason}");
@@ -235,6 +264,40 @@ pub fn open_mind(home: &Path) -> Option<marlowe_mind::Mind> {
             None
         }
     }
+}
+
+/// Whether the cross-encoder may borrow the GPU, from the Sentinel: its cached per-device
+/// utilisation and live watched runs, plus a fresh NVML read of compute-only processes (a
+/// training job or an inference server). No Sentinel or no NVML device is "unknown": CPU.
+pub fn gpu_probe(sentinel: Option<marlowe_sentinel::Sentinel>) -> marlowe_mind::GpuProbe {
+    let nvml = std::sync::Mutex::new(None::<marlowe_sentinel::gpu::Gpu>);
+    marlowe_mind::GpuProbe::new(move || {
+        let Some(s) = &sentinel else {
+            return marlowe_mind::GpuVerdict::Unknown("no Sentinel".into());
+        };
+        let state = s.state();
+        let compute = {
+            let mut g = nvml.lock().unwrap_or_else(|e| e.into_inner());
+            g.get_or_insert_with(marlowe_sentinel::gpu::Gpu::open).compute_only()
+        };
+        gpu_verdict(&state, &compute)
+    })
+}
+
+/// The pure half of [`gpu_probe`].
+pub fn gpu_verdict(state: &marlowe_proto::WatchState, compute: &[(u32, Vec<String>)]) -> marlowe_mind::GpuVerdict {
+    let loads: Vec<marlowe_mind::GpuLoad> = state
+        .gpu
+        .devices
+        .iter()
+        .map(|d| marlowe_mind::GpuLoad {
+            name: d.name.clone(),
+            util_pct: d.util_pct,
+            compute_only: compute.iter().find(|(i, _)| *i == d.index).map(|(_, n)| n.clone()).unwrap_or_default(),
+        })
+        .collect();
+    let live = state.runs.iter().filter(|r| r.status.is_live()).count();
+    marlowe_mind::judge_gpu(&loads, live)
 }
 
 #[cfg(test)]
@@ -275,6 +338,19 @@ mod tests {
         let host = crew_host(&sb, Some(&ws));
         assert!(!host.taints(&call("read", &ws.join("notes.md"))));
         assert!(matches!(host.consequence(&call("write", &ws.join("notes.md"))), marlowe_agent::Consequence::Ask { .. }));
+    }
+
+    #[test]
+    fn the_gpu_verdict_reads_util_compute_processes_and_live_runs() {
+        use marlowe_mind::GpuVerdict;
+        let mut st = marlowe_proto::WatchState::default();
+        assert!(matches!(super::gpu_verdict(&st, &[]), GpuVerdict::Unknown(_)), "no device is unknown");
+        let dev = serde_json::json!({"index": 0, "name": "RTX", "util_pct": 3, "mem_used_mb": 2000, "mem_total_mb": 16000});
+        st.gpu.devices.push(serde_json::from_value(dev).unwrap());
+        assert_eq!(super::gpu_verdict(&st, &[(0, vec![])]), GpuVerdict::Idle);
+        assert!(matches!(super::gpu_verdict(&st, &[(0, vec!["python.exe".into()])]), GpuVerdict::Busy(_)));
+        st.gpu.devices[0].util_pct = 37;
+        assert!(matches!(super::gpu_verdict(&st, &[(0, vec![])]), GpuVerdict::Busy(_)));
     }
 
     #[test]

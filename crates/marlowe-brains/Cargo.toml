@@ -8,6 +8,7 @@ description = "Model library, slots and effort, provider registry and detection,
 [dependencies]
 marlowe-model.workspace = true
 marlowe-proto.workspace = true
+marlowe-hw.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

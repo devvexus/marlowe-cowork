@@ -78,13 +78,16 @@
 
 use std::path::{Path, PathBuf};
 
-use ort::execution_providers::CPUExecutionProvider;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::Value;
 use sha2::{Digest, Sha256};
 
 use crate::cue::dense::tokenizer::{encode_pair, EncodedPair, Vocab};
+use crate::ep::Provider;
+
+/// The provider a cross-encoder runs on. One enum for every ONNX graph; see [`crate::ep`].
+pub use crate::ep::Provider as RerankProvider;
 
 /// `ms-marco-MiniLM-L-2-v2-ft-session-j`, `model.onnx` — the Session J fine-tune, f32.
 ///
@@ -142,42 +145,10 @@ pub const MAX_BATCH: usize = 10;
 /// be measured instead of argued.
 pub const SHIPPED_THREADS: usize = 1;
 
-/// Which execution provider scores the slate. This build is CPU-only, so there is one variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RerankProvider {
-    Cpu,
-}
-
-impl RerankProvider {
-    /// Whether to score the slate in ONE forward pass, **for this provider**.
-    ///
-    /// **Batching is a property of the hardware**, not a global preference. M0c Session L,
-    /// warm-249 held-out, ranking identical in every cell: CPU at 1 thread measured rerank p50
-    /// **185.8 ms** sequential against 195.6 ms batched, so batching **LOSES** on CPU. At one CPU
-    /// thread there is no parallelism across the batch dimension, so all that remains is the cost:
-    /// attention is O(seq²) per row either way, and ten rows in one forward multiply the
-    /// intermediate tensors and lose cache locality.
-    ///
-    /// Overridable by `--rerank-batch` for measurement, and the value actually used is stamped on
-    /// every retrieval-profile row — so a cell cannot claim one configuration and run another.
-    pub fn default_batching(self) -> bool {
-        match self {
-            RerankProvider::Cpu => false,
-        }
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            RerankProvider::Cpu => "CPUExecutionProvider",
-        }
-    }
-}
-
 /// The execution provider this stage is measured and adopted on.
 ///
-/// CPU, deliberately. ADR-013 records that GPU is not adopted for the retrieval path: determinism
-/// across execution providers and ADR-003's 1-vCPU VPS target each need their own ADR, and CPU
-/// already clears the budget.
+/// CPU, deliberately: every shipped number was read on it. The GPU path (`cuda` feature) is the
+/// cascade in [`crate::cascade`], taken by the product only while the GPU is idle.
 pub const PROVIDER: &str = "CPUExecutionProvider";
 
 #[derive(Debug, thiserror::Error)]
@@ -240,6 +211,11 @@ pub enum RerankError {
 
     #[error("an empty batch was passed to the cross-encoder; there is nothing to score")]
     EmptyBatch,
+
+    #[error(
+        "{name} is not a member of the cascade's fusion (crate::cascade::FUSION_GRAPHS). The membership is a rule fixed before any number existed, not a selection"
+    )]
+    NotAFusionMember { name: String },
 }
 
 fn sha256_file(path: &Path) -> Result<String, RerankError> {
@@ -270,69 +246,91 @@ fn pinned(path: &Path, expected: &'static str, dir: &Path) -> Result<(), RerankE
     Ok(())
 }
 
-/// The loaded cross-encoder. One graph, one vocabulary, one pair at a time.
+/// The loaded cross-encoder. One graph, one vocabulary, one provider.
 pub struct CrossEncoder {
     session: Session,
     vocab: Vocab,
+    provider: Provider,
+    graph: &'static str,
 }
 
 impl CrossEncoder {
-    /// Load from a directory holding the pinned `model.onnx` and `tokenizer.json`.
+    /// Load the shipped graph with the measured thread count of 1, **on CPU.**
     ///
-    /// Both digests are checked before the graph is constructed, and the execution provider is
-    /// required to register rather than being allowed to fall back. See the builder below.
-    /// Load with the shipped, measured thread count of 1, **on CPU.**
-    ///
-    /// Every published number in this project was taken at one intra-op thread, per ADR-003's
-    /// 1-vCPU target. `cross_encoder_reference.rs` loads through this and asserts
-    /// `provider() == Cpu`.
+    /// Both digests are checked before the graph is constructed, and the provider is required to
+    /// register rather than allowed to fall back. Every published number was taken at one intra-op
+    /// thread, per ADR-003's 1-vCPU target. `cross_encoder_reference.rs` loads through this and
+    /// asserts `provider() == Cpu`.
     pub fn load(dir: &Path) -> Result<Self, RerankError> {
-        Self::load_pinned(dir, SHIPPED_THREADS)
+        Self::load_on(dir, SHIPPED_THREADS, Provider::Cpu)
     }
 
-    /// Load at an explicit intra-op thread count. **Measurement only.**
-    ///
-    /// M0c Session L exists because ADR-003's 1-vCPU assumption is what forced single-threading,
-    /// and that assumption is itself under question — so the thread count had to become measurable
-    /// rather than remain a constant defended by a target nobody had re-examined.
+    /// Load at an explicit intra-op thread count, on CPU. **Measurement only.**
     ///
     /// **Multi-threaded ORT can change reduction order inside a matmul**, which changes logits,
     /// which changes the ranking. So a thread count is adopted only if `scored-candidates.ndjson`
-    /// stays byte-identical — determinism is the gate regardless of speed, and a faster
-    /// configuration that moves one bit is rejected, not priced.
+    /// stays byte-identical — determinism is the gate regardless of speed.
     pub fn load_with_threads(dir: &Path, threads: usize) -> Result<Self, RerankError> {
-        Self::load_pinned(dir, threads)
+        Self::load_on(dir, threads, Provider::Cpu)
     }
 
-    /// The constructor the product calls. **CPU-only**: identical to
-    /// [`CrossEncoder::load_with_threads`], kept under this name so the product's call site has
-    /// one stable entry point.
+    /// The shipped graph on CPU; kept as the product's stable entry point.
     pub fn load_auto(dir: &Path, threads: usize) -> Result<Self, RerankError> {
-        Self::load_pinned(dir, threads)
+        Self::load_on(dir, threads, Provider::Cpu)
     }
 
-    /// Which provider served this cross-encoder. Always CPU in this build.
-    pub fn provider(&self) -> RerankProvider {
-        RerankProvider::Cpu
-    }
-
-    fn load_pinned(dir: &Path, threads: usize) -> Result<Self, RerankError> {
-        let model_path = dir.join(MODEL_FILE);
-        let tokenizer_path = dir.join(TOKENIZER_FILE);
-
+    /// Load the shipped graph on an explicit provider. A provider that does not construct is a
+    /// [`RerankError::Session`] error, never a silent CPU session.
+    pub fn load_on(dir: &Path, threads: usize, provider: Provider) -> Result<Self, RerankError> {
         // Named before the generic `Missing`, so pointing at the pre-Session-K int8 directory
-        // says what actually happened. A stale path in a target string is the most likely way
-        // this stage gets loaded wrong, and "model.onnx does not exist" would send the reader to
-        // the fetch script rather than to ADR-018.
-        if !model_path.exists() && dir.join(SUPERSEDED_INT8_FILE).exists() {
+        // says what actually happened rather than sending the reader to the fetch script.
+        if !dir.join(MODEL_FILE).exists() && dir.join(SUPERSEDED_INT8_FILE).exists() {
             return Err(RerankError::SupersededGraph {
                 dir: dir.to_path_buf(),
                 superseded: SUPERSEDED_INT8_FILE,
                 expected: MODEL_FILE,
             });
         }
+        Self::load_pinned(dir, MODEL_SHA256, "ms-marco-MiniLM-L-2-v2-ft-session-j", threads, provider)
+    }
 
-        pinned(&model_path, MODEL_SHA256, dir)?;
+    /// Load one member of the GPU cascade's fusion by name. Its digest comes from
+    /// [`crate::cascade::FUSION_GRAPHS`] and nowhere else; every member shares the shipped
+    /// tokenizer, pinned by [`TOKENIZER_SHA256`]. An unlisted name is refused.
+    pub fn load_fusion_member(
+        dir: &Path,
+        name: &str,
+        threads: usize,
+        provider: Provider,
+    ) -> Result<Self, RerankError> {
+        let (graph, digest) = crate::cascade::FUSION_GRAPHS
+            .iter()
+            .find(|(n, _)| *n == name)
+            .copied()
+            .ok_or_else(|| RerankError::NotAFusionMember { name: name.to_string() })?;
+        Self::load_pinned(dir, digest, graph, threads, provider)
+    }
+
+    /// Which provider serves this cross-encoder.
+    pub fn provider(&self) -> RerankProvider {
+        self.provider
+    }
+
+    /// Which pinned graph this is.
+    pub fn graph(&self) -> &'static str {
+        self.graph
+    }
+
+    fn load_pinned(
+        dir: &Path,
+        digest: &'static str,
+        graph: &'static str,
+        threads: usize,
+        provider: Provider,
+    ) -> Result<Self, RerankError> {
+        let model_path = dir.join(MODEL_FILE);
+        let tokenizer_path = dir.join(TOKENIZER_FILE);
+        pinned(&model_path, digest, dir)?;
         pinned(&tokenizer_path, TOKENIZER_SHA256, dir)?;
 
         let text = std::fs::read_to_string(&tokenizer_path).map_err(|source| RerankError::Io {
@@ -342,43 +340,21 @@ impl CrossEncoder {
         let vocab = Vocab::from_tokenizer_json(&text, &tokenizer_path.display().to_string())
             .map_err(|source| RerankError::Vocab { path: tokenizer_path, source })?;
 
-        let session = Session::builder()
-            // **ADR-013's provider finding, discharged at construction.** The Python re-costing
-            // requested CUDA, ORT failed to load it on missing cuBLAS/cuDNN and fell back to CPU
-            // *without raising*, producing a "GPU" figure within 1% of the 1-thread CPU one. That
-            // was caught after the fact by comparing `get_providers()` against the request.
-            //
-            // `ort` lets the same requirement be stated up front: `error_on_failure()` turns a
-            // registration failure into a hard error instead of a silent fallback to the next
-            // provider. So the provider cannot silently differ from the one this stage was
-            // measured on -- there is no after-the-fact check to forget to write.
-            //
-            // **And there could not be one here, which is worth stating rather than implying.**
-            // Session K checked: `ort` 2.0.0-rc.10 exposes no way to enumerate a CONSTRUCTED
-            // session's active providers -- no `get_providers`, no `available_providers`, nothing
-            // on `Session`. The Python side asserts `sess.get_providers()` explicitly because it
-            // can (`tools/session_j_models.py`, `session_j_verify_export.py`); Rust states the
-            // requirement at build time instead, which refuses earlier rather than reporting
-            // later. Do not add a comment claiming a post-construction assertion exists here.
-            .and_then(|b| {
-                b.with_execution_providers([CPUExecutionProvider::default()
-                    .build()
-                    .error_on_failure()])
-            })
-            .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level1))
-            // Threads INSIDE the graph. ADR-003 sizes against a 1-vCPU VPS and every published
-            // number was read at 1 for that reason; `load` still passes `SHIPPED_THREADS`. It is a
-            // parameter rather than a constant because M0c Session L is measuring whether the
-            // 1-vCPU target — not the code — is the thing that should change.
-            .and_then(|b| b.with_intra_threads(threads))
-            // Inter-op stays 1. It parallelizes across independent graph NODES, and this graph is
-            // a single sequential chain, so raising it adds a thread pool that nothing can use.
-            // Sweeping it would produce a column of noise and invite reading one of its cells.
-            .and_then(|b| b.with_inter_threads(1))
-            .and_then(|b| b.commit_from_file(&model_path))
-            .map_err(|e| RerankError::Session { path: model_path, source: Box::new(e) })?;
-
-        Ok(Self { session, vocab })
+        // **ADR-013's provider finding, discharged at construction.** The old Python re-costing
+        // requested CUDA, ORT failed on missing cuBLAS/cuDNN and fell back to CPU *without
+        // raising*. `ep::register` uses `error_on_failure()`, so the provider cannot silently
+        // differ from the one asked for.
+        let build = || -> ort::Result<Session> {
+            let b = crate::ep::register(crate::ep::session_builder()?, provider)?;
+            let b = b.with_optimization_level(GraphOptimizationLevel::Level1)?;
+            // Threads INSIDE the graph; `load` passes `SHIPPED_THREADS` (ADR-003). Inter-op stays
+            // 1: this graph is a single sequential chain, so a second pool has nothing to run.
+            let mut b = b.with_intra_threads(threads)?.with_inter_threads(1)?;
+            b.commit_from_file(&model_path)
+        };
+        let session =
+            build().map_err(|e| RerankError::Session { path: model_path.clone(), source: Box::new(e) })?;
+        Ok(Self { session, vocab, provider, graph })
     }
 
     /// Score one `(query, document)` pair. Higher is more relevant.

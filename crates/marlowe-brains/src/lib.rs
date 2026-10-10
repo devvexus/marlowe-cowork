@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod brains;
+pub mod context;
 pub mod credentials;
 mod detect;
 mod error;
@@ -20,5 +21,6 @@ pub use credentials::{
 };
 pub use detect::{detect_ollama, detect_providers, OLLAMA_ADDR};
 pub use error::BrainsError;
-pub use factory::{ProviderConfig, ProviderCtor, ProviderFactory};
+pub use context::{ContextGate, SlotLease, DEFAULT_WINDOW};
+pub use factory::{Hardware, ProviderConfig, ProviderCtor, ProviderFactory};
 pub use library::{Library, SCHEMA};

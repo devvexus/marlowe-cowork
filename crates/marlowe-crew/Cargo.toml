@@ -11,6 +11,8 @@ marlowe-proto.workspace = true
 marlowe-agent.workspace = true
 marlowe-brains.workspace = true
 marlowe-mind.workspace = true
+marlowe-research.workspace = true
+marlowe-extract.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -18,3 +20,6 @@ crossbeam-channel.workspace = true
 rusqlite.workspace = true
 marlowe-os.workspace = true
 sha2.workspace = true
+
+[dev-dependencies]
+marlowe-provider.workspace = true

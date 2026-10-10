@@ -19,5 +19,8 @@ __pycache__/
 # Derived embedding cache.
 .embedding-cache/
 
+# GPU runtime DLLs fetched by scripts/fetch-gpu-runtime.ps1 (sha256-pinned there).
+/gpu-runtime/
+
 # Local profile roots written by tests or dev runs.
 /profile-*/

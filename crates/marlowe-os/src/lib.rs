@@ -8,8 +8,12 @@
 //! command's background processes run on (the conductor's old behaviour). marlowe-exec uses it for every child
 //! process (conductor and crew) in place of `taskkill /T` tree kills.
 //!
+//! [`console::query`] asks the terminal a question (Device Attributes, background colour) and
+//! reads the reply, which on Windows needs virtual-terminal input switched on for the exchange.
+//!
 //! Off Windows the types exist so dependents compile; jobs are unsupported there.
 
+pub mod console;
 mod job;
 
 pub use job::{spawn_in_job, spawn_in_job_with_flags, JobChild, JobObject};

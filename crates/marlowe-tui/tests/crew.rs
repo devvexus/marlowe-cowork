@@ -1,4 +1,4 @@
-//! The crew in the client: the CREW rail, the Run view (research report, build diff and merge),
+//! The crew in the client: the Crew board section, the Run view (research report, build diff and merge),
 //! the ^d dispatch prompt, toasts, steering and the run approvals.
 
 mod common;
@@ -152,7 +152,7 @@ fn rail_shows_mixed_run_states_most_urgent_first() {
     assert_eq!(order, ["ee55ff66aa77bb88", "aa11bb22cc33dd44", "ff33aa44", "dd11ee22", "cc99dd00"]);
     let buf = render(&s, W, H);
     for want in [
-        "CREW",
+        "Crew",
         "1 needs you",
         "◐ engineer · fix the gate thre",
         "tests pass (412)",

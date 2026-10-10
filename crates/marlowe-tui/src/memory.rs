@@ -148,6 +148,7 @@ impl State {
             }
             MemMode::Correct { id, input } => match k.code {
                 KeyCode::Esc => self.memory.mode = MemMode::Browse,
+                KeyCode::Backspace if input.text().is_empty() => self.memory.mode = MemMode::Browse,
                 KeyCode::Enter => {
                     if !input.is_blank() {
                         let text = input.take().trim().to_string();
@@ -211,6 +212,8 @@ impl State {
                         }
                     }
                     KeyCode::Char('u') if ctrl => m.query.clear(),
+                    // Typing searches; with nothing typed, Backspace goes back like Esc.
+                    KeyCode::Backspace if m.query.is_empty() => self.view = View::Conversation,
                     KeyCode::Backspace => {
                         m.query.pop();
                     }

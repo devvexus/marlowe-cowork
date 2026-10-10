@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use marlowe_model::{
-    CancelToken, ChatRequest, Completion, ModelInfo, Provider, ProviderError, ProviderKind,
+    CancelToken, ChatRequest, Completion, ContextAllocations, ModelInfo, Provider, ProviderError, ProviderKind,
     StreamEvent,
 };
 use serde_json::{json, Value};
@@ -35,7 +35,11 @@ pub const CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct OllamaProvider {
     endpoint: LocalEndpoint,
+    /// The window for a model with no context policy.
     num_ctx: u32,
+    /// Per-model windows from the context policy: one allocation per model, sent on every
+    /// request, so Ollama never reloads a runner because two agents asked for different sizes.
+    alloc: ContextAllocations,
     idle: Duration,
     meta: Mutex<HashMap<String, ModelMeta>>,
 }
@@ -51,6 +55,7 @@ impl OllamaProvider {
         Self {
             endpoint,
             num_ctx: DEFAULT_CONTEXT_TOKENS,
+            alloc: ContextAllocations::new(),
             idle: DEFAULT_IDLE_TIMEOUT,
             meta: Mutex::new(HashMap::new()),
         }
@@ -70,6 +75,19 @@ impl OllamaProvider {
     pub fn with_context_tokens(mut self, tokens: u32) -> Self {
         self.num_ctx = tokens.max(512);
         self
+    }
+
+    /// Shares the per-model context allocations the library keeps.
+    pub fn with_allocations(mut self, alloc: ContextAllocations) -> Self {
+        self.alloc = alloc;
+        self
+    }
+
+    /// The `num_ctx` requests for `model` send: its policy's allocation, else the default; never
+    /// above the model's own maximum.
+    pub fn context_for(&self, model: &str, meta: &ModelMeta) -> u32 {
+        let want = self.alloc.get(model).unwrap_or(self.num_ctx);
+        meta.context.map_or(want, |c| c.min(want))
     }
 
     pub fn with_idle_timeout(mut self, idle: Duration) -> Self {
@@ -125,7 +143,7 @@ impl OllamaProvider {
 
     /// The body `stream` would send, for inspection.
     pub fn build_body(&self, req: &ChatRequest, meta: &ModelMeta) -> Value {
-        let num_ctx = meta.context.map_or(self.num_ctx, |c| c.min(self.num_ctx));
+        let num_ctx = self.context_for(&req.model, meta);
         request_body(req, num_ctx, think_value(meta.think_mode(), req.effort))
     }
 
@@ -178,7 +196,7 @@ impl Provider for OllamaProvider {
             if !meta.can_chat() {
                 continue;
             }
-            out.push(model_info(&t.name, &meta, self.num_ctx));
+            out.push(model_info(&t.name, &meta, self.alloc.get(&t.name).unwrap_or(self.num_ctx)));
             self.remember(&t.name, meta);
         }
         out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -234,5 +252,28 @@ impl Provider for OllamaProvider {
             return Err(ProviderError::network("Ollama closed the stream before it finished"));
         }
         Ok(folder.finish())
+    }
+}
+
+#[cfg(test)]
+mod alloc_tests {
+    use super::*;
+    use marlowe_model::Message;
+
+    #[test]
+    fn num_ctx_follows_the_policy_and_never_exceeds_the_model() {
+        let alloc = ContextAllocations::new();
+        let p = OllamaProvider::default().with_allocations(alloc.clone());
+        let meta = ModelMeta { capabilities: Some(vec!["completion".into()]), context: Some(262_144), family: None };
+        let req = ChatRequest::new("dusk", vec![Message::user("hi")]);
+        assert_eq!(p.build_body(&req, &meta)["options"]["num_ctx"], DEFAULT_CONTEXT_TOKENS);
+        alloc.set("dusk", 47_104);
+        assert_eq!(p.build_body(&req, &meta)["options"]["num_ctx"], 47_104);
+        // Another model keeps the default: one allocation per model.
+        let other = ChatRequest::new("other", vec![Message::user("hi")]);
+        assert_eq!(p.build_body(&other, &meta)["options"]["num_ctx"], DEFAULT_CONTEXT_TOKENS);
+        // The backstop: never above what the model supports.
+        alloc.set("dusk", 1_000_000);
+        assert_eq!(p.build_body(&req, &meta)["options"]["num_ctx"], 262_144);
     }
 }

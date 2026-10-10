@@ -22,14 +22,30 @@ marlowe-tui.workspace = true
 marlowe-provider.workspace = true
 marlowe-openrouter.workspace = true
 marlowe-exec.workspace = true
+# Deep research v2's channels and cache (src/research_wire.rs).
+marlowe-research.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 crossterm.workspace = true
+# `marlowe math`: the maths gallery, drawn through the same grid and image paths as the TUI.
+marlowe-surface.workspace = true
+marlowe-typeset.workspace = true
+marlowe-os.workspace = true
+ratatui.workspace = true
 # `--eval-adapter` (src/eval/): the §4.0 NDJSON target the LongMemEval reproduction drives.
 marlowe-contract.workspace = true
 marlowe-journal.workspace = true
 marlowe-memory.workspace = true
+
+[dev-dependencies]
+# tests/context_live.rs: the planner against the real store, runner log and GPU (ignored by default).
+marlowe-hw.workspace = true
+
+[features]
+# GPU rerank (CUDA, then DirectML, then CPU, only while the GPU is idle) and the six-graph cascade.
+# Off by default; see crates/marlowe-memory/src/ep/mod.rs and scripts/fetch-gpu-runtime.ps1.
+cuda = ["marlowe-memory/cuda", "marlowe-mind/cuda"]
 
 # SetHandleInformation for the detached daemon spawn (daemon_ctl.rs).
 [target.'cfg(windows)'.dependencies]

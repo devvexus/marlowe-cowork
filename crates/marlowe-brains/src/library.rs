@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use marlowe_model::{Effort, ModelInfo, ModelRef};
-use marlowe_proto::{LibraryModel, Slot, SlotAssignment};
+use marlowe_proto::{ContextPolicy, KvType, LibraryModel, PolicySource, Slot, SlotAssignment};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::BrainsError;
@@ -23,6 +23,19 @@ CREATE TABLE IF NOT EXISTS slots (
     slot      TEXT PRIMARY KEY,
     model_ref TEXT,
     effort    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS context_policy (
+    model_ref  TEXT PRIMARY KEY,
+    max_ctx    INTEGER NOT NULL CHECK (max_ctx >= 2048),
+    kv_type    TEXT NOT NULL CHECK (kv_type IN ('f16','q8_0','q4_0')),
+    parallel   INTEGER NOT NULL CHECK (parallel BETWEEN 1 AND 16),
+    source     TEXT NOT NULL CHECK (source IN ('auto','user')),
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS hw_calibration (
+    key         TEXT PRIMARY KEY,
+    value       REAL NOT NULL,
+    observed_at INTEGER NOT NULL
 );
 ";
 
@@ -92,10 +105,12 @@ impl Library {
         Ok(model)
     }
 
-    /// Removes a model and clears any slot pointing at it. Returns whether it existed.
+    /// Removes a model, clears any slot pointing at it and deletes its context policy. Returns
+    /// whether it existed.
     pub fn remove(&self, model: &ModelRef) -> Result<bool, BrainsError> {
         let key = model.to_string();
         self.conn.execute("UPDATE slots SET model_ref = NULL WHERE model_ref = ?1", [&key])?;
+        self.conn.execute("DELETE FROM context_policy WHERE model_ref = ?1", [&key])?;
         Ok(self.conn.execute("DELETE FROM models WHERE ref = ?1", [&key])? > 0)
     }
 
@@ -170,7 +185,85 @@ impl Library {
     }
 }
 
-fn now_ms() -> i64 {
+impl Library {
+    /// The saved context policy of `model`, if any.
+    pub fn policy(&self, model: &ModelRef) -> Result<Option<ContextPolicy>, BrainsError> {
+        let row: Option<(i64, String, i64, String, i64)> = self
+            .conn
+            .query_row(
+                "SELECT max_ctx, kv_type, parallel, source, updated_at FROM context_policy WHERE model_ref = ?1",
+                [model.to_string()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()?;
+        Ok(row.and_then(|(max_ctx, kv, parallel, source, at)| {
+            Some(ContextPolicy {
+                max_ctx: max_ctx as u32,
+                kv_type: KvType::parse(&kv)?,
+                parallel: parallel as u16,
+                source: if source == "user" { PolicySource::User } else { PolicySource::Auto },
+                updated_ms: at,
+            })
+        }))
+    }
+
+    /// Every saved policy.
+    pub fn policies(&self) -> Result<Vec<(ModelRef, ContextPolicy)>, BrainsError> {
+        let mut st = self.conn.prepare("SELECT model_ref FROM context_policy ORDER BY model_ref")?;
+        let refs: Vec<String> = st.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        let mut out = Vec::new();
+        for r in refs {
+            let Ok(m) = r.parse::<ModelRef>() else { continue };
+            if let Some(p) = self.policy(&m)? {
+                out.push((m, p));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Saves a policy (the caller has validated it).
+    pub fn set_policy(&self, model: &ModelRef, p: &ContextPolicy) -> Result<(), BrainsError> {
+        let source = match p.source {
+            PolicySource::User => "user",
+            PolicySource::Auto => "auto",
+        };
+        self.conn.execute(
+            "INSERT INTO context_policy (model_ref, max_ctx, kv_type, parallel, source, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(model_ref) DO UPDATE SET max_ctx = excluded.max_ctx, kv_type = excluded.kv_type,
+               parallel = excluded.parallel, source = excluded.source, updated_at = excluded.updated_at",
+            params![model.to_string(), p.max_ctx, p.kv_type.ollama_name(), p.parallel, source, p.updated_ms],
+        )?;
+        Ok(())
+    }
+
+    pub fn calibration(&self, key: &str) -> Result<Option<f64>, BrainsError> {
+        Ok(self.conn.query_row("SELECT value FROM hw_calibration WHERE key = ?1", [key], |r| r.get(0)).optional()?)
+    }
+
+    /// The newest calibration whose key starts with `prefix`, as (key, value).
+    pub fn calibration_like(&self, prefix: &str) -> Result<Option<(String, f64)>, BrainsError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT key, value FROM hw_calibration WHERE substr(key, 1, length(?1)) = ?1 ORDER BY observed_at DESC LIMIT 1",
+                [prefix],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    pub fn set_calibration(&self, key: &str, value: f64) -> Result<(), BrainsError> {
+        self.conn.execute(
+            "INSERT INTO hw_calibration (key, value, observed_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, observed_at = excluded.observed_at",
+            params![key, value, now_ms()],
+        )?;
+        Ok(())
+    }
+}
+
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
@@ -216,6 +309,23 @@ mod tests {
         assert!(!lib.remove(&b).unwrap());
         assert_eq!(lib.resolve(&Slot::Crew("coder".into())).unwrap(), (a, Effort::Low));
         assert!(lib.set_slot(&Slot::Quick, Some(&b), Effort::Low).is_err());
+    }
+
+    #[test]
+    fn policies_persist_validate_in_sql_and_go_with_their_model() {
+        let lib = Library::open_in_memory().unwrap();
+        let a = lib.add(&info("a")).unwrap();
+        let p = ContextPolicy { max_ctx: 47_104, kv_type: KvType::Q4_0, parallel: 2, source: PolicySource::User, updated_ms: 5 };
+        lib.set_policy(&a, &p).unwrap();
+        assert_eq!(lib.policy(&a).unwrap(), Some(p));
+        assert_eq!(lib.policies().unwrap(), vec![(a.clone(), p)]);
+        // The table's CHECKs are the last line: a window under 2048 or 17 agents never lands.
+        assert!(lib.set_policy(&a, &ContextPolicy { max_ctx: 1024, ..p }).is_err());
+        assert!(lib.set_policy(&a, &ContextPolicy { parallel: 17, ..p }).is_err());
+        lib.remove(&a).unwrap();
+        assert_eq!(lib.policy(&a).unwrap(), None);
+        lib.set_calibration("compute|blob|32768|512", 370.3).unwrap();
+        assert_eq!(lib.calibration_like("compute|blob|").unwrap().map(|c| c.1), Some(370.3));
     }
 
     #[test]

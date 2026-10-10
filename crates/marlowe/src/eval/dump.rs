@@ -42,6 +42,11 @@ impl FeatureDump {
                 "rerank_score".into(),
                 c.rerank_score.map_or(serde_json::Value::Null, |v| serde_json::json!(v)),
             );
+            // The cascade's fusion rank (0 = best); null when the cascade did not rank it.
+            row.insert(
+                "fusion_rank".into(),
+                c.fusion_rank.map_or(serde_json::Value::Null, |v| serde_json::json!(v)),
+            );
             writeln!(self.out, "{}", serde_json::Value::Object(row))?;
         }
         self.out.flush()

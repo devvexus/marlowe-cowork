@@ -222,6 +222,15 @@ pub enum Rerank<'a> {
         /// configuration and execute another; the retrieval profile records the value per query.
         batched: bool,
     },
+    /// The GPU cascade ([`crate::cascade`]): a 30-wide slate, narrowed to 10 by `encoder` (the
+    /// SHIPPED graph, whose logit stays in `rerank_score`), then RRF over the shipped ranks and
+    /// each fusion member's, written to `fusion_rank`. Never offered on CPU: it reads p50 1134 ms
+    /// there against the 300 ms budget.
+    Cascade {
+        encoder: &'a mut CrossEncoder,
+        fusion: &'a mut [CrossEncoder],
+        batched: bool,
+    },
 }
 
 /// Which beliefs a retrieval may consider: this session's, or the whole profile's.
@@ -308,7 +317,13 @@ pub struct ScoredCandidate<'a> {
     /// outside the reranking budget. It never means "scored zero": a cross-encoder logit is signed
     /// and near-zero is a real, middling score, so a `0.0` sentinel would be indistinguishable from
     /// a genuine reading.
+    ///
+    /// Under the cascade this stays the SHIPPED graph's logit; the operating point is calibrated
+    /// in those units. The fusion's opinion is [`Self::fusion_rank`].
     pub rerank_score: Option<f32>,
+    /// 0-based position under the cascade's rank fusion; `None` when the cascade did not run or
+    /// the candidate was outside the narrowed ten. The ranking key's first level after pruning.
+    pub fusion_rank: Option<u32>,
 }
 
 pub struct Selection<'a> {
@@ -424,40 +439,81 @@ fn score_slate(
     scored: &mut [ScoredCandidate<'_>],
     slate: &[usize],
     batched: bool,
-) {
+    write_back: bool,
+) -> Vec<Option<f32>> {
+    let mut out = vec![None; slate.len()];
     if slate.is_empty() {
-        return;
+        return out;
     }
     if !batched {
-        for index in slate {
+        for (slot, index) in out.iter_mut().zip(slate) {
             match encoder.score(query_text, &scored[*index].entry.text) {
-                Ok(logit) => {
-                    scored[*index].rerank_score = Some(logit);
-                }
-                Err(e) => {
-                    eprintln!("marlowe: cross-encoder failed on {}: {e}", scored[*index].entry.id)
-                }
+                Ok(logit) => *slot = Some(logit),
+                Err(e) => eprintln!("marlowe: cross-encoder failed on {}: {e}", scored[*index].entry.id),
             }
         }
-        return;
-    }
-    for chunk in slate.chunks(crate::rerank::MAX_BATCH) {
-        let documents: Vec<&str> =
-            chunk.iter().map(|i| scored[*i].entry.text.as_str()).collect();
-        match encoder.score_batch(query_text, &documents) {
-            Ok(logits) => {
-                for (index, logit) in chunk.iter().zip(logits) {
-                    scored[*index].rerank_score = Some(logit);
+    } else {
+        for (chunk_no, chunk) in slate.chunks(crate::rerank::MAX_BATCH).enumerate() {
+            let documents: Vec<&str> = chunk.iter().map(|i| scored[*i].entry.text.as_str()).collect();
+            match encoder.score_batch(query_text, &documents) {
+                Ok(logits) => {
+                    for (k, logit) in logits.into_iter().enumerate() {
+                        out[chunk_no * crate::rerank::MAX_BATCH + k] = Some(logit);
+                    }
                 }
-            }
-            Err(e) => {
-                eprintln!(
+                Err(e) => eprintln!(
                     "marlowe: cross-encoder failed on a batch of {} for query {:?}: {e}",
                     documents.len(),
                     query_text
-                );
+                ),
             }
         }
+    }
+    // Only the SHIPPED graph writes `rerank_score`: the dump, the offline reconstructions and the
+    // operating point all read that field in its logit units.
+    if write_back {
+        for (index, logit) in slate.iter().zip(&out) {
+            if logit.is_some() {
+                scored[*index].rerank_score = *logit;
+            }
+        }
+    }
+    out
+}
+
+/// The cascade: score the 30-wide slate with the shipped graph (written back), narrow to 10 by
+/// its logit (ties by candidate index, as the offline tool sorted), score the ten with each
+/// fusion member (never written back), and write the RRF order to `fusion_rank`. A member that
+/// fails on any of the ten is left out of this query's fusion rather than guessed at.
+fn run_cascade(
+    encoder: &mut CrossEncoder,
+    fusion: &mut [CrossEncoder],
+    query_text: &str,
+    scored: &mut [ScoredCandidate<'_>],
+    batched: bool,
+) {
+    let slate = draw_slate(scored, crate::cascade::CASCADE_SLATE);
+    score_slate(encoder, query_text, scored, &slate, batched, true);
+    let mut narrowed: Vec<usize> = slate.iter().copied().filter(|i| scored[*i].rerank_score.is_some()).collect();
+    narrowed.sort_by(|&a, &b| {
+        let x = scored[a].rerank_score.unwrap_or(f32::NEG_INFINITY);
+        let y = scored[b].rerank_score.unwrap_or(f32::NEG_INFINITY);
+        y.total_cmp(&x).then_with(|| a.cmp(&b))
+    });
+    narrowed.truncate(crate::cascade::CASCADE_NARROW);
+    if narrowed.is_empty() {
+        return;
+    }
+    let mut members: Vec<Vec<f32>> = Vec::with_capacity(fusion.len());
+    for member in fusion.iter_mut() {
+        let logits = score_slate(member, query_text, scored, &narrowed, batched, false);
+        match logits.into_iter().collect::<Option<Vec<f32>>>() {
+            Some(l) => members.push(l),
+            None => eprintln!("marlowe: cascade member {} dropped from this query's fusion", member.graph()),
+        }
+    }
+    for (index, rank) in crate::cascade::fuse(&narrowed, &members) {
+        scored[index].fusion_rank = Some(rank);
     }
 }
 
@@ -606,6 +662,7 @@ pub fn select_for_injection_filtered<'a, P: StageProbe>(
                     session_key: 0,
                     survived_pruning: true,
                     rerank_score: None,
+                    fusion_rank: None,
                 }
             }
         })
@@ -645,7 +702,10 @@ pub fn select_for_injection_filtered<'a, P: StageProbe>(
             // with the key the reranker then replaces is what makes this a rerank stage rather than a
             // new cue â€” and it is what Q2's registered "fixed budget of 10 reranked pairs" costs.
             let slate = draw_slate(&scored, *budget);
-            score_slate(encoder, query_text, &mut scored, &slate, *batched);
+            score_slate(encoder, query_text, &mut scored, &slate, *batched, true);
+        }
+        Rerank::Cascade { encoder, fusion, batched } => {
+            run_cascade(encoder, fusion, query_text, &mut scored, *batched);
         }
     }
 
@@ -697,6 +757,15 @@ pub fn select_for_injection_filtered<'a, P: StageProbe>(
                 let (x, y) = (&scored[*a], &scored[*b]);
                 y.survived_pruning
                     .cmp(&x.survived_pruning)
+                    // The cascade's fusion rank, ascending, when present. Without the cascade
+                    // every candidate is `None` and this level is inert, so the CPU path orders
+                    // exactly as before. `None` sorts after `Some`, written out as below.
+                    .then_with(|| match (x.fusion_rank, y.fusion_rank) {
+                        (Some(p), Some(q)) => p.cmp(&q),
+                        (Some(_), None) => std::cmp::Ordering::Less,
+                        (None, Some(_)) => std::cmp::Ordering::Greater,
+                        (None, None) => std::cmp::Ordering::Equal,
+                    })
                     // `None` sorts AFTER any `Some`, so an unreranked candidate never outranks a
                     // reranked one on the absence of a score. `Option`'s own ordering puts `None`
                     // first, which is the opposite, so it is written out rather than derived.

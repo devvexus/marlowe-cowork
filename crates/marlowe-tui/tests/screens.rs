@@ -21,9 +21,9 @@ fn empty_first_run_screen() {
     let s = first_run();
     let buf = render(&s, W, H);
     assert!(contains(&buf, "You have no models. Add one?"));
-    assert!(contains(&buf, "add a model ▾"), "the title bar points at the missing model");
-    for section in ["CREW", "WATCH", "THREADS", "TODAY", "no runs", "nothing scheduled"] {
-        assert!(contains(&buf, section), "rail is missing {section}");
+    assert!(contains(&buf, "add a model ▾"), "the Model box points at the missing model");
+    for section in ["Crew", "Watch", "Threads", "Memory", "no runs", "nothing watched", "no open threads"] {
+        assert!(contains(&buf, section), "board is missing {section}");
     }
     assert!(contains(&buf, "press ↵ to add a model"));
     assert_palette_only(&buf);
@@ -216,7 +216,7 @@ fn narrow_terminal_notice() {
     let buf = render(&s, 100, 24);
     assert!(contains(&buf, "needs a window of at least 120 × 30"));
     assert!(contains(&buf, "this one is 100 × 24 — resize to continue"));
-    assert!(!contains(&buf, "CREW"));
+    assert!(!contains(&buf, "Crew"));
     assert_palette_only(&buf);
     snapshot("narrow", &buf);
 }
@@ -254,7 +254,7 @@ fn palette_and_sessions_overlays() {
 }
 
 #[test]
-fn model_picker_from_the_title_bar() {
+fn model_picker_from_the_model_box() {
     let mut s = state();
     welcome(&mut s, 0);
     let mut second = sonnet();

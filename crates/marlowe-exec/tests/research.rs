@@ -25,7 +25,10 @@ struct Fake {
 }
 
 impl Fake {
-    fn new(routes: Vec<Route>) -> Arc<Self> {
+    /// Every fake also answers robots.txt with 404 (allow all), last, so page fetches pass the
+    /// process-wide host gate the same way in every test.
+    fn new(mut routes: Vec<Route>) -> Arc<Self> {
+        routes.push(("/robots.txt", 404, "text/plain", Vec::new()));
         Arc::new(Self { routes, seen: Mutex::new(vec![]), hits: AtomicUsize::new(0) })
     }
 }
@@ -250,4 +253,9 @@ fn live_arxiv_search_and_paper() {
     let p = call(&t, "paper", json!({"url_or_arxiv_id": "1706.03762"}));
     assert!(!p.is_error, "{}", p.content);
     assert!(p.content.contains("Attention"));
+    let head: String = p.content.chars().take(700).collect();
+    eprintln!("{head}");
+    let r = call(&t, "paper", json!({"url_or_arxiv_id": "1706.03762", "part": "references"}));
+    assert!(!r.is_error, "{}", r.content);
+    eprintln!("{}", r.summary);
 }

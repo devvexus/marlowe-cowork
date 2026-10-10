@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8">
+<title>Why does my std::thread pool deadlock when a worker panics? - Rust Users Forum</title>
+<meta property="og:type" content="website">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"DiscussionForumPosting","headline":"Why does my std::thread pool deadlock when a worker panics?"}</script>
+</head>
+<body>
+<header class="d-header"><div class="title"><a href="/">Rust Users Forum</a></div>
+<nav><a href="/latest">Latest</a> <a href="/top">Top</a> <a href="/categories">Categories</a> <a href="/login">Log in</a> <a href="/signup">Sign up</a></nav></header>
+<div id="main-outlet">
+<h1 class="fancy-title"><a href="/t/thread-pool-deadlock/104233">Why does my std::thread pool deadlock when a worker panics?</a></h1>
+<div class="topic-category"><a href="/c/help/5">help</a> <a href="/tag/concurrency">concurrency</a></div>
+<div class="post-stream">
+  <article class="topic-post" id="post_1">
+    <div class="names"><span class="username"><a href="/u/kestrel">kestrel</a></span> <span class="post-date">Mar 3</span></div>
+    <div class="cooked">
+      <p>I have a small thread pool built on <code>std::sync::mpsc</code>: a shared receiver behind a <code>Mutex</code>, eight workers, and a <code>join</code> that waits for a counter to reach zero. When one job panics, <code>join</code> never returns.</p>
+      <pre><code>let job = rx.lock().unwrap().recv();
+match job {
+    Ok(f) =&gt; { f(); pending.fetch_sub(1, SeqCst); }
+    Err(_) =&gt; break,
+}</code></pre>
+      <p>What is the idiomatic way to make the pool survive a panicking job?</p>
+    </div>
+  </article>
+  <article class="topic-post" id="post_2">
+    <div class="names"><span class="username"><a href="/u/quinedot">quinedot</a></span> <span class="post-date">Mar 3</span> <span class="badge">Solution</span></div>
+    <div class="cooked">
+      <p>The panic unwinds out of <code>f()</code> before <code>fetch_sub</code> runs, so the counter never reaches zero. Worse, if the panic happens while the guard from <code>rx.lock()</code> is alive, the mutex is poisoned and every other worker's <code>unwrap()</code> panics too.</p>
+      <p>Decrement in a drop guard so it runs during unwinding, and catch the panic per job with <a href="https://doc.rust-lang.org/std/panic/fn.catch_unwind.html">catch_unwind</a> so the worker thread lives on:</p>
+      <pre><code>let result = std::panic::catch_unwind(AssertUnwindSafe(f));
+pending.fetch_sub(1, SeqCst);</code></pre>
+      <p>Also take the job out of the lock before running it, so a panic can never poison the receiver mutex.</p>
+    </div>
+  </article>
+  <article class="topic-post" id="post_3">
+    <div class="names"><span class="username"><a href="/u/kestrel">kestrel</a></span> <span class="post-date">Mar 4</span></div>
+    <div class="cooked">
+      <p>That was it. Moving <code>recv()</code> out of the guard's scope and wrapping the job in <code>catch_unwind</code> fixed the deadlock, and the pool now reports the panic message instead of hanging.</p>
+    </div>
+  </article>
+</div>
+<div class="suggested-topics"><h3>Suggested Topics</h3><table>
+<tr><td><a href="/t/1">Scoped threads and borrowed data</a></td><td>12 replies</td></tr>
+<tr><td><a href="/t/2">Is crossbeam still needed in 2025?</a></td><td>31 replies</td></tr>
+<tr><td><a href="/t/3">Rayon vs manual threads for IO</a></td><td>8 replies</td></tr>
+</table></div>
+</div>
+<footer><p>Powered by Discourse. <a href="/tos">Terms of Service</a> <a href="/privacy">Privacy Policy</a></p></footer>
+</body></html>

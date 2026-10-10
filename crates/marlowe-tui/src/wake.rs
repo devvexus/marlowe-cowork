@@ -469,6 +469,7 @@ impl State {
                         self.wake.mode = WatchMode::Browse;
                     }
                 }
+                KeyCode::Backspace if input.text().is_empty() => self.wake.mode = WatchMode::Browse,
                 KeyCode::Backspace => input.backspace(),
                 KeyCode::Delete => input.delete(),
                 KeyCode::Left => input.left(),
@@ -482,9 +483,9 @@ impl State {
             WatchMode::Browse => {
                 let rows = self.wake.rows();
                 match k.code {
-                    KeyCode::Esc => self.view = crate::state::View::Conversation,
-                    KeyCode::Up => self.wake.sel = self.wake.sel.saturating_sub(1),
-                    KeyCode::Down | KeyCode::Tab => {
+                    KeyCode::Esc | KeyCode::Backspace => self.view = crate::state::View::Conversation,
+                    KeyCode::Up | KeyCode::Char('k') => self.wake.sel = self.wake.sel.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Tab | KeyCode::Char('j') => {
                         self.wake.sel = (self.wake.sel + 1).min(rows.len().saturating_sub(1))
                     }
                     KeyCode::Char('a') => self.wake.mode = WatchMode::Add { input: Composer::default() },

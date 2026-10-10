@@ -6,9 +6,11 @@ use std::str::FromStr;
 use marlowe_model::{Effort, ModelRef, ProviderKind};
 use serde::{Deserialize, Serialize};
 
+use crate::context::{ContextPolicy, KvType};
 use crate::crew::{CrewBudget, Playbook, RunId};
 use crate::ids::{ApprovalId, SessionId};
 use crate::memory::MemoryScope;
+use crate::research::PlanDecision;
 
 /// A secret on the wire. `Debug` and `Display` never print it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -269,4 +271,24 @@ pub enum Request {
     DiscardRun { run: RunId },
     /// Answered with `Roles`.
     ListRoles,
+    /// Answers a deep research run's `PlanProposed`: approve it, run an edited plan instead, or
+    /// reject it (the run ends cancelled). Answered with `RunUpdated`.
+    ApprovePlan { run: RunId, decision: PlanDecision },
+    /// The context and hardware plan for `model`; answered with `ContextPlan` to this client.
+    ContextPlan { model: ModelRef },
+    /// Every library model's context policy and engine state; answered with `ContextPolicies`.
+    ContextPolicies,
+    /// Saves `model`'s policy. Answered with `ContextPolicySaved` (broadcast), listing what
+    /// changed now and what waits for a server restart. Refused above the model's maximum.
+    SetContextPolicy { model: ModelRef, policy: ContextPolicy },
+    /// Changes Ollama's server-wide settings and restarts it. Always goes through an approval
+    /// (`SERVER_RESTART_TOOL`) that says what restarts; `None` leaves a setting as it is.
+    ApplyOllamaServer {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kv_type: Option<KvType>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parallel: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        flash_attn: Option<bool>,
+    },
 }

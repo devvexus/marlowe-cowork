@@ -1,0 +1,40 @@
+ * marlowe — kv planning                                                                                               0 runs · 1 needs you
+╭ Conversation · kv planning ───────────────────────────────────────────────── ⣠⣾⣦⣴⣷⣄ needs you ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ marlowe-dusk:27b-super ▾        medium │
+│                                                                                                ││ ctx 12.4k / 32k · kv q8 · 1 slot       │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
+│                                                                                                │╭ Workspace ─────────────────────────────╮
+│                                                                                                ││ C:/work/valiance ▾                     │
+│                                                                                                │╰────────────────────────────────── (w) ─╯
+│                                                                                                │╭ Crew ──────────────────────────────────╮
+│                                                                                                ││ no runs                                │
+│                                                                                                │╰────────────────────────────────── (1) ─╯
+│                                                                                                │╭ Watch ─────────────────────────────────╮
+│                                           ⣿  MARLOWE                                           ││ nothing watched                        │
+│                                                                                                ││                                        │
+│                              ╔ approval ══════════════════════════════════════════════════════════════════╗                              │
+│                              ║ ollama_server_restart  wants to act                                        ║                              │
+│                              ║                                                                            ║                              │
+│                ask anything  ║ Restart Ollama with OLLAMA_KV_CACHE_TYPE=q4_0                              ║                              │
+│                              ║                                                                            ║                              │
+│                              ║ ▏ These are Ollama server settings: every Ollama model uses them.          ║                              │
+│                              ║                                                                            ║                              │
+│                              ║ from the context planner · every Ollama model is affected                  ║                              │
+│                              ║                                                                            ║                              │
+│                              ║   y allow      › n deny                                                    ║                              │
+│                              ╚════════════════════════════════════════════════════════════════════════════╝                              │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                                                                                                │╭ Threads ───────────────────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  alt-v Voice  ^k palette                     21:40

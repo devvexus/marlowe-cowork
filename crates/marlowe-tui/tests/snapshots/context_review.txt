@@ -1,0 +1,40 @@
+ * marlowe — kv planning                                                                                                0 runs · 0 need you
+╭ Conversation · kv planning ────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ marlowe-dusk:27b-super ▾        medium │
+│                                                                                                ││ ctx 12.4k / 32k · kv q8 · 1 slot       │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
+│                                                                                                │╭ Workspace ─────────────────────────────╮
+│                                                                                                ││ C:/work/valiance ▾                     │
+│                 ╭─ Context & hardware · marlowe-dusk:27b-super ────────────────────────────────────────────────── esc ─╮─────────── (w) ─╯
+│                 │ Saving 36k · q4 · 1× for marlowe-dusk:27b-super:                                                     │─────────────────╮
+│                 │                                                                                                      │                 │
+│                 │   ✓ now      Requests to this model use num_ctx 36,864 (was 32,768); Ollama reloads it on the next   │─────────── (1) ─╯
+│                 │              request (~7 s)                                                                          │─────────────────╮
+│                 │   ✓ now      Agents on this model: at most 36k each, never more; at most 1 at once                   │                 │
+│                 │   ! restart  Ollama server, affects every Ollama model: OLLAMA_KV_CACHE_TYPE q8_0 → q4_0             │                 │
+│                 │              sets your user environment variable, then quits and relaunches Ollama (unloads every    │                 │
+│                 │              loaded Ollama model, this one included; 0 requests running on this one)                 │                 │
+│                 │                                                                                                      │                 │
+│                a│ Restarting Ollama always asks first (allow or deny). Until it restarts, the meter shows the change   │                 │
+│                 │ as pending.                                                                                          │                 │
+│                 │                                                                                                      │                 │
+│                 │ s save (server change later)                                                                         │                 │
+│                 │ r save and restart Ollama…                                                                           │                 │
+│                 │ esc back                                                                                             │                 │
+│                 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯                 │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                                                                                                │╭ Threads ───────────────────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  alt-v Voice  ^k palette                     21:40

@@ -5,6 +5,7 @@
 mod agent;
 mod build;
 mod research;
+pub mod research_v2;
 
 pub use agent::{
     sandbox_shell, tail_chars, AgentRunner, ModelResolver, NoHooks, ShellFn, StepHooks, StepModel, CONTINUE_PROMPT,
@@ -12,8 +13,9 @@ pub use agent::{
 };
 pub use build::{build, detect_test_command};
 pub use research::{deep_research, first_paragraph, min_confidence, parse_verdicts, Verdict, REPORT_FILE};
+pub use research_v2::{deep_research_v2, ResearchHost, ResearchIo, ResearchV2Config};
 
-use marlowe_model::Usage;
+use marlowe_model::{Effort, Usage};
 use marlowe_proto::{Citation, Confidence, Dispatch, Playbook, SandboxKind};
 
 use crate::sandbox::Sandbox;
@@ -32,6 +34,8 @@ pub struct StepSpec {
     pub prompt: String,
     /// Narrows the role's allowlist for this step; `None` keeps it.
     pub tools: Option<Vec<String>>,
+    /// Overrides the card's effort for this step; `None` keeps it.
+    pub effort: Option<Effort>,
 }
 
 /// What one agent call produced.
@@ -84,15 +88,18 @@ pub struct PlaybookConfig {
     pub max_test_iterations: u32,
     /// The build test command; `None` detects one from the worktree.
     pub test_command: Option<String>,
+    /// Deep research v2 settings.
+    pub research: ResearchV2Config,
 }
 
 impl Default for PlaybookConfig {
     fn default() -> Self {
-        Self { max_scouts: 6, max_test_iterations: 4, test_command: None }
+        Self { max_scouts: 6, max_test_iterations: 4, test_command: None, research: ResearchV2Config::default() }
     }
 }
 
 /// Runs `playbook` for `goal`, or a single role-prompt step with `role` when there is none.
+/// Deep research is v1 here; [`run_with`] runs v2 when the run has research channels.
 pub fn run(
     playbook: Option<Playbook>,
     role: &str,
@@ -100,10 +107,24 @@ pub fn run(
     runner: &dyn StepRunner,
     cfg: &PlaybookConfig,
 ) -> Result<Dispatch, CrewError> {
-    match playbook {
-        Some(Playbook::DeepResearch) => deep_research(runner, goal, cfg),
-        Some(Playbook::Build) => build(runner, goal, cfg),
-        None => single(runner, role, goal),
+    run_with(playbook, role, goal, runner, cfg, None)
+}
+
+/// [`run`], with the research host that makes deep research v2. Without one (no channels wired)
+/// deep research falls back to v1, whose scouts search with their own tools.
+pub fn run_with(
+    playbook: Option<Playbook>,
+    role: &str,
+    goal: &str,
+    runner: &dyn StepRunner,
+    cfg: &PlaybookConfig,
+    research: Option<&dyn ResearchHost>,
+) -> Result<Dispatch, CrewError> {
+    match (playbook, research) {
+        (Some(Playbook::DeepResearch), Some(host)) => deep_research_v2(runner, host, goal, &cfg.research),
+        (Some(Playbook::DeepResearch), None) => deep_research(runner, goal, cfg),
+        (Some(Playbook::Build), _) => build(runner, goal, cfg),
+        (None, _) => single(runner, role, goal),
     }
 }
 
@@ -116,6 +137,7 @@ pub fn single(runner: &dyn StepRunner, role: &str, goal: &str) -> Result<Dispatc
         label: role.to_string(),
         prompt: format!("Goal: {goal}"),
         tools: None,
+        effort: None,
     })?;
     let diff = if runner.sandbox().kind == SandboxKind::Worktree {
         Some(runner.sandbox().diff_summary()?).filter(|d| !d.files.is_empty())

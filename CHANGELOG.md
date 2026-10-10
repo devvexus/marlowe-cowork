@@ -4,6 +4,181 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Context and hardware planner
+
+Matthew's rule: the user sets each model's maximum context up front; agents get that or less, never more; and the cost on this GPU is shown before anything loads.
+
+- **Added.** `marlowe-hw`, pure: a header-only GGUF reader (a 10 GiB blob's header in about 150 ms), the ggml type table, `ArchProfile` and the VRAM budget.
+  - `ArchProfile` gives layer roles (recurrent flags, `full_attention_interval`, per-layer `head_count_kv`, state tensors, MTP blocks), KV per token, sliding windows (the GGUF pattern or llama.cpp's per-architecture default), MLA, recurrent state (Mamba-1/2, Gated DeltaNet, RWKV, short conv), and where the weights sit (GPU, host embeddings, a tied copy, vision).
+  - The budget is `free + Σ runner dedicated − 1 GiB`. `fixed(c) + n·per_agent(c, kv)` is shared with the client as `PlanModel`, so the popup and the daemon do the same arithmetic. It also gives partial-offload layer counts and the decode slowdown (`W_gpu/BW_gpu + W_cpu/BW_ram`).
+  - `log` parses Ollama's `server.log`: the runner's argv, and every buffer per device per context. The planner is calibrated against it.
+- **Measured** with dusk-super loaded (32k, q8_0, 1 slot, MTP draft n=3). Each buffer of the runner log matches to 0.00%: main weights 10,019.96/397.85, KV 1,088.00, state 598.50 (×4 copies with the draft), and draft 774.71/128.00 MiB. The uncalibrated whole-runner prediction is 13,529.2 MiB, which is **+0.32%** against PDH's 13,485.7 MiB. Ollama's `/api/ps` says 1,631.2 MiB (**−87.9%**), so nothing reads its sizes. The measured driver overhead is 506.2 MiB. `cargo test -p marlowe --test context_live -- --ignored --nocapture` repeats this on whatever is loaded, and never loads anything.
+- **Added.** A context policy per model (`context_policy` and `hw_calibration` in `cowork.db`; removing a model removes its policy) and `Brains::context()`.
+  - `allowed_ctx` = `min(requested, max_ctx)`, with a property test that it never exceeds `max_ctx`.
+  - `slots` and `lease` provide per-model agent slots, released on drop, for the crew to call.
+  - `set_policy` refuses anything above the model's trained context, under 2,048, or with 0 or more than 16 agents.
+  - The conductor's window is the policy's. Every Ollama request for a model sends `num_ctx = max_ctx` through the shared `ContextAllocations`, a constant per model so the runner never reloads per agent, and the provider clamps anything above the model's maximum.
+  - Nothing is applied silently. Without a saved policy, requests keep the 32k default, and `a` in the popup fills in the automatic choice.
+- **Added.** Ollama runtime readers in `marlowe-provider::ollama_runtime`:
+  - the main and DRAFT GGUF headers from the store, falling back to `/api/show`;
+  - `/api/ps` for the model list and context, never sizes;
+  - the runner's `/slots`;
+  - the saved user environment, read with `reg query`.
+- **Added.** `marlowe-sentinel::vram::SentinelGpu`: NVML totals, per-runner dedicated and shared memory from the `GPU Process Memory` PDH counters (NVML reports N/A under WDDM), peak bandwidth (bus width × max memory clock × 2: 736 GB/s here), and system RAM.
+- **Added.** The server change: `OLLAMA_KV_CACHE_TYPE` / `OLLAMA_NUM_PARALLEL` / `OLLAMA_FLASH_ATTENTION` are set with `setx`, then the tray app is quit and relaunched. `ApplyOllamaServer` always raises an approval that offers only Allow and Deny. The approval says that every Ollama model is affected, and how many models and requests the restart stops. A Deny returns the manual steps. Tests use a recording fake.
+- **Added.** On the wire:
+  - requests `ContextPlan`, `ContextPolicies`, `SetContextPolicy` and `ApplyOllamaServer`;
+  - events `ContextPlan`, `ContextPolicies`, `ContextPolicySaved`, `ServerApplied`, and `ContextUsage`: one per model call, prompt plus output, out of the agent's window.
+- **Added.** The context meter, on the Model box's second row (the box is 4 rows; the board gives up one): `ctx ━━━━┊──── 12.4k / 32k · kv q8 · 1 slot`.
+  - The bar is accent up to the 70% compaction mark `┊`, amber to 90%, then red.
+  - It adds amber `57/65 on GPU` and `q4 pending`, and `not loaded` or `cloud`.
+  - When narrow it drops the bar, then the slot count, then the KV type.
+  - Hovering lights it; clicking opens the planner.
+- **Added.** The "Context & hardware" popup, opened from the meter, the model picker (`c`), the Library (`c`, or the new `window` column), and ^k "Context & hardware".
+  - It shows the GPU, the fixed load, the architecture with a layer strip (`┃` KV, `·` recurrent), the state per agent, KV per token for each type, and host RAM.
+  - A table gives per-agent cost and agents that fit at 8k–256k for f16, q8_0 and q4_0, with partial-offload layers and slowdown, or "does not fit".
+  - It shows the largest single agent, with and without the draft.
+  - ←/→ change the context, the KV type and the number of agents. A usage bar (`━` fixed, `╍` agents, `─` spare, red over the budget) and a one-line verdict follow every change.
+  - ↵ shows exactly what saving changes now and what waits for an Ollama restart. `s` saves; `r` saves and asks to restart.
+- **Known.** Still to verify on first use, each from the runner's log or `/slots` and never assumed:
+  - Ollama's `-c` value when `np > 1`;
+  - whether `prompt_eval_count` counts the cached part of the prompt (the meter uses per-call `input + output`);
+  - MLA V-cache and DSA indexer sizes (the MLA fixture is constructed, not log-validated);
+  - the vision compute buffer (an estimate until a load is measured).
+
+  The crew does not call `allowed_ctx`/`lease` yet; that wiring belongs to `marlowe-crew`. `--kv-unified` pooling and the local GGUF provider's per-model launch flags are v2.
+
+### TUI polish after first use
+
+- **Fixed.** The Library with one model said nothing about what to do: the cursor now runs down the slots, the models and a new "+ add another model" row; the border hints name what ↵ does on the row (`effort medium → high`, `keep as conductor`, `add another model`); Esc, and Backspace where nothing is typed, go back one level in every view and picker; j/k move in plain lists.
+- **Added.** Hover and click everywhere. The renderer records where each target was drawn (`State::hits`); motion sets `State::hover` and the loop redraws only when it changes. A hovered box takes the theme's hover tone (focus keeps the accent); rows, tabs and footer chords brighten their foreground. Clickable: Model/Workspace boxes, board tabs and stacked sections, crew runs (open the Run view), watched runs and notices (open Watch at their root), footer chords, the header summary, Library/Watch/Memory/crew/picker/palette/session rows, approval and import buttons, the Run view's steer line.
+- **Added.** The header row: `* marlowe — <session>` and a live summary (`3 runs · 1 needs you · 2 new`). The window title follows the session (OSC 2, saved and restored with XTWINOPS 22/23).
+- **Added.** The terminal's default background is set to `#0f0e14` (OSC 11) at start and reset (OSC 111) on every exit: quit, error, panic hook, and console close/Ctrl-Break via `marlowe-os::console::on_interrupt`. Cells still carry no background. `MARLOWE_KEEP_TERMINAL_BG=1` leaves it alone. It is set before the maths image probe, so images blend onto it.
+- **Added.** The Run view's research stage strip (Plan → Explore → Compress → Corroborate → Verify → Synthesise) with source, claim, root and citation counts from `ResearchProgress`; runs without progress show the plain transcript.
+
+### Maths for engineers and researchers
+
+- **Changed.** Typst runs in a helper process, `marlowe-typeset.exe` (crate `marlowe-typeset-helper`), built by default and shipped beside `marlowe.exe`. Images are on by default; the `typeset-images` feature is gone.
+  - `marlowe.exe` no longer links Typst. The TUI probes for Sixel as before. Where the terminal has it and the helper is present, the helper starts on the first display formula.
+  - Each formula is one JSON line each way over stdio. The request carries the Typst markup from the parse, the colour, the background, the cell size and the reserved box; the reply carries one Sixel strip per row, or an error.
+  - Every strip is checked before it reaches the terminal: `ESC P … ESC \` with printable ASCII only. The helper's environment is cleared and its stderr discarded.
+  - An error reply, a death, a timeout (20 s for the first formula, 10 s after) or a malformed reply leaves that formula on the grid. A dead helper is restarted once; after a second death the session stays on the grid. `MARLOWE_MATH_IMAGES=0` still turns images off.
+- **Added.** Matrices and alignments on the grid:
+  - Array specs are read fully: `l`/`c`/`r`, `p{…}`, `@{…}`, `*{n}{…}`, and `|` as the augmented matrix's rule. `\hline` between rows is a horizontal rule, and rules run the full height and width of the block. `pmatrix*[r]` aligns. `\substack` under a big operator stacks.
+  - A blank row separates rows only where one is three or more rows tall (a fraction). A dropped script (`f_y`) no longer doubles a row's height.
+  - `\tag` sets a right-aligned column after the widest row, in `align`, `gather` and `equation`. `eqnarray` columns are set tight. `T^{\mu}{}_{\nu}` and `{T^{ab}}_c` stagger their indices.
+  - A matrix wider than the pane is clipped at the pane's edge, with a dim `⋯` on its middle row, instead of being wrapped as `[a, b; c, d]`. The rows reserved while it streams match. Other wide displays still go to one line per row. There is no horizontal pan yet.
+- **Added.** On the image path: `cases(delim: none)` for nested `aligned`, `mat(augment: …)` for rules, alignment points for mixed column alignment, a `quad` between `align` column pairs, tags in their own column, and the `Vmatrix` delimiter `‖` (Typst refused `||` before).
+- **Added.** `marlowe math [--grid | --images] [--width N]`: 31 hard equations and matrices (`math::GALLERY`), each drawn as the conversation pane draws it, grid and then image. It says why images are off when they are.
+- **Added.** `tests/data/maths_engineering.rs`: 214 formulas in 20 categories, written the way engineers and ML researchers write them. Matrices of every bracket, block and augmented matrices, 8×8 to 10×2 numeric matrices, determinants, tagged derivations, `gather`, `cases`/`dcases`/`rcases`, Jacobians and Hessians, `\nabla`, mixed-index tensors, norms, `\mathbb E`/`\Pr`/`\operatorname{Var}`, argmin with `\substack`, multiple and contour integrals, attention/LayerNorm/KL/DPO/InfoNCE, fonts, units, `\left\{ … \right.`, and vector accents. `tests/maths_matrices.rs` adds 14 matrix snapshots.
+- **Measured** (x64, release with thin LTO, unless marked debug):
+  - `marlowe.exe` was 76.20 MB without images and 110.22 MB with `typeset-images`. It is now 76.49 MB with images on. `marlowe-typeset.exe` is 36.65 MB.
+  - Corpus: 289 formulas (75 general + 214 engineering). Every category is 289/289 on the grid (strict parse, nothing raw at 160 and 60 columns) and 289/289 through Typst. All 236 display formulas fit their grid box as images.
+  - Grid layout per formula: p50 0.043 ms, p95 0.13 ms, cold 0.1 ms (debug: 0.26 / 0.75 ms).
+  - Through the helper process, over all 236 displays: the first formula takes 19–22 ms, including the process start (290 ms when the exe is not in the disk cache). After that, p50 is 0.8 ms, p95 1.8 ms and max 4.4 ms. A debug helper takes 460 ms for the first formula, then p50 5.8 ms.
+- **Known.** Sixel on a real Windows Terminal is still not verified, and neither is the helper running beside an installed `marlowe.exe` there. Everything above was measured headless.
+
+### Typeset maths
+
+Matthew's rule: full LaTeX in the terminal, smooth, and never raw.
+
+- **Changed.** `marlowe-surface::latex` is replaced by `marlowe-surface::math`, which never shows source. A span renders only after its closing delimiter arrives. A closed span that does not parse gets one repair pass (stray `$`, an unbalanced brace, `\left` without `\right`, an unclosed environment, a dangling `^`), and anything still broken is paraphrased (`\foo{x}` reads `foo(x)`).
+  - Display maths is laid out in 2D on the character grid: stacked fractions with a `⎯` vinculum (not chrome's `─`), big operators with limits, radicals with indices, matrices, `cases`/`aligned`/`align`, brackets that scale, accents, over/underbraces, `\boxed`, `\xrightarrow`.
+  - Inline maths stays on one line, using Unicode scripts and precomposed or combining accents.
+  - A formula wider than the pane falls back to its one-line form.
+- **Changed.** Streaming:
+  - An unclosed span shows a dim `…` in the prose colour. It is not `⋯`, which marks tool lines.
+  - A display block reserves its rows as it streams, so the rows around it do not move when it lands.
+  - The streaming entry renders live (`render_prose_live`); the finished entry re-lays out identically.
+- **Changed.** User messages, reasoning, and session and run titles also typeset their maths and leave other markup as typed. `$5 and $10` is still currency.
+- **Fixed (review).** Paths that put source on screen, each now a case in `tests/maths_adversarial.rs`:
+  - A finished `$` that never closed before a command (`Let $\alpha be…`) is maths up to where prose resumes. Before, it was shown as written.
+  - A table too wide to lay out shows its lines with maths typeset, not as code. A `|` inside `$…$` no longer splits a cell, and the row still streaming holds its formula.
+  - `\tag{\alpha}`, `$\$5$`, `\begin{pmatrix}…` mid-paragraph, `\begin{array}` on its own line, and bare symbol commands in prose (`the rate \eta`; paths like `C:\theta` are left alone).
+  - The user's own backtick code and fences keep their `$` as typed.
+  - `$$…` mid-paragraph reserves its rows while it streams. A display block's reservation is counted the way the landed block is drawn.
+- **Added.** `marlowe-typeset`, off by default (`--features typeset-images` on `marlowe`). Where DA1 reports Sixel, display formulas are drawn as images:
+  - Typst 0.14.2 lays out the same parse the grid uses (`Formula::typst`). Every character with Typst meaning is escaped, and text goes in strings.
+  - The image is fitted into the box the grid reserved. It is sent as one transparent-background Sixel strip per cell row (`P2=1`), with edges blended onto the background reported by OSC 11, so there is never a filled box. Glyphs take the terminal's foreground (OSC 10) or the formula's colour.
+  - A worker thread renders and encodes once per (markup, colour, box). The pane shows the placeholder until the image is ready, then the strips. Strips are re-sent only when moved or uncovered, never into a cell something is drawn over, and stale ones are erased.
+  - `marlowe-os::console::query` reads the terminal's replies with VT input switched on for the exchange. `MARLOWE_MATH_IMAGES=0` turns images off; `=1` skips the DA1 check.
+- **Measured.**
+  - The corpus is 75 model-written formulas (30 inline, 45 display). The grid parses all 75 strictly (100%). The Typst path converts and typesets all 75 (100%), and all 45 display formulas fit their grid box.
+  - 33 malformed sources render to 132 frames with no `\`, `$` or source brace on screen.
+  - A token-by-token stream produces 329 frames with 0 raw and 0 settled rows moved. The same holds through the TUI reducer (97 frames).
+  - Grid layout p95 is 0.54 ms (debug). Typst typeset plus encode in release: p50 0.30 ms, p95 0.68 ms, first render about 5 ms.
+  - Binary size, release: the default build adds only the worker and encoder. `typst` adds 36.5 MB, measured as a size probe going from 0.13 MB to 36.6 MB. Most of that is Typst's library (syntax highlighting, bibliography styles, wasm, ICU data); the two vendored New Computer Modern fonts are 1.7 MB. That cost is why the feature is opt-in.
+- **Known.**
+  - Sixel behaviour on a real Windows Terminal is untested, on x64 and ARM64. That covers transparency (`P2=1`), whether spaces erase image cells, the `CSI 16 t` cell size, and the conpty path for query replies.
+  - Inline maths is never an image.
+  - Display formulas inside lists or quotes stay on the grid.
+  - Typst 0.15 conflicts with `rust-trafilatura`'s `icu_properties =2.1.2` pin.
+
+### TUI layout: the old harness's boxes
+
+- **Changed.** The conversation screen is drawn in titled, rounded boxes — Conversation `(c)`, Message `(i)`, Model `(m)`, Workspace `(w)` and the Situation Board — with the hotkey on each bottom border and an accent border on the box that has the keys (`Theme::region_styles`, no fills). The board takes 3/10 of the width (38–72 columns). When it has the height it stacks Crew `(1)`, Watch `(2)`, Threads `(3)` and Memory `(4)` in their own boxes. Otherwise it shows one box with a numbered tab strip. Today (date, quiet hours, clock) and the most-used chords share a one-line footer; a chord that does not fit is in the ^k palette. The presence meter sits on the Conversation box's top border, with the turn's elapsed time.
+- **Added.** The focus model: Esc (when nothing is running) or Tab hands the keys to the boxes. From there `c i m w 1–4` jump, ↵ acts, and any other letter goes back to the Message box and is typed. Alt-1..4 switches the board section from the Message box, and alt-v toggles the voice. A workspace picker (`w`) offers a typed path, the launch directory, recent sessions' workspaces and watched roots. Choosing a new workspace while a session is open starts a new session there. The Memory section shows the store size and this session's recalls.
+- **Changed.** Tab in the Message box moves focus instead of inserting four spaces. Paste still keeps indentation.
+
+### M4.5 Research (seam)
+
+- **Added.** `marlowe-research`: the keyless channel registry (no credential field; declared rate limits, identity authority and `indexes` per channel; routing by question type), `SourceRef`/`Identity`, the identity-key dedup cascade (an identifier asserted by fetched content stays `Unresolved`), corroboration over independent roots, link tables for navigation by selection, `<home>\cache\research`, and robots.txt/per-host politeness. The channel searches arrive under "Added (channels)" below.
+- **Added.** `marlowe-extract::main_content`: the `MainContent` trait, the `Candidate` enum (baseline, rs-trafilatura, rust-trafilatura) and per-page `choose` (the candidates themselves are under *Added (extraction)* below).
+- **Added.** Proto: the `ApprovePlan{run, decision}` request; the `PlanProposed{run, plan, quote}` and `ResearchProgress{run, progress}` events; `ResearchPlan`, `CostQuote`, `PlanDecision`, `ResearchStage` and `ChannelId`. These are additive, so `PROTO_VERSION` stays 1. The daemon answers `ApprovePlan` with an error until v2 runs exist.
+- **Added.** `marlowe-crew::playbook::research_v2` stage types: quote, plan gate (auto-approve is off by default), explore tree, shared source budget, verification. A run with no verification gets a refusal that names what is missing, not a report.
+- **Fixed.** `glob` returned 0 paths for `**/Cargo.toml` because `**` was treated as two one-segment `*`s. `**` now spans directories, and `**/` also matches zero of them. `{a,b}` works too. Patterns match relative to `path`, and the matcher runs as a DP with no backtracking.
+- **Fixed.** `marlowe ask` piped to a file or another program no longer prints a thinking redraw per token. It prints a single `▸ thought for N tokens` line.
+- **Changed.** Persona v3 `words_to_avoid` now also lists "to be transparent" and "just to be transparent".
+- **Added (channels).** Every keyless channel searches for real: arXiv, OpenAlex, Crossref, Semantic Scholar, Wikipedia, Wikidata, GitHub (repos, and issues/PRs with `is:issue`), Hacker News, Stack Exchange (`/similar` when full-text finds nothing), PubMed (esearch + efetch) and RSS/Atom (robots.txt, autodiscovery, per-feed cache). Web search tries SearXNG on loopback, then DuckDuckGo lite, then a daemon-supplied hosted search, and names why each one failed.
+  - Every HTTP request a channel makes takes a slot from a process-wide limiter. A 429 holds the channel for `Retry-After` (30 s when absent), and Stack Exchange `backoff` is honoured. Requests carry `USER_AGENT`; nothing sends a credential.
+  - `Channel::lookup` and `ChannelRegistry::lookup` ask the namespace authority (Crossref DOI, arXiv, PubMed, Wikidata, GitHub, OpenAlex, S2). `Deduper::unconfirmed` lists identifiers that only indexes agree on. When the authority's answer arrives, those sources fold into one (`alias_of`, `live`, `resolve`). A retraction from any route marks the source.
+  - Dedup measured on recorded output (`tests/dedup_eval.rs`): 48 routes become 36 sources, with merge precision and recall 1.000 (naive title equality: precision 0.548). The negative and independence controls hold.
+  - `marlowe-research::NetHttp` sends https through marlowe-net and plain http only to loopback (marlowe-provider). `marlowe-net` gains `fetch_with(target, Headers)` and `Fetched.retry_after`.
+- **Changed.** The exec `arxiv` tool's Atom parser and query encoding moved to `marlowe_research::arxiv`. The tool now shares the process-wide arXiv limiter and sends the research User-Agent.
+- **Known.** DuckDuckGo lite answers our honest User-Agent with a CAPTCHA (HTTP 202). The backend takes that as a refusal and rests for 24 h, recorded in the cache, and nothing tries to get around it. Keyless general web search therefore needs a local SearXNG. Semantic Scholar's shared keyless pool answered 429 to every attempt on 2026-10-09.
+- **Added (deep research v2).** `marlowe-crew::playbook::research_v2` runs the seven stages, each checkpointed and reported as `ResearchProgress`:
+  - **Plan.** The plan is drafted in a clean step (no tools, nothing fetched) from the goal, the user's profile and Mind recall. Memory is a source in its own trust bucket. The plan is priced, and the run waits `needs_you` with `PlanProposed`. `Supervisor::approve_plan` takes approve, edit or reject: an invalid edit is refused and the run keeps waiting; a reject ends the run cancelled with the reason. `CrewConfig.research.auto_approve_under_tokens` exists and is off by default.
+  - **Explore.** A breadth-b, depth-d tree. Channels are queried concurrently and results deduplicated by identity across the run. Scouts select by number from the results and from the link tables of pages their parent read, so the model never writes a URL. One `SourceBudget` is shared by every scout. The corpus fetcher reads a whole wave at `fetch_concurrency`, and gaps become bounded follow-ups.
+  - **Compress.** The new `compressor` role (Quick slot, no tools) turns each stored source, in chunks, into claims with verbatim quotes and locators. A quote not found in the stored text is dropped and counted. A claim the source attributes to another work becomes a derivation edge.
+  - **Corroborate.** Claims are grouped with stance and counted over independent roots: a blog repeating a paper is one root with it.
+  - **Verify.** The new `verifier` role reviews every claim group and checks every claim against its re-read stored passage. A missing verdict is asked for once more. Incomplete verification ends the run with a refusal naming what is missing, plus `refusal.md`, and no report.
+  - **Synthesise.** Sections per sub-question and the answer cite claim ids. Every cited sentence is checked again against its passages: unsupported ones are removed and listed, partial ones marked. The harness numbers references from source identities (DOI, arXiv, PMID, Wikidata, repo). Confidence comes from verification and corroboration. Output is `report.md` plus `research.json` (report, checks, corroboration, counts, effective citations).
+  - **Remember.** The answer and up to five established findings are stored as Result memories with the run's provenance, once.
+- **Added.** Approving a plan approves its quote: the run's token limit rises to the quote plus 25% and its steps limit to `step_estimate(plan)` (never lowered; unlimited stays unlimited). An edited plan is priced again first. Spend beyond that asks as before.
+- **Fixed (live, marlowe-dusk:27b-super).** A step on a local thinking model could spend its whole output budget (`num_predict` 8,192) thinking and give no answer. One grouping prompt took 17,382 tokens and 223 s that way, and 4 s with thinking off. Every v2 step that fails now runs once more under `<key>:again` with `StepSpec.effort = Off` (new field, overriding the card). Verification retries go direct and split their batches down to one item. A refusal names the calls that failed.
+- **Fixed (live).** The claim reviewer refuted well-supported groups for being off-goal or for repeated sources, which the run already counts. The review prompt no longer shows corroboration counts, and it judges the statement against its passages only. Repeated routes no longer pile up in dedup ("also on arxiv, arxiv, arxiv"). A reply cut off mid-marker (`[C3, C6,`), a model-written `Confidence:` line and a `Section 1/5:` prefix are stripped. A partial mark goes before the citation (`… (partly supported) [3].`). Sentences only about the evidence carry no citation, and grading words (established, suggested) are not support-checked.
+- **Changed.** The cost quote is calibrated on the live runs: 11 s per kilotoken locally, 6k compression and 5k verification tokens per source.
+- **Measured.** `tests/research_v2_live.rs` (marlowe-dusk:27b-super, a fixed six-page web plus one memory, the goal "What LoRA rank should we use for fine-tuning 7B models?"):
+  - Before the fixes: one run refused (8 of 9 groups unreviewed), and the next three reported at citation accuracy 0.83, 0.77 and 0.79.
+  - After them: 0.95 (9 supported, 1 partial) in 855 s, then 1.00 (12 of 12) in 680 s with 23 steps and 82.5k tokens.
+  - Confidence stayed low, because no group was established.
+  - The quote for that run (204k tokens, 38 min) was 2.5 to 3.5 times the actual on these short pages.
+- **Added.** `ResearchIo` / `PageFetcher` / `ChannelIo` (registry plus corpus fetcher), `CrewSetup.research` and `CrewDeps.research`. The binary passes `None` until a client can answer `PlanProposed`. With it, deep research runs v2; without it, v1. The daemon forwards `PlanProposed` and `ResearchProgress` and routes `ApprovePlan` to the supervisor. Data checkpoints are transcript rows with role `playbook`.
+- **Changed.** Role cards: `researcher` and `scout` are rewritten for v2 (plan routing and sizing; selection by number). New cards `compressor` and `verifier` bring the built-ins to seven.
+- **Added (extraction).** `marlowe-extract::main_content` reads HTML with three candidates: rs-trafilatura (page-type classification, predicted quality as confidence), rust-trafilatura and html.rs as the never-empty fallback. Both trafilatura ports are cargo features, on by default.
+  - The first acceptable reading in policy order wins. Quality first (owner's call): rs-trafilatura is only capped at 1 s, for pathological pages (a 1 MB Wikipedia article takes 160-190 ms); from 400 ms on, rust-trafilatura races it on a worker, and at the cap whatever has answered is used, else html.rs. Pages whose URL looks like a forum are never capped. `SelectionPolicy::latency()` (40 ms cap, race from 10 ms) holds p95 under 50 ms for callers that need it.
+  - The chosen text is mapped back onto html.rs blocks by word trigrams, so markdown keeps inline links, headings, tables and code. html.rs now records each block's kind and links, keeps `<pre>` line breaks, and emits MathML `alttext` as `$...$`.
+  - Measured with `tools/extraction_eval.py` on the WCXB test split (511 pages), shipped default (`data/runs/extraction-eval/tracka-quality-1s`): F1 0.793 → 0.894, forum 0.720 → 0.836, WCXB dev 0.758 → 0.846, link recall 0.930 → 0.937, no page type regresses. **p95 is above the 50 ms budget**: 52.8 ms on WCXB test (48.5 ms in a 250 ms-cap run; ±5 ms of noise from other builds) and 63.6 ms over all 2,189 pages (max 467 ms). Shipped anyway (owner's call): network fetch dominates research latency. The latency preset (run `final`) reads p95 49.3 ms over all pages at F1 0.890 (dev 0.838, link recall 0.928).
+  - `rust-toolchain.toml` pins Rust 1.98.1, which rust-trafilatura needs.
+- **Added.** `marlowe-extract::paper` turns a paper into title, abstract, numbered sections and a parsed reference list (DOI, arXiv id, year, title guess). It reads arXiv's LaTeXML HTML, e-print LaTeX (gzip, tar or bare `.tex`; `\input` inlined; `.bbl`, `thebibliography` or `.bib`) and PDF text.
+- **Changed.** The `paper` tool reads an arXiv id as HTML, then LaTeX source, then PDF. Every step passes the host gate, and arxiv.org's robots.txt disallows `/e-print`, so the LaTeX step reports the refusal and the PDF is read. `part: "references"` returns the reference list. GROBID stays an optional sidecar that is not wired up (`docs/research/grobid.md`).
+- **Added.** `marlowe-exec::corpus` restores `fetch_and_extract` with a concurrency knob. Each host gets one request in flight, hosts are served round-robin, and every request and redirect hop passes robots.txt and per-host spacing (at least 1 s, or the site's `Crawl-delay`). A short `Retry-After` is honoured once. Redirect locations are sanitised before they are echoed. Pages come back as markdown, a `DocRef` and a link table.
+- **Added.** `marlowe-exec::render`: a thin client-rendered page is rendered through the system Microsoft Edge over CDP (`headless_chrome`, no tokio). Edge runs headless in a fresh profile inside a kill-on-close Job Object, with a hard 30 s timeout, at most two at once, and downloads denied. Without Edge, or when rendering fails or the result is still thin, the page is reported unreadable (`client_rendered`) rather than passed off as the server HTML.
+- **Changed.** `web_fetch` now reads through the corpus path: robots.txt, host spacing, main-content markdown and the Edge escalation. Every page fetch sends the research User-Agent.
+- **Changed (GPU).** `ort` is now `=2.0.0-rc.13` (ONNX Runtime 1.28.0) workspace-wide, up from rc.10 (1.22.0). The reference fixtures still pass on CPU: embedder max |diff| 8.9e-8 over 41 cases; cross-encoder max |logit diff| 4.1e-6 (shipped L-2) and 1.9e-6 (L-6) over 8 cases each, against a 1e-3 tolerance. The shipped held-out pass reproduces exactly: R@1 0.6725, R@3 0.8515, R@5 0.8865, R@10 0.9039 (n=229), p95 217 ms.
+- **Added (GPU).** A `cuda` feature on `marlowe-memory`, `marlowe-mind` and `marlowe`, off by default. On x64 it uses pyke's ORT 1.28 CUDA 13 build, linked statically. On ARM64, `load-dynamic` loads the official ORT 1.31.0 at run time and registers Microsoft's CUDA plugin EP 0.3.0 (`register_ep_library` + `with_devices`). The fallback order is CUDA, then DirectML, then CPU. Every provider registers with `error_on_failure`, so a failed provider is never reported as a GPU session. TF32 is off: it moved a logit by 1.08e-3. `crates/marlowe-ort-gpu` is the per-target feature shim.
+- **Added (GPU).** `scripts/fetch-gpu-runtime.ps1` fetches a pinned runtime into `gpu-runtime\` (git-ignored) and checks its sha256 before extracting. For x64 that is the CUDA 13.4 runtime, cuBLAS, cuFFT and cuDNN 9.27 wheels. For ARM64 it is ORT 1.31.0 plus the CUDA plugin EP. Nothing is installed system-wide. `fetch-models.ps1 -Cascade` copies the five extra fine-tuned graphs, which are digest-pinned in `cascade.rs`.
+- **Added (GPU).** `marlowe-memory::ep` decides which provider to use each time a model loads. The cross-encoder takes the GPU only while `judge_gpu` says the GPU is idle, and the daemon builds that verdict from the Sentinel. Idle means utilisation under 10%, no other compute-only process (`Gpu::compute_only`, from NVML), and no live watched run. While the reranker is on the GPU it re-checks every 30 s and moves back to CPU once the GPU is busy. The embedder stays on CPU because belief vectors persist.
+- **Added (GPU).** The six-graph rerank cascade is back, on the product path when the GPU is in use: depth 30, narrowed to 10 by the shipped graph, then RRF (k=60) over six Session-J-recipe graphs (`Rerank::Cascade`, `ScoredCandidate.fusion_rank`). `rerank_score` stays the shipped logit, so the operating point does not move. The eval adapter gains `--rerank-provider`, `--rerank-plan` and `--gpu-runtime`. On the held-out split, the cascade read on CPU gives R@1 0.6769, R@3 0.8908, R@5 0.9170, R@10 0.9563 (old reading R@3 0.8908); its CPU p95 of 3,514 ms is why it is GPU-only. Measured on CUDA (RTX 4080 SUPER, driver 617.14, CUDA UMD 13.4, runtime from `gpu-runtime\`; the GPU gated idle first): the cascade gives the same R@1 0.6769, R@3 0.8908, R@5 0.9170, R@10 0.9563 at p95 50 ms; the shipped single graph on CUDA reproduces the CPU numbers exactly (R@1 0.6725, R@5 0.8865) at p95 16 ms. Against the CPU runs, max |logit diff| is 5.7e-6 over 7,344 reranked pairs, with 0 of 2,450 fusion ranks and 0 admission verdicts changed. `gpu_cuda.rs` (ignored; GPU): CUDA vs the reference fixtures 5.2e-6 (L-2) and 1.9e-6 (L-6), CUDA vs CPU 3.8e-6, batched vs single at sizes 1-10 2.1e-6. The shipped CPU numbers do not change.
+- **Added (integration).** Deep research v2 is on in the product. `src/research_wire.rs` in the binary builds the keyless registry, `NetHttp`, `<home>\cache\research` and the corpus fetcher (as crew's `PageFetcher`), and reads `<home>\research.json`: SearXNG URL, DuckDuckGo, hosted search, `auto_approve_under_tokens` (off), fetch concurrency, feeds, Wikipedia language and Stack Exchange site. Unknown fields are refused, and there is no credential field. A scripted (debug) daemon stays on v1.
+- **Added.** Answering a plan: `WatchRun` re-sends a pending `PlanProposed`. `marlowe crew plan <run>` shows the plan and quote (`--json` prints it); `approve [--breadth N] [--depth N] [--sources N]` narrows it, `edit <plan.json>` replaces it, and `reject [reason]` ends the run. The TUI Run view shows the plan with its quote, and `a` approves, `x` then `y` rejects. A toast says when a plan is ready.
+- **Added.** A finished run writes `bundle.json` (`marlowe.research-bundle/1`) next to `report.md`. Every numbered reference carries the passages the report cited from it and the stored document text. `tools/research_produce.py` drives one question through the daemon (dispatch, approve narrowed to caps, wait, copy the bundle), and `research_eval.py run --questions` limits a run to some questions.
+- **Fixed (live).** The crew's GPU gate counted desktop graphics load as busy: about 20% utilisation and 4.2 GB in use on this machine, with no Ollama process among the top three names. So every local crew run waited "for the GPU" for ever. Busy now means a live watched run, another process computing on the GPU (NVML compute list minus graphics list, the reranker's signal; Ollama excluded), or utilisation of 60% or more with no Ollama runner.
+- **Fixed (live).** A query starting "2025–2026" panicked `arxiv::versioned_id` (a byte slice inside the en dash), and the panic in one search thread failed the whole run. The slice is now char-safe, and a channel search that panics is recorded as one failed query.
+- **Fixed.** Markdown from the main-content path now keeps links in headings, and matches anchors with their whitespace collapsed. URL-level link recall goes from 0.604 to 0.641 on WCXB test (dev 0.583 to 0.614), with F1 unchanged.
+- **Measured (extraction, quiet machine, run `m45-integrator`).** On WCXB test the shipped default has F1 0.894 against html.rs 0.793, forum 0.836, no page type regressing, and **p95 43.1 ms**, so it passes the switch-default bar on every check. The earlier 52.8 ms reading was noise from other builds. Over all 2,189 pages p95 is 57.6 ms. ScrapingHub token F1 is 0.951 (html.rs 0.803), shingle F1 0.956.
+INTEGRATOR_LIVE
+
 ### M4 Crew
 
 - **Added.** `marlowe-os`, the only crate with `unsafe`:

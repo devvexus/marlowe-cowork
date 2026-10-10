@@ -1,40 +1,40 @@
-╭─ MARLOWE ─────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle · add a model ▾ · C:/work/valiance · 21:40 ─╮
-│                                                                                                       │  CREW                            │
-│                                                                                                       │  no runs                         │
-│                                                                                                       │                                  │
-│                                                                                                       │  WATCH                           │
-│                                                                                                       │  nothing watched                 │
-│                                                                                                       │                                  │
-│                                                                                                       │  THREADS                         │
-│                                                                                                       │  no open threads                 │
-│                                                                                                       │                                  │
-│                                                                                                       │  TODAY                           │
-│                                              ⣿  MARLOWE                                               │  nothing scheduled               │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                     You have no models. Add one?                                      │                                  │
-│                                                                                                       │                                  │
-│                          Marlowe thinks with whichever models you give it —                           │                                  │
-│                      local ones through Ollama, hosted ones through OpenRouter.                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                  ↵ open the library      ^k palette                                   │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────╯
-╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ › press ↵ to add a model                                                                                                                 │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────── ↵ send  ⇧↵ newline  ^k palette ─╯
+ * marlowe — new session                                                                                                0 runs · 0 need you
+╭ Conversation ──────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ add a model ▾                          │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
+│                                                                                                │╭ Workspace ─────────────────────────────╮
+│                                                                                                ││ C:/work/valiance ▾                     │
+│                                                                                                │╰────────────────────────────────── (w) ─╯
+│                                                                                                │╭ Crew ──────────────────────────────────╮
+│                                                                                                ││ no runs                                │
+│                                                                                                │╰────────────────────────────────── (1) ─╯
+│                                           ⣿  MARLOWE                                           │╭ Watch ─────────────────────────────────╮
+│                                                                                                ││ nothing watched                        │
+│                                                                                                ││                                        │
+│                                  You have no models. Add one?                                  ││                                        │
+│                                                                                                ││                                        │
+│                       Marlowe thinks with whichever models you give it —                       ││                                        │
+│                   local ones through Ollama, hosted ones through OpenRouter.                   ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                               ↵ open the library      ^k palette                               ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                                                                                                │╭ Threads ───────────────────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › press ↵ to add a model                                                ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  alt-v Voice  ^k palette                     21:40

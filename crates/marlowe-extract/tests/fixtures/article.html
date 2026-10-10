@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Low-rank adapters at small ranks | The Gradient Notebook</title>
+<meta name="description" content="Why rank 8 often matches rank 64 for LoRA fine-tuning.">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/site.css">
+<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date());</script>
+</head>
+<body class="post-template">
+<div class="cookie-banner" id="cookies"><p>We use cookies to improve your experience. <a href="/privacy">Privacy policy</a> <button>Accept all</button></p></div>
+<header class="site-header">
+  <a class="logo" href="/">The Gradient Notebook</a>
+  <nav class="main-nav"><ul>
+    <li><a href="/">Home</a></li><li><a href="/archive">Archive</a></li><li><a href="/tags/llm">LLMs</a></li>
+    <li><a href="/tags/optimisation">Optimisation</a></li><li><a href="/about">About</a></li><li><a href="/subscribe">Subscribe</a></li>
+  </ul></nav>
+</header>
+<main id="site-main">
+<article class="post">
+  <header class="post-header">
+    <h1 class="post-title">Low-rank adapters at small ranks</h1>
+    <p class="byline">By <a href="/authors/ada">Ada Lovelace</a> &middot; <time datetime="2025-03-14">14 March 2025</time> &middot; 9 min read</p>
+  </header>
+  <section class="post-content">
+    <p>Low-rank adaptation (<a href="https://arxiv.org/abs/2106.09685">LoRA</a>) freezes the pretrained weights and learns a pair of thin matrices whose product is added to each adapted layer. The original paper reported that very small ranks were enough, and a year of replications has mostly agreed with it.</p>
+    <p>In this post we look at why rank 8 so often matches rank 64 on instruction tuning, and where the claim breaks down. The short answer is that the update a fine-tune needs is itself close to low rank, so extra rank mostly learns noise.</p>
+    <h2 id="setup">Experimental setup</h2>
+    <p>We fine-tuned a 7B decoder on 52k instructions for three epochs with a cosine schedule. Every run used the same seed set, the same data order and a learning rate tuned separately for each rank, because a fixed rate quietly favours one rank over another.</p>
+    <table class="results">
+      <thead><tr><th>Rank</th><th>Trainable params</th><th>MMLU</th><th>MT-Bench</th></tr></thead>
+      <tbody>
+        <tr><td>4</td><td>2.1M</td><td>45.9</td><td>5.81</td></tr>
+        <tr><td>8</td><td>4.2M</td><td>46.8</td><td>6.02</td></tr>
+        <tr><td>64</td><td>33.6M</td><td>46.9</td><td>6.05</td></tr>
+      </tbody>
+    </table>
+    <h2 id="why">Why small ranks are enough</h2>
+    <p>The singular values of the full fine-tuning update decay quickly: the top eight directions carry most of the energy. A rank-8 adapter can represent those directions exactly, and the remainder sits below the noise floor of a three-epoch run.</p>
+    <blockquote><p>The intrinsic rank of the adaptation is low even when the model is large.</p></blockquote>
+    <p>The configuration we used is short enough to show in full:</p>
+    <pre><code class="language-python"><span class="kw">config</span> = LoraConfig(
+    r=<span class="num">8</span>,
+    lora_alpha=<span class="num">16</span>,
+    target_modules=[<span class="str">"q_proj"</span>, <span class="str">"v_proj"</span>],
+)</code></pre>
+    <h2 id="limits">Where it breaks down</h2>
+    <ul>
+      <li>Continued pretraining on a new domain needs far more rank than instruction tuning.</li>
+      <li>Very long fine-tunes slowly use the extra capacity, so rank 64 pulls ahead after ten epochs.</li>
+      <li>Math-heavy data benefits from adapting the MLP blocks, not only attention.</li>
+    </ul>
+    <p>For most instruction-tuning work, start at rank 8 and spend the saved memory on a larger batch. See the <a href="https://github.com/huggingface/peft">PEFT library</a> for a reference implementation.</p>
+  </section>
+  <footer class="post-footer">
+    <div class="share"><a href="https://twitter.com/intent/tweet">Share on X</a> <a href="https://www.linkedin.com/share">Share on LinkedIn</a> <a href="mailto:?subject=LoRA">Email</a></div>
+    <div class="tags"><a href="/tags/llm">#llm</a> <a href="/tags/lora">#lora</a> <a href="/tags/fine-tuning">#fine-tuning</a></div>
+  </footer>
+</article>
+<aside class="related">
+  <h3>Related posts</h3>
+  <ul><li><a href="/p/qlora">QLoRA on a single GPU</a></li><li><a href="/p/dora">DoRA versus LoRA</a></li><li><a href="/p/ia3">IA3, briefly</a></li></ul>
+</aside>
+<section class="comments">
+  <h3>3 comments</h3>
+  <div class="comment"><p class="author">bob_k</p><p>Great post, thanks!</p></div>
+  <div class="comment"><p class="author">mira</p><p>Did you try rank 2?</p></div>
+</section>
+</main>
+<footer class="site-footer">
+  <p>&copy; 2025 The Gradient Notebook. All rights reserved.</p>
+  <nav><a href="/terms">Terms</a> <a href="/privacy">Privacy</a> <a href="/rss">RSS</a> <a href="/contact">Contact</a></nav>
+  <form class="newsletter"><label>Get new posts by email</label><input type="email" placeholder="you@example.com"><button>Subscribe</button></form>
+</footer>
+<script src="/assets/app.js"></script>
+</body>
+</html>

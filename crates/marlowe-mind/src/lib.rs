@@ -47,8 +47,9 @@ pub use paths::{
     MODELS_ENV, RERANKER_DIR,
 };
 pub use profile::{Profile, ProfileQuery, DEFAULT_PROFILE_TOKENS};
+pub use marlowe_memory::ep::{judge_gpu, GpuLoad, GpuVerdict};
 pub use types::{
-    wire_trust, ConsolidateReport, Episode, ImportProgress, InjectQuery, Injection, Kind,
+    wire_trust, ConsolidateReport, Episode, GpuProbe, ImportProgress, InjectQuery, Injection, Kind,
     LegacyStatus, MemoryIn, MindConfig, Provenance, RecallQuery, Remembered, SnapshotInfo,
     TurnIn, TurnRole,
 };

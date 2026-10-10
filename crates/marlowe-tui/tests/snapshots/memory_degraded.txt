@@ -1,4 +1,5 @@
-╭─ MARLOWE · memory ──────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
+ * marlowe — new session                                                                                                0 runs · 0 need you
+╭ Memory ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮
 │                                                                                                                                          │
 │  Memory  ·  0 memories · 0 episodes · 0 vectors                                                                                          │
 │  degraded: embedding model not found · keyword search only, nothing is injected on its own                                               │
@@ -35,6 +36,5 @@
 │                                                                                                                                          │
 │                                                                                                                                          │
 │                                                                                                                                          │
-│                                                                                                                                          │
-│                                                                                                                                          │
 ╰─────────────────────────────────────────────────────────────────────── ↵ search  ·  ↑↓ select  ·  ^e correct  ·  ^d forget  ·  esc back ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  alt-v Voice  ^k palette                     21:40

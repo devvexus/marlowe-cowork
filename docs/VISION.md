@@ -87,30 +87,48 @@ The palette cannot change. `theme.rs` is kept verbatim:
 - the terminal's own background (`#0f0e14` in the launched WT profile) and no background fills;
 - braille glyphs, plus the markdown and LaTeX renderers.
 
-The new layout is Conversation + Situation Board (at least 120x30, mouse-enabled):
+The layout is Conversation + Situation Board (at least 120x30, mouse-enabled). Every box is a
+region with its label on the top border and its hotkey on the bottom; the board stacks its four
+sections when the window is tall enough, else shows them as numbered tabs:
 
 ```
-╭─ MARLOWE ──────────────────────── ⣀⣤⣶⣤⣀ listening · sonnet ▾ · ~/valiance ▾ · 08:14 ─╮
-│ Conversation                                        │ CREW                            │
-│  you  what changed overnight?                       │ ● research  attention-sinks     │
-│  ⋯ recall valiance · eval · 3 memories              │   step 14 · 22 sources · $0.41  │
-│  The valiance run finished at 04:12…                │ ◐ build     gate-refactor       │
-│                                                     │   ready for review  (↵)         │
-│                                                     │ WATCH                           │
-│                                                     │ ✓ valiance-ft   done 04:12      │
-│                                                     │ ▲ ci · main     passing         │
-│                                                     │ THREADS                         │
-│                                                     │ ○ ablation table for the paper  │
-│                                                     │ TODAY                           │
-│                                                     │ ◷ 17:30 wrap-up                 │
-╰─────────────────────────────────────────────────────┴─────────────────────────────────╯
- › message…                                     ^space talk · ^k palette · ^d dispatch
+ * marlowe — what changed overnight?                                 3 runs · 1 needs you
+╭ Conversation · what changed overnight? ──── ⣀⣤⣶⣤⣀ idle ╮╭ Model ───────────────────────╮
+│  you  what changed overnight?                          ││ Sonnet 4.5 ▾    medium · 200k│
+│  ⋯ recall · 3 memories · valiance gate threshold       │╰──────────────────────── (m) ─╯
+│  The valiance run finished at 04:12…                   │╭ Workspace ───────────────────╮
+│                                                        ││ ~/valiance ▾                 │
+│                                                        │╰──────────────────────── (w) ─╯
+│                                                        │╭ Crew ─────────── 1 needs you ╮
+│                                                        ││ ◐ engineer · gate-refactor   │
+│                                                        ││   ready to merge             │
+│                                                        ││ ● researcher · attention-sin…│
+│                                                        ││   step 14 · $0.41 · explore  │
+│                                                        │╰──────────────────────── (1) ─╯
+│                                                        │╭ Watch ────────────── 1 alive ╮
+│                                                        ││ ● valiance-ft  layer 9 · 40s │
+│                                                        │╰──────────────────────── (2) ─╯
+│                                                        │╭ Threads ─────────────────────╮
+│                                                        ││ no open threads              │
+╰────────────────────────────────────────────────── (c) ─╯╰──────────────────────── (3) ─╯
+╭ Message ───────────────────────────────────────────────╮╭ Memory ──────────────────────╮
+│ › message Marlowe…            ⇧↵ newline · esc boxes   ││ 390 memories · 41 episodes   │
+╰────────────────────────────────────────────────── (i) ─╯╰──────────────────────── (4) ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^g Memory  ^k palette          Friday · 21:40
 ```
 
-- **Title bar:** presence meter, conductor model picker, workspace picker, clock.
-- **Rail:** Crew, Watch, Threads, Today.
-- **Full-screen views:** Run, Library (models, slots, effort; "no models, add one" with a tool-call reliability probe on add), Memory, Timeline (episodes and sessions, searched by content), Roles and Skills.
-- **Overlays:** Focus mode, the approval modal, the ^k palette and the Wake.
+- **Header:** one borderless row: `* marlowe — <session>` and the live summary (crew and watched
+  runs, what needs the user, new notices). The window title reads `marlowe — <session>` (OSC 2),
+  and the terminal's default background is set to `#0f0e14` (OSC 11, reset with OSC 111 on exit).
+- **Pickers:** the conductor model and the workspace, as boxes with dropdowns.
+- **Board:** Crew, Watch, Threads, Memory; each run, watched item and section opens its full view.
+- **Footer:** the chords and the day (date, quiet hours, clock). Every chord is also a button.
+- **Pointer:** the box, row, tab or chord under the pointer takes the hover tone or brightens its
+  foreground, never a fill; a click acts on it.
+- **Full-screen views:** Run (live transcript, steer, pause/cancel, merge/discard, the research
+  stage strip), Library (models, slots, effort; "no models, add one"), Memory, Watch. Each shows its
+  keys on its bottom border; Esc, and Backspace where nothing is typed, go back one level.
+- **Overlays:** the approval modal, the ^k palette, sessions, dispatch, onboarding and the Wake.
 
 ## 7. Persona v3
 
@@ -120,7 +138,7 @@ Persona v2 is kept intact: anti-sycophancy, answer first, no emoji, never invent
 
 | Measure | Budget |
 |---|---|
-| Distribution | Single `marlowe.exe` (plus lazy `marlowe-voice.exe`) |
+| Distribution | Single `marlowe.exe` (plus lazy `marlowe-voice.exe` and `marlowe-typeset.exe`, the maths typesetter) |
 | Cold start to first frame | < 100 ms |
 | Idle daemon RAM, ORT unloaded | < 80 MB |
 | Harness overhead per turn, excluding model and retrieval | < 50 ms |

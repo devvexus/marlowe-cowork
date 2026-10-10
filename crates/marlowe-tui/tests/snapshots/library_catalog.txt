@@ -1,4 +1,5 @@
-╭─ MARLOWE · library ───────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle · add a model ▾ · C:/work/valiance · 21:40 ─╮
+ * marlowe — new session                                                                                                0 runs · 0 need you
+╭ Library ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮
 │                                                                                                                                          │
 │  OPENROUTER  ·  1 of 3 models                                                                                                            │
 │                                                                                                                                          │
@@ -35,6 +36,5 @@
 │                                                                                                                                          │
 │                                                                                                                                          │
 │                                                                                                                                          │
-│                                                                                                                                          │
-│                                                                                                                                          │
 ╰───────────────────────────────────────────────────────────────────────── type to search  ·  ↑↓ select  ·  ↵ add to library  ·  esc back ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  alt-v Voice  ^k palette                     21:40

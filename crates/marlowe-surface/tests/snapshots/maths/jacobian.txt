@@ -1,0 +1,11 @@
+J = \begin{bmatrix} \frac{\partial f_1}{\partial x_1} & \cdots & \frac{\partial f_1}{\partial x_n} \\ \vdots & \ddots & \vdots \\ \frac{\partial f_m}{\partial x_1} & \cdots & \frac{\partial f_m}{\partial x_n} \end{bmatrix}
+--------------------------------------------------------------------------------
+      ⎡∂f₁       ∂f₁⎤
+      ⎢⎯⎯⎯  ⋅⋅⋅  ⎯⎯⎯⎥
+      ⎢∂x₁       ∂xₙ⎥
+      ⎢             ⎥
+  J = ⎢ ⋮    ⋱    ⋮ ⎥
+      ⎢             ⎥
+      ⎢∂fₘ       ∂fₘ⎥
+      ⎢⎯⎯⎯  ⋅⋅⋅  ⎯⎯⎯⎥
+      ⎣∂x₁       ∂xₙ⎦

@@ -52,12 +52,14 @@ pub fn all(with_search: bool) -> Vec<ToolSpec> {
         ),
         spec(
             "glob",
-            "List files under a directory, optionally filtered. `pattern` supports `*` and `?`; a \
-             pattern without `/` matches file names anywhere beneath, one with `/` matches the \
-             workspace-relative path. Build output and VCS directories are skipped.",
+            "List files under a directory, optionally filtered. `pattern` supports `*` and `?` \
+             (within one path segment), `**` (any depth, so `**/Cargo.toml` finds every one, the \
+             top-level file included) and `{a,b}`; a pattern without `/` matches file names \
+             anywhere beneath, one with `/` matches the path relative to `path`. Build output and \
+             VCS directories are skipped.",
             json!({
                 "path": {"type": "string", "description": "Directory to list; default is the workspace."},
-                "pattern": {"type": "string", "description": "e.g. \"*.rs\" or \"src/*.rs\"."}
+                "pattern": {"type": "string", "description": "e.g. \"*.rs\", \"src/*.rs\" or \"**/Cargo.toml\"."}
             }),
             &[],
         ),
@@ -111,8 +113,9 @@ pub fn all(with_search: bool) -> Vec<ToolSpec> {
         ),
         spec(
             "web_fetch",
-            "Fetch an https URL and return its readable text (HTML, PDF, Office, text). Long \
-             documents come back in windows; continue with `offset`.",
+            "Fetch an https URL and return its main content (HTML as markdown with links, headings, \
+             tables and code; PDF, Office, text). Honours robots.txt. Long documents come back in \
+             windows; continue with `offset`.",
             json!({
                 "url": {"type": "string", "description": "A full https:// URL."},
                 "offset": {"type": "integer", "description": "Character offset to continue from."}
@@ -130,10 +133,15 @@ pub fn all(with_search: bool) -> Vec<ToolSpec> {
         ),
         spec(
             "paper",
-            "Read a paper from an https URL (PDF or HTML) or an arXiv id (2301.01234). Returns              title, authors when known, section names and the text; long papers come back in              windows, continue with `offset`.",
+            "Read a paper from an https URL (HTML, PDF or LaTeX source) or an arXiv id (2301.01234; \
+             arXiv's HTML is read first, then the source, then the PDF). Returns title, authors when \
+             known, numbered sections, the abstract and the text as markdown; long papers come back \
+             in windows, continue with `offset`. `part: \"references\"` returns the parsed reference \
+             list with DOIs and arXiv ids.",
             json!({
                 "url_or_arxiv_id": {"type": "string"},
-                "offset": {"type": "integer", "description": "Character offset to continue from."}
+                "offset": {"type": "integer", "description": "Character offset to continue from."},
+                "part": {"type": "string", "enum": ["text", "references"], "description": "What to return (default text)."}
             }),
             &["url_or_arxiv_id"],
         ),

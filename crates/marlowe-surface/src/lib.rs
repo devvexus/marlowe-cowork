@@ -11,7 +11,7 @@
 //! # What is here
 //!
 //! The reusable rendering foundation: the palette ([`theme`]), the region contract ([`region`]),
-//! markdown and maths ([`markdown`], [`latex`]), the meter ([`meter`], [`amplitude`],
+//! markdown and maths ([`markdown`], [`math`]), the meter ([`meter`], [`amplitude`],
 //! [`frame_clock`]), chrome glyphs ([`chrome`]), keys, clipboard, overlays and `doctor`. The
 //! application that arranges them is not part of this crate.
 //!
@@ -35,10 +35,10 @@ pub mod clipboard;
 pub mod doctor;
 pub mod frame_clock;
 pub mod keys;
-/// Inline maths — legible where it can be, visibly source where it cannot. ADR-047.
-pub mod latex;
 /// Markdown for the conversation pane, inside §B2's colour budget. ADR-047.
 pub mod markdown;
+/// LaTeX maths typeset on the character grid: 2D display, one-line inline, never the source.
+pub mod math;
 pub mod meter;
 pub mod overlay;
 pub mod region;

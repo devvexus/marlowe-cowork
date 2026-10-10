@@ -10,6 +10,7 @@ marlowe-model.workspace = true
 marlowe-proto.workspace = true
 marlowe-agent.workspace = true
 marlowe-brains.workspace = true
+marlowe-hw.workspace = true
 marlowe-mind.workspace = true
 marlowe-sentinel.workspace = true
 marlowe-voice.workspace = true

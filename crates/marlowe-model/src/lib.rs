@@ -4,6 +4,7 @@
 
 #![forbid(unsafe_code)]
 
+mod alloc;
 mod cancel;
 mod error;
 mod fold;
@@ -13,6 +14,7 @@ mod provider;
 mod request;
 mod stream;
 
+pub use alloc::ContextAllocations;
 pub use cancel::{CancelHook, CancelToken};
 pub use error::{ProviderError, ProviderErrorKind};
 pub use fold::{fold_events, CompletionBuilder};

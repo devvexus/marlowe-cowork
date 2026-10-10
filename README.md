@@ -20,6 +20,7 @@ MarloweCowork is a local-first research engineer that lives on your machine. It 
 | M2 | Memory that knows: turn ingest, embed queue, snapshots, episodes, `import-legacy` | Done — LongMemEval held-out reproduced exactly (R@1 0.6725, R@5 0.8865, R@10 0.9039, n=229) |
 | M3 | The Wake v1: boot sequence, spoken greeting, brief, watchers, first-run onboarding | Done |
 | M4 | Crew: Job Objects, dispatch, durable runs, sandbox, playbooks | Done — 1,297 tests green; scripted end-to-end run on a debug daemon: research, build + merge, blocked push, resume after `taskkill /F` |
+| M4.5 | Deep Research v2 + CUDA: keyless channels, main-content extraction, corpus fetcher, plan → explore → compress → corroborate → verify → synthesise → remember, GPU rerank cascade | Done — README_M45 |
 | M5 | Sentinel II and dreaming: routines, arXiv, wrap-up, overnight queue | Planned |
 | M6 | Full voice: `marlowe-voice.exe` sidecar with sherpa-onnx | Planned |
 | M7 | Ship: perf budgets, installer, Windows ARM64 | Planned |

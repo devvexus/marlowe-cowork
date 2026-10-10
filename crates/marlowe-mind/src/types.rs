@@ -202,6 +202,27 @@ pub struct SnapshotInfo {
     pub beliefs: u64,
 }
 
+/// Asks whether the GPU may be borrowed now; the daemon builds it over the Sentinel. Called at
+/// every cross-encoder load, and every 30 s while one is GPU-resident.
+#[derive(Clone)]
+pub struct GpuProbe(std::sync::Arc<dyn Fn() -> marlowe_memory::ep::GpuVerdict + Send + Sync>);
+
+impl GpuProbe {
+    pub fn new(f: impl Fn() -> marlowe_memory::ep::GpuVerdict + Send + Sync + 'static) -> Self {
+        Self(std::sync::Arc::new(f))
+    }
+
+    pub fn verdict(&self) -> marlowe_memory::ep::GpuVerdict {
+        (self.0)()
+    }
+}
+
+impl std::fmt::Debug for GpuProbe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("GpuProbe")
+    }
+}
+
 /// Service tunables. `Default` is what the daemon runs with; tests shrink them.
 #[derive(Debug, Clone)]
 pub struct MindConfig {
@@ -213,6 +234,8 @@ pub struct MindConfig {
     pub embed_queue: usize,
     /// How often a snapshot is written while running.
     pub snapshot_every: Duration,
+    /// GPU idleness for the cross-encoder's provider choice. `None` keeps it on CPU.
+    pub gpu: Option<GpuProbe>,
 }
 
 impl Default for MindConfig {
@@ -222,6 +245,7 @@ impl Default for MindConfig {
             model_idle: Duration::from_secs(10 * 60),
             embed_queue: 1024,
             snapshot_every: Duration::from_secs(15 * 60),
+            gpu: None,
         }
     }
 }

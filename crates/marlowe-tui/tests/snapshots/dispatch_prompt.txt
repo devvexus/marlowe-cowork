@@ -1,40 +1,40 @@
-╭─ MARLOWE ───────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
-│                                                                                                       │  CREW                            │
-│                                                                                                       │  no runs                         │
-│                                                                                                       │                                  │
-│                                                                                                       │  WATCH                           │
-│                           ╭ dispatch ────────────────────────────────────────────────────────────────────────╮ng watched                 │
-│                           │ ROLE                                                                             │                           │
-│                           │   analyst       Reads numbers and logs; says what changed and why it matters.    │DS                         │
-│                           │   engineer      Changes code in a worktree, runs the tests, leaves a diff.       │en threads                 │
+ * marlowe — new session                                                                                                0 runs · 0 need you
+╭ Conversation ──────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ Claude Sonnet 4.5 ▾             medium │
+│                                                                                                ││ ctx ────────────┊──── 0 / 200k · cloud │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
+│                           ╭ dispatch ────────────────────────────────────────────────────────────────────────╮───────────────────────────╮
+│                           │ ROLE                                                                             │ance ▾                     │
+│                           │   analyst       Reads numbers and logs; says what changed and why it matters.    │───────────────────── (w) ─╯
+│                           │   engineer      Changes code in a worktree, runs the tests, leaves a diff.       │───────────────────────────╮
 │                           │ › researcher    Plans a question, sends scouts, writes a cited report.           │                           │
-│                           │   reviewer      Tries to break a claim or a diff; lists what blocks it.          │                           │
-│                           │   scout         Answers one narrow question with sources.                        │y 9 October                │
-│                           │                                                                                  │ 23:00–07:00               │
-│                           │ GOAL                                                                             │utines                     │
+│                           │   reviewer      Tries to break a claim or a diff; lists what blocks it.          │───────────────────── (1) ─╯
+│                           │   scout         Answers one narrow question with sources.                        │───────────────────────────╮
+│                           │                                                                                  │hed                        │
+│                           │ GOAL                                                                             │                           │
 │                           │ › compare LoRA ranks for the 22B gates                                           │                           │
 │                           │                                                                                  │                           │
 │                           │ PLAYBOOK  none · deep_research · build                                           │                           │
-│                    ask any│ plan → scouts in parallel → verify → a cited report                              │                           │
+│                ask anythin│ plan → scouts in parallel → verify → a cited report                              │                           │
 │                           │ in C:/work/valiance · returns at once; the result comes back here                │                           │
 │                           │                                                                                  │                           │
 │                           │ ↵ dispatch  ·  ↑↓ role  ·  tab playbook  ·  esc cancel                           │                           │
 │                           ╰──────────────────────────────────────────────────────────────────────────────────╯                           │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────╯
-╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ › message Marlowe…                                                                                                                       │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────── ↵ send  ⇧↵ newline  ^k palette ─╯
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                                                                                                │╭ Threads ───────────────────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  ^k palette               Friday 9 October · 21:40

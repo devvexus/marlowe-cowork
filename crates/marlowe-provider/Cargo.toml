@@ -7,5 +7,6 @@ license.workspace = true
 # Local providers only: loopback HTTP, no TLS. `tests/no_tls_in_the_default_path.rs` keeps it so.
 [dependencies]
 marlowe-model.workspace = true
+marlowe-hw.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

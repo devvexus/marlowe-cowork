@@ -27,9 +27,10 @@ const UNTRUSTED_TOOLS: [&str; 4] = ["web_search", "web_fetch", "arxiv", "paper"]
 const RELAY_SUMMARY_CHARS: usize = 6_000;
 const RELAY_GOAL_CHARS: usize = 300;
 const RELAY_CITATIONS: usize = 12;
-/// A GPU at or above either share is busy (the brief's polish rule).
-const BUSY_UTIL_PCT: u32 = 10;
-const BUSY_MEM_PCT: u64 = 25;
+/// Utilisation that means heavy graphics (a game, a render) when no Ollama runner is on the
+/// device. The desktop alone (compositor, browsers, a live wallpaper) sits near 20% and must not
+/// hold local crew runs.
+const HEAVY_UTIL_PCT: u32 = 60;
 
 /// The running supervisor and the daemon's bookkeeping around it.
 pub(crate) struct CrewLink {
@@ -61,6 +62,8 @@ pub(crate) fn start(core: &Arc<Core>, setup: CrewSetup) -> Result<JoinHandle<()>
         approvals: Arc::new(RunGate { core: Arc::downgrade(core) }),
         mind: core.mind.clone(),
         gpu_busy: gpu_probe(Arc::downgrade(core)),
+        // With channels and the corpus fetcher, deep research runs v2; without them, v1.
+        research: setup.research,
     };
     let home = core.home.clone();
     let supervisor = catch_unwind(AssertUnwindSafe(|| Supervisor::start(&home, deps, setup.config, tx)))
@@ -133,6 +136,12 @@ fn on_event(core: &Arc<Core>, ev: CrewEvent) {
                 relay(core, &session, &run, Some(dispatch.clone()), None);
             }
             core.bus.publish(Event::RunFinished { run, dispatch });
+        }
+        CrewEvent::PlanProposed { run, plan, quote, .. } => {
+            core.bus.publish(Event::PlanProposed { run, plan, quote });
+        }
+        CrewEvent::Research { run, progress } => {
+            core.bus.publish(Event::ResearchProgress { run, progress });
         }
     }
 }
@@ -333,26 +342,39 @@ impl RunApprovals for RunGate {
     }
 }
 
-/// Busy when the Sentinel sees a watched run alive, or a GPU in use with no Ollama process on it.
-/// Load on a device Ollama is using is taken to be Marlowe's own (crew steps now check the GPU
-/// before every step, and must not wait on the model a previous step left loaded). No Sentinel, or
-/// no GPU reported: not busy (a machine without NVML can still run local crew models).
+/// Busy when the Sentinel sees a watched run alive, when another process computes on a GPU (a
+/// training job, another inference server: NVML's compute list minus its graphics list, the same
+/// signal the reranker's GPU gate reads), or when graphics load is heavy with no Ollama runner on
+/// the device. Ollama is Marlowe's own (crew steps check before every step and must not wait on
+/// the model a previous step left loaded). No Sentinel, or no GPU reported: not busy.
 fn gpu_probe(core: Weak<Core>) -> GpuBusy {
+    let nvml = Mutex::new(None::<marlowe_sentinel::gpu::Gpu>);
     Arc::new(move || {
         let Some(core) = core.upgrade() else { return false };
         let Some(s) = core.sentinel.as_ref() else { return false };
-        catch_unwind(AssertUnwindSafe(|| gpu_busy(&s.state()))).unwrap_or(false)
+        catch_unwind(AssertUnwindSafe(|| {
+            let compute = lock(&nvml).get_or_insert_with(marlowe_sentinel::gpu::Gpu::open).compute_only();
+            gpu_busy(&s.state(), &compute)
+        }))
+        .unwrap_or(false)
     })
 }
 
-pub(crate) fn gpu_busy(state: &WatchState) -> bool {
-    devices_busy(&state.gpu) || state.runs.iter().any(|r| r.status.is_live())
+/// `compute`: per device index, other processes doing compute only.
+pub(crate) fn gpu_busy(state: &WatchState, compute: &[(u32, Vec<String>)]) -> bool {
+    devices_busy(&state.gpu, compute) || state.runs.iter().any(|r| r.status.is_live())
 }
 
-fn devices_busy(gpu: &GpuReport) -> bool {
+fn is_ollama(name: &str) -> bool {
+    name.to_ascii_lowercase().starts_with("ollama")
+}
+
+fn devices_busy(gpu: &GpuReport, compute: &[(u32, Vec<String>)]) -> bool {
     gpu.devices.iter().any(|d| {
-        let loaded = d.util_pct >= BUSY_UTIL_PCT || d.mem_used_mb * 100 >= d.mem_total_mb.max(1) * BUSY_MEM_PCT;
-        loaded && !d.processes.iter().any(|p| p.to_ascii_lowercase().starts_with("ollama"))
+        let on_device: Vec<&String> = compute.iter().filter(|(i, _)| *i == d.index).flat_map(|(_, n)| n).collect();
+        let foreign = on_device.iter().any(|n| !is_ollama(n));
+        let ollama = on_device.iter().any(|n| is_ollama(n)) || d.processes.iter().any(|p| is_ollama(p));
+        foreign || (d.util_pct >= HEAVY_UTIL_PCT && !ollama)
     })
 }
 
@@ -490,9 +512,9 @@ mod tests {
     }
 
     #[test]
-    fn the_gpu_is_busy_when_used_or_a_run_is_alive() {
+    fn the_gpu_is_busy_for_foreign_compute_heavy_graphics_or_a_live_run() {
         let mut st = WatchState::default();
-        assert!(!gpu_busy(&st), "no GPU reported: not busy");
+        assert!(!gpu_busy(&st, &[]), "no GPU reported: not busy");
         st.gpu.devices.push(GpuDevice {
             index: 0,
             name: "gpu".into(),
@@ -502,16 +524,26 @@ mod tests {
             temp_c: None,
             processes: vec![],
         });
-        assert!(!gpu_busy(&st));
+        assert!(!gpu_busy(&st, &[(0, vec![])]));
+        // The desktop (compositor, browsers, a live wallpaper): ~20% and a quarter of the memory.
+        st.gpu.devices[0].util_pct = 23;
+        st.gpu.devices[0].mem_used_mb = 4_500;
+        st.gpu.devices[0].processes = vec!["dwm.exe".into(), "wallpaper64.exe".into()];
+        assert!(!gpu_busy(&st, &[(0, vec![])]), "desktop load is not a reason to wait");
+        // Heavy graphics with no Ollama runner (a game) waits.
         st.gpu.devices[0].util_pct = 80;
-        assert!(gpu_busy(&st));
-        st.gpu.devices[0].util_pct = 0;
-        st.gpu.devices[0].mem_used_mb = 4000;
-        assert!(gpu_busy(&st));
-        // Ollama holding the memory (a model a crew step left loaded) is not a reason to wait.
-        st.gpu.devices[0].processes = vec!["ollama_llama_server.exe".into(), "dwm.exe".into()];
-        assert!(!gpu_busy(&st));
-        st.gpu.devices[0].processes = vec!["python.exe".into(), "dwm.exe".into()];
-        assert!(gpu_busy(&st));
+        assert!(gpu_busy(&st, &[(0, vec![])]));
+        // Ollama computing (a model a crew step left loaded) is Marlowe's own.
+        assert!(!gpu_busy(&st, &[(0, vec!["ollama.exe".into()])]));
+        // Current Ollama computes in its own llama-server (labelled by the Sentinel); a llama.cpp
+        // server outside Ollama's install is someone else's.
+        assert!(!gpu_busy(&st, &[(0, vec!["ollama:llama-server.exe".into()])]));
+        assert!(gpu_busy(&st, &[(0, vec!["llama-server.exe".into()])]));
+        // A training job waits however idle the device looks.
+        st.gpu.devices[0].util_pct = 2;
+        assert!(gpu_busy(&st, &[(0, vec!["python.exe".into()])]));
+        assert!(gpu_busy(&st, &[(0, vec!["ollama.exe".into(), "python.exe".into()])]));
+        // Compute on a device the Sentinel does not report is not counted against this one.
+        assert!(!gpu_busy(&st, &[(1, vec!["python.exe".into()])]));
     }
 }

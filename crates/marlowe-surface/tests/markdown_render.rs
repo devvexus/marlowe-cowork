@@ -342,14 +342,14 @@ fn a_subscript_with_no_unicode_form_degrades_rather_than_refusing() {
     assert!(out.contains("∇_θ"), "{out}");
     assert!(!out.contains("\nabla"), "refused instead of degrading: {out}");
 
-    // Multi-character scripts keep their braces: `D_KL` invites reading `K` as the subscript and
-    // `L` as what follows it.
+    // Multi-character scripts stay grouped: `D_KL` invites reading `K` as the subscript and `L` as
+    // what follows it. The group is parenthesised, because a brace on screen reads as source.
     let kl = plain(r"$D_{\mathrm{KL}}(P \| Q)$");
-    assert!(kl.contains("D_{KL}"), "{kl}");
+    assert!(kl.contains("D_(KL)"), "{kl}");
 
     // And the script is RENDERED, not passed through as source.
     let e = plain(r"$\mathbb{E}_{\pi_\theta}$");
-    assert!(e.contains("𝔼_{π_θ}"), "{e}");
+    assert!(e.contains("𝔼_(π_θ)"), "{e}");
 }
 
 /// **The control that keeps the refusal rule honest.** A true Unicode script is still preferred
@@ -373,7 +373,7 @@ fn a_script_unicode_can_express_still_uses_the_real_glyph() {
 fn transpose_renders_so_the_attention_formula_does() {
     // `\top` was the single unrenderable token in the formula everyone writes as QK^T.
     let out = plain(r"$\operatorname{softmax}\!\left( \frac{QK^\top}{\sqrt{d}} \right) V$");
-    assert!(out.contains("QK^⊤"), "{out}");
+    assert!(out.contains("QKᵀ"), "{out}");
     assert!(!out.contains("\\top"), "refused instead of rendering: {out}");
 }
 
@@ -394,19 +394,18 @@ fn deliberate_spacing_between_equations_survives() {
     assert!(r.contains("x = y") && !r.contains("x  ="), "{r}");
 }
 
-/// **The accent refusal was one step too wide.** `\hat{y}` is U+0177 -- one precomposed
-/// codepoint, one column, no font composition required -- and it is the predicted value in every
-/// regression loss. Refusing it refused the formula around it.
+/// **Accents render: precomposed where Unicode has the letter, combining where it does not.**
+/// `\hat{y}` is U+0177, one codepoint and one column. `\hat{x}` has no precomposed form, so it is
+/// `x` plus U+0302, and the wrap arithmetic counts display columns so the mark stays on its letter.
+/// Until 2026-10-09 the second case stayed visibly its source; maths now never renders raw.
 #[test]
-fn an_accent_with_a_precomposed_form_renders_and_one_without_still_refuses() {
+fn an_accent_renders_precomposed_or_combining_and_never_as_source() {
     let out = plain(r"$L = \frac{1}{2}(y - \hat{y})^2$");
-    assert!(out.contains("½(y - ŷ)²"), "{out}");
+    assert!(out.contains("½(y − ŷ)²"), "{out}");
 
-    // **The control, and it is the whole reason this is not a widening.** Where Unicode has no
-    // precomposed form the alternative is a COMBINING mark -- zero columns wide, so the wrap
-    // arithmetic and the eye disagree -- and it still refuses.
     let x = plain(r"$\hat{x}$");
-    assert!(x.contains(r"$\hat{x}$"), "a combining-mark accent must stay source: {x}");
+    assert!(x.contains("x\u{302}"), "{x}");
+    assert!(!x.contains('$') && !x.contains('\\'), "an accent reached the screen as source: {x}");
 }
 
 // ── requested after use: maths should stand out, and reasoning should render too ─────────────
@@ -519,17 +518,16 @@ fn no_frame_of_a_streaming_equation_shows_raw_latex() {
     }
 }
 
-/// **The control: a CLOSED expression that cannot render still shows its source, whole.**
+/// **A closed expression renders whole: never truncated to a valid prefix, never left as source.**
 ///
-/// The prefix fallback is keyed on the span being unterminated, and this is why. A finished
-/// expression that will not render is a real refusal — a matrix, an over-line — and truncating it
-/// to the part that happened to work would be the "wrong and plausible" output this module exists
-/// to prevent.
+/// This was the control for the old prefix fallback, when a closed expression the renderer could not
+/// draw stayed visibly its source. Every closed span is now typeset, repaired or paraphrased, and
+/// none of those drops a term.
 #[test]
-fn a_closed_expression_that_cannot_render_is_not_silently_truncated() {
+fn a_closed_expression_renders_whole_and_never_as_source() {
     let out = common::buffer_text(&common::frame(&Pane::saying(r"$x = \hat{x} + 1$"), 120, 40));
-    assert!(out.contains(r"\hat{x}"), "a real refusal was truncated to its valid prefix:
-{out}");
+    assert!(out.contains("x = x\u{302} + 1"), "{out}");
+    assert!(!out.contains(r"\hat"), "source reached the screen:\n{out}");
 }
 
 /// **Currency is still protected mid-stream**, which is the risk this change introduces: an
