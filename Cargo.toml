@@ -36,6 +36,8 @@ members = [
     # (`marlowe-typeset.exe`), which `marlowe.exe` starts lazily and never links.
     "crates/marlowe-typeset",
     "crates/marlowe-typeset-helper",
+    # M4.5: research sources (channels, identity dedup, corroboration, link tables, cache).
+    "crates/marlowe-research",
     # M4.5: context and hardware planner (GGUF header, KV/state maths, VRAM budget).
     "crates/marlowe-hw",
 ]
@@ -73,6 +75,7 @@ marlowe-voice = { path = "crates/marlowe-voice" }
 marlowe-os = { path = "crates/marlowe-os" }
 marlowe-crew = { path = "crates/marlowe-crew" }
 marlowe-typeset = { path = "crates/marlowe-typeset" }
+marlowe-research = { path = "crates/marlowe-research" }
 marlowe-hw = { path = "crates/marlowe-hw" }
 
 # Terminal. crossterm, not termion: Windows is the primary platform.
@@ -134,6 +137,55 @@ windows-sys = { version = "=0.61.2", features = [
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }
+
+# The main-content candidates (marlowe-extract) stay optimised and quiet in dev and test builds:
+# unoptimised they run 10-30x slower and trip the selector's time cap on ordinary pages, and
+# rs-trafilatura prints DEBUG lines to stderr whenever debug assertions are on.
+[profile.dev.package.rs-trafilatura]
+opt-level = 3
+debug-assertions = false
+
+[profile.dev.package.rust-trafilatura]
+opt-level = 3
+
+[profile.dev.package.web-page-classifier]
+opt-level = 3
+
+[profile.dev.package.dom_query]
+opt-level = 3
+
+[profile.dev.package.html5ever]
+opt-level = 3
+
+[profile.dev.package.markup5ever]
+opt-level = 3
+
+[profile.dev.package.tendril]
+opt-level = 3
+
+[profile.dev.package.selectors]
+opt-level = 3
+
+[profile.dev.package.cssparser]
+opt-level = 3
+
+[profile.dev.package.string_cache]
+opt-level = 3
+
+[profile.dev.package.rust-readability-v2]
+opt-level = 3
+
+[profile.dev.package.rust-domdistiller]
+opt-level = 3
+
+[profile.dev.package.html-cleaning]
+opt-level = 3
+
+[profile.dev.package.rust-htmldate]
+opt-level = 3
+
+[profile.dev.package.rust-py3langid]
+opt-level = 3
 
 [profile.release]
 debug = 1

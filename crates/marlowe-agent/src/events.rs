@@ -32,4 +32,6 @@ pub struct TurnOutcome {
     pub text: String,
     /// Set when `stop` is `Error`.
     pub error: Option<String>,
+    /// The final model call stopped at the output-token limit, so its text may end mid-sentence.
+    pub truncated: bool,
 }

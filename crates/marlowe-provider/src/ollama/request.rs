@@ -226,6 +226,12 @@ mod tests {
         let body = request_body(&req, 32_768, None);
         assert_eq!(body["options"]["num_predict"], 16_384);
         assert_eq!(body["tools"][0]["function"]["name"], "read");
+        // Found live: without a cap a 32k window predicts 8,192 tokens, which a thinking model
+        // spent before answering. A sized research step asks for its own budget.
+        req.max_output_tokens = None;
+        assert_eq!(request_body(&req, 32_768, None)["options"]["num_predict"], 8_192);
+        req.max_output_tokens = Some(12_288);
+        assert_eq!(request_body(&req, 32_768, None)["options"]["num_predict"], 12_288);
     }
 
     #[test]

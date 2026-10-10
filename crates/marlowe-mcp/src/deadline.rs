@@ -46,7 +46,8 @@ impl Deadline {
     /// The only method, and it returns no quantity — see the header. A `remaining()` returning a
     /// `Duration` would be the first step toward a number something else could read.
     pub fn passed(&self) -> bool {
-        Instant::now() > self.0
+        // `>=`: two reads of a coarse clock can be equal, and a bound of 0 ms has been reached.
+        Instant::now() >= self.0
     }
 }
 

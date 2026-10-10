@@ -10,7 +10,16 @@ marlowe-model.workspace = true
 marlowe-brains.workspace = true
 marlowe-net.workspace = true
 marlowe-extract.workspace = true
+# The arXiv channel (parser, query encoding, process-wide limiter) and the research HTTP port;
+# the corpus uses its host gate (robots.txt, per-host spacing) and DocRef.
+marlowe-research.workspace = true
 marlowe-os.workspace = true
+# Chrome DevTools Protocol over a synchronous websocket (tungstenite; no tokio), driving the system
+# Microsoft Edge for client-rendered pages. Default `offline` feature: the protocol bindings are
+# pre-generated, nothing is downloaded at build time; the `fetch` feature (downloads a Chromium)
+# stays off.
+headless_chrome = "=1.0.22"
+thiserror.workspace = true
 regex.workspace = true
 sha2.workspace = true
 serde_json.workspace = true

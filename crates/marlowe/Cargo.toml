@@ -22,6 +22,8 @@ marlowe-tui.workspace = true
 marlowe-provider.workspace = true
 marlowe-openrouter.workspace = true
 marlowe-exec.workspace = true
+# Deep research v2's channels and cache (src/research_wire.rs).
+marlowe-research.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

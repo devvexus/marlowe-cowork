@@ -73,7 +73,7 @@ fn scripted() -> bool {
 }
 
 /// Web search through OpenRouter's server tool; errors when no key exists.
-fn web_search(
+pub(crate) fn web_search(
     credentials: &dyn CredentialStore,
     query: &str,
     cancel: &CancelToken,
@@ -201,9 +201,19 @@ pub fn daemon_deps(home: &Path) -> DaemonDeps {
         mind: open_mind(home),
         sentinel: start_sentinel(home),
         voice: start_voice(home),
-        // The daemon starts the supervisor with its models, approvals, memory and GPU state.
-        crew: Some(CrewSetup { tools: crew_tool_factory(credentials, home), config: CrewConfig::default() }),
+        // The daemon starts the supervisor with its models, approvals, memory and GPU state; deep
+        // research runs v2 over the keyless channels and the corpus fetcher.
+        crew: Some(crew_setup(credentials, home)),
     }
+}
+
+/// The crew: tools, config, and deep research v2's I/O with `<home>\research.json` applied. A
+/// scripted run has no network, so it keeps deep research on v1.
+fn crew_setup(credentials: Arc<dyn CredentialStore>, home: &Path) -> CrewSetup {
+    let settings = crate::research_wire::ResearchSettings::load(home);
+    let config = CrewConfig { research: settings.v2(), ..CrewConfig::default() };
+    let research = (!scripted()).then(|| crate::research_wire::research_io(home, &settings, credentials.clone()));
+    CrewSetup { tools: crew_tool_factory(credentials, home), config, research }
 }
 
 /// The watchers over the persisted roots. A Sentinel that fails to start (or panics doing so)

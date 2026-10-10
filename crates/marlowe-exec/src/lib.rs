@@ -12,8 +12,11 @@
 
 #![forbid(unsafe_code)]
 
+pub mod corpus;
 mod fs_tools;
+mod paper;
 pub mod paths;
+pub mod render;
 pub mod research;
 pub mod shell;
 mod specs;

@@ -1,0 +1,7 @@
+# rust-trafilatura 2.2.8 (a main-content candidate in marlowe-extract) declares rust-version 1.98.1.
+# aarch64-pc-windows-msvc stays installed so the ARM64 build is checked with the same compiler.
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]
+targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
+profile = "minimal"

@@ -1,0 +1,290 @@
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"
+    		xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <channel>
+        <title>LWN.net</title>
+        <link>https://lwn.net</link>
+        <description> LWN.net is a comprehensive source of news and opinions from
+        and about the Linux community.  This is the main LWN.net feed,
+        listing all articles which are posted to the site front page.
+</description>
+        <language>en-us</language>
+        <pubDate>Fri, 09 Oct 2026 14:58:15 +0000</pubDate>
+        <lastBuildDate>Fri, 09 Oct 2026 14:58:15 +0000</lastBuildDate>
+        <docs>https://www.rssboard.org/rss-specification</docs>
+        <webMaster>lwn@lwn.net</webMaster>
+        <atom:link href="https://lwn.net/headlines/rss2"
+    		rel="self" type="application/rss+xml"/>
+    <item>
+        <title>[$] The state of systemd: 2026 edition</title>
+        <link>https://lwn.net/Articles/1099024/</link>
+        <guid>https://lwn.net/Articles/1099024/</guid>
+        <dc:creator>jzb</dc:creator>
+        <description>&lt;p&gt;At the 2026 &lt;a href=&quot;https://all-systems-go.io/&quot;&gt;All Systems Go!&lt;/a&gt;
+conference, systemd maintainers Luca Boccassi and Zbigniew Jędrzejewski-Szmek
+delivered the traditional &quot;state of the project&quot; session with an overview of the
+systemd project's accomplishments in the past year. That was followed by a
+maintainer round table where Boccassi, Jędrzejewski-Szmek, Daan De&amp;#160;Meyer, and
+project leader Lennart Poettering fielded questions about systemd's size,
+health, and if it might replace Kubernetes. (It will not.)&lt;/p&gt;
+</description>
+        <pubDate>Fri, 09 Oct 2026 14:58:15 +0000</pubDate>
+        </item>
+        <item>
+        <title>Let's Encrypt moving to 64-day certificate lifetimes in 2027</title>
+        <link>https://lwn.net/Articles/1099588/</link>
+        <guid>https://lwn.net/Articles/1099588/</guid>
+        <dc:creator>jzb</dc:creator>
+        <description>&lt;p&gt;&lt;a href=&quot;https://letsencrypt.org/2026/10/07/64-day-certs.html&quot;&gt;Let's
+Encrypt&lt;/a&gt;, the nonprofit that provides free TLS certificates for millions of
+sites, has &lt;a
+href=&quot;https://letsencrypt.org/2026/10/07/64-day-certs.html&quot;&gt;announced&lt;/a&gt; that
+it will be moving to certificates with 64-day lifetimes on February&amp;#160;10,
+2027:&lt;/p&gt;
+
+&lt;blockquote class=&quot;bq&quot;&gt;
+&lt;p&gt;This means that any certificate we issue or renew on and after that date will
+have a 64 day validity period, and we expect the last 90-day certificate to
+expire on May 11, 2027. We will not revoke valid certificates as a part of this
+process.&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;This is the second stage of Let's Encrypt's plan, &lt;a
+href=&quot;https://letsencrypt.org/2025/12/02/from-90-to-45&quot;&gt;announced in 2025&lt;/a&gt;,
+to move to 45-day certificate lifetimes as required by the the &lt;a
+href=&quot;https://cabforum.org/working-groups/server/baseline-requirements/requirements/&quot;&gt;CA/Browser
+Forum Baseline Requirements&lt;/a&gt;. In 2028, Let's Encrypt will switch to 45-day certificates.&lt;/p&gt;</description>
+        <pubDate>Fri, 09 Oct 2026 14:02:44 +0000</pubDate>
+        </item>
+        <item>
+        <title>Security updates for Friday</title>
+        <link>https://lwn.net/Articles/1099587/</link>
+        <guid>https://lwn.net/Articles/1099587/</guid>
+        <dc:creator>jzb</dc:creator>
+        <description>Security updates have been issued by &lt;b&gt;AlmaLinux&lt;/b&gt; (bind, bind9.16, freerdp, glibc, kbd, mod_auth_openidc, openssl, perl-DBI, python3.12, python3.14, and tftp), &lt;b&gt;Debian&lt;/b&gt; (rails and twitter-bootstrap3), &lt;b&gt;Fedora&lt;/b&gt; (barman, cockpit, hcloud, libmodsecurity, nginx-mod-modsecurity, perl-DBI, sudo, and xorg-x11-server-Xwayland), &lt;b&gt;Mageia&lt;/b&gt; (libxfont2), &lt;b&gt;Oracle&lt;/b&gt; (bind9.18, firefox, kernel, nodejs24, perl-DBI, and vim), &lt;b&gt;Red Hat&lt;/b&gt; (kernel, libreswan, opentelemetry-collector, osbuild-composer, rhc, and runc), &lt;b&gt;SUSE&lt;/b&gt; (alloy, amazon-ecs-init, bind, busybox, distribution, emacs, ghostscript, glibc, GraphicsMagick, hauler, helm, helm3, jackson-annotations, jackson-core, jackson-databind, kernel, libpoppler-cpp3, libxtst, logback, nvidia-open-driver-G07-signed, perl-DBI, php-composer2, pi-coding-agent, portprotonqt, pvetui, python-hpack, python313-GitPython, and wpa_supplicant), and &lt;b&gt;Ubuntu&lt;/b&gt; (apache2, bluez, libarchive, libde265, libgit2, libpng1.6, libxml2, linux, linux-aws, linux-aws-6.8, linux-aws-fips, linux-fips, linux-realtime, linux-realtime-6.8, linux-aws-7.0, linux-azure, linux-azure-6.8, linux-azure-fde, linux-azure-fde-6.8, linux-azure-fips, linux-azure-7.0, linux-azure-fde-7.0, linux-gcp, linux-gcp-6.8, linux-gcp-fips, linux-gcp-7.0, linux-hwe-7.0, linux-oracle-7.0, linux-gke, linux-gkeop, linux-ibm, linux-lowlatency, linux-lowlatency-hwe-6.8, linux-nvidia, linux-nvidia-6.8, linux-nvidia-lowlatency, linux-oracle, linux-ibm-6.8, linux-nvidia, and linux-oem-6.17).
+</description>
+        <pubDate>Fri, 09 Oct 2026 13:08:14 +0000</pubDate>
+        </item>
+        <item>
+        <title>[$] An update on Rust's project goals</title>
+        <link>https://lwn.net/Articles/1098617/</link>
+        <guid>https://lwn.net/Articles/1098617/</guid>
+        <dc:creator>daroc</dc:creator>
+        <description>&lt;p&gt;
+Tomáš Šedovič is a program manager at the Rust Foundation. He co-leads the
+&lt;a href=&quot;https://rust-lang.org/governance/teams/#team-goals&quot;&gt;
+goals team&lt;/a&gt;, which helps
+organize the Rust project's
+&lt;a href=&quot;https://goals.rust-lang.org/2026/goals.html&quot;&gt;
+overall goals&lt;/a&gt;, including making sure that the people
+who have agreed to work on one have the support they need.
+At Kangrejos 2026, he provided an overview of the Rust project's goal processes
+aimed at ensuring that the Rust for Linux developers were aware of how the
+project organizes, tracks, and amends goals.
+The
+&lt;a href=&quot;https://rust-for-linux.com/&quot;&gt;
+Rust for Linux project&lt;/a&gt;
+has inspired several current project goals, so he thought that getting an inside
+view of the process might be helpful.
+&lt;/p&gt;
+</description>
+        <pubDate>Thu, 08 Oct 2026 17:00:30 +0000</pubDate>
+        </item>
+        <item>
+        <title>[$] The [vx]swap showdown</title>
+        <link>https://lwn.net/Articles/1098399/</link>
+        <guid>https://lwn.net/Articles/1098399/</guid>
+        <dc:creator>corbet</dc:creator>
+        <description>The kernel's swap layer has undergone &lt;a href=&quot;https://lwn.net/Articles/1057102/&quot;&gt;some
+significant changes&lt;/a&gt; over the course of the last year and a number of
+longstanding problems have been addressed.  One problem that has &lt;i&gt;not&lt;/i&gt;
+yet been solved in the mainline is the direct tie between slots in the swap
+cache and space in persistent swap files, which can cause highly
+inefficient resource use.  There are two competing solutions for this
+problem, neither of which has, as yet, reached readiness for merging; a
+lengthy discussion on possible paths forward shows ongoing disagreement
+over the best path forward.
+</description>
+        <pubDate>Thu, 08 Oct 2026 13:43:27 +0000</pubDate>
+        </item>
+        <item>
+        <title>Security updates for Thursday</title>
+        <link>https://lwn.net/Articles/1099388/</link>
+        <guid>https://lwn.net/Articles/1099388/</guid>
+        <dc:creator>jzb</dc:creator>
+        <description>Security updates have been issued by &lt;b&gt;AlmaLinux&lt;/b&gt; (bind, firefox, freerdp, ghostscript, glibc, kernel, kernel-rt, perl-DBI, python3.12, rust-rpm-sequoia, rust-sequoia-sq, rust-sequoia-sqv, and vim), &lt;b&gt;Debian&lt;/b&gt; (gst-plugins-base1.0, python3.11, and xz-utils), &lt;b&gt;Fedora&lt;/b&gt; (7zip, chromium, curl, docker-buildx, kernel, Lmod, and sos), &lt;b&gt;Mageia&lt;/b&gt; (tesseract), &lt;b&gt;Oracle&lt;/b&gt; (dovecot, firefox, freerdp, gd, ghostscript, kernel, librabbitmq, perl-DBI, python3.12, rust-rpm-sequoia, rust-sequoia-sqv, sg3_utils, vim, and virtuoso-opensource), &lt;b&gt;Slackware&lt;/b&gt; (xorg-server), &lt;b&gt;SUSE&lt;/b&gt; (aliyun-cli, busybox, cadvisor, chromedriver, chromium, crane, distribution-registry, fetchmail, fio, ghostscript, golang-github-prometheus-alertmanager, google-osconfig-agent, govulncheck-vulndb, libsoup, libXtst, openexr, prometheus-blackbox_exporter, python-fsspec, rpcbind, rsyslog, rustup, wireshark, wpa_supplicant, and zcode), and &lt;b&gt;Ubuntu&lt;/b&gt; (erlang, golang-golang-x-net, gst-plugins-ugly1.0, lxml, poppler, and sudo).
+</description>
+        <pubDate>Thu, 08 Oct 2026 13:11:00 +0000</pubDate>
+        </item>
+        <item>
+        <title>[$] LWN.net Weekly Edition for October 8, 2026</title>
+        <link>https://lwn.net/Articles/1097859/</link>
+        <guid>https://lwn.net/Articles/1097859/</guid>
+        <dc:creator>corbet</dc:creator>
+        <description>Inside this week's LWN.net Weekly Edition:
+        &lt;p&gt;
+        &lt;ul&gt;
+&lt;li&gt; &lt;a href=&quot;https://lwn.net/Articles/1097859/&quot;&gt;Front&lt;/a&gt;: Kernel bugs; Gentoo's Chromium package; Rust smart pointers; Sashiko; Charon; LAVD scheduler; Python random-number modules.
+            &lt;li&gt; &lt;a href=&quot;https://lwn.net/Articles/1097861/&quot;&gt;Briefs&lt;/a&gt;: OpenSSH 10.6; RustConf recordings; Rust 1.99.0; Picard 3.0; Zig 0.17; Quotes; ...
+            &lt;li&gt; &lt;a href=&quot;https://lwn.net/Articles/1097862/&quot;&gt;Announcements&lt;/a&gt;: Newsletters, conferences, security updates, patches, and more.
+            &lt;/ul&gt;
+
+        </description>
+        <pubDate>Thu, 08 Oct 2026 00:22:31 +0000</pubDate>
+        </item>
+        <item>
+        <title>[$] Analyzing Rust programs with Charon</title>
+        <link>https://lwn.net/Articles/1097198/</link>
+        <guid>https://lwn.net/Articles/1097198/</guid>
+        <dc:creator>daroc</dc:creator>
+        <description>&lt;p&gt;
+Nadrieril is a long-time Rust contributor, and the maintainer of the rustc
+pattern-matching infrastructure. During his involvement with Rust, he has
+noticed a problem with the usability of the language: it is difficult to
+automatically extract information from a Rust crate for use with other tooling.
+&lt;a href=&quot;https://github.com/AeneasVerif/charon#charon&quot;&gt;
+The Charon project&lt;/a&gt; aims to fix that by providing a stable API for accessing
+internal information from the Rust compiler.
+&lt;/p&gt;
+</description>
+        <pubDate>Wed, 07 Oct 2026 15:19:59 +0000</pubDate>
+        </item>
+        <item>
+        <title>[$] Evolving the LAVD scheduler from gaming to servers</title>
+        <link>https://lwn.net/Articles/1097209/</link>
+        <guid>https://lwn.net/Articles/1097209/</guid>
+        <dc:creator>corbet</dc:creator>
+        <description>The &lt;a href=&quot;https://lwn.net/Articles/922405/&quot;&gt;extensible scheduler class&lt;/a&gt;, which
+enables the creation of custom CPU schedulers with BPF, has led to a burst
+of innovation in this area; &lt;a
+href=&quot;https://github.com/sched-ext/scx/tree/main/scheds/rust/scx_lavd#scx_lavd&quot;&gt;the
+LAVD scheduler&lt;/a&gt; has, perhaps, been one of the most noteworthy schedulers
+to emerge.  Though it was originally &lt;a href=&quot;https://lwn.net/Articles/1051430/&quot;&gt;designed
+for gaming applications&lt;/a&gt;, the LAVD scheduler has since grown to serve
+other types of workloads as well.  At the 2026 edition of &lt;a
+href=&quot;https://kernel-recipes.org/en/2026/&quot;&gt;Kernel Recipes&lt;/a&gt;, Changwoo Min
+and Gavin Guo presented an overview of this scheduler and how it has
+evolved over time.
+</description>
+        <pubDate>Wed, 07 Oct 2026 13:33:48 +0000</pubDate>
+        </item>
+        <item>
+        <title>A new Raspberry Pi Desktop release is finally available for x86-64</title>
+        <link>https://lwn.net/Articles/1099206/</link>
+        <guid>https://lwn.net/Articles/1099206/</guid>
+        <dc:creator>jzb</dc:creator>
+        <description>&lt;p&gt;Simon Long has &lt;a
+href=&quot;https://www.raspberrypi.com/news/raspberry-pi-desktop-now-available-for-pc-and-mac/&quot;&gt;announced&lt;/a&gt;
+a long-awaited release of Raspberry Pi OS, based on &lt;a
+href=&quot;https://www.debian.org/releases/trixie/&quot;&gt;Debian&amp;#160;13 (&quot;trixie&quot;)&lt;/a&gt;,
+for x86-64 systems.&lt;/p&gt;
+
+&lt;blockquote class=&quot;bq&quot;&gt;
+&lt;p&gt;We managed to find the time to update the Desktop for the Buster and Bullseye
+releases of Debian, but then we all just got too busy with other things, and,
+while we left the Bullseye version on the website for anyone who wanted it, we
+simply didn't have time to release any newer versions. But people kept on asking
+for it – we get two or three emails every week asking when the PC Desktop will
+be updated, and we haven't had an answer, because we honestly didn't know when
+we might get a chance to do it. We've continually tried to allocate time to be
+able to work on this, but it hasn't been easy. [...]&lt;/p&gt;
+
+&lt;p&gt;Earlier this year, we (or rather Serge) finally got the latest version of the
+Desktop running on top of a Debian Trixie image. It's now based on 64-bit Debian
+(the amd64 architecture) rather than the older 32-bit version, as Debian itself
+has stopped supporting 32-bit for PC architectures. This shouldn't be a major
+problem – most PCs made in the last 15 years or so will quite happily run the
+64-bit version of Debian, as will most Intel-based Macs. (Debian support for
+Apple Silicon is still experimental, so unfortunately those of you with the
+latest and greatest shiny fruit products will not be able to run this.)&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;&lt;/p&gt;</description>
+        <pubDate>Wed, 07 Oct 2026 13:26:25 +0000</pubDate>
+        </item>
+        <item>
+        <title>Security updates for Wednesday</title>
+        <link>https://lwn.net/Articles/1099202/</link>
+        <guid>https://lwn.net/Articles/1099202/</guid>
+        <dc:creator>jzb</dc:creator>
+        <description>Security updates have been issued by &lt;b&gt;AlmaLinux&lt;/b&gt; (bind, dovecot, freerdp, kernel, mariadb-connector-c, mod_auth_openidc, nodejs22, nodejs:22, sudo, and vim), &lt;b&gt;Debian&lt;/b&gt; (node-shell-quote, puma, rails, ruby-jwt, and suricata-update), &lt;b&gt;Fedora&lt;/b&gt; (chromium, cockpit, flocq, freerdp, gappalib-coq, golang-x-mod, httpd, janus, libical, musescore, python3-docs, python3.14, python3.15, rocq, rocq-stdlib, tesseract, why3, and zenon), &lt;b&gt;Mageia&lt;/b&gt; (srt and tor), &lt;b&gt;Oracle&lt;/b&gt; (freerdp, kernel, libpcap, mariadb-connector-c, nodejs22, sudo, and vim), &lt;b&gt;Red Hat&lt;/b&gt; (expat and grafana), &lt;b&gt;Slackware&lt;/b&gt; (openssh), &lt;b&gt;SUSE&lt;/b&gt; (chromium, docker-stable, firefox, jupyter-jupyterlab, libtcnative-1-0, tomcat, tomcat10, libtcnative-1-0, tomcat11, openexr, python310, python313-azure-storage-queue, python313-langchain-anthropic, python313-sglang, python313-Werkzeug, and valkey), and &lt;b&gt;Ubuntu&lt;/b&gt; (fluidsynth, freerdp3, freetype, golang-1.18, golang-1.21, golang-1.24, gst-plugins-good1.0, libsoup2.4, libsoup3, libwebsockets, linux, linux-aws, linux-gcp, linux-gke, linux-ibm, linux-oracle, linux-realtime, linux-azure, linux-azure-fde, linux-nvidia-tegra, linux-oem-7.0, redis, sg3-utils, tesseract, and u-boot).
+</description>
+        <pubDate>Wed, 07 Oct 2026 13:08:53 +0000</pubDate>
+        </item>
+        <item>
+        <title>[$] Python's two modules for random numbers</title>
+        <link>https://lwn.net/Articles/1097468/</link>
+        <guid>https://lwn.net/Articles/1097468/</guid>
+        <dc:creator>jake</dc:creator>
+        <description>Python's &lt;a
+href=&quot;https://docs.python.org/3/library/random.html&quot;&gt;&lt;tt&gt;random&lt;/tt&gt;&lt;/a&gt;
+and &lt;a
+href=&quot;https://docs.python.org/3/library/secrets.html&quot;&gt;&lt;tt&gt;secrets&lt;/tt&gt;&lt;/a&gt;
+modules both include utilities for obtaining random values, but only one of them is suitable for generating passwords and security tokens.
+For much of Python's history, &lt;tt&gt;random&lt;/tt&gt; was used for passwords and tokens anyway, despite documentation that called it unsuitable for cryptography.
+In 2015, Python's core team debated whether to fix that misuse by making &lt;tt&gt;random&lt;/tt&gt; secure by default.
+Instead, in 2016, Python 3.6 added a second module: &lt;tt&gt;secrets&lt;/tt&gt;.  The
+&lt;tt&gt;random&lt;/tt&gt; module is still misused at times, so it is instructive
+to look into how the random-number modules should be used.
+</description>
+        <pubDate>Tue, 06 Oct 2026 15:02:09 +0000</pubDate>
+        </item>
+        <item>
+        <title>[$] Last rites for Gentoo's Chromium package</title>
+        <link>https://lwn.net/Articles/1097760/</link>
+        <guid>https://lwn.net/Articles/1097760/</guid>
+        <dc:creator>jzb</dc:creator>
+        <description>&lt;p&gt;&lt;a href=&quot;https://www.chromium.org/Home/&quot;&gt;Chromium&lt;/a&gt;, the open-source
+upstream project for Google's Chrome web browser, is the browser of choice for
+many Linux users. It has also gained a reputation as being &lt;a
+href=&quot;https://lwn.net/Articles/619158/&quot;&gt;difficult for Linux distributions to
+package and build&lt;/a&gt;: Chromium has a complex build system, the project bundles
+many of its dependencies, and it has frequent releases. All of that, plus user
+complaints, has led the maintainers of the &lt;a
+href=&quot;https://packages.gentoo.org/packages/www-client/chromium&quot;&gt;Gentoo Chromium
+package&lt;/a&gt; to give up on trying to maintain the package.&lt;/p&gt;
+</description>
+        <pubDate>Tue, 06 Oct 2026 13:44:50 +0000</pubDate>
+        </item>
+        <item>
+        <title>OpenSSH 10.6 released</title>
+        <link>https://lwn.net/Articles/1098980/</link>
+        <guid>https://lwn.net/Articles/1098980/</guid>
+        <dc:creator>jzb</dc:creator>
+        <description>&lt;a href=&quot;https://www.openssh.org/txt/release-10.6&quot;&gt;Version 10.6&lt;/a&gt; of OpenSSH
+has been released. The announcement notes that the OpenSSH team has been
+receiving a large number of AI-assisted security bug reports. &quot;&lt;q&gt;We very much
+welcome these reports, especially when combined with human triage, analysis,
+test-cases and particularly when accompanied by proposed fixes&lt;/q&gt;&quot;. As a
+result, the project expects to be making more frequent releases to get updates
+to users more quickly rather than batching the bug fixes until the next planned
+release.&lt;/p&gt;
+
+&lt;p&gt;Notable changes in this release include enabling the hybrid post-quantum
+ssh-mldsa44-ed25519 signature algorithm, addition of a &lt;tt&gt;-p&lt;/tt&gt; option for &lt;a
+href=&quot;https://man.openbsd.org/sftp&quot;&gt;&lt;tt&gt;sftp&lt;/tt&gt;&lt;/a&gt;'s &lt;a
+href=&quot;https://man.openbsd.org/sftp#lmkdir&quot;&gt;&lt;tt&gt;lmkdir&lt;/tt&gt;&lt;/a&gt;/&lt;a
+href=&quot;https://man.openbsd.org/sftp#mkdir&quot;&gt;&lt;tt&gt;mkdir&lt;/tt&gt;&lt;/a&gt; commands, as well
+as disabling the LZ77 dictionary coder in &lt;a
+href=&quot;https://man.openbsd.org/ssh&quot;&gt;&lt;tt&gt;ssh&lt;/tt&gt;&lt;/a&gt; and &lt;a
+href=&quot;https://man.openbsd.org/sshd&quot;&gt;&lt;tt&gt;sshd&lt;/tt&gt;&lt;/a&gt; to mitigate side-channel
+leaks (which will result in reduced effectiveness of the Compression
+option). The &lt;a
+href=&quot;https://man.openbsd.org/scp#R&quot;&gt;&lt;tt&gt;scp&amp;#160;-R&lt;/tt&gt;&lt;/a&gt; option, which
+allows copies between two remote hosts, is being deprecated due to security
+risks; the option will be ignored in the future. See the announcement for full
+details of all changes and bug fixes.&lt;/p&gt;
+
+&lt;p&gt;&lt;/p&gt;</description>
+        <pubDate>Tue, 06 Oct 2026 13:42:48 +0000</pubDate>
+        </item>
+        <item>
+        <title>Security updates for Tuesday</title>
+        <link>https://lwn.net/Articles/1098979/</link>
+        <guid>https://lwn.net/Articles/1098979/</guid>
+        <dc:creator>jzb</dc:creator>
+        <description>Security updates have been issued by &lt;b&gt;AlmaLinux&lt;/b&gt; (gd, gimp, kernel, kernel-rt, libpcap, librabbitmq, mariadb-connector-c, osbuild-composer, ruby:2.5, and sudo), &lt;b&gt;Debian&lt;/b&gt; (libmodule-cpants-analyse-perl, libpng1.6, libreoffice, roundcube, ruby-oauth2, and sabnzbdplus), &lt;b&gt;Fedora&lt;/b&gt; (0install, alt-ergo, apron, brltty, chromium, coccinelle, cri-o1.36, emacs-common-tuareg, flocq, frama-c, freetennis, gappalib-coq, guestfs-tools, haxe, hevea, hivex, kernel, lem, libguestfs, libnbd, nbdkit, not-ocamlfind, ocaml, ocaml-afl-persistent, ocaml-alcotest, ocaml-astring, ocaml-atd, ocaml-augeas, ocaml-b0, ocaml-base, ocaml-base64, ocaml-benchmark, ocaml-bin-prot, ocaml-biniou, ocaml-bisect-ppx, ocaml-bos, ocaml-cairo, ocaml-calendar, ocaml-camlbz2, ocaml-camlidl, ocaml-camlimages, ocaml-camlp-streams, ocaml-camlp5, ocaml-camlp5-buildscripts, ocaml-camlpdf, ocaml-camomile, ocaml-capitalization, ocaml-cinaps, ocaml-cmdliner, ocaml-compiler-libs-janestreet, ocaml-cpdf, ocaml-cppo, ocaml-crowbar, ocaml-cryptokit, ocaml-csexp, ocaml-csv, ocaml-ctypes, ocaml-cudf, ocaml-curl, ocaml-curses, ocaml-dbus, ocaml-domain-name, ocaml-dose3, ocaml-dune, ocaml-easy-format, ocaml-expat, ocaml-extlib, ocaml-facile, ocaml-fieldslib, ocaml-fileutils, ocaml-findlib, ocaml-fmt, ocaml-fpath, ocaml-gen, ocaml-gettext, ocaml-graphics, ocaml-gsl, ocaml-integers, ocaml-intrinsics-kernel, ocaml-jane-street-headers, ocaml-jsonm, ocaml-jst-config, ocaml-lablgl, ocaml-lablgtk, ocaml-lablgtk3, ocaml-labltk, ocaml-lacaml, ocaml-lambda-term, ocaml-libvirt, ocaml-linenoise, ocaml-logs, ocaml-luv, ocaml-lwt, ocaml-mccs, ocaml-mdx, ocaml-menhir, ocaml-merlin, ocaml-mew, ocaml-mew-vi, ocaml-mlgmpidl, ocaml-mlmpfr, ocaml-monolith, ocaml-mtime, ocaml-mysql, ocaml-num, ocaml-obuild, ocaml-ocamlbuild, ocaml-ocamlgraph, ocaml-ocamlnet, ocaml-ocp-indent, ocaml-ocplib-endian, ocaml-ocplib-simplex, ocaml-omake, ocaml-omd, ocaml-opam-0install-cudf, ocaml-opam-file-format, ocaml-ounit, ocaml-parmap, ocaml-parsexp, ocaml-patch, ocaml-pcre2, ocaml-perl4caml, ocaml-postgresql, ocaml-pp, ocaml-pprint, ocaml-ppx-assert, ocaml-ppx-base, ocaml-ppx-bench, ocaml-ppx-bin-prot, ocaml-ppx-cold, ocaml-ppx-compare, ocaml-ppx-custom-printf, ocaml-ppx-derivers, ocaml-ppx-deriving, ocaml-ppx-deriving-yaml, ocaml-ppx-deriving-yojson, ocaml-ppx-enumerate, ocaml-ppx-expect, ocaml-ppx-fields-conv, ocaml-ppx-globalize, ocaml-ppx-hash, ocaml-ppx-here, ocaml-ppx-inline-test, ocaml-ppx-let, ocaml-ppx-optcomp, ocaml-ppx-sexp-conv, ocaml-ppx-stable-witness, ocaml-ppx-variants-conv, ocaml-ppxlib, ocaml-ppxlib-jane, ocaml-psmt2-frontend, ocaml-ptmap, ocaml-pyml, ocaml-qcheck, ocaml-qtest, ocaml-re, ocaml-react, ocaml-res, ocaml-result, ocaml-rresult, ocaml-SDL, ocaml-sedlex, ocaml-sexplib, ocaml-sexplib0, ocaml-sha, ocaml-spdx-licenses, ocaml-sqlite, ocaml-ssl, ocaml-stdcompat, ocaml-stdio, ocaml-stdlib-random, ocaml-store, ocaml-swhid-core, ocaml-testo, ocaml-time-now, ocaml-topkg, ocaml-trie, ocaml-unionfind, ocaml-uucd, ocaml-uucp, ocaml-uunf, ocaml-uuseg, ocaml-uutf, ocaml-variantslib, ocaml-version, ocaml-xml-light, ocaml-xmlm, ocaml-xmlrpc-light, ocaml-yaml, ocaml-yamlx, ocaml-yojson, ocaml-zarith, ocaml-zed, ocaml-zip, ocaml-zmq, ocamlify, ocamlmod, opam, perl-DBI, planets, plplot, prooftree, python3.12, rocq, rocq-stdlib, supermin, unison, utop, virt-top, virt-v2v, why3, xen, z3, and zenon), &lt;b&gt;Oracle&lt;/b&gt; (bind, expat, gawk, gdb, ghostscript, gimp, gvfs, kernel, libpcap, libvirt, mod_auth_openidc, openssh, rsync, thunderbird, and webkit2gtk3), &lt;b&gt;Red Hat&lt;/b&gt; (vim), &lt;b&gt;Slackware&lt;/b&gt; (cups), &lt;b&gt;SUSE&lt;/b&gt; (apache-sshd, binutils, cups, docker-stable, java-11-openjdk, libraw-devel, libX11, pcre2, perl-DBI, python-msgpack, python312, python313-tokenizers, rpcbind, rpm, rubygem-rails-html-sanitizer, squid, sssd, terraform-provider-susepubliccloud, valkey, and wpa_supplicant), and &lt;b&gt;Ubuntu&lt;/b&gt; (aodh, watcher, edk2, libreoffice, libxmltok, linux, linux-aws, linux-aws-5.15, linux-aws-fips, linux-azure, linux-azure-5.15, linux-azure-fde-5.15, linux-azure-fips, linux-fips, linux-gke, linux-gkeop, linux-hwe-5.15, linux-ibm, linux-ibm-5.15, linux-intel-iot-realtime, linux-intel-iotg, linux-intel-iotg-5.15, linux-kvm, linux-lowlatency, linux-lowlatency-hwe-5.15, linux-oracle, linux-realtime, linux-xilinx-zynqmp, linux-azure-5.4, linux-azure-fde, linux-gcp, linux-gcp-fips, linux-gcp-5.15, linux-oracle-5.15, linux-raspi, rabbitmq-server, and unbound).
+</description>
+        <pubDate>Tue, 06 Oct 2026 13:12:24 +0000</pubDate>
+        </item>
+        </channel>
+</rss>

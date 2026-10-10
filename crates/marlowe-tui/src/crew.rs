@@ -9,7 +9,8 @@ use std::cell::Cell;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use marlowe_proto::{
-    CrewRunInfo, CrewRunStatus, CrewStep, Dispatch, Playbook, Request, RoleInfo, RunId, SandboxKind, Severity,
+    CostQuote, CrewRunInfo, CrewRunStatus, CrewStep, Dispatch, PlanDecision, Playbook, Request, ResearchCounts,
+    ResearchPlan, ResearchProgress, ResearchStage, RoleInfo, RunId, SandboxKind, Severity, StageState,
 };
 use marlowe_surface::chrome::Ink;
 
@@ -35,6 +36,7 @@ pub const PLAYBOOKS: [Option<Playbook>; 3] = [None, Some(Playbook::DeepResearch)
 pub enum RunConfirm {
     Cancel,
     Discard,
+    RejectPlan,
 }
 
 /// The open Run view.
@@ -70,6 +72,35 @@ impl RunView {
             scroll: 0,
             scroll_max: Cell::new(0),
         }
+    }
+}
+
+/// The research stages the Run view's strip shows, in order. `Remember` happens after the report
+/// and is not worth a cell.
+pub const STRIP: [ResearchStage; 6] = [
+    ResearchStage::Plan,
+    ResearchStage::Explore,
+    ResearchStage::Compress,
+    ResearchStage::Corroborate,
+    ResearchStage::Verify,
+    ResearchStage::Synthesise,
+];
+
+/// A deep research run's progress, from its `ResearchProgress` events.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ResearchTrack {
+    /// Each stage's last report: state, done, total. `None` until the stage has reported.
+    pub stages: [Option<(StageState, u32, u32)>; 7],
+    /// The stage that reported last.
+    pub current: Option<ResearchStage>,
+    /// The last report's one-line detail.
+    pub detail: Option<String>,
+    pub counts: ResearchCounts,
+}
+
+impl ResearchTrack {
+    pub fn stage(&self, s: ResearchStage) -> Option<(StageState, u32, u32)> {
+        self.stages[s.ordinal() as usize - 1]
     }
 }
 
@@ -113,6 +144,10 @@ pub struct Crew {
     pub open: Option<RunView>,
     pub prompt: Option<DispatchPrompt>,
     pub toasts: Vec<CrewToast>,
+    /// Research runs' stage progress, by run. Absent for runs that never reported (older crews).
+    pub research: Vec<(RunId, ResearchTrack)>,
+    /// Research plans waiting for the user's answer, by run.
+    pub plans: Vec<(RunId, ResearchPlan, CostQuote)>,
 }
 
 impl Crew {
@@ -156,6 +191,38 @@ impl Crew {
                 None
             }
         }
+    }
+
+    /// A research run's progress, if it has reported any.
+    pub fn research(&self, id: &RunId) -> Option<&ResearchTrack> {
+        self.research.iter().find(|(r, _)| r == id).map(|(_, t)| t)
+    }
+
+    pub(crate) fn on_research(&mut self, run: &RunId, p: &ResearchProgress) {
+        let i = match self.research.iter().position(|(r, _)| r == run) {
+            Some(i) => i,
+            None => {
+                self.research.push((run.clone(), ResearchTrack::default()));
+                self.research.len() - 1
+            }
+        };
+        let t = &mut self.research[i].1;
+        t.stages[p.stage.ordinal() as usize - 1] = Some((p.state, p.done, p.total));
+        // A new stage's detail replaces the last; a report without one keeps its stage's.
+        if t.current != Some(p.stage) || p.detail.is_some() {
+            t.detail = p.detail.clone();
+        }
+        t.current = Some(p.stage);
+        t.counts = p.counts;
+    }
+
+    /// The plan a research run is waiting on, if any.
+    pub fn plan(&self, id: &RunId) -> Option<(&ResearchPlan, &CostQuote)> {
+        self.plans.iter().find(|(r, _, _)| r == id).map(|(_, p, q)| (p, q))
+    }
+
+    fn drop_plan(&mut self, id: &RunId) {
+        self.plans.retain(|(r, _, _)| r != id);
     }
 
     fn clamp_sel(&mut self) {
@@ -305,6 +372,10 @@ impl State {
         self.crew.presence = Presence::Online;
         let prev = self.crew.upsert(info);
         let changed = prev != Some(info.status);
+        if info.status != CrewRunStatus::NeedsYou {
+            // Answered here or elsewhere; the run moved on.
+            self.crew.drop_plan(&info.id);
+        }
         if changed && info.status == CrewRunStatus::NeedsYou {
             let detail = info.note.as_deref().map(first_line).unwrap_or_default();
             self.crew_toast(info, Severity::Attention, "needs you", detail);
@@ -314,6 +385,20 @@ impl State {
             self.crew_toast(info, Severity::Alarm, "failed", detail);
         }
         self.refresh_report(&info.id);
+    }
+
+    /// A research run drafted its plan and waits for the user (also re-sent when its Run view
+    /// opens).
+    pub(crate) fn on_plan_proposed(&mut self, run: &RunId, plan: &ResearchPlan, quote: &CostQuote) {
+        let fresh = self.crew.plan(run).is_none();
+        self.crew.drop_plan(run);
+        self.crew.plans.push((run.clone(), plan.clone(), quote.clone()));
+        if fresh {
+            if let Some(info) = self.crew.get(run).cloned() {
+                let detail = format!("{} sub-questions · about {} tokens · ^r to answer", plan.sub_questions.len(), quote.model_tokens);
+                self.crew_toast(&info, Severity::Attention, "plan ready", detail);
+            }
+        }
     }
 
     /// A live step: the rail's current action, and the Run view's transcript if it is open.
@@ -414,7 +499,7 @@ impl State {
             return;
         }
         let now = self.now_ms;
-        let title = format!("{} {what} · {}", r.role, crate::text::clean(&r.title));
+        let title = format!("{} {what} · {}", r.role, crate::text::clean_maths(&r.title));
         self.crew.toasts.retain(|t| t.until_ms > now && t.run != r.id);
         self.crew.toasts.push(CrewToast { run: r.id.clone(), severity, title, detail, until_ms: now + TOAST_MS });
         let extra = self.crew.toasts.len().saturating_sub(MAX_TOASTS);
@@ -487,6 +572,10 @@ impl State {
             KeyCode::Backspace if ctrl => p.goal.backspace_word(),
             KeyCode::Char('w') if ctrl => p.goal.backspace_word(),
             KeyCode::Char('u') if ctrl => p.goal.clear(),
+            KeyCode::Backspace if p.goal.text().is_empty() => {
+                self.crew.prompt = None;
+                self.overlay = None;
+            }
             KeyCode::Backspace => p.goal.backspace(),
             KeyCode::Delete => p.goal.delete(),
             KeyCode::Left => p.goal.left(),
@@ -536,9 +625,11 @@ impl State {
         }
         let order: Vec<RunId> = self.crew.ordered().iter().map(|r| r.id.clone()).collect();
         match k.code {
-            KeyCode::Esc => self.view = View::Conversation,
-            KeyCode::Up => self.crew.sel = self.crew.sel.saturating_sub(1),
-            KeyCode::Down | KeyCode::Tab => self.crew.sel = (self.crew.sel + 1).min(order.len().saturating_sub(1)),
+            KeyCode::Esc | KeyCode::Backspace => self.view = View::Conversation,
+            KeyCode::Up | KeyCode::Char('k') => self.crew.sel = self.crew.sel.saturating_sub(1),
+            KeyCode::Down | KeyCode::Tab | KeyCode::Char('j') => {
+                self.crew.sel = (self.crew.sel + 1).min(order.len().saturating_sub(1))
+            }
             KeyCode::Enter => {
                 if let Some(id) = order.get(self.crew.sel).cloned() {
                     self.open_run(id, out);
@@ -552,6 +643,7 @@ impl State {
     fn run_key(&mut self, k: KeyEvent, out: &mut Vec<Request>) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let info = self.crew.open_run().cloned();
+        let plan_pending = self.crew.open.as_ref().is_some_and(|v| self.crew.plan(&v.run).is_some());
         let Some(v) = self.crew.open.as_mut() else { return };
         let run = v.run.clone();
 
@@ -562,6 +654,10 @@ impl State {
                     match c {
                         RunConfirm::Cancel => out.push(Request::CancelRun { run }),
                         RunConfirm::Discard => out.push(Request::DiscardRun { run }),
+                        RunConfirm::RejectPlan => {
+                            out.push(Request::ApprovePlan { run: run.clone(), decision: PlanDecision::Reject { reason: None } });
+                            self.crew.drop_plan(&run);
+                        }
                     }
                 }
                 KeyCode::Char('n') | KeyCode::Esc => v.confirm = None,
@@ -573,6 +669,7 @@ impl State {
         if v.steering {
             match k.code {
                 KeyCode::Esc => v.steering = false,
+                KeyCode::Backspace if v.steer.text().is_empty() => v.steering = false,
                 KeyCode::Enter => {
                     if !v.steer.is_blank() {
                         let text = v.steer.take().trim().to_string();
@@ -601,11 +698,12 @@ impl State {
         let max = v.scroll_max.get();
         let ended = info.as_ref().is_none_or(|r| r.status.is_terminal());
         match k.code {
-            KeyCode::Esc => {
+            // Back one level: the run list.
+            KeyCode::Esc | KeyCode::Backspace => {
                 self.crew.open = None;
             }
-            KeyCode::Up => v.scroll = (v.scroll + 1).min(max),
-            KeyCode::Down => v.scroll = v.scroll.saturating_sub(1),
+            KeyCode::Up | KeyCode::Char('k') => v.scroll = (v.scroll + 1).min(max),
+            KeyCode::Down | KeyCode::Char('j') => v.scroll = v.scroll.saturating_sub(1),
             KeyCode::PageUp => v.scroll = (v.scroll + 10).min(max),
             KeyCode::PageDown => v.scroll = v.scroll.saturating_sub(10),
             KeyCode::Home => v.scroll = max,
@@ -642,6 +740,12 @@ impl State {
                 Some(_) => self.flash("nothing to discard while the run is working", NoteTone::Dim),
                 None => {}
             },
+            KeyCode::Char('a') if plan_pending => {
+                out.push(Request::ApprovePlan { run: run.clone(), decision: PlanDecision::Approve });
+                self.crew.drop_plan(&run);
+                self.flash("plan approved — the run is exploring", NoteTone::Dim);
+            }
+            KeyCode::Char('x') if plan_pending => v.confirm = Some(RunConfirm::RejectPlan),
             KeyCode::Char('r') => out.push(Request::WatchRun { run }),
             _ => {}
         }

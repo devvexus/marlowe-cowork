@@ -48,6 +48,8 @@ pub fn build(runner: &dyn StepRunner, goal: &str, cfg: &PlaybookConfig) -> Resul
              in a few lines: what changes where, and how you will know it works."
         ),
         tools: Some(LOOK.iter().map(|t| t.to_string()).collect()),
+        effort: None,
+        max_output: None,
     })?;
 
     let test_line = match &command {
@@ -65,6 +67,8 @@ pub fn build(runner: &dyn StepRunner, goal: &str, cfg: &PlaybookConfig) -> Resul
                 plan.text.trim()
             ),
             tools: None,
+            effort: None,
+            max_output: None,
         })?
         .text;
 
@@ -100,6 +104,8 @@ pub fn build(runner: &dyn StepRunner, goal: &str, cfg: &PlaybookConfig) -> Resul
                 tests_line(&tests, command.as_deref())
             ),
             tools: Some(REVIEW_TOOLS.iter().map(|t| t.to_string()).collect()),
+            effort: None,
+            max_output: None,
         })?;
         blocking = !review.text.to_ascii_lowercase().contains("no blocking issues");
         review_note = if blocking {
@@ -119,6 +125,8 @@ pub fn build(runner: &dyn StepRunner, goal: &str, cfg: &PlaybookConfig) -> Resul
                         review.text.trim()
                     ),
                     tools: None,
+                    effort: None,
+                    max_output: None,
                 })?
                 .text;
             if let Some(cmd) = &command {
@@ -202,6 +210,8 @@ fn test_loop(
                 label: format!("fix tests {fixes}/{max_fixes}"),
                 prompt: fix_prompt(goal, cmd, &r),
                 tools: None,
+                effort: None,
+                max_output: None,
             })?
             .text;
         last = Some(text);

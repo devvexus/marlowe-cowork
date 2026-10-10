@@ -19,23 +19,26 @@ pub const CREW_USAGE: &str = "\
 usage: marlowe crew [list [N] | show <run> | roles
                     | dispatch <role> <goal> [--playbook deep_research|build] [--workspace DIR] [--session ID]
                     | steer <run> <text> | cancel <run> | pause <run> | resume <run>
+                    | plan <run> [--json] | plan <run> approve [--breadth N] [--depth N] [--sources N]
+                    | plan <run> edit <plan.json> | plan <run> reject [reason]
                     | merge <run> [--yes] | discard <run> [--yes]]
-<run> is the id or a unique prefix of it (the 8 characters `list` shows).";
+<run> is the id or a unique prefix of it (the 8 characters `list` shows).
+`plan` shows a deep research run's proposed plan and its cost quote; approve may narrow it.";
 
 type CmdResult = Result<i32, String>;
 
-fn connect(home: &Path) -> Result<Client, String> {
+pub(crate) fn connect(home: &Path) -> Result<Client, String> {
     let info = daemon_ctl::ensure(home)?;
     Client::connect(&info, "marlowe-crew").map_err(|e| e.to_string())
 }
 
-fn send(c: &mut Client, req: &Request) -> Result<(), String> {
+pub(crate) fn send(c: &mut Client, req: &Request) -> Result<(), String> {
     c.send(req).map_err(|e| e.to_string())
 }
 
 /// The next reply to this client (`seq: 0`) that `pick` accepts; a `seq: 0` `Error` fails.
 /// Broadcasts (other runs' updates, other clients' errors) are skipped.
-fn reply<T>(c: &mut Client, timeout: Duration, mut pick: impl FnMut(&Event) -> Option<T>) -> Result<T, String> {
+pub(crate) fn reply<T>(c: &mut Client, timeout: Duration, mut pick: impl FnMut(&Event) -> Option<T>) -> Result<T, String> {
     let end = Instant::now() + timeout;
     loop {
         let left = end.saturating_duration_since(Instant::now());
@@ -55,7 +58,7 @@ fn reply<T>(c: &mut Client, timeout: Duration, mut pick: impl FnMut(&Event) -> O
     }
 }
 
-fn run_updated(e: &Event) -> Option<CrewRunInfo> {
+pub(crate) fn run_updated(e: &Event) -> Option<CrewRunInfo> {
     match e {
         Event::RunUpdated(info) => Some(info.clone()),
         _ => None,
@@ -85,6 +88,7 @@ pub fn run(home: &Path, args: &[String]) -> CmdResult {
         "cancel" => control(home, Request::CancelRun { run: run_arg(args, 1)? }, "cancelled"),
         "pause" => control(home, Request::PauseRun { run: run_arg(args, 1)? }, "pausing"),
         "resume" => control(home, Request::ResumeRun { run: run_arg(args, 1)? }, "resumed"),
+        "plan" => crate::crew_plan::run(home, &run_arg(args, 1)?, rest.get(1..).unwrap_or_default()),
         "merge" | "discard" => {
             let run = run_arg(args, 1)?;
             let yes = rest.iter().any(|a| a == "--yes");
@@ -252,7 +256,7 @@ fn glyph(s: CrewRunStatus) -> &'static str {
 }
 
 /// One line per run: id, status, role · title, step · spend · current action.
-fn run_line(r: &CrewRunInfo) -> String {
+pub(crate) fn run_line(r: &CrewRunInfo) -> String {
     let playbook = r.playbook.map(|p| format!(" [{}]", p.as_str())).unwrap_or_default();
     let mut line = format!(
         "{}  {} {:<9} {} · {}{playbook} · step {} · {} tok · ${:.2}",

@@ -1,0 +1,142 @@
+{
+  "schema": "marlowe.research-questions/1",
+  "status": "Draft key points written for M4.5 Track E on 2026-10-09; Matthew reviews them before the first scored run counts.",
+  "rules": "Each key point is one checkable statement that a good report on the question must convey. Wording need not match. 'source' names where a reviewer can confirm it, and is not given to the system under test.",
+  "questions": [
+    {
+      "id": "q01",
+      "domain": "ml_research",
+      "qtype": "published_research",
+      "expected_channels": ["arxiv", "semantic_scholar", "openalex"],
+      "question": "Does LoRA match full fine-tuning quality for large language models, and where does it fall short?",
+      "key_points": [
+        {"id": "q01.1", "text": "LoRA freezes the pretrained weights and trains low-rank (rank-decomposition) update matrices injected into the Transformer layers.", "source": "Hu et al. 2021, arXiv:2106.09685"},
+        {"id": "q01.2", "text": "The original LoRA paper reports quality on par with or better than full fine-tuning on RoBERTa, DeBERTa, GPT-2 and GPT-3, with far fewer trainable parameters and no added inference latency.", "source": "Hu et al. 2021, arXiv:2106.09685"},
+        {"id": "q01.3", "text": "Controlled comparisons on programming and mathematics find LoRA substantially underperforms full fine-tuning in standard low-rank settings, especially for continued pretraining.", "source": "Biderman et al. 2024, arXiv:2405.09673"},
+        {"id": "q01.4", "text": "LoRA forgets less: it better preserves the base model's performance outside the target domain than full fine-tuning.", "source": "Biderman et al. 2024, arXiv:2405.09673"},
+        {"id": "q01.5", "text": "QLoRA fine-tunes LoRA adapters on a frozen 4-bit quantized base model, making 65B-parameter fine-tuning fit on a single 48 GB GPU.", "source": "Dettmers et al. 2023, arXiv:2305.14314"}
+      ]
+    },
+    {
+      "id": "q02",
+      "domain": "ml_research",
+      "qtype": "published_research",
+      "expected_channels": ["arxiv", "semantic_scholar", "github"],
+      "question": "What is FlashAttention and why is it faster than standard attention?",
+      "key_points": [
+        {"id": "q02.1", "text": "FlashAttention computes exact attention (not an approximation).", "source": "Dao et al. 2022, arXiv:2205.14135"},
+        {"id": "q02.2", "text": "It is IO-aware: it tiles the computation so blocks stay in on-chip SRAM, reducing reads and writes to GPU high-bandwidth memory (HBM), which dominate runtime.", "source": "Dao et al. 2022, arXiv:2205.14135"},
+        {"id": "q02.3", "text": "It never materialises the full N x N attention matrix; the backward pass recomputes attention from saved softmax statistics, so memory grows linearly with sequence length.", "source": "Dao et al. 2022, arXiv:2205.14135"},
+        {"id": "q02.4", "text": "FlashAttention-2 improves parallelism and work partitioning for roughly a 2x speedup over the first version; FlashAttention-3 targets Hopper GPUs with asynchrony and FP8.", "source": "Dao 2023, arXiv:2307.08691; Shah et al. 2024, arXiv:2407.08608"}
+      ]
+    },
+    {
+      "id": "q03",
+      "domain": "ml_research",
+      "qtype": "published_research",
+      "expected_channels": ["arxiv", "semantic_scholar", "openalex"],
+      "question": "How do mixture-of-experts language models reduce compute per token, and what makes them hard to train and serve?",
+      "key_points": [
+        {"id": "q03.1", "text": "A router sends each token to only the top-k experts (k=1 in Switch Transformer, k=2 in Mixtral), so active parameters per token are far fewer than total parameters.", "source": "Fedus et al. 2021, arXiv:2101.03961; Jiang et al. 2024, arXiv:2401.04088"},
+        {"id": "q03.2", "text": "An auxiliary load-balancing loss (or an equivalent mechanism) is needed to stop routing from collapsing onto a few experts.", "source": "Shazeer et al. 2017, arXiv:1701.06538; Fedus et al. 2021"},
+        {"id": "q03.3", "text": "Training can be unstable; remedies include the router z-loss and capacity factors with token dropping.", "source": "Zoph et al. 2022 (ST-MoE), arXiv:2202.08906"},
+        {"id": "q03.4", "text": "Serving needs memory for all experts, so memory scales with total parameters, not active ones (Mixtral 8x7B: about 47B total, about 13B active per token).", "source": "Jiang et al. 2024, arXiv:2401.04088"}
+      ]
+    },
+    {
+      "id": "q04",
+      "domain": "ml_research",
+      "qtype": "published_research",
+      "expected_channels": ["arxiv", "semantic_scholar", "openalex"],
+      "question": "What does the Chinchilla paper conclude about compute-optimal scaling of language models, and has it held up?",
+      "key_points": [
+        {"id": "q04.1", "text": "For a fixed compute budget, model size and training tokens should be scaled in roughly equal proportion.", "source": "Hoffmann et al. 2022, arXiv:2203.15556"},
+        {"id": "q04.2", "text": "Chinchilla (70B parameters, about 1.4T tokens) outperformed the much larger Gopher (280B) trained with the same compute.", "source": "Hoffmann et al. 2022, arXiv:2203.15556"},
+        {"id": "q04.3", "text": "This revises Kaplan et al. (2020), whose laws favoured growing model size faster than data.", "source": "Kaplan et al. 2020, arXiv:2001.08361"},
+        {"id": "q04.4", "text": "The result is often summarised as roughly 20 training tokens per parameter.", "source": "Hoffmann et al. 2022 (Table 3); widely cited heuristic"},
+        {"id": "q04.5", "text": "A 2024 replication attempt found problems with one of the paper's three estimation approaches (the parametric fit), while the corrected estimate stays close to the other two.", "source": "Besiroglu et al. 2024, arXiv:2404.10102"}
+      ]
+    },
+    {
+      "id": "q05",
+      "domain": "engineering",
+      "qtype": "engineering",
+      "expected_channels": ["web", "stack_exchange", "hacker_news"],
+      "question": "What are the trade-offs between SQLite's WAL mode and its rollback-journal mode?",
+      "key_points": [
+        {"id": "q05.1", "text": "In WAL mode readers do not block the writer and the writer does not block readers, but there is still only one writer at a time.", "source": "sqlite.org/wal.html"},
+        {"id": "q05.2", "text": "WAL is usually faster for writes, needing fewer fsyncs per transaction.", "source": "sqlite.org/wal.html"},
+        {"id": "q05.3", "text": "WAL relies on shared memory (the -shm wal-index), so every process must be on the same host; it does not work over a network filesystem.", "source": "sqlite.org/wal.html"},
+        {"id": "q05.4", "text": "Checkpoints copy WAL content back into the database; long-running readers can starve checkpoints and let the WAL file grow without bound.", "source": "sqlite.org/wal.html"}
+      ]
+    },
+    {
+      "id": "q06",
+      "domain": "engineering",
+      "qtype": "engineering",
+      "expected_channels": ["web"],
+      "question": "What does RFC 9309 specify about how crawlers must interpret robots.txt?",
+      "key_points": [
+        {"id": "q06.1", "text": "The most specific (longest) matching rule wins; when an allow and a disallow rule match equally, allow should be used.", "source": "RFC 9309 section 2.2.2"},
+        {"id": "q06.2", "text": "If robots.txt is unavailable with a 4xx status the crawler may access any resource; if it is unreachable (5xx or network error) the crawler must assume complete disallow.", "source": "RFC 9309 section 2.3.1"},
+        {"id": "q06.3", "text": "Crawlers must parse at least 500 kibibytes of the file.", "source": "RFC 9309 section 2.5"},
+        {"id": "q06.4", "text": "Crawlers should not use a cached robots.txt for more than 24 hours, unless it is unreachable.", "source": "RFC 9309 section 2.4"},
+        {"id": "q06.5", "text": "Rules support the '*' wildcard and the '$' end-of-path anchor; crawl-delay is not part of the standard.", "source": "RFC 9309 sections 2.2.3 and 2.2.4"}
+      ]
+    },
+    {
+      "id": "q07",
+      "domain": "engineering",
+      "qtype": "engineering",
+      "expected_channels": ["arxiv", "github", "web"],
+      "question": "Which techniques most reduce LLM decoding latency on a single GPU, and why do they work?",
+      "key_points": [
+        {"id": "q07.1", "text": "Autoregressive decoding is memory-bandwidth bound: each token reads all the weights, so moving fewer bytes per token is what speeds it up.", "source": "e.g. Leviathan et al. 2023; Kim et al. 2023 (SqueezeLLM), arXiv:2306.07629"},
+        {"id": "q07.2", "text": "Speculative decoding has a small draft model propose several tokens that the target model verifies in one pass, giving the same output distribution as the target model.", "source": "Leviathan et al. 2023, arXiv:2211.17192; Chen et al. 2023, arXiv:2302.01318"},
+        {"id": "q07.3", "text": "Low-bit weight quantization (e.g. 4-bit GPTQ or AWQ) cuts the bytes read per token, and so cuts latency, at a small quality cost.", "source": "Frantar et al. 2022, arXiv:2210.17323; Lin et al. 2023, arXiv:2306.00978"},
+        {"id": "q07.4", "text": "The KV cache avoids recomputing attention over past tokens; PagedAttention (vLLM) manages it in blocks to cut fragmentation, which mainly raises throughput and batch size.", "source": "Kwon et al. 2023, arXiv:2309.06180"}
+      ]
+    },
+    {
+      "id": "q08",
+      "domain": "general",
+      "qtype": "general",
+      "expected_channels": ["wikipedia", "web"],
+      "question": "What caused the Space Shuttle Challenger disaster in 1986?",
+      "key_points": [
+        {"id": "q08.1", "text": "An O-ring seal in a field joint of the right solid rocket booster failed, letting hot gas escape and leading to the break-up about 73 seconds after launch on 28 January 1986.", "source": "Rogers Commission report (1986)"},
+        {"id": "q08.2", "text": "The unusually cold launch-day temperature reduced the O-rings' resilience.", "source": "Rogers Commission report (1986)"},
+        {"id": "q08.3", "text": "Morton Thiokol engineers warned against launching in the cold, and the concern was overruled in the launch decision.", "source": "Rogers Commission report (1986)"},
+        {"id": "q08.4", "text": "The Rogers Commission faulted NASA's decision-making and communication as well as the joint design; Richard Feynman showed O-ring stiffness in iced water.", "source": "Rogers Commission report (1986), Appendix F"}
+      ]
+    },
+    {
+      "id": "q09",
+      "domain": "general",
+      "qtype": "biomedical",
+      "expected_channels": ["pubmed", "openalex", "wikipedia"],
+      "question": "How do mRNA vaccines work, and what made them practical?",
+      "key_points": [
+        {"id": "q09.1", "text": "The mRNA encodes an antigen (for COVID-19 vaccines, the SARS-CoV-2 spike protein) that the body's cells translate, prompting an immune response.", "source": "e.g. Pardi et al. 2018, Nat Rev Drug Discov, doi:10.1038/nrd.2017.243"},
+        {"id": "q09.2", "text": "The mRNA is delivered inside lipid nanoparticles.", "source": "Pardi et al. 2018"},
+        {"id": "q09.3", "text": "Modified nucleosides (pseudouridine, later N1-methylpseudouridine) reduce innate immune activation; Kariko and Weissman's work on this won the 2023 Nobel Prize in Physiology or Medicine.", "source": "Kariko et al. 2005, Immunity; nobelprize.org 2023"},
+        {"id": "q09.4", "text": "The mRNA does not enter the nucleus or change the recipient's DNA, and it is degraded naturally.", "source": "CDC / Pardi et al. 2018"},
+        {"id": "q09.5", "text": "The first COVID-19 mRNA vaccines needed cold storage, ultra-cold (about -80 to -60 C) for Pfizer-BioNTech's original formulation.", "source": "FDA EUA fact sheets (2020)"}
+      ]
+    },
+    {
+      "id": "q10",
+      "domain": "general",
+      "qtype": "biomedical",
+      "expected_channels": ["pubmed", "openalex", "web"],
+      "question": "Does intermittent fasting produce more weight loss than ordinary daily calorie restriction?",
+      "key_points": [
+        {"id": "q10.1", "text": "When total calorie intake is matched, randomized trials generally find weight loss similar to daily calorie restriction, not superior.", "source": "systematic reviews; trials below"},
+        {"id": "q10.2", "text": "A one-year trial of alternate-day fasting versus daily calorie restriction (Trepanowski et al., JAMA Internal Medicine 2017) found no superior weight loss or adherence for fasting.", "source": "Trepanowski et al. 2017, doi:10.1001/jamainternmed.2017.0936"},
+        {"id": "q10.3", "text": "A 12-month trial of time-restricted eating plus calorie restriction versus calorie restriction alone (Liu et al., NEJM 2022) found no significant difference in weight loss.", "source": "Liu et al. 2022, doi:10.1056/NEJMoa2114833"},
+        {"id": "q10.4", "text": "The TREAT trial (Lowe et al., JAMA Internal Medicine 2020) of 16:8 time-restricted eating found no significant weight-loss benefit over consistent meal timing.", "source": "Lowe et al. 2020, doi:10.1001/jamainternmed.2020.4153"},
+        {"id": "q10.5", "text": "The evidence is limited by short durations, small samples and adherence problems, so a claim of superiority should be reported as contested or unsupported.", "source": "reviewer judgement over the trials above"}
+      ]
+    }
+  ]
+}

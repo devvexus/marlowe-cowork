@@ -39,8 +39,15 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
             Ok(list) => reply(Event::Runs { list }),
             Err(e) => fail(e.to_string()),
         },
+        // A plan still waiting for the user comes first, so a client that (re)opens the run can
+        // answer it.
         Request::WatchRun { run } => match resolve(sup, &run).and_then(|id| sup.transcript(&id).map_err(|e| e.to_string())) {
-            Ok((run, steps)) => reply(Event::RunTranscript { run, steps }),
+            Ok((run, steps)) => {
+                if let Some((plan, quote)) = sup.pending_plan(&run.id) {
+                    reply(Event::PlanProposed { run: run.id.clone(), plan, quote });
+                }
+                reply(Event::RunTranscript { run, steps })
+            }
             Err(m) => fail(m),
         },
         Request::Steer { run, text } => {
@@ -59,6 +66,7 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
         Request::ResumeRun { run } => control(core, client, sup, &run, |id| sup.resume(id)),
         Request::MergeRun { run } => spawn_settle(core, client, run, Settle::Merge),
         Request::DiscardRun { run } => spawn_settle(core, client, run, Settle::Discard),
+        Request::ApprovePlan { run, decision } => control(core, client, sup, &run, |id| sup.approve_plan(id, decision)),
         other => fail(format!("not a crew request: {other:?}")),
     }
 }

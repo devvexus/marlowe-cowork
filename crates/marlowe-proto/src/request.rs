@@ -10,6 +10,7 @@ use crate::context::{ContextPolicy, KvType};
 use crate::crew::{CrewBudget, Playbook, RunId};
 use crate::ids::{ApprovalId, SessionId};
 use crate::memory::MemoryScope;
+use crate::research::PlanDecision;
 
 /// A secret on the wire. `Debug` and `Display` never print it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -270,6 +271,9 @@ pub enum Request {
     DiscardRun { run: RunId },
     /// Answered with `Roles`.
     ListRoles,
+    /// Answers a deep research run's `PlanProposed`: approve it, run an edited plan instead, or
+    /// reject it (the run ends cancelled). Answered with `RunUpdated`.
+    ApprovePlan { run: RunId, decision: PlanDecision },
     /// The context and hardware plan for `model`; answered with `ContextPlan` to this client.
     ContextPlan { model: ModelRef },
     /// Every library model's context policy and engine state; answered with `ContextPolicies`.

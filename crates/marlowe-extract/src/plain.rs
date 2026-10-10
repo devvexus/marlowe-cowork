@@ -59,6 +59,7 @@ pub fn extract(
         headings,
         lang: None,
         description: None,
+        meta: Vec::new(),
         bytes_in: bytes.len(),
         encoding: decoded.encoding,
         warnings,

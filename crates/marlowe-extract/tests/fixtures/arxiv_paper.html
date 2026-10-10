@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>[2301.01234] Attention and Memory in Small Models</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://arxiv.org/static/browse/0.3.4/css/ar5iv.0.7.9.min.css">
+</head>
+<body>
+<header class="desktop_header"><div class="html-header-logo"><a href="https://arxiv.org/">arXiv</a></div>
+<div class="html-header-message">This is experimental HTML to improve accessibility. <a href="https://info.arxiv.org/about/accessible_HTML.html">Learn more</a> <a href="https://github.com/arXiv/html_feedback/issues">Report issue</a></div>
+<nav class="html-header-nav"><a href="https://arxiv.org/abs/2301.01234">Back to abstract page</a> <a href="https://arxiv.org/pdf/2301.01234">Download PDF</a></nav></header>
+<div class="ltx_page_main">
+<div class="ltx_page_content">
+<article class="ltx_document ltx_authors_1line">
+<h1 class="ltx_title ltx_title_document">Attention and Memory in Small Models</h1>
+<div class="ltx_authors">
+<span class="ltx_creator ltx_role_author"><span class="ltx_personname">Ada Lovelace</span><span class="ltx_author_notes">Analytical Engines Ltd</span></span>
+<span class="ltx_author_before">, </span>
+<span class="ltx_creator ltx_role_author"><span class="ltx_personname">Alan Turing</span></span>
+</div>
+<div class="ltx_abstract">
+<h6 class="ltx_title ltx_title_abstract">Abstract</h6>
+<p class="ltx_p">We study how attention and memory trade off in models below ten million parameters. A key-value memory of size <math alttext="m" class="ltx_Math" display="inline"><semantics><mi>m</mi></semantics></math> recovers most of the accuracy lost when attention heads are pruned, and the effect holds across three tasks.</p>
+</div>
+<section id="S1" class="ltx_section">
+<h2 class="ltx_title ltx_title_section"><span class="ltx_tag ltx_tag_section">1 </span>Introduction</h2>
+<div id="S1.p1" class="ltx_para"><p class="ltx_p">Small language models are deployed where memory and latency are scarce. Prior work <cite class="ltx_cite ltx_citemacro_cite">[<a href="#bib.bib1" class="ltx_ref">1</a>, <a href="#bib.bib2" class="ltx_ref">2</a>]</cite> shows attention is the dominant cost at long context, while retrieval-augmented models <cite class="ltx_cite">[<a href="#bib.bib3" class="ltx_ref">3</a>]</cite> move knowledge into an external store.</p></div>
+</section>
+<section id="S2" class="ltx_section">
+<h2 class="ltx_title ltx_title_section"><span class="ltx_tag ltx_tag_section">2 </span>Method</h2>
+<div id="S2.p1" class="ltx_para"><p class="ltx_p">We replace <math alttext="h" class="ltx_Math"><mi>h</mi></math> of the <math alttext="H" class="ltx_Math"><mi>H</mi></math> attention heads with a memory read whose cost is <math alttext="O(\log m)" class="ltx_Math"><mrow><mi>O</mi></mrow></math> per token.</p></div>
+<section id="S2.SS1" class="ltx_subsection">
+<h3 class="ltx_title ltx_title_subsection"><span class="ltx_tag ltx_tag_subsection">2.1 </span>Training</h3>
+<div id="S2.SS1.p1" class="ltx_para"><p class="ltx_p">All models are trained for 20k steps with AdamW and a batch of 256 sequences.</p></div>
+</section>
+</section>
+<section id="S3" class="ltx_section">
+<h2 class="ltx_title ltx_title_section"><span class="ltx_tag ltx_tag_section">3 </span>Results</h2>
+<figure id="S3.T1" class="ltx_table">
+<figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_table">Table 1: </span>Accuracy with pruned heads.</figcaption>
+<table class="ltx_tabular">
+<tr class="ltx_tr"><th class="ltx_th">Heads kept</th><th class="ltx_th">No memory</th><th class="ltx_th">With memory</th></tr>
+<tr class="ltx_tr"><td class="ltx_td">8 of 8</td><td class="ltx_td">71.2</td><td class="ltx_td">71.4</td></tr>
+<tr class="ltx_tr"><td class="ltx_td">4 of 8</td><td class="ltx_td">63.0</td><td class="ltx_td">70.1</td></tr>
+</table>
+</figure>
+<div id="S3.p1" class="ltx_para"><p class="ltx_p">With half the heads removed, memory recovers 7.1 of the 8.2 points lost.</p></div>
+</section>
+<section id="bib" class="ltx_bibliography">
+<h2 class="ltx_title ltx_title_bibliography">References</h2>
+<ul class="ltx_biblist">
+<li id="bib.bib1" class="ltx_bibitem"><span class="ltx_tag ltx_role_refnum ltx_tag_bibitem">[1]</span><span class="ltx_bibblock">A. Vaswani, N. Shazeer, N. Parmar, et al.</span><span class="ltx_bibblock">Attention is all you need.</span><span class="ltx_bibblock">In <em class="ltx_emph">NeurIPS</em>, 2017. <a href="https://arxiv.org/abs/1706.03762" class="ltx_ref ltx_href">arXiv:1706.03762</a></span></li>
+<li id="bib.bib2" class="ltx_bibitem"><span class="ltx_tag ltx_role_refnum ltx_tag_bibitem">[2]</span><span class="ltx_bibblock">T. Dao, D. Fu, S. Ermon, A. Rudra, and C. Ré.</span><span class="ltx_bibblock">FlashAttention: fast and memory-efficient exact attention with IO-awareness.</span><span class="ltx_bibblock">In <em class="ltx_emph">NeurIPS</em>, 2022.</span></li>
+<li id="bib.bib3" class="ltx_bibitem"><span class="ltx_tag ltx_role_refnum ltx_tag_bibitem">[3]</span><span class="ltx_bibblock">S. Borgeaud et al.</span><span class="ltx_bibblock">Improving language models by retrieving from trillions of tokens.</span><span class="ltx_bibblock">In <em class="ltx_emph">ICML</em>, 2022. <a href="https://doi.org/10.48550/arXiv.2112.04426" class="ltx_ref ltx_href">doi:10.48550/arXiv.2112.04426</a></span></li>
+<li id="bib.bib4" class="ltx_bibitem"><span class="ltx_tag ltx_role_refnum ltx_tag_bibitem">[4]</span><span class="ltx_bibblock">J. Jumper et al.</span><span class="ltx_bibblock">Highly accurate protein structure prediction with AlphaFold.</span><span class="ltx_bibblock"><em class="ltx_emph">Nature</em> 596, 583–589 (2021). https://doi.org/10.1038/s41586-021-03819-2</span></li>
+</ul>
+</section>
+</article>
+</div>
+<footer class="ltx_page_footer"><div class="ltx_page_logo">Generated by <a href="https://math.nist.gov/~BMiller/LaTeXML/">LaTeXML</a></div></footer>
+</div>
+<button class="feedback-btn">Report Issue</button>
+</body>
+</html>

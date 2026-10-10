@@ -261,7 +261,7 @@ impl Fs<'_> {
                  it — the file you named is already the answer.",
             );
         }
-        let keep = |p: &Path| matches_glob(pattern, p, self.root);
+        let keep = |p: &Path| matches_glob(pattern, p, &base, self.root);
         let walk = collect(&base, WALK_FILE_CAP, &keep);
         let mut hits: Vec<String> = walk.files.iter().map(|f| self.shown(f)).collect();
         hits.sort();
@@ -384,7 +384,7 @@ impl Fs<'_> {
                  contains it, or use `read` to look at this one file.",
             );
         }
-        let keep = |p: &Path| file_glob.is_none_or(|g| matches_glob(g, p, self.root));
+        let keep = |p: &Path| file_glob.is_none_or(|g| matches_glob(g, p, &base, self.root));
         let walk = collect(&base, WALK_FILE_CAP, &keep);
 
         let mut emitted: Vec<String> = Vec::new();
@@ -499,20 +499,25 @@ impl Fs<'_> {
     }
 }
 
-/// A name-only pattern matches the file name; one with `/` matches the root-relative path.
-fn matches_glob(pattern: &str, p: &Path, root: Option<&Path>) -> bool {
-    if pattern == "*" {
+/// A name-only pattern matches the file name. One with `/` (or `\`) matches the path relative to
+/// the searched directory `base`, or failing that relative to the workspace `root`.
+fn matches_glob(pattern: &str, p: &Path, base: &Path, root: Option<&Path>) -> bool {
+    let pattern = pattern.trim().replace('\\', "/");
+    let pattern = pattern.strip_prefix("./").unwrap_or(&pattern);
+    if pattern == "*" || pattern == "**" {
         return true;
     }
-    let subject = if pattern.contains('/') {
-        match root.and_then(|r| p.strip_prefix(r).ok()) {
-            Some(r) => r.to_string_lossy().replace('\\', "/"),
-            None => p.to_string_lossy().replace('\\', "/"),
-        }
-    } else {
-        p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
-    };
-    glob_match(pattern, &subject)
+    if !pattern.contains('/') {
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        return glob_match(pattern, &name);
+    }
+    let rel = |r: &Path| p.strip_prefix(r).ok().map(|x| x.to_string_lossy().replace('\\', "/"));
+    match (rel(base), root.and_then(rel)) {
+        (Some(b), Some(r)) => glob_match(pattern, &b) || glob_match(pattern, &r),
+        (Some(b), None) => glob_match(pattern, &b),
+        (None, Some(r)) => glob_match(pattern, &r),
+        (None, None) => glob_match(pattern, &p.to_string_lossy()),
+    }
 }
 
 /// What one directory walk found.

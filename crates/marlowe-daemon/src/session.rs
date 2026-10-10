@@ -387,6 +387,7 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
         steps: 0,
         text: String::new(),
         error: Some(format!("the turn failed: {e}")),
+        truncated: false,
     });
     convo.next_turn = convo.next_turn.max(turn + 1);
 

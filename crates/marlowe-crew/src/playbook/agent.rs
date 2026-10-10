@@ -54,6 +54,29 @@ pub type ModelResolver = Arc<dyn Fn(&RoleCard) -> Result<StepModel, CrewError> +
 /// Runs a command in the sandbox. The default is [`sandbox_shell`].
 pub type ShellFn = Arc<dyn Fn(&Sandbox, &str, &CancelToken) -> Result<ShellResult, CrewError> + Send + Sync>;
 
+/// Tokens kept free in the window beside a no-tool step's prompt and reply (estimates are rough).
+pub const OUTPUT_MARGIN: u32 = 1_024;
+/// The smallest reply cap a step is given, however long its prompt.
+pub const MIN_OUTPUT: u32 = 1_024;
+
+/// A step that gave no answer: its spend and how its last call stopped.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StepFailure {
+    pub why: String,
+    pub usage: Usage,
+    /// The last call stopped at the output limit (usually: all of it went to thinking).
+    pub truncated: bool,
+    /// The reply cap the step ran with, when it set one.
+    pub max_output: Option<u32>,
+}
+
+/// The reply cap for a step asking for `want` tokens: at most the room the prompt leaves in a
+/// `window`-token context, never under [`MIN_OUTPUT`].
+pub fn output_cap(want: u32, window: u32, prompt_tokens: u32) -> u32 {
+    let room = window.saturating_sub(prompt_tokens).saturating_sub(OUTPUT_MARGIN);
+    want.min(room).max(MIN_OUTPUT)
+}
+
 /// What the supervisor wraps around each agent call. Every method has a do-nothing default.
 pub trait StepHooks: Send + Sync {
     /// The stored result of a completed step `key`; a resumed run skips the call.
@@ -91,6 +114,10 @@ pub trait StepHooks: Send + Sync {
 
     /// A step finished: its whole conversation and its result. The checkpoint goes here.
     fn finished(&self, _spec: &StepSpec, _messages: &[Message], _result: &StepResult) {}
+
+    /// A step ended without an answer: what it spent and why, for the record. Nothing is
+    /// checkpointed, so a resumed run asks again.
+    fn failed(&self, _spec: &StepSpec, _messages: &[Message], _failure: &StepFailure) {}
 
     /// The run's one-line current action.
     fn progress(&self, _action: &str) {}
@@ -227,9 +254,19 @@ impl AgentRunner {
             spec: spec.clone(),
             failed: failed.clone(),
         };
-        let mut agent = Agent::new(Arc::new(metered), model.model, Arc::new(tools), self.system(card, spec, &allow));
-        agent.effort = card.effort;
+        let system = self.system(card, spec, &allow);
+        let prompt_tokens = marlowe_agent::context::estimate_tokens(&system.render_text())
+            + marlowe_agent::context::estimate_tokens(&spec.prompt);
+        let mut agent = Agent::new(Arc::new(metered), model.model, Arc::new(tools), system);
+        agent.effort = spec.effort.unwrap_or(card.effort);
         agent.approvals = self.approvals.clone();
+        // A sized step gets the room its prompt leaves, not the provider's default (Ollama's is
+        // a quarter of the window, which a thinking model can spend before it answers).
+        if let Some(want) = spec.max_output {
+            let cap = output_cap(want, agent.context.window_tokens, prompt_tokens);
+            agent.max_output = Some(cap);
+            agent.context.reserve_output = cap;
+        }
 
         let session = SessionId::from(format!("crew:{}", self.run).as_str());
         let mut convo = Conversation::new(session, Some(self.sandbox.root.clone()));
@@ -239,6 +276,7 @@ impl AgentRunner {
         let mut usage = Usage::default();
         let mut prompt = spec.prompt.clone();
         let mut finished = false;
+        let mut truncated = false;
         for _ in 0..=MAX_CONTINUES {
             self.hooks.admit(spec)?;
             if self.cancel.is_cancelled() {
@@ -251,6 +289,7 @@ impl AgentRunner {
             if let Some(e) = failed.lock().unwrap_or_else(|e| e.into_inner()).take() {
                 return Err(e);
             }
+            truncated = out.truncated;
             match out.stop {
                 TurnStop::Done => {
                     finished = true;
@@ -268,12 +307,12 @@ impl AgentRunner {
         }
         let text = last_assistant_text(&convo.messages);
         if !finished || text.trim().is_empty() {
-            return Err(CrewError::Step {
-                step: spec.key.clone(),
-                message: if finished { "the agent gave no answer".into() } else { "the step did not finish".into() },
-            });
+            let why = if finished { "the agent gave no answer" } else { "the step did not finish" };
+            let failure = StepFailure { why: why.into(), usage, truncated, max_output: agent.max_output };
+            self.hooks.failed(spec, &convo.messages, &failure);
+            return Err(CrewError::Step { step: spec.key.clone(), message: why.into() });
         }
-        let result = StepResult { text, usage, tainted: convo.exposure.tainted };
+        let result = StepResult { text, usage, tainted: convo.exposure.tainted, truncated };
         self.hooks.finished(spec, &convo.messages, &result);
         Ok(result)
     }
@@ -523,4 +562,18 @@ pub fn tail_chars(text: &str, max: usize) -> String {
     }
     let tail: String = text.chars().skip(n - max).collect();
     format!("[… {} earlier characters cut]\n{tail}", n - max)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// dusk at 32k: a 9k-token prompt leaves room for a 22.7k reply, so a retry's doubled budget
+    /// is honoured; a prompt that fills the window still gets a minimal reply.
+    #[test]
+    fn a_reply_cap_is_the_room_the_prompt_leaves() {
+        assert_eq!(output_cap(12_288, 32_768, 9_000), 12_288);
+        assert_eq!(output_cap(24_576, 32_768, 9_000), 32_768 - 9_000 - OUTPUT_MARGIN);
+        assert_eq!(output_cap(12_288, 32_768, 31_500), MIN_OUTPUT);
+    }
 }

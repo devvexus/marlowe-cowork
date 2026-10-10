@@ -222,7 +222,7 @@ fn start_with(home: &Path, brains: Arc<Brains>, cfg: CrewConfig, gpu_busy: bool)
 fn start_probe(home: &Path, brains: Arc<Brains>, cfg: CrewConfig, gpu_busy: GpuBusy) -> Fixture {
     let approvals = Arc::new(TestApprovals::default());
     let (tx, events) = crossbeam_channel::unbounded();
-    let deps = CrewDeps { brains, tools: tool_factory(), approvals: approvals.clone(), mind: None, gpu_busy };
+    let deps = CrewDeps { brains, tools: tool_factory(), approvals: approvals.clone(), mind: None, gpu_busy, research: None };
     let sup = Supervisor::start(home, deps, cfg, tx).unwrap();
     Fixture { sup, events, approvals }
 }
@@ -890,6 +890,7 @@ fn the_store_round_trips_runs_and_steps() {
         output: Some("1. do it".into()),
         usage: Usage { input: 5, output: 3, ..Default::default() },
         tainted: false,
+        truncated: false,
         at_ms: 1,
     };
     store.append_step(&rec).unwrap();

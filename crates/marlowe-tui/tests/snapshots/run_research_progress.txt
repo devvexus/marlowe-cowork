@@ -1,0 +1,40 @@
+ * marlowe — gate work                                                                                                 3 runs · 1 needs you
+╭ Run · LoRA rank ablations for 22B gates ─────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮
+│                                                                                                                                          │
+│  ● researcher · LoRA rank ablations for 22B gates                                                                               running  │
+│  step 6 of 40 · $0.0213 of $0.50 · 41.2k tokens of 400k · web_search "lora rank ablation" · 1m ago                                       │
+│  deep_research · C:/work/valiance · run aa11bb22                                                                                         │
+│  ✓ Plan → ✓ Explore → ✓ Compress → ✓ Corroborate → ● Verify 20/26 → ○ Synthesise                                                         │
+│  sources 42 found · 30 fetched · claims 118 · independent roots 9 · citations 24 supported · 2 unsupported                               │
+│  reading arXiv:2401.01234                                                                                                                │
+│  goal  LoRA rank ablations for 22B gates                                                                                                 │
+│                                                                                                                                          │
+│  TRANSCRIPT                                                                                                                              │
+│  loading the transcript…                                                                                                                 │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│  steer › s to steer: a note the run reads at its next step                                                                               │
+│                                                                                                                                          │
+╰────────────────────────────────────────────────────────────────────────── s steer  ·  p pause  ·  c cancel  ·  ↑↓ scroll  ·  esc/⌫ runs ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^k palette        Friday 9 October · quiet 23:00–07:00 · 21:40

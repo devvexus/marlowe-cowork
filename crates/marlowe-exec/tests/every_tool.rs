@@ -131,6 +131,33 @@ fn glob_lists_filters_and_skips_build_output() {
     assert!(call(&t, "glob", json!({"pattern": "*.md"})).content.starts_with("Readme.MD"));
 }
 
+/// Found live: `**/Cargo.toml` returned 0 paths in a 25-manifest workspace because `**` was two
+/// one-segment stars (so it matched exactly one directory level and never the root manifest).
+#[test]
+fn globstar_finds_every_manifest_at_every_depth() {
+    let ws = Ws::new("et-globstar");
+    ws.put("Cargo.toml", "");
+    for i in 0..24 {
+        ws.put(&format!("crates/c{i:02}/Cargo.toml"), "");
+    }
+    ws.put("crates/c00/fuzz/Cargo.toml", "");
+    ws.put("target/debug/build/Cargo.toml", "");
+    let t = ws.tools();
+    let o = call(&t, "glob", json!({"pattern": "**/Cargo.toml"}));
+    assert_eq!(o.summary, "26 paths", "{}", o.content);
+    assert!(o.content.lines().any(|l| l == "Cargo.toml"), "{}", o.content);
+    assert!(o.content.contains("crates/c00/fuzz/Cargo.toml"));
+    assert!(!o.content.contains("target/debug"), "build output stays skipped");
+    // Patterns are relative to `path` when one is given; backslashes and `./` are accepted.
+    let o = call(&t, "glob", json!({"path": "crates", "pattern": "*/Cargo.toml"}));
+    assert_eq!(o.summary, "24 paths", "{}", o.content);
+    let o = call(&t, "glob", json!({"pattern": r".\crates\**\Cargo.toml"}));
+    assert_eq!(o.summary, "25 paths", "{}", o.content);
+    ws.put("crates/c01/Cargo.toml", "x = 1\n");
+    let o = call(&t, "grep", json!({"pattern": "x", "glob": "**/c01/*.toml"}));
+    assert!(o.content.starts_with("crates/c01/Cargo.toml:1:"), "{}", o.content);
+}
+
 #[test]
 fn grep_reports_matches_context_and_how_many_files_it_read() {
     let ws = Ws::new("et-grep");

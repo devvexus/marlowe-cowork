@@ -85,6 +85,7 @@ pub fn extract(bytes: &[u8]) -> Result<Document, ExtractError> {
         headings: Vec::new(),
         lang: None,
         description: None,
+        meta: Vec::new(),
         bytes_in: bytes.len(),
         encoding: "UTF-8",
         warnings,

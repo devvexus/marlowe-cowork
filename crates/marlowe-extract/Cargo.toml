@@ -43,11 +43,21 @@ lopdf = "0.44"
 # **Content addressing must be collision-resistant, not merely fast.** See ADR-043.
 blake3.workspace = true
 thiserror.workspace = true
+# Paper identifiers (DOI, arXiv id) in reference lists. Already in the lockfile.
+regex.workspace = true
 serde = { workspace = true, optional = true }
+# Main-content candidates (see src/main_content.rs). Both are pure Rust over html5ever DOMs and
+# require no tokio. rs-trafilatura: MIT OR Apache-2.0; its optional `spider` crawler feature
+# (tokio) stays off. rust-trafilatura: Apache-2.0 AND BSD-3-Clause, rust-version 1.98.1; its
+# default `mimalloc` feature (a C allocator) stays off so ARM64 needs no C toolchain.
+rs-trafilatura = { version = "=0.2.2", optional = true, default-features = false }
+rust-trafilatura = { version = "=2.2.8", optional = true, default-features = false }
 
 [features]
-default = []
+default = ["rs-trafilatura", "rust-trafilatura"]
 serde = ["dep:serde"]
+rs-trafilatura = ["dep:rs-trafilatura"]
+rust-trafilatura = ["dep:rust-trafilatura"]
 
 [dev-dependencies]
 blake3.workspace = true

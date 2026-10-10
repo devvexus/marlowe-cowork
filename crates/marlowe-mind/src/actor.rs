@@ -38,7 +38,8 @@ const EMBED_RETRY: Duration = Duration::from_secs(30);
 
 pub(crate) enum Cmd {
     Ingest(TurnIn, Reply<Result<(), MindError>>),
-    Remember(MemoryIn, Reply<Result<Remembered, MindError>>),
+    /// The memory and the ids of memories it was derived from (its lineage).
+    Remember(MemoryIn, Vec<String>, Reply<Result<Remembered, MindError>>),
     Inject(InjectQuery, Reply<Injection>),
     Profile(ProfileQuery, Reply<UserProfile>),
     Recall(RecallQuery, Reply<Result<Vec<RecallHit>, MindError>>),
@@ -238,7 +239,7 @@ impl Actor {
     fn handle(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::Ingest(t, r) => drop(r.send(self.ingest(t))),
-            Cmd::Remember(m, r) => drop(r.send(self.remember(m))),
+            Cmd::Remember(m, parents, r) => drop(r.send(self.remember(m, &parents))),
             Cmd::Inject(q, r) => drop(r.send(self.inject(q))),
             Cmd::Profile(q, r) => drop(r.send(profile::build(self.beliefs.entries(), &q, now_ms()))),
             Cmd::Recall(q, r) => drop(r.send(self.recall(q))),
@@ -353,7 +354,9 @@ impl Actor {
         Ok(())
     }
 
-    fn remember(&mut self, m: MemoryIn) -> Result<Remembered, MindError> {
+    /// `parents`: memories this one was derived from. Those still in the store become its
+    /// lineage, so its trust is the worst over them and a correction can find it.
+    fn remember(&mut self, m: MemoryIn, parents: &[String]) -> Result<Remembered, MindError> {
         let text = m.text.trim();
         let reason = match &m.kind {
             Kind::Decision { reason } if !reason.trim().is_empty() => Some(reason.trim().to_string()),
@@ -390,13 +393,14 @@ impl Actor {
         // A deliberate write from a session that never read untrusted content cannot have been
         // steered by it (the taint latch guarantees that), so it is live at once; a tainted one
         // is UntrustedContent, keeps the maturation window and never enters the profile.
+        let lineage: Vec<String> = parents.iter().filter(|p| self.beliefs.get(p).is_some()).cloned().collect();
         let r = self.write(&BeliefWrite {
             session_id: &session,
             turn_id: kind.label(),
             run_id: run_id.as_deref(),
             text: &text,
             author,
-            derived_from: &[],
+            derived_from: &lineage,
             occurred_at_ms: now_ms(),
             tags: Tags { kind: Some(belief_kind(kind)), scope, utterance: None, source: source_note(&m.source), reason },
             maturation: MaturationPolicy::Deliberate,

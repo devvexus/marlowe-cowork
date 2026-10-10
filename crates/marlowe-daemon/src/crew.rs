@@ -61,6 +61,8 @@ pub(crate) fn start(core: &Arc<Core>, setup: CrewSetup) -> Result<JoinHandle<()>
         approvals: Arc::new(RunGate { core: Arc::downgrade(core) }),
         mind: core.mind.clone(),
         gpu_busy: gpu_probe(Arc::downgrade(core)),
+        // With channels and the corpus fetcher, deep research runs v2; without them, v1.
+        research: setup.research,
     };
     let home = core.home.clone();
     let supervisor = catch_unwind(AssertUnwindSafe(|| Supervisor::start(&home, deps, setup.config, tx)))
@@ -133,6 +135,12 @@ fn on_event(core: &Arc<Core>, ev: CrewEvent) {
                 relay(core, &session, &run, Some(dispatch.clone()), None);
             }
             core.bus.publish(Event::RunFinished { run, dispatch });
+        }
+        CrewEvent::PlanProposed { run, plan, quote, .. } => {
+            core.bus.publish(Event::PlanProposed { run, plan, quote });
+        }
+        CrewEvent::Research { run, progress } => {
+            core.bus.publish(Event::ResearchProgress { run, progress });
         }
     }
 }

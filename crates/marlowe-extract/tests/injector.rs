@@ -22,6 +22,7 @@ fn doc(text: &str) -> Document {
         headings: Vec::new(),
         lang: None,
         description: None,
+        meta: Vec::new(),
         bytes_in: text.len(),
         encoding: "UTF-8",
         warnings: Vec::new(),

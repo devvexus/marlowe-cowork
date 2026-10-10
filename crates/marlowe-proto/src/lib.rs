@@ -16,6 +16,7 @@ mod ids;
 mod memory;
 pub mod paths;
 mod request;
+mod research;
 mod user;
 mod watch;
 
@@ -37,6 +38,11 @@ pub use ids::{ApprovalId, SessionId};
 pub use memory::{ImportReport, MemoryChange, MemoryHit, MemoryKind, MemoryScope, MemoryStatsReport, MemoryTrust};
 pub use paths::DaemonInfo;
 pub use request::{ApprovalDecision, Request, Secret, Slot, SlotParseError};
+pub use research::{
+    ChannelId, ChannelParseError, CostQuote, PlanDecision, PlanError, ResearchCounts, ResearchPlan, ResearchProgress,
+    ResearchStage, StageState, SubQuestion, PLAN_MAX_BREADTH, PLAN_MAX_DEPTH, PLAN_MAX_QUERIES, PLAN_MAX_SOURCES,
+    PLAN_MAX_SUBQUESTIONS,
+};
 pub use user::{clean_user_field, AddressForm, AddressParseError, USER_FIELD_MAX};
 pub use watch::{
     BriefItem, BriefItemKind, GitInfo, GpuDevice, GpuReport, Notice, NoticeSource, OllamaReport, QuietHours,
@@ -50,3 +56,5 @@ pub const PROTO_VERSION: u32 = 1;
 mod tests;
 #[cfg(test)]
 mod tests_crew;
+#[cfg(test)]
+mod tests_research;

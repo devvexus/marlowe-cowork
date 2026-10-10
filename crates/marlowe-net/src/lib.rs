@@ -95,6 +95,29 @@ pub struct Fetched {
     pub wire_bytes: usize,
     /// Was this served over a connection that already existed?
     pub reused_connection: bool,
+    /// `Retry-After`, verbatim, when the server sent one (429/503). Interpreting it is the
+    /// caller's business.
+    pub retry_after: Option<String>,
+}
+
+/// The request headers a caller may choose. Everything else is fixed by this crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Headers<'a> {
+    /// Names the client; research callers identify themselves and say they are automated.
+    pub user_agent: &'a str,
+    pub accept: &'a str,
+}
+
+impl Headers<'static> {
+    /// What [`Client::fetch`] sends.
+    pub const DEFAULT: Headers<'static> = Headers { user_agent: "marlowe", accept: "*/*" };
+}
+
+impl Headers<'_> {
+    /// Printable ASCII only, so a value can never end the header block or add a header.
+    fn valid(&self) -> bool {
+        [self.user_agent, self.accept].iter().all(|v| !v.is_empty() && v.bytes().all(|b| (0x20..0x7f).contains(&b)))
+    }
 }
 
 /// Bodies above this are truncated rather than buffered. `web` returns by reference anyway,
@@ -261,13 +284,25 @@ impl Client {
     /// check and our write. Without the retry, pooling would convert a working fetch into an
     /// intermittent failure — the classic reason naive keep-alive implementations get reverted.
     pub fn fetch(&self, target: &Target) -> Result<Fetched, FetchError> {
-        match self.try_fetch(target, true) {
-            Err(e) if is_connection_fault(&e) => self.try_fetch(target, false),
+        self.fetch_with(target, &Headers::DEFAULT)
+    }
+
+    /// [`Client::fetch`] with caller-chosen `User-Agent` and `Accept`. A header value that is not
+    /// printable ASCII is refused before anything is sent.
+    pub fn fetch_with(&self, target: &Target, headers: &Headers<'_>) -> Result<Fetched, FetchError> {
+        if !headers.valid() {
+            return Err(FetchError::Unsupported {
+                url: target.host.clone(),
+                detail: "a request header is empty or not printable ASCII".into(),
+            });
+        }
+        match self.try_fetch(target, headers, true) {
+            Err(e) if is_connection_fault(&e) => self.try_fetch(target, headers, false),
             other => other,
         }
     }
 
-    fn try_fetch(&self, target: &Target, allow_pooled: bool) -> Result<Fetched, FetchError> {
+    fn try_fetch(&self, target: &Target, headers: &Headers<'_>, allow_pooled: bool) -> Result<Fetched, FetchError> {
         let (mut reader, reused) = match allow_pooled.then(|| self.take_pooled(target)).flatten() {
             Some(r) => {
                 self.stats.reuses.fetch_add(1, Ordering::Relaxed);
@@ -283,9 +318,9 @@ impl Client {
         // those bytes never cross the network. `identity` was leaving that on the table on every
         // request.
         let request = format!(
-            "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: marlowe\r\nAccept: */*\r\n\
+            "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {}\r\nAccept: {}\r\n\
              Accept-Encoding: gzip, br\r\nConnection: keep-alive\r\n\r\n",
-            target.path, target.host
+            target.path, target.host, headers.user_agent, headers.accept
         );
         reader
             .get_mut()
@@ -321,6 +356,7 @@ impl Client {
             redirect_to,
             wire_bytes,
             reused_connection: reused,
+            retry_after: head.retry_after,
         })
     }
 
@@ -705,6 +741,11 @@ pub fn fetch(target: &Target) -> Result<Fetched, FetchError> {
     shared().fetch(target)
 }
 
+/// [`fetch`] with caller-chosen headers.
+pub fn fetch_with(target: &Target, headers: &Headers<'_>) -> Result<Fetched, FetchError> {
+    shared().fetch_with(target, headers)
+}
+
 /// Concurrent fetch against the shared client.
 pub fn fetch_many(targets: &[Target], concurrency: usize) -> Vec<Result<Fetched, FetchError>> {
     shared().fetch_many(targets, concurrency)
@@ -830,6 +871,17 @@ mod tests {
     #[test]
     fn fetch_many_of_nothing_is_empty_rather_than_a_panic() {
         assert!(Client::new().fetch_many(&[], 8).is_empty());
+    }
+
+    #[test]
+    fn header_values_that_could_inject_are_refused_before_connecting() {
+        let target = Target::parse("https://example.com/").unwrap();
+        for bad in ["a\r\nX-Evil: 1", "", "caf\u{e9}"] {
+            let h = Headers { user_agent: bad, accept: "*/*" };
+            assert!(matches!(Client::new().fetch_with(&target, &h), Err(FetchError::Unsupported { .. })), "{bad:?}");
+        }
+        assert!(Headers::DEFAULT.valid());
+        assert!(Headers { user_agent: "MarloweCowork/0.1 (automated)", accept: "application/json" }.valid());
     }
 
     #[test]

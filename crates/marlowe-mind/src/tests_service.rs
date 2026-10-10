@@ -296,6 +296,35 @@ fn trust_sets_maturation_and_corrections_cannot_lower_authority() {
     let _ = fs::remove_dir_all(&home);
 }
 
+/// A research finding rests on a recalled memory: an untainted write still lands at the worst
+/// trust over its lineage.
+#[test]
+fn a_derived_memory_takes_the_worst_trust_of_its_lineage() {
+    let home = temp_home("lineage");
+    let mind = Mind::open_with(&home, without_models(&home)).unwrap();
+    let web = mind
+        .remember(MemoryIn {
+            text: "A forum post says rank 64 always wins.".into(),
+            kind: Kind::Note,
+            scope: Scope::Global,
+            source: Provenance::Agent { session: "s1".into(), turn: 1, tainted: true },
+        })
+        .unwrap();
+    let finding = |text: &str| MemoryIn {
+        text: text.into(),
+        kind: Kind::Result,
+        scope: Scope::Global,
+        source: Provenance::Agent { session: "crew:r1".into(), turn: 2, tainted: false },
+    };
+    let derived = mind.remember_derived(finding("Research finding: rank 64 wins."), vec![web.id.clone()]).unwrap();
+    assert_eq!(derived.trust, Trust::Untrusted, "{derived:?}");
+    assert!(derived.matures_at_ms.is_some(), "and it matures like its parent");
+    let alone = mind.remember_derived(finding("Research finding: rank 8 suffices."), vec!["gone".into()]).unwrap();
+    assert_eq!(alone.trust, Trust::Inferred, "an id no longer in the store adds no lineage");
+    drop(mind);
+    let _ = fs::remove_dir_all(&home);
+}
+
 #[test]
 fn explicit_project_scope_filters_recall_and_turns_are_global() {
     let home = temp_home("scope");

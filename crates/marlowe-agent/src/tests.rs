@@ -717,3 +717,19 @@ fn the_callers_repo_context_survives_the_per_turn_environment_refresh() {
     assert!(sys.contains("Repo: main · 2 uncommitted changes · last commit abc1234 \"wire the brief\""), "{sys}");
     assert!(!sys.contains("Now: stale"), "the clock is refreshed every turn");
 }
+
+#[test]
+fn an_output_cap_override_reaches_the_request() {
+    // The catalog knows no max_output (a local model): without the override the request carries
+    // none and the provider picks its own default.
+    let p = ScriptedProvider::new(vec![answer("one"), answer("two")]);
+    let mut info = model();
+    info.max_output = None;
+    let mut a = Agent::new(p.clone(), info, TestTools::new(), SystemPrompt::with_core("core"));
+    run(&a, &mut convo(), "go");
+    a.max_output = Some(12_288);
+    run(&a, &mut convo(), "go");
+    let reqs = p.requests();
+    assert_eq!(reqs[0].max_output_tokens, None);
+    assert_eq!(reqs[1].max_output_tokens, Some(12_288));
+}
