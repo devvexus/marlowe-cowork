@@ -13,3 +13,24 @@ marlowe-model.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# Track C (M4.6): the tags index (sqlite, keyed by path + blake3), gitignore matching for its walk,
+# and the LSP client (lsp-server framing, lsp-types payloads; a reader thread per server).
+rusqlite.workspace = true
+blake3.workspace = true
+crossbeam-channel.workspace = true
+ignore = "0.4.33"
+lsp-server = "0.10"
+lsp-types = "0.97"
+
+# tree-sitter is a C compile; ARM64 builds without it (no L1 tags) until approval 9.1-i installs
+# the ARM64 build tools. `index::tags` has a stub for aarch64.
+[target.'cfg(not(target_arch = "aarch64"))'.dependencies]
+tree-sitter = "0.27"
+tree-sitter-tags = "0.27"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-go = "0.25"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"

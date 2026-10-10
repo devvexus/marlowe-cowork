@@ -1,0 +1,251 @@
+//! The live language servers of one tool host (design 3.3 L2): started lazily per (server,
+//! root), at most [`MAX_LIVE`] at once (the least recently used one is stopped to make room),
+//! stopped after [`IDLE_STOP`] unused by a reaper thread that ends with the manager. A server
+//! that fails to start is not retried for this manager's life (its error is kept and reported).
+//! `MARLOWE_LSP=off` (or `0`) disables every server, for hosts and test rigs that must never
+//! start one.
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+use std::time::Duration;
+
+use crossbeam_channel::{RecvTimeoutError, Sender};
+
+use super::client::LspClient;
+use super::servers::{default_specs, ServerSpec};
+use super::transport::{Launch, StdioLauncher};
+use super::LspError;
+use crate::index::{norm_key, Lang};
+
+/// Most servers running at once per manager.
+pub const MAX_LIVE: usize = 2;
+/// A server unused this long is stopped.
+pub const IDLE_STOP: Duration = Duration::from_secs(600);
+/// How long the initialize handshake may take.
+pub const START_TIMEOUT: Duration = Duration::from_secs(60);
+
+type Key = (&'static str, String);
+
+#[derive(Default)]
+struct Slot {
+    cell: OnceLock<Result<LspClient, String>>,
+}
+
+struct Inner {
+    launcher: Arc<dyn Launch>,
+    specs: Vec<ServerSpec>,
+    slots: Mutex<HashMap<Key, Arc<Slot>>>,
+    /// Which server serves a language under a root (the first that can run there).
+    chosen: Mutex<HashMap<(Lang, String), Option<usize>>>,
+    max_live: usize,
+    idle: Duration,
+    /// Dropped with the manager, which ends the reaper.
+    _reaper: Sender<()>,
+}
+
+/// The language servers of one host.
+#[derive(Clone)]
+pub struct LspManager {
+    inner: Arc<Inner>,
+}
+
+impl std::fmt::Debug for LspManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LspManager").field("servers", &self.inner.specs.iter().map(|s| s.id).collect::<Vec<_>>()).finish()
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Whether `MARLOWE_LSP` turns servers off.
+pub fn disabled_by_env() -> bool {
+    std::env::var("MARLOWE_LSP").is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "off" | "false" | "no"))
+}
+
+impl LspManager {
+    /// The installed servers ([`default_specs`]) over stdio; none when `MARLOWE_LSP` is off.
+    pub fn new() -> Self {
+        let specs = if disabled_by_env() { Vec::new() } else { default_specs() };
+        Self::with(Arc::new(StdioLauncher), specs)
+    }
+
+    /// No servers at all (the L0/L1 fallbacks answer).
+    pub fn disabled() -> Self {
+        Self::with(Arc::new(StdioLauncher), Vec::new())
+    }
+
+    /// `specs` started by `launcher` (tests pass the fake).
+    pub fn with(launcher: Arc<dyn Launch>, specs: Vec<ServerSpec>) -> Self {
+        Self::with_limits(launcher, specs, MAX_LIVE, IDLE_STOP)
+    }
+
+    pub fn with_limits(launcher: Arc<dyn Launch>, specs: Vec<ServerSpec>, max_live: usize, idle: Duration) -> Self {
+        let (tx, rx) = crossbeam_channel::bounded::<()>(0);
+        let inner = Arc::new(Inner {
+            launcher,
+            specs,
+            slots: Mutex::new(HashMap::new()),
+            chosen: Mutex::new(HashMap::new()),
+            max_live: max_live.max(1),
+            idle,
+            _reaper: tx,
+        });
+        let weak: Weak<Inner> = Arc::downgrade(&inner);
+        let tick = (idle / 4).clamp(Duration::from_millis(50), Duration::from_secs(30));
+        let _ = std::thread::Builder::new().name("lsp-reaper".into()).spawn(move || loop {
+            match rx.recv_timeout(tick) {
+                Err(RecvTimeoutError::Timeout) => match weak.upgrade() {
+                    Some(inner) => LspManager { inner }.reap(),
+                    None => return,
+                },
+                _ => return,
+            }
+        });
+        Self { inner }
+    }
+
+    /// Whether any server is configured.
+    pub fn enabled(&self) -> bool {
+        !self.inner.specs.is_empty()
+    }
+
+    /// The server for files of `lang` under `root`: the first configured one that can run there
+    /// (else the first configured one, whose start then says what is missing).
+    pub fn spec_for(&self, lang: Lang, root: &Path) -> Option<&ServerSpec> {
+        let key = (lang, norm_key(root));
+        let mut chosen = lock(&self.inner.chosen);
+        let i = *chosen.entry(key).or_insert_with(|| {
+            let serving: Vec<usize> = (0..self.inner.specs.len()).filter(|&i| self.inner.specs[i].serves(lang)).collect();
+            serving.iter().copied().find(|&i| self.inner.specs[i].launch_command(root).is_some()).or(serving.first().copied())
+        });
+        i.map(|i| &self.inner.specs[i])
+    }
+
+    fn key(spec: &ServerSpec, root: &Path) -> Key {
+        (spec.id, norm_key(root))
+    }
+
+    /// The running server for `path` under `root`, if it is up.
+    pub fn running(&self, path: &Path, root: &Path) -> Option<LspClient> {
+        let spec = self.spec_for(Lang::of(path)?, root)?;
+        let slot = lock(&self.inner.slots).get(&Self::key(spec, root)).cloned()?;
+        match slot.cell.get() {
+            Some(Ok(c)) if c.alive() => Some(c.clone()),
+            _ => None,
+        }
+    }
+
+    /// The server for `path` under `root`, started if it is not running.
+    pub fn client(&self, path: &Path, root: &Path) -> Result<LspClient, LspError> {
+        let lang = Lang::of(path).ok_or_else(|| LspError::NoServer(path.display().to_string()))?;
+        let spec = self.spec_for(lang, root).ok_or_else(|| LspError::NoServer(lang.name().to_string()))?.clone();
+        let key = Self::key(&spec, root);
+        let slot = {
+            let mut slots = lock(&self.inner.slots);
+            // A server that died is started again on demand.
+            if let Some(s) = slots.get(&key) {
+                if matches!(s.cell.get(), Some(Ok(c)) if !c.alive()) {
+                    slots.remove(&key);
+                }
+            }
+            if !slots.contains_key(&key) {
+                self.make_room(&mut slots);
+            }
+            slots.entry(key).or_default().clone()
+        };
+        let started = slot.cell.get_or_init(|| {
+            LspClient::start(self.inner.launcher.as_ref(), &spec, root, START_TIMEOUT).map_err(|e| e.to_string())
+        });
+        match started {
+            Ok(c) => {
+                c.touch();
+                Ok(c.clone())
+            }
+            Err(e) => Err(LspError::Start(e.clone())),
+        }
+    }
+
+    /// The server for an edited file: the running one, or a new one when the root has the
+    /// server's project marker (`Cargo.toml`, `pyproject.toml`, `package.json`, ...). An edit in
+    /// a stray folder never starts a server.
+    pub fn for_edit(&self, path: &Path, root: &Path) -> Option<LspClient> {
+        if let Some(c) = self.running(path, root) {
+            return Some(c);
+        }
+        let spec = self.spec_for(Lang::of(path)?, root)?;
+        if !spec.wanted_in(root) {
+            return None;
+        }
+        self.client(path, root).ok()
+    }
+
+    /// Stops the least recently used live servers until there is room for one more.
+    fn make_room(&self, slots: &mut HashMap<Key, Arc<Slot>>) {
+        loop {
+            let live: Vec<(Key, LspClient)> = slots
+                .iter()
+                .filter_map(|(k, s)| match s.cell.get() {
+                    Some(Ok(c)) => Some((k.clone(), c.clone())),
+                    _ => None,
+                })
+                .collect();
+            if live.len() < self.inner.max_live {
+                return;
+            }
+            let Some((key, victim)) = live.into_iter().max_by_key(|(_, c)| c.idle_for()) else { return };
+            slots.remove(&key);
+            stop_later(victim);
+        }
+    }
+
+    /// Stops servers idle longer than the idle limit, and forgets dead ones.
+    pub fn reap(&self) {
+        let mut slots = lock(&self.inner.slots);
+        let stale: Vec<Key> = slots
+            .iter()
+            .filter(|(_, s)| matches!(s.cell.get(), Some(Ok(c)) if !c.alive() || c.idle_for() >= self.inner.idle))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in stale {
+            if let Some(Ok(c)) = slots.remove(&k).and_then(|s| s.cell.get().cloned()) {
+                stop_later(c);
+            }
+        }
+    }
+
+    /// The servers running now.
+    pub fn live(&self) -> Vec<LspClient> {
+        lock(&self.inner.slots)
+            .values()
+            .filter_map(|s| match s.cell.get() {
+                Some(Ok(c)) if c.alive() => Some(c.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Stops every server and waits for them.
+    pub fn shutdown_all(&self) {
+        let all: Vec<LspClient> = lock(&self.inner.slots)
+            .drain()
+            .filter_map(|(_, s)| s.cell.get().and_then(|r| r.as_ref().ok()).cloned())
+            .collect();
+        for c in all {
+            c.shutdown();
+        }
+    }
+}
+
+impl Default for LspManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Shuts a server down off the caller's thread (the polite stop can take a couple of seconds).
+fn stop_later(c: LspClient) {
+    let _ = std::thread::Builder::new().name("lsp-stop".into()).spawn(move || c.shutdown());
+}
