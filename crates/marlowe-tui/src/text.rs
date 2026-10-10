@@ -10,6 +10,12 @@ pub fn clean(s: &str) -> String {
     prepared.replace('\t', "    ")
 }
 
+/// [`clean`], with any maths in it typeset to one line. For model- or user-written titles, which
+/// would otherwise put LaTeX source on screen. Not for commands or paths, where `$` is not maths.
+pub fn clean_maths(s: &str) -> String {
+    marlowe_surface::markdown::maths_one_line(&clean(s))
+}
+
 /// Display width of a string.
 pub fn width(s: &str) -> usize {
     UnicodeWidthStr::width(s)
@@ -35,6 +41,28 @@ pub fn truncate(s: &str, max: usize) -> String {
     }
     out.push('…');
     out
+}
+
+/// Truncates to `max` display columns from the left, starting with `…` when cut: for paths,
+/// whose tail is the part that names them.
+pub fn truncate_left(s: &str, max: usize) -> String {
+    if width(s) <= max {
+        return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut tail: Vec<char> = Vec::new();
+    let mut w = 0;
+    for c in s.chars().rev() {
+        let cw = c.width().unwrap_or(0);
+        if w + cw > max.saturating_sub(1) {
+            break;
+        }
+        tail.push(c);
+        w += cw;
+    }
+    std::iter::once('…').chain(tail.into_iter().rev()).collect()
 }
 
 /// Pads with spaces to exactly `w` columns (truncating if longer).
@@ -232,6 +260,8 @@ mod tests {
     #[test]
     fn truncate_and_pad() {
         assert_eq!(truncate("abcdef", 4), "abc…");
+        assert_eq!(truncate_left("C:/work/valiance", 9), "…valiance");
+        assert_eq!(truncate_left("short", 9), "short");
         assert_eq!(pad("ab", 4), "ab  ");
         assert_eq!(width(&pad("abcdef", 4)), 4);
     }

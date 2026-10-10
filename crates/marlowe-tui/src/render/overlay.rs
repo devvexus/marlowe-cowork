@@ -9,10 +9,19 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Widget};
 
-use super::{ink, put};
+use super::{hit, hovered, ink, put, put_row};
 use crate::input::palette_matches;
-use crate::state::{Approval, State, APPROVAL_CHOICES, APPROVAL_DETAIL_ROWS};
+use crate::state::{Approval, State, Target, APPROVAL_CHOICES, APPROVAL_DETAIL_ROWS};
 use crate::text;
+
+/// `› ` on the cursor's row (accent) or under the pointer (hover tone).
+fn row_marker(selected: bool, over: bool, theme: &Theme) -> Span<'static> {
+    match (selected, over) {
+        (true, _) => Span::styled("› ", ink(Ink::Accent, theme)),
+        (false, true) => Span::styled("› ", ink(Ink::Hover, theme)),
+        (false, false) => Span::raw("  "),
+    }
+}
 
 fn centred(area: Rect, w: u16, h: u16, top_bias: bool) -> Rect {
     let w = w.min(area.width.saturating_sub(4));
@@ -23,6 +32,16 @@ fn centred(area: Rect, w: u16, h: u16, top_bias: bool) -> Rect {
         area.y + area.height.saturating_sub(h) / 2
     };
     Rect { x: area.x + area.width.saturating_sub(w) / 2, y, width: w, height: h }
+}
+
+/// Key hints on a panel's bottom border, at the right.
+fn panel_hints(r: Rect, items: &[(&str, &str)], theme: &Theme, buf: &mut Buffer) {
+    let l = super::hints(items, theme);
+    let l = Line::from([vec![Span::raw(" ")], l.spans, vec![Span::raw(" ")]].concat());
+    let w = l.width() as u16;
+    if w + 4 <= r.width {
+        put(buf, r.right().saturating_sub(w + 2), r.bottom().saturating_sub(1), &l, w);
+    }
 }
 
 fn panel(r: Rect, title: &str, border: ratatui::style::Style, double: bool, buf: &mut Buffer) -> Rect {
@@ -37,7 +56,7 @@ fn panel(r: Rect, title: &str, border: ratatui::style::Style, double: bool, buf:
 }
 
 /// Recedes everything already drawn: a foreground rewrite to the dimmest weight, never a fill.
-fn scrim(area: Rect, theme: &Theme, buf: &mut Buffer) {
+pub(crate) fn scrim(area: Rect, theme: &Theme, buf: &mut Buffer) {
     let fg = Ink::Dimmer.color(theme);
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
@@ -56,6 +75,8 @@ pub fn approval(area: Rect, state: &State, a: &Approval, theme: &Theme, buf: &mu
     let dimmer = ink(Ink::Dimmer, theme);
     let w: u16 = 78;
     let tw = (w - 4) as usize;
+    // A server restart is allowed once or denied: never "for this session".
+    let once_only = a.tool == marlowe_proto::SERVER_RESTART_TOOL;
 
     let detail = a.detail_lines();
     let top = state.approval_scroll.min(a.detail_scroll_max());
@@ -84,11 +105,14 @@ pub fn approval(area: Rect, state: &State, a: &Approval, theme: &Theme, buf: &mu
     if let Some(run) = &a.run {
         // A crew run asks: say which, so the request is read against its goal.
         let who = match state.crew.get(run) {
-            Some(r) => format!("from the crew · {} · {}", text::clean(&r.role), text::clean(&r.title)),
+            Some(r) => format!("from the crew · {} · {}", text::clean(&r.role), text::clean_maths(&r.title)),
             None => format!("from crew run {}", run.short()),
         };
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(text::truncate(&who, tw), ink(Ink::Accent, theme))));
+    } else if once_only {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("from the context planner · every Ollama model is affected", amber)));
     } else if state.session.as_ref() != Some(&a.session) {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled("from another session", dimmer)));
@@ -97,21 +121,34 @@ pub fn approval(area: Rect, state: &State, a: &Approval, theme: &Theme, buf: &mu
     let labels = ["allow", "allow for session", "deny"];
     let keys = ["y", "a", "n"];
     let mut choice = Vec::new();
+    // Each button's column span in the row, for the mouse.
+    let mut buttons: Vec<(usize, u16, u16)> = Vec::new();
+    let mut x = 0u16;
     for (i, (label, key)) in labels.iter().zip(keys).enumerate() {
+        if once_only && i == 1 {
+            continue;
+        }
         let sel = i == state.approval_sel;
         let allowed = APPROVAL_CHOICES[i].is_allowed();
-        let marker = if sel { "› " } else { "  " };
+        let over = hovered(state, &Target::Button(i)) && !(allowed && !state.approval_read);
+        let marker = if sel || over { "› " } else { "  " };
+        let marker_style = if sel { ink(Ink::Accent, theme) } else { ink(Ink::Hover, theme) };
         let style = match (sel, allowed) {
             (_, true) if !state.approval_read => dimmer,
             (true, true) => ink(Ink::Accent, theme).add_modifier(Modifier::BOLD),
             (true, false) => ink(Ink::Red, theme).add_modifier(Modifier::BOLD),
+            (false, _) if over => theme.bright(),
             (false, _) => theme.normal(),
         };
-        choice.push(Span::styled(marker, ink(Ink::Accent, theme)));
+        let w = (2 + key.len() + 1 + text::width(label)) as u16;
+        buttons.push((i, x, w));
+        x += w + 6;
+        choice.push(Span::styled(marker, marker_style));
         choice.push(Span::styled(format!("{key} "), dimmer));
         choice.push(Span::styled(*label, style));
         choice.push(Span::raw("      "));
     }
+    let buttons_row = lines.len();
     lines.push(Line::from(choice));
     if !state.approval_read {
         lines.push(Line::from(Span::styled("read the whole request (↓ / PgDn) to enable allow", amber)));
@@ -126,13 +163,20 @@ pub fn approval(area: Rect, state: &State, a: &Approval, theme: &Theme, buf: &mu
     for (i, l) in lines.iter().enumerate().take(inner.height as usize) {
         put(buf, inner.x, inner.y + i as u16, l, inner.width);
     }
+    if buttons_row < inner.height as usize {
+        for (i, bx, bw) in buttons {
+            let rect = Rect { x: inner.x + bx, y: inner.y + buttons_row as u16, width: bw, height: 1 };
+            hit(state, rect.intersection(inner), Target::Button(i));
+        }
+    }
 }
 
-pub fn palette(area: Rect, query: &str, sel: usize, theme: &Theme, buf: &mut Buffer) {
+pub fn palette(area: Rect, state: &State, query: &str, sel: usize, theme: &Theme, buf: &mut Buffer) {
     let matches = palette_matches(query);
     let h = matches.len().max(1) as u16 + 4;
     let r = centred(area, 60, h, true);
     let inner = panel(r, "palette", ink(Ink::Accent, theme), false, buf);
+    panel_hints(r, &[("↑↓", "select"), ("↵", "run"), ("esc", "close")], theme, buf);
     let q = if query.is_empty() {
         Line::from(vec![Span::styled("› ", ink(Ink::Accent, theme)), Span::styled("type a command", ink(Ink::Dimmer, theme))])
     } else {
@@ -150,21 +194,16 @@ pub fn palette(area: Rect, query: &str, sel: usize, theme: &Theme, buf: &mut Buf
             break;
         }
         let label_style = if selected { ink(Ink::Accent, theme).add_modifier(Modifier::BOLD) } else { theme.normal() };
-        let marker = if selected { Span::styled("› ", ink(Ink::Accent, theme)) } else { Span::raw("  ") };
+        let marker = row_marker(selected, hovered(state, &Target::Row(i)), theme);
         let chord = cmd.chord();
         let gap = (inner.width as usize).saturating_sub(2 + text::width(cmd.label()) + text::width(chord));
-        put(
-            buf,
-            inner.x,
-            y,
-            &Line::from(vec![
-                marker,
-                Span::styled(cmd.label(), label_style),
-                Span::raw(" ".repeat(gap)),
-                Span::styled(chord, ink(Ink::Dimmer, theme)),
-            ]),
-            inner.width,
-        );
+        let line = Line::from(vec![
+            marker,
+            Span::styled(cmd.label(), label_style),
+            Span::raw(" ".repeat(gap)),
+            Span::styled(chord, ink(Ink::Dimmer, theme)),
+        ]);
+        put_row(state, buf, (inner.x, y, inner.width), line, Target::Row(i), theme);
     }
 }
 
@@ -172,6 +211,7 @@ pub fn sessions(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut 
     let n = state.sessions.as_ref().map_or(1, |s| s.len().max(1));
     let r = centred(area, 96, n as u16 + 4, true);
     let inner = panel(r, "sessions", ink(Ink::Accent, theme), false, buf);
+    panel_hints(r, &[("↑↓", "select"), ("↵", "open"), ("esc/⌫", "close")], theme, buf);
     let dim = ink(Ink::Dim, theme);
     let dimmer = ink(Ink::Dimmer, theme);
     let Some(list) = &state.sessions else {
@@ -187,9 +227,9 @@ pub fn sessions(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut 
     for (i, s) in list.iter().enumerate().skip(first).take(rows) {
         let selected = i == sel;
         let current = state.session.as_ref() == Some(&s.id);
-        let marker = if selected { Span::styled("› ", ink(Ink::Accent, theme)) } else { Span::raw("  ") };
+        let marker = row_marker(selected, hovered(state, &Target::Row(i)), theme);
         let title_style = if selected { theme.bright() } else { theme.normal() };
-        let title = if s.title.trim().is_empty() { "untitled".to_string() } else { text::clean(&s.title) };
+        let title = if s.title.trim().is_empty() { "untitled".to_string() } else { text::clean_maths(&s.title) };
         let ws = s.workspace.as_deref().map(text::short_path).unwrap_or_default();
         let mut spans = vec![
             marker,
@@ -201,12 +241,13 @@ pub fn sessions(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut 
         if current {
             spans.push(Span::styled("  open", ink(Ink::Speech, theme)));
         }
-        put(buf, inner.x, inner.y + (i - first) as u16, &Line::from(spans), inner.width);
+        put_row(state, buf, (inner.x, inner.y + (i - first) as u16, inner.width), Line::from(spans), Target::Row(i), theme);
     }
 }
 
 pub fn model_picker(r: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut Buffer) {
     let inner = panel(r, "conductor", ink(Ink::Accent, theme), false, buf);
+    panel_hints(r, &[("↵", "choose"), ("c", "context"), ("esc/⌫", "close")], theme, buf);
     let current = state.library.conductor();
     for (i, m) in state.library.models.iter().enumerate() {
         let y = inner.y + i as u16;
@@ -214,7 +255,7 @@ pub fn model_picker(r: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut
             return;
         }
         let selected = i == sel;
-        let marker = if selected { Span::styled("› ", ink(Ink::Accent, theme)) } else { Span::raw("  ") };
+        let marker = row_marker(selected, hovered(state, &Target::Row(i)), theme);
         let name_style = if selected { theme.bright() } else { theme.normal() };
         let mut spans = vec![
             marker,
@@ -224,19 +265,26 @@ pub fn model_picker(r: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut
         if current.as_ref() == Some(&m.model) {
             spans.push(Span::styled("  ✓", ink(Ink::Speech, theme)));
         }
-        put(buf, inner.x, y, &Line::from(spans), inner.width);
+        // Each model's window, right-aligned: what its agents get at most.
+        let window = state.context.model(&m.model).map(|c| c.max_ctx).or(m.info.context_window);
+        if let Some(wn) = window {
+            let label = marlowe_proto::ctx_label(wn);
+            let used = Line::from(spans.clone()).width();
+            let gap = (inner.width as usize).saturating_sub(used + text::width(&label));
+            if gap >= 2 {
+                spans.push(Span::raw(" ".repeat(gap)));
+                spans.push(Span::styled(label, ink(Ink::Dim, theme)));
+            }
+        }
+        put_row(state, buf, (inner.x, y, inner.width), Line::from(spans), Target::Row(i), theme);
     }
-    let y = inner.y + state.library.models.len() as u16;
+    let n = state.library.models.len();
+    let y = inner.y + n as u16;
     if y < inner.bottom() {
-        let selected = sel >= state.library.models.len();
-        let marker = if selected { Span::styled("› ", ink(Ink::Accent, theme)) } else { Span::raw("  ") };
-        put(
-            buf,
-            inner.x,
-            y,
-            &Line::from(vec![marker, Span::styled("open the library…", ink(Ink::Dim, theme))]),
-            inner.width,
-        );
+        let selected = sel >= n;
+        let marker = row_marker(selected, hovered(state, &Target::Row(n)), theme);
+        let line = Line::from(vec![marker, Span::styled("open the library…", ink(Ink::Dim, theme))]);
+        put_row(state, buf, (inner.x, y, inner.width), line, Target::Row(n), theme);
     }
 }
 
@@ -252,15 +300,27 @@ pub fn import_offer(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &
         put(buf, inner.x, inner.y + i as u16, &Line::from(Span::styled(l.clone(), theme.normal())), inner.width);
     }
     let mut spans = Vec::new();
+    let y = inner.y + body.len() as u16 + 1;
+    let mut x = inner.x;
     for (i, (key, label)) in [("y", "Yes"), ("n", "Not now")].into_iter().enumerate() {
         let on = i == sel;
-        let style = if on { ink(Ink::Accent, theme).add_modifier(Modifier::BOLD) } else { theme.normal() };
-        spans.push(Span::styled(if on { "\u{203a} " } else { "  " }, ink(Ink::Accent, theme)));
+        let over = hovered(state, &Target::Button(i));
+        let style = match (on, over) {
+            (true, _) => ink(Ink::Accent, theme).add_modifier(Modifier::BOLD),
+            (false, true) => theme.bright(),
+            (false, false) => theme.normal(),
+        };
+        spans.push(row_marker(on, over, theme));
         spans.push(Span::styled(format!("{key} "), ink(Ink::Dimmer, theme)));
         spans.push(Span::styled(label, style));
         spans.push(Span::raw("      "));
+        let w = (2 + key.len() + 1 + label.len()) as u16;
+        if y < inner.bottom() {
+            hit(state, Rect { x, y, width: w, height: 1 }.intersection(inner), Target::Button(i));
+        }
+        x += w + 6;
     }
-    put(buf, inner.x, inner.y + body.len() as u16 + 1, &Line::from(spans), inner.width);
+    put(buf, inner.x, y, &Line::from(spans), inner.width);
 }
 
 /// First-run onboarding. Returns where the cursor goes on the name step.
@@ -362,4 +422,64 @@ pub fn onboard(area: Rect, state: &State, theme: &Theme, buf: &mut Buffer) -> Op
         put(buf, inner.x, inner.y + i as u16, l, inner.width);
     }
     cursor_row.map(|(row, col)| (inner.x + 2 + col as u16, inner.y + row as u16))
+}
+
+/// The workspace dropdown under the Workspace box: a path field, then the known directories.
+/// Returns the cursor position in the field.
+pub fn workspace_picker(r: Rect, state: &State, query: &str, sel: usize, theme: &Theme, buf: &mut Buffer) -> Option<(u16, u16)> {
+    let inner = panel(r, "workspace", ink(Ink::Accent, theme), false, buf);
+    if inner.height == 0 {
+        return None;
+    }
+    let dim = ink(Ink::Dim, theme);
+    let dimmer = ink(Ink::Dimmer, theme);
+    let field = if query.is_empty() {
+        Span::styled("type a path, or pick one", dimmer)
+    } else {
+        Span::styled(text::clean(query), theme.normal())
+    };
+    put(buf, inner.x, inner.y, &Line::from(vec![Span::styled("› ", ink(Ink::Accent, theme)), field]), inner.width);
+    let choices = state.workspace_choices(query);
+    if choices.is_empty() {
+        put(buf, inner.x + 2, inner.y + 2, &Line::from(Span::styled("nothing matches — type a full path", dim)), inner.width);
+    }
+    let roots: Vec<String> = state
+        .wake
+        .watch
+        .iter()
+        .flat_map(|w| w.roots.iter().map(|r| crate::wake::norm(&r.path)))
+        .collect();
+    let current = state.shown_workspace().map(crate::wake::norm);
+    for (i, p) in choices.iter().enumerate() {
+        let y = inner.y + 2 + i as u16;
+        if y >= inner.bottom() {
+            break;
+        }
+        let n = crate::wake::norm(p);
+        let tag = if current.as_deref() == Some(n.as_str()) {
+            "current"
+        } else if roots.contains(&n) {
+            "watched"
+        } else if state.launch_workspace.as_deref().map(crate::wake::norm).as_deref() == Some(n.as_str()) {
+            "launch dir"
+        } else {
+            ""
+        };
+        let on = i == sel;
+        let room = (inner.width as usize).saturating_sub(4 + text::width(tag));
+        let mut spans = vec![
+            row_marker(on, hovered(state, &Target::Row(i)), theme),
+            Span::styled(
+                text::truncate_left(&text::short_path(&text::clean(p)), room),
+                if on { theme.bright() } else { theme.normal() },
+            ),
+        ];
+        if !tag.is_empty() {
+            spans.push(Span::styled(format!("  {tag}"), dimmer));
+        }
+        put_row(state, buf, (inner.x, y, inner.width), Line::from(spans), Target::Row(i), theme);
+    }
+    panel_hints(r, &[("↵", "choose"), ("esc", "close")], theme, buf);
+    let col = text::width(&text::clean(query)).min(inner.width.saturating_sub(3) as usize) as u16;
+    Some((inner.x + 2 + col, inner.y))
 }

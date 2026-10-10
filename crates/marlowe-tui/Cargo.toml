@@ -9,6 +9,8 @@ description = "The terminal client: Conversation + Situation Board, Library, app
 marlowe-model.workspace = true
 marlowe-proto.workspace = true
 marlowe-surface.workspace = true
+# Asking the terminal what it can show, before the input thread starts.
+marlowe-os.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 crossbeam-channel.workspace = true

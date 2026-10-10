@@ -8,9 +8,9 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::{ink, put};
-use crate::library::{LibFocus, LibStep, Library};
-use crate::state::State;
+use super::{hovered, ink, put, put_row};
+use crate::library::{LibFocus, LibStep, Library, OverviewRow};
+use crate::state::{State, Target};
 use crate::text;
 
 /// The content area inside the main frame.
@@ -26,34 +26,45 @@ fn content(main: Rect) -> Rect {
 pub fn draw(main: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     let lib = &state.library;
     let c = content(main);
-    let hints: Vec<(&str, &str)> = match &lib.step {
+    // The hints name what ↵ does on the row under the cursor, and how to leave.
+    let hints: Vec<(&str, String)> = match &lib.step {
         LibStep::Overview if !lib.has_models() => {
             empty(c, state, theme, buf);
-            vec![("↵", "add a model"), ("esc", "back")]
+            vec![("↵", "add a model".into()), ("esc/⌫", "back".into())]
         }
         LibStep::Overview => {
-            overview(c, lib, theme, buf);
-            vec![
-                ("↑↓", "select"),
-                ("←→", "model"),
-                ("e", "effort"),
-                ("tab", "slots / models"),
-                ("a", "add"),
-                ("d", "remove"),
-                ("esc", "back"),
-            ]
+            overview(c, state, theme, buf);
+            let enter = lib.enter_action();
+            match lib.overview_row() {
+                OverviewRow::Slot(_) => vec![
+                    ("↵", enter),
+                    ("←→", "model".into()),
+                    ("↑↓", "move".into()),
+                    ("a", "add a model".into()),
+                    ("esc/⌫", "back".into()),
+                ],
+                OverviewRow::Model(_) => vec![
+                    ("↵", enter),
+                    ("c", "context".into()),
+                    ("d", "remove".into()),
+                    ("↑↓", "move".into()),
+                    ("a", "add a model".into()),
+                    ("esc/⌫", "back".into()),
+                ],
+                OverviewRow::Add => vec![("↵", enter), ("↑↓", "move".into()), ("esc/⌫", "back".into())],
+            }
         }
         LibStep::Providers { sel } => {
-            providers(c, lib, *sel, theme, buf);
-            vec![("↑↓", "select"), ("↵", "choose"), ("esc", "back")]
+            providers(c, state, *sel, theme, buf);
+            vec![("↑↓", "select".into()), ("↵", "choose".into()), ("esc/⌫", "back".into())]
         }
         LibStep::Key { provider, input } => {
             key_entry(c, *provider, input.len(), theme, buf);
-            vec![("↵", "save and continue"), ("^u", "clear"), ("esc", "back")]
+            vec![("↵", "save and continue".into()), ("^u", "clear".into()), ("esc", "back".into())]
         }
         LibStep::Catalog { provider, query, sel } => {
-            catalog(c, lib, *provider, query, *sel, theme, buf);
-            vec![("type", "to search"), ("↑↓", "select"), ("↵", "add to library"), ("esc", "back")]
+            catalog(c, state, *provider, query, *sel, theme, buf);
+            vec![("type", "to search".into()), ("↑↓", "select".into()), ("↵", "add to library".into()), ("esc", "back".into())]
         }
     };
     let mut spans = vec![Span::raw(" ")];
@@ -96,12 +107,14 @@ fn heading(title: &str, sub: &str, theme: &Theme) -> Line<'static> {
     Line::from(spans)
 }
 
-fn centred(r: Rect, lines: &[Line], buf: &mut Buffer) {
+/// Draws `lines` centred in `r`; returns the first row.
+fn centred(r: Rect, lines: &[Line], buf: &mut Buffer) -> u16 {
     let top = r.y + r.height.saturating_sub(lines.len() as u16) * 2 / 5;
     for (i, l) in lines.iter().enumerate() {
         let w = l.width() as u16;
         put(buf, r.x + r.width.saturating_sub(w) / 2, top + i as u16, l, r.width);
     }
+    top
 }
 
 fn empty(c: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
@@ -128,11 +141,15 @@ fn empty(c: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
         lines.push(Line::from(""));
     }
     lines.push(Line::from(""));
+    let button = lines.len();
     lines.push(Line::from(vec![
         Span::styled("↵", ink(Ink::Accent, theme)),
         Span::styled(" add a model", dim),
     ]));
-    centred(c, &lines, buf);
+    let top = centred(c, &lines, buf);
+    let w = lines[button].width() as u16;
+    let x = c.x + c.width.saturating_sub(w) / 2;
+    put_row(state, buf, (x, top + button as u16, w), lines[button].clone(), Target::AddModel, theme);
 }
 
 fn row_marker(selected: bool, focused: bool, theme: &Theme) -> Span<'static> {
@@ -143,7 +160,16 @@ fn row_marker(selected: bool, focused: bool, theme: &Theme) -> Span<'static> {
     }
 }
 
-fn overview(c: Rect, lib: &Library, theme: &Theme, buf: &mut Buffer) {
+/// The marker for a row that may be under the pointer: the cursor's wins, then the hover tone.
+fn marker(selected: bool, focused: bool, over: bool, theme: &Theme) -> Span<'static> {
+    if over && !(selected && focused) {
+        return Span::styled("› ", ink(Ink::Hover, theme));
+    }
+    row_marker(selected, focused, theme)
+}
+
+fn overview(c: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
+    let lib = &state.library;
     let dim = ink(Ink::Dim, theme);
     let dimmer = ink(Ink::Dimmer, theme);
     let mut y = c.y;
@@ -170,8 +196,9 @@ fn overview(c: Rect, lib: &Library, theme: &Theme, buf: &mut Buffer) {
         };
         let levels = row.model.as_ref().and_then(|m| lib.info(m)).map(|i| i.effort_levels.len()).unwrap_or(0);
         let effort = if levels == 0 { "—".to_string() } else { row.effort.to_string() };
+        let over = hovered(state, &Target::Slot(i));
         let mut spans = vec![
-            row_marker(selected, slots_focus, theme),
+            marker(selected, slots_focus, over, theme),
             Span::styled(text::pad(&row.slot.label(), 20), label_style),
             Span::styled(text::pad(&model, 34), theme.normal()),
             Span::styled(text::pad(&provider, 14), dim),
@@ -180,14 +207,15 @@ fn overview(c: Rect, lib: &Library, theme: &Theme, buf: &mut Buffer) {
         if row.inherited {
             spans.push(Span::styled("default", dimmer));
         }
-        put(buf, c.x, y, &Line::from(spans), c.width);
+        put_row(state, buf, (c.x, y, c.width), Line::from(spans), Target::Slot(i), theme);
         y += 1;
     }
 
     y += 2;
     let models_focus = lib.focus == LibFocus::Models;
     let n = lib.models.len();
-    put(buf, c.x, y, &heading("MODELS", &format!("{n} in the library"), theme), c.width);
+    let sub = if n == 1 { "1 in the library · the default for every slot".to_string() } else { format!("{n} in the library") };
+    put(buf, c.x, y, &heading("MODELS", &sub, theme), c.width);
     y += 2;
     put(
         buf,
@@ -198,7 +226,7 @@ fn overview(c: Rect, lib: &Library, theme: &Theme, buf: &mut Buffer) {
                 "{}{}{}{}{}",
                 text::pad("model", 34),
                 text::pad("provider", 14),
-                text::pad("context", 10),
+                text::pad("window", 16),
                 text::pad("price / Mtok", 18),
                 "can"
             ),
@@ -207,21 +235,43 @@ fn overview(c: Rect, lib: &Library, theme: &Theme, buf: &mut Buffer) {
         c.width,
     );
     y += 1;
-    let room = c.bottom().saturating_sub(y) as usize;
-    let first = lib.model_sel.saturating_sub(room.saturating_sub(1));
+    // One row stays for "add another model".
+    let room = c.bottom().saturating_sub(y + 1) as usize;
+    let first = lib.model_sel.min(lib.models.len().saturating_sub(1)).saturating_sub(room.saturating_sub(1));
     for (i, m) in lib.models.iter().enumerate().skip(first).take(room) {
         let selected = i == lib.model_sel;
         let name_style = if selected && models_focus { theme.bright() } else { theme.normal() };
+        let over = hovered(state, &Target::Model(i));
+        // The window column: the saved policy (`46k · q8 · 1×`), else the window requests use.
+        let window = match state.context.model(&m.model) {
+            Some(mc) => match &mc.policy {
+                Some(p) => marlowe_proto::policy_label(p),
+                None => marlowe_proto::ctx_label(mc.max_ctx),
+            },
+            None => context(&m.info),
+        };
+        let ctx_target = Target::ModelCtx(i);
+        let wstyle = if hovered(state, &ctx_target) { ink(Ink::Hover, theme) } else { dim };
         let spans = vec![
-            row_marker(selected, models_focus, theme),
+            marker(selected, models_focus, over, theme),
             Span::styled(text::pad(&text::short_model(&m.model, Some(&m.info)), 34), name_style),
             Span::styled(text::pad(m.model.provider.display_name(), 14), dim),
-            Span::styled(text::pad(&context(&m.info), 10), dim),
+            Span::styled(text::pad(&window, 16), wstyle),
             Span::styled(text::pad(&pricing(&m.info), 18), dim),
             Span::styled(abilities(&m.info), dimmer),
         ];
-        put(buf, c.x, y, &Line::from(spans), c.width);
+        put_row(state, buf, (c.x, y, c.width), Line::from(spans), Target::Model(i), theme);
+        // The window cell opens the planner; recorded after the row so it wins the pointer.
+        super::hit(state, Rect { x: c.x + 2 + 34 + 14, y, width: 16, height: 1 }, ctx_target);
         y += 1;
+    }
+    if y < c.bottom() {
+        let selected = lib.overview_row() == OverviewRow::Add;
+        let over = hovered(state, &Target::AddModel);
+        let label = if lib.models.is_empty() { "+ add a model" } else { "+ add another model" };
+        let style = if selected { theme.bright() } else { ink(Ink::Dim, theme) };
+        let line = Line::from(vec![marker(selected, models_focus, over, theme), Span::styled(label, style)]);
+        put_row(state, buf, (c.x, y, c.width), line, Target::AddModel, theme);
     }
 }
 
@@ -248,7 +298,8 @@ fn abilities(i: &ModelInfo) -> String {
     v.join(" · ")
 }
 
-fn providers(c: Rect, lib: &Library, sel: usize, theme: &Theme, buf: &mut Buffer) {
+fn providers(c: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut Buffer) {
+    let lib = &state.library;
     let dim = ink(Ink::Dim, theme);
     let dimmer = ink(Ink::Dimmer, theme);
     put(buf, c.x, c.y, &heading("ADD A MODEL", "choose a provider", theme), c.width);
@@ -262,7 +313,8 @@ fn providers(c: Rect, lib: &Library, sel: usize, theme: &Theme, buf: &mut Buffer
             (true, true) => theme.bright(),
             (true, false) => theme.normal(),
         };
-        let mut spans = vec![row_marker(selected && avail, true, theme), Span::styled(text::pad(kind.display_name(), 16), name_style)];
+        let over = avail && hovered(state, &Target::Row(i));
+        let mut spans = vec![marker(selected && avail, true, over, theme), Span::styled(text::pad(kind.display_name(), 16), name_style)];
         if !avail {
             spans.push(Span::styled("coming soon", dimmer));
         } else {
@@ -278,7 +330,11 @@ fn providers(c: Rect, lib: &Library, sel: usize, theme: &Theme, buf: &mut Buffer
             spans.push(Span::styled(text::pad(&text::clean(&note), 46), dim));
             spans.push(Span::styled(if kind.is_local() { "runs on this machine" } else { "hosted" }, dimmer));
         }
-        put(buf, c.x, y, &Line::from(spans), c.width);
+        if avail {
+            put_row(state, buf, (c.x, y, c.width), Line::from(spans), Target::Row(i), theme);
+        } else {
+            put(buf, c.x, y, &Line::from(spans), c.width);
+        }
         y += 2;
     }
 }
@@ -313,7 +369,8 @@ fn key_entry(c: Rect, provider: ProviderKind, len: usize, theme: &Theme, buf: &m
     put(buf, c.x + 2, c.y + 6, &Line::from(spans), c.width);
 }
 
-fn catalog(c: Rect, lib: &Library, provider: ProviderKind, query: &str, sel: usize, theme: &Theme, buf: &mut Buffer) {
+fn catalog(c: Rect, state: &State, provider: ProviderKind, query: &str, sel: usize, theme: &Theme, buf: &mut Buffer) {
+    let lib: &Library = &state.library;
     let dim = ink(Ink::Dim, theme);
     let dimmer = ink(Ink::Dimmer, theme);
     let rows = lib.filtered_catalog(query);
@@ -358,8 +415,9 @@ fn catalog(c: Rect, lib: &Library, provider: ProviderKind, query: &str, sel: usi
         let selected = i == sel;
         let added = lib.in_library(provider, &m.id);
         let name_style: Style = if selected { theme.bright() } else { theme.normal() };
+        let over = hovered(state, &Target::Row(i));
         let mut spans = vec![
-            row_marker(selected, true, theme),
+            marker(selected, true, over, theme),
             Span::styled(text::pad(&text::clean(&m.id), 46), name_style),
             Span::styled(text::pad(&context(m), 10), dim),
             Span::styled(text::pad(&pricing(m), 18), dim),
@@ -368,6 +426,6 @@ fn catalog(c: Rect, lib: &Library, provider: ProviderKind, query: &str, sel: usi
         if added {
             spans.push(Span::styled("in library", ink(Ink::Green, theme)));
         }
-        put(buf, c.x, y0 + 1 + (i - first) as u16, &Line::from(spans), c.width);
+        put_row(state, buf, (c.x, y0 + 1 + (i - first) as u16, c.width), Line::from(spans), Target::Row(i), theme);
     }
 }

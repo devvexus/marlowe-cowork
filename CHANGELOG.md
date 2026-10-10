@@ -4,6 +4,20 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### TUI polish after first use
+
+- **Fixed.** The Library with one model said nothing about what to do: the cursor now runs down the slots, the models and a new "+ add another model" row; the border hints name what ↵ does on the row (`effort medium → high`, `keep as conductor`, `add another model`); Esc, and Backspace where nothing is typed, go back one level in every view and picker; j/k move in plain lists.
+- **Added.** Hover and click everywhere. The renderer records where each target was drawn (`State::hits`); motion sets `State::hover` and the loop redraws only when it changes. A hovered box takes the theme's hover tone (focus keeps the accent); rows, tabs and footer chords brighten their foreground. Clickable: Model/Workspace boxes, board tabs and stacked sections, crew runs (open the Run view), watched runs and notices (open Watch at their root), footer chords, the header summary, Library/Watch/Memory/crew/picker/palette/session rows, approval and import buttons, the Run view's steer line.
+- **Added.** The header row: `* marlowe — <session>` and a live summary (`3 runs · 1 needs you · 2 new`). The window title follows the session (OSC 2, saved and restored with XTWINOPS 22/23).
+- **Added.** The terminal's default background is set to `#0f0e14` (OSC 11) at start and reset (OSC 111) on every exit: quit, error, panic hook, and console close/Ctrl-Break via `marlowe-os::console::on_interrupt`. Cells still carry no background. `MARLOWE_KEEP_TERMINAL_BG=1` leaves it alone. It is set before the maths image probe, so images blend onto it.
+- **Added.** The Run view's research stage strip (Plan → Explore → Compress → Corroborate → Verify → Synthesise) with source, claim, root and citation counts from `ResearchProgress`; runs without progress show the plain transcript.
+
+### TUI layout: the old harness's boxes
+
+- **Changed.** The conversation screen is drawn in titled, rounded boxes — Conversation `(c)`, Message `(i)`, Model `(m)`, Workspace `(w)` and the Situation Board — with the hotkey on each bottom border and an accent border on the box that has the keys (`Theme::region_styles`, no fills). The board takes 3/10 of the width (38–72 columns). When it has the height it stacks Crew `(1)`, Watch `(2)`, Threads `(3)` and Memory `(4)` in their own boxes. Otherwise it shows one box with a numbered tab strip. Today (date, quiet hours, clock) and the most-used chords share a one-line footer; a chord that does not fit is in the ^k palette. The presence meter sits on the Conversation box's top border, with the turn's elapsed time.
+- **Added.** The focus model: Esc (when nothing is running) or Tab hands the keys to the boxes. From there `c i m w 1–4` jump, ↵ acts, and any other letter goes back to the Message box and is typed. Alt-1..4 switches the board section from the Message box, and alt-v toggles the voice. A workspace picker (`w`) offers a typed path, the launch directory, recent sessions' workspaces and watched roots. Choosing a new workspace while a session is open starts a new session there. The Memory section shows the store size and this session's recalls.
+- **Changed.** Tab in the Message box moves focus instead of inserting four spaces. Paste still keeps indentation.
+
 ### M4 Crew
 
 - **Added.** `marlowe-os`, the only crate with `unsafe`:

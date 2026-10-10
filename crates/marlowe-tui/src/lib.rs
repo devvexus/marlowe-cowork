@@ -14,6 +14,7 @@ pub mod client;
 pub mod composer;
 pub mod crew;
 mod input;
+mod osc;
 pub mod library;
 pub mod memory;
 pub mod onboard;

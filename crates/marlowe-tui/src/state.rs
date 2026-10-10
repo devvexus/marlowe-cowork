@@ -3,7 +3,7 @@
 //! `input.rs`. Handlers return the requests to send, so the whole client is testable without a
 //! socket or a terminal.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use marlowe_model::{Part, Role, Usage};
 use marlowe_proto::{
@@ -110,12 +110,120 @@ pub enum View {
     Crew,
 }
 
+/// Which box on the conversation screen the keys go to. Reading order is `Tab` order.
+///
+/// Plain letters are text while the Message box has focus; anywhere else they are the boxes'
+/// hotkeys (the `(c)`, `(i)`, `(m)`, `(w)`, `(1)`… on their borders). Ctrl chords never depend on
+/// focus, and a letter that is not a hotkey goes back to the Message box and is typed there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Focus {
+    Conversation,
+    #[default]
+    Message,
+    Model,
+    Workspace,
+    /// The Situation Board; which section is `State::board_tab`.
+    Board,
+}
+
+impl Focus {
+    pub const ORDER: [Focus; 5] = [Focus::Conversation, Focus::Message, Focus::Model, Focus::Workspace, Focus::Board];
+
+    pub fn next(self) -> Focus {
+        let i = Self::ORDER.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ORDER[(i + 1) % Self::ORDER.len()]
+    }
+
+    pub fn prev(self) -> Focus {
+        let i = Self::ORDER.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ORDER[(i + Self::ORDER.len() - 1) % Self::ORDER.len()]
+    }
+}
+
+/// The Situation Board's sections, numbered as their hotkeys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BoardTab {
+    #[default]
+    Crew,
+    Watch,
+    Threads,
+    Memory,
+}
+
+impl BoardTab {
+    pub const ALL: [BoardTab; 4] = [BoardTab::Crew, BoardTab::Watch, BoardTab::Threads, BoardTab::Memory];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BoardTab::Crew => "Crew",
+            BoardTab::Watch => "Watch",
+            BoardTab::Threads => "Threads",
+            BoardTab::Memory => "Memory",
+        }
+    }
+
+    /// `'1'`..=`'4'`.
+    pub fn key(self) -> char {
+        (b'1' + self.index() as u8) as char
+    }
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|t| *t == self).unwrap_or(0)
+    }
+
+    pub fn from_key(c: char) -> Option<BoardTab> {
+        c.to_digit(10).and_then(|d| Self::ALL.get((d as usize).checked_sub(1)?).copied())
+    }
+}
+
+/// Something on screen the pointer can light and click. The renderer records where each one was
+/// drawn ([`State::hits`]); the mouse handler looks the pointer up there, so a click always lands
+/// on what the user saw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    /// A box on the conversation screen.
+    Box(Focus),
+    /// A board section: its tab label (tabbed) or its whole box (stacked).
+    Tab(BoardTab),
+    /// A crew run, on the board or in the run list: opens its Run view.
+    Run(RunId),
+    /// A watched run or notice on the board, by path: opens Watch at the root that holds it.
+    Watched(String),
+    /// A footer chord: runs its command.
+    Chord(Command),
+    /// The footer's `^k palette`.
+    Palette,
+    /// The header's live summary: opens the crew.
+    Summary,
+    /// Row `i` of the list the open view or overlay shows.
+    Row(usize),
+    /// Library overview rows: a slot, a model, and "add another model".
+    Slot(usize),
+    Model(usize),
+    AddModel,
+    /// An approval button, left to right.
+    Button(usize),
+    /// The Run view's steer line.
+    Steer,
+    /// The Model box's context meter: opens the planner.
+    ContextMeter,
+    /// A Library model's window column: opens the planner for model `i`.
+    ModelCtx(usize),
+    /// A context in the planner's table (row `i`), and optionally a KV column.
+    PlanCell(usize, Option<usize>),
+    /// A planner control: focus it.
+    PlanField(crate::context::PlanField),
+}
+
 /// A palette command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     NewSession,
     Sessions,
+    Model,
+    Workspace,
     Library,
+    Context,
     Memory,
     Watch,
     Crew,
@@ -130,10 +238,13 @@ pub enum Command {
 }
 
 impl Command {
-    pub const ALL: [Command; 14] = [
+    pub const ALL: [Command; 17] = [
         Command::NewSession,
         Command::Sessions,
+        Command::Model,
+        Command::Workspace,
         Command::Library,
+        Command::Context,
         Command::Memory,
         Command::Watch,
         Command::Crew,
@@ -151,7 +262,10 @@ impl Command {
         match self {
             Command::NewSession => "New session",
             Command::Sessions => "Sessions",
+            Command::Model => "Model — the conductor",
+            Command::Workspace => "Workspace — where new sessions start",
             Command::Library => "Library — models and slots",
+            Command::Context => "Context & hardware — what fits on this GPU",
             Command::Memory => "Memory — search, correct, forget",
             Command::Watch => "Watch — runs, notices, roots",
             Command::Crew => "Crew — runs and results",
@@ -170,13 +284,16 @@ impl Command {
         match self {
             Command::NewSession => "^n",
             Command::Sessions => "^o",
+            Command::Model => "",
+            Command::Workspace => "",
             Command::Library => "^l",
+            Command::Context => "",
             Command::Memory => "^g",
             Command::Watch => "^w",
             Command::Crew => "^r",
             Command::Dispatch => "^d",
             Command::Brief => "",
-            Command::ToggleVoice => "",
+            Command::ToggleVoice => "alt-v",
             Command::ImportMemories => "",
             Command::Introduce => "",
             Command::ToggleThinking => "^t",
@@ -192,12 +309,22 @@ pub enum Overlay {
     Palette { query: String, sel: usize },
     Sessions { sel: usize },
     ModelPicker { sel: usize },
+    /// Where new sessions start: typed path or a known directory.
+    WorkspacePicker { query: String, sel: usize },
     /// First-run offer to import the old harness memories; `sel` 0 is Yes, 1 is Not now.
     ImportOffer { sel: usize },
     /// First-run onboarding; its state is `State::onboard`.
     Onboard,
     /// The ^d dispatch prompt; its state is `State::crew.prompt`.
     Dispatch,
+    /// The context and hardware planner for `model`: the field ←/→ adjust, the policy being
+    /// edited (`None` until the plan arrives), and whether the review screen is up.
+    ContextPlan {
+        model: marlowe_model::ModelRef,
+        field: crate::context::PlanField,
+        draft: Option<marlowe_proto::ContextPolicy>,
+        review: bool,
+    },
 }
 
 /// A transient one-line message under the composer.
@@ -265,8 +392,11 @@ pub struct State {
     pub session: Option<SessionId>,
     pub title: Option<String>,
     pub workspace: Option<String>,
-    /// Workspace for a new session: the directory the client was started in.
+    /// Workspace for a new session: the directory the client was started in, until the
+    /// workspace picker chooses another.
     pub default_workspace: Option<String>,
+    /// The directory the client was started in; always offered by the workspace picker.
+    pub launch_workspace: Option<String>,
     pub entries: Vec<Entry>,
     pub live: Option<LiveTurn>,
     /// Text sent with no session yet, shown until its TurnStarted arrives.
@@ -297,8 +427,14 @@ pub struct State {
     pub wake: Wake,
     /// Crew runs, the Run view, the dispatch prompt.
     pub crew: Crew,
+    /// Context windows, the live meter, the planner's plan.
+    pub context: crate::context::ContextUi,
 
     pub view: View,
+    /// Which box on the conversation screen has the keys.
+    pub focus: Focus,
+    /// The Situation Board section shown (tabbed) or focused (stacked).
+    pub board_tab: BoardTab,
     pub overlay: Option<Overlay>,
     pub composer: Composer,
     pub show_thinking: bool,
@@ -307,6 +443,11 @@ pub struct State {
     /// Largest useful scroll, written back by the renderer.
     pub scroll_max: Cell<usize>,
     pub flash: Option<Flash>,
+    /// What the pointer is over, as of the last mouse event.
+    pub hover: Option<Target>,
+    /// Where the last frame drew each clickable thing, in drawing order (later is on top).
+    /// Written by the renderer, read by the mouse handler.
+    pub hits: RefCell<Vec<(ratatui::layout::Rect, Target)>>,
 
     /// Wall clock for the title bar, e.g. `08:14`. Set by the run loop.
     pub clock: String,
@@ -333,6 +474,7 @@ impl State {
             session: None,
             title: None,
             workspace: None,
+            launch_workspace: default_workspace.clone(),
             default_workspace,
             entries: Vec::new(),
             live: None,
@@ -354,13 +496,18 @@ impl State {
             onboard: Onboard::Idle,
             wake: Wake::default(),
             crew: Crew::default(),
+            context: crate::context::ContextUi::default(),
             view: View::Conversation,
+            focus: Focus::Message,
+            board_tab: BoardTab::Crew,
             overlay: None,
             composer: Composer::default(),
             show_thinking: false,
             scroll: 0,
             scroll_max: Cell::new(0),
             flash: None,
+            hover: None,
+            hits: RefCell::new(Vec::new()),
             clock: String::new(),
             date: String::new(),
             now_ms: 0,
@@ -368,9 +515,88 @@ impl State {
         }
     }
 
+    /// The topmost thing the last frame drew at `p`.
+    pub fn target_at(&self, p: ratatui::layout::Position) -> Option<Target> {
+        self.hits.borrow().iter().rev().find(|(r, _)| r.contains(p)).map(|(_, t)| t.clone())
+    }
+
+    /// The header's name for the session: its title, else `new session`.
+    pub fn session_label(&self) -> String {
+        match self.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            Some(t) => crate::text::clean_maths(t),
+            None => "new session".to_string(),
+        }
+    }
+
+    /// The terminal window's title: `marlowe — <session>`.
+    pub fn window_title(&self) -> String {
+        let t: String = format!("marlowe — {}", self.session_label())
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        crate::text::truncate(&t, 80)
+    }
+
+    /// The header's live summary: `2 runs · 1 needs you · 3 new`. Runs are the crew's unfinished
+    /// runs plus watched runs alive; "needs you" counts runs waiting on the user and approvals;
+    /// "new" is unseen notices above info.
+    pub fn summary(&self) -> String {
+        let crew = self.crew.runs.iter().filter(|r| !r.status.is_terminal()).count();
+        let watched = self
+            .wake
+            .watch
+            .as_ref()
+            .map_or(0, |w| w.runs.iter().filter(|r| r.status == marlowe_proto::RunStatus::Alive).count());
+        let runs = crew + watched;
+        let needs = self.crew.count(marlowe_proto::CrewRunStatus::NeedsYou) + self.approvals.len();
+        let mut parts = vec![
+            format!("{runs} run{}", if runs == 1 { "" } else { "s" }),
+            format!("{needs} need{} you", if needs == 1 { "s" } else { "" }),
+        ];
+        let fresh = self
+            .wake
+            .notices
+            .iter()
+            .filter(|n| !n.seen && n.severity > marlowe_proto::Severity::Info)
+            .count();
+        if fresh > 0 {
+            parts.push(format!("{fresh} new"));
+        }
+        parts.join(" · ")
+    }
+
     /// The workspace shown in the title bar.
     pub fn shown_workspace(&self) -> Option<&str> {
         self.workspace.as_deref().or(self.default_workspace.as_deref())
+    }
+
+    /// What the workspace picker offers for `query`: the typed path first when it looks like one,
+    /// then the shown workspace, the launch directory, recent sessions' and the watched roots —
+    /// de-duplicated (case and separators ignored) and filtered by the query.
+    pub fn workspace_choices(&self, query: &str) -> Vec<String> {
+        let q = query.trim().trim_matches('"').trim();
+        let mut out: Vec<String> = Vec::new();
+        let mut push = |p: &str| {
+            let n = crate::wake::norm(p);
+            if !p.trim().is_empty() && !out.iter().any(|o| crate::wake::norm(o) == n) {
+                out.push(p.to_string());
+            }
+        };
+        if q.contains(['/', '\\', ':']) || q.starts_with('~') {
+            push(q);
+        }
+        let ql = q.to_lowercase().replace('\\', "/");
+        let mut known: Vec<&str> = Vec::new();
+        known.extend(self.shown_workspace());
+        known.extend(self.launch_workspace.as_deref());
+        known.extend(self.sessions.iter().flatten().filter_map(|s| s.workspace.as_deref()));
+        known.extend(self.wake.watch.iter().flat_map(|w| w.roots.iter().map(|r| r.path.as_str())));
+        for p in known {
+            if ql.is_empty() || p.to_lowercase().replace('\\', "/").contains(&ql) {
+                push(p);
+            }
+        }
+        out
     }
 
     pub fn is_busy(&self) -> bool {
@@ -482,6 +708,7 @@ impl State {
                     self.check_gap = true;
                 }
                 out.push(Request::LibraryState);
+                out.push(Request::ContextPolicies);
                 self.wake_probes(out);
             }
             Event::SessionOpened { session, title, workspace } => {
@@ -623,6 +850,10 @@ impl State {
                     self.entries.push(Entry::Usage { usage: *usage });
                 }
                 self.live = None;
+                // The runner may have loaded, reloaded or partly offloaded: refresh the meter.
+                if self.conn.is_online() {
+                    out.push(Request::ContextPolicies);
+                }
             }
             Event::ApprovalRequested { approval, session, tool, summary, detail, run } => {
                 if !self.approvals.iter().any(|a| a.id == *approval) {
@@ -648,7 +879,36 @@ impl State {
                 }
             }
             Event::LibraryState { models, slots, providers } => {
+                let before = self.library.conductor();
                 self.library.set_state(models.clone(), slots.clone(), providers.clone());
+                if self.library.conductor() != before && before.is_some() {
+                    out.push(Request::ContextPolicies);
+                }
+            }
+            Event::ContextUsage { session, tokens, window, .. } if self.mine(session) => {
+                self.context.usage = Some((session.clone(), *tokens, *window));
+            }
+            Event::ContextPlan(plan) => self.on_context_plan(plan),
+            Event::ContextPolicies { models } => self.context.models = models.clone(),
+            Event::ContextPolicySaved { model, policy, pending_restart, .. } => {
+                if let Some(m) = self.context.models.iter_mut().find(|m| &m.model == model) {
+                    m.max_ctx = policy.max_ctx;
+                    m.policy = Some(*policy);
+                }
+                if let Some(p) = self.context.plan.as_mut().filter(|p| &p.model == model) {
+                    p.policy = *policy;
+                }
+                if reply || self.overlay.is_none() {
+                    let what = marlowe_proto::policy_label(policy);
+                    if *pending_restart {
+                        self.flash(format!("saved {what} · the KV/parallel change waits for an Ollama restart"), NoteTone::Amber);
+                    } else {
+                        self.flash(format!("saved {what}"), NoteTone::Dim);
+                    }
+                }
+            }
+            Event::ServerApplied { ok, message } => {
+                self.flash(crate::text::clean(message), if *ok { NoteTone::Dim } else { NoteTone::Amber });
             }
             Event::Catalog { provider, models } => {
                 self.library.set_catalog(*provider, models.clone());
@@ -717,7 +977,13 @@ impl State {
             Event::Runs { list } => self.on_runs(list),
             Event::RunTranscript { run, steps } => self.on_run_transcript(run, steps),
             Event::Roles { list } => self.on_roles(list),
+            Event::ResearchProgress { run, progress } => self.crew.on_research(run, progress),
+            Event::PlanProposed { run, plan, quote } => self.on_plan_proposed(run, plan, quote),
             Event::Error { session: None, message } if self.absorb_absent(message) => {}
+            Event::Error { session: None, message } if self.context.loading.is_some() && message.starts_with("context plan") => {
+                self.context.loading = None;
+                self.context.error = Some(crate::text::clean(message));
+            }
             Event::Error { session: None, message } if reply && message.starts_with("replay gap") => {
                 // The daemon skipped the replay: reload what is open instead.
                 self.check_gap = false;

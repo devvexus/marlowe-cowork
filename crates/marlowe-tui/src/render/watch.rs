@@ -10,8 +10,8 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
 use super::boot::severity_style;
-use super::{ink, note_style, put};
-use crate::state::State;
+use super::{hovered, ink, note_style, put, put_row};
+use crate::state::{State, Target};
 use crate::text;
 use crate::wake::{notice_glyph, run_detail, run_glyph, Presence, WatchMode, WatchRow};
 
@@ -88,12 +88,22 @@ pub fn draw(main: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
         }
     }
     let mut offers_header = false;
+    // Which lines are selectable rows, by line index.
+    let mut targets: Vec<(usize, Target)> = Vec::new();
     for (i, row) in rows.iter().enumerate() {
-        let sel = i == wake.sel && matches!(wake.mode, WatchMode::Browse);
-        let marker = if sel { Span::styled("› ", accent) } else { Span::raw("  ") };
+        let browse = matches!(wake.mode, WatchMode::Browse);
+        let sel = i == wake.sel && browse;
+        let marker = if sel {
+            Span::styled("› ", accent)
+        } else if browse && hovered(state, &Target::Row(i)) {
+            Span::styled("› ", ink(Ink::Hover, theme))
+        } else {
+            Span::raw("  ")
+        };
         match row {
             WatchRow::Root(p) => {
                 let Some(root) = roots.iter().find(|r| &r.path == p) else { continue };
+                targets.push((lines.len(), Target::Row(i)));
                 lines.push(root_line(root, marker, sel, w, theme));
             }
             WatchRow::Offer(o) => {
@@ -102,6 +112,7 @@ pub fn draw(main: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
                     lines.push(Line::from(""));
                     lines.push(section("OFFERS", theme));
                 }
+                targets.push((lines.len(), Target::Row(i)));
                 lines.push(offer_line(o, marker, sel, state.now_ms, w, theme));
             }
         }
@@ -168,8 +179,13 @@ pub fn draw(main: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     // The prompt, when adding or confirming, takes the last two rows.
     let prompt = !matches!(wake.mode, WatchMode::Browse);
     let body_h = c.height.saturating_sub(if prompt { 2 } else { 0 }) as usize;
-    for (i, l) in lines.iter().take(body_h).enumerate() {
-        put(buf, c.x, c.y + i as u16, l, c.width);
+    let browse = matches!(wake.mode, WatchMode::Browse);
+    for (i, l) in lines.into_iter().take(body_h).enumerate() {
+        let y = c.y + i as u16;
+        match targets.iter().find(|(at, _)| *at == i) {
+            Some((_, t)) if browse => put_row(state, buf, (c.x, y, c.width), l, t.clone(), theme),
+            _ => put(buf, c.x, y, &l, c.width),
+        }
     }
     match &wake.mode {
         WatchMode::Add { input } => {
@@ -196,7 +212,7 @@ pub fn draw(main: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     // Footer hints, then the flash.
     let hints: &[(&str, &str)] = match &wake.mode {
         WatchMode::Browse => {
-            &[("↵", "watch offer"), ("a", "add"), ("x", "remove"), ("r", "rescan"), ("↑↓", "select"), ("esc", "back")]
+            &[("↵", "watch offer"), ("a", "add"), ("x", "remove"), ("r", "rescan"), ("↑↓", "select"), ("esc/⌫", "back")]
         }
         WatchMode::Add { .. } => &[("↵", "watch"), ("esc", "cancel")],
         WatchMode::ConfirmRemove { .. } => &[("y", "remove"), ("n", "keep")],

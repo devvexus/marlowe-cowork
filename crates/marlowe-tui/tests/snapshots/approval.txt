@@ -1,18 +1,18 @@
-╭─ MARLOWE · what changed in the gate overnight? ────────────────────── ⣠⣾⣦⣴⣷⣄ needs you · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
-│  you  what changed in the gate overnight?                                                             │  CREW                            │
-│  ▸ thought · 1,204 tokens                                                                             │  no runs                         │
-│  ⋯ powershell Remove-Item build …                                                                     │                                  │
-│                                                                                                       │  WATCH                           │
-│                                                                                                       │  nothing watched                 │
-│                                                                                                       │                                  │
-│                                                                                                       │  THREADS                         │
-│                                                                                                       │  no open threads                 │
-│                                                                                                       │                                  │
-│                                                                                                       │  TODAY                           │
-│                                                                                                       │  nothing scheduled               │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
+ * marlowe — what changed in the gate overnight?                                                                       0 runs · 1 needs you
+╭ Conversation · what changed in the gate overnight? ───────────────────────── ⣠⣾⣦⣴⣷⣄ needs you ─╮╭ Model ─────────────────────────────────╮
+│  you  what changed in the gate overnight?                                                      ││ Claude Sonnet 4.5 ▾             medium │
+│  ▸ thought · 1,204 tokens                                                                      ││ ctx ────────────┊──── 0 / 200k · cloud │
+│  ⋯ powershell Remove-Item build …                                                              │╰────────────────────────────────── (m) ─╯
+│                                                                                                │╭ Workspace ─────────────────────────────╮
+│                                                                                                ││ C:/work/valiance ▾                     │
+│                                                                                                │╰────────────────────────────────── (w) ─╯
+│                                                                                                │╭ Crew ──────────────────────────────────╮
+│                                                                                                ││ no runs                                │
+│                                                                                                │╰────────────────────────────────── (1) ─╯
+│                                                                                                │╭ Watch ─────────────────────────────────╮
+│                                                                                                ││ nothing watched                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
 │                              ╔ approval ══════════════════════════════════════════════════════════════════╗                              │
 │                              ║ powershell  wants to act                                                   ║                              │
 │                              ║                                                                            ║                              │
@@ -22,19 +22,19 @@
 │                              ║                                                                            ║                              │
 │                              ║   y allow        a allow for session      › n deny                         ║                              │
 │                              ╚════════════════════════════════════════════════════════════════════════════╝                              │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────╯
-╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ › steer the running turn…                                                                                                                │
-╰────────────────────────────────────────────────────────────────────────────────────────── ↵ send  ⇧↵ newline  esc interrupt  ^k palette ─╯
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                                                                                                │╭ Threads ───────────────────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › steer the running turn…                                           esc interrupt · ⇧↵ newline ││ nothing recalled this session          │
+╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  alt-v Voice  ^k palette                     21:40

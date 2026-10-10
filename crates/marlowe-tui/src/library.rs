@@ -44,6 +44,15 @@ pub enum LibFocus {
     Models,
 }
 
+/// The overview row under the cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverviewRow {
+    Slot(usize),
+    Model(usize),
+    /// "add another model", after the last model.
+    Add,
+}
+
 /// A provider's catalog as last received.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Catalog {
@@ -101,7 +110,8 @@ impl Library {
         self.models = models;
         self.slots = slots;
         self.providers = providers;
-        self.model_sel = self.model_sel.min(self.models.len().saturating_sub(1));
+        // One past the last model is the "add another model" row.
+        self.model_sel = self.model_sel.min(self.models.len());
         self.slot_sel = self.slot_sel.min(self.slot_rows().len().saturating_sub(1));
     }
 
@@ -198,16 +208,97 @@ impl Library {
         out.push(Request::ListCatalog { provider });
     }
 
+    /// The overview row under the cursor.
+    pub fn overview_row(&self) -> OverviewRow {
+        match self.focus {
+            LibFocus::Slots => OverviewRow::Slot(self.slot_sel),
+            LibFocus::Models if self.model_sel >= self.models.len() => OverviewRow::Add,
+            LibFocus::Models => OverviewRow::Model(self.model_sel),
+        }
+    }
+
+    /// What ↵ does on the overview row under the cursor, for the hints.
+    pub fn enter_action(&self) -> String {
+        match self.overview_row() {
+            OverviewRow::Slot(i) => {
+                let rows = self.slot_rows();
+                let Some(row) = rows.get(i) else { return "select".into() };
+                let levels = self.effort_levels(row);
+                if levels.is_empty() {
+                    "next model".into()
+                } else {
+                    format!("effort {} → {}", row.effort, row.effort.cycle(&levels))
+                }
+            }
+            OverviewRow::Model(i) if self.conductor().as_ref() == self.models.get(i).map(|m| &m.model) => {
+                "keep as conductor".into()
+            }
+            OverviewRow::Model(_) => "use as conductor".into(),
+            OverviewRow::Add => "add another model".into(),
+        }
+    }
+
+    fn effort_levels(&self, row: &SlotAssignment) -> Vec<Effort> {
+        row.model.as_ref().and_then(|m| self.info(m)).map(|i| i.effort_levels.clone()).unwrap_or_default()
+    }
+
+    /// A click on a library row: the first selects it, a second on the selected row acts like ↵.
+    pub(crate) fn click(&mut self, t: &crate::state::Target, out: &mut Vec<Request>) -> (bool, Option<String>) {
+        use crate::state::Target;
+        let enter = KeyEvent::from(KeyCode::Enter);
+        match (t, self.step.clone()) {
+            (Target::AddModel, LibStep::Overview) => {
+                self.focus = LibFocus::Models;
+                self.model_sel = self.models.len();
+                self.start_add();
+            }
+            (Target::Slot(i), LibStep::Overview) => {
+                if self.overview_row() == OverviewRow::Slot(*i) {
+                    return self.on_key(enter, out);
+                }
+                self.focus = LibFocus::Slots;
+                self.slot_sel = *i;
+            }
+            (Target::Model(i), LibStep::Overview) => {
+                if self.overview_row() == OverviewRow::Model(*i) {
+                    return self.on_key(enter, out);
+                }
+                self.focus = LibFocus::Models;
+                self.model_sel = *i;
+            }
+            (Target::Row(i), LibStep::Providers { sel }) => {
+                if sel == *i {
+                    return self.on_key(enter, out);
+                }
+                if ProviderKind::ALL.get(*i).is_some_and(|k| k.is_available_now()) {
+                    self.step = LibStep::Providers { sel: *i };
+                }
+            }
+            (Target::Row(i), LibStep::Catalog { provider, query, sel }) => {
+                if sel == *i {
+                    return self.on_key(enter, out);
+                }
+                self.step = LibStep::Catalog { provider, query, sel: *i };
+            }
+            _ => {}
+        }
+        (true, None)
+    }
+
     /// Handles a key in the library view. Returns `false` when the library should close.
+    ///
+    /// Every step goes back one level on Esc, and on Backspace where nothing is typed: the
+    /// overview to the conversation, the provider list to the overview, a key or a search to the
+    /// provider list.
     pub(crate) fn on_key(&mut self, k: KeyEvent, out: &mut Vec<Request>) -> (bool, Option<String>) {
         let mut flash = None;
         let step = self.step.clone();
         match step {
             LibStep::Overview => return (self.overview_key(k, out, &mut flash), flash),
             LibStep::Providers { sel } => match k.code {
-                KeyCode::Esc => self.step = LibStep::Overview,
-                KeyCode::Up => self.step = LibStep::Providers { sel: step_provider(sel, -1) },
-                KeyCode::Down | KeyCode::Tab => {
+                KeyCode::Esc | KeyCode::Backspace => self.step = LibStep::Overview,
+                KeyCode::Up | KeyCode::Char('k') => self.step = LibStep::Providers { sel: step_provider(sel, -1) },
+                KeyCode::Down | KeyCode::Tab | KeyCode::Char('j') => {
                     self.step = LibStep::Providers { sel: step_provider(sel, 1) }
                 }
                 KeyCode::Enter => {
@@ -224,6 +315,9 @@ impl Library {
             },
             LibStep::Key { provider, mut input } => match k.code {
                 KeyCode::Esc => self.step = LibStep::Providers { sel: provider_index(provider) },
+                KeyCode::Backspace if input.is_empty() => {
+                    self.step = LibStep::Providers { sel: provider_index(provider) }
+                }
                 KeyCode::Enter => {
                     let key = input.0.trim().to_string();
                     if !key.is_empty() {
@@ -249,6 +343,9 @@ impl Library {
                 let n = self.filtered_catalog(&query).len();
                 match k.code {
                     KeyCode::Esc => {
+                        self.step = LibStep::Providers { sel: provider_index(provider) };
+                    }
+                    KeyCode::Backspace if query.is_empty() => {
                         self.step = LibStep::Providers { sel: provider_index(provider) };
                     }
                     KeyCode::Up => {
@@ -294,6 +391,8 @@ impl Library {
         (true, flash)
     }
 
+    /// The overview: one cursor runs down the slots, then the models, then "add another model";
+    /// Tab jumps between the two lists.
     fn overview_key(
         &mut self,
         k: KeyEvent,
@@ -302,7 +401,7 @@ impl Library {
     ) -> bool {
         if !self.has_models() {
             match k.code {
-                KeyCode::Esc => return false,
+                KeyCode::Esc | KeyCode::Backspace => return false,
                 KeyCode::Enter | KeyCode::Char('a') | KeyCode::Char('y') => self.start_add(),
                 _ => {}
             }
@@ -310,7 +409,7 @@ impl Library {
         }
         let rows = self.slot_rows();
         match k.code {
-            KeyCode::Esc => return false,
+            KeyCode::Esc | KeyCode::Backspace => return false,
             KeyCode::Char('a') => self.start_add(),
             KeyCode::Tab | KeyCode::BackTab => {
                 self.focus = match self.focus {
@@ -318,42 +417,35 @@ impl Library {
                     LibFocus::Models => LibFocus::Slots,
                 }
             }
-            KeyCode::Up => match self.focus {
+            KeyCode::Up | KeyCode::Char('k') => match self.focus {
                 LibFocus::Slots => self.slot_sel = self.slot_sel.saturating_sub(1),
-                LibFocus::Models => self.model_sel = self.model_sel.saturating_sub(1),
-            },
-            KeyCode::Down => match self.focus {
-                LibFocus::Slots => self.slot_sel = (self.slot_sel + 1).min(rows.len() - 1),
-                LibFocus::Models => {
-                    self.model_sel = (self.model_sel + 1).min(self.models.len() - 1)
+                LibFocus::Models if self.model_sel == 0 => {
+                    self.focus = LibFocus::Slots;
+                    self.slot_sel = rows.len() - 1;
                 }
+                LibFocus::Models => self.model_sel -= 1,
+            },
+            KeyCode::Down | KeyCode::Char('j') => match self.focus {
+                LibFocus::Slots if self.slot_sel + 1 >= rows.len() => {
+                    self.focus = LibFocus::Models;
+                    self.model_sel = 0;
+                }
+                LibFocus::Slots => self.slot_sel += 1,
+                LibFocus::Models => self.model_sel = (self.model_sel + 1).min(self.models.len()),
             },
             KeyCode::Left | KeyCode::Right if self.focus == LibFocus::Slots => {
                 let Some(row) = rows.get(self.slot_sel) else { return true };
-                // Options: inherit the default, then each library model.
-                let mut options: Vec<Option<ModelRef>> = vec![None];
-                options.extend(self.models.iter().map(|m| Some(m.model.clone())));
-                let current = if row.inherited { None } else { row.model.clone() };
-                let i = options.iter().position(|o| *o == current).unwrap_or(0);
-                let next = if k.code == KeyCode::Right {
-                    (i + 1) % options.len()
-                } else {
-                    (i + options.len() - 1) % options.len()
-                };
-                let model = options[next].clone();
-                self.apply_slot(&row.slot, model.clone(), row.effort);
-                out.push(Request::SetSlot { slot: row.slot.clone(), model, effort: row.effort });
+                self.cycle_model(row, k.code == KeyCode::Right, out);
             }
             KeyCode::Char('e') | KeyCode::Enter if self.focus == LibFocus::Slots => {
                 let Some(row) = rows.get(self.slot_sel) else { return true };
-                let levels = row
-                    .model
-                    .as_ref()
-                    .and_then(|m| self.info(m))
-                    .map(|i| i.effort_levels.clone())
-                    .unwrap_or_default();
+                let levels = self.effort_levels(row);
                 if levels.is_empty() {
-                    *flash = Some("this model has no effort levels".into());
+                    if k.code == KeyCode::Enter {
+                        self.cycle_model(row, true, out);
+                    } else {
+                        *flash = Some("this model has no effort levels".into());
+                    }
                     return true;
                 }
                 let effort = row.effort.cycle(&levels);
@@ -361,6 +453,18 @@ impl Library {
                 self.apply_slot(&row.slot, model.clone(), effort);
                 out.push(Request::SetSlot { slot: row.slot.clone(), model, effort });
             }
+            KeyCode::Enter => match self.overview_row() {
+                OverviewRow::Add => self.start_add(),
+                OverviewRow::Model(i) => {
+                    let m = self.models[i].model.clone();
+                    let effort = rows[0].effort;
+                    let name = crate::text::short_model(&m, Some(&self.models[i].info));
+                    self.apply_slot(&Slot::Conductor, Some(m.clone()), effort);
+                    out.push(Request::SetSlot { slot: Slot::Conductor, model: Some(m), effort });
+                    *flash = Some(format!("{name} is the conductor"));
+                }
+                OverviewRow::Slot(_) => {}
+            },
             KeyCode::Char('d') | KeyCode::Delete if self.focus == LibFocus::Models => {
                 if let Some(m) = self.models.get(self.model_sel) {
                     out.push(Request::RemoveModel { model: m.model.clone() });
@@ -371,6 +475,18 @@ impl Library {
             _ => {}
         }
         true
+    }
+
+    /// Moves a slot to the next (or previous) choice: inherit the default, then each model.
+    fn cycle_model(&mut self, row: &SlotAssignment, forward: bool, out: &mut Vec<Request>) {
+        let mut options: Vec<Option<ModelRef>> = vec![None];
+        options.extend(self.models.iter().map(|m| Some(m.model.clone())));
+        let current = if row.inherited { None } else { row.model.clone() };
+        let i = options.iter().position(|o| *o == current).unwrap_or(0);
+        let next = if forward { (i + 1) % options.len() } else { (i + options.len() - 1) % options.len() };
+        let model = options[next].clone();
+        self.apply_slot(&row.slot, model.clone(), row.effort);
+        out.push(Request::SetSlot { slot: row.slot.clone(), model, effort: row.effort });
     }
 
     /// Updates a slot locally so the table reacts before the daemon confirms.

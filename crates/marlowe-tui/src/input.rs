@@ -6,8 +6,10 @@ use ratatui::layout::{Position, Rect};
 
 use crate::library::LibStep;
 use crate::render::geometry;
+use crate::render::BoardMode;
 use crate::state::{
-    Command, NoteTone, Overlay, State, View, APPROVAL_CHOICES, APPROVAL_DETAIL_ROWS, APPROVAL_GUARD_MS,
+    BoardTab, Command, Focus, NoteTone, Overlay, State, Target, View, APPROVAL_CHOICES, APPROVAL_DETAIL_ROWS,
+    APPROVAL_GUARD_MS,
 };
 
 /// Lines one wheel notch scrolls.
@@ -21,6 +23,7 @@ impl State {
             return out;
         }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = k.modifiers.contains(KeyModifiers::ALT);
 
         // Typing before onboarding shows means they are busy: it stays away this session.
         let printable = matches!(k.code, KeyCode::Char(_)) && !ctrl;
@@ -87,7 +90,17 @@ impl State {
                 }
             }
         }
+        // The footer's one Alt key. Ctrl+Alt is AltGr on many layouts and is a character.
+        if alt && !ctrl && matches!(k.code, KeyCode::Char('v' | 'V')) {
+            self.run_command(Command::ToggleVoice, &mut out);
+            return out;
+        }
         match self.view {
+            View::Library if k.code == KeyCode::Char('c') && self.library_model_row().is_some() => {
+                if let Some(m) = self.library_model_row() {
+                    self.open_context(m, &mut out);
+                }
+            }
             View::Library => {
                 let (stay, flash) = self.library.on_key(k, &mut out);
                 if let Some(f) = flash {
@@ -112,7 +125,7 @@ impl State {
             return;
         }
         match (&mut self.overlay, self.view) {
-            (Some(Overlay::Palette { query, sel }), _) => {
+            (Some(Overlay::Palette { query, sel }), _) | (Some(Overlay::WorkspacePicker { query, sel }), _) => {
                 query.push_str(text.lines().next().unwrap_or(""));
                 *sel = 0;
             }
@@ -140,52 +153,274 @@ impl State {
                     v.steer.insert_str(&text.replace(['\r', '\n'], " "));
                 }
             }
-            (None, View::Conversation) => self.composer.insert_str(text),
+            (None, View::Conversation) => {
+                self.focus = Focus::Message;
+                self.composer.insert_str(text);
+            }
         }
     }
 
-    /// Handles a mouse event against a frame of `area`.
+    /// Handles a mouse event against a frame of `area`. Motion only moves [`State::hover`]; the
+    /// run loop redraws when that changes.
     pub fn on_mouse(&mut self, m: MouseEvent, area: Rect) -> Vec<Request> {
         let mut out = Vec::new();
-        if matches!(m.kind, MouseEventKind::Down(_)) {
-            self.wake.boot = None;
-        }
-        let g = geometry(area, self);
         let at = Position { x: m.column, y: m.row };
         match m.kind {
-            MouseEventKind::ScrollUp if self.view == View::Conversation && self.overlay.is_none() => {
-                self.scroll = (self.scroll + WHEEL_LINES).min(self.scroll_max.get());
-            }
-            MouseEventKind::ScrollDown if self.view == View::Conversation && self.overlay.is_none() => {
-                self.scroll = self.scroll.saturating_sub(WHEEL_LINES);
+            MouseEventKind::Moved => self.hover = self.pointer_target(area, at),
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let up = m.kind == MouseEventKind::ScrollUp;
+                self.wheel(up);
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                if !self.approvals.is_empty() {
-                    return out;
-                }
-                if let Some(Overlay::ModelPicker { .. }) = self.overlay {
-                    if let Some(r) = g.picker {
-                        if r.contains(at) {
-                            let row = at.y.saturating_sub(r.y + 1) as usize;
-                            self.overlay = Some(Overlay::ModelPicker { sel: row });
-                            self.overlay_key(KeyEvent::from(KeyCode::Enter), &mut out);
-                            return out;
-                        }
-                    }
-                    self.overlay = None;
-                    return out;
-                }
-                if g.model.is_some_and(|r| r.contains(at)) && self.overlay.is_none() {
-                    self.open_model_picker();
-                }
+                self.wake.boot = None;
+                self.click(area, at, &mut out);
+                // What is under the pointer may have changed with the screen.
+                self.hover = None;
             }
             _ => {}
         }
         out
     }
 
+    /// The wheel scrolls whatever is reading: the conversation, a run's transcript, an approval.
+    fn wheel(&mut self, up: bool) {
+        if let Some(a) = self.approvals.first() {
+            let max = a.detail_scroll_max();
+            self.approval_scroll =
+                if up { self.approval_scroll.saturating_sub(WHEEL_LINES) } else { (self.approval_scroll + WHEEL_LINES).min(max) };
+            if self.approval_scroll >= max {
+                self.approval_read = true;
+            }
+            return;
+        }
+        if self.overlay.is_some() {
+            return;
+        }
+        match self.view {
+            View::Conversation if up => self.scroll = (self.scroll + WHEEL_LINES).min(self.scroll_max.get()),
+            View::Conversation => self.scroll = self.scroll.saturating_sub(WHEEL_LINES),
+            View::Crew => {
+                if let Some(v) = self.crew.open.as_mut() {
+                    let max = v.scroll_max.get();
+                    v.scroll = if up { (v.scroll + WHEEL_LINES).min(max) } else { v.scroll.saturating_sub(WHEEL_LINES) };
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// What the pointer is over: whatever the last frame recorded there, else (on the conversation
+    /// screen with nothing floating) the box under it.
+    pub fn pointer_target(&self, area: Rect, at: Position) -> Option<Target> {
+        if let Some(t) = self.target_at(at) {
+            return Some(t);
+        }
+        if !self.approvals.is_empty() || self.overlay.is_some() || self.view != View::Conversation {
+            return None;
+        }
+        let g = geometry(area, self);
+        if g.model.is_some_and(|r| r.contains(at)) {
+            Some(Target::Box(Focus::Model))
+        } else if g.workspace.is_some_and(|r| r.contains(at)) {
+            Some(Target::Box(Focus::Workspace))
+        } else if let Some(t) = g.tab_at(at) {
+            Some(Target::Tab(t))
+        } else if g.board.contains(at) {
+            // The tabbed board's body is the section on show.
+            Some(Target::Tab(self.board_tab))
+        } else if g.composer.is_some_and(|r| r.contains(at)) {
+            Some(Target::Box(Focus::Message))
+        } else if g.conversation_box.contains(at) {
+            Some(Target::Box(Focus::Conversation))
+        } else {
+            None
+        }
+    }
+
+    fn click(&mut self, area: Rect, at: Position, out: &mut Vec<Request>) {
+        if !self.approvals.is_empty() {
+            if let Some(Target::Button(i)) = self.target_at(at) {
+                if self.now_ms.saturating_sub(self.approval_since_ms) >= APPROVAL_GUARD_MS {
+                    self.approval_sel = i.min(APPROVAL_CHOICES.len() - 1);
+                    self.approval_key(KeyEvent::from(KeyCode::Enter), out);
+                }
+            }
+            return;
+        }
+        let g = geometry(area, self);
+        let enter = KeyEvent::from(KeyCode::Enter);
+        match self.overlay.clone() {
+            Some(Overlay::ContextPlan { review, draft, .. }) => {
+                match self.target_at(at) {
+                    Some(Target::PlanCell(i, kv)) => {
+                        let ctx = self.plan_rows().get(i).copied();
+                        if let Some(ctx) = ctx {
+                            self.context_pick(ctx, kv.and_then(|k| marlowe_proto::KvType::ALL.get(k).copied()));
+                        }
+                    }
+                    Some(Target::PlanField(f)) => {
+                        if let Some(Overlay::ContextPlan { field, .. }) = &mut self.overlay {
+                            *field = f;
+                        }
+                    }
+                    Some(Target::Button(0)) => self.context_key(KeyEvent::from(if review { KeyCode::Char('s') } else { KeyCode::Enter }), out),
+                    Some(Target::Button(1)) if review => self.context_key(KeyEvent::from(KeyCode::Char('r')), out),
+                    Some(Target::Button(_)) => self.context_key(KeyEvent::from(KeyCode::Esc), out),
+                    Some(_) => {}
+                    None if !review && draft.is_some() => {}
+                    None => self.overlay = None,
+                }
+                return;
+            }
+            Some(Overlay::ModelPicker { .. }) => {
+                if let Some(r) = g.picker.filter(|r| r.contains(at)) {
+                    let row = at.y.saturating_sub(r.y + 1) as usize;
+                    if at.y > r.y && row <= self.library.models.len() {
+                        self.overlay = Some(Overlay::ModelPicker { sel: row });
+                        self.overlay_key(enter, out);
+                    }
+                    return;
+                }
+                self.overlay = None;
+                self.focus = Focus::Message;
+                return;
+            }
+            Some(Overlay::WorkspacePicker { query, .. }) => {
+                if let Some(r) = g.picker.filter(|r| r.contains(at)) {
+                    // Rows start under the query line and a blank.
+                    let row = at.y.saturating_sub(r.y + 3) as usize;
+                    if at.y >= r.y + 3 && row < self.workspace_choices(&query).len() {
+                        self.overlay = Some(Overlay::WorkspacePicker { query, sel: row });
+                        self.overlay_key(enter, out);
+                    }
+                    return;
+                }
+                self.overlay = None;
+                self.focus = Focus::Message;
+                return;
+            }
+            Some(Overlay::Palette { query, .. }) => {
+                match self.target_at(at) {
+                    Some(Target::Row(i)) => {
+                        self.overlay = Some(Overlay::Palette { query, sel: i });
+                        self.overlay_key(enter, out);
+                    }
+                    Some(_) => {}
+                    None => self.overlay = None,
+                }
+                return;
+            }
+            Some(Overlay::Sessions { .. }) => {
+                match self.target_at(at) {
+                    Some(Target::Row(i)) => {
+                        self.overlay = Some(Overlay::Sessions { sel: i });
+                        self.overlay_key(enter, out);
+                    }
+                    Some(_) => {}
+                    None => self.overlay = None,
+                }
+                return;
+            }
+            Some(Overlay::ImportOffer { .. }) => {
+                if let Some(Target::Button(i)) = self.target_at(at) {
+                    self.overlay = Some(Overlay::ImportOffer { sel: i.min(1) });
+                    self.overlay_key(enter, out);
+                }
+                return;
+            }
+            Some(_) => return,
+            None => {}
+        }
+        let Some(target) = self.pointer_target(area, at) else { return };
+        match target {
+            Target::Box(Focus::Model) => {
+                self.focus = Focus::Model;
+                self.open_model_picker();
+            }
+            Target::Box(Focus::Workspace) => self.open_workspace_picker(out),
+            Target::Box(f) => self.focus = f,
+            Target::Tab(t) => {
+                // A stacked section is a box of its own: a click opens it. A tab is selected by the
+                // first click and opened by a second.
+                let open = g.board_mode == BoardMode::Stacked
+                    || g.tab_at(at).is_none()
+                    || (self.board_tab == t && self.focus == Focus::Board);
+                self.select_tab(t);
+                if open {
+                    self.open_board_view(out);
+                }
+            }
+            Target::Run(id) => {
+                self.flash = None;
+                self.open_run(id, out);
+            }
+            Target::Watched(path) => {
+                self.open_watch(out);
+                let p = crate::wake::norm(&path);
+                let rows = self.wake.rows();
+                if let Some(i) = rows.iter().position(|r| {
+                    matches!(r, crate::wake::WatchRow::Root(root) if p.starts_with(&crate::wake::norm(root)))
+                }) {
+                    self.wake.sel = i;
+                }
+            }
+            Target::Chord(cmd) => self.run_command(cmd, out),
+            Target::Palette => self.overlay = Some(Overlay::Palette { query: String::new(), sel: 0 }),
+            Target::Summary => {
+                if self.view != View::Crew {
+                    self.open_crew(out);
+                }
+            }
+            Target::Slot(_) | Target::Model(_) | Target::AddModel => self.library_click(&target, out),
+            Target::Row(i) => match self.view {
+                View::Library => self.library_click(&target, out),
+                View::Watch if matches!(self.wake.mode, crate::wake::WatchMode::Browse) => {
+                    if self.wake.sel == i {
+                        self.watch_key(enter, out);
+                    } else {
+                        self.wake.sel = i;
+                    }
+                }
+                View::Memory if matches!(self.memory.mode, crate::memory::MemMode::Browse) => self.memory.sel = i,
+                _ => {}
+            },
+            Target::Steer => {
+                if let Some(v) = self.crew.open.as_mut() {
+                    v.steering = true;
+                }
+            }
+            Target::ContextMeter => self.open_context_for_conductor(out),
+            Target::ModelCtx(i) => {
+                if let Some(m) = self.library.models.get(i).map(|m| m.model.clone()) {
+                    self.open_context(m, out);
+                }
+            }
+            Target::Button(_) | Target::PlanCell(..) | Target::PlanField(_) => {}
+        }
+    }
+
+    /// The Library model row under the cursor, on the overview.
+    fn library_model_row(&self) -> Option<marlowe_model::ModelRef> {
+        let lib = &self.library;
+        if lib.step != LibStep::Overview || lib.focus != crate::library::LibFocus::Models {
+            return None;
+        }
+        lib.models.get(lib.model_sel).map(|m| m.model.clone())
+    }
+
+    fn library_click(&mut self, t: &Target, out: &mut Vec<Request>) {
+        let (stay, flash) = self.library.click(t, out);
+        if let Some(f) = flash {
+            self.flash(f, NoteTone::Dim);
+        }
+        if !stay {
+            self.view = View::Conversation;
+        }
+    }
+
     fn open_model_picker(&mut self) {
         if !self.library.has_models() {
+            self.focus = Focus::Message;
             self.view = View::Library;
             self.library.step = LibStep::Overview;
             return;
@@ -200,6 +435,51 @@ impl State {
         self.overlay = Some(Overlay::ModelPicker { sel });
     }
 
+    /// Opens the workspace picker, asking for recent sessions so their directories are offered.
+    fn open_workspace_picker(&mut self, out: &mut Vec<Request>) {
+        self.view = View::Conversation;
+        self.focus = Focus::Workspace;
+        self.overlay = Some(Overlay::WorkspacePicker { query: String::new(), sel: 0 });
+        if self.conn.is_online() {
+            out.push(Request::ListSessions { limit: 30 });
+        }
+    }
+
+    /// New sessions start in `path`. A session is tied to its workspace, so choosing another one
+    /// while a session is open starts a new session (the old one stays under ^o).
+    fn choose_workspace(&mut self, path: String) {
+        let path = path.trim().trim_matches('"').trim().to_string();
+        let same = self.shown_workspace().map(crate::wake::norm) == Some(crate::wake::norm(&path));
+        self.default_workspace = Some(path.clone());
+        if same {
+            return;
+        }
+        let shown = crate::text::short_path(&path);
+        if self.session.is_some() {
+            self.reset_conversation();
+            self.flash(format!("new session in {shown} · the last one is under ^o"), NoteTone::Dim);
+        } else {
+            self.workspace = None;
+            self.flash(format!("new sessions start in {shown}"), NoteTone::Dim);
+        }
+    }
+
+    /// Selects a board section and gives the board the keys.
+    fn select_tab(&mut self, t: BoardTab) {
+        self.board_tab = t;
+        self.focus = Focus::Board;
+    }
+
+    /// Enter on the board: the section's full view.
+    fn open_board_view(&mut self, out: &mut Vec<Request>) {
+        match self.board_tab {
+            BoardTab::Crew => self.open_crew(out),
+            BoardTab::Watch => self.open_watch(out),
+            BoardTab::Memory => self.open_memory(out),
+            BoardTab::Threads => self.flash("no open threads yet — reflection opens them", NoteTone::Dim),
+        }
+    }
+
     pub(crate) fn run_command(&mut self, cmd: Command, out: &mut Vec<Request>) {
         self.overlay = None;
         match cmd {
@@ -212,6 +492,13 @@ impl State {
                 self.overlay = Some(Overlay::Sessions { sel: 0 });
                 out.push(Request::ListSessions { limit: 30 });
             }
+            Command::Model => {
+                self.view = View::Conversation;
+                self.focus = Focus::Model;
+                self.open_model_picker();
+            }
+            Command::Workspace => self.open_workspace_picker(out),
+            Command::Context => self.open_context_for_conductor(out),
             Command::Library => {
                 if self.view == View::Library {
                     self.view = View::Conversation;
@@ -295,7 +582,17 @@ impl State {
         if self.now_ms.saturating_sub(self.approval_since_ms) < APPROVAL_GUARD_MS {
             return;
         }
+        // A server restart is allowed once or denied: never "for this session".
+        let once_only = self.approvals.first().is_some_and(|a| a.tool == marlowe_proto::SERVER_RESTART_TOOL);
         let decision = match k.code {
+            KeyCode::Left | KeyCode::BackTab if once_only => {
+                self.approval_sel = 0;
+                None
+            }
+            KeyCode::Right | KeyCode::Tab if once_only => {
+                self.approval_sel = APPROVAL_CHOICES.len() - 1;
+                None
+            }
             KeyCode::Left | KeyCode::BackTab => {
                 self.approval_sel = self.approval_sel.saturating_sub(1);
                 None
@@ -306,6 +603,7 @@ impl State {
             }
             KeyCode::Enter => Some(APPROVAL_CHOICES[self.approval_sel]),
             KeyCode::Char('y') => Some(APPROVAL_CHOICES[0]),
+            KeyCode::Char('a') if once_only => None,
             KeyCode::Char('a') => Some(APPROVAL_CHOICES[1]),
             KeyCode::Char('n') | KeyCode::Esc => Some(APPROVAL_CHOICES[2]),
             _ => None,
@@ -322,6 +620,10 @@ impl State {
     }
 
     fn overlay_key(&mut self, k: KeyEvent, out: &mut Vec<Request>) {
+        if matches!(self.overlay, Some(Overlay::ContextPlan { .. })) {
+            self.context_key(k, out);
+            return;
+        }
         if self.overlay == Some(Overlay::Onboard) {
             self.onboard_key(k, out);
             return;
@@ -335,6 +637,9 @@ impl State {
             if matches!(self.overlay, Some(Overlay::ImportOffer { .. })) {
                 self.legacy_dismissed = true;
             }
+            if matches!(self.overlay, Some(Overlay::ModelPicker { .. } | Overlay::WorkspacePicker { .. })) {
+                self.focus = Focus::Message;
+            }
             self.overlay = None;
             return;
         }
@@ -343,6 +648,7 @@ impl State {
             Overlay::Palette { mut query, sel } => {
                 let n = palette_matches(&query).len();
                 match k.code {
+                    KeyCode::Backspace if query.is_empty() => self.overlay = None,
                     KeyCode::Up => self.overlay = Some(Overlay::Palette { query, sel: sel.saturating_sub(1) }),
                     KeyCode::Down | KeyCode::Tab => {
                         let sel = (sel + 1).min(n.saturating_sub(1));
@@ -364,13 +670,48 @@ impl State {
                     _ => {}
                 }
             }
+            Overlay::WorkspacePicker { mut query, sel } => {
+                let n = self.workspace_choices(&query).len();
+                match k.code {
+                    KeyCode::Backspace if query.is_empty() => {
+                        self.overlay = None;
+                        self.focus = Focus::Message;
+                    }
+                    KeyCode::Up => {
+                        self.overlay = Some(Overlay::WorkspacePicker { query, sel: sel.saturating_sub(1) })
+                    }
+                    KeyCode::Down | KeyCode::Tab => {
+                        let sel = (sel + 1).min(n.saturating_sub(1));
+                        self.overlay = Some(Overlay::WorkspacePicker { query, sel });
+                    }
+                    KeyCode::Enter => {
+                        if let Some(p) = self.workspace_choices(&query).get(sel).cloned() {
+                            self.overlay = None;
+                            self.focus = Focus::Message;
+                            self.choose_workspace(p);
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        query.pop();
+                        self.overlay = Some(Overlay::WorkspacePicker { query, sel: 0 });
+                    }
+                    KeyCode::Char(c) if !ctrl => {
+                        query.push(c);
+                        self.overlay = Some(Overlay::WorkspacePicker { query, sel: 0 });
+                    }
+                    _ => {}
+                }
+            }
             Overlay::ImportOffer { sel } => self.offer_key(k, sel, out),
-            Overlay::Onboard | Overlay::Dispatch => {}
+            Overlay::Onboard | Overlay::Dispatch | Overlay::ContextPlan { .. } => {}
             Overlay::Sessions { sel } => {
                 let n = self.sessions.as_ref().map_or(0, Vec::len);
                 match k.code {
-                    KeyCode::Up => self.overlay = Some(Overlay::Sessions { sel: sel.saturating_sub(1) }),
-                    KeyCode::Down | KeyCode::Tab => {
+                    KeyCode::Backspace => self.overlay = None,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.overlay = Some(Overlay::Sessions { sel: sel.saturating_sub(1) })
+                    }
+                    KeyCode::Down | KeyCode::Tab | KeyCode::Char('j') => {
                         self.overlay = Some(Overlay::Sessions { sel: (sel + 1).min(n.saturating_sub(1)) })
                     }
                     KeyCode::Enter => {
@@ -389,13 +730,26 @@ impl State {
             Overlay::ModelPicker { sel } => {
                 let n = self.library.models.len();
                 match k.code {
-                    KeyCode::Up => self.overlay = Some(Overlay::ModelPicker { sel: sel.saturating_sub(1) }),
-                    KeyCode::Down | KeyCode::Tab => {
+                    KeyCode::Backspace => {
+                        self.overlay = None;
+                        self.focus = Focus::Message;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.overlay = Some(Overlay::ModelPicker { sel: sel.saturating_sub(1) })
+                    }
+                    KeyCode::Down | KeyCode::Tab | KeyCode::Char('j') => {
                         // The last row opens the library.
                         self.overlay = Some(Overlay::ModelPicker { sel: (sel + 1).min(n) })
                     }
+                    // `c`: that model's context and hardware plan.
+                    KeyCode::Char('c') if sel < n => {
+                        let m = self.library.models[sel].model.clone();
+                        self.focus = Focus::Message;
+                        self.open_context(m, out);
+                    }
                     KeyCode::Enter => {
                         self.overlay = None;
+                        self.focus = Focus::Message;
                         if sel >= n {
                             self.run_command(Command::Library, out);
                             return;
@@ -431,15 +785,39 @@ impl State {
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
         let alt = k.modifiers.contains(KeyModifiers::ALT);
         self.flash = None;
+        // Focus moves the same way from every box.
+        match k.code {
+            KeyCode::Tab if !ctrl && !alt => {
+                self.focus = self.focus.next();
+                return;
+            }
+            KeyCode::BackTab => {
+                self.focus = self.focus.prev();
+                return;
+            }
+            // Alt-1..4 picks a board section without leaving the Message box.
+            KeyCode::Char(c) if alt && !ctrl => {
+                if let Some(t) = BoardTab::from_key(c) {
+                    self.board_tab = t;
+                    return;
+                }
+            }
+            _ => {}
+        }
+        if self.focus != Focus::Message {
+            self.region_key(k, out);
+            return;
+        }
         match k.code {
             KeyCode::Enter if shift || alt => self.composer.insert('\n'),
             KeyCode::Char('j') if ctrl => self.composer.insert('\n'),
             KeyCode::Enter => self.send(out),
+            // Esc interrupts a running turn; otherwise it hands the keys to the boxes.
             KeyCode::Esc => {
                 if self.is_busy() {
                     self.run_command(Command::Interrupt, out);
-                } else if self.scroll > 0 {
-                    self.scroll = 0;
+                } else {
+                    self.focus = Focus::Conversation;
                 }
             }
             KeyCode::PageUp => {
@@ -467,8 +845,57 @@ impl State {
                     self.scroll = self.scroll.saturating_sub(1);
                 }
             }
-            KeyCode::Tab => self.composer.insert_str("    "),
             KeyCode::Char(c) if !ctrl => self.composer.insert(c),
+            _ => {}
+        }
+    }
+
+    /// Keys while a box other than Message has focus: the boxes' hotkeys, the focused box's own
+    /// keys, and any other character goes back to the Message box and is typed there.
+    fn region_key(&mut self, k: KeyEvent, out: &mut Vec<Request>) {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let focus = self.focus;
+        match k.code {
+            KeyCode::Esc => {
+                self.focus = Focus::Message;
+                self.scroll = 0;
+            }
+            KeyCode::Enter => match focus {
+                Focus::Model => self.open_model_picker(),
+                Focus::Workspace => self.open_workspace_picker(out),
+                Focus::Board => self.open_board_view(out),
+                Focus::Conversation | Focus::Message => self.focus = Focus::Message,
+            },
+            KeyCode::Char('i') if !ctrl => self.focus = Focus::Message,
+            KeyCode::Char('c') if !ctrl => self.focus = Focus::Conversation,
+            KeyCode::Char('m') if !ctrl => {
+                self.focus = Focus::Model;
+                self.open_model_picker();
+            }
+            KeyCode::Char('w') if !ctrl => self.open_workspace_picker(out),
+            KeyCode::Char(c) if !ctrl && BoardTab::from_key(c).is_some() => {
+                if let Some(t) = BoardTab::from_key(c) {
+                    self.select_tab(t);
+                }
+            }
+            KeyCode::Left if focus == Focus::Board => {
+                let i = self.board_tab.index();
+                self.board_tab = BoardTab::ALL[(i + BoardTab::ALL.len() - 1) % BoardTab::ALL.len()];
+            }
+            KeyCode::Right if focus == Focus::Board => {
+                let i = self.board_tab.index();
+                self.board_tab = BoardTab::ALL[(i + 1) % BoardTab::ALL.len()];
+            }
+            KeyCode::Up => self.scroll = (self.scroll + 1).min(self.scroll_max.get()),
+            KeyCode::Down => self.scroll = self.scroll.saturating_sub(1),
+            KeyCode::PageUp => self.scroll = (self.scroll + self.page()).min(self.scroll_max.get()),
+            KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(self.page()),
+            KeyCode::Home => self.scroll = self.scroll_max.get(),
+            KeyCode::End => self.scroll = 0,
+            KeyCode::Char(c) if !ctrl => {
+                self.focus = Focus::Message;
+                self.composer.insert(c);
+            }
             _ => {}
         }
     }

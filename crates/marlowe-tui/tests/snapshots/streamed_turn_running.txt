@@ -1,40 +1,40 @@
-╭─ MARLOWE · what changed in the gate overnight? ──────────────────────── ⣦⣤⣤⣤⣴⣿ working · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
-│  you  what changed in the gate overnight?                                                             │  CREW                            │
-│  ▸ thought · 1,204 tokens                                                                             │  no runs                         │
-│  ⋯ bash git log --since=yesterday …                                                                   │                                  │
-│  ⋯ read src/gate.rs …                                                                                 │  WATCH                           │
-│                                                                                                       │  nothing watched                 │
-│                                                                                                       │                                  │
-│                                                                                                       │  THREADS                         │
-│                                                                                                       │  no open threads                 │
-│                                                                                                       │                                  │
-│                                                                                                       │  TODAY                           │
-│                                                                                                       │  nothing scheduled               │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────╯
-╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ › steer the running turn…                                                                                                                │
-╰────────────────────────────────────────────────────────────────────────────────────────── ↵ send  ⇧↵ newline  esc interrupt  ^k palette ─╯
+ * marlowe — what changed in the gate overnight?                                                                        0 runs · 0 need you
+╭ Conversation · what changed in the gate overnight? ─────────────────────────── ⣦⣤⣤⣤⣴⣿ working ─╮╭ Model ─────────────────────────────────╮
+│  you  what changed in the gate overnight?                                                      ││ Claude Sonnet 4.5 ▾             medium │
+│  ▸ thought · 1,204 tokens                                                                      ││ ctx ────────────┊──── 0 / 200k · cloud │
+│  ⋯ bash git log --since=yesterday …                                                            │╰────────────────────────────────── (m) ─╯
+│  ⋯ read src/gate.rs …                                                                          │╭ Workspace ─────────────────────────────╮
+│                                                                                                ││ C:/work/valiance ▾                     │
+│                                                                                                │╰────────────────────────────────── (w) ─╯
+│                                                                                                │╭ Crew ──────────────────────────────────╮
+│                                                                                                ││ no runs                                │
+│                                                                                                │╰────────────────────────────────── (1) ─╯
+│                                                                                                │╭ Watch ─────────────────────────────────╮
+│                                                                                                ││ nothing watched                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                                                                                                │╭ Threads ───────────────────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › steer the running turn…                                           esc interrupt · ⇧↵ newline ││ nothing recalled this session          │
+╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ esc Interrupt  ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  alt-v Voice  ^k palette      21:40

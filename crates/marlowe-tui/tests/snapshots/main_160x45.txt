@@ -1,0 +1,45 @@
+ * marlowe — what changed in the gate overnight?                                                                                           3 runs · 1 needs you
+╭ Conversation · what changed in the gate overnight? ──────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ───────────────────────────────────────╮
+│  you  what changed in the gate overnight?                                                                    ││ Claude Sonnet 4.5 ▾                   medium │
+│  ⋯ recall · 3 memories · valiance gate threshold history                                                     ││ ctx ────────────────┊────── 0 / 200k · cloud │
+│  ⋯ bash git log --since=yesterday · 3 commits                                                                │╰──────────────────────────────────────── (m) ─╯
+│                                                                                                              │╭ Workspace ───────────────────────────────────╮
+│  Two commits touched the gate: the threshold moved to 0.42, and the eval harness now pins the tokenizer.     ││ C:/work/valiance ▾                           │
+│                                                               12.4k in · 830 out · 1.2k reasoning · $0.0496  │╰──────────────────────────────────────── (w) ─╯
+│                                                                                                              │╭ Crew ────────────────────────── 1 needs you ─╮
+│                                                                                                              ││ ◐ engineer · fix the gate threshold off-by…  │
+│                                                                                                              ││   waiting on you                             │
+│                                                                                                              ││ ● researcher · LoRA rank ablations for 22B…  │
+│                                                                                                              ││   step 6 · $0.0213 · web_search "lora rank…  │
+│                                                                                                              │╰──────────────────────────────────────── (1) ─╯
+│                                                                                                              │╭ Watch ───────────────────────────── 1 alive ─╮
+│                                                                                                              ││ ✗ llama-8b-sweep-b                           │
+│                                                                                                              ││   torch.OutOfMemoryError: CUDA out of memo…  │
+│                                                                                                              ││ ● marlowe-valiance-22b-wnr5                  │
+│                                                                                                              ││   wnr-p5 · layer 9 · 40s ago                 │
+│                                                                                                              ││                                              │
+│                                                                                                              ││                                              │
+│                                                                                                              ││                                              │
+│                                                                                                              ││                                              │
+│                                                                                                              ││                                              │
+│                                                                                                              ││                                              │
+│                                                                                                              ││                                              │
+│                                                                                                              ││                                              │
+│                                                                                                              ││                                              │
+│                                                                                                              ││                                              │
+│                                                                                                              ││                                              │
+│                                                                                                              ││                                              │
+│                                                                                                              ││                                              │
+│                                                                                                              ││                                              │
+│                                                                                                              ││                                              │
+│                                                                                                              ││                                              │
+│                                                                                                              │╰──────────────────────────────────────── (2) ─╯
+│                                                                                                              │╭ Threads ─────────────────────────────────────╮
+│                                                                                                              ││ no open threads                              │
+│                                                                                                              │╰──────────────────────────────────────── (3) ─╯
+│                                                                                                              │╭ Memory ──────────────────────────────────────╮
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯│ 390 memories · 41 episodes                   │
+╭ Message ─────────────────────────────────────────────────────────────────────────────────────────────────────╮│ 3 recalled over 1 turn                       │
+│ › message Marlowe…                                                                    ⇧↵ newline · esc boxes ││ ⋯ valiance gate threshold history            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────────────────── (4) ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  ^k palette               Friday 9 October · quiet 23:00–07:00 · 21:40

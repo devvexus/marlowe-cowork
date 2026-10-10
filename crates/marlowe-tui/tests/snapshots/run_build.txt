@@ -1,4 +1,5 @@
-╭─ MARLOWE · run · fix the gate threshold off-by-one ─────────────────────── ⣀⣀⣀⣀⣀⣀ idle · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
+ * marlowe — new session                                                                                                1 run · 1 needs you
+╭ Run · fix the gate threshold off-by-one ─────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮
 │                                                                                                                                          │
 │  ◐ engineer · fix the gate threshold off-by-one                                                                               needs you  │
 │  step 14 of 40 · $0.18 of $0.50 · 88k tokens of 400k · 1m ago                                                                            │
@@ -35,6 +36,5 @@
 │                                                                                                                                          │
 │                                                                                                                                          │
 │                                                                                                                                          │
-│                                                                                                                                          │
-│                                                                                                                                          │
-╰─────────────────────────────────────────────────────────────────────────────────────── m merge  ·  d discard  ·  ↑↓ scroll  ·  esc runs ─╯
+╰───────────────────────────────────────────────────────────────────────────────────── m merge  ·  d discard  ·  ↑↓ scroll  ·  esc/⌫ runs ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  ^k palette               Friday 9 October · 21:40

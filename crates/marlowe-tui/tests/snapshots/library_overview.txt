@@ -1,4 +1,5 @@
-╭─ MARLOWE · library ─────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
+ * marlowe — new session                                                                                                0 runs · 0 need you
+╭ Library ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮
 │                                                                                                                                          │
 │  SLOTS  ·  which model does what                                                                                                         │
 │                                                                                                                                          │
@@ -9,13 +10,11 @@
 │    Quick               Claude Sonnet 4.5                 OpenRouter    medium   default                                                  │
 │                                                                                                                                          │
 │                                                                                                                                          │
-│  MODELS  ·  1 in the library                                                                                                             │
+│  MODELS  ·  1 in the library · the default for every slot                                                                                │
 │                                                                                                                                          │
-│    model                             provider      context   price / Mtok      can                                                       │
-│  › Claude Sonnet 4.5                 OpenRouter    200k      $3 / $15          tools · reasoning                                         │
-│                                                                                                                                          │
-│                                                                                                                                          │
-│                                                                                                                                          │
+│    model                             provider      window          price / Mtok      can                                                 │
+│  › Claude Sonnet 4.5                 OpenRouter    200k            $3 / $15          tools · reasoning                                   │
+│    + add another model                                                                                                                   │
 │                                                                                                                                          │
 │                                                                                                                                          │
 │                                                                                                                                          │
@@ -37,4 +36,5 @@
 │                                                                                                                                          │
 │                                                                                                                                          │
 │                                                                                                                                          │
-╰─ added anthropic/claude-sonnet-4.5 ───── ↑↓ select  ·  ←→ model  ·  e effort  ·  tab slots / models  ·  a add  ·  d remove  ·  esc back ─╯
+╰─ added anthropic/claude-sonnet-4.5 ──────── ↵ keep as conductor  ·  c context  ·  d remove  ·  ↑↓ move  ·  a add a model  ·  esc/⌫ back ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  alt-v Voice  ^k palette                     21:40

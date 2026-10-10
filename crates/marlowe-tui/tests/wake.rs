@@ -1,4 +1,4 @@
-//! The Wake: boot frames, the brief, the voice-driven meter, the WATCH/TODAY rail, toasts and
+//! The Wake: boot frames, the brief, the voice-driven meter, the Watch section and the footer's Today, toasts and
 //! the Watch view. Snapshotted, and every frame keeps the no-background palette rule.
 
 mod common;
@@ -308,7 +308,7 @@ fn rail_shows_runs_notices_and_today() {
     );
     let buf = render(&s, W, H);
     for want in [
-        "WATCH",
+        "Watch",
         "1 alive",
         "✗ llama-8b-sweep-b",
         "◐ marlowe-valiance-22b-wnr3",
@@ -318,9 +318,8 @@ fn rail_shows_runs_notices_and_today() {
         "✓ marlowe-valiance-22b-wnr4",
         "▲ valiance: eval_loss plateau",
         "✓ new model marlowe-valiance",
-        "Friday 9 October",
-        "quiet 23:00–07:00",
-        "no routines",
+        // Today lives on the footer.
+        "Friday 9 October · quiet 23:00–07:00 · 21:40",
     ] {
         assert!(contains(&buf, want), "rail is missing {want}");
     }
@@ -340,7 +339,7 @@ fn urgent_notices_toast_and_quiet_hours_show_in_the_rail() {
     let buf = render(&s, W, H);
     assert!(contains(&buf, "✗ wnr5 loss is NaN"));
     assert!(contains(&buf, "step 4,120 · loss nan"));
-    assert!(contains(&buf, "quiet now · 23:00–07:00"));
+    assert!(contains(&buf, "quiet now 23:00–07:00"), "quiet hours are on the footer, amber while in them");
     assert_palette_only(&buf);
     snapshot("toast", &buf);
     // A duplicate at the same severity does not toast again; the toast expires.

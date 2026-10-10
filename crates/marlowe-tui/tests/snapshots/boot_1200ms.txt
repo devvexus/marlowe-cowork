@@ -1,40 +1,40 @@
-╭─ MARLOWE ─────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ waking · Claude Sonnet 4.5 ▾ · C:/work/valiance · 21:40 ─╮
-│                                                                                                       │  CREW                            │
-│                                                                                                       │  no runs                         │
-│                                                                                                       │                                  │
-│                                                                                                       │  WATCH                   1 alive │
-│                                                                                                       │  ✗ llama-8b-sweep-b              │
-│                                                                                                       │    torch.OutOfMemoryError: CUDA… │
-│                                                                                                       │  ◐ marlowe-valiance-22b-wnr3     │
-│                                                                                                       │    silent 23m · pid 51200 alive  │
-│                                                                                                       │  ● marlowe-valiance-22b-wnr5     │
-│                                                                                                       │    wnr-p5 · layer 9 · 41s ago    │
-│                     ⣀⣀⣀⣀⣀⣀  MARLOWE                                                                   │  ✓ marlowe-valiance-22b-wnr4     │
-│                                                                                                       │    [05:19:34] done · audit3_mar… │
-│                     ●  daemon ····· online · v0.1.0                                                   │                                  │
-│                     ●  memory ····· 390 beliefs · recall online                                       │  THREADS                         │
-│                     ●  brains ····· Claude Sonnet 4.5 · 1 model                                       │  no open threads                 │
-│                     ●  watch ······ 1 root · 1 run alive · 2 need a look                              │                                  │
-│                     ●  voice ······ online · George (en-GB)                                           │  TODAY                           │
-│                                                                                                       │  Friday 9 October                │
-│                     any key to begin                                                                  │  quiet 23:00–07:00               │
-│                                                                                                       │  no routines                     │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-│                                                                                                       │                                  │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────╯
-╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ › message Marlowe…                                                                                                                       │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────── ↵ send  ⇧↵ newline  ^k palette ─╯
+ * marlowe — new session                                                                                                 1 run · 0 need you
+╭ Conversation ────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ waking ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ Claude Sonnet 4.5 ▾             medium │
+│                                                                                                ││ ctx ────────────┊──── 0 / 200k · cloud │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
+│                                                                                                │╭ Workspace ─────────────────────────────╮
+│                                                                                                ││ C:/work/valiance ▾                     │
+│                                                                                                │╰────────────────────────────────── (w) ─╯
+│                                                                                                │╭ Crew ──────────────────────────────────╮
+│                                                                                                ││ no runs                                │
+│                                                                                                │╰────────────────────────────────── (1) ─╯
+│                  ⣀⣀⣀⣀⣀⣀  MARLOWE                                                               │╭ Watch ─────────────────────── 1 alive ─╮
+│                                                                                                ││ ✗ llama-8b-sweep-b                     │
+│                  ●  daemon ····· online · v0.1.0                                               ││   torch.OutOfMemoryError: CUDA out o…  │
+│                  ●  memory ····· 390 beliefs · recall online                                   ││ ◐ marlowe-valiance-22b-wnr3            │
+│                  ●  brains ····· Claude Sonnet 4.5 · 1 model                                   ││   silent 23m · pid 51200 alive         │
+│                  ●  watch ······ 1 root · 1 run alive · 2 need a look                          ││ ● marlowe-valiance-22b-wnr5            │
+│                  ●  voice ······ online · George (en-GB)                                       ││   wnr-p5 · layer 9 · 41s ago           │
+│                                                                                                ││ ✓ marlowe-valiance-22b-wnr4            │
+│                  any key to begin                                                              ││   [05:19:34] done · audit3_marlowe-v…  │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                                                                                                │╭ Threads ───────────────────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ 390 memories · 41 episodes             │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^k palette        Friday 9 October · quiet 23:00–07:00 · 21:40

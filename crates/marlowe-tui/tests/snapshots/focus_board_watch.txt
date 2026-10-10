@@ -1,0 +1,30 @@
+ * marlowe — what changed in the gate overnight?                                                   3 runs · 1 needs you
+╭ Conversation · what changed in the gate overnight? ────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────╮
+│  you  what changed in the gate overnight?                                      ││ Claude Sonnet 4.5 ▾         medium │
+│  ⋯ recall · 3 memories · valiance gate threshold history                       ││ ctx ─────────┊─── 0 / 200k · cloud │
+│  ⋯ bash git log --since=yesterday · 3 commits                                  │╰────────────────────────────── (m) ─╯
+│                                                                                │╭ Workspace ─────────────────────────╮
+│  Two commits touched the gate: the threshold moved to 0.42, and the eval       ││ C:/work/valiance ▾                 │
+│  harness now pins the tokenizer.                                               │╰────────────────────────────── (w) ─╯
+│                                 12.4k in · 830 out · 1.2k reasoning · $0.0496  │╭ 1 Crew 2 Watch 3 Threads 4 Memory ─╮
+│                                                                                ││ ✗ llama-8b-sweep-b                 │
+│                                                                                ││   torch.OutOfMemoryError: CUDA o…  │
+│                                                                                ││ ● marlowe-valiance-22b-wnr5        │
+│                                                                                ││   wnr-p5 · layer 9 · 40s ago       │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (c) ─╯│                                    │
+╭ Message ───────────────────────────────────────────────────────────────────────╮│                                    │
+│ › message Marlowe…                                      ⇧↵ newline · esc boxes ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (i) ─╯╰─ ↵ open · ←→ section ────── (1-4) ─╯
+ ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^k palette       quiet 23:00–07:00 · 21:40
