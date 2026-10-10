@@ -408,6 +408,7 @@ fn box_hovered(state: &State, f: Focus) -> bool {
     match (&state.hover, f) {
         (Some(Target::Box(h)), _) => *h == f,
         (Some(Target::Tab(_)), Focus::Board) => true,
+        (Some(Target::Thought(_)), Focus::Conversation) => true,
         _ => false,
     }
 }
@@ -590,7 +591,17 @@ fn draw_conversation_box(g: &Geometry, state: &State, theme: &Theme, buf: &mut B
     region_box(r, title, &reg.hotkey_label(), focus, theme, buf);
     border_right(r, r.y, &presence(state, theme), taken, buf);
     if focus == FocusLevel::Focused {
-        let keys = hints(&[("↑↓", "scroll"), ("end", "latest"), ("i", "type")], theme);
+        // With reasoning on screen, Enter folds the block the cursor is on (as the last frame drew
+        // it) and Shift+arrows move the cursor between blocks.
+        let v = state.viewport.get();
+        let cursor = crate::state::pick_thought(&state.marks.borrow(), v.top, v.size.1 as usize, state.thought);
+        let keys = match cursor {
+            Some(e) => {
+                let fold = if state.thought_open(e) { "close" } else { "open" };
+                hints(&[("↑↓", "scroll"), ("⇧↑↓", "thoughts"), ("↵", fold), ("end", "latest"), ("i", "type")], theme)
+            }
+            None => hints(&[("↑↓", "scroll"), ("end", "latest"), ("i", "type")], theme),
+        };
         border_left(r, &keys, buf);
     }
 }

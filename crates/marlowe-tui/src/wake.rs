@@ -361,7 +361,7 @@ impl State {
         let shown = self.entries.iter().any(|e| matches!(e, crate::state::Entry::Brief { text: t, .. } if t == text));
         if !shown && !text.trim().is_empty() {
             self.entries.push(crate::state::Entry::Brief { text: text.to_string(), offers: offers.to_vec() });
-            self.scroll = 0;
+            self.follow_tail();
         }
     }
 

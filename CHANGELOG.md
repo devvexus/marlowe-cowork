@@ -4,6 +4,15 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Reasoning folds
+
+Matthew: the old TUI opened the thinking block on Enter; the new one had no way to open a finished block except ^t for all of them.
+
+- **Added.** A finished block's marker reads `▸ thought for 12s · 1,204 tokens` (the time is from its first reasoning delta to what closed it; a stored transcript has only the count). Enter on the Conversation box (`esc` or `⇧tab` from the Message box) opens or closes the block its cursor is on: the one picked with `⇧↑`/`⇧↓`, else the lowest on screen, drawn in the accent with `↵`. A click on any marker folds that block and leaves the keys where they were. Markers light one weight up under the pointer; no fill.
+- **Added.** Folds are per block (`State::folds`, by entry index) over ^t's default; ^t still opens or closes every block and clears them.
+- **Changed.** A fold opens or closes in place: the toggled marker keeps its screen row (`Anchor`). That can leave the view above the tail with `scroll` 0 (`Pin::Above`, held like a scrolled-up view until the reader scrolls or sends) or past it (`Pin::Tail`: the rows under a block closed near the end wait empty until the reply fills them, then the view follows the tail; scrolling moves from where it is).
+- **Tests.** `marlowe-tui/tests/folds.rs` replays keys and clicks: open and close any number of times with the screen given back exactly, past blocks reached with `⇧↑`, hover lighting, a click mid-stream that then holds the reader's rows, and a close near the end mid-stream where the view never moves back. `stream_replay.rs` is unchanged and green.
+
 ### Steady streaming and one maths style
 
 Matthew's first hands-on (dusk-27b, Windows Terminal): the pane bounced while maths streamed, and typeset images looked like grey serif renders beside the grid maths.

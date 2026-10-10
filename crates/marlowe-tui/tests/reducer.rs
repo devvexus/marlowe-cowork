@@ -122,7 +122,7 @@ fn retracted_text_becomes_thinking() {
     let mut s = in_session();
     feed(&mut s, 4, Event::TextDelta { session: sid(), turn: 1, text: "<think>hmm".into() });
     feed(&mut s, 5, Event::TextRetracted { session: sid(), turn: 1, tokens: 3 });
-    assert_eq!(s.entries.last(), Some(&Entry::Thinking { text: "<think>hmm".into(), tokens: 3, live: false }));
+    assert_eq!(s.entries.last(), Some(&Entry::Thinking { text: "<think>hmm".into(), tokens: 3, live: false, ms: 0 }));
 }
 
 #[test]
