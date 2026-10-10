@@ -12,14 +12,18 @@
 //! Rename turns the server's WorkspaceEdit into per-file byte edits, renders each file's change
 //! as a unified diff, checks that replaying the diff onto the original reproduces the new text
 //! exactly, then writes every file; a failed write puts back the ones already written, so the
-//! rename lands whole or not at all. Edits outside the root, and file create/rename/delete
-//! operations, are refused before anything is written.
+//! rename lands whole or not at all. Edits outside the root (after `..` and links), file
+//! create/rename/delete operations, and edits to a file whose disk text is not the copy the
+//! server answered from, are refused before anything is written. Every request first brings the
+//! server's open files up to the disk, since the shell or an editor may have changed them.
 //!
 //! Post-edit diagnostics: [`CodeIntel::before_edit`] opens the files on their server (starting
 //! it only when the workspace has its project marker) and remembers what it last published;
 //! [`CodeIntel::after_edit`] sends the new text, waits for a publish for that version (settle
 //! 800 ms quiet, all files within 5 s; pulled where the server takes pulls) and returns the
-//! errors that were not there before.
+//! errors that were not there before. Publishes that land later (rust-analyzer's `cargo check`)
+//! are read by [`CodeIntel::latest`]; `marlowe-exec`'s diagnostics middleware diffs them against
+//! what the model was last shown.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -53,6 +57,37 @@ pub const BODY_LINES: usize = 60;
 /// readiness signal answer before they have scanned the workspace (pyright's first `references`
 /// comes back empty for about a second).
 pub const WARMUP: Duration = Duration::from_secs(5);
+
+/// Who is asking: whether the call may use a trusted server (the user's free-write workspace, in a
+/// session no untrusted content has entered; see [`super::servers`]), and its interrupt.
+#[derive(Clone, Copy)]
+pub struct Caller<'a> {
+    pub cancelled: &'a dyn Fn() -> bool,
+    pub trusted: bool,
+}
+
+impl<'a> Caller<'a> {
+    pub fn new(cancelled: &'a dyn Fn() -> bool, trusted: bool) -> Self {
+        Self { cancelled, trusted }
+    }
+}
+
+/// The errors in `now` that are not in `known`, matched by (code, message) as a multiset, so
+/// errors that only moved lines are not new.
+pub fn new_errors(known: &[Diag], now: &[Diag]) -> Vec<Diag> {
+    let mut known: Vec<(Option<&str>, &str)> =
+        known.iter().filter(|d| d.severity == 1).map(|d| (d.code.as_deref(), d.message.as_str())).collect();
+    let mut out = Vec::new();
+    for d in now.iter().filter(|d| d.severity == 1) {
+        match known.iter().position(|k| *k == (d.code.as_deref(), d.message.as_str())) {
+            Some(i) => {
+                known.swap_remove(i);
+            }
+            None => out.push(d.clone()),
+        }
+    }
+    out
+}
 
 /// A request whose empty answer from a warming-up server is retried every 500 ms until the
 /// server is [`WARMUP`] old. Servers with `serverStatus` were waited for already.
@@ -190,6 +225,24 @@ impl EditSnapshot {
     pub fn is_empty(&self) -> bool {
         self.before.is_empty()
     }
+
+    /// Whether the snapshot covers `path`.
+    pub fn covers(&self, path: &Path) -> bool {
+        self.before.contains_key(&norm_key(path))
+    }
+
+    /// What `path` had before the edit, as far as its server had said.
+    pub fn known(&self, path: &Path) -> Vec<Diag> {
+        self.before.get(&norm_key(path)).and_then(|e| e.0.clone()).unwrap_or_default()
+    }
+
+    /// Diffs `path` against `known` instead of what its server last published: what the model
+    /// was last shown, so a publish that landed unseen since then (a late `cargo check`) is new.
+    pub fn assume_known(&mut self, path: &Path, known: Vec<Diag>) {
+        if let Some(entry) = self.before.get_mut(&norm_key(path)) {
+            entry.0 = Some(known);
+        }
+    }
 }
 
 /// Diagnostics for one file after an edit.
@@ -204,6 +257,38 @@ pub struct FileDiags {
     /// The server's line text for each new error, for display.
     pub lines: Vec<String>,
     /// Columns are in the server's units; this says which.
+    pub encoding: Encoding,
+    /// Everything the file has now, and the publish it came from (server instance, generation).
+    pub now: Vec<Diag>,
+    pub instance: u64,
+    pub gen: u64,
+}
+
+impl FileDiags {
+    /// `now` diffed against `known`, with the error lines read from `text`.
+    pub fn diff(path: &Path, known: &[Diag], now: Vec<Diag>, text: &str, encoding: Encoding, instance: u64, gen: u64) -> Self {
+        let new_errors = new_errors(known, &now);
+        let lines = new_errors.iter().map(|d| text.lines().nth(d.line as usize).unwrap_or("").trim().to_string()).collect();
+        FileDiags {
+            path: path.to_path_buf(),
+            errors: now.iter().filter(|d| d.severity == 1).count(),
+            warnings: now.iter().filter(|d| d.severity == 2).count(),
+            new_errors,
+            lines,
+            encoding,
+            now,
+            instance,
+            gen,
+        }
+    }
+}
+
+/// A file's latest publish on its running server, read without waiting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Latest {
+    pub instance: u64,
+    pub gen: u64,
+    pub items: Vec<Diag>,
     pub encoding: Encoding,
 }
 
@@ -311,9 +396,9 @@ impl CodeIntel {
         Ok(())
     }
 
+    /// Whether `p` is under the root, with `..` applied and links resolved.
     fn inside(&self, p: &Path) -> bool {
-        let (k, r) = (norm_key(p), norm_key(&self.root));
-        k.len() > r.len() && k.starts_with(&r) && k.as_bytes()[r.len()] == b'/'
+        super::uri::contained(&self.root, p)
     }
 
     /// `p` relative to the root, `/`-separated (absolute when outside).
@@ -333,15 +418,29 @@ impl CodeIntel {
         (start + t.col.saturating_sub(1) as usize).min(text.len())
     }
 
-    /// The server for `path`, started if needed, with the file synced; waits for it to be ready.
-    fn server_at(
-        &self,
-        ws: &dyn Workspace,
-        path: &Path,
-        cancelled: &dyn Fn() -> bool,
-    ) -> Result<(LspClient, String, bool)> {
-        let client = self.lsp.client(path, &self.root)?;
-        let ready = client.wait_ready(READY_MAX, cancelled);
+    /// The server for `path` (started if needed, waited for), with every file it has open brought
+    /// up to the disk: once a file is open the server goes by Marlowe's copy, so a change made
+    /// since by the shell (`cargo fmt`, `git checkout`) or an editor would leave its answers
+    /// pointing at old positions. Returns whether it was ready.
+    fn connect(&self, ws: &dyn Workspace, path: &Path, caller: &Caller) -> Result<(LspClient, bool)> {
+        let client = self.lsp.client(path, &self.root, caller.trusted)?;
+        let ready = client.wait_ready(READY_MAX, caller.cancelled);
+        self.resync(ws, &client);
+        Ok((client, ready))
+    }
+
+    /// Sends the disk's text for every open file whose text differs from the server's copy.
+    fn resync(&self, ws: &dyn Workspace, client: &LspClient) {
+        for p in client.open_docs() {
+            if let Ok(text) = Self::read_text(ws, &p) {
+                client.sync(&p, &text);
+            }
+        }
+    }
+
+    /// [`Self::connect`] with `path` itself opened and synced; its text.
+    fn server_at(&self, ws: &dyn Workspace, path: &Path, caller: &Caller) -> Result<(LspClient, String, bool)> {
+        let (client, ready) = self.connect(ws, path, caller)?;
         let text = Self::read_text(ws, path)?;
         client.sync(path, &text);
         Ok((client, text, ready))
@@ -380,7 +479,7 @@ impl CodeIntel {
         symbol: &str,
         path: Option<&Path>,
         kind: Option<&str>,
-        cancelled: &dyn Fn() -> bool,
+        caller: &Caller,
     ) -> Result<(Vec<Target>, Source)> {
         let (container, name) = split_symbol(symbol);
         if name.is_empty() {
@@ -401,7 +500,7 @@ impl CodeIntel {
                 return Ok((here, Source::Index));
             }
             // Used in that file but defined elsewhere: ask the server from the use.
-            if let Ok(t) = self.definition_from_use(ws, p, &name, cancelled) {
+            if let Ok(t) = self.definition_from_use(ws, p, &name, caller) {
                 if !t.is_empty() {
                     return Ok((t, Source::Server));
                 }
@@ -411,7 +510,7 @@ impl CodeIntel {
             return Ok((found, Source::Index));
         }
         // No tag: the servers' workspace symbols.
-        let t = self.workspace_symbols(ws, &name, container.as_deref(), path, cancelled)?;
+        let t = self.workspace_symbols(ws, &name, container.as_deref(), path, caller)?;
         if t.is_empty() {
             let hint = match path {
                 Some(p) => format!(" (looked in {} and the whole workspace)", self.rel(p)),
@@ -423,11 +522,11 @@ impl CodeIntel {
     }
 
     /// Go-to-definition from the first whole-word use of `name` in `path`.
-    fn definition_from_use(&self, ws: &dyn Workspace, path: &Path, name: &str, cancelled: &dyn Fn() -> bool) -> Result<Vec<Target>> {
+    fn definition_from_use(&self, ws: &dyn Workspace, path: &Path, name: &str, caller: &Caller) -> Result<Vec<Target>> {
         let text = Self::read_text(ws, path)?;
         let Some(off) = first_word(&text, name) else { return Ok(Vec::new()) };
-        let (client, text, _) = self.server_at(ws, path, cancelled)?;
-        let r = ask(&client, "textDocument/definition", Self::position(&client, path, &text, off), cancelled)?;
+        let (client, text, _) = self.server_at(ws, path, caller)?;
+        let r = ask(&client, "textDocument/definition", Self::position(&client, path, &text, off), caller.cancelled)?;
         let locs: Vec<Value> = match r {
             Value::Array(a) => a,
             Value::Null => Vec::new(),
@@ -469,7 +568,7 @@ impl CodeIntel {
         name: &str,
         container: Option<&str>,
         path: Option<&Path>,
-        cancelled: &dyn Fn() -> bool,
+        caller: &Caller,
     ) -> Result<Vec<Target>> {
         let probe: Vec<PathBuf> = match path {
             Some(p) => vec![p.to_path_buf()],
@@ -478,14 +577,13 @@ impl CodeIntel {
         let mut out = Vec::new();
         let mut asked = Vec::new();
         for file in probe {
-            let Some(spec) = Lang::of(&file).and_then(|l| self.lsp.spec_for(l, &self.root)) else { continue };
+            let Some(spec) = Lang::of(&file).and_then(|l| self.lsp.spec_for(l, &self.root, caller.trusted)) else { continue };
             if asked.contains(&spec.id) {
                 continue;
             }
             asked.push(spec.id);
-            let Ok(client) = self.lsp.client(&file, &self.root) else { continue };
-            client.wait_ready(READY_MAX, cancelled);
-            let Ok(r) = ask(&client, "workspace/symbol", json!({"query": name}), cancelled) else { continue };
+            let Ok((client, _)) = self.connect(ws, &file, caller) else { continue };
+            let Ok(r) = ask(&client, "workspace/symbol", json!({"query": name}), caller.cancelled) else { continue };
             let mut cache = HashMap::new();
             for s in r.as_array().into_iter().flatten() {
                 if s.get("name").and_then(Value::as_str) != Some(name) {
@@ -533,7 +631,7 @@ impl CodeIntel {
         path: Option<&Path>,
         kind: Option<&str>,
         limit: usize,
-        cancelled: &dyn Fn() -> bool,
+        caller: &Caller,
     ) -> Result<(Vec<Target>, Source)> {
         self.ensure_index(ws)?;
         if let Some(p) = path.filter(|p| ws.metadata(p).is_ok_and(|m| m.is_file)) {
@@ -549,29 +647,29 @@ impl CodeIntel {
                 tags.truncate(limit);
                 return Ok((tags, Source::Index));
             }
-            return self.document_symbols(ws, p, query, limit, cancelled).map(|t| (t, Source::Server));
+            return self.document_symbols(ws, p, query, limit, caller).map(|t| (t, Source::Server));
         }
-        let mut hits: Vec<Target> = self.index.search(query, kind, limit).into_iter().map(Target::from_symbol).collect();
-        if let Some(dir) = path {
-            let d = norm_key(dir);
-            hits.retain(|t| norm_key(&t.path).starts_with(&format!("{d}/")));
-        }
+        // The folder is part of the index query, so the limit counts only its definitions.
+        let hits: Vec<Target> = self.index.search_in(query, kind, path, limit).into_iter().map(Target::from_symbol).collect();
         if !hits.is_empty() || query.is_empty() {
             return Ok((hits, Source::Index));
         }
         let (container, name) = split_symbol(query);
-        let mut t = self.workspace_symbols(ws, &name, container.as_deref(), None, cancelled)?;
+        let mut t = self.workspace_symbols(ws, &name, container.as_deref(), None, caller)?;
+        if let Some(dir) = path {
+            t.retain(|t| super::uri::contained(dir, &t.path));
+        }
         t.truncate(limit);
         Ok((t, Source::Server))
     }
 
-    fn document_symbols(&self, ws: &dyn Workspace, path: &Path, query: &str, limit: usize, cancelled: &dyn Fn() -> bool) -> Result<Vec<Target>> {
-        let (client, text, _) = self.server_at(ws, path, cancelled)?;
+    fn document_symbols(&self, ws: &dyn Workspace, path: &Path, query: &str, limit: usize, caller: &Caller) -> Result<Vec<Target>> {
+        let (client, text, _) = self.server_at(ws, path, caller)?;
         let r = client.request(
             "textDocument/documentSymbol",
             json!({"textDocument": {"uri": path_to_uri(path)}}),
             REQUEST_TIMEOUT,
-            cancelled,
+            caller.cancelled,
         )?;
         let enc = client.encoding();
         let mut out = Vec::new();
@@ -633,14 +731,14 @@ impl CodeIntel {
         symbol: &str,
         path: Option<&Path>,
         limit: usize,
-        cancelled: &dyn Fn() -> bool,
+        caller: &Caller,
     ) -> Result<(Target, Vec<Loc>, Source)> {
-        let target = self.one(ws, symbol, path, cancelled)?;
-        match self.server_at(ws, &target.path, cancelled) {
+        let target = self.one(ws, symbol, path, caller)?;
+        match self.server_at(ws, &target.path, caller) {
             Ok((client, text, _)) if client.has("referencesProvider") => {
                 let mut params = Self::position(&client, &target.path, &text, Self::target_offset(&text, &target));
                 params["context"] = json!({"includeDeclaration": false});
-                let r = ask(&client, "textDocument/references", params, cancelled)?;
+                let r = ask(&client, "textDocument/references", params, caller.cancelled)?;
                 let mut cache = HashMap::new();
                 let mut locs: Vec<Loc> = r
                     .as_array()
@@ -676,8 +774,8 @@ impl CodeIntel {
     }
 
     /// The one definition `symbol` names, or an error listing the candidates.
-    pub fn one(&self, ws: &dyn Workspace, symbol: &str, path: Option<&Path>, cancelled: &dyn Fn() -> bool) -> Result<Target> {
-        let (mut found, _) = self.resolve(ws, symbol, path, None, cancelled)?;
+    pub fn one(&self, ws: &dyn Workspace, symbol: &str, path: Option<&Path>, caller: &Caller) -> Result<Target> {
+        let (mut found, _) = self.resolve(ws, symbol, path, None, caller)?;
         found.dedup_by(|a, b| norm_key(&a.path) == norm_key(&b.path) && a.line == b.line);
         if found.len() == 1 {
             return Ok(found.remove(0));
@@ -696,12 +794,12 @@ impl CodeIntel {
     }
 
     /// Hover text for the one definition `symbol` names (the server's; the signature without one).
-    pub fn hover(&self, ws: &dyn Workspace, symbol: &str, path: Option<&Path>, cancelled: &dyn Fn() -> bool) -> Result<(Target, String, Source)> {
-        let target = self.one(ws, symbol, path, cancelled)?;
-        if let Ok((client, text, _)) = self.server_at(ws, &target.path, cancelled) {
+    pub fn hover(&self, ws: &dyn Workspace, symbol: &str, path: Option<&Path>, caller: &Caller) -> Result<(Target, String, Source)> {
+        let target = self.one(ws, symbol, path, caller)?;
+        if let Ok((client, text, _)) = self.server_at(ws, &target.path, caller) {
             if client.has("hoverProvider") {
                 let params = Self::position(&client, &target.path, &text, Self::target_offset(&text, &target));
-                if let Ok(r) = client.request("textDocument/hover", params, REQUEST_TIMEOUT, cancelled) {
+                if let Ok(r) = client.request("textDocument/hover", params, REQUEST_TIMEOUT, caller.cancelled) {
                     let h = hover_text(&r);
                     if !h.is_empty() {
                         return Ok((target, h, Source::Server));
@@ -715,16 +813,15 @@ impl CodeIntel {
 
     /// Diagnostics for `path` (opened on its server, settled), or every file the running servers
     /// have published for.
-    pub fn diagnostics(&self, ws: &dyn Workspace, path: Option<&Path>, cancelled: &dyn Fn() -> bool) -> Result<Vec<(PathBuf, Vec<Diag>, Encoding)>> {
+    pub fn diagnostics(&self, ws: &dyn Workspace, path: Option<&Path>, caller: &Caller) -> Result<Vec<(PathBuf, Vec<Diag>, Encoding)>> {
         match path {
             Some(p) => {
-                let client = self.lsp.client(p, &self.root)?;
-                client.wait_ready(READY_MAX, cancelled);
+                let (client, _) = self.connect(ws, p, caller)?;
                 let text = Self::read_text(ws, p)?;
                 let (version, gen) = client.sync(p, &text);
                 let diags = client
-                    .pull_diagnostics(p, REQUEST_TIMEOUT, cancelled)
-                    .or_else(|| client.wait_diagnostics(p, gen, version, SETTLE, DIAG_MAX, cancelled))
+                    .pull_diagnostics(p, REQUEST_TIMEOUT, caller.cancelled)
+                    .or_else(|| client.wait_diagnostics(p, gen, version, SETTLE, DIAG_MAX, caller.cancelled))
                     .or_else(|| client.diagnostics(p))
                     .unwrap_or_default();
                 Ok(vec![(p.to_path_buf(), diags, client.encoding())])
@@ -755,17 +852,17 @@ impl CodeIntel {
         symbol: &str,
         new_name: &str,
         path: Option<&Path>,
-        cancelled: &dyn Fn() -> bool,
+        caller: &Caller,
     ) -> Result<RenamePlan> {
         let new_name = new_name.trim();
         if !is_identifier(new_name) {
             return Err(IntelError::Refused(format!("`{new_name}` is not an identifier")));
         }
-        let target = self.one(ws, symbol, path, cancelled)?;
+        let target = self.one(ws, symbol, path, caller)?;
         if target.name == new_name {
             return Err(IntelError::Refused(format!("`{symbol}` is already called `{new_name}`")));
         }
-        let (client, text, ready) = self.server_at(ws, &target.path, cancelled).map_err(|e| match e {
+        let (client, text, ready) = self.server_at(ws, &target.path, caller).map_err(|e| match e {
             IntelError::Lsp(l) => IntelError::Refused(format!(
                 "rename_symbol needs a language server for {} ({l}); a rename by name alone is not safe",
                 self.rel(&target.path)
@@ -778,33 +875,44 @@ impl CodeIntel {
         let pos = Self::position(&client, &target.path, &text, Self::target_offset(&text, &target));
         let prepare = client.capabilities().pointer("/renameProvider/prepareProvider").and_then(Value::as_bool) == Some(true);
         if prepare {
-            let r = client.request("textDocument/prepareRename", pos.clone(), REQUEST_TIMEOUT, cancelled)?;
+            let r = client.request("textDocument/prepareRename", pos.clone(), REQUEST_TIMEOUT, caller.cancelled)?;
             if r.is_null() {
                 return Err(IntelError::Refused(format!("{} says `{}` cannot be renamed here", client.id(), target.qualified())));
             }
         }
         let mut params = pos;
         params["newName"] = json!(new_name);
-        let edit = client.request("textDocument/rename", params, REQUEST_TIMEOUT, cancelled)?;
+        let edit = client.request("textDocument/rename", params, REQUEST_TIMEOUT, caller.cancelled)?;
         if edit.is_null() {
             let why = if ready { "" } else { " (it was still loading the workspace)" };
             return Err(IntelError::Refused(format!("{} returned no edits for `{}`{why}", client.id(), target.qualified())));
         }
-        let files = self.changes(ws, &edit, client.encoding())?;
+        let files = self.changes(ws, &edit, &client)?;
         if files.is_empty() {
             return Err(IntelError::Refused(format!("{} returned no edits for `{}`", client.id(), target.qualified())));
         }
         Ok(RenamePlan { target, new_name: new_name.to_string(), files })
     }
 
-    /// A WorkspaceEdit as checked per-file changes.
-    fn changes(&self, ws: &dyn Workspace, edit: &Value, enc: Encoding) -> Result<Vec<FileChange>> {
-        let mut per_file: Vec<(PathBuf, Vec<Value>)> = Vec::new();
-        let mut push = |uri: &str, edits: Vec<Value>| -> Result<()> {
-            let path = uri_to_path(uri).ok_or_else(|| IntelError::Refused(format!("the server edits a non-file URI {uri}")))?;
-            match per_file.iter_mut().find(|(p, _)| norm_key(p) == norm_key(&path)) {
-                Some((_, e)) => e.extend(edits),
-                None => per_file.push((path, edits)),
+    /// A WorkspaceEdit as checked per-file changes. The server's positions are only good for the
+    /// text it saw: a file it has open must hold, on disk, exactly the copy the server has (and
+    /// the version the edit names, when it names one), or the rename is refused.
+    fn changes(&self, ws: &dyn Workspace, edit: &Value, client: &LspClient) -> Result<Vec<FileChange>> {
+        let enc = client.encoding();
+        // (path, edits, the document version the server says it edited)
+        let mut per_file: Vec<(PathBuf, Vec<Value>, Option<i64>)> = Vec::new();
+        let mut push = |uri: &str, edits: Vec<Value>, version: Option<i64>| -> Result<()> {
+            let raw = uri_to_path(uri).ok_or_else(|| IntelError::Refused(format!("the server edits a non-file URI {uri}")))?;
+            // `..` applied, so the path checked is the path written.
+            let path = super::uri::normalize(&raw).ok_or_else(|| {
+                IntelError::Refused(format!("the rename would edit {} outside the workspace; nothing was changed", raw.display()))
+            })?;
+            match per_file.iter_mut().find(|(p, ..)| norm_key(p) == norm_key(&path)) {
+                Some((_, e, v)) => {
+                    e.extend(edits);
+                    *v = v.or(version);
+                }
+                None => per_file.push((path, edits, version)),
             }
             Ok(())
         };
@@ -817,15 +925,16 @@ impl CodeIntel {
                     )));
                 }
                 let uri = c.pointer("/textDocument/uri").and_then(Value::as_str).unwrap_or("");
-                push(uri, c.get("edits").and_then(Value::as_array).cloned().unwrap_or_default())?;
+                let version = c.pointer("/textDocument/version").and_then(Value::as_i64);
+                push(uri, c.get("edits").and_then(Value::as_array).cloned().unwrap_or_default(), version)?;
             }
         } else if let Some(ch) = edit.get("changes").and_then(Value::as_object) {
             for (uri, edits) in ch {
-                push(uri, edits.as_array().cloned().unwrap_or_default())?;
+                push(uri, edits.as_array().cloned().unwrap_or_default(), None)?;
             }
         }
         let mut out = Vec::new();
-        for (path, edits) in per_file {
+        for (path, edits, version) in per_file {
             if !self.inside(&path) {
                 return Err(IntelError::Refused(format!(
                     "the rename would edit {} outside the workspace; nothing was changed",
@@ -833,6 +942,19 @@ impl CodeIntel {
                 )));
             }
             let old = Self::read_text(ws, &path)?;
+            let stale = || {
+                IntelError::Refused(format!(
+                    "{} changed since the language server saw it; nothing was changed. Try the rename again",
+                    self.rel(&path)
+                ))
+            };
+            let doc = client.doc(&path);
+            if doc.is_some_and(|(_, hash)| hash != blake3::hash(old.as_bytes())) {
+                return Err(stale());
+            }
+            if version.is_some() && doc.map(|d| d.0) != version {
+                return Err(stale());
+            }
             let mut byte_edits = Vec::new();
             for e in &edits {
                 let r = e.get("range").ok_or_else(|| IntelError::Refused("an edit without a range".into()))?;
@@ -895,10 +1017,11 @@ impl CodeIntel {
 
     /// Before an edit to `paths`: open each on its server (starting it when the workspace has its
     /// project marker) and remember its current diagnostics.
-    pub fn before_edit(&self, ws: &dyn Workspace, paths: &[PathBuf]) -> EditSnapshot {
+    pub fn before_edit(&self, ws: &dyn Workspace, paths: &[PathBuf], caller: &Caller) -> EditSnapshot {
         let mut snap = EditSnapshot::default();
         for p in paths {
-            let Some(client) = self.lsp.for_edit(p, &self.root) else { continue };
+            let Some(client) = self.lsp.for_edit(p, &self.root, caller.trusted) else { continue };
+            self.resync(ws, &client);
             let mut opened = None;
             if !client.is_open(p) {
                 if let Ok(text) = Self::read_text(ws, p) {
@@ -906,7 +1029,7 @@ impl CodeIntel {
                 }
             }
             let known = if client.pulls_diagnostics() {
-                client.pull_diagnostics(p, Duration::from_secs(2), &|| false)
+                client.pull_diagnostics(p, Duration::from_secs(2), caller.cancelled)
             } else {
                 client.diagnostics(p)
             };
@@ -917,14 +1040,14 @@ impl CodeIntel {
 
     /// After an edit to `paths`: re-tags them, sends their servers the new text and returns the
     /// new errors per file (files with a server only). All files share one [`DIAG_MAX`] wait.
-    pub fn after_edit(&self, ws: &dyn Workspace, paths: &[PathBuf], snap: &EditSnapshot, cancelled: &dyn Fn() -> bool) -> Vec<FileDiags> {
+    pub fn after_edit(&self, ws: &dyn Workspace, paths: &[PathBuf], snap: &EditSnapshot, caller: &Caller) -> Vec<FileDiags> {
         for p in paths {
             let _ = self.index.update_file(ws, p);
         }
         let deadline = Instant::now() + DIAG_MAX;
         let mut pending = Vec::new();
         for p in paths {
-            let Some(client) = self.lsp.for_edit(p, &self.root) else { continue };
+            let Some(client) = self.lsp.for_edit(p, &self.root, caller.trusted) else { continue };
             let Ok(text) = Self::read_text(ws, p) else { continue };
             let (mut before, opened) = snap.before.get(&norm_key(p)).cloned().unwrap_or((None, None));
             if before.is_none() {
@@ -933,7 +1056,7 @@ impl CodeIntel {
                 before = match opened {
                     Some(gen) => {
                         let left = deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(1500));
-                        client.wait_diagnostics(p, gen, 1, Duration::from_millis(100), left, cancelled)
+                        client.wait_diagnostics(p, gen, 1, Duration::from_millis(100), left, caller.cancelled)
                     }
                     None => client.diagnostics(p),
                 };
@@ -945,32 +1068,25 @@ impl CodeIntel {
         for (p, client, text, version, gen, before) in pending {
             let left = deadline.saturating_duration_since(Instant::now());
             let now = client
-                .pull_diagnostics(&p, left.max(Duration::from_millis(500)), cancelled)
-                .or_else(|| client.wait_diagnostics(&p, gen, version, SETTLE, left, cancelled));
-            let Some(now) = now else { continue };
-            let mut known: Vec<(u8, Option<String>, String)> =
-                before.iter().flatten().filter(|d| d.severity == 1).map(|d| (d.severity, d.code.clone(), d.message.clone())).collect();
-            let mut new_errors = Vec::new();
-            for d in now.iter().filter(|d| d.severity == 1) {
-                let key = (d.severity, d.code.clone(), d.message.clone());
-                match known.iter().position(|k| *k == key) {
-                    Some(i) => {
-                        known.swap_remove(i);
-                    }
-                    None => new_errors.push(d.clone()),
-                }
-            }
-            let lines = new_errors.iter().map(|d| text.lines().nth(d.line as usize).unwrap_or("").trim().to_string()).collect();
-            out.push(FileDiags {
-                path: p,
-                errors: now.iter().filter(|d| d.severity == 1).count(),
-                warnings: now.iter().filter(|d| d.severity == 2).count(),
-                new_errors,
-                lines,
-                encoding: client.encoding(),
-            });
+                .pull_published(&p, left.max(Duration::from_millis(500)), caller.cancelled)
+                .or_else(|| client.wait_published(&p, gen, version, SETTLE, left, caller.cancelled));
+            let Some((gen, now)) = now else { continue };
+            let known = before.unwrap_or_default();
+            out.push(FileDiags::diff(&p, &known, now, &text, client.encoding(), client.instance(), gen));
         }
         out
+    }
+
+    /// The latest publish for `path` on its running server, without waiting or starting one.
+    pub fn latest(&self, path: &Path) -> Option<Latest> {
+        let client = self.lsp.running(path, &self.root)?;
+        let (gen, items) = client.published(path)?;
+        Some(Latest { instance: client.instance(), gen, items, encoding: client.encoding() })
+    }
+
+    /// `p`'s text, for the lines of late diagnostics.
+    pub fn text_of(&self, ws: &dyn Workspace, p: &Path) -> String {
+        Self::read_text(ws, p).unwrap_or_default()
     }
 
     /// The repo map (design 3.4), refreshed first.

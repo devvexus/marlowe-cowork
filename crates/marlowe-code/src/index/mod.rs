@@ -408,11 +408,28 @@ impl Index {
     /// Definitions whose name contains `query` (case-insensitive), best first: exact, then
     /// prefix, then substring; shorter names and paths first within a tier.
     pub fn search(&self, query: &str, kind: Option<&str>, limit: usize) -> Vec<Symbol> {
-        let pattern = format!("%{}%", query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
-        let mut hits = self.query(
-            &format!("{} WHERE t.def = 1 AND t.name LIKE ?1 ESCAPE '\\' LIMIT 20000", Self::COLS),
-            &[&pattern],
-        );
+        self.search_in(query, kind, None, limit)
+    }
+
+    /// [`Self::search`] over the files under folder `under` (absolute) only; the folder is part
+    /// of the query, so the limit counts only its definitions. A folder outside the root has none.
+    pub fn search_in(&self, query: &str, kind: Option<&str>, under: Option<&Path>, limit: usize) -> Vec<Symbol> {
+        let esc = |s: &str| s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        let pattern = format!("%{}%", esc(query));
+        let folder = match under {
+            Some(d) if norm_key(d) != norm_key(&self.root) => match self.rel(d) {
+                Some(rel) => Some(format!("{}/%", esc(&rel))),
+                None => return Vec::new(),
+            },
+            _ => None,
+        };
+        let mut hits = match &folder {
+            None => self.query(&format!("{} WHERE t.def = 1 AND t.name LIKE ?1 ESCAPE '\\' LIMIT 20000", Self::COLS), &[&pattern]),
+            Some(f) => self.query(
+                &format!("{} WHERE t.def = 1 AND t.name LIKE ?1 ESCAPE '\\' AND f.path LIKE ?2 ESCAPE '\\' LIMIT 20000", Self::COLS),
+                &[&pattern, f],
+            ),
+        };
         if let Some(k) = kind {
             hits.retain(|s| s.kind.eq_ignore_ascii_case(k));
         }

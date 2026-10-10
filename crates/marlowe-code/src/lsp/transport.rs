@@ -37,7 +37,8 @@ pub struct Channel {
 
 /// Starts language servers.
 pub trait Launch: Send + Sync {
-    fn launch(&self, spec: &ServerSpec, root: &Path) -> Result<Channel, LspError>;
+    /// Starts `spec` for `root`; `trusted` picks its command (see [`super::servers`]).
+    fn launch(&self, spec: &ServerSpec, root: &Path, trusted: bool) -> Result<Channel, LspError>;
 }
 
 /// Real servers over stdio.
@@ -60,14 +61,18 @@ impl Drop for ChildGuard {
 }
 
 impl Launch for StdioLauncher {
-    fn launch(&self, spec: &ServerSpec, root: &Path) -> Result<Channel, LspError> {
-        let command = spec.launch_command(root).ok_or_else(|| LspError::NotInstalled(spec.id.to_string()))?;
+    fn launch(&self, spec: &ServerSpec, root: &Path, trusted: bool) -> Result<Channel, LspError> {
+        let command = spec.launch_command(root, trusted).ok_or_else(|| LspError::NotInstalled(spec.id.to_string()))?;
         let program = PathBuf::from(&command[0]);
         let mut cmd = std::process::Command::new(&program);
         cmd.args(&command[1..]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        // The server's cwd is the workspace: without this, `cmd.exe` (npm's `.cmd` shims) and
+        // Node look for a bare `node` / `python` there before `PATH`, so a planted
+        // `<root>\node.exe` would run.
+        let no_cwd_search = ("NoDefaultCurrentDirectoryInExePath".to_string(), "1".to_string());
         let launch = ChildSpec::new()
             .with_cwd(root)
-            .with_env(spec.env.iter().map(|(k, v)| (k.to_string(), v.to_string())))
+            .with_env(std::iter::once(no_cwd_search).chain(spec.env.iter().map(|(k, v)| (k.to_string(), v.to_string()))))
             .with_creation_flags(child::CREATE_NO_WINDOW);
         let mut proc = child::spawn(&mut cmd, &launch)
             .map_err(|e| LspError::Start(format!("{} ({}): {e}", spec.id, program.display())))?;

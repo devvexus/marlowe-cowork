@@ -10,13 +10,16 @@ use std::time::{Duration, Instant};
 use marlowe_os::workspace::{ExecOutput, ExecRequest, LocalFs, Meta, WalkEntry, WalkOpts, Workspace};
 
 use super::fake::{FakeConfig, FakeLauncher};
-use super::intel::{CodeIntel, IntelError, Source};
+use super::uri::path_to_uri;
+use super::intel::{Caller, CodeIntel, IntelError, Source};
 use super::manager::LspManager;
 use super::*;
 use crate::index::tests::Tmp;
 use crate::index::{Index, Lang};
 
 const NEVER: &dyn Fn() -> bool = &|| false;
+/// A caller in the user's own workspace with an untainted session.
+const ME: &Caller<'static> = &Caller { cancelled: NEVER, trusted: true };
 
 fn fake_manager(cfg: FakeConfig) -> (FakeLauncher, LspManager) {
     let launcher = FakeLauncher::new(cfg);
@@ -52,7 +55,7 @@ fn the_client_handshakes_syncs_and_waits_for_settled_diagnostics() {
     let t = project();
     let (log, mgr) = fake_manager(FakeConfig::default());
     let f = t.put("src/bad.rs", "fn ok() {}\n// ERROR: first\n");
-    let c = mgr.client(&f, &t.0).unwrap();
+    let c = mgr.client(&f, &t.0, true).unwrap();
     assert_eq!(c.id(), "fake-rust");
     assert!(c.has("renameProvider") && !c.has("nopeProvider"));
     let (v, gen) = c.sync(&f, "fn ok() {}\n// ERROR: first\n");
@@ -95,13 +98,13 @@ fn the_manager_starts_lazily_keeps_two_live_and_stops_idle_servers() {
     let mgr = LspManager::with_limits(Arc::new(launcher.clone()), specs, 2, Duration::from_millis(400));
     let rs = t.0.join("src/engine.rs");
     assert!(mgr.running(&rs, &t.0).is_none(), "nothing starts until asked");
-    let a = mgr.client(&rs, &t.0).unwrap();
-    let again = mgr.client(&rs, &t.0).unwrap();
+    let a = mgr.client(&rs, &t.0, true).unwrap();
+    let again = mgr.client(&rs, &t.0, true).unwrap();
     assert_eq!(launcher.launches(), ["fake-rust"], "one server per (server, root)");
     drop(again);
     std::thread::sleep(Duration::from_millis(20));
-    let _py = mgr.client(&t.put("a.py", "def f():\n  pass\n"), &t.0).unwrap();
-    let _ts = mgr.client(&t.put("a.ts", "function g() {}\n"), &t.0).unwrap();
+    let _py = mgr.client(&t.put("a.py", "def f():\n  pass\n"), &t.0, true).unwrap();
+    let _ts = mgr.client(&t.put("a.ts", "function g() {}\n"), &t.0, true).unwrap();
     assert_eq!(launcher.launches(), ["fake-rust", "fake-py", "fake-ts"]);
     assert_eq!(mgr.live().len(), 2, "the least recently used server made room");
     std::thread::sleep(Duration::from_millis(300));
@@ -115,9 +118,9 @@ fn the_manager_starts_lazily_keeps_two_live_and_stops_idle_servers() {
     }
     assert!(mgr.live().is_empty(), "idle servers stop");
     // No server for the language, and no marker for an edit: nothing starts.
-    assert!(matches!(mgr.client(&t.put("x.go", "package x\n"), &t.0), Err(LspError::NoServer(_))));
+    assert!(matches!(mgr.client(&t.put("x.go", "package x\n"), &t.0, true), Err(LspError::NoServer(_))));
     let stray = Tmp::new("stray");
-    assert!(mgr.for_edit(&stray.put("x.rs", "fn a() {}\n"), &stray.0).is_none());
+    assert!(mgr.for_edit(&stray.put("x.rs", "fn a() {}\n"), &stray.0, true).is_none());
 }
 
 #[test]
@@ -125,20 +128,20 @@ fn a_server_that_fails_to_start_is_reported_and_not_retried() {
     let t = project();
     let (log, mgr) = fake_manager(FakeConfig { fail_init: true, ..FakeConfig::default() });
     let f = t.0.join("src/engine.rs");
-    let e = mgr.client(&f, &t.0).unwrap_err();
+    let e = mgr.client(&f, &t.0, true).unwrap_err();
     assert!(e.to_string().contains("initialize failed"), "{e}");
-    assert!(mgr.client(&f, &t.0).is_err());
+    assert!(mgr.client(&f, &t.0, true).is_err());
     assert_eq!(log.launches().len(), 1);
     // The engine falls back to the index for references and hover.
     let eng = engine(&t, mgr);
-    let (target, refs, source) = eng.references(&LocalFs, "Engine::start", None, 50, NEVER).unwrap();
+    let (target, refs, source) = eng.references(&LocalFs, "Engine::start", None, 50, ME).unwrap();
     assert_eq!(source, Source::Index);
     assert_eq!(target.container.as_deref(), Some("Engine"));
     assert!(refs.iter().all(|l| l.text.contains("start")), "{refs:?}");
-    let (_, hover, source) = eng.hover(&LocalFs, "Engine::start", None, NEVER).unwrap();
+    let (_, hover, source) = eng.hover(&LocalFs, "Engine::start", None, ME).unwrap();
     assert_eq!(source, Source::Index);
     assert!(hover.contains("pub fn start(&self) -> u32"), "{hover}");
-    let e = eng.plan_rename(&LocalFs, "Engine::start", "run", None, NEVER).unwrap_err();
+    let e = eng.plan_rename(&LocalFs, "Engine::start", "run", None, ME).unwrap_err();
     assert!(e.to_string().contains("needs a language server"), "{e}");
 }
 
@@ -149,7 +152,7 @@ fn readiness_waits_for_server_status() {
     let mut spec = FakeLauncher::spec("fake-rust", &[Lang::Rust], &[]);
     spec.server_status = true;
     let mgr = LspManager::with(Arc::new(launcher), vec![spec]);
-    let c = mgr.client(&t.0.join("src/engine.rs"), &t.0).unwrap();
+    let c = mgr.client(&t.0.join("src/engine.rs"), &t.0, true).unwrap();
     assert!(!c.wait_ready(Duration::from_millis(50), NEVER), "not quiescent yet");
     let started = Instant::now();
     assert!(c.wait_ready(Duration::from_secs(5), NEVER));
@@ -163,40 +166,40 @@ fn parity_t25_names_resolve_through_the_index_and_the_server() {
     let eng = engine(&t, mgr);
 
     // Ambiguous by bare name; `Container::name` and `path` narrow it.
-    let e = eng.one(&LocalFs, "start", None, NEVER).unwrap_err();
+    let e = eng.one(&LocalFs, "start", None, ME).unwrap_err();
     assert!(matches!(e, IntelError::Ambiguous(_)), "{e}");
     assert!(e.to_string().contains("src/engine.rs:3") && e.to_string().contains("src/other.rs:1"), "{e}");
-    let target = eng.one(&LocalFs, "Engine::start", None, NEVER).unwrap();
+    let target = eng.one(&LocalFs, "Engine::start", None, ME).unwrap();
     assert_eq!((target.line, target.end_line), (3, 5));
-    assert_eq!(eng.one(&LocalFs, "other::start", None, NEVER).unwrap().path, t.0.join("src").join("other.rs"));
+    assert_eq!(eng.one(&LocalFs, "other::start", None, ME).unwrap().path, t.0.join("src").join("other.rs"));
     let body = eng.body(&LocalFs, &target);
     assert_eq!(body.len(), 3);
     assert_eq!(body[1], (4, "        self.n".to_string()));
 
     // A name only used in `path` resolves through the server's go-to-definition from the use.
-    let (found, source) = eng.resolve(&LocalFs, "Engine", Some(&t.0.join("src/main.rs")), None, NEVER).unwrap();
+    let (found, source) = eng.resolve(&LocalFs, "Engine", Some(&t.0.join("src/main.rs")), None, ME).unwrap();
     assert_eq!(source, Source::Server);
     assert_eq!(found[0].path, t.0.join("src").join("engine.rs"));
     assert_eq!(found[0].kind, "class", "the index fills in what it knows");
 
     // References and hover come from the server at the resolved definition.
-    let (_, refs, source) = eng.references(&LocalFs, "Engine::start", None, 50, NEVER).unwrap();
+    let (_, refs, source) = eng.references(&LocalFs, "Engine::start", None, 50, ME).unwrap();
     assert_eq!(source, Source::Server);
     let lines: Vec<(String, u32)> = refs.iter().map(|l| (eng.rel(&l.path), l.line)).collect();
     // The fake does not tell same-named symbols apart; a real server does. The declaration is
     // left out.
     assert!(lines.contains(&("src/main.rs".into(), 3)) && lines.contains(&("src/main.rs".into(), 4)), "{lines:?}");
     assert!(!lines.contains(&("src/engine.rs".into(), 3)), "{lines:?}");
-    let (_, hover, source) = eng.hover(&LocalFs, "Engine::start", None, NEVER).unwrap();
+    let (_, hover, source) = eng.hover(&LocalFs, "Engine::start", None, ME).unwrap();
     assert_eq!(source, Source::Server);
     assert!(hover.contains("fake docs for start"), "{hover}");
 
     // Symbols: by query over the index, or a file's own.
-    let (hits, _) = eng.symbols(&LocalFs, "eng", None, None, 10, NEVER).unwrap();
+    let (hits, _) = eng.symbols(&LocalFs, "eng", None, None, 10, ME).unwrap();
     assert_eq!(hits[0].name, "Engine");
-    let (hits, _) = eng.symbols(&LocalFs, "", Some(&t.0.join("src/engine.rs")), None, 10, NEVER).unwrap();
+    let (hits, _) = eng.symbols(&LocalFs, "", Some(&t.0.join("src/engine.rs")), None, 10, ME).unwrap();
     assert_eq!(hits.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(), ["Engine", "start"]);
-    assert!(matches!(eng.one(&LocalFs, "nope_nothing", None, NEVER), Err(IntelError::NotFound(_))));
+    assert!(matches!(eng.one(&LocalFs, "nope_nothing", None, ME), Err(IntelError::NotFound(_))));
 }
 
 #[test]
@@ -207,7 +210,7 @@ fn a_name_the_index_does_not_have_comes_from_workspace_symbols() {
     let (_log, mgr) = fake_manager(FakeConfig::default());
     let eng = engine(&t, mgr);
     assert!(eng.index().defs("generated_entry").is_empty());
-    let (found, source) = eng.resolve(&LocalFs, "generated_entry", None, None, NEVER).unwrap();
+    let (found, source) = eng.resolve(&LocalFs, "generated_entry", None, None, ME).unwrap();
     assert_eq!(source, Source::Server);
     assert_eq!(found[0].path, t.0.join("gen").join("hidden.rs"));
     assert_eq!(found[0].kind, "function");
@@ -220,7 +223,7 @@ fn parity_t26_rename_applies_every_file_atomically() {
         t.put("src/wide.rs", "// é😀 start\nfn wide() { let s = \"é😀\"; s.start(); }\n");
         let (_log, mgr) = fake_manager(FakeConfig { utf8, document_changes, ..FakeConfig::default() });
         let eng = engine(&t, mgr);
-        let plan = eng.plan_rename(&LocalFs, "Engine::start", "launch", None, NEVER).unwrap();
+        let plan = eng.plan_rename(&LocalFs, "Engine::start", "launch", None, ME).unwrap();
         let rels: Vec<String> = plan.files.iter().map(|f| eng.rel(&f.path)).collect();
         assert!(rels.contains(&"src/engine.rs".into()) && rels.contains(&"src/main.rs".into()), "{rels:?}");
         assert!(plan.files.iter().all(|f| f.diff.starts_with("--- a/src/")), "root-relative diff labels");
@@ -234,7 +237,7 @@ fn parity_t26_rename_applies_every_file_atomically() {
         assert!(eng.index().defs("start").iter().all(|s| !s.path.ends_with("engine.rs")), "the index saw the rename");
         assert!(eng.index().defs("launch").iter().any(|s| s.path.ends_with("engine.rs")));
         // Stale plan: refused, nothing written.
-        let plan = eng.plan_rename(&LocalFs, "Engine::launch", "go", None, NEVER).unwrap();
+        let plan = eng.plan_rename(&LocalFs, "Engine::launch", "go", None, ME).unwrap();
         std::fs::write(t.0.join("src/main.rs"), format!("{main}// touched\n")).unwrap();
         let e = eng.apply_rename(&LocalFs, &plan).unwrap_err();
         assert!(e.to_string().contains("changed since"), "{e}");
@@ -284,7 +287,7 @@ fn a_failed_write_puts_every_file_back() {
         .iter()
         .map(|r| (t.0.join(r), std::fs::read_to_string(t.0.join(r)).unwrap()))
         .collect();
-    let plan = eng.plan_rename(&LocalFs, "Engine::start", "launch", None, NEVER).unwrap();
+    let plan = eng.plan_rename(&LocalFs, "Engine::start", "launch", None, ME).unwrap();
     assert!(plan.files.len() >= 2);
     let ws = FailingWrites { fail_at: 2, writes: AtomicUsize::new(0) };
     let e = eng.apply_rename(&ws, &plan).unwrap_err();
@@ -299,8 +302,8 @@ fn rename_refuses_edits_outside_the_root_and_bad_names() {
     let t = project();
     let (_log, mgr) = fake_manager(FakeConfig::default());
     let eng = engine(&t, mgr);
-    assert!(matches!(eng.plan_rename(&LocalFs, "Engine::start", "not-a-name", None, NEVER), Err(IntelError::Refused(_))));
-    assert!(matches!(eng.plan_rename(&LocalFs, "Engine::start", "start", None, NEVER), Err(IntelError::Refused(_))));
+    assert!(matches!(eng.plan_rename(&LocalFs, "Engine::start", "not-a-name", None, ME), Err(IntelError::Refused(_))));
+    assert!(matches!(eng.plan_rename(&LocalFs, "Engine::start", "start", None, ME), Err(IntelError::Refused(_))));
     // An engine whose root is a subfolder: the server's edit reaches outside it.
     let sub = t.0.join("src");
     let (_log, mgr) = fake_manager(FakeConfig::default());
@@ -310,11 +313,135 @@ fn rename_refuses_edits_outside_the_root_and_bad_names() {
     t.put("outside.rs", "fn use_it() { Engine::start(); }\n");
     // The fake reads files under its root only, so plant the outside use through a document
     // the server is told about.
-    let c = narrow.lsp().client(&sub.join("engine.rs"), &sub).unwrap();
+    let c = narrow.lsp().client(&sub.join("engine.rs"), &sub, true).unwrap();
     c.sync(&t.0.join("outside.rs"), "fn use_it() { x.start(); }\n");
-    let e = narrow.plan_rename(&LocalFs, "Engine::start", "launch", None, NEVER).unwrap_err();
+    let e = narrow.plan_rename(&LocalFs, "Engine::start", "launch", None, ME).unwrap_err();
     assert!(e.to_string().contains("outside the workspace"), "{e}");
     assert!(std::fs::read_to_string(sub.join("engine.rs")).unwrap().contains("fn start"));
+}
+
+#[test]
+fn rename_resyncs_files_the_shell_changed_and_refuses_a_change_mid_rename() {
+    let t = project();
+    let (log, mgr) = fake_manager(FakeConfig::default());
+    let eng = engine(&t, mgr);
+    // Both files are opened on the server (the server now goes by Marlowe's copy of them).
+    eng.references(&LocalFs, "Engine::start", None, 50, ME).unwrap();
+    eng.resolve(&LocalFs, "Engine", Some(&t.0.join("src/main.rs")), None, ME).unwrap();
+    let main = t.0.join("src/main.rs");
+    assert!(eng.lsp().running(&main, &t.0).unwrap().is_open(&main));
+    // A formatter shifts every line of main.rs on disk, behind the server's back.
+    let formatted = "// formatted\n\nfn main() {\n        let e = make();\n        e.start();\n        e.start();\n}\n\nfn make() -> Engine {\n    todo!()\n}\n";
+    std::fs::write(&main, formatted).unwrap();
+    let plan = eng.plan_rename(&LocalFs, "Engine::start", "launch", None, ME).unwrap();
+    eng.apply_rename(&LocalFs, &plan).unwrap();
+    assert_eq!(std::fs::read_to_string(&main).unwrap(), formatted.replace("e.start()", "e.launch()"), "edits land on the new positions");
+    assert!(log.log().iter().any(|m| m == "textDocument/didChange"), "the server was brought up to the disk");
+
+    // The file changes again while the server is computing the rename: refused, nothing written.
+    let (_log, mgr) = fake_manager(FakeConfig { rename_race: Some((main.clone(), format!("\n\n{formatted}"))), ..FakeConfig::default() });
+    let eng = engine(&t, mgr);
+    eng.resolve(&LocalFs, "Engine", Some(&main), None, ME).unwrap();
+    let engine_rs = std::fs::read_to_string(t.0.join("src/engine.rs")).unwrap();
+    let e = eng.plan_rename(&LocalFs, "Engine::launch", "go", None, ME).unwrap_err();
+    assert!(e.to_string().contains("src/main.rs changed since the language server saw it"), "{e}");
+    assert_eq!(std::fs::read_to_string(t.0.join("src/engine.rs")).unwrap(), engine_rs, "nothing was written");
+}
+
+/// Links `link` to the folder `target` (a junction on Windows, which needs no privilege).
+fn link_dir(target: &Path, link: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        if std::os::windows::fs::symlink_dir(target, link).is_ok() {
+            return true;
+        }
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.arg("/c").arg("mklink").arg("/J").arg(link).arg(target).stdout(std::process::Stdio::null());
+        let spec = marlowe_os::child::ChildSpec::new().with_creation_flags(marlowe_os::child::CREATE_NO_WINDOW);
+        match marlowe_os::child::spawn(&mut cmd, &spec) {
+            Ok(mut p) => p.child_mut().wait().is_ok_and(|s| s.success()) && link.is_dir(),
+            Err(_) => false,
+        }
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+}
+
+#[test]
+fn rename_refuses_a_dot_dot_uri_and_a_link_out_of_the_root() {
+    let t = project();
+    let outside = Tmp::new("outside");
+    let victim = outside.put("victim.rs", "fn victim() {}\n");
+    let parent = t.0.parent().unwrap();
+    let escape = parent.join(format!("{}-escape.rs", t.0.file_name().unwrap().to_string_lossy()));
+    std::fs::write(&escape, "fn escape() {}\n").unwrap();
+    let dotdot = format!("{}/src/../../{}", path_to_uri(&t.0), escape.file_name().unwrap().to_string_lossy());
+    let linked = t.0.join("vendor");
+    let mut uris = vec![dotdot];
+    if link_dir(&outside.0, &linked) {
+        uris.push(path_to_uri(&linked.join("victim.rs")));
+    } else {
+        eprintln!("could not make a directory link here; the link case is skipped");
+    }
+    for uri in uris {
+        let (_log, mgr) = fake_manager(FakeConfig { rename_extra_uri: Some(uri.clone()), ..FakeConfig::default() });
+        let eng = engine(&t, mgr);
+        let e = eng.plan_rename(&LocalFs, "Engine::start", "launch", None, ME).unwrap_err();
+        assert!(e.to_string().contains("outside the workspace"), "{uri}: {e}");
+    }
+    assert_eq!(std::fs::read_to_string(&escape).unwrap(), "fn escape() {}\n");
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "fn victim() {}\n");
+    assert!(std::fs::read_to_string(t.0.join("src/engine.rs")).unwrap().contains("fn start"));
+    let _ = std::fs::remove_file(&escape);
+    let _ = std::fs::remove_dir(&linked);
+}
+
+#[test]
+fn an_untrusted_caller_never_gets_a_trusted_server() {
+    let t = project();
+    let (log, mgr) = fake_manager(FakeConfig::default());
+    let rs = t.0.join("src/engine.rs");
+    let trusted = mgr.client(&rs, &t.0, true).unwrap();
+    assert!(trusted.trusted());
+    // A tainted session asks: the trusted server is stopped and an untrusted one serves it.
+    let untrusted = mgr.client(&rs, &t.0, false).unwrap();
+    assert!(!untrusted.trusted());
+    assert_eq!(log.launches_with_trust(), [("fake-rust".to_string(), true), ("fake-rust".to_string(), false)]);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while trusted.alive() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!trusted.alive(), "the trusted server was stopped");
+    // A trusted caller takes the untrusted one that runs; an edit's server follows the same rule.
+    assert!(!mgr.client(&rs, &t.0, true).unwrap().trusted());
+    assert!(!mgr.for_edit(&rs, &t.0, false).unwrap().trusted());
+    assert_eq!(log.launches().len(), 2);
+}
+
+#[test]
+fn symbols_under_a_folder_count_only_its_definitions() {
+    let t = project();
+    t.put("src/net/conn.rs", "pub fn renew_conn() {}\npub fn close_conn() {}\n");
+    for i in 0..60 {
+        t.put(&format!("src/gen/g{i}.rs"), &format!("pub fn new_thing_{i}() {{}}\n"));
+    }
+    let (_log, mgr) = fake_manager(FakeConfig::default());
+    let eng = engine(&t, mgr);
+    let net = t.0.join("src/net");
+    let (hits, source) = eng.symbols(&LocalFs, "new", Some(&net), None, 10, ME).unwrap();
+    assert_eq!(source, Source::Index);
+    assert_eq!(hits.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(), ["renew_conn"], "60 better matches elsewhere do not crowd it out");
+    let (hits, _) = eng.symbols(&LocalFs, "", Some(&net), None, 10, ME).unwrap();
+    let mut names: Vec<&str> = hits.iter().map(|h| h.name.as_str()).collect();
+    names.sort();
+    assert_eq!(names, ["close_conn", "renew_conn"]);
+    // The server fallback keeps to the folder too.
+    let (hits, _) = eng.symbols(&LocalFs, "new_thing_7", Some(&net), None, 10, ME).unwrap();
+    assert!(hits.is_empty(), "{hits:?}");
+    let (hits, _) = eng.symbols(&LocalFs, "new_thing_7", Some(&t.0.join("src/gen")), None, 10, ME).unwrap();
+    assert_eq!(hits.len(), 1);
 }
 
 #[test]
@@ -326,11 +453,11 @@ fn parity_t24_new_errors_after_an_edit_are_reported_and_old_ones_are_not() {
         let eng = engine(&t, mgr);
         // The edit follows at once: the pre-edit publish has not landed yet, and after_edit
         // waits for it before sending the change.
-        let snap = eng.before_edit(&LocalFs, std::slice::from_ref(&f));
+        let snap = eng.before_edit(&LocalFs, std::slice::from_ref(&f), ME);
         assert_eq!(snap.len(), 1);
         std::fs::write(&f, "fn a() {}\n// ERROR: old problem\nfn b() {}\n// ERROR: new problem\n// WARN: meh\n").unwrap();
         let started = Instant::now();
-        let out = eng.after_edit(&LocalFs, std::slice::from_ref(&f), &snap, NEVER);
+        let out = eng.after_edit(&LocalFs, std::slice::from_ref(&f), &snap, ME);
         assert!(started.elapsed() < Duration::from_secs(5));
         assert_eq!(out.len(), 1);
         let d = &out[0];
@@ -349,14 +476,14 @@ fn an_edit_outside_a_project_starts_no_server() {
     let f = t.put("a.rs", "fn a() {}\n// ERROR: x\n");
     let (log, mgr) = fake_manager(FakeConfig::default());
     let eng = CodeIntel::new(&t.0, Index::in_memory(&t.0).unwrap(), mgr);
-    let snap = eng.before_edit(&LocalFs, std::slice::from_ref(&f));
-    assert!(eng.after_edit(&LocalFs, std::slice::from_ref(&f), &snap, NEVER).is_empty());
+    let snap = eng.before_edit(&LocalFs, std::slice::from_ref(&f), ME);
+    assert!(eng.after_edit(&LocalFs, std::slice::from_ref(&f), &snap, ME).is_empty());
     assert!(log.launches().is_empty());
     // The diagnostics tool starts it on request.
-    let d = eng.diagnostics(&LocalFs, Some(&f), NEVER).unwrap();
+    let d = eng.diagnostics(&LocalFs, Some(&f), ME).unwrap();
     assert_eq!(d[0].1.len(), 1);
     assert_eq!(log.launches(), ["fake-rust"]);
-    let all = eng.diagnostics(&LocalFs, None, NEVER).unwrap();
+    let all = eng.diagnostics(&LocalFs, None, ME).unwrap();
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].0, f);
 }
@@ -372,29 +499,29 @@ fn live_roundtrip(files: &[(&str, &str)], file: &str, symbol: &str, use_file: &s
     }
     let mgr = LspManager::new();
     let started = Instant::now();
-    let c = mgr.client(&t.0.join(file), &t.0).unwrap_or_else(|e| panic!("{e}"));
+    let c = mgr.client(&t.0.join(file), &t.0, true).unwrap_or_else(|e| panic!("{e}"));
     let ready = c.wait_ready(super::intel::READY_MAX, NEVER);
     eprintln!("{} up in {:?} (ready: {ready})", c.id(), started.elapsed());
     let eng = engine(&t, mgr.clone());
-    let target = eng.one(&LocalFs, symbol, None, NEVER).unwrap();
+    let target = eng.one(&LocalFs, symbol, None, ME).unwrap();
     assert!(target.path.ends_with(file), "{target:?}");
-    let (_, refs, source) = eng.references(&LocalFs, symbol, None, 50, NEVER).unwrap();
+    let (_, refs, source) = eng.references(&LocalFs, symbol, None, 50, ME).unwrap();
     eprintln!("references at {:?}: {refs:?}", started.elapsed());
     assert_eq!(source, Source::Server);
     assert!(refs.iter().any(|l| l.path.ends_with(use_file)), "{refs:?}");
-    let (_, hover, source) = eng.hover(&LocalFs, symbol, None, NEVER).unwrap();
+    let (_, hover, source) = eng.hover(&LocalFs, symbol, None, ME).unwrap();
     assert_eq!(source, Source::Server, "{hover}");
-    let plan = eng.plan_rename(&LocalFs, symbol, "renamed_thing", None, NEVER).unwrap();
+    let plan = eng.plan_rename(&LocalFs, symbol, "renamed_thing", None, ME).unwrap();
     eng.apply_rename(&LocalFs, &plan).unwrap();
     let used = std::fs::read_to_string(t.0.join(use_file)).unwrap();
     assert!(used.contains("renamed_thing"), "{used}");
     let f = t.0.join(file);
-    let snap = eng.before_edit(&LocalFs, std::slice::from_ref(&f));
+    let snap = eng.before_edit(&LocalFs, std::slice::from_ref(&f), ME);
     let text = std::fs::read_to_string(&f).unwrap();
     std::fs::write(&f, format!("{text}\n{broken}\n")).unwrap();
     let mut found = Vec::new();
     for _ in 0..6 {
-        found = eng.after_edit(&LocalFs, std::slice::from_ref(&f), &snap, NEVER);
+        found = eng.after_edit(&LocalFs, std::slice::from_ref(&f), &snap, ME);
         if found.iter().any(|d| !d.new_errors.is_empty()) {
             break;
         }

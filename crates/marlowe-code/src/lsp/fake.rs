@@ -11,9 +11,12 @@
 //!   client offers it);
 //! - after `didOpen`/`didChange` it publishes one error per line containing `ERROR:` and one
 //!   warning per `WARN:` (message: the rest of the line), after [`FakeConfig::publish_delay`];
-//!   with [`FakeConfig::pull`] it also answers `textDocument/diagnostic`.
+//!   with [`FakeConfig::pull`] it also answers `textDocument/diagnostic`;
+//! - with [`FakeConfig::late`], a line containing `LATE:` is an error only in a second publish
+//!   that long after the change, the way rust-analyzer's `cargo check` results land after its own.
 //!
-//! [`FakeLauncher::log`] records every method the client sent, for assertions.
+//! [`FakeLauncher::log`] records every method the client sent, [`FakeLauncher::launches`] every
+//! start and whether it was trusted, for assertions.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -47,6 +50,13 @@ pub struct FakeConfig {
     pub status_after: Option<Duration>,
     /// Fail `initialize` (a server that crashes on start).
     pub fail_init: bool,
+    /// Publish `LATE:` lines as errors in a second publish this long after each change.
+    pub late: Option<Duration>,
+    /// `rename` also edits this URI (a hostile or confused server), inserting at its start.
+    pub rename_extra_uri: Option<String>,
+    /// `rename` writes this text to this file on disk right after computing its answer (an
+    /// editor or the shell changing the file while the rename is in flight).
+    pub rename_race: Option<(PathBuf, String)>,
 }
 
 impl Default for FakeConfig {
@@ -59,6 +69,9 @@ impl Default for FakeConfig {
             document_changes: false,
             status_after: None,
             fail_init: false,
+            late: None,
+            rename_extra_uri: None,
+            rename_race: None,
         }
     }
 }
@@ -68,7 +81,7 @@ impl Default for FakeConfig {
 pub struct FakeLauncher {
     pub config: FakeConfig,
     log: Arc<Mutex<Vec<String>>>,
-    launches: Arc<Mutex<Vec<String>>>,
+    launches: Arc<Mutex<Vec<(String, bool)>>>,
 }
 
 impl FakeLauncher {
@@ -83,6 +96,11 @@ impl FakeLauncher {
 
     /// The server ids launched, in order.
     pub fn launches(&self) -> Vec<String> {
+        self.launches.lock().unwrap_or_else(|p| p.into_inner()).iter().map(|l| l.0.clone()).collect()
+    }
+
+    /// Each launch's server id and whether it was started trusted, in order.
+    pub fn launches_with_trust(&self) -> Vec<(String, bool)> {
         self.launches.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
@@ -111,8 +129,8 @@ impl ProcessGuard for FakeGuard {
 }
 
 impl Launch for FakeLauncher {
-    fn launch(&self, spec: &ServerSpec, root: &Path) -> Result<Channel, LspError> {
-        self.launches.lock().unwrap_or_else(|p| p.into_inner()).push(spec.id.to_string());
+    fn launch(&self, spec: &ServerSpec, root: &Path, trusted: bool) -> Result<Channel, LspError> {
+        self.launches.lock().unwrap_or_else(|p| p.into_inner()).push((spec.id.to_string(), trusted));
         let (client, server) = Connection::memory();
         let alive = Arc::new(Mutex::new(true));
         let state = Fake {
@@ -456,6 +474,15 @@ impl Fake {
                     }));
                     changes.insert(uri, Value::Array(edits));
                 }
+                if let Some(uri) = &self.cfg.rename_extra_uri {
+                    let edits = json!([{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "// pwned
+"}]);
+                    doc_changes.push(json!({"textDocument": {"uri": uri, "version": null}, "edits": edits}));
+                    changes.insert(uri.clone(), edits);
+                }
+                if let Some((path, text)) = &self.cfg.rename_race {
+                    let _ = std::fs::write(path, text);
+                }
                 if self.cfg.document_changes {
                     ok(json!({"documentChanges": doc_changes}))
                 } else {
@@ -466,18 +493,21 @@ impl Fake {
                 let Some(path) = p.pointer("/textDocument/uri").and_then(Value::as_str).and_then(uri_to_path) else {
                     return ok(json!({"kind": "full", "items": []}));
                 };
-                ok(json!({"kind": "full", "items": self.diagnostics_for(&path)}))
+                ok(json!({"kind": "full", "items": self.diagnostics_for(&path, false)}))
             }
             _ => Response::new_err(r.id.clone(), -32601, format!("fake: no {}", r.method)),
         }
     }
 
-    fn diagnostics_for(&self, path: &Path) -> Vec<Value> {
+    fn diagnostics_for(&self, path: &Path, late: bool) -> Vec<Value> {
         let Some((_, text)) = self.files.get(&norm_key(path)) else { return Vec::new() };
         let mut out = Vec::new();
         let mut at = 0;
         for line in text.split_inclusive('\n') {
-            for (marker, severity) in [("ERROR:", 1), ("WARN:", 2)] {
+            for (marker, severity) in [("ERROR:", 1), ("WARN:", 2), ("LATE:", 1)] {
+                if marker == "LATE:" && !late {
+                    continue;
+                }
                 if let Some(i) = line.find(marker) {
                     let msg = line[i + marker.len()..].trim();
                     out.push(json!({
@@ -496,16 +526,25 @@ impl Fake {
 
     fn publish(&self, path: &Path) {
         let key = norm_key(path);
-        let params = json!({
-            "uri": path_to_uri(path),
-            "version": self.versions.get(&key).copied(),
-            "diagnostics": self.diagnostics_for(path),
-        });
+        let params = |late: bool| {
+            json!({
+                "uri": path_to_uri(path),
+                "version": self.versions.get(&key).copied(),
+                "diagnostics": self.diagnostics_for(path, late),
+            })
+        };
+        let mut sends = vec![(self.cfg.publish_delay, params(false))];
+        if let Some(late) = self.cfg.late {
+            sends.push((late, params(true)));
+        }
         let out = self.out.clone();
-        let delay = self.cfg.publish_delay;
         std::thread::spawn(move || {
-            std::thread::sleep(delay);
-            let _ = out.send(Notification::new("textDocument/publishDiagnostics".into(), params).into());
+            let mut slept = Duration::ZERO;
+            for (at, p) in sends {
+                std::thread::sleep(at.saturating_sub(slept));
+                slept = slept.max(at);
+                let _ = out.send(Notification::new("textDocument/publishDiagnostics".into(), p).into());
+            }
         });
     }
 

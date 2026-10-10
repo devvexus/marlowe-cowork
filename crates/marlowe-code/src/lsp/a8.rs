@@ -6,18 +6,17 @@
 //! cargo test -p marlowe-code --release --lib -- --ignored a8_ --nocapture --test-threads 1
 //! ```
 //!
-//! Gates: cold tags index <= 20 s per 100k LOC; incremental re-tag <= 50 ms per file; post-edit
-//! diagnostics p95 <= 5 s warm. The diagnostics run turns rust-analyzer's `checkOnSave`, build
-//! scripts and proc macros off, so the number is the client's path (sync, publish, settle) over
-//! rust-analyzer's own diagnostics, not a `cargo check` of the whole repository.
+//! Gates: cold tags index <= 20 s per 100k LOC; incremental re-tag <= 50 ms for every file (the
+//! max, not a percentile); post-edit diagnostics p95 <= 5 s warm. The diagnostics run uses the
+//! shipped rust-analyzer settings for a trusted workspace unmodified (build scripts, proc macros
+//! and `cargo check` on every save all on). Set `CARGO_BUILD_JOBS` to keep its builds to a few
+//! cores on a shared machine.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use marlowe_os::workspace::LocalFs;
-use serde_json::json;
-
-use super::intel::CodeIntel;
+use super::intel::{Caller, CodeIntel};
 use super::manager::LspManager;
 use super::servers::default_specs;
 use super::transport::StdioLauncher;
@@ -98,7 +97,7 @@ fn a8_tags_index_cold_and_incremental() {
     drop(idx);
     let _ = std::fs::remove_file(&db);
     assert!(per_100k <= 20.0, "cold index {per_100k:.2} s per 100k LOC");
-    assert!(pct(&times, 0.95) <= Duration::from_millis(50));
+    assert!(pct(&times, 1.0) <= Duration::from_millis(50), "the slowest file took {:?}", pct(&times, 1.0));
 }
 
 #[test]
@@ -108,13 +107,10 @@ fn a8_post_edit_diagnostics_warm() {
         eprintln!("MARLOWE_A8_REPO is not set to a checkout; skipped");
         return;
     };
-    let mut spec = default_specs().into_iter().find(|s| s.id == "rust-analyzer").unwrap();
-    spec.init_options["checkOnSave"] = json!(false);
-    // Build scripts and proc macros would compile every dependency first (minutes of CPU on a
-    // shared machine); the probe edit is a plain type error that needs neither.
-    spec.init_options["cargo"]["buildScripts"]["enable"] = json!(false);
-    spec.init_options["procMacro"]["enable"] = json!(false);
+    let spec = default_specs().into_iter().find(|s| s.id == "rust-analyzer").unwrap();
     let lsp = LspManager::with(std::sync::Arc::new(StdioLauncher), vec![spec]);
+    let never = || false;
+    let trusted = Caller::new(&never, true);
     let idx = Index::in_memory(&root).unwrap();
     idx.refresh(&LocalFs).unwrap();
     let sample: Vec<PathBuf> = sample_files(&idx, &root, 40)
@@ -125,8 +121,9 @@ fn a8_post_edit_diagnostics_warm() {
     let eng = CodeIntel::new(&root, idx, lsp.clone());
 
     let started = Instant::now();
-    let client = lsp.client(&sample[0], &root).unwrap();
-    let ready = client.wait_ready(Duration::from_secs(900), &|| false);
+    let client = lsp.client(&sample[0], &root, true).unwrap();
+    assert!(client.trusted() && client.spec().init_options_for(&root, true)["checkOnSave"] == true, "the shipped trusted settings");
+    let ready = client.wait_ready(Duration::from_secs(1800), &|| false);
     eprintln!("A8 rust-analyzer quiescent after {:.1} s (ready: {ready})", started.elapsed().as_secs_f64());
 
     let broken = "\nfn a8_probe() -> u32 { \"not a number\" }\n";
@@ -136,10 +133,10 @@ fn a8_post_edit_diagnostics_warm() {
         for round in 0..2 {
             // Round 0: the file was not open (the middleware opens it in pre_mutation, right
             // before the edit). Round 1: it is open and settled.
-            let snap = eng.before_edit(&LocalFs, std::slice::from_ref(f));
+            let snap = eng.before_edit(&LocalFs, std::slice::from_ref(f), &trusted);
             std::fs::write(f, format!("{original}{broken}")).unwrap();
             let t = Instant::now();
-            let out = eng.after_edit(&LocalFs, std::slice::from_ref(f), &snap, &|| false);
+            let out = eng.after_edit(&LocalFs, std::slice::from_ref(f), &snap, &trusted);
             let took = t.elapsed();
             let hit = out.iter().any(|d| d.new_errors.iter().any(|e| e.message.contains("u32") || e.message.contains("mismatched")));
             // A miss counts as past the gate.
@@ -154,8 +151,8 @@ fn a8_post_edit_diagnostics_warm() {
                 repeat.push(took);
             }
             std::fs::write(f, &original).unwrap();
-            let snap = eng.before_edit(&LocalFs, std::slice::from_ref(f));
-            eng.after_edit(&LocalFs, std::slice::from_ref(f), &snap, &|| false);
+            let snap = eng.before_edit(&LocalFs, std::slice::from_ref(f), &trusted);
+            eng.after_edit(&LocalFs, std::slice::from_ref(f), &snap, &trusted);
         }
     }
     first.sort();

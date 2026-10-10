@@ -4,6 +4,11 @@
 //! that fails to start is not retried for this manager's life (its error is kept and reported).
 //! `MARLOWE_LSP=off` (or `0`) disables every server, for hosts and test rigs that must never
 //! start one.
+//!
+//! Trust (see [`super::servers`]): an untrusted caller never gets a trusted server. One running
+//! for its root is stopped first ([`LspManager::distrust`]), so a session that took in
+//! untrusted content cannot have a trusted rust-analyzer run a `build.rs` it just wrote. A trusted
+//! caller takes whatever runs (an untrusted server is only less capable); it is not restarted.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -36,8 +41,8 @@ struct Inner {
     launcher: Arc<dyn Launch>,
     specs: Vec<ServerSpec>,
     slots: Mutex<HashMap<Key, Arc<Slot>>>,
-    /// Which server serves a language under a root (the first that can run there).
-    chosen: Mutex<HashMap<(Lang, String), Option<usize>>>,
+    /// Which server serves a language under a root, trusted or not (the first that can run).
+    chosen: Mutex<HashMap<(Lang, String, bool), Option<usize>>>,
     max_live: usize,
     idle: Duration,
     /// Dropped with the manager, which ends the reaper.
@@ -114,12 +119,16 @@ impl LspManager {
 
     /// The server for files of `lang` under `root`: the first configured one that can run there
     /// (else the first configured one, whose start then says what is missing).
-    pub fn spec_for(&self, lang: Lang, root: &Path) -> Option<&ServerSpec> {
-        let key = (lang, norm_key(root));
+    pub fn spec_for(&self, lang: Lang, root: &Path, trusted: bool) -> Option<&ServerSpec> {
+        let key = (lang, norm_key(root), trusted);
         let mut chosen = lock(&self.inner.chosen);
         let i = *chosen.entry(key).or_insert_with(|| {
             let serving: Vec<usize> = (0..self.inner.specs.len()).filter(|&i| self.inner.specs[i].serves(lang)).collect();
-            serving.iter().copied().find(|&i| self.inner.specs[i].launch_command(root).is_some()).or(serving.first().copied())
+            serving
+                .iter()
+                .copied()
+                .find(|&i| self.inner.specs[i].launch_command(root, trusted).is_some())
+                .or(serving.first().copied())
         });
         i.map(|i| &self.inner.specs[i])
     }
@@ -128,58 +137,98 @@ impl LspManager {
         (spec.id, norm_key(root))
     }
 
-    /// The running server for `path` under `root`, if it is up.
-    pub fn running(&self, path: &Path, root: &Path) -> Option<LspClient> {
-        let spec = self.spec_for(Lang::of(path)?, root)?;
-        let slot = lock(&self.inner.slots).get(&Self::key(spec, root)).cloned()?;
-        match slot.cell.get() {
+    /// A live server for `lang` under `root`, whichever configured server it is.
+    fn live_for(&self, slots: &HashMap<Key, Arc<Slot>>, lang: Lang, root: &Path) -> Option<LspClient> {
+        let r = norm_key(root);
+        self.inner.specs.iter().filter(|s| s.serves(lang)).find_map(|s| match slots.get(&(s.id, r.clone()))?.cell.get() {
             Some(Ok(c)) if c.alive() => Some(c.clone()),
             _ => None,
+        })
+    }
+
+    /// The running server for `path` under `root`, if it is up.
+    pub fn running(&self, path: &Path, root: &Path) -> Option<LspClient> {
+        let lang = Lang::of(path)?;
+        self.live_for(&lock(&self.inner.slots), lang, root)
+    }
+
+    /// Stops every trusted server for `root` (before an untrusted caller uses the root).
+    pub fn distrust(&self, root: &Path) {
+        Self::distrust_locked(&mut lock(&self.inner.slots), root);
+    }
+
+    fn distrust_locked(slots: &mut HashMap<Key, Arc<Slot>>, root: &Path) {
+        let r = norm_key(root);
+        let trusted: Vec<Key> = slots
+            .iter()
+            .filter(|(k, s)| k.1 == r && matches!(s.cell.get(), Some(Ok(c)) if c.trusted()))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in trusted {
+            if let Some(Ok(c)) = slots.remove(&k).and_then(|s| s.cell.get().cloned()) {
+                stop_later(c);
+            }
         }
     }
 
-    /// The server for `path` under `root`, started if it is not running.
-    pub fn client(&self, path: &Path, root: &Path) -> Result<LspClient, LspError> {
+    /// The server for `path` under `root`, started if it is not running. An untrusted caller
+    /// (`trusted` false) never gets a trusted server: one running is stopped first.
+    pub fn client(&self, path: &Path, root: &Path, trusted: bool) -> Result<LspClient, LspError> {
         let lang = Lang::of(path).ok_or_else(|| LspError::NoServer(path.display().to_string()))?;
-        let spec = self.spec_for(lang, root).ok_or_else(|| LspError::NoServer(lang.name().to_string()))?.clone();
-        let key = Self::key(&spec, root);
-        let slot = {
-            let mut slots = lock(&self.inner.slots);
-            // A server that died is started again on demand.
-            if let Some(s) = slots.get(&key) {
-                if matches!(s.cell.get(), Some(Ok(c)) if !c.alive()) {
-                    slots.remove(&key);
+        // Twice at most: a trusted start that raced an untrusted caller is stopped and redone.
+        for _ in 0..2 {
+            let (slot, spec) = {
+                let mut slots = lock(&self.inner.slots);
+                if !trusted {
+                    Self::distrust_locked(&mut slots, root);
                 }
+                if let Some(c) = self.live_for(&slots, lang, root) {
+                    c.touch();
+                    return Ok(c);
+                }
+                let spec = self.spec_for(lang, root, trusted).ok_or_else(|| LspError::NoServer(lang.name().to_string()))?.clone();
+                let key = Self::key(&spec, root);
+                // A server that died is started again on demand.
+                if let Some(s) = slots.get(&key) {
+                    if matches!(s.cell.get(), Some(Ok(c)) if !c.alive()) {
+                        slots.remove(&key);
+                    }
+                }
+                if !slots.contains_key(&key) {
+                    self.make_room(&mut slots);
+                }
+                (slots.entry(key).or_default().clone(), spec)
+            };
+            let started = slot.cell.get_or_init(|| {
+                LspClient::start(self.inner.launcher.as_ref(), &spec, root, trusted, START_TIMEOUT).map_err(|e| e.to_string())
+            });
+            match started {
+                Ok(c) if !trusted && c.trusted() => continue,
+                Ok(c) => {
+                    c.touch();
+                    return Ok(c.clone());
+                }
+                Err(e) => return Err(LspError::Start(e.clone())),
             }
-            if !slots.contains_key(&key) {
-                self.make_room(&mut slots);
-            }
-            slots.entry(key).or_default().clone()
-        };
-        let started = slot.cell.get_or_init(|| {
-            LspClient::start(self.inner.launcher.as_ref(), &spec, root, START_TIMEOUT).map_err(|e| e.to_string())
-        });
-        match started {
-            Ok(c) => {
-                c.touch();
-                Ok(c.clone())
-            }
-            Err(e) => Err(LspError::Start(e.clone())),
         }
+        Err(LspError::Start("a trusted server kept starting for an untrusted caller".into()))
     }
 
     /// The server for an edited file: the running one, or a new one when the root has the
     /// server's project marker (`Cargo.toml`, `pyproject.toml`, `package.json`, ...). An edit in
-    /// a stray folder never starts a server.
-    pub fn for_edit(&self, path: &Path, root: &Path) -> Option<LspClient> {
+    /// a stray folder never starts a server. Untrusted, a trusted server is stopped first.
+    pub fn for_edit(&self, path: &Path, root: &Path, trusted: bool) -> Option<LspClient> {
+        if !trusted {
+            self.distrust(root);
+        }
         if let Some(c) = self.running(path, root) {
             return Some(c);
         }
-        let spec = self.spec_for(Lang::of(path)?, root)?;
+        let spec = self.spec_for(Lang::of(path)?, root, trusted)?;
         if !spec.wanted_in(root) {
             return None;
         }
-        self.client(path, root).ok()
+        self.client(path, root, trusted).ok()
     }
 
     /// Stops the least recently used live servers until there is room for one more.

@@ -57,6 +57,53 @@ pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
     }
 }
 
+/// `p` with `.` dropped and `..` applied lexically; `None` when a `..` would climb past the top.
+pub fn normalize(p: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    return None;
+                }
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    Some(out)
+}
+
+/// `p` with links resolved: the canonical form of its deepest existing ancestor, plus the rest.
+fn real(p: &Path) -> PathBuf {
+    let mut tail = Vec::new();
+    let mut cur = p.to_path_buf();
+    loop {
+        if let Ok(c) = cur.canonicalize() {
+            let mut out = c;
+            out.extend(tail.iter().rev());
+            return out;
+        }
+        match (cur.file_name().map(|n| n.to_os_string()), cur.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name);
+                cur = parent.to_path_buf();
+            }
+            _ => return p.to_path_buf(),
+        }
+    }
+}
+
+/// Whether `p` lies strictly beneath `root` once `..` is applied and junctions and symlinks are
+/// resolved (a lexical prefix test lets `root/../x` and a link out of the root through).
+pub fn contained(root: &Path, p: &Path) -> bool {
+    let (Some(p), Some(root)) = (normalize(p), normalize(root)) else { return false };
+    let (p, root) = (real(&p), real(&root));
+    p != root && p.starts_with(&root)
+}
+
 fn percent_decode(s: &str) -> Option<String> {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -161,6 +208,20 @@ mod tests {
         }
         assert_eq!(uri_to_path("untitled:Untitled-1"), None);
         assert_eq!(uri_to_path("file:///bad%zz"), None);
+    }
+
+    #[test]
+    fn containment_applies_dot_dot_and_refuses_climbing_out() {
+        let root = std::env::temp_dir().join(format!("marlowe-uri-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        assert!(contained(&root, &root.join("src").join("a.rs")));
+        assert!(contained(&root, &root.join("src").join("..").join("b.rs")), "still inside");
+        assert!(!contained(&root, &root.join("..").join("x.rs")));
+        assert!(!contained(&root, &root.join("src").join("..").join("..").join("x.rs")));
+        assert!(!contained(&root, &root), "the root itself is not a file in it");
+        assert!(contained(&root, &root.join("new").join("deep").join("c.rs")), "files that do not exist yet");
+        assert_eq!(normalize(Path::new("a/../../b")), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

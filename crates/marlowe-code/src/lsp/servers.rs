@@ -12,6 +12,13 @@
 //! which a daemon started outside a login shell may not have on its `PATH`. rust-analyzer's
 //! `cargo check` runs in its own target subdirectory (`cargo.targetDir`), so it never holds the
 //! lock a user's build waits on.
+//!
+//! **Trust.** A server is started *trusted* only for the user's own free-write workspace in a
+//! session no untrusted content has entered. Untrusted, nothing the workspace supplies runs: the
+//! TypeScript servers use the global TypeScript, never `<root>/node_modules`, and rust-analyzer
+//! starts with build scripts, proc macros and `checkOnSave` (a `cargo check`, which runs both)
+//! off. Trusted, rust-analyzer runs all three, so post-edit diagnostics include rustc's own
+//! errors (borrowck, lifetimes, trait bounds).
 
 use std::path::{Path, PathBuf};
 
@@ -19,10 +26,10 @@ use serde_json::{json, Value};
 
 use crate::index::Lang;
 
-/// Root-dependent `initializationOptions`.
-pub type OptionsFn = fn(&Path, &Value) -> Value;
-/// Root-dependent command (`None`: cannot run there).
-pub type CommandFn = fn(&Path) -> Option<Vec<String>>;
+/// `initializationOptions` for a root, trusted or not.
+pub type OptionsFn = fn(&Path, bool, &Value) -> Value;
+/// The command for a root, trusted or not (`None`: cannot run there).
+pub type CommandFn = fn(&Path, bool) -> Option<Vec<String>>;
 
 /// One language server.
 #[derive(Debug, Clone)]
@@ -32,7 +39,7 @@ pub struct ServerSpec {
     pub langs: Vec<Lang>,
     /// Program name or path, then arguments.
     pub command: Vec<String>,
-    /// `initializationOptions`.
+    /// `initializationOptions` (for a trusted root; [`Self::options_for_root`] adjusts them).
     pub init_options: Value,
     /// Extra environment for the child (after the credential scrub).
     pub env: Vec<(&'static str, &'static str)>,
@@ -42,9 +49,9 @@ pub struct ServerSpec {
     /// The server reports `experimental/serverStatus` (rust-analyzer): requests wait for it to
     /// be quiescent after start.
     pub server_status: bool,
-    /// `initializationOptions` for a given root, when they depend on it.
+    /// `initializationOptions` for a given root and trust, when they depend on them.
     pub options_for_root: Option<OptionsFn>,
-    /// The command for a given root, when it depends on it (`None`: cannot run there).
+    /// The command for a given root and trust, when it depends on them (`None`: cannot run).
     pub command_for_root: Option<CommandFn>,
 }
 
@@ -54,18 +61,18 @@ impl ServerSpec {
     }
 
     /// The command to run for `root` with its program resolved; `None` when it cannot run.
-    pub fn launch_command(&self, root: &Path) -> Option<Vec<String>> {
+    pub fn launch_command(&self, root: &Path, trusted: bool) -> Option<Vec<String>> {
         if let Some(f) = self.command_for_root {
-            return f(root);
+            return f(root, trusted);
         }
         let program = find_program(self.command.first()?)?;
         Some(std::iter::once(program.to_string_lossy().into_owned()).chain(self.command[1..].iter().cloned()).collect())
     }
 
     /// The `initializationOptions` to send for `root`.
-    pub fn init_options_for(&self, root: &Path) -> Value {
+    pub fn init_options_for(&self, root: &Path, trusted: bool) -> Value {
         match self.options_for_root {
-            Some(f) => f(root, &self.init_options),
+            Some(f) => f(root, trusted, &self.init_options),
             None => self.init_options.clone(),
         }
     }
@@ -95,7 +102,7 @@ pub fn default_specs() -> Vec<ServerSpec> {
             env: Vec::new(),
             markers: vec!["Cargo.toml"],
             server_status: true,
-            options_for_root: None,
+            options_for_root: Some(rust_analyzer_options),
             command_for_root: None,
         },
         ServerSpec {
@@ -134,12 +141,24 @@ pub fn default_specs() -> Vec<ServerSpec> {
     ]
 }
 
-/// The TypeScript package a root uses: its own `node_modules/typescript`, else the global npm
-/// one beside `tsc`. With its major version.
-fn typescript_package(root: &Path) -> Option<(PathBuf, u64)> {
-    let local = root.join("node_modules").join("typescript");
+/// Untrusted, rust-analyzer runs nothing the workspace supplies: no build scripts, no proc
+/// macros, no `cargo check` on save.
+fn rust_analyzer_options(_root: &Path, trusted: bool, base: &Value) -> Value {
+    let mut opts = base.clone();
+    if !trusted {
+        opts["cargo"]["buildScripts"]["enable"] = json!(false);
+        opts["procMacro"]["enable"] = json!(false);
+        opts["checkOnSave"] = json!(false);
+    }
+    opts
+}
+
+/// The TypeScript package a root uses: when trusted, its own `node_modules/typescript` first;
+/// else (and failing that) the global npm one beside `tsc`. With its major version.
+fn typescript_package(root: &Path, trusted: bool) -> Option<(PathBuf, u64)> {
+    let local = trusted.then(|| root.join("node_modules").join("typescript"));
     let global = find_program("tsc").and_then(|tsc| tsc.parent().map(|d| d.join("node_modules").join("typescript")));
-    for dir in std::iter::once(local).chain(global) {
+    for dir in local.into_iter().chain(global) {
         let Ok(text) = std::fs::read_to_string(dir.join("package.json")) else { continue };
         let Ok(pkg) = serde_json::from_str::<Value>(&text) else { continue };
         let major = pkg.get("version").and_then(Value::as_str).and_then(|v| v.split('.').next()?.parse().ok()).unwrap_or(0);
@@ -149,29 +168,29 @@ fn typescript_package(root: &Path) -> Option<(PathBuf, u64)> {
 }
 
 /// `tsserver.js` of the root's TypeScript (before 7, which has no tsserver).
-fn tsserver_js(root: &Path) -> Option<PathBuf> {
-    let (dir, _) = typescript_package(root)?;
+fn tsserver_js(root: &Path, trusted: bool) -> Option<PathBuf> {
+    let (dir, _) = typescript_package(root, trusted)?;
     Some(dir.join("lib").join("tsserver.js")).filter(|p| p.is_file())
 }
 
-fn tls_command(root: &Path) -> Option<Vec<String>> {
-    tsserver_js(root)?;
+fn tls_command(root: &Path, trusted: bool) -> Option<Vec<String>> {
+    tsserver_js(root, trusted)?;
     let program = find_program("typescript-language-server")?;
     Some(vec![program.to_string_lossy().into_owned(), "--stdio".into()])
 }
 
 /// typescript-language-server is told which tsserver to use.
-fn tsserver_options(root: &Path, base: &Value) -> Value {
+fn tsserver_options(root: &Path, trusted: bool, base: &Value) -> Value {
     let mut opts = base.clone();
-    if let Some(js) = tsserver_js(root) {
+    if let Some(js) = tsserver_js(root, trusted) {
         opts["tsserver"] = json!({"path": js.to_string_lossy()});
     }
     opts
 }
 
 /// TypeScript 7's platform executable (`@typescript/typescript-<platform>-<arch>/lib/tsc.exe`).
-fn native_ts_command(root: &Path) -> Option<Vec<String>> {
-    let (dir, major) = typescript_package(root)?;
+fn native_ts_command(root: &Path, trusted: bool) -> Option<Vec<String>> {
+    let (dir, major) = typescript_package(root, trusted)?;
     if major < 7 {
         return None;
     }
@@ -244,9 +263,46 @@ mod tests {
         std::fs::create_dir_all(&lib).unwrap();
         std::fs::write(root.join("node_modules/typescript/package.json"), r#"{"version": "5.6.3"}"#).unwrap();
         std::fs::write(lib.join("tsserver.js"), "").unwrap();
-        assert_eq!(typescript_package(&root).map(|p| p.1), Some(5));
-        assert_eq!(native_ts_command(&root), None);
-        assert_eq!(tsserver_options(&root, &json!({}))["tsserver"]["path"], json!(lib.join("tsserver.js").to_string_lossy()));
+        assert_eq!(typescript_package(&root, true).map(|p| p.1), Some(5));
+        assert_eq!(native_ts_command(&root, true), None);
+        assert_eq!(tsserver_options(&root, true, &json!({}))["tsserver"]["path"], json!(lib.join("tsserver.js").to_string_lossy()));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_untrusted_root_runs_nothing_the_workspace_supplies() {
+        // A workspace TypeScript, with a planted native executable, is never used untrusted.
+        let root = std::env::temp_dir().join(format!("marlowe-ts-untrusted-{}", std::process::id()));
+        let ts = root.join("node_modules").join("typescript");
+        std::fs::create_dir_all(ts.join("lib")).unwrap();
+        std::fs::write(ts.join("package.json"), r#"{"version": "7.0.0"}"#).unwrap();
+        std::fs::write(ts.join("lib").join("tsserver.js"), "").unwrap();
+        for arch in ["x64", "arm64"] {
+            let exe = ts.join("node_modules").join("@typescript").join(format!("typescript-win32-{arch}")).join("lib");
+            std::fs::create_dir_all(&exe).unwrap();
+            std::fs::write(exe.join("tsc.exe"), "").unwrap();
+        }
+        let local = |p: Option<(PathBuf, u64)>| p.is_some_and(|(d, _)| d.starts_with(&root));
+        assert!(local(typescript_package(&root, true)), "trusted: the workspace's own TypeScript");
+        assert!(!local(typescript_package(&root, false)), "untrusted: never the workspace's");
+        for spec in default_specs() {
+            if let Some(cmd) = spec.launch_command(&root, false) {
+                assert!(!Path::new(&cmd[0]).starts_with(&root), "{}: {cmd:?}", spec.id);
+            }
+            let opts = spec.init_options_for(&root, false);
+            let tsserver = opts.pointer("/tsserver/path").and_then(Value::as_str).unwrap_or("");
+            assert!(!Path::new(tsserver).starts_with(&root), "{}: {opts}", spec.id);
+        }
+        if cfg!(windows) {
+            assert!(native_ts_command(&root, true).is_some_and(|c| Path::new(&c[0]).starts_with(&root)), "trusted runs it");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+
+        // rust-analyzer: build scripts, proc macros and cargo check only when trusted.
+        let ra = default_specs().into_iter().find(|s| s.id == "rust-analyzer").unwrap();
+        let (t, u) = (ra.init_options_for(&root, true), ra.init_options_for(&root, false));
+        let flags = |o: &Value| (o["cargo"]["buildScripts"]["enable"].clone(), o["procMacro"]["enable"].clone(), o["checkOnSave"].clone());
+        assert_eq!(flags(&t), (json!(true), json!(true), json!(true)));
+        assert_eq!(flags(&u), (json!(false), json!(false), json!(false)));
     }
 }

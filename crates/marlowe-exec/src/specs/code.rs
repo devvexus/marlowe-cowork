@@ -24,7 +24,7 @@ use marlowe_agent::{
     ToolOutcome,
 };
 use marlowe_code::index::norm_key;
-use marlowe_code::lsp::intel::{self, CodeIntel, IntelError, Roots, Source, Target};
+use marlowe_code::lsp::intel::{self, Caller, CodeIntel, IntelError, Roots, Source, Target};
 use marlowe_code::lsp::{Diag, LspManager};
 use marlowe_code::repomap::{self, MapOptions};
 use marlowe_model::ToolSpec;
@@ -121,7 +121,8 @@ fn has_root(t: &BuiltinTools) -> bool {
     t.workspace().is_some()
 }
 
-/// A `path` outside the user's folders brings untrusted text in.
+/// A `path` outside the user's folders brings untrusted text in. (A server's answer that lands
+/// outside them is shown as its location and signature only; see [`Cx::shows`].)
 fn reads_outside(t: &BuiltinTools, call: &ToolCallReq) -> bool {
     str_arg(&call.args, "path").is_some_and(|p| !p.trim().is_empty() && !t.trusted_read(p))
 }
@@ -150,12 +151,19 @@ fn describe_rename(call: &ToolCallReq) -> String {
     crate::first_line(&format!("rename_symbol {sym} -> {new}"), 100)
 }
 
-/// What every code tool needs: the root, its engine, the port and the cancel check.
+/// What every code tool needs: the root, its engine, the port, the cancel check and the trust.
 struct Cx<'a> {
     root: &'a Path,
     intel: Arc<CodeIntel>,
     tools: &'a BuiltinTools,
     ctx: &'a ToolCtx,
+    trusted: bool,
+}
+
+/// Whether language servers for `root` may run what the workspace supplies (its TypeScript, build
+/// scripts, proc macros): only for the user's free-write workspace in an untainted session.
+pub(super) fn trusted_servers(tools: &BuiltinTools, root: &Path, tainted: bool) -> bool {
+    !tainted && tools.inside_root(&root.join("x").to_string_lossy())
 }
 
 impl<'a> Cx<'a> {
@@ -164,15 +172,25 @@ impl<'a> Cx<'a> {
             .root_for_ref(ctx)
             .ok_or_else(|| ToolOutcome::error("the code tools need a workspace folder; this session has none"))?;
         let intel = tools.state::<CodeHost>().intel(root);
-        Ok(Cx { root, intel, tools, ctx })
+        let trusted = trusted_servers(tools, root, ctx.tainted);
+        Ok(Cx { root, intel, tools, ctx, trusted })
+    }
+
+    /// Runs `f` as this call's [`Caller`].
+    fn with<R>(&self, f: impl FnOnce(&Caller) -> R) -> R {
+        let cancelled = || self.ctx.cancel.is_cancelled();
+        f(&Caller::new(&cancelled, self.trusted))
+    }
+
+    /// Whether text from `p` may be shown: it is in the user's folders. Elsewhere (a dependency
+    /// the server pointed at) only its location and signature are, and the model is told to
+    /// `read` it, so the read goes through `read`'s taint.
+    fn shows(&self, p: &Path) -> bool {
+        self.tools.trusted_read(&p.to_string_lossy())
     }
 
     fn ws(&self) -> &dyn marlowe_os::workspace::Workspace {
         self.tools.workspace_port()
-    }
-
-    fn cancelled(&self) -> impl Fn() -> bool + '_ {
-        || self.ctx.cancel.is_cancelled()
     }
 
     fn path(&self, args: &Value) -> Option<PathBuf> {
@@ -223,7 +241,7 @@ fn symbols(t: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
     }
     let kind = str_arg(args, "kind").map(str::trim).filter(|k| !k.is_empty());
     let n = limit(args, 50, 500);
-    let (hits, source) = match c.intel.symbols(c.ws(), query, path.as_deref(), kind, n, &c.cancelled()) {
+    let (hits, source) = match c.with(|k| c.intel.symbols(c.ws(), query, path.as_deref(), kind, n, k)) {
         Ok(h) => h,
         Err(e) => return fail(e),
     };
@@ -252,7 +270,7 @@ fn definition(t: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
     };
     let path = c.path(args);
     let kind = str_arg(args, "kind").map(str::trim).filter(|k| !k.is_empty());
-    let (found, source) = match c.intel.resolve(c.ws(), symbol, path.as_deref(), kind, &c.cancelled()) {
+    let (found, source) = match c.with(|k| c.intel.resolve(c.ws(), symbol, path.as_deref(), kind, k)) {
         Ok(f) => f,
         Err(e) => return fail(e),
     };
@@ -263,6 +281,11 @@ fn definition(t: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
     }
     for target in found.iter().take(n) {
         let _ = writeln!(out, "\n{}  ({})  {}:{}", target.qualified(), kind_of(target), c.rel(&target.path), target.line);
+        if !c.shows(&target.path) {
+            let _ = writeln!(out, "{:>6}│ {}", target.line, target.sig.trim());
+            let _ = writeln!(out, "      │ ... (outside your folders; `read` the file to see the body)");
+            continue;
+        }
         let body = c.intel.body(c.ws(), target);
         for (line, text) in &body {
             let _ = writeln!(out, "{line:>6}│ {text}");
@@ -286,7 +309,7 @@ fn references(t: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
         return ToolOutcome::error("give `symbol`, e.g. `Engine::start`");
     };
     let n = limit(args, 100, 1000);
-    let (target, locs, source) = match c.intel.references(c.ws(), symbol, c.path(args).as_deref(), n, &c.cancelled()) {
+    let (target, locs, source) = match c.with(|k| c.intel.references(c.ws(), symbol, c.path(args).as_deref(), n, k)) {
         Ok(r) => r,
         Err(e) => return fail(e),
     };
@@ -314,7 +337,11 @@ fn references(t: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
             let _ = write!(out, "\n{rel}");
             last = rel;
         }
-        let _ = write!(out, "\n{:>6}:{:<3}│ {}", l.line, l.col, l.text.trim());
+        if c.shows(&l.path) {
+            let _ = write!(out, "\n{:>6}:{:<3}│ {}", l.line, l.col, l.text.trim());
+        } else {
+            let _ = write!(out, "\n{:>6}:{:<3}│ (outside your folders; `read` to see it)", l.line, l.col);
+        }
     }
     if locs.len() == n {
         let _ = write!(out, "\n(first {n}; raise `limit` for more)");
@@ -330,8 +357,18 @@ fn hover(t: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
     let Some(symbol) = str_arg(args, "symbol").map(str::trim).filter(|s| !s.is_empty()) else {
         return ToolOutcome::error("give `symbol`");
     };
-    let found = c.intel.hover(c.ws(), symbol, c.path(args).as_deref(), &c.cancelled());
+    let found = c.with(|k| c.intel.hover(c.ws(), symbol, c.path(args).as_deref(), k));
     match found {
+        Ok((target, _, _)) if !c.shows(&target.path) => ToolOutcome::ok(
+            format!(
+                "{}  {}:{}  (outside your folders)\n\n{}\n\n(`read` the file for its documentation)",
+                target.qualified(),
+                c.rel(&target.path),
+                target.line,
+                target.sig.trim()
+            ),
+            target.qualified(),
+        ),
         Ok((target, text, source)) => ToolOutcome::ok(
             format!("{}  {}:{}  ({})\n\n{text}", target.qualified(), c.rel(&target.path), target.line, source_note(source)),
             target.qualified(),
@@ -363,7 +400,7 @@ fn diagnostics(t: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
     let floor = severity_floor(args);
     let n = limit(args, 100, 1000);
     let path = c.path(args);
-    let found = match c.intel.diagnostics(c.ws(), path.as_deref(), &c.cancelled()) {
+    let found = match c.with(|k| c.intel.diagnostics(c.ws(), path.as_deref(), k)) {
         Ok(f) => f,
         Err(e) => return fail(e),
     };
@@ -407,7 +444,7 @@ fn rename_symbol(t: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
     let (Some(symbol), Some(new_name)) = (str_arg(args, "symbol"), str_arg(args, "new_name")) else {
         return ToolOutcome::error("give `symbol` and `new_name`");
     };
-    let plan = match c.intel.plan_rename(c.ws(), symbol, new_name, c.path(args).as_deref(), &c.cancelled()) {
+    let plan = match c.with(|k| c.intel.plan_rename(c.ws(), symbol, new_name, c.path(args).as_deref(), k)) {
         Ok(p) => p,
         Err(e) => return fail(e),
     };
@@ -415,7 +452,7 @@ fn rename_symbol(t: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
         return ToolOutcome::error("interrupted before the rename was written; nothing changed");
     }
     let paths: Vec<PathBuf> = plan.files.iter().map(|f| f.path.clone()).collect();
-    let snap = c.intel.before_edit(c.ws(), &paths);
+    let snap = c.with(|k| c.intel.before_edit(c.ws(), &paths, k));
     if let Err(e) = c.intel.apply_rename(c.ws(), &plan) {
         return fail(e);
     }
@@ -435,7 +472,7 @@ fn rename_symbol(t: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
     if lines.len() > DIFF_LINES {
         let _ = writeln!(out, "... ({} more diff lines)", lines.len() - DIFF_LINES);
     }
-    let after = c.intel.after_edit(c.ws(), &paths, &snap, &c.cancelled());
+    let after = c.with(|k| c.intel.after_edit(c.ws(), &paths, &snap, k));
     out.push_str(&diag::render(&after, |p| c.rel(p)));
     let summary = format!("{} in {}", plural(plan.edits(), "edit", "edits"), plural(plan.files.len(), "file", "files"));
     ToolOutcome::ok(out.trim_end().to_string(), summary)
@@ -540,7 +577,7 @@ fn rename_spec() -> ToolSpec {
 pub fn middleware(tools: &BuiltinTools) -> Vec<Arc<dyn ToolMiddleware>> {
     match tools.workspace() {
         Some(root) if tools.workspace_port().kind() == "local" => {
-            vec![Arc::new(DiagnosticsMiddleware::new(tools.state::<CodeHost>().as_ref().clone(), root))]
+            vec![Arc::new(DiagnosticsMiddleware::for_host(tools, root))]
         }
         _ => Vec::new(),
     }

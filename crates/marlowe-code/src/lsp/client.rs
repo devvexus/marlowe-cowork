@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
@@ -84,9 +84,15 @@ struct Published {
 
 #[derive(Debug, Clone)]
 struct Doc {
+    path: PathBuf,
     version: i64,
     hash: blake3::Hash,
+    /// The diagnostics generation just before the change that made `version`.
+    changed_gen: u64,
 }
+
+/// Tells clients apart across restarts (each has its own generation counter).
+static INSTANCES: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Default)]
 struct State {
@@ -110,6 +116,9 @@ struct State {
 struct Inner {
     spec: ServerSpec,
     root: PathBuf,
+    /// Started with the workspace's own programs and build steps allowed (see `servers`).
+    trusted: bool,
+    instance: u64,
     tx: Sender<Message>,
     next_id: AtomicI32,
     pending: Mutex<HashMap<RequestId, Sender<Result<Value, lsp_server::ResponseError>>>>,
@@ -139,11 +148,13 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl LspClient {
     /// Starts `spec` for `root` and runs the initialize handshake (bounded by `timeout`).
-    pub fn start(launch: &dyn Launch, spec: &ServerSpec, root: &Path, timeout: Duration) -> Result<Self, LspError> {
-        let Channel { tx, rx, guard, stderr } = launch.launch(spec, root)?;
+    pub fn start(launch: &dyn Launch, spec: &ServerSpec, root: &Path, trusted: bool, timeout: Duration) -> Result<Self, LspError> {
+        let Channel { tx, rx, guard, stderr } = launch.launch(spec, root, trusted)?;
         let inner = Arc::new(Inner {
             spec: spec.clone(),
             root: root.to_path_buf(),
+            trusted,
+            instance: INSTANCES.fetch_add(1, Ordering::Relaxed),
             tx,
             next_id: AtomicI32::new(1),
             pending: Mutex::new(HashMap::new()),
@@ -168,7 +179,7 @@ impl LspClient {
             "rootUri": root_uri,
             "rootPath": root.to_string_lossy(),
             "workspaceFolders": [{"uri": root_uri, "name": name}],
-            "initializationOptions": spec.init_options_for(root),
+            "initializationOptions": spec.init_options_for(root, trusted),
             "capabilities": client_capabilities(),
         });
         let result = client.request_raw("initialize", params, timeout, &|| false).map_err(|e| match e {
@@ -198,6 +209,16 @@ impl LspClient {
 
     pub fn root(&self) -> &Path {
         &self.inner.root
+    }
+
+    /// Whether the server was started trusted (may run the workspace's build steps).
+    pub fn trusted(&self) -> bool {
+        self.inner.trusted
+    }
+
+    /// This client's identity: a restarted server is a new instance with new generations.
+    pub fn instance(&self) -> u64 {
+        self.inner.instance
     }
 
     pub fn alive(&self) -> bool {
@@ -338,8 +359,8 @@ impl LspClient {
 
     /// Makes the server's copy of `path` equal `text`: opens it, or sends the full new text as a
     /// change (and a save, which is what starts rust-analyzer's `cargo check`). Returns the
-    /// document version now and the diagnostics generation before the change, for
-    /// [`Self::wait_diagnostics`]. Unchanged text sends nothing.
+    /// document version now and the diagnostics generation just before the change that made it,
+    /// for [`Self::wait_diagnostics`]. Unchanged text sends nothing.
     pub fn sync(&self, path: &Path, text: &str) -> (i64, u64) {
         self.touch();
         let key = norm_key(path);
@@ -348,10 +369,11 @@ impl LspClient {
         let mut st = lock(&self.inner.state);
         let gen = st.gen;
         match st.docs.get_mut(&key) {
-            Some(doc) if doc.hash == hash => (doc.version, gen),
+            Some(doc) if doc.hash == hash => (doc.version, doc.changed_gen),
             Some(doc) => {
                 doc.version += 1;
                 doc.hash = hash;
+                doc.changed_gen = gen;
                 let version = doc.version;
                 drop(st);
                 self.notify(
@@ -362,7 +384,7 @@ impl LspClient {
                 (version, gen)
             }
             None => {
-                st.docs.insert(key, Doc { version: 1, hash });
+                st.docs.insert(key, Doc { path: path.to_path_buf(), version: 1, hash, changed_gen: gen });
                 drop(st);
                 let lang = Lang::of(path).map_or("plaintext", |l| l.language_id(path));
                 self.notify(
@@ -391,9 +413,24 @@ impl LspClient {
         lock(&self.inner.state).docs.contains_key(&norm_key(path))
     }
 
+    /// The files the server has open (it goes by Marlowe's copy of them, not the disk).
+    pub fn open_docs(&self) -> Vec<PathBuf> {
+        lock(&self.inner.state).docs.values().map(|d| d.path.clone()).collect()
+    }
+
+    /// The version and content hash of the server's copy of `path`, when it has it open.
+    pub fn doc(&self, path: &Path) -> Option<(i64, blake3::Hash)> {
+        lock(&self.inner.state).docs.get(&norm_key(path)).map(|d| (d.version, d.hash))
+    }
+
     /// The diagnostics last published for `path`, if any were.
     pub fn diagnostics(&self, path: &Path) -> Option<Vec<Diag>> {
         lock(&self.inner.state).diags.get(&norm_key(path)).map(|p| p.items.clone())
+    }
+
+    /// The last publish for `path`: its generation and diagnostics.
+    pub fn published(&self, path: &Path) -> Option<(u64, Vec<Diag>)> {
+        lock(&self.inner.state).diags.get(&norm_key(path)).map(|p| (p.gen, p.items.clone()))
     }
 
     /// Every file with published diagnostics, and them.
@@ -417,6 +454,19 @@ impl LspClient {
         max: Duration,
         cancelled: &dyn Fn() -> bool,
     ) -> Option<Vec<Diag>> {
+        self.wait_published(path, after, min_version, settle, max, cancelled).map(|p| p.1)
+    }
+
+    /// [`Self::wait_diagnostics`] with the generation of the publish it settled on.
+    pub fn wait_published(
+        &self,
+        path: &Path,
+        after: u64,
+        min_version: i64,
+        settle: Duration,
+        max: Duration,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<(u64, Vec<Diag>)> {
         let key = norm_key(path);
         let deadline = Instant::now() + max;
         let mut st = lock(&self.inner.state);
@@ -425,20 +475,20 @@ impl LspClient {
                 .diags
                 .get(&key)
                 .filter(|p| p.gen > after && p.version.is_none_or(|v| v >= min_version))
-                .map(|p| (p.at, p.items.clone()));
+                .map(|p| (p.at, p.gen, p.items.clone()));
             let now = Instant::now();
-            if let Some((at, items)) = &fresh {
+            if let Some((at, gen, items)) = &fresh {
                 if now.duration_since(*at) >= settle || now >= deadline {
-                    return Some(items.clone());
+                    return Some((*gen, items.clone()));
                 }
             } else if now >= deadline || !st.alive {
                 return None;
             }
             if cancelled() {
-                return fresh.map(|f| f.1);
+                return fresh.map(|f| (f.1, f.2));
             }
             let wake = match &fresh {
-                Some((at, _)) => (*at + settle).min(deadline),
+                Some((at, ..)) => (*at + settle).min(deadline),
                 None => deadline,
             };
             let wait = wake.saturating_duration_since(now).clamp(Duration::from_millis(5), Duration::from_millis(100));
@@ -448,6 +498,11 @@ impl LspClient {
 
     /// `textDocument/diagnostic` for `path` (servers that take pull requests).
     pub fn pull_diagnostics(&self, path: &Path, timeout: Duration, cancelled: &dyn Fn() -> bool) -> Option<Vec<Diag>> {
+        self.pull_published(path, timeout, cancelled).map(|p| p.1)
+    }
+
+    /// [`Self::pull_diagnostics`] with the generation it was stored at.
+    pub fn pull_published(&self, path: &Path, timeout: Duration, cancelled: &dyn Fn() -> bool) -> Option<(u64, Vec<Diag>)> {
         if !self.pulls_diagnostics() {
             return None;
         }
@@ -455,7 +510,7 @@ impl LspClient {
             .request("textDocument/diagnostic", json!({"textDocument": {"uri": path_to_uri(path)}}), timeout, cancelled)
             .ok()?;
         if r.get("kind").and_then(Value::as_str) == Some("unchanged") {
-            return self.diagnostics(path);
+            return self.published(path);
         }
         let items: Vec<Diag> = r.get("items")?.as_array()?.iter().filter_map(Diag::from_value).collect();
         let mut st = lock(&self.inner.state);
@@ -465,7 +520,7 @@ impl LspClient {
             norm_key(path),
             Published { path: path.to_path_buf(), version: None, items: items.clone(), gen, at: Instant::now() },
         );
-        Some(items)
+        Some((gen, items))
     }
 
     /// Polite stop: `shutdown`, `exit`, then the process tree is killed if it is still there.
@@ -597,7 +652,7 @@ fn on_request(inner: &Inner, r: Request) {
             let answers: Vec<Value> = items
                 .iter()
                 .map(|item| match item.get("section").and_then(Value::as_str) {
-                    Some(s) if s == inner.spec.id => inner.spec.init_options_for(&inner.root),
+                    Some(s) if s == inner.spec.id => inner.spec.init_options_for(&inner.root, inner.trusted),
                     _ => Value::Null,
                 })
                 .collect();
