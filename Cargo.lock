@@ -2712,8 +2712,10 @@ dependencies = [
 name = "marlowe-code"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "marlowe-model",
  "marlowe-os",
+ "pdf-extract",
  "serde",
  "serde_json",
  "thiserror 2.0.19",

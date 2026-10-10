@@ -1,0 +1,2068 @@
+{
+ "about": "150 edit-engine cases (M4.6 track A, design 2.1 T6). Generated once by an independent Python model of the tier rules; never regenerated to make a test pass.",
+ "files": {
+  "f00": "use std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\n        self.entries.insert(path, manifest);\n    }\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                version = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}\n",
+  "f01": "import math\nimport os\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field(default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\nclass Trainer:\n    def __init__(self, model, config):\n        self.model = model\n        self.config = config\n        self.step = 0\n        self.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n        self.step += 1\n        return loss\n\n    def save(self, path):\n        os.makedirs(os.path.dirname(path), exist_ok=True)\n        with open(path, \"w\") as f:\n            f.write(str(self.history))\n\n\ndef main():\n    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n",
+  "f02": "name: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace\n      - name: Test\n        run: cargo test --workspace --no-fail-fast\n",
+  "f03": "import { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n  return config;\n}\n\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n    const item = req.body;\n    if (!item || !item.name) {\n      res.status(400).json({ error: \"name required\" });\n      return;\n    }\n    res.status(201).json(item);\n  });\n}\n",
+  "f04": "use std::collections::HashMap;\r\nuse std::path::{Path, PathBuf};\r\n\r\n/// A cache of parsed manifests, keyed by path.\r\npub struct ManifestCache {\r\n    entries: HashMap<PathBuf, Manifest>,\r\n    hits: u64,\r\n    misses: u64,\r\n}\r\n\r\nimpl ManifestCache {\r\n    pub fn new() -> Self {\r\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\r\n    }\r\n\r\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\r\n        if self.entries.contains_key(path) {\r\n            self.hits += 1;\r\n            return self.entries.get(path);\r\n        }\r\n        self.misses += 1;\r\n        None\r\n    }\r\n\r\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\r\n        self.entries.insert(path, manifest);\r\n    }\r\n\r\n    pub fn hit_rate(&self) -> f64 {\r\n        let total = self.hits + self.misses;\r\n        if total == 0 {\r\n            return 0.0;\r\n        }\r\n        self.hits as f64 / total as f64\r\n    }\r\n}\r\n\r\n#[derive(Debug, Clone, PartialEq)]\r\npub struct Manifest {\r\n    pub name: String,\r\n    pub version: String,\r\n    pub dependencies: Vec<String>,\r\n}\r\n\r\nimpl Manifest {\r\n    pub fn parse(text: &str) -> Result<Self, String> {\r\n        let mut name = None;\r\n        let mut version = None;\r\n        for line in text.lines() {\r\n            if let Some(v) = line.strip_prefix(\"name = \") {\r\n                name = Some(v.trim_matches('\"').to_string());\r\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\r\n                version = Some(v.trim_matches('\"').to_string());\r\n            }\r\n        }\r\n        Ok(Self {\r\n            name: name.ok_or(\"no name\")?,\r\n            version: version.ok_or(\"no version\")?,\r\n            dependencies: Vec::new(),\r\n        })\r\n    }\r\n}\r\n",
+  "f05": "import { readFile } from \"node:fs/promises\";\r\n\r\nexport async function loadConfig(path) {\r\n  const raw = await readFile(path, \"utf8\");\r\n  const config = JSON.parse(raw);\r\n  if (!config.port) {\r\n    config.port = 8080;\r\n  }\r\n  return config;\r\n}\r\n\r\nexport function route(app, config) {\r\n  app.get(\"/health\", (req, res) => {\r\n    res.json({ ok: true, port: config.port });\r\n  });\r\n  app.post(\"/items\", async (req, res) => {\r\n    const item = req.body;\r\n    if (!item || !item.name) {\r\n      res.status(400).json({ error: \"name required\" });\r\n      return;\r\n    }\r\n    res.status(201).json(item);\r\n  });\r\n}\r\n",
+  "f06": "import math\r\nimport os\r\nfrom dataclasses import dataclass, field\r\n\r\n\r\n@dataclass\r\nclass RunConfig:\r\n    lr: float = 3e-4\r\n    batch_size: int = 32\r\n    warmup_steps: int = 500\r\n    tags: list = field(default_factory=list)\r\n\r\n\r\ndef cosine_schedule(step, total, base_lr, warmup=500):\r\n    if step < warmup:\r\n        return base_lr * step / warmup\r\n    progress = (step - warmup) / max(1, total - warmup)\r\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\r\n\r\n\r\nclass Trainer:\r\n    def __init__(self, model, config):\r\n        self.model = model\r\n        self.config = config\r\n        self.step = 0\r\n        self.history = []\r\n\r\n    def train_step(self, batch):\r\n        loss = self.model.loss(batch)\r\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\r\n        self.model.update(lr)\r\n        self.history.append(loss)\r\n        self.step += 1\r\n        return loss\r\n\r\n    def save(self, path):\r\n        os.makedirs(os.path.dirname(path), exist_ok=True)\r\n        with open(path, \"w\") as f:\r\n            f.write(str(self.history))\r\n\r\n\r\ndef main():\r\n    config = RunConfig(tags=[\"baseline\"])\r\n    trainer = Trainer(model=None, config=config)\r\n    for _ in range(3):\r\n        trainer.train_step(batch=None)\r\n    trainer.save(\"runs/baseline/history.txt\")\r\n",
+  "f07": "name: ci\r\non:\r\n  push:\r\n    branches: [main]\r\n  pull_request:\r\njobs:\r\n  test:\r\n    runs-on: windows-latest\r\n    steps:\r\n      - uses: actions/checkout@v4\r\n      - name: Build\r\n        run: cargo build --workspace\r\n      - name: Test\r\n        run: cargo test --workspace --no-fail-fast\r\n",
+  "f08": "# Notes — café résumé\n日本語のテキスト: 東京\nemoji: 🚀 launch ✅ done\nnaïve façade coöperate\nΕλληνικά: αβγ\nend of notes — fin\n",
+  "f09": "use std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\n        self.entries.insert(path, manifest);\n    }\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                version = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}",
+  "f10": "name: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace\n      - name: Test\n        run: cargo test --workspace --no-fail-fast",
+  "f11": "import { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n  return config;\n}\n\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n    const item = req.body;\n    if (!item || !item.name) {\n      res.status(400).json({ error: \"name required\" });\n      return;\n    }\n    res.status(201).json(item);\n  });\n}",
+  "f12": "import math\nimport os\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field(default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\nclass Trainer:\n    def __init__(self, model, config):\n        self.model = model\n        self.config = config\n        self.step = 0\n        self.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n        self.step += 1\n        return loss\n\n    def save(self, path):\n        os.makedirs(os.path.dirname(path), exist_ok=True)\n        with open(path, \"w\") as f:\n            f.write(str(self.history))\n\n\ndef main():\n    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")",
+  "f13": "",
+  "f14": "let re = Regex::new(r\"^(\\d+)\\.(\\d+)$\").unwrap();\nlet glob = \"src/**/*.{rs,toml}\";\nlet price = \"$9.99 (approx.)\";\nlet pipe = a | b || c;\nlet set = [a-z]+?;\nlet braces = {x: {y: 1}};\n"
+ },
+ "cases": [
+  {
+   "id": "exact-01",
+   "category": "exact",
+   "file": "f00",
+   "old": "\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,",
+   "new": "",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "use std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\n        self.entries.insert(path, manifest);\n    }\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                version = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}\n"
+   }
+  },
+  {
+   "id": "exact-02",
+   "category": "exact",
+   "file": "f01",
+   "old": "import os",
+   "new": "# replaced\nimport os",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import math\n# replaced\nimport os\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field(default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\nclass Trainer:\n    def __init__(self, model, config):\n        self.model = model\n        self.config = config\n        self.step = 0\n        self.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n        self.step += 1\n        return loss\n\n    def save(self, path):\n        os.makedirs(os.path.dirname(path), exist_ok=True)\n        with open(path, \"w\") as f:\n            f.write(str(self.history))\n\n\ndef main():\n    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n"
+   }
+  },
+  {
+   "id": "exact-03",
+   "category": "exact",
+   "file": "f00",
+   "old": "    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;",
+   "new": "    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\npub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;_extra",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "use std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\n        self.entries.insert(path, manifest);\n    }\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\npub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;_extra\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                version = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}\n"
+   }
+  },
+  {
+   "id": "exact-04",
+   "category": "exact",
+   "file": "f02",
+   "old": "  push:\n    branches: [main]\n  pull_request:\n",
+   "new": "  push:\n    branches: [main]\n  pull_request:\n\npush:\n    branches: [main]\n  pull_request:_extra",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "name: ci\non:\n  push:\n    branches: [main]\n  pull_request:\n\npush:\n    branches: [main]\n  pull_request:_extrajobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace\n      - name: Test\n        run: cargo test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "exact-05",
+   "category": "exact",
+   "file": "f00",
+   "old": "        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());",
+   "new": "        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\nlet mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());_extra",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "use std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\n        self.entries.insert(path, manifest);\n    }\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\nlet mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());_extra\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                version = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}\n"
+   }
+  },
+  {
+   "id": "exact-06",
+   "category": "exact",
+   "file": "f01",
+   "old": "        self.step += 1\n        return loss\n\n",
+   "new": "# replaced\n        self.step += 1\n        return loss\n\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import math\nimport os\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field(default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\nclass Trainer:\n    def __init__(self, model, config):\n        self.model = model\n        self.config = config\n        self.step = 0\n        self.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n# replaced\n        self.step += 1\n        return loss\n\n    def save(self, path):\n        os.makedirs(os.path.dirname(path), exist_ok=True)\n        with open(path, \"w\") as f:\n            f.write(str(self.history))\n\n\ndef main():\n    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n"
+   }
+  },
+  {
+   "id": "exact-07",
+   "category": "exact",
+   "file": "f01",
+   "old": "            f.write(str(self.history))\n",
+   "new": "            f.write(str(this.history))\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import math\nimport os\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field(default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\nclass Trainer:\n    def __init__(self, model, config):\n        self.model = model\n        self.config = config\n        self.step = 0\n        self.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n        self.step += 1\n        return loss\n\n    def save(self, path):\n        os.makedirs(os.path.dirname(path), exist_ok=True)\n        with open(path, \"w\") as f:\n            f.write(str(this.history))\n\n\ndef main():\n    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n"
+   }
+  },
+  {
+   "id": "exact-08",
+   "category": "exact",
+   "file": "f03",
+   "old": "  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {",
+   "new": "  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\napp.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {_extra",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n  return config;\n}\n\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\napp.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {_extra\n    const item = req.body;\n    if (!item || !item.name) {\n      res.status(400).json({ error: \"name required\" });\n      return;\n    }\n    res.status(201).json(item);\n  });\n}\n"
+   }
+  },
+  {
+   "id": "exact-09",
+   "category": "exact",
+   "file": "f03",
+   "old": "    config.port = 8080;\n  }\n  return config;",
+   "new": "",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  if (!config.port) {\n\n}\n\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n    const item = req.body;\n    if (!item || !item.name) {\n      res.status(400).json({ error: \"name required\" });\n      return;\n    }\n    res.status(201).json(item);\n  });\n}\n"
+   }
+  },
+  {
+   "id": "exact-10",
+   "category": "exact",
+   "file": "f01",
+   "old": "\n@dataclass\nclass RunConfig:\n",
+   "new": "\n@dataclass\nclass RunConfig:\n // changed",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import math\nimport os\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n // changed    lr: float = 3e-4\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field(default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\nclass Trainer:\n    def __init__(self, model, config):\n        self.model = model\n        self.config = config\n        self.step = 0\n        self.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n        self.step += 1\n        return loss\n\n    def save(self, path):\n        os.makedirs(os.path.dirname(path), exist_ok=True)\n        with open(path, \"w\") as f:\n            f.write(str(self.history))\n\n\ndef main():\n    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n"
+   }
+  },
+  {
+   "id": "exact-11",
+   "category": "exact",
+   "file": "f03",
+   "old": "export function route(app, config) {\n  app.get(\"/health\", (req, res) => {",
+   "new": "",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n  return config;\n}\n\n\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n    const item = req.body;\n    if (!item || !item.name) {\n      res.status(400).json({ error: \"name required\" });\n      return;\n    }\n    res.status(201).json(item);\n  });\n}\n"
+   }
+  },
+  {
+   "id": "exact-12",
+   "category": "exact",
+   "file": "f01",
+   "old": "        self.history = []",
+   "new": "# replaced\n        self.history = []",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import math\nimport os\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field(default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\nclass Trainer:\n    def __init__(self, model, config):\n        self.model = model\n        self.config = config\n        self.step = 0\n# replaced\n        self.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n        self.step += 1\n        return loss\n\n    def save(self, path):\n        os.makedirs(os.path.dirname(path), exist_ok=True)\n        with open(path, \"w\") as f:\n            f.write(str(self.history))\n\n\ndef main():\n    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n"
+   }
+  },
+  {
+   "id": "exact-13",
+   "category": "exact",
+   "file": "f01",
+   "old": "    trainer = Trainer(model=None, config=config)",
+   "new": "# replaced\n    trainer = Trainer(model=None, config=config)",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import math\nimport os\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field(default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\nclass Trainer:\n    def __init__(self, model, config):\n        self.model = model\n        self.config = config\n        self.step = 0\n        self.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n        self.step += 1\n        return loss\n\n    def save(self, path):\n        os.makedirs(os.path.dirname(path), exist_ok=True)\n        with open(path, \"w\") as f:\n            f.write(str(self.history))\n\n\ndef main():\n    config = RunConfig(tags=[\"baseline\"])\n# replaced\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n"
+   }
+  },
+  {
+   "id": "exact-14",
+   "category": "exact",
+   "file": "f02",
+   "old": "    steps:",
+   "new": "    STEPS:",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "name: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    STEPS:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace\n      - name: Test\n        run: cargo test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "exact-15",
+   "category": "exact",
+   "file": "f01",
+   "old": "@dataclass\nclass RunConfig:\n    lr: float = 3e-4",
+   "new": "@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4_extra",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import math\nimport os\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4_extra\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field(default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\nclass Trainer:\n    def __init__(self, model, config):\n        self.model = model\n        self.config = config\n        self.step = 0\n        self.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n        self.step += 1\n        return loss\n\n    def save(self, path):\n        os.makedirs(os.path.dirname(path), exist_ok=True)\n        with open(path, \"w\") as f:\n            f.write(str(self.history))\n\n\ndef main():\n    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n"
+   }
+  },
+  {
+   "id": "exact-16",
+   "category": "exact",
+   "file": "f02",
+   "old": "  push:\n    branches: [main]\n",
+   "new": "",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "name: ci\non:\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace\n      - name: Test\n        run: cargo test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "exact-17",
+   "category": "exact",
+   "file": "f03",
+   "old": "  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {",
+   "new": "  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\napp.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {_extra",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n  return config;\n}\n\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\napp.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {_extra\n    const item = req.body;\n    if (!item || !item.name) {\n      res.status(400).json({ error: \"name required\" });\n      return;\n    }\n    res.status(201).json(item);\n  });\n}\n"
+   }
+  },
+  {
+   "id": "exact-18",
+   "category": "exact",
+   "file": "f03",
+   "old": "  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n",
+   "new": "  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n // changed",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n // changed  return config;\n}\n\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n    const item = req.body;\n    if (!item || !item.name) {\n      res.status(400).json({ error: \"name required\" });\n      return;\n    }\n    res.status(201).json(item);\n  });\n}\n"
+   }
+  },
+  {
+   "id": "exact-19",
+   "category": "exact",
+   "file": "f00",
+   "old": "        Self { entries: HashMap::new(), hits: 0, misses: 0 }",
+   "new": "        Self { entries: HashMap::new(), hits: 0, misses: 0 }\nSelf { entries: HashMap::new(), hits: 0, misses: 0 }_extra",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "use std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\nSelf { entries: HashMap::new(), hits: 0, misses: 0 }_extra\n    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\n        self.entries.insert(path, manifest);\n    }\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                version = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}\n"
+   }
+  },
+  {
+   "id": "exact-20",
+   "category": "exact",
+   "file": "f03",
+   "old": "    }\n    res.status(201).json(item);\n  });\n",
+   "new": "    }\n    res.status(201).json(item);\n  });\n // changed",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n  return config;\n}\n\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n    const item = req.body;\n    if (!item || !item.name) {\n      res.status(400).json({ error: \"name required\" });\n      return;\n    }\n    res.status(201).json(item);\n  });\n // changed}\n"
+   }
+  },
+  {
+   "id": "exact-21",
+   "category": "exact",
+   "file": "f02",
+   "old": "  pull_request:\njobs:\n",
+   "new": "  pull_request:\njobs:\n\npull_request:\njobs:_extra",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "name: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n\npull_request:\njobs:_extra  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace\n      - name: Test\n        run: cargo test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "exact-22",
+   "category": "exact",
+   "file": "f03",
+   "old": "    if (!item || !item.name) {\n      res.status(400).json({ error: \"name required\" });\n      return;",
+   "new": "    if (!item || !item.name) {\n      res.status(400).json({ error: \"name required\" });\n      return!",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n  return config;\n}\n\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n    const item = req.body;\n    if (!item || !item.name) {\n      res.status(400).json({ error: \"name required\" });\n      return!\n    }\n    res.status(201).json(item);\n  });\n}\n"
+   }
+  },
+  {
+   "id": "exact-23",
+   "category": "exact",
+   "file": "f00",
+   "old": "            dependencies: Vec::new(),\n        })\n    }\n",
+   "new": "# replaced\n            dependencies: Vec::new(),\n        })\n    }\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "use std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\n        self.entries.insert(path, manifest);\n    }\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                version = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n# replaced\n            dependencies: Vec::new(),\n        })\n    }\n}\n"
+   }
+  },
+  {
+   "id": "exact-24",
+   "category": "exact",
+   "file": "f00",
+   "old": "/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n",
+   "new": "# replaced\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "use std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\n# replaced\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\n        self.entries.insert(path, manifest);\n    }\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                version = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}\n"
+   }
+  },
+  {
+   "id": "exact-25",
+   "category": "exact",
+   "file": "f02",
+   "old": "name: ci\non:\n",
+   "new": "# replaced\nname: ci\non:\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "# replaced\nname: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace\n      - name: Test\n        run: cargo test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "exact-26",
+   "category": "exact",
+   "file": "f01",
+   "old": "import os\n",
+   "new": "import os\n // changed",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import math\nimport os\n // changedfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field(default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\nclass Trainer:\n    def __init__(self, model, config):\n        self.model = model\n        self.config = config\n        self.step = 0\n        self.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n        self.step += 1\n        return loss\n\n    def save(self, path):\n        os.makedirs(os.path.dirname(path), exist_ok=True)\n        with open(path, \"w\") as f:\n            f.write(str(self.history))\n\n\ndef main():\n    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n"
+   }
+  },
+  {
+   "id": "exact-27",
+   "category": "exact",
+   "file": "f01",
+   "old": "            f.write(str(self.history))\n",
+   "new": "            f.write(str(this.history))\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import math\nimport os\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field(default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\nclass Trainer:\n    def __init__(self, model, config):\n        self.model = model\n        self.config = config\n        self.step = 0\n        self.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n        self.step += 1\n        return loss\n\n    def save(self, path):\n        os.makedirs(os.path.dirname(path), exist_ok=True)\n        with open(path, \"w\") as f:\n            f.write(str(this.history))\n\n\ndef main():\n    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n"
+   }
+  },
+  {
+   "id": "exact-28",
+   "category": "exact",
+   "file": "f02",
+   "old": "    branches: [main]\n  pull_request:",
+   "new": "# replaced\n    branches: [main]\n  pull_request:",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "name: ci\non:\n  push:\n# replaced\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace\n      - name: Test\n        run: cargo test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "exact-29",
+   "category": "exact",
+   "file": "f01",
+   "old": "    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\n",
+   "new": "    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n!",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import math\nimport os\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field(default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n!class Trainer:\n    def __init__(self, model, config):\n        self.model = model\n        self.config = config\n        self.step = 0\n        self.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n        self.step += 1\n        return loss\n\n    def save(self, path):\n        os.makedirs(os.path.dirname(path), exist_ok=True)\n        with open(path, \"w\") as f:\n            f.write(str(self.history))\n\n\ndef main():\n    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n"
+   }
+  },
+  {
+   "id": "exact-30",
+   "category": "exact",
+   "file": "f03",
+   "old": "  if (!config.port) {\n",
+   "new": "  IF (!CONFIG.PORT) {\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  IF (!CONFIG.PORT) {\n    config.port = 8080;\n  }\n  return config;\n}\n\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n    const item = req.body;\n    if (!item || !item.name) {\n      res.status(400).json({ error: \"name required\" });\n      return;\n    }\n    res.status(201).json(item);\n  });\n}\n"
+   }
+  },
+  {
+   "id": "replace_all-01",
+   "category": "replace_all",
+   "file": "f03",
+   "old": "name",
+   "new": "NAME_X",
+   "replace_all": true,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 2,
+    "result": "import { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n  return config;\n}\n\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n    const item = req.body;\n    if (!item || !item.NAME_X) {\n      res.status(400).json({ error: \"NAME_X required\" });\n      return;\n    }\n    res.status(201).json(item);\n  });\n}\n"
+   }
+  },
+  {
+   "id": "replace_all-02",
+   "category": "replace_all",
+   "file": "f02",
+   "old": "cargo",
+   "new": "CARGO_X",
+   "replace_all": true,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 2,
+    "result": "name: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: CARGO_X build --workspace\n      - name: Test\n        run: CARGO_X test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "replace_all-03",
+   "category": "replace_all",
+   "file": "f01",
+   "old": "config",
+   "new": "CONFIG_X",
+   "replace_all": true,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 7,
+    "result": "import math\nimport os\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field(default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\nclass Trainer:\n    def __init__(self, model, CONFIG_X):\n        self.model = model\n        self.CONFIG_X = CONFIG_X\n        self.step = 0\n        self.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.CONFIG_X.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n        self.step += 1\n        return loss\n\n    def save(self, path):\n        os.makedirs(os.path.dirname(path), exist_ok=True)\n        with open(path, \"w\") as f:\n            f.write(str(self.history))\n\n\ndef main():\n    CONFIG_X = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, CONFIG_X=CONFIG_X)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n"
+   }
+  },
+  {
+   "id": "replace_all-04",
+   "category": "replace_all",
+   "file": "f03",
+   "old": "config",
+   "new": "CONFIG_X",
+   "replace_all": true,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 6,
+    "result": "import { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const CONFIG_X = JSON.parse(raw);\n  if (!CONFIG_X.port) {\n    CONFIG_X.port = 8080;\n  }\n  return CONFIG_X;\n}\n\nexport function route(app, CONFIG_X) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: CONFIG_X.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n    const item = req.body;\n    if (!item || !item.name) {\n      res.status(400).json({ error: \"name required\" });\n      return;\n    }\n    res.status(201).json(item);\n  });\n}\n"
+   }
+  },
+  {
+   "id": "replace_all-05",
+   "category": "replace_all",
+   "file": "f00",
+   "old": "path",
+   "new": "PATH_X",
+   "replace_all": true,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 7,
+    "result": "use std::collections::HashMap;\nuse std::PATH_X::{Path, PathBuf};\n\n/// A cache of parsed manifests, keyed by PATH_X.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get(&mut self, PATH_X: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(PATH_X) {\n            self.hits += 1;\n            return self.entries.get(PATH_X);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, PATH_X: PathBuf, manifest: Manifest) {\n        self.entries.insert(PATH_X, manifest);\n    }\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                version = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}\n"
+   }
+  },
+  {
+   "id": "replace_all-06",
+   "category": "replace_all",
+   "file": "f02",
+   "old": "cargo",
+   "new": "CARGO_X",
+   "replace_all": true,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 2,
+    "result": "name: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: CARGO_X build --workspace\n      - name: Test\n        run: CARGO_X test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "replace_all-07",
+   "category": "replace_all",
+   "file": "f02",
+   "old": "name",
+   "new": "NAME_X",
+   "replace_all": true,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 3,
+    "result": "NAME_X: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - NAME_X: Build\n        run: cargo build --workspace\n      - NAME_X: Test\n        run: cargo test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "replace_all-08",
+   "category": "replace_all",
+   "file": "f03",
+   "old": "name",
+   "new": "NAME_X",
+   "replace_all": true,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 2,
+    "result": "import { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n  return config;\n}\n\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n    const item = req.body;\n    if (!item || !item.NAME_X) {\n      res.status(400).json({ error: \"NAME_X required\" });\n      return;\n    }\n    res.status(201).json(item);\n  });\n}\n"
+   }
+  },
+  {
+   "id": "replace_all-09",
+   "category": "replace_all",
+   "file": "f01",
+   "old": "path",
+   "new": "PATH_X",
+   "replace_all": true,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 4,
+    "result": "import math\nimport os\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field(default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\nclass Trainer:\n    def __init__(self, model, config):\n        self.model = model\n        self.config = config\n        self.step = 0\n        self.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n        self.step += 1\n        return loss\n\n    def save(self, PATH_X):\n        os.makedirs(os.PATH_X.dirname(PATH_X), exist_ok=True)\n        with open(PATH_X, \"w\") as f:\n            f.write(str(self.history))\n\n\ndef main():\n    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n"
+   }
+  },
+  {
+   "id": "replace_all-10",
+   "category": "replace_all",
+   "file": "f00",
+   "old": "path",
+   "new": "PATH_X",
+   "replace_all": true,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 7,
+    "result": "use std::collections::HashMap;\nuse std::PATH_X::{Path, PathBuf};\n\n/// A cache of parsed manifests, keyed by PATH_X.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get(&mut self, PATH_X: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(PATH_X) {\n            self.hits += 1;\n            return self.entries.get(PATH_X);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, PATH_X: PathBuf, manifest: Manifest) {\n        self.entries.insert(PATH_X, manifest);\n    }\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                version = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}\n"
+   }
+  },
+  {
+   "id": "ambiguous-01",
+   "category": "ambiguous",
+   "file": "f03",
+   "old": "config",
+   "new": "zz",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "ambiguous",
+    "count": 6
+   }
+  },
+  {
+   "id": "ambiguous-02",
+   "category": "ambiguous",
+   "file": "f00",
+   "old": "path",
+   "new": "zz",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "ambiguous",
+    "count": 7
+   }
+  },
+  {
+   "id": "ambiguous-03",
+   "category": "ambiguous",
+   "file": "f01",
+   "old": "path",
+   "new": "zz",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "ambiguous",
+    "count": 4
+   }
+  },
+  {
+   "id": "ambiguous-04",
+   "category": "ambiguous",
+   "file": "f03",
+   "old": "config",
+   "new": "zz",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "ambiguous",
+    "count": 6
+   }
+  },
+  {
+   "id": "ambiguous-05",
+   "category": "ambiguous",
+   "file": "f03",
+   "old": "res.",
+   "new": "zz",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "ambiguous",
+    "count": 3
+   }
+  },
+  {
+   "id": "ambiguous-06",
+   "category": "ambiguous",
+   "file": "f03",
+   "old": "name",
+   "new": "zz",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "ambiguous",
+    "count": 2
+   }
+  },
+  {
+   "id": "ambiguous-07",
+   "category": "ambiguous",
+   "file": "f00",
+   "old": "}",
+   "new": "zz",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "ambiguous",
+    "count": 17
+   }
+  },
+  {
+   "id": "ambiguous-08",
+   "category": "ambiguous",
+   "file": "f03",
+   "old": "return",
+   "new": "zz",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "ambiguous",
+    "count": 2
+   }
+  },
+  {
+   "id": "ambiguous-09",
+   "category": "ambiguous",
+   "file": "f03",
+   "old": "config",
+   "new": "zz",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "ambiguous",
+    "count": 6
+   }
+  },
+  {
+   "id": "ambiguous-10",
+   "category": "ambiguous",
+   "file": "f01",
+   "old": "config",
+   "new": "zz",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "ambiguous",
+    "count": 7
+   }
+  },
+  {
+   "id": "eol_crlf_file-01",
+   "category": "eol_crlf_file",
+   "file": "f04",
+   "old": "    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {",
+   "new": "# replaced\n    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "use std::collections::HashMap;\r\nuse std::path::{Path, PathBuf};\r\n\r\n/// A cache of parsed manifests, keyed by path.\r\npub struct ManifestCache {\r\n    entries: HashMap<PathBuf, Manifest>,\r\n    hits: u64,\r\n    misses: u64,\r\n}\r\n\r\nimpl ManifestCache {\r\n    pub fn new() -> Self {\r\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\r\n# replaced\r\n    }\r\n\r\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\r\n        if self.entries.contains_key(path) {\r\n            self.hits += 1;\r\n            return self.entries.get(path);\r\n        }\r\n        self.misses += 1;\r\n        None\r\n    }\r\n\r\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\r\n        self.entries.insert(path, manifest);\r\n    }\r\n\r\n    pub fn hit_rate(&self) -> f64 {\r\n        let total = self.hits + self.misses;\r\n        if total == 0 {\r\n            return 0.0;\r\n        }\r\n        self.hits as f64 / total as f64\r\n    }\r\n}\r\n\r\n#[derive(Debug, Clone, PartialEq)]\r\npub struct Manifest {\r\n    pub name: String,\r\n    pub version: String,\r\n    pub dependencies: Vec<String>,\r\n}\r\n\r\nimpl Manifest {\r\n    pub fn parse(text: &str) -> Result<Self, String> {\r\n        let mut name = None;\r\n        let mut version = None;\r\n        for line in text.lines() {\r\n            if let Some(v) = line.strip_prefix(\"name = \") {\r\n                name = Some(v.trim_matches('\"').to_string());\r\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\r\n                version = Some(v.trim_matches('\"').to_string());\r\n            }\r\n        }\r\n        Ok(Self {\r\n            name: name.ok_or(\"no name\")?,\r\n            version: version.ok_or(\"no version\")?,\r\n            dependencies: Vec::new(),\r\n        })\r\n    }\r\n}\r\n"
+   }
+  },
+  {
+   "id": "eol_crlf_file-02",
+   "category": "eol_crlf_file",
+   "file": "f05",
+   "old": "export function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n",
+   "new": "export function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n // changed",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "import { readFile } from \"node:fs/promises\";\r\n\r\nexport async function loadConfig(path) {\r\n  const raw = await readFile(path, \"utf8\");\r\n  const config = JSON.parse(raw);\r\n  if (!config.port) {\r\n    config.port = 8080;\r\n  }\r\n  return config;\r\n}\r\n\r\nexport function route(app, config) {\r\n  app.get(\"/health\", (req, res) => {\r\n    res.json({ ok: true, port: config.port });\r\n  });\r\n  app.post(\"/items\", async (req, res) => {\r\n // changed    const item = req.body;\r\n    if (!item || !item.name) {\r\n      res.status(400).json({ error: \"name required\" });\r\n      return;\r\n    }\r\n    res.status(201).json(item);\r\n  });\r\n}\r\n"
+   }
+  },
+  {
+   "id": "eol_crlf_file-03",
+   "category": "eol_crlf_file",
+   "file": "f04",
+   "old": "        None\n    }\n\n",
+   "new": "        None\n    }\n\n\nNone\n    }_extra",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "use std::collections::HashMap;\r\nuse std::path::{Path, PathBuf};\r\n\r\n/// A cache of parsed manifests, keyed by path.\r\npub struct ManifestCache {\r\n    entries: HashMap<PathBuf, Manifest>,\r\n    hits: u64,\r\n    misses: u64,\r\n}\r\n\r\nimpl ManifestCache {\r\n    pub fn new() -> Self {\r\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\r\n    }\r\n\r\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\r\n        if self.entries.contains_key(path) {\r\n            self.hits += 1;\r\n            return self.entries.get(path);\r\n        }\r\n        self.misses += 1;\r\n        None\r\n    }\r\n\r\n\r\nNone\r\n    }_extra    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\r\n        self.entries.insert(path, manifest);\r\n    }\r\n\r\n    pub fn hit_rate(&self) -> f64 {\r\n        let total = self.hits + self.misses;\r\n        if total == 0 {\r\n            return 0.0;\r\n        }\r\n        self.hits as f64 / total as f64\r\n    }\r\n}\r\n\r\n#[derive(Debug, Clone, PartialEq)]\r\npub struct Manifest {\r\n    pub name: String,\r\n    pub version: String,\r\n    pub dependencies: Vec<String>,\r\n}\r\n\r\nimpl Manifest {\r\n    pub fn parse(text: &str) -> Result<Self, String> {\r\n        let mut name = None;\r\n        let mut version = None;\r\n        for line in text.lines() {\r\n            if let Some(v) = line.strip_prefix(\"name = \") {\r\n                name = Some(v.trim_matches('\"').to_string());\r\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\r\n                version = Some(v.trim_matches('\"').to_string());\r\n            }\r\n        }\r\n        Ok(Self {\r\n            name: name.ok_or(\"no name\")?,\r\n            version: version.ok_or(\"no version\")?,\r\n            dependencies: Vec::new(),\r\n        })\r\n    }\r\n}\r\n"
+   }
+  },
+  {
+   "id": "eol_crlf_file-04",
+   "category": "eol_crlf_file",
+   "file": "f04",
+   "old": "        let mut name = None;\n        let mut version = None;\n",
+   "new": "",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "use std::collections::HashMap;\r\nuse std::path::{Path, PathBuf};\r\n\r\n/// A cache of parsed manifests, keyed by path.\r\npub struct ManifestCache {\r\n    entries: HashMap<PathBuf, Manifest>,\r\n    hits: u64,\r\n    misses: u64,\r\n}\r\n\r\nimpl ManifestCache {\r\n    pub fn new() -> Self {\r\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\r\n    }\r\n\r\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\r\n        if self.entries.contains_key(path) {\r\n            self.hits += 1;\r\n            return self.entries.get(path);\r\n        }\r\n        self.misses += 1;\r\n        None\r\n    }\r\n\r\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\r\n        self.entries.insert(path, manifest);\r\n    }\r\n\r\n    pub fn hit_rate(&self) -> f64 {\r\n        let total = self.hits + self.misses;\r\n        if total == 0 {\r\n            return 0.0;\r\n        }\r\n        self.hits as f64 / total as f64\r\n    }\r\n}\r\n\r\n#[derive(Debug, Clone, PartialEq)]\r\npub struct Manifest {\r\n    pub name: String,\r\n    pub version: String,\r\n    pub dependencies: Vec<String>,\r\n}\r\n\r\nimpl Manifest {\r\n    pub fn parse(text: &str) -> Result<Self, String> {\r\n        for line in text.lines() {\r\n            if let Some(v) = line.strip_prefix(\"name = \") {\r\n                name = Some(v.trim_matches('\"').to_string());\r\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\r\n                version = Some(v.trim_matches('\"').to_string());\r\n            }\r\n        }\r\n        Ok(Self {\r\n            name: name.ok_or(\"no name\")?,\r\n            version: version.ok_or(\"no version\")?,\r\n            dependencies: Vec::new(),\r\n        })\r\n    }\r\n}\r\n"
+   }
+  },
+  {
+   "id": "eol_crlf_file-05",
+   "category": "eol_crlf_file",
+   "file": "f06",
+   "old": "        self.step += 1\n        return loss\n\n    def save(self, path):\n",
+   "new": "        self.step += 1\n        return loss\n\n    def save(self, path):\n\nself.step += 1\n        return loss\n\n    def save(self, path):_extra",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "import math\r\nimport os\r\nfrom dataclasses import dataclass, field\r\n\r\n\r\n@dataclass\r\nclass RunConfig:\r\n    lr: float = 3e-4\r\n    batch_size: int = 32\r\n    warmup_steps: int = 500\r\n    tags: list = field(default_factory=list)\r\n\r\n\r\ndef cosine_schedule(step, total, base_lr, warmup=500):\r\n    if step < warmup:\r\n        return base_lr * step / warmup\r\n    progress = (step - warmup) / max(1, total - warmup)\r\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\r\n\r\n\r\nclass Trainer:\r\n    def __init__(self, model, config):\r\n        self.model = model\r\n        self.config = config\r\n        self.step = 0\r\n        self.history = []\r\n\r\n    def train_step(self, batch):\r\n        loss = self.model.loss(batch)\r\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\r\n        self.model.update(lr)\r\n        self.history.append(loss)\r\n        self.step += 1\r\n        return loss\r\n\r\n    def save(self, path):\r\n\r\nself.step += 1\r\n        return loss\r\n\r\n    def save(self, path):_extra        os.makedirs(os.path.dirname(path), exist_ok=True)\r\n        with open(path, \"w\") as f:\r\n            f.write(str(self.history))\r\n\r\n\r\ndef main():\r\n    config = RunConfig(tags=[\"baseline\"])\r\n    trainer = Trainer(model=None, config=config)\r\n    for _ in range(3):\r\n        trainer.train_step(batch=None)\r\n    trainer.save(\"runs/baseline/history.txt\")\r\n"
+   }
+  },
+  {
+   "id": "eol_crlf_file-06",
+   "category": "eol_crlf_file",
+   "file": "f07",
+   "old": "    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n",
+   "new": "# replaced\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "name: ci\r\non:\r\n  push:\r\n    branches: [main]\r\n  pull_request:\r\njobs:\r\n  test:\r\n# replaced\r\n    runs-on: windows-latest\r\n    steps:\r\n      - uses: actions/checkout@v4\r\n      - name: Build\r\n        run: cargo build --workspace\r\n      - name: Test\r\n        run: cargo test --workspace --no-fail-fast\r\n"
+   }
+  },
+  {
+   "id": "eol_crlf_file-07",
+   "category": "eol_crlf_file",
+   "file": "f04",
+   "old": "        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;",
+   "new": "        if this.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "use std::collections::HashMap;\r\nuse std::path::{Path, PathBuf};\r\n\r\n/// A cache of parsed manifests, keyed by path.\r\npub struct ManifestCache {\r\n    entries: HashMap<PathBuf, Manifest>,\r\n    hits: u64,\r\n    misses: u64,\r\n}\r\n\r\nimpl ManifestCache {\r\n    pub fn new() -> Self {\r\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\r\n    }\r\n\r\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\r\n        if this.entries.contains_key(path) {\r\n            self.hits += 1;\r\n            return self.entries.get(path);\r\n        }\r\n        self.misses += 1;\r\n        None\r\n    }\r\n\r\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\r\n        self.entries.insert(path, manifest);\r\n    }\r\n\r\n    pub fn hit_rate(&self) -> f64 {\r\n        let total = self.hits + self.misses;\r\n        if total == 0 {\r\n            return 0.0;\r\n        }\r\n        self.hits as f64 / total as f64\r\n    }\r\n}\r\n\r\n#[derive(Debug, Clone, PartialEq)]\r\npub struct Manifest {\r\n    pub name: String,\r\n    pub version: String,\r\n    pub dependencies: Vec<String>,\r\n}\r\n\r\nimpl Manifest {\r\n    pub fn parse(text: &str) -> Result<Self, String> {\r\n        let mut name = None;\r\n        let mut version = None;\r\n        for line in text.lines() {\r\n            if let Some(v) = line.strip_prefix(\"name = \") {\r\n                name = Some(v.trim_matches('\"').to_string());\r\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\r\n                version = Some(v.trim_matches('\"').to_string());\r\n            }\r\n        }\r\n        Ok(Self {\r\n            name: name.ok_or(\"no name\")?,\r\n            version: version.ok_or(\"no version\")?,\r\n            dependencies: Vec::new(),\r\n        })\r\n    }\r\n}\r\n"
+   }
+  },
+  {
+   "id": "eol_crlf_file-08",
+   "category": "eol_crlf_file",
+   "file": "f06",
+   "old": "\n\n@dataclass\nclass RunConfig:",
+   "new": "# replaced\n\n\n@dataclass\nclass RunConfig:",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "import math\r\nimport os\r\nfrom dataclasses import dataclass, field\r\n# replaced\r\n\r\n\r\n@dataclass\r\nclass RunConfig:\r\n    lr: float = 3e-4\r\n    batch_size: int = 32\r\n    warmup_steps: int = 500\r\n    tags: list = field(default_factory=list)\r\n\r\n\r\ndef cosine_schedule(step, total, base_lr, warmup=500):\r\n    if step < warmup:\r\n        return base_lr * step / warmup\r\n    progress = (step - warmup) / max(1, total - warmup)\r\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\r\n\r\n\r\nclass Trainer:\r\n    def __init__(self, model, config):\r\n        self.model = model\r\n        self.config = config\r\n        self.step = 0\r\n        self.history = []\r\n\r\n    def train_step(self, batch):\r\n        loss = self.model.loss(batch)\r\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\r\n        self.model.update(lr)\r\n        self.history.append(loss)\r\n        self.step += 1\r\n        return loss\r\n\r\n    def save(self, path):\r\n        os.makedirs(os.path.dirname(path), exist_ok=True)\r\n        with open(path, \"w\") as f:\r\n            f.write(str(self.history))\r\n\r\n\r\ndef main():\r\n    config = RunConfig(tags=[\"baseline\"])\r\n    trainer = Trainer(model=None, config=config)\r\n    for _ in range(3):\r\n        trainer.train_step(batch=None)\r\n    trainer.save(\"runs/baseline/history.txt\")\r\n"
+   }
+  },
+  {
+   "id": "eol_crlf_file-09",
+   "category": "eol_crlf_file",
+   "file": "f05",
+   "old": "      return;\n    }",
+   "new": "# replaced\n      return;\n    }",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "import { readFile } from \"node:fs/promises\";\r\n\r\nexport async function loadConfig(path) {\r\n  const raw = await readFile(path, \"utf8\");\r\n  const config = JSON.parse(raw);\r\n  if (!config.port) {\r\n    config.port = 8080;\r\n  }\r\n  return config;\r\n}\r\n\r\nexport function route(app, config) {\r\n  app.get(\"/health\", (req, res) => {\r\n    res.json({ ok: true, port: config.port });\r\n  });\r\n  app.post(\"/items\", async (req, res) => {\r\n    const item = req.body;\r\n    if (!item || !item.name) {\r\n      res.status(400).json({ error: \"name required\" });\r\n# replaced\r\n      return;\r\n    }\r\n    res.status(201).json(item);\r\n  });\r\n}\r\n"
+   }
+  },
+  {
+   "id": "eol_crlf_file-10",
+   "category": "eol_crlf_file",
+   "file": "f07",
+   "old": "      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace",
+   "new": "# replaced\n      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "name: ci\r\non:\r\n  push:\r\n    branches: [main]\r\n  pull_request:\r\njobs:\r\n  test:\r\n    runs-on: windows-latest\r\n    steps:\r\n# replaced\r\n      - uses: actions/checkout@v4\r\n      - name: Build\r\n        run: cargo build --workspace\r\n      - name: Test\r\n        run: cargo test --workspace --no-fail-fast\r\n"
+   }
+  },
+  {
+   "id": "eol_crlf_file-11",
+   "category": "eol_crlf_file",
+   "file": "f05",
+   "old": "      res.status(400).json({ error: \"name required\" });\n      return;\n    }\n    res.status(201).json(item);",
+   "new": "      res.status(400).json({ error: \"name required\" });\n      return;\n    }\n    res.status(201).json(item);\nres.status(400).json({ error: \"name required\" });\n      return;\n    }\n    res.status(201).json(item);_extra",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "import { readFile } from \"node:fs/promises\";\r\n\r\nexport async function loadConfig(path) {\r\n  const raw = await readFile(path, \"utf8\");\r\n  const config = JSON.parse(raw);\r\n  if (!config.port) {\r\n    config.port = 8080;\r\n  }\r\n  return config;\r\n}\r\n\r\nexport function route(app, config) {\r\n  app.get(\"/health\", (req, res) => {\r\n    res.json({ ok: true, port: config.port });\r\n  });\r\n  app.post(\"/items\", async (req, res) => {\r\n    const item = req.body;\r\n    if (!item || !item.name) {\r\n      res.status(400).json({ error: \"name required\" });\r\n      return;\r\n    }\r\n    res.status(201).json(item);\r\nres.status(400).json({ error: \"name required\" });\r\n      return;\r\n    }\r\n    res.status(201).json(item);_extra\r\n  });\r\n}\r\n"
+   }
+  },
+  {
+   "id": "eol_crlf_file-12",
+   "category": "eol_crlf_file",
+   "file": "f05",
+   "old": "  if (!config.port) {\n    config.port = 8080;\n  }\n  return config;\n}\n",
+   "new": "",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "import { readFile } from \"node:fs/promises\";\r\n\r\nexport async function loadConfig(path) {\r\n  const raw = await readFile(path, \"utf8\");\r\n  const config = JSON.parse(raw);\r\n\r\nexport function route(app, config) {\r\n  app.get(\"/health\", (req, res) => {\r\n    res.json({ ok: true, port: config.port });\r\n  });\r\n  app.post(\"/items\", async (req, res) => {\r\n    const item = req.body;\r\n    if (!item || !item.name) {\r\n      res.status(400).json({ error: \"name required\" });\r\n      return;\r\n    }\r\n    res.status(201).json(item);\r\n  });\r\n}\r\n"
+   }
+  },
+  {
+   "id": "eol_crlf_file-13",
+   "category": "eol_crlf_file",
+   "file": "f06",
+   "old": "    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):",
+   "new": "# replaced\n    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "import math\r\nimport os\r\nfrom dataclasses import dataclass, field\r\n\r\n\r\n@dataclass\r\nclass RunConfig:\r\n    lr: float = 3e-4\r\n    batch_size: int = 32\r\n    warmup_steps: int = 500\r\n    tags: list = field(default_factory=list)\r\n\r\n\r\ndef cosine_schedule(step, total, base_lr, warmup=500):\r\n    if step < warmup:\r\n        return base_lr * step / warmup\r\n    progress = (step - warmup) / max(1, total - warmup)\r\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\r\n\r\n\r\nclass Trainer:\r\n    def __init__(self, model, config):\r\n        self.model = model\r\n        self.config = config\r\n        self.step = 0\r\n        self.history = []\r\n\r\n    def train_step(self, batch):\r\n        loss = self.model.loss(batch)\r\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\r\n        self.model.update(lr)\r\n        self.history.append(loss)\r\n        self.step += 1\r\n        return loss\r\n\r\n    def save(self, path):\r\n        os.makedirs(os.path.dirname(path), exist_ok=True)\r\n        with open(path, \"w\") as f:\r\n            f.write(str(self.history))\r\n\r\n\r\ndef main():\r\n# replaced\r\n    config = RunConfig(tags=[\"baseline\"])\r\n    trainer = Trainer(model=None, config=config)\r\n    for _ in range(3):\r\n        trainer.train_step(batch=None)\r\n    trainer.save(\"runs/baseline/history.txt\")\r\n"
+   }
+  },
+  {
+   "id": "eol_crlf_file-14",
+   "category": "eol_crlf_file",
+   "file": "f05",
+   "old": "\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n",
+   "new": "",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "import { readFile } from \"node:fs/promises\";\r\n\r\nexport async function loadConfig(path) {\r\n  const raw = await readFile(path, \"utf8\");\r\n  const config = JSON.parse(raw);\r\n  if (!config.port) {\r\n    config.port = 8080;\r\n  }\r\n  return config;\r\n}\r\n    res.json({ ok: true, port: config.port });\r\n  });\r\n  app.post(\"/items\", async (req, res) => {\r\n    const item = req.body;\r\n    if (!item || !item.name) {\r\n      res.status(400).json({ error: \"name required\" });\r\n      return;\r\n    }\r\n    res.status(201).json(item);\r\n  });\r\n}\r\n"
+   }
+  },
+  {
+   "id": "eol_crlf_file-15",
+   "category": "eol_crlf_file",
+   "file": "f06",
+   "old": "class Trainer:\n    def __init__(self, model, config):\n        self.model = model",
+   "new": "# replaced\nclass Trainer:\n    def __init__(self, model, config):\n        self.model = model",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "import math\r\nimport os\r\nfrom dataclasses import dataclass, field\r\n\r\n\r\n@dataclass\r\nclass RunConfig:\r\n    lr: float = 3e-4\r\n    batch_size: int = 32\r\n    warmup_steps: int = 500\r\n    tags: list = field(default_factory=list)\r\n\r\n\r\ndef cosine_schedule(step, total, base_lr, warmup=500):\r\n    if step < warmup:\r\n        return base_lr * step / warmup\r\n    progress = (step - warmup) / max(1, total - warmup)\r\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\r\n\r\n\r\n# replaced\r\nclass Trainer:\r\n    def __init__(self, model, config):\r\n        self.model = model\r\n        self.config = config\r\n        self.step = 0\r\n        self.history = []\r\n\r\n    def train_step(self, batch):\r\n        loss = self.model.loss(batch)\r\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\r\n        self.model.update(lr)\r\n        self.history.append(loss)\r\n        self.step += 1\r\n        return loss\r\n\r\n    def save(self, path):\r\n        os.makedirs(os.path.dirname(path), exist_ok=True)\r\n        with open(path, \"w\") as f:\r\n            f.write(str(self.history))\r\n\r\n\r\ndef main():\r\n    config = RunConfig(tags=[\"baseline\"])\r\n    trainer = Trainer(model=None, config=config)\r\n    for _ in range(3):\r\n        trainer.train_step(batch=None)\r\n    trainer.save(\"runs/baseline/history.txt\")\r\n"
+   }
+  },
+  {
+   "id": "eol_crlf_snippet-01",
+   "category": "eol_crlf_snippet",
+   "file": "f03",
+   "old": "    if (!item || !item.name) {\r\n      res.status(400).json({ error: \"name required\" });\r\n      return;\r\n    }\r\n",
+   "new": "",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "import { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n  return config;\n}\n\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n    const item = req.body;\n    res.status(201).json(item);\n  });\n}\n"
+   }
+  },
+  {
+   "id": "eol_crlf_snippet-02",
+   "category": "eol_crlf_snippet",
+   "file": "f02",
+   "old": "    steps:\r\n      - uses: actions/checkout@v4",
+   "new": "    steps:\r\n      - uses: actions/checkout@v!",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "name: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v!\n      - name: Build\n        run: cargo build --workspace\n      - name: Test\n        run: cargo test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "eol_crlf_snippet-03",
+   "category": "eol_crlf_snippet",
+   "file": "f00",
+   "old": "\r\n    pub fn hit_rate(&self) -> f64 {\r\n        let total = self.hits + self.misses;\r\n        if total == 0 {\r\n",
+   "new": "",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "use std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\n        self.entries.insert(path, manifest);\n    }\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                version = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}\n"
+   }
+  },
+  {
+   "id": "eol_crlf_snippet-04",
+   "category": "eol_crlf_snippet",
+   "file": "f03",
+   "old": "    if (!item || !item.name) {\r\n      res.status(400).json({ error: \"name required\" });\r\n      return;\r\n",
+   "new": "    if (!item || !item.name) {\r\n      res.status(400).json({ error: \"name required\" });\r\n      return;\r\n // changed",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "import { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n  return config;\n}\n\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n    const item = req.body;\n    if (!item || !item.name) {\n      res.status(400).json({ error: \"name required\" });\n      return;\n // changed    }\n    res.status(201).json(item);\n  });\n}\n"
+   }
+  },
+  {
+   "id": "eol_crlf_snippet-05",
+   "category": "eol_crlf_snippet",
+   "file": "f03",
+   "old": "  app.post(\"/items\", async (req, res) => {\r\n    const item = req.body;\r\n    if (!item || !item.name) {\r\n      res.status(400).json({ error: \"name required\" });",
+   "new": "",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "eol",
+    "count": 1,
+    "result": "import { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n  return config;\n}\n\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n\n      return;\n    }\n    res.status(201).json(item);\n  });\n}\n"
+   }
+  },
+  {
+   "id": "whitespace_less-01",
+   "category": "whitespace_less",
+   "file": "f02",
+   "old": "- uses: actions/checkout@v4\n- name: Build\n  run: cargo build --workspace\n",
+   "new": "- uses: actions/checkout@v4\n- name: Build\n  run: cargo build --workspace\n- uses: actions/checkout@v4_more\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "name: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace\n      - uses: actions/checkout@v4_more\n      - name: Test\n        run: cargo test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "whitespace_less-02",
+   "category": "whitespace_less",
+   "file": "f00",
+   "old": "if let Some(v) = line.strip_prefix(\"name = \") {\n    name = Some(v.trim_matches('\"').to_string());\n} else if let Some(v) = line.strip_prefix(\"version = \") {\n    version = Some(v.trim_matches('\"').to_string());\n",
+   "new": "if let Some( v) = line.strip_prefix(\"name = \") {\n    name = Some( v.trim_matches('\"').to_string());\n} else if let Some( v) = line.strip_prefix(\"version = \") {\n    version = Some( v.trim_matches('\"').to_string());\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "use std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\n        self.entries.insert(path, manifest);\n    }\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some( v) = line.strip_prefix(\"name = \") {\n                name = Some( v.trim_matches('\"').to_string());\n            } else if let Some( v) = line.strip_prefix(\"version = \") {\n                version = Some( v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}\n"
+   }
+  },
+  {
+   "id": "whitespace_less-03",
+   "category": "whitespace_less",
+   "file": "f00",
+   "old": "\npub fn get(&mut self, path: &Path) -> Option<&Manifest> {\n",
+   "new": "\npub fn get( &mut self, path: &Path) -> Option<&Manifest> {\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "use std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get( &mut self, path: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\n        self.entries.insert(path, manifest);\n    }\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                version = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}\n"
+   }
+  },
+  {
+   "id": "whitespace_less-04",
+   "category": "whitespace_less",
+   "file": "f02",
+   "old": "- name: Build\n  run: cargo build --workspace\n",
+   "new": "- name: Build\n  run: cargo build --workspace\n- name: Build_more\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "name: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace\n      - name: Build_more\n      - name: Test\n        run: cargo test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "whitespace_less-05",
+   "category": "whitespace_less",
+   "file": "f00",
+   "old": "    self.entries.insert(path, manifest);\n}\n",
+   "new": "    self.entries.insert( path, manifest);\n}\n\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "use std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\n        self.entries.insert( path, manifest);\n    }\n\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                version = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}\n"
+   }
+  },
+  {
+   "id": "whitespace_less-06",
+   "category": "whitespace_less",
+   "file": "f01",
+   "old": "warmup_steps: int = 500\ntags: list = field(default_factory=list)\n",
+   "new": "warmup_steps: int = 500\ntags: list = field( default_factory=list)\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "import math\nimport os\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field( default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\nclass Trainer:\n    def __init__(self, model, config):\n        self.model = model\n        self.config = config\n        self.step = 0\n        self.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n        self.step += 1\n        return loss\n\n    def save(self, path):\n        os.makedirs(os.path.dirname(path), exist_ok=True)\n        with open(path, \"w\") as f:\n            f.write(str(self.history))\n\n\ndef main():\n    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n"
+   }
+  },
+  {
+   "id": "whitespace_less-07",
+   "category": "whitespace_less",
+   "file": "f02",
+   "old": "runs-on: windows-latest\nsteps:",
+   "new": "runs-on: windows-latest\nsteps:\nruns-on: windows-latest_more",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "name: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n    runs-on: windows-latest_more\n      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace\n      - name: Test\n        run: cargo test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "whitespace_less-08",
+   "category": "whitespace_less",
+   "file": "f02",
+   "old": "push:\n  branches: [main]\n",
+   "new": "push:\n  branches: [main]\npush:_more\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "name: ci\non:\n  push:\n    branches: [main]\n  push:_more\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace\n      - name: Test\n        run: cargo test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "whitespace_less-09",
+   "category": "whitespace_less",
+   "file": "f02",
+   "old": "runs-on: windows-latest\nsteps:\n  - uses: actions/checkout@v4",
+   "new": "runs-on: windows-latest\nsteps:\n  - uses: actions/checkout@v4\nruns-on: windows-latest_more",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "name: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n    runs-on: windows-latest_more\n      - name: Build\n        run: cargo build --workspace\n      - name: Test\n        run: cargo test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "whitespace_less-10",
+   "category": "whitespace_less",
+   "file": "f03",
+   "old": "if (!item || !item.name) {\n  res.status(400).json({ error: \"name required\" });\n  return;\n",
+   "new": "if ( !item || !item.name) {\n  res.status( 400).json({ error: \"name required\" });\n  return;\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "import { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n  return config;\n}\n\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n    const item = req.body;\n    if ( !item || !item.name) {\n      res.status( 400).json({ error: \"name required\" });\n      return;\n    }\n    res.status(201).json(item);\n  });\n}\n"
+   }
+  },
+  {
+   "id": "whitespace_more-01",
+   "category": "whitespace_more",
+   "file": "f02",
+   "old": "\t      - name: Test",
+   "new": "\t      - namE: Test",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "name: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace\n      - namE: Test\n        run: cargo test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "whitespace_more-02",
+   "category": "whitespace_more",
+   "file": "f02",
+   "old": "      branches: [main]\n",
+   "new": "      branchEs: [main]\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "name: ci\non:\n  push:\n    branchEs: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace\n      - name: Test\n        run: cargo test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "whitespace_more-03",
+   "category": "whitespace_more",
+   "file": "f01",
+   "old": "\t        self.history = []\n\n\t    def train_step(self, batch):\n",
+   "new": "\t        sElf.history = []\n\n\t    def train_step(self, batch):\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "import math\nimport os\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field(default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\nclass Trainer:\n    def __init__(self, model, config):\n        self.model = model\n        self.config = config\n        self.step = 0\n        sElf.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n        self.step += 1\n        return loss\n\n    def save(self, path):\n        os.makedirs(os.path.dirname(path), exist_ok=True)\n        with open(path, \"w\") as f:\n            f.write(str(self.history))\n\n\ndef main():\n    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n"
+   }
+  },
+  {
+   "id": "whitespace_more-04",
+   "category": "whitespace_more",
+   "file": "f00",
+   "old": "                  version = Some(v.trim_matches('\"').to_string());\n              }\n          }",
+   "new": "                  vErsion = Some(v.trim_matches('\"').to_string());\n              }\n          }",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "use std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\n        self.entries.insert(path, manifest);\n    }\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                vErsion = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}\n"
+   }
+  },
+  {
+   "id": "whitespace_more-05",
+   "category": "whitespace_more",
+   "file": "f03",
+   "old": "      const raw = await readFile(path, \"utf8\");",
+   "new": "      const raw = await rEadFile(path, \"utf8\");",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "import { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await rEadFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n  return config;\n}\n\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n    const item = req.body;\n    if (!item || !item.name) {\n      res.status(400).json({ error: \"name required\" });\n      return;\n    }\n    res.status(201).json(item);\n  });\n}\n"
+   }
+  },
+  {
+   "id": "whitespace_trailing-01",
+   "category": "whitespace_trailing",
+   "file": "f00",
+   "old": "        }  \n        Ok(Self {  \n            name: name.ok_or(\"no name\")?,  ",
+   "new": "        }\n        Ok(Self {\n            nAme: name.ok_or(\"no name\")?,\n// tail",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "use std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\n        self.entries.insert(path, manifest);\n    }\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                version = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            nAme: name.ok_or(\"no name\")?,\n// tail\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}\n"
+   }
+  },
+  {
+   "id": "whitespace_trailing-02",
+   "category": "whitespace_trailing",
+   "file": "f02",
+   "old": "on:  \n  push:  \n    branches: [main]  \n",
+   "new": "on:\n  push:\n    brAnches: [main]\n\n// tail",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "name: ci\non:\n  push:\n    brAnches: [main]\n\n// tail  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace\n      - name: Test\n        run: cargo test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "whitespace_trailing-03",
+   "category": "whitespace_trailing",
+   "file": "f02",
+   "old": "      - name: Build  \n        run: cargo build --workspace  \n      - name: Test  ",
+   "new": "      - nAme: Build\n        run: cargo build --workspace\n      - name: Test\n// tail",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "name: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - nAme: Build\n        run: cargo build --workspace\n      - name: Test\n// tail\n        run: cargo test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "whitespace_trailing-04",
+   "category": "whitespace_trailing",
+   "file": "f00",
+   "old": "        self.misses += 1;  \n        None  \n    }  ",
+   "new": "        self.misses += 1;\n        None\n    }\n// tail",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "use std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;\n        None\n    }\n// tail\n\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\n        self.entries.insert(path, manifest);\n    }\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                version = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}\n"
+   }
+  },
+  {
+   "id": "whitespace_trailing-05",
+   "category": "whitespace_trailing",
+   "file": "f02",
+   "old": "      - name: Build  ",
+   "new": "      - nAme: Build\n// tail",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "whitespace",
+    "count": 1,
+    "result": "name: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - nAme: Build\n// tail\n        run: cargo build --workspace\n      - name: Test\n        run: cargo test --workspace --no-fail-fast\n"
+   }
+  },
+  {
+   "id": "not_found-01",
+   "category": "not_found",
+   "file": "f00",
+   "old": "            depQndencies: Vec::new(),\n        })",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "not_found-02",
+   "category": "not_found",
+   "file": "f00",
+   "old": "pub struct ManifestQache {\n",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "not_found-03",
+   "category": "not_found",
+   "file": "f02",
+   "old": "joQs:",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "not_found-04",
+   "category": "not_found",
+   "file": "f01",
+   "old": "    Qatch_size: int = 32\n",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "not_found-05",
+   "category": "not_found",
+   "file": "f01",
+   "old": "        retuQn loss\n",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "not_found-06",
+   "category": "not_found",
+   "file": "f03",
+   "old": "    res.json({ ok: true, port: config.port });\n  });\n  app.posQ(\"/items\", async (req, res) => {",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "not_found-07",
+   "category": "not_found",
+   "file": "f03",
+   "old": "  app.get(\"/health\", (req, res) => {\n    res.Qson({ ok: true, port: config.port });\n  });\n",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "not_found-08",
+   "category": "not_found",
+   "file": "f01",
+   "old": "    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=Qonfig)\n",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "not_found-09",
+   "category": "not_found",
+   "file": "f01",
+   "old": "    tagQ: list = field(default_factory=list)\n",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "not_found-10",
+   "category": "not_found",
+   "file": "f02",
+   "old": "      Q name: Build\n        run: cargo build --workspace\n",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "not_found-11",
+   "category": "not_found",
+   "file": "f00",
+   "old": "fn does_not_exist() {}",
+   "new": "y",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "not_found-12",
+   "category": "not_found",
+   "file": "f00",
+   "old": "print('nowhere')",
+   "new": "y",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "not_found-13",
+   "category": "not_found",
+   "file": "f00",
+   "old": "zzz",
+   "new": "y",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "not_found-14",
+   "category": "not_found",
+   "file": "f00",
+   "old": "completely different text\nacross lines",
+   "new": "y",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "not_found-15",
+   "category": "not_found",
+   "file": "f00",
+   "old": "<html>",
+   "new": "y",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "nonuniform_indent-01",
+   "category": "nonuniform_indent",
+   "file": "f00",
+   "old": "self.hits += 1;\n              return self.entries.get(path);",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "nonuniform_indent-02",
+   "category": "nonuniform_indent",
+   "file": "f00",
+   "old": "pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n          let mut version = None;",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "nonuniform_indent-03",
+   "category": "nonuniform_indent",
+   "file": "f00",
+   "old": "let mut version = None;\n        for line in text.lines() {\n              if let Some(v) = line.strip_prefix(\"name = \") {",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "nonuniform_indent-04",
+   "category": "nonuniform_indent",
+   "file": "f03",
+   "old": "\nexport function route(app, config) {\n    app.get(\"/health\", (req, res) => {",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "nonuniform_indent-05",
+   "category": "nonuniform_indent",
+   "file": "f03",
+   "old": "return config;\n}\n\n  export function route(app, config) {",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found"
+   }
+  },
+  {
+   "id": "unicode-01",
+   "category": "unicode",
+   "file": "f08",
+   "old": "日本語のテキスト: 東京",
+   "new": "日本語のテキスト: 東京 ✔",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "# Notes — café résumé\n日本語のテキスト: 東京 ✔\nemoji: 🚀 launch ✅ done\nnaïve façade coöperate\nΕλληνικά: αβγ\nend of notes — fin\n"
+   }
+  },
+  {
+   "id": "unicode-02",
+   "category": "unicode",
+   "file": "f08",
+   "old": "naïve façade coöperate\nΕλληνικά: αβγ\n",
+   "new": "naïve façade coöperate\nΕλληνικά: αβγ\n ✔",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "# Notes — café résumé\n日本語のテキスト: 東京\nemoji: 🚀 launch ✅ done\nnaïve façade coöperate\nΕλληνικά: αβγ\n ✔end of notes — fin\n"
+   }
+  },
+  {
+   "id": "unicode-03",
+   "category": "unicode",
+   "file": "f08",
+   "old": "Ελληνικά: αβγ\n",
+   "new": "Ελληνικά: αβγ\n ✔",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "# Notes — café résumé\n日本語のテキスト: 東京\nemoji: 🚀 launch ✅ done\nnaïve façade coöperate\nΕλληνικά: αβγ\n ✔end of notes — fin\n"
+   }
+  },
+  {
+   "id": "unicode-04",
+   "category": "unicode",
+   "file": "f08",
+   "old": "# Notes — café résumé\n日本語のテキスト: 東京\n",
+   "new": "# Notes - cafe resume\n日本語のテキスト: 東京\n ✔",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "# Notes - cafe resume\n日本語のテキスト: 東京\n ✔emoji: 🚀 launch ✅ done\nnaïve façade coöperate\nΕλληνικά: αβγ\nend of notes — fin\n"
+   }
+  },
+  {
+   "id": "unicode-05",
+   "category": "unicode",
+   "file": "f08",
+   "old": "日本語のテキスト: 東京\nemoji: 🚀 launch ✅ done\n",
+   "new": "日本語のテキスト: 東京\nemoji: 🚀 launch ✅ done\n ✔",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "# Notes — café résumé\n日本語のテキスト: 東京\nemoji: 🚀 launch ✅ done\n ✔naïve façade coöperate\nΕλληνικά: αβγ\nend of notes — fin\n"
+   }
+  },
+  {
+   "id": "unicode-06",
+   "category": "unicode",
+   "file": "f08",
+   "old": "日本語のテキスト: 東京\nemoji: 🚀 launch ✅ done\n",
+   "new": "日本語のテキスト: 東京\nemoji: 🚀 launch ✅ done\n ✔",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "# Notes — café résumé\n日本語のテキスト: 東京\nemoji: 🚀 launch ✅ done\n ✔naïve façade coöperate\nΕλληνικά: αβγ\nend of notes — fin\n"
+   }
+  },
+  {
+   "id": "unicode-07",
+   "category": "unicode",
+   "file": "f08",
+   "old": "naïve façade coöperate\nΕλληνικά: αβγ",
+   "new": "naïve façade coöperate\nΕλληνικά: αβγ ✔",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "# Notes — café résumé\n日本語のテキスト: 東京\nemoji: 🚀 launch ✅ done\nnaïve façade coöperate\nΕλληνικά: αβγ ✔\nend of notes — fin\n"
+   }
+  },
+  {
+   "id": "unicode-08",
+   "category": "unicode",
+   "file": "f08",
+   "old": "emoji: 🚀 launch ✅ done\n",
+   "new": "emoji: 🚀 launch ✅ done\n ✔",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "# Notes — café résumé\n日本語のテキスト: 東京\nemoji: 🚀 launch ✅ done\n ✔naïve façade coöperate\nΕλληνικά: αβγ\nend of notes — fin\n"
+   }
+  },
+  {
+   "id": "unicode-09",
+   "category": "unicode",
+   "file": "f08",
+   "old": "# Notes — café résumé\n",
+   "new": "# Notes - cafe resume\n ✔",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "# Notes - cafe resume\n ✔日本語のテキスト: 東京\nemoji: 🚀 launch ✅ done\nnaïve façade coöperate\nΕλληνικά: αβγ\nend of notes — fin\n"
+   }
+  },
+  {
+   "id": "unicode-10",
+   "category": "unicode",
+   "file": "f08",
+   "old": "# Notes — café résumé\n日本語のテキスト: 東京\n",
+   "new": "# Notes - cafe resume\n日本語のテキスト: 東京\n ✔",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "# Notes - cafe resume\n日本語のテキスト: 東京\n ✔emoji: 🚀 launch ✅ done\nnaïve façade coöperate\nΕλληνικά: αβγ\nend of notes — fin\n"
+   }
+  },
+  {
+   "id": "start_end-01",
+   "category": "start_end",
+   "file": "f09",
+   "old": "use std::collections::HashMap;",
+   "new": "// header\nuse std::collections::HashMap;",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "// header\nuse std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\n        self.entries.insert(path, manifest);\n    }\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                version = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}"
+   }
+  },
+  {
+   "id": "start_end-02",
+   "category": "start_end",
+   "file": "f01",
+   "old": "        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")",
+   "new": "        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n// footer",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import math\nimport os\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field(default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\nclass Trainer:\n    def __init__(self, model, config):\n        self.model = model\n        self.config = config\n        self.step = 0\n        self.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n        self.step += 1\n        return loss\n\n    def save(self, path):\n        os.makedirs(os.path.dirname(path), exist_ok=True)\n        with open(path, \"w\") as f:\n            f.write(str(self.history))\n\n\ndef main():\n    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n// footer\n"
+   }
+  },
+  {
+   "id": "start_end-03",
+   "category": "start_end",
+   "file": "f03",
+   "old": "import { readFile } from \"node:fs/promises\";",
+   "new": "// header\nimport { readFile } from \"node:fs/promises\";",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "// header\nimport { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n  return config;\n}\n\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n    const item = req.body;\n    if (!item || !item.name) {\n      res.status(400).json({ error: \"name required\" });\n      return;\n    }\n    res.status(201).json(item);\n  });\n}\n"
+   }
+  },
+  {
+   "id": "start_end-04",
+   "category": "start_end",
+   "file": "f10",
+   "old": "      - name: Test\n        run: cargo test --workspace --no-fail-fast",
+   "new": "      - name: Test\n        run: cargo test --workspace --no-fail-fast\n// footer",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "name: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace\n      - name: Test\n        run: cargo test --workspace --no-fail-fast\n// footer"
+   }
+  },
+  {
+   "id": "start_end-05",
+   "category": "start_end",
+   "file": "f00",
+   "old": "use std::collections::HashMap;",
+   "new": "// header\nuse std::collections::HashMap;",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "// header\nuse std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\n        self.entries.insert(path, manifest);\n    }\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                version = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}\n"
+   }
+  },
+  {
+   "id": "start_end-06",
+   "category": "start_end",
+   "file": "f01",
+   "old": "        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")",
+   "new": "        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n// footer",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import math\nimport os\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field(default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\nclass Trainer:\n    def __init__(self, model, config):\n        self.model = model\n        self.config = config\n        self.step = 0\n        self.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n        self.step += 1\n        return loss\n\n    def save(self, path):\n        os.makedirs(os.path.dirname(path), exist_ok=True)\n        with open(path, \"w\") as f:\n            f.write(str(self.history))\n\n\ndef main():\n    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n// footer\n"
+   }
+  },
+  {
+   "id": "start_end-07",
+   "category": "start_end",
+   "file": "f11",
+   "old": "import { readFile } from \"node:fs/promises\";\n",
+   "new": "// header\nimport { readFile } from \"node:fs/promises\";\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "// header\nimport { readFile } from \"node:fs/promises\";\n\nexport async function loadConfig(path) {\n  const raw = await readFile(path, \"utf8\");\n  const config = JSON.parse(raw);\n  if (!config.port) {\n    config.port = 8080;\n  }\n  return config;\n}\n\nexport function route(app, config) {\n  app.get(\"/health\", (req, res) => {\n    res.json({ ok: true, port: config.port });\n  });\n  app.post(\"/items\", async (req, res) => {\n    const item = req.body;\n    if (!item || !item.name) {\n      res.status(400).json({ error: \"name required\" });\n      return;\n    }\n    res.status(201).json(item);\n  });\n}"
+   }
+  },
+  {
+   "id": "start_end-08",
+   "category": "start_end",
+   "file": "f02",
+   "old": "      - name: Test\n        run: cargo test --workspace --no-fail-fast",
+   "new": "      - name: Test\n        run: cargo test --workspace --no-fail-fast\n// footer",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "name: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: cargo build --workspace\n      - name: Test\n        run: cargo test --workspace --no-fail-fast\n// footer\n"
+   }
+  },
+  {
+   "id": "start_end-09",
+   "category": "start_end",
+   "file": "f00",
+   "old": "use std::collections::HashMap;\nuse std::path::{Path, PathBuf};",
+   "new": "// header\nuse std::collections::HashMap;\nuse std::path::{Path, PathBuf};",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "// header\nuse std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\n/// A cache of parsed manifests, keyed by path.\npub struct ManifestCache {\n    entries: HashMap<PathBuf, Manifest>,\n    hits: u64,\n    misses: u64,\n}\n\nimpl ManifestCache {\n    pub fn new() -> Self {\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\n        if self.entries.contains_key(path) {\n            self.hits += 1;\n            return self.entries.get(path);\n        }\n        self.misses += 1;\n        None\n    }\n\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\n        self.entries.insert(path, manifest);\n    }\n\n    pub fn hit_rate(&self) -> f64 {\n        let total = self.hits + self.misses;\n        if total == 0 {\n            return 0.0;\n        }\n        self.hits as f64 / total as f64\n    }\n}\n\n#[derive(Debug, Clone, PartialEq)]\npub struct Manifest {\n    pub name: String,\n    pub version: String,\n    pub dependencies: Vec<String>,\n}\n\nimpl Manifest {\n    pub fn parse(text: &str) -> Result<Self, String> {\n        let mut name = None;\n        let mut version = None;\n        for line in text.lines() {\n            if let Some(v) = line.strip_prefix(\"name = \") {\n                name = Some(v.trim_matches('\"').to_string());\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\n                version = Some(v.trim_matches('\"').to_string());\n            }\n        }\n        Ok(Self {\n            name: name.ok_or(\"no name\")?,\n            version: version.ok_or(\"no version\")?,\n            dependencies: Vec::new(),\n        })\n    }\n}\n"
+   }
+  },
+  {
+   "id": "start_end-10",
+   "category": "start_end",
+   "file": "f12",
+   "old": "        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")",
+   "new": "        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n// footer",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "import math\nimport os\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass RunConfig:\n    lr: float = 3e-4\n    batch_size: int = 32\n    warmup_steps: int = 500\n    tags: list = field(default_factory=list)\n\n\ndef cosine_schedule(step, total, base_lr, warmup=500):\n    if step < warmup:\n        return base_lr * step / warmup\n    progress = (step - warmup) / max(1, total - warmup)\n    return 0.5 * base_lr * (1 + math.cos(math.pi * progress))\n\n\nclass Trainer:\n    def __init__(self, model, config):\n        self.model = model\n        self.config = config\n        self.step = 0\n        self.history = []\n\n    def train_step(self, batch):\n        loss = self.model.loss(batch)\n        lr = cosine_schedule(self.step, 10000, self.config.lr)\n        self.model.update(lr)\n        self.history.append(loss)\n        self.step += 1\n        return loss\n\n    def save(self, path):\n        os.makedirs(os.path.dirname(path), exist_ok=True)\n        with open(path, \"w\") as f:\n            f.write(str(self.history))\n\n\ndef main():\n    config = RunConfig(tags=[\"baseline\"])\n    trainer = Trainer(model=None, config=config)\n    for _ in range(3):\n        trainer.train_step(batch=None)\n    trainer.save(\"runs/baseline/history.txt\")\n// footer"
+   }
+  },
+  {
+   "id": "empty_old-01",
+   "category": "empty_old",
+   "file": "f00",
+   "old": "",
+   "new": "new text\n",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "empty_old"
+   }
+  },
+  {
+   "id": "empty_old-02",
+   "category": "empty_old",
+   "file": "f01",
+   "old": "",
+   "new": "new text\n",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "empty_old"
+   }
+  },
+  {
+   "id": "empty_old-03",
+   "category": "empty_old",
+   "file": "f13",
+   "old": "",
+   "new": "new text\n",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "empty_old"
+   }
+  },
+  {
+   "id": "no_change-01",
+   "category": "no_change",
+   "file": "f00",
+   "old": "hits: u64,",
+   "new": "hits: u64,",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "no_change"
+   }
+  },
+  {
+   "id": "no_change-02",
+   "category": "no_change",
+   "file": "f01",
+   "old": "self.step = 0",
+   "new": "self.step = 0",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "no_change"
+   }
+  },
+  {
+   "id": "no_change-03",
+   "category": "no_change",
+   "file": "f03",
+   "old": "return config;",
+   "new": "return config;",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "no_change"
+   }
+  },
+  {
+   "id": "line_prefix-01",
+   "category": "line_prefix",
+   "file": "f00",
+   "old": "     3\t\n     4\t/// A cache of parsed manifests, keyed by path.\n",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found",
+    "contains": [
+     "line-number prefix",
+     "starting at line 3"
+    ]
+   }
+  },
+  {
+   "id": "line_prefix-02",
+   "category": "line_prefix",
+   "file": "f01",
+   "old": "    12\t\n    13\t\n    14\tdef cosine_schedule(step, total, base_lr, warmup=500):\n",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found",
+    "contains": [
+     "line-number prefix",
+     "starting at line 12"
+    ]
+   }
+  },
+  {
+   "id": "line_prefix-03",
+   "category": "line_prefix",
+   "file": "f03",
+   "old": "     4\t  const raw = await readFile(path, \"utf8\");\n     5\t  const config = JSON.parse(raw);\n",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found",
+    "contains": [
+     "line-number prefix",
+     "starting at line 4"
+    ]
+   }
+  },
+  {
+   "id": "line_prefix-04",
+   "category": "line_prefix",
+   "file": "f02",
+   "old": "     9\t    steps:\n    10\t      - uses: actions/checkout@v4\n",
+   "new": "x",
+   "replace_all": false,
+   "expect": {
+    "ok": false,
+    "error": "not_found",
+    "contains": [
+     "line-number prefix",
+     "starting at line 9"
+    ]
+   }
+  },
+  {
+   "id": "regex_chars-01",
+   "category": "regex_chars",
+   "file": "f14",
+   "old": "let re = Regex::new(r\"^(\\d+)\\.(\\d+)$\").unwrap();",
+   "new": "const re = Regex::new(r\"^(\\d+)\\.(\\d+)$\").unwrap();",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "const re = Regex::new(r\"^(\\d+)\\.(\\d+)$\").unwrap();\nlet glob = \"src/**/*.{rs,toml}\";\nlet price = \"$9.99 (approx.)\";\nlet pipe = a | b || c;\nlet set = [a-z]+?;\nlet braces = {x: {y: 1}};\n"
+   }
+  },
+  {
+   "id": "regex_chars-02",
+   "category": "regex_chars",
+   "file": "f14",
+   "old": "let glob = \"src/**/*.{rs,toml}\";",
+   "new": "const glob = \"src/**/*.{rs,toml}\";",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "let re = Regex::new(r\"^(\\d+)\\.(\\d+)$\").unwrap();\nconst glob = \"src/**/*.{rs,toml}\";\nlet price = \"$9.99 (approx.)\";\nlet pipe = a | b || c;\nlet set = [a-z]+?;\nlet braces = {x: {y: 1}};\n"
+   }
+  },
+  {
+   "id": "regex_chars-03",
+   "category": "regex_chars",
+   "file": "f14",
+   "old": "let price = \"$9.99 (approx.)\";",
+   "new": "const price = \"$9.99 (approx.)\";",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "let re = Regex::new(r\"^(\\d+)\\.(\\d+)$\").unwrap();\nlet glob = \"src/**/*.{rs,toml}\";\nconst price = \"$9.99 (approx.)\";\nlet pipe = a | b || c;\nlet set = [a-z]+?;\nlet braces = {x: {y: 1}};\n"
+   }
+  },
+  {
+   "id": "regex_chars-04",
+   "category": "regex_chars",
+   "file": "f14",
+   "old": "let pipe = a | b || c;",
+   "new": "const pipe = a | b || c;",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "let re = Regex::new(r\"^(\\d+)\\.(\\d+)$\").unwrap();\nlet glob = \"src/**/*.{rs,toml}\";\nlet price = \"$9.99 (approx.)\";\nconst pipe = a | b || c;\nlet set = [a-z]+?;\nlet braces = {x: {y: 1}};\n"
+   }
+  },
+  {
+   "id": "regex_chars-05",
+   "category": "regex_chars",
+   "file": "f14",
+   "old": "let set = [a-z]+?;",
+   "new": "const set = [a-z]+?;",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "let re = Regex::new(r\"^(\\d+)\\.(\\d+)$\").unwrap();\nlet glob = \"src/**/*.{rs,toml}\";\nlet price = \"$9.99 (approx.)\";\nlet pipe = a | b || c;\nconst set = [a-z]+?;\nlet braces = {x: {y: 1}};\n"
+   }
+  },
+  {
+   "id": "crlf_exact-01",
+   "category": "crlf_exact",
+   "file": "f04",
+   "old": "        Self { entries: HashMap::new(), hits: 0, misses: 0 }\r\n    }\r\n",
+   "new": "        Self { entries: HashMap::new(), hits: 0, misses: 0 }\n    }\n\n// added line\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "use std::collections::HashMap;\r\nuse std::path::{Path, PathBuf};\r\n\r\n/// A cache of parsed manifests, keyed by path.\r\npub struct ManifestCache {\r\n    entries: HashMap<PathBuf, Manifest>,\r\n    hits: u64,\r\n    misses: u64,\r\n}\r\n\r\nimpl ManifestCache {\r\n    pub fn new() -> Self {\r\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\r\n    }\r\n\r\n// added line\r\n\r\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\r\n        if self.entries.contains_key(path) {\r\n            self.hits += 1;\r\n            return self.entries.get(path);\r\n        }\r\n        self.misses += 1;\r\n        None\r\n    }\r\n\r\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\r\n        self.entries.insert(path, manifest);\r\n    }\r\n\r\n    pub fn hit_rate(&self) -> f64 {\r\n        let total = self.hits + self.misses;\r\n        if total == 0 {\r\n            return 0.0;\r\n        }\r\n        self.hits as f64 / total as f64\r\n    }\r\n}\r\n\r\n#[derive(Debug, Clone, PartialEq)]\r\npub struct Manifest {\r\n    pub name: String,\r\n    pub version: String,\r\n    pub dependencies: Vec<String>,\r\n}\r\n\r\nimpl Manifest {\r\n    pub fn parse(text: &str) -> Result<Self, String> {\r\n        let mut name = None;\r\n        let mut version = None;\r\n        for line in text.lines() {\r\n            if let Some(v) = line.strip_prefix(\"name = \") {\r\n                name = Some(v.trim_matches('\"').to_string());\r\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\r\n                version = Some(v.trim_matches('\"').to_string());\r\n            }\r\n        }\r\n        Ok(Self {\r\n            name: name.ok_or(\"no name\")?,\r\n            version: version.ok_or(\"no version\")?,\r\n            dependencies: Vec::new(),\r\n        })\r\n    }\r\n}\r\n"
+   }
+  },
+  {
+   "id": "crlf_exact-02",
+   "category": "crlf_exact",
+   "file": "f04",
+   "old": "}\r\n\r\nimpl ManifestCache {\r\n",
+   "new": "}\n\nimpl ManifestCache {\n\n// added line\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "use std::collections::HashMap;\r\nuse std::path::{Path, PathBuf};\r\n\r\n/// A cache of parsed manifests, keyed by path.\r\npub struct ManifestCache {\r\n    entries: HashMap<PathBuf, Manifest>,\r\n    hits: u64,\r\n    misses: u64,\r\n}\r\n\r\nimpl ManifestCache {\r\n\r\n// added line\r\n    pub fn new() -> Self {\r\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\r\n    }\r\n\r\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\r\n        if self.entries.contains_key(path) {\r\n            self.hits += 1;\r\n            return self.entries.get(path);\r\n        }\r\n        self.misses += 1;\r\n        None\r\n    }\r\n\r\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\r\n        self.entries.insert(path, manifest);\r\n    }\r\n\r\n    pub fn hit_rate(&self) -> f64 {\r\n        let total = self.hits + self.misses;\r\n        if total == 0 {\r\n            return 0.0;\r\n        }\r\n        self.hits as f64 / total as f64\r\n    }\r\n}\r\n\r\n#[derive(Debug, Clone, PartialEq)]\r\npub struct Manifest {\r\n    pub name: String,\r\n    pub version: String,\r\n    pub dependencies: Vec<String>,\r\n}\r\n\r\nimpl Manifest {\r\n    pub fn parse(text: &str) -> Result<Self, String> {\r\n        let mut name = None;\r\n        let mut version = None;\r\n        for line in text.lines() {\r\n            if let Some(v) = line.strip_prefix(\"name = \") {\r\n                name = Some(v.trim_matches('\"').to_string());\r\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\r\n                version = Some(v.trim_matches('\"').to_string());\r\n            }\r\n        }\r\n        Ok(Self {\r\n            name: name.ok_or(\"no name\")?,\r\n            version: version.ok_or(\"no version\")?,\r\n            dependencies: Vec::new(),\r\n        })\r\n    }\r\n}\r\n"
+   }
+  },
+  {
+   "id": "crlf_exact-03",
+   "category": "crlf_exact",
+   "file": "f04",
+   "old": "\r\nimpl ManifestCache {\r\n    pub fn new() -> Self {\r\n",
+   "new": "\nimpl ManifestCache {\n    pub fn new() -> Self {\n\n// added line\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "use std::collections::HashMap;\r\nuse std::path::{Path, PathBuf};\r\n\r\n/// A cache of parsed manifests, keyed by path.\r\npub struct ManifestCache {\r\n    entries: HashMap<PathBuf, Manifest>,\r\n    hits: u64,\r\n    misses: u64,\r\n}\r\n\r\nimpl ManifestCache {\r\n    pub fn new() -> Self {\r\n\r\n// added line\r\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\r\n    }\r\n\r\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\r\n        if self.entries.contains_key(path) {\r\n            self.hits += 1;\r\n            return self.entries.get(path);\r\n        }\r\n        self.misses += 1;\r\n        None\r\n    }\r\n\r\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\r\n        self.entries.insert(path, manifest);\r\n    }\r\n\r\n    pub fn hit_rate(&self) -> f64 {\r\n        let total = self.hits + self.misses;\r\n        if total == 0 {\r\n            return 0.0;\r\n        }\r\n        self.hits as f64 / total as f64\r\n    }\r\n}\r\n\r\n#[derive(Debug, Clone, PartialEq)]\r\npub struct Manifest {\r\n    pub name: String,\r\n    pub version: String,\r\n    pub dependencies: Vec<String>,\r\n}\r\n\r\nimpl Manifest {\r\n    pub fn parse(text: &str) -> Result<Self, String> {\r\n        let mut name = None;\r\n        let mut version = None;\r\n        for line in text.lines() {\r\n            if let Some(v) = line.strip_prefix(\"name = \") {\r\n                name = Some(v.trim_matches('\"').to_string());\r\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\r\n                version = Some(v.trim_matches('\"').to_string());\r\n            }\r\n        }\r\n        Ok(Self {\r\n            name: name.ok_or(\"no name\")?,\r\n            version: version.ok_or(\"no version\")?,\r\n            dependencies: Vec::new(),\r\n        })\r\n    }\r\n}\r\n"
+   }
+  },
+  {
+   "id": "crlf_exact-04",
+   "category": "crlf_exact",
+   "file": "f04",
+   "old": "        let mut version = None;\r\n        for line in text.lines() {\r\n",
+   "new": "        let mut version = None;\n        for line in text.lines() {\n\n// added line\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "use std::collections::HashMap;\r\nuse std::path::{Path, PathBuf};\r\n\r\n/// A cache of parsed manifests, keyed by path.\r\npub struct ManifestCache {\r\n    entries: HashMap<PathBuf, Manifest>,\r\n    hits: u64,\r\n    misses: u64,\r\n}\r\n\r\nimpl ManifestCache {\r\n    pub fn new() -> Self {\r\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\r\n    }\r\n\r\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\r\n        if self.entries.contains_key(path) {\r\n            self.hits += 1;\r\n            return self.entries.get(path);\r\n        }\r\n        self.misses += 1;\r\n        None\r\n    }\r\n\r\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\r\n        self.entries.insert(path, manifest);\r\n    }\r\n\r\n    pub fn hit_rate(&self) -> f64 {\r\n        let total = self.hits + self.misses;\r\n        if total == 0 {\r\n            return 0.0;\r\n        }\r\n        self.hits as f64 / total as f64\r\n    }\r\n}\r\n\r\n#[derive(Debug, Clone, PartialEq)]\r\npub struct Manifest {\r\n    pub name: String,\r\n    pub version: String,\r\n    pub dependencies: Vec<String>,\r\n}\r\n\r\nimpl Manifest {\r\n    pub fn parse(text: &str) -> Result<Self, String> {\r\n        let mut name = None;\r\n        let mut version = None;\r\n        for line in text.lines() {\r\n\r\n// added line\r\n            if let Some(v) = line.strip_prefix(\"name = \") {\r\n                name = Some(v.trim_matches('\"').to_string());\r\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\r\n                version = Some(v.trim_matches('\"').to_string());\r\n            }\r\n        }\r\n        Ok(Self {\r\n            name: name.ok_or(\"no name\")?,\r\n            version: version.ok_or(\"no version\")?,\r\n            dependencies: Vec::new(),\r\n        })\r\n    }\r\n}\r\n"
+   }
+  },
+  {
+   "id": "crlf_exact-05",
+   "category": "crlf_exact",
+   "file": "f04",
+   "old": "        self.misses += 1;\r\n        None",
+   "new": "        self.misses += 1;\n        None\n// added line\n",
+   "replace_all": false,
+   "expect": {
+    "ok": true,
+    "tier": "exact",
+    "count": 1,
+    "result": "use std::collections::HashMap;\r\nuse std::path::{Path, PathBuf};\r\n\r\n/// A cache of parsed manifests, keyed by path.\r\npub struct ManifestCache {\r\n    entries: HashMap<PathBuf, Manifest>,\r\n    hits: u64,\r\n    misses: u64,\r\n}\r\n\r\nimpl ManifestCache {\r\n    pub fn new() -> Self {\r\n        Self { entries: HashMap::new(), hits: 0, misses: 0 }\r\n    }\r\n\r\n    pub fn get(&mut self, path: &Path) -> Option<&Manifest> {\r\n        if self.entries.contains_key(path) {\r\n            self.hits += 1;\r\n            return self.entries.get(path);\r\n        }\r\n        self.misses += 1;\r\n        None\r\n// added line\r\n\r\n    }\r\n\r\n    pub fn insert(&mut self, path: PathBuf, manifest: Manifest) {\r\n        self.entries.insert(path, manifest);\r\n    }\r\n\r\n    pub fn hit_rate(&self) -> f64 {\r\n        let total = self.hits + self.misses;\r\n        if total == 0 {\r\n            return 0.0;\r\n        }\r\n        self.hits as f64 / total as f64\r\n    }\r\n}\r\n\r\n#[derive(Debug, Clone, PartialEq)]\r\npub struct Manifest {\r\n    pub name: String,\r\n    pub version: String,\r\n    pub dependencies: Vec<String>,\r\n}\r\n\r\nimpl Manifest {\r\n    pub fn parse(text: &str) -> Result<Self, String> {\r\n        let mut name = None;\r\n        let mut version = None;\r\n        for line in text.lines() {\r\n            if let Some(v) = line.strip_prefix(\"name = \") {\r\n                name = Some(v.trim_matches('\"').to_string());\r\n            } else if let Some(v) = line.strip_prefix(\"version = \") {\r\n                version = Some(v.trim_matches('\"').to_string());\r\n            }\r\n        }\r\n        Ok(Self {\r\n            name: name.ok_or(\"no name\")?,\r\n            version: version.ok_or(\"no version\")?,\r\n            dependencies: Vec::new(),\r\n        })\r\n    }\r\n}\r\n"
+   }
+  }
+ ]
+}

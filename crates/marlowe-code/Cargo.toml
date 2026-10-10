@@ -13,3 +13,7 @@ marlowe-model.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# Track A (M4.6): content digests for `FileState` and image blobs, and per-page PDF text for
+# `read{pages}`. Both are already in Cargo.lock (marlowe-extract), so this adds no crate.
+blake3.workspace = true
+pdf-extract = "0.12"
