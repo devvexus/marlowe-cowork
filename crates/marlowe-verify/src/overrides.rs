@@ -56,7 +56,9 @@ pub(crate) fn apply(fs: &Fs<'_>, root: &Path, p: &mut ProjectProfile) {
                 continue;
             };
             match command_of(kind, v, root) {
-                Ok(c) => {
+                Ok(mut c) => {
+                    // The override may name an npm script; what it runs is shown like a detected one.
+                    c.runs = crate::stacks::node_runs_at(fs, &root.join(&c.cwd), &c.cmd.argv);
                     p.commands.retain(|d| d.kind != kind);
                     p.commands.push(c);
                 }
@@ -67,7 +69,8 @@ pub(crate) fn apply(fs: &Fs<'_>, root: &Path, p: &mut ProjectProfile) {
     if let Some(Value::Array(list)) = table.get("services") {
         for (i, v) in list.iter().enumerate() {
             match service_of(v, root) {
-                Ok(s) => {
+                Ok(mut s) => {
+                    s.runs = crate::stacks::node_runs_at(fs, &root.join(&s.cwd), &s.cmd.argv);
                     p.services.retain(|d| !d.name.eq_ignore_ascii_case(&s.name));
                     p.services.push(s);
                 }
@@ -163,7 +166,7 @@ fn service_of(v: &Value, root: &Path) -> Result<ServiceDef, String> {
         env_allow,
         source: Source::Override,
         available: true,
-        runs: None,
+        runs: Vec::new(),
     })
 }
 

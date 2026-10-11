@@ -10,7 +10,7 @@ use regex::Regex;
 use serde_json::Value;
 
 use crate::cmd::Cmd;
-use crate::profile::{Found, Fs, Kind, Lockfile, Migrations, ProjectCmd, ServiceDef, Source, Stack, StackAt};
+use crate::profile::{Found, Fs, Kind, Lockfile, Migrations, ProjectCmd, Script, ServiceDef, Source, Stack, StackAt};
 
 /// Detects every stack in `dir` (`rel` is its path from the project root).
 pub(crate) fn scan_dir(fs: &Fs<'_>, dir: &Path, rel: &str, f: &mut Found) {
@@ -37,6 +37,7 @@ pub(crate) fn scan_dir(fs: &Fs<'_>, dir: &Path, rel: &str, f: &mut Found) {
     if names.iter().any(|n| is_compose(n)) {
         compose(rel, f);
     }
+    crate::registries::refine(fs, dir, rel, f);
 }
 
 fn is_requirements(n: &str) -> bool {
@@ -280,7 +281,7 @@ fn service(name: &str, cmd: Cmd, rel: &str, url: Option<&str>, port: Option<u16>
         env_allow: Vec::new(),
         source: Source::Detected,
         available: true,
-        runs: None,
+        runs: Vec::new(),
     }
 }
 
@@ -318,9 +319,7 @@ fn node(fs: &Fs<'_>, dir: &Path, rel: &str, names: &[String], f: &mut Found) {
         if let (Some(s), true) = (sep, argv.len() >= 2 && argv[1] == "run") {
             c = c.separator(s);
         }
-        if argv.len() >= 3 && argv[1] == "run" {
-            c.runs = scripts.and_then(|s| s.get(argv[2])).and_then(Value::as_str).map(String::from);
-        }
+        c.runs = node_runs(&pkg, &argv.iter().map(|a| a.to_string()).collect::<Vec<_>>());
         f.commands.push(c);
     };
     for (kind, candidates) in [
@@ -352,7 +351,10 @@ fn node(fs: &Fs<'_>, dir: &Path, rel: &str, names: &[String], f: &mut Found) {
         _ => &["bun", "install"],
     };
     let host = if stack == Stack::Yarn && !has(".yarnrc.yml") { "registry.yarnpkg.com" } else { "registry.npmjs.org" };
-    f.commands.push(ProjectCmd::new(Kind::Install, stack, rel, install).registry(host));
+    let mut inst = ProjectCmd::new(Kind::Install, stack, rel, install).registry(host);
+    // The root's own lifecycle scripts (`postinstall`, `prepare`) run on every install.
+    inst.runs = node_runs(&pkg, &install.iter().map(|a| a.to_string()).collect::<Vec<_>>());
+    f.commands.push(inst);
     match stack {
         Stack::Npm => lock(f, rel, "package-lock.json", stack, &["npm", "install", "--package-lock-only"]),
         Stack::Pnpm => lock(f, rel, "pnpm-lock.yaml", stack, &["pnpm", "install", "--lockfile-only"]),
@@ -379,7 +381,7 @@ fn node(fs: &Fs<'_>, dir: &Path, rel: &str, names: &[String], f: &mut Found) {
     if let Some(s) = script(&["dev", "start", "serve"]) {
         let url = framework.map(|(_, p)| format!("http://localhost:{p}/"));
         let mut def = service("dev", Cmd::new(&[pm, "run", &s]), rel, url.as_deref(), framework.map(|(_, p)| p));
-        def.runs = scripts.and_then(|m| m.get(s.as_str())).and_then(Value::as_str).map(String::from);
+        def.runs = node_runs(&pkg, &[pm.to_string(), "run".to_string(), s.clone()]);
         f.services.push(def);
     }
 
@@ -427,6 +429,79 @@ fn node(fs: &Fs<'_>, dir: &Path, rel: &str, names: &[String], f: &mut Found) {
             Some(exec(&["sequelize-cli", "db:migrate:undo:all"])),
             &[".sequelizerc"],
         ));
+    }
+}
+
+/// The scripts a package-manager command runs (see [`Script`]), from `pkg` (a parsed
+/// package.json): the named script with its `pre`/`post` hooks and every script those call
+/// (`npm run lint && jest`), or for an install the root's lifecycle scripts. Empty when the
+/// command does not run package scripts (`npx tsc`, `cargo test`).
+pub(crate) fn node_runs(pkg: &Value, argv: &[String]) -> Vec<Script> {
+    const INSTALL_HOOKS: [&str; 7] = ["preinstall", "install", "postinstall", "prepublish", "preprepare", "prepare", "postprepare"];
+    let Some(scripts) = pkg.get("scripts").and_then(Value::as_object) else { return Vec::new() };
+    let prog = argv.first().map(|p| Path::new(p).file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()).unwrap_or_default();
+    if !matches!(prog.as_str(), "npm" | "pnpm" | "yarn" | "bun") {
+        return Vec::new();
+    }
+    let rest: Vec<&str> = argv.iter().skip(1).map(String::as_str).filter(|a| !a.starts_with('-')).collect();
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    match rest.first().copied() {
+        Some("run" | "run-script" | "rum" | "urn") => {
+            if let Some(name) = rest.get(1) {
+                collect_script(scripts, name, true, &mut seen, &mut out, 0);
+            }
+        }
+        Some("test" | "t" | "tst") => collect_script(scripts, "test", true, &mut seen, &mut out, 0),
+        Some("start") => collect_script(scripts, "start", true, &mut seen, &mut out, 0),
+        Some("stop") => collect_script(scripts, "stop", true, &mut seen, &mut out, 0),
+        Some("install" | "i" | "ci" | "add" | "update" | "up") => {
+            for hook in INSTALL_HOOKS {
+                take_script(scripts, hook, false, &mut seen, &mut out, 0);
+            }
+        }
+        None if prog == "yarn" => {
+            for hook in INSTALL_HOOKS {
+                take_script(scripts, hook, false, &mut seen, &mut out, 0);
+            }
+        }
+        // `yarn build` is a script.
+        Some(name) if prog == "yarn" && scripts.contains_key(name) => collect_script(scripts, name, true, &mut seen, &mut out, 0),
+        _ => {}
+    }
+    out
+}
+
+/// [`node_runs`] for the package.json in `dir`.
+pub(crate) fn node_runs_at(fs: &Fs<'_>, dir: &Path, argv: &[String]) -> Vec<Script> {
+    let Some(pkg) = fs.text(&dir.join("package.json")).and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return Vec::new() };
+    node_runs(&pkg, argv)
+}
+
+/// `name` and the `pre`/`post` scripts the package manager runs around it.
+fn collect_script(scripts: &serde_json::Map<String, Value>, name: &str, own: bool, seen: &mut std::collections::HashSet<String>, out: &mut Vec<Script>, depth: usize) {
+    take_script(scripts, &format!("pre{name}"), false, seen, out, depth);
+    take_script(scripts, name, own, seen, out, depth);
+    take_script(scripts, &format!("post{name}"), false, seen, out, depth);
+}
+
+/// One script by exact name (`own`: it is the one the command names, so it carries no label),
+/// then the scripts its body calls.
+fn take_script(scripts: &serde_json::Map<String, Value>, name: &str, own: bool, seen: &mut std::collections::HashSet<String>, out: &mut Vec<Script>, depth: usize) {
+    static CALLS: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let calls = CALLS.get_or_init(|| {
+        Regex::new(r"\b(?:npm|pnpm|bun)\s+(?:run|run-script)\s+(?:-\S+\s+)*([A-Za-z0-9:_.\-]+)|\byarn\s+(?:run\s+)?([A-Za-z0-9:_.\-]+)|\bnpm\s+(test|start|stop)\b").expect("static regex")
+    });
+    if depth > 4 || out.len() >= 24 || !seen.insert(name.to_string()) {
+        return;
+    }
+    let Some(body) = scripts.get(name).and_then(Value::as_str) else { return };
+    out.push(Script { name: if own { String::new() } else { name.to_string() }, body: body.to_string() });
+    let called: Vec<String> = calls.captures_iter(body).filter_map(|c| c.get(1).or(c.get(2)).or(c.get(3)).map(|m| m.as_str().to_string())).collect();
+    for next in called {
+        if scripts.contains_key(&next) {
+            collect_script(scripts, &next, false, seen, out, depth + 1);
+        }
     }
 }
 

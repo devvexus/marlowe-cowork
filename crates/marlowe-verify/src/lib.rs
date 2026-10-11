@@ -32,6 +32,7 @@ pub mod service;
 pub mod state;
 pub mod tools;
 
+mod registries;
 mod stacks;
 
 pub use env::Env;

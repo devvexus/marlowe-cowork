@@ -156,6 +156,15 @@ pub enum Source {
     Override,
 }
 
+/// A script a command runs on its own account: the body of a package.json script, which the
+/// command line (`npm run test`) does not show. `name` is empty for the script the command names
+/// and the lifecycle script's name for the ones the package manager runs around it (`pretest`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Script {
+    pub name: String,
+    pub body: String,
+}
+
 /// One runnable command of the profile.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectCmd {
@@ -165,8 +174,12 @@ pub struct ProjectCmd {
     pub cwd: String,
     pub stack: Option<Stack>,
     pub source: Source,
-    /// The registry host an install reaches (shown in the approval; recorded as approved).
+    /// The registry host an install reaches (shown in the approval; recorded as approved). For a
+    /// detected install it is read from the project's registry configuration, not assumed.
     pub registry_host: Option<String>,
+    /// Further hosts the install reaches (a scoped registry, a git dependency, a mirror).
+    #[serde(default)]
+    pub extra_hosts: Vec<String>,
     /// The check fails when it prints anything (`gofmt -l`).
     pub fail_on_output: bool,
     /// Run first, unless the path (relative to `cwd`) exists: `cmake -S . -B build`.
@@ -176,10 +189,12 @@ pub struct ProjectCmd {
     /// The program was found on `PATH` when the profile was built.
     pub available: bool,
     pub timeout_s: Option<u64>,
-    /// What the command runs when the manifest says so: the body of the package.json script
-    /// `npm run test` names. Shown in the approval and read by the sandbox policy, because the
-    /// command line alone does not say what executes.
-    pub runs: Option<String>,
+    /// What the command runs when a manifest says so: the package.json script `npm run test`
+    /// names, the `pretest`/`posttest` the package manager runs around it, and the scripts those
+    /// call. Shown in the approval, part of the fingerprint, and read by the sandbox policy,
+    /// because the command line alone does not say what executes.
+    #[serde(default)]
+    pub runs: Vec<Script>,
 }
 
 impl ProjectCmd {
@@ -191,12 +206,13 @@ impl ProjectCmd {
             stack: Some(stack),
             source: Source::Detected,
             registry_host: None,
+            extra_hosts: Vec::new(),
             fail_on_output: false,
             pre: None,
             args_separator: None,
             available: true,
             timeout_s: None,
-            runs: None,
+            runs: Vec::new(),
         }
     }
 
@@ -228,7 +244,8 @@ pub struct ServiceDef {
     pub source: Source,
     pub available: bool,
     /// See [`ProjectCmd::runs`].
-    pub runs: Option<String>,
+    #[serde(default)]
+    pub runs: Vec<Script>,
 }
 
 /// How the project migrates a database.

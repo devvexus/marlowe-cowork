@@ -13,12 +13,12 @@ use std::time::Duration;
 use marlowe_model::ImageRef;
 use serde_json::Value;
 
-use crate::browser::{self, BrowseError, BrowseRequest, Show, Step};
+use crate::browser::{self, BrowseError, BrowseRequest, Reach, Show, Step};
 use crate::cmd::{split_args, valid_env_name, Cmd};
 use crate::env::Env;
 use crate::http::{self, Checks, StatusSpec, Url};
 use crate::migrate::{self, Target};
-use crate::profile::{Kind, Migrations, ProjectCmd, ProjectProfile};
+use crate::profile::{Kind, Migrations, ProjectCmd, ProjectProfile, Script};
 use crate::run::{self, GateOpts};
 use crate::service::{Ready, StartSpec};
 use crate::state::VerifyState;
@@ -159,13 +159,16 @@ pub struct ProjectPlan {
     pub op: ProjectOp,
     pub cmds: Vec<ProjectCmd>,
     pub migration: Option<Migrations>,
+    /// Databases a migrate call would touch other than the throwaway, named by the migration's own
+    /// environment, arguments or config files (redacted). Empty when it uses the throwaway only.
+    pub named_dbs: Vec<String>,
     pub profile: Arc<ProjectProfile>,
 }
 
 pub fn plan_project(env: &Env<'_>, state: &VerifyState, args: &Value) -> Result<ProjectPlan, String> {
     let op = parse_project(args)?;
     let profile = if matches!(op, ProjectOp::Profile) { Arc::new(crate::profile::detect(env.ws, env.root)) } else { state.profile(env.ws, env.root) };
-    let mut plan = ProjectPlan { op: op.clone(), cmds: Vec::new(), migration: None, profile: Arc::clone(&profile) };
+    let mut plan = ProjectPlan { op: op.clone(), cmds: Vec::new(), migration: None, named_dbs: Vec::new(), profile: Arc::clone(&profile) };
     let none = |what: &str| -> String {
         let have: Vec<&str> = Kind::ALL.into_iter().filter(|k| !profile.commands_of(*k).is_empty()).map(|k| k.name()).collect();
         if profile.is_empty() {
@@ -199,14 +202,18 @@ pub fn plan_project(env: &Env<'_>, state: &VerifyState, args: &Value) -> Result<
                 return Err(none("format, lint, typecheck, build or test"));
             }
         }
-        ProjectOp::Migrate { tool, .. } => {
+        ProjectOp::Migrate { tool, database_url, .. } => {
             let m = match tool {
                 Some(t) => profile.migrations.iter().find(|m| m.tool.eq_ignore_ascii_case(t)),
                 None => profile.migrations.first(),
             };
-            plan.migration = Some(m.cloned().ok_or_else(|| {
+            let m = m.cloned().ok_or_else(|| {
                 "no migrations are detected (alembic, django, prisma, knex, drizzle, sequelize, goose, golang-migrate); describe them in .marlowe/project.toml [migrations]".to_string()
-            })?);
+            })?;
+            if database_url.is_none() {
+                plan.named_dbs = migrate::named_databases(env, &m);
+            }
+            plan.migration = Some(m);
         }
     }
     if let Some(ms) = A(args).int("timeout_ms") {
@@ -239,7 +246,7 @@ impl ProjectPlan {
             dirs.join(";"),
             mig,
             self.user_db(),
-            self.runs()
+            self.scripts()
         )
     }
 
@@ -269,25 +276,44 @@ impl ProjectPlan {
         v
     }
 
-    /// What the commands execute when a manifest says so (package.json script bodies).
-    pub fn runs(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.cmds.iter().filter_map(|c| c.runs.clone()).collect();
-        v.dedup();
+    /// The scripts the commands run when a manifest says so (package.json script bodies, with the
+    /// `pre`/`post` and lifecycle scripts the package manager runs around them), in order.
+    pub fn scripts(&self) -> Vec<Script> {
+        let mut v: Vec<Script> = Vec::new();
+        for s in self.cmds.iter().flat_map(|c| c.runs.iter()) {
+            if !v.contains(s) {
+                v.push(s.clone());
+            }
+        }
         v
     }
 
-    /// Registry hosts the install commands reach.
+    /// What those scripts contain, one line each, for the sandbox policy to classify.
+    pub fn runs(&self) -> Vec<String> {
+        self.scripts().into_iter().map(|s| s.body).collect()
+    }
+
+    /// Every host the install commands reach: the registry and any further source.
     pub fn hosts(&self) -> Vec<String> {
-        let mut h: Vec<String> = self.cmds.iter().filter_map(|c| c.registry_host.clone()).collect();
+        let mut h: Vec<String> = self.cmds.iter().flat_map(|c| c.registry_host.iter().chain(c.extra_hosts.iter())).cloned().collect();
         h.sort();
         h.dedup();
         h
     }
 
-    /// The database a migrate call names, redacted (a throwaway needs no approval).
+    /// An install whose destination is not known: no host is recorded, or the host is the
+    /// project file's own word (`.marlowe/project.toml`).
+    pub fn install_destination_unknown(&self) -> bool {
+        self.cmds.iter().any(|c| c.kind == Kind::Install && (c.registry_host.is_none() || c.source == crate::profile::Source::Override))
+    }
+
+    /// The database a migrate call touches other than the throwaway, redacted: the one it was
+    /// given, or the ones the migration's own configuration names. `None` means the throwaway
+    /// only, which needs no approval.
     pub fn user_db(&self) -> Option<String> {
         match &self.op {
             ProjectOp::Migrate { database_url: Some(u), .. } => Some(migrate::redact_url(u)),
+            ProjectOp::Migrate { .. } if !self.named_dbs.is_empty() => Some(self.named_dbs.join("; ")),
             _ => None,
         }
     }
@@ -349,7 +375,8 @@ pub fn project(env: &Env<'_>, state: &VerifyState, args: &Value) -> Out {
             let m = plan.migration.as_ref().expect("planned");
             let target = match database_url {
                 Some(u) => Target::User(u.clone()),
-                None => Target::Throwaway,
+                None if plan.named_dbs.is_empty() => Target::Throwaway,
+                None => Target::Config(plan.named_dbs.clone()),
             };
             match migrate::migrate(env, m, &target, *roundtrip, &state.logs) {
                 Ok(r) => Out::verdict(r.ok(), r.render(), if r.ok() { format!("{} migrated", m.tool) } else { format!("{} migration failed", m.tool) }),
@@ -379,8 +406,8 @@ pub struct ServicePlan {
     pub tail: usize,
     /// Requested credential variables (names the harness scrubs from children): the user approves these.
     pub credentials: Vec<String>,
-    /// The package.json script a profile service runs, when it is one.
-    pub runs: Option<String>,
+    /// The package.json scripts a profile service runs, when it is one.
+    pub runs: Vec<Script>,
 }
 
 fn sanitize_name(s: &str) -> String {
@@ -401,7 +428,7 @@ pub fn plan_service(env: &Env<'_>, state: &VerifyState, args: &Value) -> Result<
     let name = a.str("name").map(String::from);
     let tail = a.int("tail").unwrap_or(60).clamp(1, 500) as usize;
     if matches!(op, ServiceOp::Stop | ServiceOp::Logs | ServiceOp::Status) {
-        return Ok(ServicePlan { op, name, spec: None, tail, credentials: Vec::new(), runs: None });
+        return Ok(ServicePlan { op, name, spec: None, tail, credentials: Vec::new(), runs: Vec::new() });
     }
     let profile = state.profile(env.ws, env.root);
     let defined = || profile.services.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ");
@@ -452,7 +479,7 @@ pub fn plan_service(env: &Env<'_>, state: &VerifyState, args: &Value) -> Result<
         .filter(|n| marlowe_os::child::is_scrubbed(n) || env.scrub.iter().any(|s| s.eq_ignore_ascii_case(n)))
         .cloned()
         .collect();
-    let runs = if a.str("command").is_none() { base.and_then(|b| b.runs.clone()) } else { None };
+    let runs = if a.str("command").is_none() { base.map(|b| b.runs.clone()).unwrap_or_default() } else { crate::stacks::node_runs_at(&crate::profile::Fs { ws: env.ws }, &cwd, &cmd.argv) };
     Ok(ServicePlan { op, name: Some(svc_name.clone()), spec: Some(StartSpec { name: svc_name, cmd, cwd, ready, env_allow, env: Vec::new() }), tail, credentials, runs })
 }
 
@@ -618,8 +645,23 @@ pub struct BrowserPlan {
     pub show: Show,
     /// A page on this machine (loopback or a file in the workspace).
     pub local: bool,
-    /// The remote host, when it is not.
-    pub host: Option<String>,
+    /// Every remote host the call can reach: the page's own and each absolute `goto` target.
+    /// Empty for a page on this machine.
+    pub hosts: Vec<String>,
+    /// The port of a page served from this machine.
+    pub port: Option<u16>,
+}
+
+impl BrowserPlan {
+    /// The steps that can change state on a server.
+    pub fn acting_steps(&self) -> Vec<&Step> {
+        self.request.steps.iter().filter(|s| s.acts()).collect()
+    }
+
+    /// The `eval` steps, as typed.
+    pub fn evals(&self) -> Vec<&str> {
+        self.request.steps.iter().filter_map(|s| if let Step::Eval(js) = s { Some(js.as_str()) } else { None }).collect()
+    }
 }
 
 fn file_url(p: &std::path::Path) -> String {
@@ -638,20 +680,25 @@ fn file_url(p: &std::path::Path) -> String {
 pub fn plan_browser(env: &Env<'_>, args: &Value) -> Result<BrowserPlan, String> {
     let a = A(args);
     let raw = a.str("url").ok_or("`url` is required (http://localhost:PORT/..., or a path to an html file in the workspace)")?;
+    let boundary = env.pin.unwrap_or(env.root);
+    let boundary = boundary.canonicalize().unwrap_or_else(|_| boundary.to_path_buf());
+    let mut file_root = None;
+    let mut port = None;
     let (url, local, host) = if raw.starts_with("http://") || raw.starts_with("https://") {
         let u = Url::parse(raw).map_err(|e| e.to_string())?;
         if u.is_loopback() {
             if u.https {
                 return Err("https to localhost is not supported (self-signed certificate); use http://localhost:PORT".into());
             }
+            port = Some(u.port);
             (u.display(), true, None)
         } else {
-            (u.display(), false, Some(u.host))
+            (u.display(), false, Some(u.host.to_ascii_lowercase()))
         }
-    } else if raw.starts_with(':') {
-        (format!("http://localhost{raw}"), true, None)
-    } else if raw.starts_with("localhost") || raw.starts_with("127.0.0.1") {
-        (format!("http://{raw}"), true, None)
+    } else if raw.starts_with(':') || raw.starts_with("localhost") || raw.starts_with("127.0.0.1") {
+        let u = Url::parse(&if raw.starts_with(':') { format!("http://localhost{raw}") } else { format!("http://{raw}") }).map_err(|e| e.to_string())?;
+        port = Some(u.port);
+        (u.display(), true, None)
     } else {
         let path = match raw.strip_prefix("file:///") {
             Some(p) => PathBuf::from(p.replace("%20", " ")),
@@ -661,13 +708,33 @@ pub fn plan_browser(env: &Env<'_>, args: &Value) -> Result<BrowserPlan, String> 
         if !path.is_file() {
             return Err(format!("{} does not exist; give an http://localhost:PORT URL or an html file in the workspace", path.display()));
         }
-        let boundary = env.pin.unwrap_or(env.root);
-        if !crate::env::inside(boundary, &path) {
+        if !crate::env::inside(&boundary, &path) {
             return Err(format!("{} is outside the workspace; a file page must be inside it", path.display()));
         }
+        file_root = Some(boundary.clone());
         (file_url(&path.canonicalize().unwrap_or(path)), true, None)
     };
     let steps = Step::parse_all(&a.list("steps"))?;
+    // Every host the call can reach: where it starts and each absolute `goto`. A remote page gets
+    // no local files, and a local page's `goto` to another host is refused when it runs.
+    let mut hosts: Vec<String> = host.into_iter().collect();
+    if !local {
+        for step in &steps {
+            let Step::Goto(target) = step else { continue };
+            let t = target.trim().to_ascii_lowercase();
+            if t.starts_with("file:") {
+                return Err("a page from another host cannot open local files (`goto file:...`); verify a workspace file as its own page".into());
+            }
+            if t.starts_with("http://") || t.starts_with("https://") {
+                let u = Url::parse(target.trim()).map_err(|e| format!("goto {target}: {e}"))?;
+                if !u.is_loopback() {
+                    hosts.push(u.host.to_ascii_lowercase());
+                }
+            }
+        }
+        hosts.sort();
+        hosts.dedup();
+    }
     let action = a.str("action").map(str::to_ascii_lowercase);
     let show = match action.as_deref() {
         None | Some("snapshot") | Some("check") | Some("text") => Show::Snapshot,
@@ -677,9 +744,11 @@ pub fn plan_browser(env: &Env<'_>, args: &Value) -> Result<BrowserPlan, String> 
     };
     let width = a.int("width").unwrap_or(1280).clamp(200, 3840) as u32;
     let height = a.int("height").unwrap_or(800).clamp(200, 2400) as u32;
+    let reach = Reach { hosts: hosts.clone(), loopback: local, write_ports: port.into_iter().collect(), file_root };
     let request = BrowseRequest {
         url,
         strict_local: local,
+        reach,
         viewport: (width, height),
         steps,
         wait_for: a.str("wait_for").map(String::from),
@@ -688,14 +757,18 @@ pub fn plan_browser(env: &Env<'_>, args: &Value) -> Result<BrowserPlan, String> 
         full_page: a.bool("full_page").unwrap_or(false),
         timeout: Duration::from_millis(a.int("timeout_ms").unwrap_or(45_000).clamp(5_000, 180_000) as u64),
     };
-    Ok(BrowserPlan { request, show, local, host })
+    Ok(BrowserPlan { request, show, local, hosts, port })
 }
 
 pub fn browser(env: &Env<'_>, state: &VerifyState, args: &Value) -> Out {
-    let plan = match plan_browser(env, args) {
+    let mut plan = match plan_browser(env, args) {
         Ok(p) => p,
         Err(e) => return Out::err(e),
     };
+    // Services this session started may be written to by the page (a form on the dev server).
+    if plan.local {
+        plan.request.reach.write_ports.extend(state.services.owned_ports());
+    }
     let Some(driver) = state.browser().filter(|b| b.available()) else {
         return Out::err(BrowseError::NoBrowser.to_string());
     };

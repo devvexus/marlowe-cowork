@@ -18,14 +18,21 @@
 //! | `type <text>` / `press <Key>` | keyboard input to the focused element (`Enter`, `Tab`, `Escape`) |
 //! | `wait <selector>` / `wait_gone <selector>` / `wait_text <text>` | until it appears, vanishes, shows |
 //! | `eval <js>` | evaluates an expression (promises awaited) and records the value |
-//! | `goto <url or /path>` | navigates (same host only for a local page) |
+//! | `goto <url or /path>` | navigates (a local page stays on this machine; a remote page on the hosts the call was approved for) |
 //! | `scroll <selector\|top\|bottom>` / `sleep <ms>` | |
+//!
+//! What a page may reach is a [`Reach`], built from the call's plan and enforced by the driver on
+//! every request the page makes (the browser's own request interception, so `eval`, iframes and
+//! redirects are covered, not just `goto`): the hosts the call was judged for, loopback for a page
+//! on this machine, files only below the workspace.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use marlowe_model::{CancelToken, ImageRef};
+
+use crate::http::Url;
 
 /// A browser-driving step.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +99,35 @@ impl Step {
     }
 }
 
+impl std::fmt::Display for Step {
+    /// The step as it is typed.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Step::Click(a) => write!(f, "click {a}"),
+            Step::Hover(a) => write!(f, "hover {a}"),
+            Step::Fill { selector, text } => write!(f, "fill {selector} = {text}"),
+            Step::Select { selector, value } => write!(f, "select {selector} = {value}"),
+            Step::Type(a) => write!(f, "type {a}"),
+            Step::Press(a) => write!(f, "press {a}"),
+            Step::Wait(a) => write!(f, "wait {a}"),
+            Step::WaitGone(a) => write!(f, "wait_gone {a}"),
+            Step::WaitText(a) => write!(f, "wait_text {a}"),
+            Step::Eval(a) => write!(f, "eval {a}"),
+            Step::Goto(a) => write!(f, "goto {a}"),
+            Step::Scroll(a) => write!(f, "scroll {a}"),
+            Step::Sleep(ms) => write!(f, "sleep {ms}"),
+        }
+    }
+}
+
+impl Step {
+    /// A step that can change state on a server (a click may submit a form, `eval` runs anything,
+    /// `goto` is a request); waits, hovers and scrolls only look.
+    pub fn acts(&self) -> bool {
+        matches!(self, Step::Click(_) | Step::Fill { .. } | Step::Select { .. } | Step::Type(_) | Step::Press(_) | Step::Eval(_) | Step::Goto(_))
+    }
+}
+
 fn example(verb: &str) -> &'static str {
     match verb {
         "fill" => "#email = ada@example.org",
@@ -103,12 +139,132 @@ fn example(verb: &str) -> &'static str {
     }
 }
 
+/// What a page may reach, decided from the call before the browser starts and enforced per
+/// request while it runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reach {
+    /// Remote hosts (and their subdomains) the call was judged for. Never loopback.
+    pub hosts: Vec<String>,
+    /// A page on this machine: loopback may be read.
+    pub loopback: bool,
+    /// Loopback ports a request that changes state may go to: the page's own server and the
+    /// services this session started. Any other local port is read-only.
+    pub write_ports: Vec<u16>,
+    /// A page from the workspace: files may be opened below this directory, and nowhere else.
+    pub file_root: Option<PathBuf>,
+}
+
+fn reads(method: &str) -> bool {
+    matches!(method.to_ascii_uppercase().as_str(), "GET" | "HEAD" | "OPTIONS")
+}
+
+impl Reach {
+    /// Whether the page may make this request, or why not.
+    pub fn check(&self, method: &str, url: &str) -> Result<(), String> {
+        let url = url.trim();
+        let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase()).unwrap_or_default();
+        match scheme.as_str() {
+            "data" | "blob" | "about" | "chrome-error" => Ok(()),
+            "file" => self.check_file(url),
+            "http" | "https" | "ws" | "wss" => self.check_net(method, url, &scheme),
+            "" => Err(format!("`{url}` is not a URL")),
+            other => Err(format!("{other}: URLs are not opened by a check")),
+        }
+    }
+
+    fn check_net(&self, method: &str, url: &str, scheme: &str) -> Result<(), String> {
+        let as_http = match scheme {
+            "ws" => url.replacen("ws:", "http:", 1),
+            "wss" => url.replacen("wss:", "https:", 1),
+            _ => url.to_string(),
+        };
+        let u = Url::parse(&as_http).map_err(|e| e.to_string())?;
+        let host = u.host.to_ascii_lowercase();
+        if u.is_loopback() {
+            if !self.loopback {
+                return Err(format!("{} is on this machine; a page from another host cannot reach it", u.authority()));
+            }
+            if reads(method) || self.write_ports.contains(&u.port) {
+                return Ok(());
+            }
+            return Err(format!("a {method} to {} changes state on a local service this session did not start", u.authority()));
+        }
+        if self.hosts.iter().any(|a| host == *a || host.ends_with(&format!(".{a}"))) {
+            return Ok(());
+        }
+        if self.loopback && self.hosts.is_empty() {
+            Err(format!("{host} is not on this machine: a check of a page on this machine stays on this machine"))
+        } else {
+            Err(format!(
+                "{host} is not a host this call was approved to reach (approved: {})",
+                if self.hosts.is_empty() { "none".to_string() } else { self.hosts.join(", ") }
+            ))
+        }
+    }
+
+    fn check_file(&self, url: &str) -> Result<(), String> {
+        let Some(root) = &self.file_root else {
+            return Err("a page that is not a file of the workspace cannot open local files".into());
+        };
+        let rest = url.get("file:".len()..).unwrap_or("").strip_prefix("//").ok_or("not a file:// URL")?;
+        let at = rest.find('/').unwrap_or(rest.len());
+        let (authority, path) = rest.split_at(at);
+        if !(authority.is_empty() || authority.eq_ignore_ascii_case("localhost")) {
+            return Err(format!("file://{authority}/... is a network share"));
+        }
+        let path = percent_decode(path.split(['?', '#']).next().unwrap_or(""));
+        // `/C:/dir/x` is a drive path.
+        let b = path.as_bytes();
+        let path = if b.len() > 2 && b[0] == b'/' && b[2] == b':' { path[1..].to_string() } else { path };
+        let abs = crate::env::resolve(root, &path);
+        if crate::env::inside(root, &abs) {
+            Ok(())
+        } else {
+            Err(format!("{} is outside the workspace; a page can open only files below {}", abs.display(), root.display()))
+        }
+    }
+
+    /// Edge's `--host-resolver-rules`: names that are not allowed do not resolve, a second line
+    /// of defence behind [`Reach::check`].
+    pub fn resolver_rules(&self) -> String {
+        let mut r = String::from("MAP * ~NOTFOUND");
+        if self.loopback {
+            r.push_str(" , EXCLUDE localhost , EXCLUDE 127.0.0.1");
+        }
+        for h in &self.hosts {
+            r.push_str(&format!(" , EXCLUDE {h} , EXCLUDE *.{h}"));
+        }
+        r
+    }
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Some(v) = s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// What to load and collect.
 #[derive(Debug, Clone)]
 pub struct BrowseRequest {
     pub url: String,
-    /// Keep the browser on this machine: every request to another host fails.
+    /// The page is on this machine (loopback or a workspace file); it changes how a blocked
+    /// request is explained.
     pub strict_local: bool,
+    /// What the page may reach.
+    pub reach: Reach,
     pub viewport: (u32, u32),
     pub steps: Vec<Step>,
     /// A CSS selector, or `text:<words>`, to wait for after load (otherwise the page settles).
@@ -284,6 +440,7 @@ pub fn render(req: &BrowseRequest, r: &BrowseReport, show: Show, shot: Option<&S
         for f in r.failed_requests.iter().take(12) {
             let why = match f.status {
                 Some(s) => format!("HTTP {s}"),
+                None if f.reason.contains("ERR_BLOCKED_BY_CLIENT (") => format!("not fetched: {}", f.reason),
                 None if is_blocked(f) && req.strict_local => format!("{} (not fetched: a check of a page on this machine keeps the browser on this machine)", f.reason),
                 None => f.reason.clone(),
             };
@@ -399,6 +556,59 @@ mod tests {
         assert!(err.starts_with("steps[1]:"), "{err}");
     }
 
+    fn remote() -> Reach {
+        Reach { hosts: vec!["github.com".into()], loopback: false, write_ports: vec![], file_root: None }
+    }
+
+    fn local(root: &Path) -> Reach {
+        Reach { hosts: vec![], loopback: true, write_ports: vec![5173], file_root: Some(root.to_path_buf()) }
+    }
+
+    #[test]
+    fn a_remote_page_reaches_only_the_hosts_it_was_judged_for() {
+        let r = remote();
+        assert!(r.check("GET", "https://github.com/a").is_ok());
+        assert!(r.check("GET", "https://api.github.com/a").is_ok(), "a subdomain of an approved host");
+        assert!(r.check("GET", "wss://github.com/socket").is_ok());
+        let e = r.check("GET", "https://evil.example/?d=1").unwrap_err();
+        assert!(e.contains("not a host this call was approved to reach") && e.contains("github.com"), "{e}");
+        assert!(r.check("GET", "https://notgithub.com/").is_err(), "a suffix of the name is not a subdomain");
+        assert!(r.check("GET", "http://127.0.0.1:11434/api").unwrap_err().contains("on this machine"));
+        assert!(r.check("GET", "http://localhost:8080/").is_err());
+        assert!(r.check("GET", "file:///C:/Users/me/.ssh/id_ed25519").unwrap_err().contains("cannot open local files"));
+        assert!(r.check("GET", "ftp://github.com/x").is_err());
+        assert!(r.check("GET", "data:text/html,hi").is_ok());
+        assert!(r.resolver_rules().starts_with("MAP * ~NOTFOUND") && r.resolver_rules().contains("EXCLUDE *.github.com") && !r.resolver_rules().contains("localhost"));
+    }
+
+    #[test]
+    fn a_page_on_this_machine_reads_loopback_writes_only_to_its_own_ports_and_opens_only_workspace_files() {
+        let root = std::env::temp_dir().join(format!("marlowe-verify-reach-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("site")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let r = local(&root);
+        assert!(r.check("GET", "http://localhost:11434/api/tags").is_ok(), "reading any local port is free");
+        assert!(r.check("POST", "http://localhost:5173/api").is_ok());
+        let e = r.check("POST", "http://localhost:11434/api/generate").unwrap_err();
+        assert!(e.contains("did not start"), "{e}");
+        assert!(r.check("DELETE", "http://127.0.0.1:8080/x").is_err());
+        assert!(r.check("GET", "https://example.org/").unwrap_err().contains("stays on this machine"));
+        let url = |p: &Path| {
+            let s = p.to_string_lossy().replace('\\', "/");
+            format!("file:///{}", s.trim_start_matches("//?/").trim_start_matches('/'))
+        };
+        assert!(r.check("GET", &url(&root.join("site").join("index.html"))).is_ok());
+        let outside = root.parent().unwrap().join("secret.txt");
+        let e = r.check("GET", &url(&outside)).unwrap_err();
+        assert!(e.contains("outside the workspace"), "{e}");
+        assert!(r.check("GET", &format!("{}/../secret.txt", url(&root))).is_err(), "dot-dot does not climb out");
+        assert!(r.check("GET", &format!("{}/site/%2e%2e/%2e%2e/secret.txt", url(&root))).is_err(), "nor does an encoded one");
+        assert!(r.check("GET", "file://server/share/x").unwrap_err().contains("network share"));
+        assert_eq!(r.resolver_rules(), "MAP * ~NOTFOUND , EXCLUDE localhost , EXCLUDE 127.0.0.1");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn report() -> BrowseReport {
         BrowseReport {
             final_url: "http://127.0.0.1:5000/".into(),
@@ -422,7 +632,7 @@ mod tests {
 
     #[test]
     fn the_report_folds_repeats_and_explains_blocked_hosts() {
-        let req = BrowseRequest { url: "http://127.0.0.1:5000/".into(), strict_local: true, viewport: (1280, 800), steps: Vec::new(), wait_for: None, snapshot: true, screenshot: false, full_page: false, timeout: Duration::from_secs(30) };
+        let req = BrowseRequest { url: "http://127.0.0.1:5000/".into(), strict_local: true, reach: Reach::default(), viewport: (1280, 800), steps: Vec::new(), wait_for: None, snapshot: true, screenshot: false, full_page: false, timeout: Duration::from_secs(30) };
         let r = report();
         let t = render(&req, &r, Show::Snapshot, None);
         assert!(t.contains("console: 2 error(s), 1 warning(s), 1 other message(s)"), "{t}");

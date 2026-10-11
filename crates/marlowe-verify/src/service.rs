@@ -332,6 +332,14 @@ impl ServiceTable {
         self.map.lock().unwrap_or_else(|p| p.into_inner()).values().any(|s| s.ports.contains(&port))
     }
 
+    /// Every port a running service of this table answers on.
+    pub fn owned_ports(&self) -> Vec<u16> {
+        let mut v: Vec<u16> = self.map.lock().unwrap_or_else(|p| p.into_inner()).values().flat_map(|s| s.ports.iter().copied()).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
     /// Kills `name` and forgets it. Returns the tail of its output, or `None` if it was unknown.
     pub fn stop(&self, name: &str) -> Option<String> {
         let mut svc = self.map.lock().unwrap_or_else(|p| p.into_inner()).remove(name)?;

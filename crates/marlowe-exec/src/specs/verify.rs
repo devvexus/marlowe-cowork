@@ -10,7 +10,8 @@
 //! | `service` start / restart | asks, naming the command and any credential variables | as above; credentials and inline shell code (`bash -c`) always ask |
 //! | `service` status / logs / stop | free | free |
 //! | `http_check`, `browser` on this machine | free (a state-changing request asks unless it goes to a service started here) | same |
-//! | `http_check`, `browser` on another host | asks for a new host, and taints the session | same |
+//! | `http_check`, `browser` on another host | asks for a new host (a `browser` call names every host its `goto` steps reach, and always shows its `eval` text), and taints the session | same |
+//! | `browser` steps that act (`click`, `fill`, `eval`, `goto`...) on a local port no service here started | asks | same |
 //!
 //! Every child starts through `marlowe_os::child` (scrubbed environment, Job Object, per-launch
 //! `env_allow`); services and the browser die with the host.
@@ -20,6 +21,7 @@ use std::sync::Arc;
 
 use marlowe_agent::{CallCtx, Consequence, Effects, Exposure, Mutation, SandboxView, ToolCallReq, ToolCtx, ToolGroup, ToolOutcome};
 use marlowe_model::{CancelToken, ResultPart, ToolSpec};
+use marlowe_verify::browser::Step;
 use marlowe_verify::tools::{self as vt, Out, ProjectOp, ServiceOp};
 use marlowe_verify::{Env, VerifyState};
 use serde_json::{json, Value};
@@ -152,14 +154,18 @@ fn project_consequence(tools: &BuiltinTools, call: &ToolCallReq, _exposure: &Exp
         None => Consequence::Free,
         Some(plan) => {
             if let Some(db) = plan.user_db() {
-                return ask(format!("project migrate against {db} (a database you named)"));
+                return ask(format!("project migrate against {db} (a database other than the throwaway one)"));
             }
             let hosts = plan.hosts();
-            let reach = if hosts.is_empty() { String::new() } else { format!(" (reaches {})", hosts.join(", ")) };
+            let reach = if !hosts.is_empty() {
+                format!(" (reaches {})", hosts.join(", "))
+            } else if plan.install_destination_unknown() {
+                " (reaches a network host that is not known)".to_string()
+            } else {
+                String::new()
+            };
             let over = if plan.profile.commands.iter().any(|c| c.source == marlowe_verify::profile::Source::Override) { " [commands from .marlowe/project.toml]" } else { "" };
-            let runs = plan.runs();
-            let runs = if runs.is_empty() { String::new() } else { format!(" [script: {}]", clip(&runs.join("; "), 120)) };
-            ask(format!("project {}: {}{runs}{reach}{over}", op_name(&plan), clip(&plan.command_lines().join("; "), 160)))
+            ask(format!("project {}: {}{}{reach}{over}", op_name(&plan), clip(&plan.command_lines().join("; "), 160), script_note(&plan.scripts())))
         }
     })
     .unwrap_or_else(|| ask("project: no workspace".into()))
@@ -170,7 +176,13 @@ fn project_crew(tools: &BuiltinTools, call: &ToolCallReq, exposure: &Exposure, s
     plan_with(tools, |env, st| match judged_project(env, st, call) {
         None => Consequence::Free,
         Some(plan) => {
-            if plan.user_db().is_some() || plan.hosts().iter().any(|h| !exposure.approved_hosts.contains(h)) || exposure.tainted {
+            // An install reaches a registry: never free where its destination is the repo's own word
+            // (an override) or unknown, since the crew's shell policy does not see network use.
+            if plan.user_db().is_some()
+                || plan.install_destination_unknown()
+                || plan.hosts().iter().any(|h| !exposure.approved_hosts.contains(h))
+                || exposure.tainted
+            {
                 return plain();
             }
             // The script a command names is what runs; the sandbox policy reads it too.
@@ -183,6 +195,16 @@ fn project_crew(tools: &BuiltinTools, call: &ToolCallReq, exposure: &Exposure, s
         }
     })
     .unwrap_or_else(plain)
+}
+
+/// The scripts a command runs, for an approval: the one the command names as its body, the others
+/// (`pretest`, `postinstall`, what a script calls) with their names, each cut at 100 characters.
+fn script_note(scripts: &[marlowe_verify::profile::Script]) -> String {
+    if scripts.is_empty() {
+        return String::new();
+    }
+    let shown: Vec<String> = scripts.iter().map(|s| if s.name.is_empty() { clip(&s.body, 100) } else { format!("{}: {}", s.name, clip(&s.body, 100)) }).collect();
+    format!(" [script: {}]", shown.join("; "))
 }
 
 fn project_describe(call: &ToolCallReq) -> String {
@@ -220,7 +242,7 @@ fn service_consequence(tools: &BuiltinTools, call: &ToolCallReq, _exposure: &Exp
         Some(plan) => {
             let creds = if plan.credentials.is_empty() { String::new() } else { format!(" [passes credential variables: {}]", plan.credentials.join(", ")) };
             let inline = if plan.indirect() { " [runs inline shell code]" } else { "" };
-            let script = plan.runs.as_ref().map(|r| format!(" [script: {}]", clip(r, 120))).unwrap_or_default();
+            let script = script_note(&plan.runs);
             let verb = if plan.op == ServiceOp::Start { "start" } else { "restart" };
             Consequence::Ask { summary: format!("service {verb}: {}{script}{creds}{inline}", clip(&plan.display().unwrap_or_default(), 160)) }
         }
@@ -237,7 +259,7 @@ fn service_crew(tools: &BuiltinTools, call: &ToolCallReq, exposure: &Exposure, s
             if !plan.credentials.is_empty() || plan.indirect() || exposure.tainted {
                 return plain();
             }
-            for line in plan.display().into_iter().chain(plan.runs.clone()) {
+            for line in plan.display().into_iter().chain(plan.runs.iter().map(|s| s.body.clone())) {
                 if let Consequence::Ask { summary } = sandbox.classify_shell(&line, false) {
                     return Consequence::Ask { summary: format!("service start: {summary}") };
                 }
@@ -275,8 +297,8 @@ fn http_host(call: &ToolCallReq) -> Option<String> {
     (!plan.request.url.is_loopback()).then(|| plan.request.url.host.clone())
 }
 
-fn browser_host(tools: &BuiltinTools, call: &ToolCallReq) -> Option<String> {
-    plan_with(tools, |env, _| vt::plan_browser(env, &call.args).ok().and_then(|p| p.host)).flatten()
+fn browser_plan(tools: &BuiltinTools, call: &ToolCallReq) -> Option<vt::BrowserPlan> {
+    plan_with(tools, |env, _| vt::plan_browser(env, &call.args).ok()).flatten()
 }
 
 fn new_host(name: &str, host: Option<String>, exposure: &Exposure) -> Consequence {
@@ -318,16 +340,51 @@ fn http_describe(call: &ToolCallReq) -> String {
     }
 }
 
+/// Everything a `browser` call can do is in its plan: the hosts it can reach (the page and each
+/// absolute `goto`), the steps that act, the scripts it runs. A page on this machine that acts on
+/// a service this session did not start asks, as `http_check` does for a state-changing request.
 fn browser_consequence(tools: &BuiltinTools, call: &ToolCallReq, exposure: &Exposure) -> Consequence {
-    new_host("browser", browser_host(tools, call), exposure)
+    // A call that cannot be planned fails on its own and reaches nothing.
+    let Some(plan) = browser_plan(tools, call) else { return Consequence::Free };
+    let steps = |v: Vec<&Step>| clip(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>().join("; "), 160);
+    let evals = plan.evals();
+    if !plan.local {
+        // Script on a remote page always shows its text, even where the host is approved.
+        let new: Vec<&str> = plan.hosts.iter().filter(|h| !exposure.approved_hosts.contains(*h)).map(String::as_str).collect();
+        if new.is_empty() && evals.is_empty() {
+            return Consequence::Free;
+        }
+        let mut why = Vec::new();
+        if !new.is_empty() {
+            why.push(match new.as_slice() {
+                [_] if plan.hosts.len() == 1 => "a new host".to_string(),
+                [only] => format!("a new host: {only}"),
+                many => format!("new hosts: {}", many.join(", ")),
+            });
+        }
+        if !evals.is_empty() {
+            why.push(format!("runs script on the page [{}]", steps(plan.request.steps.iter().filter(|s| matches!(s, Step::Eval(_))).collect())));
+        }
+        return Consequence::Ask { summary: format!("browser {}: {}", plan.hosts.join(", "), why.join("; ")) };
+    }
+    if exposure.tainted && !evals.is_empty() {
+        return Consequence::Ask { summary: format!("browser: runs script after an untrusted read [{}]", steps(plan.request.steps.iter().filter(|s| matches!(s, Step::Eval(_))).collect())) };
+    }
+    let acting = plan.acting_steps();
+    match plan.port {
+        Some(port) if !acting.is_empty() && !tools.state::<VerifyState>().services.owns_port(port) => {
+            Consequence::Ask { summary: format!("browser localhost:{port}: {} on a local service this session did not start", steps(acting)) }
+        }
+        _ => Consequence::Free,
+    }
 }
 
 fn browser_taints(tools: &BuiltinTools, call: &ToolCallReq) -> bool {
-    browser_host(tools, call).is_some()
+    browser_plan(tools, call).is_some_and(|p| !p.hosts.is_empty())
 }
 
 fn browser_egress(tools: &BuiltinTools, call: &ToolCallReq) -> Option<String> {
-    browser_host(tools, call)
+    browser_plan(tools, call).and_then(|p| p.hosts.into_iter().next())
 }
 
 fn browser_describe(call: &ToolCallReq) -> String {
@@ -417,7 +474,8 @@ fn browser_spec() -> ToolSpec {
         "Open a page in headless Edge and report the console (errors, exceptions, failed requests) with \
          the page outline or a screenshot you can see. `steps` drive the page first, one string each: \
          `click #id`, `fill #id = text`, `select #id = value`, `press Enter`, `wait .css`, `wait_text \
-         words`, `eval js`, `goto /path`. A page on this machine can reach only this machine.",
+         words`, `eval js`, `goto /path`. A page can reach only the hosts its url and `goto` steps name; \
+         a page on this machine reaches only this machine and files of the workspace.",
         json!({
             "url": {"type": "string", "description": "http://localhost:5173/, :5173/path, or an html file in the workspace."},
             "action": {"type": "string", "enum": ["snapshot", "screenshot", "console"], "description": "snapshot (default): outline, text, console; screenshot: image, console; console: console and network only."},

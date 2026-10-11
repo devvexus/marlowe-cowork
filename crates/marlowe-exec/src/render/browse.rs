@@ -3,9 +3,13 @@
 //! One run is one headless Edge in a fresh profile inside a kill-on-close Job Object (see the
 //! parent module): it opens the page, collects console messages, uncaught exceptions, browser log
 //! entries and failed requests as they happen, runs the request's steps, then reads the page
-//! outline and takes the screenshot. A page on this machine runs with Edge's DNS pointed nowhere
-//! but localhost (`--host-resolver-rules`), so what it loads from elsewhere fails visibly in the
-//! report instead of quietly reaching the internet.
+//! outline and takes the screenshot.
+//!
+//! What the page may reach is the request's [`Reach`](marlowe_verify::browser::Reach), enforced
+//! twice: Edge's DNS is pointed nowhere but the allowed names (`--host-resolver-rules`), and every
+//! request the page makes, including `eval`, iframes, redirects and `goto`, is paused through the
+//! DevTools Fetch domain and failed unless the reach allows it. What was refused shows in the
+//! report instead of quietly leaving the machine or reading a file outside the workspace.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -13,8 +17,9 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use headless_chrome::browser::tab::RequestPausedDecision;
 use headless_chrome::protocol::cdp::types::Event;
-use headless_chrome::protocol::cdp::{Emulation, Network, Page, Runtime};
+use headless_chrome::protocol::cdp::{Emulation, Fetch, Network, Page, Runtime};
 use headless_chrome::{Browser as Chrome, Tab};
 use marlowe_model::CancelToken;
 use marlowe_verify::browser::{
@@ -69,9 +74,7 @@ impl Browser for EdgeBrowser {
             "--force-device-scale-factor=1".to_string(),
             "--hide-scrollbars".to_string(),
         ];
-        if req.strict_local {
-            extra.push("--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE localhost , EXCLUDE 127.0.0.1".to_string());
-        }
+        extra.push(format!("--host-resolver-rules={}", req.reach.resolver_rules()));
         let mut child = spawn_edge(&self.edge, &profile, &extra).map_err(error)?;
         let result = drive(&profile.0, req, self.settle, deadline, cancel);
         child.kill_tree();
@@ -122,6 +125,8 @@ struct Collector {
     console: Mutex<Vec<ConsoleEntry>>,
     failed: Mutex<Vec<FailedRequest>>,
     urls: Mutex<HashMap<String, String>>,
+    /// Requests the reach refused, by url, with why.
+    blocked: Mutex<HashMap<String, String>>,
     inflight: AtomicI64,
     last_event: Mutex<Option<Instant>>,
 }
@@ -179,6 +184,12 @@ impl Collector {
         if g.len() < 200 && !g.iter().any(|f| f.url == url && f.reason == reason) {
             g.push(FailedRequest { url, reason, status });
         }
+    }
+
+    /// A request the page's reach refused: reported as a failed request with the reason.
+    fn block(&self, url: &str, why: &str) {
+        self.blocked.lock().unwrap_or_else(|p| p.into_inner()).insert(url.to_string(), why.to_string());
+        self.fail(url.to_string(), format!("net::ERR_BLOCKED_BY_CLIENT ({why})"), None);
     }
 
     fn on_event(&self, ev: &Event) {
@@ -246,7 +257,11 @@ impl Collector {
                 }
                 if e.params.canceled != Some(true) {
                     let url = self.urls.lock().unwrap_or_else(|p| p.into_inner()).get(&e.params.request_id).cloned().unwrap_or_default();
-                    self.fail(url, e.params.error_text.clone(), None);
+                    // Already reported with its reason when the reach refused it.
+                    let refused = e.params.error_text.contains("ERR_BLOCKED_BY_CLIENT") && self.blocked.lock().unwrap_or_else(|p| p.into_inner()).contains_key(&url);
+                    if !refused {
+                        self.fail(url, e.params.error_text.clone(), None);
+                    }
                 }
             }
             Event::NetworkResponseReceived(e) => {
@@ -288,6 +303,21 @@ fn browse(ws: &str, req: &BrowseRequest, settle: Duration, budget: Duration) -> 
         }
     }))
     .map_err(setup)?;
+    // Every request the page makes passes the reach first.
+    let reach = req.reach.clone();
+    let seen = Arc::clone(&collector);
+    tab.enable_request_interception(Arc::new(move |_t, _s, ev: Fetch::events::RequestPausedEvent| {
+        let r = &ev.params.request;
+        match reach.check(&r.method, &r.url) {
+            Ok(()) => RequestPausedDecision::Continue(None),
+            Err(why) => {
+                seen.block(&r.url, &why);
+                RequestPausedDecision::Fail(Fetch::FailRequest { request_id: ev.params.request_id.clone(), error_reason: Network::ErrorReason::BlockedByClient })
+            }
+        }
+    }))
+    .map_err(setup)?;
+    tab.enable_fetch(Some(&[Fetch::RequestPattern { url_pattern: Some("*".into()), resource_Type: None, request_stage: Some(Fetch::RequestStage::Request) }]), None).map_err(setup)?;
     tab.enable_runtime().map_err(setup)?;
     tab.enable_log().map_err(setup)?;
     tab.call_method(Network::Enable {
@@ -328,7 +358,7 @@ fn browse(ws: &str, req: &BrowseRequest, settle: Duration, budget: Duration) -> 
     }
     if report.steps.iter().all(|s| s.ok) {
         for step in &req.steps {
-            let raw = step_text(step);
+            let raw = step.to_string();
             let r = run_step(&tab, step, req, step_time(end));
             let ok = r.is_ok();
             let detail = match r {
@@ -419,24 +449,6 @@ fn show(v: &Value) -> String {
         Value::String(s) => s.clone(),
         Value::Null => "undefined".into(),
         other => other.to_string(),
-    }
-}
-
-fn step_text(s: &Step) -> String {
-    match s {
-        Step::Click(a) => format!("click {a}"),
-        Step::Hover(a) => format!("hover {a}"),
-        Step::Fill { selector, text } => format!("fill {selector} = {text}"),
-        Step::Select { selector, value } => format!("select {selector} = {value}"),
-        Step::Type(a) => format!("type {a}"),
-        Step::Press(a) => format!("press {a}"),
-        Step::Wait(a) => format!("wait {a}"),
-        Step::WaitGone(a) => format!("wait_gone {a}"),
-        Step::WaitText(a) => format!("wait_text {a}"),
-        Step::Eval(a) => format!("eval {a}"),
-        Step::Goto(a) => format!("goto {a}"),
-        Step::Scroll(a) => format!("scroll {a}"),
-        Step::Sleep(ms) => format!("sleep {ms}"),
     }
 }
 
@@ -560,8 +572,8 @@ fn run_step(tab: &Arc<Tab>, step: &Step, req: &BrowseRequest, timeout: Duration)
             } else {
                 return Err(format!("cannot resolve `{target}` against {current}"));
             };
-            if req.strict_local && !(local_url(&url) && (!url.starts_with("file://") || current.starts_with("file://"))) {
-                return Err(format!("goto {url}: a check of a page on this machine stays on this machine"));
+            if let Err(why) = req.reach.check("GET", &url) {
+                return Err(format!("goto {url}: {why}"));
             }
             tab.navigate_to(&url).and_then(|t| t.wait_until_navigated()).map_err(|e| format!("navigation failed: {}", short(&e)))?;
             Ok(format!("now at {}", tab.get_url()))
@@ -591,16 +603,6 @@ fn origin_of(url: &str) -> Option<String> {
     }
     let authority = rest.split('/').next()?;
     Some(format!("{scheme}://{authority}"))
-}
-
-fn local_url(url: &str) -> bool {
-    if url.starts_with("file://") {
-        return true;
-    }
-    let Some((_, rest)) = url.split_once("://") else { return false };
-    let authority = rest.split('/').next().unwrap_or("");
-    let host = if let Some(h) = authority.strip_prefix('[') { h.split(']').next().unwrap_or("") } else { authority.rsplit_once(':').map_or(authority, |(h, _)| h) };
-    marlowe_verify::http::is_loopback_host(host)
 }
 
 fn screenshot(tab: &Tab, req: &BrowseRequest) -> Result<Vec<u8>, String> {
@@ -681,13 +683,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn urls_are_classified_as_local_or_not() {
-        for u in ["http://127.0.0.1:3000/a", "http://localhost/x", "http://[::1]:80/", "file:///C:/x/index.html"] {
-            assert!(local_url(u), "{u}");
-        }
-        for u in ["https://example.org/", "http://10.0.0.5:3000/"] {
-            assert!(!local_url(u), "{u}");
-        }
+    fn origins_are_read_from_the_current_page() {
         assert_eq!(origin_of("http://localhost:5173/a/b").as_deref(), Some("http://localhost:5173"));
         assert_eq!(origin_of("file:///x/index.html"), None);
     }
