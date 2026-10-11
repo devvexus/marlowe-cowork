@@ -718,3 +718,56 @@ fn parity_m9_the_projects_permission_files_ask_in_every_mode() {
     let p = perms(&w, PermissionMode::DontAsk);
     assert_eq!(run_with(&p, &w.root, false, &[call("1", "edit", json!({"path": rel(".claude/settings.json")}))]), ["refused"]);
 }
+
+/// The mixed tools as plan mode sees them: `git` (reads, writes, network) answers Free for a
+/// read and asks for a write; `agent` runs.
+struct MixedHost {
+    ran: Mutex<Vec<String>>,
+}
+
+impl ToolHost for MixedHost {
+    fn specs(&self) -> Vec<ToolSpec> {
+        Vec::new()
+    }
+    fn call(&self, call: &ToolCall, _ctx: &ToolCtx) -> ToolOutcome {
+        self.ran.lock().unwrap().push(format!("{} {}", call.name, call.args));
+        ToolOutcome::ok("done", "done")
+    }
+    fn consequence(&self, call: &ToolCall) -> Consequence {
+        match (call.name.as_str(), arg(call, "op")) {
+            ("git", "status" | "diff" | "log") => Consequence::Free,
+            ("git", op) => Consequence::Ask { summary: format!("git {op}") },
+            _ => Consequence::Free,
+        }
+    }
+    fn manifest(&self, name: &str) -> Option<ToolManifest> {
+        let (group, effects) = match name {
+            "git" => (ToolGroup::Git, Effects { reads: true, writes: true, runs: false, network: true }),
+            "agent" => (ToolGroup::Agent, Effects::RUN),
+            _ => return None,
+        };
+        Some(ToolManifest { group, profiles: Profiles::ALL, effects, path_args: &[] })
+    }
+}
+
+/// Plan mode allows what only reads, decided per call (tracks J and F): `git status` runs and
+/// `git commit` is refused; a built-in `explore` agent runs and a `general` one is refused.
+#[test]
+fn parity_m1_plan_mode_allows_read_only_git_and_read_only_agents() {
+    let w = ws("m1-mixed");
+    let p = perms(&w, PermissionMode::Plan);
+    let host = MixedHost { ran: Mutex::new(Vec::new()) };
+    let services = Services::new().with(p);
+    let gate = Recording::new(&[]);
+    let mut convo = Conversation::new(SessionId("s".into()), Some(w.root.clone()));
+    let calls = [
+        call("1", "git", json!({"op": "status"})),
+        call("2", "git", json!({"op": "commit", "message": "x"})),
+        call("3", "agent", json!({"type": "explore", "prompt": "find the parser"})),
+        call("4", "agent", json!({"type": "general", "prompt": "fix the parser"})),
+    ];
+    let r = batch(&host, &[], &services, &*gate, &calls, &mut convo);
+    let refused: Vec<bool> = r.iter().map(|x| x.is_error && x.content.contains("plan mode")).collect();
+    assert_eq!(refused, [false, true, false, true], "{r:?}");
+    assert!(gate.asked().is_empty(), "nothing asked in plan mode: {:?}", gate.asked());
+}

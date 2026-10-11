@@ -32,6 +32,11 @@ pub struct Conversation {
     ///
     /// [`push`]: Conversation::push
     pub pending_context: Vec<String>,
+    /// Images attached to the next user message (pasted, dropped or `@img.png`, track H; stored
+    /// with `PutBlob`): [`push`] adds them to that message after its text.
+    ///
+    /// [`push`]: Conversation::push
+    pub pending_images: Vec<marlowe_model::ImageRef>,
 }
 
 impl Conversation {
@@ -47,6 +52,7 @@ impl Conversation {
             exposure: Exposure::default(),
             ext: Extensions::new(),
             pending_context: Vec::new(),
+            pending_images: Vec::new(),
         }
     }
 
@@ -57,6 +63,9 @@ impl Conversation {
 
     /// Appends `m`; a user message also takes the pending context ([`Conversation::pending_context`]).
     pub fn push(&mut self, mut m: Message) {
+        if m.role == Role::User && !self.pending_images.is_empty() {
+            m.content.extend(self.pending_images.drain(..).map(Part::Image));
+        }
         if m.role == Role::User && !self.pending_context.is_empty() {
             m.content.extend(self.pending_context.drain(..).map(|text| Part::Text { text }));
         }

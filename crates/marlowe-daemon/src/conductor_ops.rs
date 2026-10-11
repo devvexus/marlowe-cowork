@@ -564,7 +564,39 @@ pub(crate) fn middleware(core: &Arc<Core>, convo: &Conversation) -> Vec<Arc<dyn 
         LoopGuard::new(),
         Arc::new(PrefixNotice { core: core.clone() }),
         Arc::new(LostAgents { core: core.clone() }),
+        Arc::new(GoodMark { core: core.clone() }),
     ]
+}
+
+/// `/good`: marks this session, as it stands, worth keeping for `marlowe export trajectories`
+/// (track M's keep rule): `daemon_kv` `export.good.<session>` = `{"upto": <stored messages>,
+/// "at_ms": <now>}`, the same row `marlowe export good` writes. No model call.
+struct GoodMark {
+    core: Arc<Core>,
+}
+
+/// The `daemon_kv` key prefix `marlowe export` reads (`export::source::GOOD_PREFIX`).
+const GOOD_PREFIX: &str = "export.good.";
+
+impl ToolMiddleware for GoodMark {
+    fn name(&self) -> &str {
+        "good-mark"
+    }
+
+    fn before_turn(&self, convo: &mut Conversation, text: &mut String) -> TurnFlow {
+        if text.trim() != "/good" {
+            return TurnFlow::Continue;
+        }
+        let upto = convo.messages.len();
+        let value = serde_json::json!({"upto": upto, "at_ms": now_ms()}).to_string();
+        let reply = match self.core.store.set_kv(&format!("{GOOD_PREFIX}{}", convo.session), &value) {
+            Ok(()) => format!(
+                "/good: this session ({upto} messages) is marked worth keeping; `marlowe export trajectories` takes it when its project has export enabled"
+            ),
+            Err(e) => format!("/good: the mark was not saved: {e}"),
+        };
+        TurnFlow::Block(reply)
+    }
 }
 
 /// F's services for one session, added by `stack.rs`.
@@ -574,7 +606,7 @@ pub(crate) fn services(core: &Arc<Core>, convo: &Conversation, services: Service
     let tools_core = core.clone();
     let model = core.brains.agent_parts(&Slot::Conductor).ok().map(|(_, info, _)| info);
     let tools: HostFactory = Arc::new(move |workspace: Option<&Path>| -> Arc<dyn ToolHost> {
-        (tools_core.tools)(&HostRequest { workspace: workspace.map(Path::to_path_buf), model: model.clone() })
+        (tools_core.tools)(&HostRequest { workspace: workspace.map(Path::to_path_buf), model: model.clone(), session: None })
     });
     // The session's own tools for a worktree it entered or a root it added (built as session.rs
     // builds them, from the conductor's model).

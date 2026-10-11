@@ -593,8 +593,9 @@ fn a_waiting_plan_is_a_banner_in_the_main_window_whose_buttons_answer_it() {
     assert_eq!(s.view, View::Conversation);
     let buf = frame(&s);
     assert!(contains(&buf, "◐ research plan waiting for your approval · researcher · LoRA rank ablations for 22B gates"), "{}", dump(&buf));
-    assert!(contains(&buf, "1 sub-question · ~96k tokens · 12 fetches · 18 min"), "{}", dump(&buf));
-    for b in ["^r review", "approve", "edit", "reject"] {
+    // The quote shares its row with the buttons; at this width its tail is cut (the Run view shows it whole).
+    assert!(contains(&buf, "1 sub-question · ~96k tokens · 12 fetches · 18 m"), "{}", dump(&buf));
+    for b in ["alt-r review", "approve", "edit", "reject"] {
         find_below(&buf, "research plan waiting for your approval", b);
     }
     assert!(contains(&buf, "researcher research plan waiting"), "and a toast:\n{}", dump(&buf));
@@ -624,13 +625,13 @@ fn a_waiting_plan_is_a_banner_in_the_main_window_whose_buttons_answer_it() {
     assert!(geometry(area(), &s).plan_banner.is_none());
 }
 
-/// ^r opens the run whose plan waits (another run also needs the user), with the plan, its quote
+/// alt-r opens the run whose plan waits (another run also needs the user), with the plan, its quote
 /// and its buttons under the header, above the transcript; the buttons click.
 #[test]
 fn ctrl_r_opens_the_waiting_plan_with_its_quote_and_buttons_above_the_transcript() {
     use marlowe_proto::PlanDecision;
     let mut s = plan_waiting();
-    let out = s.on_key(ctrl('r'));
+    let out = s.on_key(alt('r'));
     assert!(out.contains(&Request::WatchRun { run: RunId::from("aa11bb22") }), "{out:?}");
     let info = s.crew.get(&RunId::from("aa11bb22")).unwrap().clone();
     let steps = vec![marlowe_proto::CrewStep { step: 1, role: "researcher".into(), action: "plan".into(), text: "drafted".into(), at_ms: NOW }];
@@ -665,7 +666,7 @@ fn ctrl_r_opens_the_waiting_plan_with_its_quote_and_buttons_above_the_transcript
 fn e_edits_the_plan_and_s_sends_it_as_edited() {
     use marlowe_proto::{ChannelId, PlanDecision};
     let mut s = plan_waiting();
-    s.on_key(ctrl('r'));
+    s.on_key(alt('r'));
     s.on_key(key(KeyCode::Char('e')));
     let buf = frame(&s);
     for want in ["Edit the research plan", "› 1. Which ranks hold accuracy on 7B models?", "+ add a question", "breadth", "‹   3 ›", "depth", "sources", "s send", "esc discard edits"] {
@@ -709,7 +710,7 @@ fn e_edits_the_plan_and_s_sends_it_as_edited() {
 fn the_plan_editor_clicks_and_refuses_a_plan_with_no_questions() {
     use marlowe_proto::PlanDecision;
     let mut s = plan_waiting();
-    s.on_key(ctrl('r'));
+    s.on_key(alt('r'));
     let buf = frame(&s);
     let (x, y) = find_below(&buf, "quote:", "e edit");
     s.on_mouse(click(x, y), area());

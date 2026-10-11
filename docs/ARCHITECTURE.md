@@ -102,6 +102,20 @@ Parallel tracks (design `docs/research/m46-design.md` sections 7-8) plug in with
 - **Wire**: new `Request`/`Event` variants (types in `marlowe-proto/src/coding.rs`) are routed in `marlowe-daemon/src/client.rs` to stub `*_ops.rs` files, one per owning track. `Part::Image`, `ToolResult::parts` (`ResultPart`) and `ModelInfo::supports_vision` are additive; pre-M4.6 turns and library rows load unchanged (fixtures in `marlowe-model/tests/fixtures`).
 - Skeleton crates `marlowe-code`, `marlowe-verify`, `marlowe-settings`, `marlowe-anthropic`; `marlowe bench|export|mcp|eval` stubs in the binary.
 
+## M4.6 coding surface (wave 1)
+
+- **Permissions.** One `Permissions` service per session decides every call: hard denies, deny rules, plan mode, tripwires (shell asks, new hosts, taint, a tool's `AskEvery`), ask rules, allow rules, then the mode. A project widens permissions only by trusted digest. Without the service (crew, tests) the tool's consequence decides and a session allow is keyed on the tool name, so it never frees an `AskEvery`.
+- **Running calls.** Reads in one message run in parallel; calls that write (by manifest) run on one worker in release order.
+- **Turn inputs.** An `Ask` carries images (joined to the user's message from `<home>/blobs`, the store `read`, `PutBlob` and the providers share) and `marlowe -p`'s options (session allow/deny rules, mode, step and cost caps, an appended system prompt). The code group's middleware puts the repo map into the prompt sections once per session.
+- **Files.** `marlowe-code` holds the edit engine, FileState, notebooks and `edit_lines`; `specs/files.rs` is the tool surface, its schemas pinned in `specs/files/specs_m46_files.json`.
+- **Jobs.** Every shell call is a job with a log under `<home>\jobs`; `marlowe_os::job::bg_hub` is the process-wide registry. Job notices reach the model between steps; an idle session is woken by a relay turn (`job_ops`, started at boot). A relay never loads a model: one that cannot run is deferred (crew runs) or held by the session until the user's next turn.
+- **Code intel.** `marlowe-code` tags index (`<home>\index`, per root) plus an LSP manager shared per profile home (2 live, 10 min idle, `MARLOWE_LSP=off`). Code tools are name-based and offered only with a workspace; post-edit diagnostics are `specs/code` `DiagnosticsMiddleware`. Servers start trusted only for the free-write workspace in an untainted session; a tainted session gets none, and server text from outside the user's folders is shown as location and signature only. Crew hosts get the index but no servers.
+- **Verify.** `marlowe-verify` detects project profiles and runs gates, services, `http_check` and the Edge `browser`; the browser's reach is enforced on every request. Logs, screenshots and blobs live under the profile home.
+- **Git.** `marlowe-exec/src/git`: the PR plan is written into the call's args by `git::guard` before the gate; `<home>\ci_watch.json` is the push ledger (exec writes it, the Sentinel's CI probe reads it); `Request::OpenPr` asks once and reuses `gh` through the tool factory, so `marlowe-daemon` has no git code.
+- **Sessions.** Transcript rows per model call and tool batch (`turns`, `call_results`, `rewound_turns`). Checkpoints are a shadow bare repo per workspace (`<home>\checkpoints\<name>-<hash>.git`, refs `pre`, `post`, `undo`, `rewound`, `top.txt`); a rewind leaves foreign edits alone and retracts the rewound turn's beliefs (`Retracted` journal event).
+- **Headless and MCP.** `marlowe -p` drives the daemon (or `--standalone`, a private library copy with no memory); `marlowe-mcp` is client (stdio, streamable HTTP, OAuth 2.1) and server (`marlowe mcp`); MCP tools beyond the window's share defer behind `tool_search`.
+- **Export.** `marlowe export` (opt-in per project) writes SFT and step-DPO JSONL through a layered scrubber; nothing is uploaded.
+
 ## Crew and sandbox model
 
 An agent is a role card (`roles/*.md`, overridden by `<home>\roles\*.md`: slot, effort, tool allowlist, budget, sandbox kind, instructions), and that is all. Depth 1: crew runs never get `dispatch`.

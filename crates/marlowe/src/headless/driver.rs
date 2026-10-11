@@ -37,12 +37,11 @@ const NO_ANSWER: &str = "(no answer: running non-interactively)";
 /// How long a prompt argument waits for piped data that never comes (a parent that left stdin
 /// open) before the run goes on without it.
 pub const STDIN_GRACE: Duration = Duration::from_secs(3);
-/// Whether the shipped daemon applies [`HeadlessOptions`] to a turn: removes `disallowed_tools`
-/// from the tool list, denies a matching call even when it needs no approval, and appends
-/// `append_system_prompt`. It does not yet (the conductor is M4.6 track F's `conductor_ops`), so
-/// those two flags refuse to run instead of being ignored. The integrator sets this to `true`
-/// when F applies them; the two `#[ignore]`d tests in `tests_flags.rs` then pass.
-pub const DAEMON_APPLIES_OPTIONS: bool = false;
+/// Whether the shipped daemon applies [`HeadlessOptions`] to a turn: `disallowed_tools` become
+/// session deny rules (a matching call is refused even when it needs no approval),
+/// `allowed_tools` session allow rules, and `append_system_prompt` ends the stable prompt. It
+/// does (`marlowe-daemon` `session::run_one`); a test's fake daemon that does not sets it false.
+pub const DAEMON_APPLIES_OPTIONS: bool = true;
 
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_ERROR: i32 = 1;
@@ -87,6 +86,8 @@ struct Turn {
     call_start: usize,
     steps: u32,
     tool_started: HashMap<String, Instant>,
+    /// Tool names by call id, for denials the daemon decided without asking.
+    tool_names: HashMap<String, String>,
     tool_time: Duration,
     denials: Vec<Value>,
     error: Option<String>,
@@ -908,6 +909,7 @@ impl Driver {
                 let (sid, model) = (self.session.0.clone(), self.lib.display.clone());
                 let text = self.turn.as_mut().map(|t| {
                     t.tool_started.insert(call_id.clone(), Instant::now());
+                    t.tool_names.insert(call_id.clone(), tool.clone());
                     t.call_start = 0;
                     std::mem::take(&mut t.text)
                 });
@@ -918,6 +920,13 @@ impl Driver {
                 if let Some(t) = self.turn.as_mut() {
                     if let Some(at) = t.tool_started.remove(&call_id) {
                         t.tool_time += at.elapsed();
+                    }
+                    // Refused by the daemon's permission layer (a deny rule, plan or dont_ask
+                    // mode) without an approval: a denial all the same.
+                    if let (false, Some(reason)) = (ok, summary.strip_prefix(marlowe_agent::REFUSED_SUMMARY)) {
+                        let tool = t.tool_names.get(&call_id).cloned().unwrap_or_default();
+                        let reason = reason.trim_start_matches(':').trim();
+                        t.denials.push(json!({"tool_name": tool, "tool_use_id": call_id, "tool_input": {}, "reason": reason}));
                     }
                 }
                 let sid = self.session.0.clone();

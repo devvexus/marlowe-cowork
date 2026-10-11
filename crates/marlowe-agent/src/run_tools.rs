@@ -41,10 +41,15 @@ pub(crate) const DENIED: &str =
 /// Content returned to the model for a call skipped because the turn was interrupted.
 pub(crate) const INTERRUPTED: &str = "Not run: the user interrupted the turn.";
 
+/// The start of a refused call's summary (`not allowed: <reason>`); clients that report denials
+/// (`marlowe -p`'s `permission_denials`) read the reason after it.
+pub const REFUSED_SUMMARY: &str = "not allowed";
+
 /// Content for a call the permission layer refused without asking.
 fn refused(why: &str) -> ToolOutcome {
+    let reason: String = why.lines().next().unwrap_or("").chars().take(200).collect();
     ToolOutcome {
-        summary: "not allowed".into(),
+        summary: format!("{REFUSED_SUMMARY}: {reason}"),
         ..ToolOutcome::error(format!(
             "Not run: {why}. Do not retry it unchanged; continue another way, or tell the user what you need."
         ))
@@ -91,6 +96,9 @@ pub(crate) fn run_calls(
         sink(AgentEvent::ToolStarted { call_id: c.id.clone(), tool: c.name.clone(), summary: host.describe(c) });
     }
     let perms = services.get::<Permissions>();
+    // A slash command's `allowed-tools`, for this turn (cleared when the turn ends).
+    let grants: Vec<String> =
+        cx.scope.with_ext(|e| e.get::<crate::commands::CommandGrant>().map(|g| g.allowed_tools.clone()).unwrap_or_default());
 
     let mut outcomes: Vec<Option<ToolOutcome>> = vec![None; calls.len()];
     // The calls as they will run: `before_approval` may have rewritten their arguments.
@@ -113,7 +121,7 @@ pub(crate) fn run_calls(
         match perms {
             Some(p) => {
                 let hook = cx.scope.with_ext(|e| e.get_mut::<HookVerdicts>().and_then(|v| v.0.remove(&c.id)));
-                match p.decide(host, c, &convo.exposure, hook) {
+                match p.decide_granted(host, c, &convo.exposure, hook, &grants) {
                     Gate::Free => free.push(i),
                     Gate::Deny(why) => outcomes[i] = Some(refused(&why)),
                     Gate::Ask { summary, proposal, hosts, tripwire } => ask.push(Pending { i, summary, proposal, hosts, tripwire }),

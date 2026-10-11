@@ -212,6 +212,8 @@ impl Agent {
         let mut text_in = user_text.to_string();
         for m in &self.middleware {
             if let TurnFlow::Block(reason) = m.before_turn(convo, &mut text_in) {
+                // Context an earlier middleware added for this turn must not reach the next one.
+                convo.pending_context.clear();
                 return TurnOutcome {
                     stop: TurnStop::Error,
                     usage: Default::default(),
@@ -279,6 +281,10 @@ impl Agent {
                     match c {
                         Control::Compact(focus) => forced_compact = Some(focus),
                         Control::AddDir(dir) => {
+                            // The permission layer frees file calls inside it as in the workspace.
+                            if let Some(p) = self.services.get::<crate::approval::Permissions>() {
+                                p.add_root(dir.clone());
+                            }
                             convo.ext.get_or_default::<crate::instructions::WorkspaceRoots>().add(&dir);
                             reload = true;
                         }
@@ -331,6 +337,10 @@ impl Agent {
                                 sink(AgentEvent::Compacted { before_tokens: before, after_tokens: after });
                             }
                             asm = context::assemble_with(&system, &profile, &memory, convo, &cfg);
+                            // PostCompact hooks (track E) inform; their output is not used.
+                            if let Some(r) = self.services.get::<Arc<crate::hooks::HookRunner>>() {
+                                let _ = r.post_compact(if focus.is_some() { "manual" } else { "auto" });
+                            }
                         }
                         Err(e) if e.is_cancelled() || cancel.is_cancelled() => break TurnStop::Interrupted,
                         // A failed summary leaves history as it was; the call below may still fit.

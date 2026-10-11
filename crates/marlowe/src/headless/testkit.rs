@@ -164,6 +164,17 @@ impl ToolHost for FreeWrite {
             _ => Tools.consequence(call),
         }
     }
+
+    /// `write` as the real files group declares it, so path rules (`write`, `Write(src/**)`) see
+    /// it as a file write.
+    fn manifest(&self, name: &str) -> Option<marlowe_agent::ToolManifest> {
+        (name == "write").then_some(marlowe_agent::ToolManifest {
+            group: marlowe_agent::ToolGroup::Files,
+            profiles: marlowe_agent::Profiles::ALL,
+            effects: marlowe_agent::Effects::WRITE,
+            path_args: &["path"],
+        })
+    }
 }
 
 // ---------------------------------------------------------------- the rig

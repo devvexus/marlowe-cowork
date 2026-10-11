@@ -214,6 +214,7 @@ fn parity_X16_hooks_shows_which_hooks_run_and_trusts_a_project_hook() {
                 HookInfo { event: "PreToolUse".into(), matcher: Some("Bash".into()), command: "./scripts/check.sh".into(), scope: SettingsScope::Project, trusted: false },
                 HookInfo { event: "PostToolUse".into(), matcher: None, command: "cargo fmt".into(), scope: SettingsScope::User, trusted: true },
             ],
+            digest: String::new(),
         },
     );
     let buf = palette_frame(&s);

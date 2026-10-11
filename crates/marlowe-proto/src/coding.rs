@@ -193,7 +193,7 @@ pub enum RewindScope {
 pub struct CheckpointInfo {
     pub turn: u32,
     pub at_ms: i64,
-    /// Files changed since the previous checkpoint.
+    /// Files this turn changed (measured to where the turn ended, its `post` tree).
     pub files: u32,
     #[serde(default)]
     pub summary: String,

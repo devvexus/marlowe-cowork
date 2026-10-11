@@ -21,7 +21,8 @@ use marlowe_agent::{
 };
 use marlowe_brains::{Admission, Priority};
 use marlowe_model::{CancelToken, Message, ModelRef, Usage};
-use marlowe_proto::{ApprovalDecision, Event, SessionId, Slot};
+use marlowe_model::ImageRef;
+use marlowe_proto::{ApprovalDecision, Event, HeadlessOptions, SessionId, Slot};
 
 use crate::daemon::Core;
 use crate::mind::{ComposedTools, MindMemory, MindTools, RecallSink};
@@ -44,23 +45,46 @@ pub(crate) enum RunnerCmd {
     Stop,
 }
 
+/// What an ask carries beside its words: attached images (U3) and `marlowe -p`'s per-run
+/// options (H4).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct AskExtras {
+    pub images: Vec<ImageRef>,
+    pub options: Option<HeadlessOptions>,
+}
+
+impl AskExtras {
+    fn is_empty(&self) -> bool {
+        self.images.is_empty() && self.options.is_none()
+    }
+
+    /// Folds a later ask's extras in: images add up, the later options win.
+    fn merge(&mut self, later: AskExtras) {
+        self.images.extend(later.images);
+        if later.options.is_some() {
+            self.options = later.options;
+        }
+    }
+}
+
 /// What one turn starts from: the user's words, or a crew result to relay.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TurnInput {
     pub text: String,
     /// A crew relay: not the user's words, so memory does not ingest it at user trust.
     pub relay: bool,
     /// The relayed result carries untrusted content; the conversation is tainted before the turn.
     pub tainted: bool,
+    pub extras: AskExtras,
 }
 
 impl TurnInput {
     pub fn user(text: String) -> Self {
-        Self { text, relay: false, tainted: false }
+        Self { text, relay: false, tainted: false, extras: AskExtras::default() }
     }
 
     pub fn relay(text: String, tainted: bool) -> Self {
-        Self { text, relay: true, tainted }
+        Self { text, relay: true, tainted, extras: AskExtras::default() }
     }
 }
 
@@ -78,6 +102,8 @@ struct RunState {
     cancel: CancelToken,
     /// Asks too long to be a steer; run after the current turn.
     queued: Vec<String>,
+    /// The queued asks' images and options, for the turn that runs them.
+    queued_extras: AskExtras,
     /// Crew results waiting for the current turn to end; each runs as a relay turn.
     relays: Vec<TurnInput>,
     /// Job notices and background-agent reports whose relay turn could not run (relays never load
@@ -123,6 +149,7 @@ impl SessionHandle {
                 busy: false,
                 cancel: CancelToken::new(),
                 queued: Vec::new(),
+                queued_extras: AskExtras::default(),
                 relays: Vec::new(),
                 held: Vec::new(),
                 closed: false,
@@ -168,7 +195,14 @@ impl SessionHandle {
     }
 
     /// Starts a turn, or queues `text` behind the running one.
+    #[cfg(test)]
     pub fn enqueue(&self, text: String) -> Result<(), Enqueue> {
+        self.enqueue_with(text, AskExtras::default())
+    }
+
+    /// [`Self::enqueue`] with images and options. An ask that carries them is never a steer: it
+    /// queues for a turn of its own.
+    pub fn enqueue_with(&self, text: String, extras: AskExtras) -> Result<(), Enqueue> {
         let mut st = lock(&self.state);
         if st.closed {
             return Err(Enqueue::Closed);
@@ -176,10 +210,12 @@ impl SessionHandle {
         if !st.busy {
             st.busy = true;
             st.cancel = CancelToken::new();
-            return self.cmd_tx.send(RunnerCmd::Turn(TurnInput::user(text))).map_err(|_| Enqueue::Closed);
+            let input = TurnInput { extras, ..TurnInput::user(text) };
+            return self.cmd_tx.send(RunnerCmd::Turn(input)).map_err(|_| Enqueue::Closed);
         }
-        if !st.queued.is_empty() {
+        if !st.queued.is_empty() || !extras.is_empty() {
             st.queued.push(text);
+            st.queued_extras.merge(extras);
             return Ok(());
         }
         match Steer::admit(&text) {
@@ -292,7 +328,7 @@ fn serve(
 ) {
     // The tool set is fixed for the session from the conductor's model as of now (prompt cache).
     let model = guard(|| conductor_model(core)).ok().flatten();
-    let request = HostRequest { workspace: convo.workspace.clone(), model };
+    let request = HostRequest { workspace: convo.workspace.clone(), model, session: Some(convo.session.clone()) };
     let tools = match guard(|| (core.tools)(&request)) {
         Ok(t) => t,
         Err(e) => {
@@ -361,6 +397,12 @@ fn serve(
             let cancel = lock(&handle.state).cancel.clone();
             run_one(core, handle, &mut convo, &tools, &stack, &recorder, &input, &cancel);
             turns_run += 1;
+            // Hooks' systemMessage lines, failures and diagnostics (track E) reach the user.
+            if let Some(r) = stack.services.get::<Arc<marlowe_agent::hooks::HookRunner>>() {
+                for message in r.take_messages() {
+                    core.bus.publish(Event::Error { session: Some(handle.id.clone()), message: format!("hook: {message}") });
+                }
+            }
             // The user's turn brought the conductor's model up: crew results that could not
             // load it themselves go out now (this session's land in the queue read below).
             if !input.relay {
@@ -378,6 +420,8 @@ fn serve(
     if let (true, Some(mind)) = (evicted && turns_run > 0 && !core.is_shutting_down(), &core.mind) {
         let _ = guard(|| crate::mind_ops::write_episode(core, mind, &convo));
     }
+    // SessionEnd hooks run, and the session's permissions and hook runner go (track E).
+    let _ = guard(|| crate::mode_ops::forget(core, &handle.id, "other"));
 }
 
 enum Work {
@@ -396,7 +440,8 @@ fn settle(core: &Arc<Core>, handle: &Arc<SessionHandle>, next: &mut VecDeque<Tur
     let mut relays: Vec<TurnInput> = relayed.into_iter().map(|t| TurnInput::relay(t, false)).collect();
     relays.append(&mut st.relays);
     if !left.is_empty() {
-        next.push_back(TurnInput::user(left.join("\n\n")));
+        let extras = std::mem::take(&mut st.queued_extras);
+        next.push_back(TurnInput { extras, ..TurnInput::user(left.join("\n\n")) });
     }
     next.extend(relays);
     if !next.is_empty() && !core.is_shutting_down() {
@@ -488,9 +533,20 @@ fn run_one(
     system = system.blocks_from(tools.persona_blocks());
     let mut env = Environment::current(workspace.clone(), info.display.clone());
     env.repo = workspace.as_deref().and_then(|w| repo_context(core, w));
-    let system = system.user(core.user()).environment(env);
+    let mut system = system.user(core.user()).environment(env);
+    let options = input.extras.options.clone().unwrap_or_default();
+    if let Some(a) = &options.append_system_prompt {
+        system = system.append(a.clone());
+    }
     let mut agent = Agent::new(provider, info, tools.clone(), system);
     agent.effort = effort;
+    // `marlowe -p`'s limits for this turn (H4).
+    if let Some(n) = options.max_steps {
+        agent.budget.max_steps = n;
+    }
+    if let Some(usd) = options.max_budget_usd {
+        agent.budget.max_cost_usd = Some(usd);
+    }
     agent.memory = match &core.mind {
         Some(mind) => {
             let budget = agent.context.effective_window() / MEMORY_TIER_DIVISOR;
@@ -504,6 +560,21 @@ fn run_one(
     agent.middleware.extend(stack.middleware.iter().cloned());
     agent.observers = stack.observers.clone();
     agent.services = stack.services.clone();
+    // `marlowe -p`'s rules and mode (H4) go into the session's permission layer, so a denied
+    // tool is refused even where it would run unasked.
+    if let Some(p) = stack.services.get::<marlowe_agent::approval::Permissions>() {
+        if let Some(mode) = options.permission_mode {
+            p.set_mode(mode);
+            core.bus.publish(Event::ModeChanged { session: session.clone(), mode });
+        }
+        if let Err(e) = p.grant(&options.allowed_tools, marlowe_proto::SettingsScope::Session) {
+            core.bus.publish(Event::Error { session: Some(session.clone()), message: format!("allowed tools not applied: {e}") });
+        }
+        if let Err(e) = p.deny_for_session(&options.disallowed_tools) {
+            core.bus.publish(Event::Error { session: Some(session.clone()), message: format!("disallowed tools not applied: {e}") });
+        }
+    }
+    convo.pending_images = input.extras.images.clone();
     let window = agent.context.window_tokens;
 
     core.bus.publish(Event::TurnStarted { session: session.clone(), turn, model, user: text.to_string() });
@@ -641,6 +712,11 @@ struct Gate {
 
 impl ApprovalGate for Gate {
     fn ask(&self, req: ApprovalReq) -> ApprovalDecision {
+        self.ask_with(req, None)
+    }
+
+    /// The modal shows the rule "don't ask again" would add (track E).
+    fn ask_with(&self, req: ApprovalReq, proposed_rule: Option<String>) -> ApprovalDecision {
         if self.core.is_shutting_down() || self.cancel.is_cancelled() {
             return ApprovalDecision::Deny;
         }
@@ -659,7 +735,7 @@ impl ApprovalGate for Gate {
             summary: req.summary,
             detail: req.detail,
             run: None,
-            proposed_rule: None,
+            proposed_rule,
         });
         let decision = rx.recv_timeout(self.core.cfg.approval_timeout).unwrap_or(ApprovalDecision::Deny);
         self.core.approvals.remove(id);

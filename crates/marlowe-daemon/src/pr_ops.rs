@@ -48,7 +48,7 @@ fn open(core: &Arc<Core>, run: &RunId, title: Option<String>, body: Option<Strin
     let id = resolve(sup, run)?;
     let info = sup.get(&id).map_err(|e| e.to_string())?.ok_or_else(|| format!("no run {}", id.short()))?;
     let origin = worktree_origin(&info)?;
-    let host = (core.tools)(&HostRequest { workspace: Some(origin), model: None });
+    let host = (core.tools)(&HostRequest { workspace: Some(origin), model: None, session: None });
     let session = info.session.clone().unwrap_or_else(|| crate::crew::orphan_session(&id));
     let ask = |summary: String, detail: String| crate::crew::ask(core, &id, info.session.as_ref(), "gh pr_create".into(), summary, detail);
     let url = open_pr(host.as_ref(), &session, &info, title, body, &ask)?;

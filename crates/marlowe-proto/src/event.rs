@@ -267,7 +267,13 @@ pub enum Event {
     /// Reply to `ListRules`, `AddRule`, `RemoveRule`.
     Rules { rules: Vec<crate::coding::RuleInfo> },
     /// Reply to `ListHooks`, `TrustHooks`.
-    Hooks { hooks: Vec<crate::coding::HookInfo> },
+    Hooks {
+        hooks: Vec<crate::coding::HookInfo>,
+        /// The digest of what the project asks to be trusted with (its hooks, widening rules,
+        /// directories, commands, mode): `TrustHooks` must send it back unchanged.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        digest: String,
+    },
     /// Reply to `GetSettings`, `SetSetting`.
     Settings { layers: Vec<crate::coding::SettingsLayer> },
     /// Reply to `ListCommands`.

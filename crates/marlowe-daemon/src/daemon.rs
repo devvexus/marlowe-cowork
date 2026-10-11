@@ -21,7 +21,7 @@ use marlowe_proto::{
 };
 
 use crate::bus::Bus;
-use crate::session::{self, Enqueue, SessionHandle};
+use crate::session::{self, AskExtras, Enqueue, SessionHandle};
 use crate::store::{self, Store};
 use crate::{lock, now_ms, DaemonConfig, DaemonDeps, DaemonError, ToolHostFactory};
 
@@ -285,6 +285,18 @@ impl Core {
 
     /// Handles `Ask`: starts a turn, or queues the text when the session is busy.
     pub fn ask(self: &Arc<Self>, client: u64, session: Option<SessionId>, text: String, workspace: Option<String>) -> Result<(), Refusal> {
+        self.ask_with(client, session, text, workspace, AskExtras::default())
+    }
+
+    /// [`Self::ask`] with attached images and `marlowe -p`'s options.
+    pub(crate) fn ask_with(
+        self: &Arc<Self>,
+        client: u64,
+        session: Option<SessionId>,
+        text: String,
+        workspace: Option<String>,
+        extras: AskExtras,
+    ) -> Result<(), Refusal> {
         if text.trim().is_empty() {
             return Err((session, "nothing to send".into()));
         }
@@ -306,10 +318,10 @@ impl Core {
             });
         }
         let refuse = |m: String| (Some(handle.id.clone()), m);
-        match handle.enqueue(text.clone()) {
+        match handle.enqueue_with(text.clone(), extras.clone()) {
             Ok(()) => Ok(()),
             // The runner went idle and exited after we looked it up: load it again.
-            Err(Enqueue::Closed) => self.session(&handle.id)?.enqueue(text).map_err(|e| refuse(e.to_string())),
+            Err(Enqueue::Closed) => self.session(&handle.id)?.enqueue_with(text, extras).map_err(|e| refuse(e.to_string())),
             Err(e) => Err(refuse(e.to_string())),
         }
     }

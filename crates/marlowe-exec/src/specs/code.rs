@@ -609,9 +609,74 @@ fn rename_spec() -> ToolSpec {
 pub fn middleware(tools: &BuiltinTools) -> Vec<Arc<dyn ToolMiddleware>> {
     match tools.workspace() {
         Some(root) if tools.workspace_port().kind() == "local" => {
-            vec![Arc::new(DiagnosticsMiddleware::for_host(tools, root))]
+            vec![Arc::new(DiagnosticsMiddleware::for_host(tools, root)), Arc::new(RepoMapMiddleware::for_host(tools, root))]
         }
         _ => Vec::new(),
+    }
+}
+
+/// Puts the ranked repo map (T27) into the session's prompt sections on its first turn, leaning
+/// toward the names the user's first message mentions. Made once per session, so the stable
+/// prefix stays byte-identical turn to turn (C10); the prefix fitter cuts it to the model's
+/// budget (`context::fit_prefix`).
+pub struct RepoMapMiddleware {
+    intel: Arc<CodeIntel>,
+    port: Arc<dyn marlowe_os::workspace::Workspace>,
+    context_tokens: u32,
+}
+
+/// Set once this session's repo map was made.
+#[derive(Debug, Clone, Default)]
+struct RepoMapped;
+
+impl RepoMapMiddleware {
+    pub fn for_host(tools: &BuiltinTools, root: &Path) -> Self {
+        let context_tokens = match tools.exposure().0 {
+            marlowe_agent::ExposureProfile::Frontier => 200_000,
+            marlowe_agent::ExposureProfile::Local => 32_768,
+        };
+        Self { intel: tools.state::<CodeHost>().intel(root), port: Arc::clone(&tools.port), context_tokens }
+    }
+}
+
+/// Identifier-shaped words of `text` (`snake_case`, `CamelCase`, `mixedCase`), at most 20.
+fn identifiers(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for w in text.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+        let shaped = w.len() >= 3
+            && w.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+            && (w.contains('_') || w.chars().skip(1).any(char::is_uppercase));
+        if shaped && !out.iter().any(|x| x == w) {
+            out.push(w.to_string());
+        }
+        if out.len() == 20 {
+            break;
+        }
+    }
+    out
+}
+
+impl ToolMiddleware for RepoMapMiddleware {
+    fn name(&self) -> &str {
+        "repo-map"
+    }
+
+    fn before_turn(&self, convo: &mut marlowe_agent::Conversation, text: &mut String) -> marlowe_agent::TurnFlow {
+        if convo.ext.get::<RepoMapped>().is_none() {
+            convo.ext.insert(RepoMapped);
+            let opts = MapOptions {
+                budget_tokens: repomap::budget_for(self.context_tokens),
+                focus: Vec::new(),
+                mentioned: identifiers(text),
+                under: None,
+            };
+            let map = self.intel.repo_map(self.port.as_ref(), &opts);
+            if !map.trim().is_empty() {
+                convo.ext.get_or_default::<marlowe_agent::system::PromptSections>().repo_map =
+                    format!("<repo_map>\n{}\n</repo_map>", map.trim_end());
+            }
+        }
+        marlowe_agent::TurnFlow::Continue
     }
 }
 

@@ -377,6 +377,23 @@ fn exposure_fixes_the_tool_set_and_refuses_the_rest() {
     assert!(files_only.persona_blocks().is_empty(), "the files group has no persona block");
 }
 
+/// Track J's finding 4b: a host that offers the shells but not the git group still refuses a
+/// force push typed into bash.
+#[test]
+fn parity_g7_the_shell_guard_holds_without_the_git_group() {
+    use marlowe_agent::{CallCtx, CallFlow, ExposureProfile, ToolGroup};
+    let host = BuiltinTools::new(None).with_exposure(ExposureProfile::Local, vec![ToolGroup::Files, ToolGroup::Shell]);
+    let mw = host.middleware();
+    assert!(mw.iter().any(|m| m.name() == "git-guard"), "{:?}", mw.iter().map(|m| m.name().to_string()).collect::<Vec<_>>());
+    let ctx = ToolCtx { session: SessionId("s".into()), turn: 0, workspace: None, cancel: CancelToken::new(), tainted: false };
+    let cx = CallCtx::detached(ctx);
+    let mut push = ToolCallReq { id: "c".into(), name: "bash".into(), args: json!({"command": "git push --force origin main"}) };
+    let refused = mw.iter().any(|m| matches!(m.before_approval(&mut push, &cx), CallFlow::Done(_)));
+    assert!(refused, "a force push through bash is refused without the git group");
+    let mut status = ToolCallReq { id: "c".into(), name: "bash".into(), args: json!({"command": "git status"}) };
+    assert!(mw.iter().all(|m| matches!(m.before_approval(&mut status, &cx), CallFlow::Continue)));
+}
+
 #[test]
 fn every_group_file_registers_its_hooks() {
     let setup = super::HostSetup { home: Path::new("C:/home"), workspace: None };

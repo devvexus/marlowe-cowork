@@ -141,11 +141,15 @@ pub const BUILTINS: &[(&str, &str, Option<&str>)] = &[
     ("rewind", "Restore code and/or conversation to an earlier turn", None),
     ("diff", "Show the changes made this session", Some("[turn]")),
     ("export", "Export this conversation", None),
+    ("good", "Mark this session worth keeping for `marlowe export`", None),
     ("permissions", "Allow, ask and deny rules", None),
     ("hooks", "Configured hooks", None),
     ("mcp", "MCP servers", None),
     ("config", "Settings", None),
     ("doctor", "Check the installation", None),
+    ("commit", "Commit the current changes in the repository's style", Some("[note]")),
+    ("pr", "Push the branch and open a pull request (one approval)", Some("[note]")),
+    ("pr-comments", "Read a pull request's review feedback and address it", Some("[number]")),
     ("review", "Review a pull request or the pending diff", Some("[pr]")),
     ("security-review", "Security review of the pending changes", None),
     ("todos", "Show the todo list", None),
@@ -1076,7 +1080,19 @@ impl ToolMiddleware for CommandsMiddleware {
             s
         };
         let catalog = Catalog::load(&sources);
-        let Some(found) = catalog.find(&name).filter(|c| c.user_invocable) else { return TurnFlow::Continue };
+        let Some(found) = catalog.find(&name).filter(|c| c.user_invocable) else {
+            // The built-in git commands (track J), unless a command file of that name exists.
+            if let Some(expand) = crate::git_prompts::builtin(&name) {
+                let mut out = format!("<command-name>/{name}</command-name>\n");
+                if !args.is_empty() {
+                    out.push_str(&format!("<command-args>{args}</command-args>\n"));
+                }
+                out.push('\n');
+                out.push_str(&expand(&args));
+                *text = out;
+            }
+            return TurnFlow::Continue;
+        };
         let mut cmd = found.clone();
         let mut untrusted = None;
         let actions = repository_actions(&cmd);

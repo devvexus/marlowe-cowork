@@ -455,6 +455,12 @@ pub fn persona_block() -> Option<&'static str> {
 }
 
 /// Per-host setup from the profile home: job logs live in `<home>\jobs`.
+/// Tells the host which session it serves when it is built, so the user's `!` and Ctrl+B reach
+/// this session's job table without a claim (track B's finding 2).
+pub fn note_session(tools: &crate::BuiltinTools, session: &str) {
+    tools.state::<HostJobs>().note_session(session);
+}
+
 pub fn configure(tools: crate::BuiltinTools, setup: &super::HostSetup<'_>) -> crate::BuiltinTools {
     // The logs are the harness's own files: reading one back to see what a summary left out is not an untrusted read.
     let jobs = setup.home.join("jobs");

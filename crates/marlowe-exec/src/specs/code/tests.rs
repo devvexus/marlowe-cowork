@@ -88,7 +88,8 @@ fn the_group_registers_six_tools_offered_only_with_a_workspace() {
     assert!(with_root.specs().iter().any(|s| s.name == "rename_symbol"));
     assert!(!BuiltinTools::new(None).specs().iter().any(|s| s.name == "symbols"), "no workspace, no code tools");
     assert!(detect(Some(&w.0)) && !detect(None) && !detect(Some(&w.0.join("src"))));
-    assert_eq!(middleware(&with_root).len(), 1);
+    // Post-edit diagnostics and the repo map.
+    assert_eq!(middleware(&with_root).len(), 2);
     assert!(middleware(&BuiltinTools::new(None)).is_empty());
 }
 
@@ -278,6 +279,27 @@ fn parity_t27_the_repo_map_is_budgeted_for_the_model() {
     assert!(marlowe_code::repomap::estimate_tokens(&map) <= 1_200);
     let small = repo_map(&t, &w.0, vec![w.0.join("src/m7.rs")], Vec::new(), 32_768);
     assert!(small.contains("helper_7"), "{small}");
+}
+
+/// T27 in the prompt (track C's need): the code group's middleware puts the ranked map into the
+/// session's prompt sections on the first turn, once, leaning toward names the user mentioned.
+#[test]
+fn parity_t27_the_repo_map_reaches_the_prompt_sections_once() {
+    let w = project();
+    let t = BuiltinTools::new(Some(w.0.clone()));
+    let mw = super::middleware(&t);
+    let repo = mw.iter().find(|m| m.name() == "repo-map").expect("the code group maps the repo");
+    let mut convo = Conversation::new(SessionId("s".into()), Some(w.0.clone()));
+    let mut text = "why does Engine::start return n?".to_string();
+    repo.before_turn(&mut convo, &mut text);
+    let map = convo.ext.get::<marlowe_agent::system::PromptSections>().map(|s| s.repo_map.clone()).unwrap_or_default();
+    assert!(map.starts_with("<repo_map>\n") && map.contains("src/engine.rs"), "{map}");
+    // Once per session: a later turn leaves the prefix as it was.
+    w.put("src/late.rs", "pub fn late_addition() {}\n");
+    repo.before_turn(&mut convo, &mut "again".to_string());
+    let again = convo.ext.get::<marlowe_agent::system::PromptSections>().map(|s| s.repo_map.clone()).unwrap_or_default();
+    assert_eq!(again, map);
+    assert_eq!(super::identifiers("fix parse_args in MyType, not foo"), ["parse_args", "MyType"]);
 }
 
 /// What the loop appends after a step (`after_step` of every middleware), as text.

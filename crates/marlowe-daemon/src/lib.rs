@@ -62,6 +62,9 @@ pub struct HostRequest {
     /// The conductor's model when the session started, so the host fixes its tool set for the
     /// session (`BuiltinTools::with_model_exposure`). `None` when no model is assigned yet.
     pub model: Option<ModelInfo>,
+    /// The session the host is built for (its background jobs belong to it; track B). `None`
+    /// for hosts no session owns (a PR's dry run, a subagent's root).
+    pub session: Option<marlowe_proto::SessionId>,
 }
 
 /// Builds the tool host for a session.

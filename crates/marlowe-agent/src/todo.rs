@@ -210,6 +210,13 @@ pub fn exit_plan_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
     cx.scope.with_ext(|e| {
         *e.get_or_default::<PlanState>() = PlanState { plan: Some(plan.to_string()), approved: true };
     });
+    // The approval was the user's yes: leave plan mode (track E) and tell the clients.
+    if let Some(p) = cx.scope.services.get::<crate::approval::Permissions>() {
+        let mode = p.exit_plan();
+        if let Some(sink) = cx.scope.services.get::<crate::approval::ModeSink>() {
+            (sink.0)(&cx.session, mode);
+        }
+    }
     ToolOutcome::ok("The user approved the plan. Leave plan mode and carry it out, keeping the todo list current.", "plan approved")
 }
 

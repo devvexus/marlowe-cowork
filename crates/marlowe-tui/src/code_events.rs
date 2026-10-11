@@ -256,8 +256,11 @@ impl State {
                 self.code.rules = Some(rules.clone());
                 self.clamp_panel();
             }
-            Event::Hooks { hooks } => {
+            Event::Hooks { hooks, digest } => {
                 self.code.hooks = Some(hooks.clone());
+                if !digest.is_empty() {
+                    self.set_hooks_digest(digest);
+                }
                 self.clamp_panel();
             }
             Event::Settings { layers } => {

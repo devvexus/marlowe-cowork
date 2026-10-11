@@ -22,7 +22,8 @@ const ALLOWED: &[(&str, usize, &str)] = &[
     ("marlowe-typeset/src/helper.rs", 1, "env_clear helper, stricter than the scrub; ChildSpec::with_clear_env is its target"),
     ("marlowe/src/daemon_ctl.rs", 1, "relaunches marlowe itself, which needs the key environment fallback"),
     ("marlowe/src/launcher.rs", 1, "opens the user's terminal running marlowe"),
-    ("marlowe-voice/src/tests.rs", 3, "`voice.status()` calls, not processes (the file names std::process for a pid)"),
+    ("marlowe-voice/src/tests.rs", 11, "`voice.status()` calls, not processes, plus two test-only Python probes (a version check, a process a GPU-gate test holds)"),
+    ("marlowe-voice/src/sidecar.rs", 1, "`self.spawn()`, the sidecar's own method; the process starts through child::spawn"),
 ];
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {

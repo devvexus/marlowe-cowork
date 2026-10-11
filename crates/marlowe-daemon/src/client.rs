@@ -98,10 +98,11 @@ fn dispatch(core: &Arc<Core>, client: u64, client_name: &str, req: Request) {
     let refuse = |(session, message): (Option<marlowe_proto::SessionId>, String)| reply(Event::Error { session, message });
     match req {
         Request::Hello { .. } => reply(Event::Error { session: None, message: "already greeted".into() }),
-        // `images` (G, H) and `options` (K) are carried on the wire; the conductor applies them
-        // once those tracks land.
-        Request::Ask { session, text, workspace, .. } => {
-            if let Err(r) = core.ask(client, session, text, workspace) {
+        // Images (stored first with `PutBlob`) join the user's message; `marlowe -p`'s options
+        // apply to the turn.
+        Request::Ask { session, text, workspace, images, options } => {
+            let extras = crate::session::AskExtras { images, options };
+            if let Err(r) = core.ask_with(client, session, text, workspace, extras) {
                 refuse(r);
             }
         }

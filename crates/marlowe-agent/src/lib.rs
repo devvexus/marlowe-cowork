@@ -13,6 +13,7 @@ pub mod checkpoint;
 pub mod commands;
 pub mod context;
 pub mod convo;
+pub mod git_prompts;
 mod events;
 pub mod hooks;
 pub mod instructions;
@@ -33,6 +34,7 @@ pub use context::{Assembled, ContextConfig, COMPACTION_TRIGGER, KEEP_TOOL_RESULT
 pub use convo::Conversation;
 pub use events::{AgentEvent, TurnOutcome};
 pub use memory::{MemoryHook, NoMemory, Recollection};
+pub use run_tools::REFUSED_SUMMARY;
 pub use steer::{Steer, SteerRefused, MAX_STEER_CHARS};
 pub use system::{Environment, PersonaBlock, SystemPrompt, UserInfo, PERSONA_CORE};
 pub use middleware::{

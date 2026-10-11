@@ -479,8 +479,21 @@ impl Sidecar {
             None => materialize_script(&cfg.cache_dir).map_err(|e| SidecarError::Start(format!("writing the sidecar script: {e}")))?,
         };
         let mut cmd = cfg.command(python, &script, reference);
-        let jc = marlowe_os::spawn_in_job_with_flags(&mut cmd, CREATE_NO_WINDOW)
-            .map_err(|e| SidecarError::Start(format!("could not run {}: {e}", python.display())))?;
+        // The one spawner (non-negotiable 5): scrubbed on top of the command's own removals, no
+        // console, and a kill-on-close job or no start at all (the job frees its VRAM).
+        let spec = marlowe_os::ChildSpec {
+            creation_flags: CREATE_NO_WINDOW,
+            containment: marlowe_os::Containment::Job,
+            ..marlowe_os::ChildSpec::new()
+        };
+        let jc = match marlowe_os::child::spawn(&mut cmd, &spec) {
+            Ok(marlowe_os::ChildProc::Job(j)) => j,
+            Ok(marlowe_os::ChildProc::Bare(mut c)) => {
+                let _ = c.kill();
+                return Err(SidecarError::Start("the sidecar could not be put in a job object".into()));
+            }
+            Err(e) => return Err(SidecarError::Start(format!("could not run {}: {e}", python.display()))),
+        };
         let pid = jc.id();
         let (mut child, job) = jc.into_parts();
         let job = Arc::new(job);

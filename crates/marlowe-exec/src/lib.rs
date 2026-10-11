@@ -353,7 +353,14 @@ impl ToolHost for BuiltinTools {
     }
 
     fn middleware(&self) -> Vec<Arc<dyn ToolMiddleware>> {
-        specs::GROUPS.iter().filter(|g| self.groups.contains(&g.group)).flat_map(|g| (g.middleware)(self)).collect()
+        let mut out: Vec<Arc<dyn ToolMiddleware>> =
+            specs::GROUPS.iter().filter(|g| self.groups.contains(&g.group)).flat_map(|g| (g.middleware)(self)).collect();
+        // The shell half of G7 (force pushes, `--no-verify`) holds whether or not the git group
+        // is offered: without it, the shells carry the git guard's shell check on their own.
+        if !self.groups.contains(&ToolGroup::Git) && self.groups.contains(&ToolGroup::Shell) {
+            out.push(git::shell_guard());
+        }
+        out
     }
 
     fn persona_blocks(&self) -> Vec<PersonaBlock> {

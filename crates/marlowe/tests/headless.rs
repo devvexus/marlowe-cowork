@@ -171,13 +171,14 @@ fn parity_h4_strict_mcp_config_leaves_the_servers_of_the_home_out_of_the_session
     assert_eq!(init_servers(&o), ["runside"], "strict: the run's servers alone");
 }
 
+/// The shipped daemon applies the per-run tool filters and the appended prompt, so the flags run
+/// (a daemon that does not is `tests_flags.rs`'s fake, where they are refused, not ignored).
 #[test]
-fn parity_h4_a_flag_the_daemon_cannot_apply_is_refused_not_ignored() {
-    let e = env("refused", json!([{"name": "any", "reply": "ok"}]));
+fn parity_h4_the_flags_the_daemon_applies_are_accepted() {
+    let e = env("applied", json!([{"name": "any", "reply": "ok"}]));
     for flag in [["--disallowed-tools", "Write"], ["--append-system-prompt", "be terse"]] {
         let o = print(&e, &flag, "hi");
-        assert_eq!(code(&o), 1, "{flag:?}: {}", String::from_utf8_lossy(&o.stderr));
-        assert!(String::from_utf8_lossy(&o.stderr).contains("cannot be honoured"), "{}", String::from_utf8_lossy(&o.stderr));
-        assert!(text(&o).is_empty(), "no answer was produced");
+        assert_eq!(code(&o), 0, "{flag:?}: {}", String::from_utf8_lossy(&o.stderr));
+        assert_eq!(text(&o).trim(), "ok");
     }
 }

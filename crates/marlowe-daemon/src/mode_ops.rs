@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use marlowe_agent::approval::{default_pwsh, Permissions, PwshParser};
+use marlowe_agent::approval::{default_pwsh, ModeSink, Permissions, PwshParser};
 use marlowe_agent::hooks::{HookMiddleware, HookRunner, PromptHookEvaluator};
 use marlowe_agent::{Conversation, Services, ToolMiddleware, TurnObserver};
 use marlowe_model::{CancelToken, ChatRequest, Message};
@@ -44,7 +44,6 @@ fn registry(core: &Arc<Core>) -> Arc<Registry> {
 /// Drops a closed session's entry: its SessionEnd hooks run (`reason`: `clear`, `logout`,
 /// `prompt_input_exit`, `other`), and its scratch dir goes once the last clone is dropped.
 /// The session close path calls this; the next use of the session builds a fresh entry.
-#[allow(dead_code)] // called from session.rs's close path (integrator)
 pub(crate) fn forget(core: &Arc<Core>, session: &SessionId, reason: &str) {
     let reg = registry(core);
     let gone = reg.sessions.lock().unwrap_or_else(|p| p.into_inner()).remove(session);
@@ -212,7 +211,7 @@ fn hooks_event(core: &Arc<Core>, workspace: Option<&str>) -> Event {
     let ws = workspace.map(PathBuf::from);
     let s = Settings::load(&core.home, ws.as_deref(), None);
     let hooks: Vec<HookInfo> = s.hook_rows().into_iter().map(|(h, trusted)| h.info(trusted)).collect();
-    Event::Hooks { hooks }
+    Event::Hooks { hooks, digest: s.digest.clone() }
 }
 
 fn settings_event(core: &Arc<Core>, workspace: Option<&str>) -> Event {
@@ -234,7 +233,14 @@ pub(crate) fn observers(core: &Arc<Core>, convo: &Conversation) -> Vec<Arc<dyn T
 /// E's services for one session (permissions, the hook runner), added by `stack.rs`.
 pub(crate) fn services(core: &Arc<Core>, convo: &Conversation, services: Services) -> Services {
     let e = entry(core, convo);
-    services.with(e.perms).with(e.runner)
+    // `exit_plan` changes the mode from inside a turn: the clients hear it as from SetMode.
+    let weak = Arc::downgrade(core);
+    let sink = ModeSink(Arc::new(move |session: &SessionId, mode| {
+        if let Some(core) = weak.upgrade() {
+            core.bus.publish(Event::ModeChanged { session: session.clone(), mode });
+        }
+    }));
+    services.with(e.perms).with(e.runner).with(sink)
 }
 
 /// Judges prompt hooks with one short model call.

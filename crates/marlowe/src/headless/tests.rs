@@ -260,7 +260,9 @@ fn parity_h4_allowed_tools_answer_the_approval_and_disallowed_win() {
     rig.script.push(vec![Ev::Text("denied"), Ev::Usage(5, 5)]);
     let o = rig.print(&["--output-format", "json", "--allowed-tools", "Bash", "--disallowed-tools", "Bash(git diff:*)", "diff"]);
     let d = o.result()["permission_denials"][0].clone();
-    assert!(d["reason"].as_str().unwrap().contains("--disallowed-tools"), "{d}");
+    // The daemon's permission layer holds the run's deny rules and refuses first, naming the rule.
+    let why = d["reason"].as_str().unwrap();
+    assert!(why.contains("--disallowed-tools") || why.contains("denied by the rule `Bash(git diff:*)`"), "{d}");
 }
 
 // ---------------------------------------------------------------- H5: control messages
@@ -367,10 +369,12 @@ fn parity_h5_set_permission_mode_changes_the_mode_mid_run() {
     assert!(!rig.script.tool_results().iter().any(|c| c.contains("bash ran")), "{:?}", rig.script.tool_results());
 }
 
+/// With track E merged the daemon holds plan mode, so the switch is acknowledged (a daemon that
+/// cannot hold it is `tests_flags.rs`'s `parity_h4_plan_mode_is_an_error_when_the_daemon_cannot_hold_it`).
 #[test]
-fn parity_h5_set_permission_mode_plan_is_an_error_when_the_daemon_cannot_hold_it() {
+fn parity_h5_set_permission_mode_plan_is_held_by_the_daemon() {
     let rig = Rig::new("h5-mode-plan");
-    rig.script.push(vec![Ev::Text("still default"), Ev::Usage(5, 5)]);
+    rig.script.push(vec![Ev::Text("planning"), Ev::Usage(5, 5)]);
     let (w, r) = pipe();
     w.line(json!({"type": "control_request", "request_id": "p1", "request": {"subtype": "set_permission_mode", "mode": "plan"}}));
     w.line(user("go"));
@@ -379,8 +383,8 @@ fn parity_h5_set_permission_mode_plan_is_an_error_when_the_daemon_cannot_hold_it
     let o = run_args(args, &rig.home, &rig.ws, Some(r), rig.connector());
     assert_eq!(o.code, 0, "{}\n{}", o.err.text(), o.out.text());
     let ack = o.lines().into_iter().find(|l| l["type"] == "control_response").expect("an answer");
-    assert_eq!(ack["response"]["subtype"], "error", "plan was not set, so it is not acknowledged as set: {ack}");
-    assert!(ack["response"]["error"].as_str().unwrap().contains("plan"), "{ack}");
+    assert_eq!(ack["response"]["subtype"], "success", "{ack}");
+    assert_eq!(ack["response"]["response"]["mode"], "plan", "{ack}");
 }
 
 #[test]

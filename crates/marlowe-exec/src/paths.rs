@@ -2,8 +2,27 @@
 
 use std::path::{Component, Path, PathBuf};
 
-/// Absolute, lexically normalised form of `raw` (relative paths join `base`, else the process cwd).
+/// The user's home folder (`USERPROFILE`, else `HOME`).
+fn user_home() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from)
+}
+
+/// `~`, `~/x` and `~\x` name the user's home folder, as in a shell (the permission layer reads
+/// them the same way, so a write there is judged where it lands).
+pub fn expand_home(raw: &str) -> Option<PathBuf> {
+    let rest = raw.strip_prefix('~')?;
+    if !(rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\')) {
+        return None;
+    }
+    Some(user_home()?.join(rest.trim_start_matches(['/', '\\'])))
+}
+
+/// Absolute, lexically normalised form of `raw` (relative paths join `base`, else the process
+/// cwd; a leading `~` is the user's home).
 pub fn resolve(base: Option<&Path>, raw: &str) -> PathBuf {
+    if let Some(home) = expand_home(raw.trim()) {
+        return normalise(&home);
+    }
     let raw = Path::new(raw.trim());
     let joined = if raw.is_absolute() {
         raw.to_path_buf()
@@ -91,4 +110,20 @@ pub fn is_broad_root(root: &Path) -> bool {
     const SYSTEM: [&str; 7] =
         ["WINDIR", "SystemRoot", "APPDATA", "LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"];
     SYSTEM.iter().filter_map(|k| env_dir(k)).any(|d| r.starts_with(&d) || d.starts_with(&r))
+}
+
+#[cfg(test)]
+mod tests {
+    /// FlashAgent's case (track A): `~/` is the user's home folder, never a folder named `~` in
+    /// the project.
+    #[test]
+    fn a_path_under_the_home_folder_is_read_from_there_not_from_the_project() {
+        let Some(home) = super::user_home() else { return };
+        let ws = std::env::temp_dir().join("marlowe-paths-ws");
+        assert_eq!(super::resolve(Some(&ws), "~/notes.txt"), super::normalise(&home.join("notes.txt")));
+        assert_eq!(super::resolve(Some(&ws), "~"), super::normalise(&home));
+        assert_eq!(super::resolve(Some(&ws), "~x/y"), super::normalise(&ws.join("~x").join("y")));
+        assert!(!super::inside(&ws, &super::resolve(Some(&ws), "~/notes.txt")));
+        assert_eq!(super::expand_home("a/~/b"), None);
+    }
 }

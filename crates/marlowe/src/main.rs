@@ -59,7 +59,12 @@ marlowe status | shutdown | doctor [--json]
 marlowe -p [PROMPT] [flags]               one non-interactive run, like `claude -p` (marlowe -p --help)
 marlowe mcp [list | add | add-json | remove | get | trust | auth | logout]
                                           MCP servers (.mcp.json and the settings layers)
-marlowe bench | export | eval             M4.6 commands (not available yet)
+marlowe export [status | enable <dir> | disable <dir> | good <session> [--upto N] | ungood <session>
+               | trajectories [--dry-run] [--out DIR] [--project DIR] [--include-tainted]
+                 [--no-thinking] [--since YYYY-MM-DD]]
+                                          opt-in training data from your own sessions; nothing
+                                          is uploaded (full help: marlowe export --help)
+marlowe bench | eval                      M4.6 coding bench and eval (not available yet)
 
 ask streams the reply to stdout. A tool that needs approval prompts on stdin; --yes allows
 every approval in this turn; an empty answer or a closed stdin denies.

@@ -136,6 +136,8 @@ pub struct SystemPrompt {
     user: Option<UserInfo>,
     env: Option<Environment>,
     sections: PromptSections,
+    /// `--append-system-prompt` (H4): last in the stable tier.
+    appended: Option<String>,
 }
 
 impl Default for SystemPrompt {
@@ -152,7 +154,7 @@ impl SystemPrompt {
 
     /// A custom core (tests, crew role cards).
     pub fn with_core(core: impl Into<String>) -> Self {
-        Self { core: core.into(), blocks: Vec::new(), user: None, env: None, sections: PromptSections::default() }
+        Self { core: core.into(), blocks: Vec::new(), user: None, env: None, sections: PromptSections::default(), appended: None }
     }
 
     /// Appends a capability block (once).
@@ -255,7 +257,18 @@ impl SystemPrompt {
         if !s.output_style.trim().is_empty() {
             out.push(SystemBlock { text: s.output_style.trim().to_string(), cache: true });
         }
+        if let Some(a) = &self.appended {
+            out.push(SystemBlock { text: a.trim().to_string(), cache: true });
+        }
         out
+    }
+
+    /// Appends `text` after everything else in the stable tier (`marlowe -p
+    /// --append-system-prompt`).
+    pub fn append(mut self, text: impl Into<String>) -> Self {
+        let text = text.into();
+        self.appended = (!text.trim().is_empty()).then_some(text);
+        self
     }
 
     /// The volatile environment block, if set. Never cached.

@@ -789,10 +789,23 @@ impl Subagents {
         // A background agent has its own token (the caller's turn ends at once); a foreground one
         // stops with the caller's.
         let cancel = if req.background { marlowe_model::CancelToken::new() } else { cx.cancel.clone() };
-        let agent = match self.build_agent(&ty, req.model.as_deref(), workspace.as_deref(), &cancel) {
+        let mut agent = match self.build_agent(&ty, req.model.as_deref(), workspace.as_deref(), &cancel) {
             Ok(a) => a,
             Err(e) => return ToolOutcome::error(format!("could not start the {} agent: {e}", ty.name)),
         };
+        // The caller's session decides the subagent's calls too (track E): its mode and rules
+        // through the Permissions service; SubagentStart hooks (their context goes to the agent)
+        // and SubagentStop through a hook middleware of the agent's own.
+        let mut prompt = req.prompt.clone();
+        if let Some(p) = cx.scope.services.get::<crate::approval::Permissions>() {
+            agent.services = agent.services.clone().with(p.clone());
+        }
+        if let Some(runner) = cx.scope.services.get::<Arc<crate::hooks::HookRunner>>() {
+            if let Some(c) = runner.subagent_start(&id, &ty.name).context_text() {
+                prompt = format!("{prompt}\n\n<system-reminder>\n{c}\n</system-reminder>");
+            }
+            agent.middleware.push(Arc::new(crate::hooks::HookMiddleware::for_subagent(runner.clone(), &id, &ty.name)));
+        }
         let session = SessionId(format!("{}/{id}", cx.session));
         let mut convo = Conversation::new(session, workspace.clone());
         convo.exposure.tainted = cx.tainted;
@@ -801,7 +814,7 @@ impl Subagents {
         if req.background {
             let me = self.clone();
             let parent = cx.session.clone();
-            let prompt = req.prompt.clone();
+            let prompt = prompt.clone();
             let model = req.model.clone();
             let ty2 = ty.clone();
             let id2 = id.clone();
@@ -861,7 +874,7 @@ impl Subagents {
             );
         }
 
-        let result = self.run_agent(&agent, &mut convo, &req.prompt, &cancel, false);
+        let result = self.run_agent(&agent, &mut convo, &prompt, &cancel, false);
         if convo.exposure.tainted {
             cx.scope.with_ext(|e| e.insert(ReportTainted));
         }

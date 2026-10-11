@@ -12,9 +12,11 @@ use marlowe_brains::{api_key, CredentialStore, KeyringStore, MemoryStore, Provid
 use marlowe_crew::{CrewConfig, CrewSetup, CrewToolFactory, Sandbox, SandboxKind};
 use marlowe_daemon::{DaemonDeps, HostRequest, SentinelLink, ToolHostFactory, VoiceLink};
 use marlowe_exec::{Leftovers, ResearchConfig, SearchBackend, SearchResponse, SearchResult};
+use marlowe_model::image::{BlobStore, FsBlobStore};
 use marlowe_model::{
     CancelToken, ChatRequest, Effort, Message, Provider, ProviderError, ProviderKind, ToolSpec,
 };
+use marlowe_provider::ollama::repair::RepairStats;
 
 /// Sentinel events queued for the daemon's forwarder; a full queue drops, never blocks a watcher.
 const SENTINEL_QUEUE: usize = 1024;
@@ -26,40 +28,60 @@ const SEARCH_MODEL_DEFAULT: &str = "google/gemini-2.5-flash";
 const SEARCH_MODEL_ENV: &str = "MARLOWE_SEARCH_MODEL";
 const SEARCH_TOOL: &str = "openrouter:web_search";
 
-fn make_ollama(cfg: &ProviderConfig) -> Result<Arc<dyn Provider>, ProviderError> {
+/// Tool-call repair counts across every provider this process builds (A4; `marlowe bench`).
+pub fn repair_stats() -> Arc<RepairStats> {
+    static STATS: std::sync::OnceLock<Arc<RepairStats>> = std::sync::OnceLock::new();
+    STATS.get_or_init(|| Arc::new(RepairStats::new())).clone()
+}
+
+fn make_ollama(cfg: &ProviderConfig, blobs: Arc<dyn BlobStore>) -> Result<Arc<dyn Provider>, ProviderError> {
     // Every request for a model sends that model's context policy window (one allocation per
     // model), so Ollama never reloads a runner because two agents asked for different sizes.
-    let p = marlowe_provider::OllamaProvider::from_base_url(cfg.base_url.as_deref())?.with_allocations(cfg.context.clone());
+    let p = marlowe_provider::OllamaProvider::from_base_url(cfg.base_url.as_deref())?
+        .with_allocations(cfg.context.clone())
+        .with_blobs(blobs)
+        .with_repair_stats(repair_stats());
     Ok(Arc::new(p))
 }
 
 /// Never fails: the catalog works without a key; `stream` then returns an Auth error.
-fn make_openrouter(cfg: &ProviderConfig) -> Result<Arc<dyn Provider>, ProviderError> {
-    Ok(Arc::new(marlowe_openrouter::OpenRouterProvider::from_key(cfg.api_key.as_deref())))
+fn make_openrouter(cfg: &ProviderConfig, blobs: Arc<dyn BlobStore>) -> Result<Arc<dyn Provider>, ProviderError> {
+    Ok(Arc::new(
+        marlowe_openrouter::OpenRouterProvider::from_key(cfg.api_key.as_deref())
+            .with_blobs(blobs)
+            .with_repair_stats(repair_stats()),
+    ))
 }
 
-/// Provider factory with Ollama and OpenRouter registered, keys from Credential Manager.
-pub fn provider_factory(credentials: Arc<dyn CredentialStore>) -> ProviderFactory {
+/// Provider factory with Ollama and OpenRouter registered, keys from Credential Manager. Images
+/// are read from `<home>\blobs`, the store `read`, paste (`PutBlob`) and the browser write.
+pub fn provider_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> ProviderFactory {
     let mut f = ProviderFactory::new(credentials);
-    f.register(ProviderKind::Ollama, make_ollama);
-    f.register(ProviderKind::OpenRouter, make_openrouter);
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::new(home.join("blobs")));
+    let b = blobs.clone();
+    f.register(ProviderKind::Ollama, move |cfg| make_ollama(cfg, b.clone()));
+    f.register(ProviderKind::OpenRouter, move |cfg| make_openrouter(cfg, blobs.clone()));
     let ollama_url = std::env::var("MARLOWE_OLLAMA_ADDR").ok();
     if let Some(url) = &ollama_url {
         f.set_base_url(ProviderKind::Ollama, url.clone());
     }
     // The context planner reads Ollama's store, its runner log and the GPU; it changes nothing
-    // but the server settings, and only after an approval.
-    let endpoint = ollama_url
-        .as_deref()
-        .and_then(marlowe_provider::LocalEndpoint::parse)
-        .unwrap_or_else(marlowe_provider::LocalEndpoint::default_ollama);
-    f.set_hardware(marlowe_brains::Hardware {
-        models: Arc::new(marlowe_provider::OllamaHw::new(endpoint.clone())),
-        gpu: Arc::new(marlowe_sentinel::vram::SentinelGpu::open()),
-        server: Arc::new(
-            marlowe_provider::OllamaServerControl::new(endpoint).with_scrub(marlowe_brains::scrubbed_env().iter().copied()),
-        ),
-    });
+    // but the server settings, and only after an approval. A scripted run has no engine to read:
+    // nothing loads, so nothing is gated.
+    if !scripted() {
+        let endpoint = ollama_url
+            .as_deref()
+            .and_then(marlowe_provider::LocalEndpoint::parse)
+            .unwrap_or_else(marlowe_provider::LocalEndpoint::default_ollama);
+        f.set_hardware(marlowe_brains::Hardware {
+            models: Arc::new(marlowe_provider::OllamaHw::new(endpoint.clone())),
+            gpu: Arc::new(marlowe_sentinel::vram::SentinelGpu::open()),
+            server: Arc::new(
+                marlowe_provider::OllamaServerControl::new(endpoint)
+                    .with_scrub(marlowe_brains::scrubbed_env().iter().copied()),
+            ),
+        });
+    }
     #[cfg(debug_assertions)]
     crate::scripted::install(&mut f);
     f
@@ -152,7 +174,11 @@ pub fn tool_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> ToolH
             tools = tools.with_model_exposure(model);
         }
         let setup = marlowe_exec::specs::HostSetup { home: &home, workspace: req.workspace.as_deref() };
-        Arc::new(marlowe_exec::specs::configure(tools, &setup)) as Arc<dyn ToolHost>
+        let tools = marlowe_exec::specs::configure(tools, &setup);
+        if let Some(session) = &req.session {
+            marlowe_exec::specs::shell::note_session(&tools, &session.0);
+        }
+        Arc::new(tools) as Arc<dyn ToolHost>
     })
 }
 
@@ -173,8 +199,18 @@ pub fn crew_tool_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> 
             .with_child_env(sandbox.child_env())
             .with_shell_dir(sandbox.root.clone())
             .with_leftovers(Leftovers::KillWithHost);
-        Arc::new(tools) as Arc<dyn ToolHost>
+        Arc::new(crew_configure(tools, &home, workspace)) as Arc<dyn ToolHost>
     })
+}
+
+/// The groups a crew host gets from the profile home: `git` without `gh` (crew pushes and PRs go
+/// through `Request::OpenPr`, track J) and the verify group's state (logs, screenshots, the Edge
+/// driver; track D). Not the agent group (a crew agent never spawns agents) and no language
+/// servers (track C).
+fn crew_configure(tools: marlowe_exec::BuiltinTools, home: &Path, workspace: Option<&Path>) -> marlowe_exec::BuiltinTools {
+    let setup = marlowe_exec::specs::HostSetup { home, workspace };
+    let tools = marlowe_exec::specs::verify::configure(tools, &setup);
+    tools.with_state(marlowe_exec::git::GitState::new(Some(home.to_path_buf())).without_gh())
 }
 
 /// The built-ins for a crew sandbox. A `None` sandbox has no writable root: its directory is a
@@ -206,7 +242,7 @@ pub fn daemon_deps(home: &Path) -> DaemonDeps {
     let credentials: Arc<dyn CredentialStore> =
         if scripted() { Arc::new(MemoryStore::new()) } else { Arc::new(KeyringStore::new()) };
     DaemonDeps {
-        providers: provider_factory(credentials.clone()),
+        providers: provider_factory(credentials.clone(), home),
         tools: tool_factory(credentials.clone(), home),
         user: user_info(home),
         mind: open_mind(home, sentinel.as_ref().map(|s| s.sentinel.clone())),
@@ -224,7 +260,7 @@ pub fn standalone_deps(home: &Path, memory: bool) -> DaemonDeps {
     let credentials: Arc<dyn CredentialStore> =
         if scripted() { Arc::new(MemoryStore::new()) } else { Arc::new(KeyringStore::new()) };
     DaemonDeps {
-        providers: provider_factory(credentials.clone()),
+        providers: provider_factory(credentials.clone(), home),
         tools: tool_factory(credentials, home),
         user: user_info(home),
         mind: if memory { open_mind(home, None) } else { None },
@@ -344,7 +380,7 @@ pub fn gpu_verdict(state: &marlowe_proto::WatchState, compute: &ComputeLists) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{cited_links, crew_host};
+    use super::{cited_links, crew_configure, crew_host};
     use marlowe_agent::ToolHost;
     use marlowe_crew::{Sandbox, SandboxKind};
 
@@ -380,6 +416,19 @@ mod tests {
         let host = crew_host(&sb, Some(&ws));
         assert!(!host.taints(&call("read", &ws.join("notes.md"))));
         assert!(matches!(host.consequence(&call("write", &ws.join("notes.md"))), marlowe_agent::Consequence::Ask { .. }));
+    }
+
+    /// Track J's finding 7: a crew host offers `git` (its consequences are the crew's) and never
+    /// `gh`; it never offers the agent group.
+    #[test]
+    fn a_crew_host_lists_git_and_not_gh_or_agents() {
+        let root = std::env::temp_dir().join("marlowe-wire-test-crew-git");
+        let sb = Sandbox { kind: SandboxKind::Scratch, root: root.clone(), origin: None, branch: None, base: None, repo_digest: None };
+        let home = std::env::temp_dir().join("marlowe-wire-test-crew-home");
+        let host = crew_configure(crew_host(&sb, None), &home, None);
+        let names: Vec<String> = host.specs().into_iter().map(|s| s.name).collect();
+        assert!(names.iter().any(|n| n == "git"), "{names:?}");
+        assert!(!names.iter().any(|n| n == "gh" || n == "agent" || n == "todo"), "{names:?}");
     }
 
     #[test]

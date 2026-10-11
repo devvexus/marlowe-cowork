@@ -107,6 +107,7 @@ fn every_m46_event_round_trips_inside_an_envelope() {
                 scope: SettingsScope::Project,
                 trusted: false,
             }],
+            digest: "ab12".into(),
         },
         Event::Settings { layers: vec![SettingsLayer { scope: SettingsScope::User, path: None, text: "[network]".into() }] },
         Event::Commands {

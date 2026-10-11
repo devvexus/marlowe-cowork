@@ -93,6 +93,11 @@ pub enum Gate {
     Deny(String),
 }
 
+/// Tells the session's clients that its mode changed outside `SetMode` (the `exit_plan` tool, once
+/// approved). The daemon installs it beside [`Permissions`].
+#[derive(Clone)]
+pub struct ModeSink(pub Arc<dyn Fn(&SessionId, PermissionMode) + Send + Sync>);
+
 /// `marlowe_proto::PermissionMode` as the policy's mode.
 pub fn policy_mode(m: PermissionMode) -> Mode {
     match m {
@@ -211,6 +216,25 @@ impl Permissions {
         *m = mode;
     }
 
+    /// Whether an `agent` or `skill` call only reads (track F's resolution of the type or skill).
+    fn only_reads(&self, call: &ToolCall) -> bool {
+        let home = Some(self.inner.home.as_path());
+        let ws = self.inner.workspace.as_deref();
+        match call.name.as_str() {
+            "agent" => {
+                let ty = ["type", "subagent_type"]
+                    .iter()
+                    .find_map(|k| call.args.get(*k).and_then(Value::as_str))
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or("general");
+                crate::subagent::read_only_type(ty, home, ws)
+            }
+            "skill" => crate::commands::skill_read_only(&call.args, &crate::instructions::Sources::for_session(home, ws)),
+            _ => false,
+        }
+    }
+
     /// Leaves plan mode for the mode it was entered from (the `exit_plan` tool, once approved).
     /// Outside plan mode it changes nothing.
     pub fn exit_plan(&self) -> PermissionMode {
@@ -278,6 +302,16 @@ impl Permissions {
         Ok(())
     }
 
+    /// Denies `rules` for the rest of the session (`marlowe -p --disallowed-tools`): a deny rule
+    /// beats every allow, and a call it matches is refused even where it would run unasked.
+    pub fn deny_for_session(&self, rules: &[String]) -> Result<(), String> {
+        let mut s = lock(&self.inner.session);
+        for r in rules {
+            s.add_text(rules::Action::Deny, r).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     /// Whether every rule of `proposal` was granted this session (so a later call in the same
     /// batch need not ask again).
     pub fn granted(&self, proposal: &[String]) -> bool {
@@ -287,6 +321,20 @@ impl Permissions {
 
     /// Decides `call` (after middleware rewrote it); see `marlowe_permission::rules::policy`.
     pub fn decide(&self, host: &dyn ToolHost, call: &ToolCall, exposure: &Exposure, hook: Option<HookPermission>) -> Gate {
+        self.decide_granted(host, call, exposure, hook, &[])
+    }
+
+    /// [`Self::decide`] with `granted` allow rules for this turn only: a slash command's
+    /// `allowed-tools` (track F; a repository command grants nothing until the user trusts it).
+    /// They never lift a deny rule, plan mode or a tripwire.
+    pub fn decide_granted(
+        &self,
+        host: &dyn ToolHost,
+        call: &ToolCall,
+        exposure: &Exposure,
+        hook: Option<HookPermission>,
+        granted: &[String],
+    ) -> Gate {
         let loaded = self.inner.loaded.read().unwrap_or_else(|p| p.into_inner());
         let mut roots = loaded.roots.clone();
         roots.extend(lock(&self.inner.extra_roots).iter().cloned());
@@ -310,6 +358,19 @@ impl Permissions {
         } else {
             crate::tools::Effects::READ
         });
+        // An agent type or a skill that only reads is a read (plan mode allows it). Decided on the
+        // resolved type, never its name: a repository's `explore` is forced read-only (track F).
+        // The mixed tools decide per call: what `git`, `gh` or `ci_status` answers Free is a read
+        // (status, diff, log, pr_view; track J), and the verify group's `project{op:profile}`
+        // and `service{op:status|logs}` only look (track D). Plan mode allows those.
+        let op = call.args.get("op").and_then(Value::as_str).unwrap_or("");
+        let effects = match call.name.as_str() {
+            "agent" | "skill" if self.only_reads(call) => crate::tools::Effects::READ,
+            "git" | "gh" | "ci_status" if says == ToolSays::Free => crate::tools::Effects::READ,
+            "project" if op == "profile" => crate::tools::Effects::READ,
+            "service" if matches!(op, "status" | "logs") => crate::tools::Effects::READ,
+            _ => effects,
+        };
 
         // Shell lines are analysed in their own dialect from their working directory.
         let dialect = Dialect::of_tool(&call.name);
@@ -364,15 +425,27 @@ impl Permissions {
         if let Some(m) = &manifest {
             for a in m.path_args {
                 if let Some(p) = call.args.get(*a).and_then(Value::as_str).filter(|p| !p.trim().is_empty()) {
-                    subject.paths.push(match root.as_deref() {
-                        Some(r) => lexical_join(r, Path::new(p)),
-                        None => PathBuf::from(p),
+                    // `~` is the user's home, as the file tools read it (never a folder named `~`
+                    // inside the workspace).
+                    let p = p.trim();
+                    let home = p
+                        .strip_prefix('~')
+                        .filter(|rest| rest.is_empty() || rest.starts_with(['/', '\\']))
+                        .and_then(|rest| self.inner.user_home.as_ref().map(|h| h.join(rest.trim_start_matches(['/', '\\']))));
+                    subject.paths.push(match (home, root.as_deref()) {
+                        (Some(h), _) => lexical_join(&h, Path::new(".")),
+                        (None, Some(r)) => lexical_join(r, Path::new(p)),
+                        (None, None) => PathBuf::from(p),
                     });
                 }
             }
         }
         let mut rules = loaded.rules.clone();
         rules.extend(&lock(&self.inner.session));
+        for g in granted {
+            // A grant that is not a rule (a typo in a command file) grants nothing.
+            let _ = rules.add_text(rules::Action::Allow, g);
+        }
         let rule = rules.evaluate(&subject);
 
         // The tool's own Ask, lifted where settings already answer it: a web call to a host the

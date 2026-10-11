@@ -323,11 +323,8 @@ fn free_write_rig(name: &str) -> Rig {
     Rig::with_tools(name, std::sync::Arc::new(|| std::sync::Arc::new(FreeWrite) as std::sync::Arc<dyn marlowe_agent::ToolHost>))
 }
 
-/// What the flags must do once the conductor applies them. They fail today, which is the point:
-/// `cargo test -- --ignored` shows the day track F's `conductor_ops` honours `HeadlessOptions`,
-/// and flipping `DAEMON_APPLIES_OPTIONS` goes with making these pass.
+/// What the flags do now that the conductor applies them (`DAEMON_APPLIES_OPTIONS`).
 #[test]
-#[ignore = "needs M4.6 track F: the conductor applies HeadlessOptions"]
 fn parity_h4_a_disallowed_write_inside_the_workspace_does_not_happen() {
     let rig = free_write_rig("h4-disallowed-write");
     let target = rig.ws.join("out.txt");
@@ -339,7 +336,6 @@ fn parity_h4_a_disallowed_write_inside_the_workspace_does_not_happen() {
 }
 
 #[test]
-#[ignore = "needs M4.6 track F: the conductor applies HeadlessOptions"]
 fn parity_h4_an_appended_system_prompt_reaches_the_model() {
     let rig = Rig::new("h4-append");
     rig.script.push(vec![Ev::Text("ok"), Ev::Usage(5, 5)]);
