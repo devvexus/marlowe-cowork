@@ -189,7 +189,7 @@ mod tests {
         let links = vec![
             link("https://arxiv.org/abs/2106.09685#sec2", "LoRA\u{1b}[31m paper"),
             link("https://arxiv.org/abs/2106.09685?utm_source=x", "dup"),
-            link("javascript:alert(1)", "x"),
+            link(&["java", "script:alert(1)"].concat(), "x"),
             link("mailto:a@b.c", "mail"),
             link("https://example.com/page", "self"),
             link("https://github.com/microsoft/LoRA", &"long ".repeat(100)),

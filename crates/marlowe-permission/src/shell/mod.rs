@@ -24,6 +24,7 @@ pub mod bash;
 pub mod cmd;
 pub mod danger;
 mod git;
+mod lit;
 mod net;
 mod paths;
 pub mod pwsh;

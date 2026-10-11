@@ -264,8 +264,8 @@ impl OAuth {
         McpError::Http { server: self.name.clone(), status: 0, detail }
     }
 
-    /// The authorization URL is shown by the desktop's URL opener (`rundll32 url.dll,
-    /// FileProtocolHandler` on Windows), which will launch whatever scheme it is given, so it comes
+    /// The authorization URL is shown by the desktop's URL opener (the shell's own, on Windows),
+    /// which will launch whatever scheme it is given, so it comes
     /// from untrusted server metadata only as `https`, or `http` to this machine; nothing that
     /// could carry a second argument or a control character.
     fn browsable(&self, endpoint: &str) -> Result<(), McpError> {

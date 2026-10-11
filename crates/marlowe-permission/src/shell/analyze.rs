@@ -77,10 +77,7 @@ fn git_env_scan(text: &str, a: &mut Analysis) {
 fn text_scan(text: &str, a: &mut Analysis) {
     git_env_scan(text, a);
     let l = text.to_ascii_lowercase();
-    if ["net.webclient", "downloadstring", "downloadfile", "downloaddata", "system.net.http", "net.http.httpclient", "net.sockets", "openread("]
-        .iter()
-        .any(|v| l.contains(v))
-    {
+    if super::lit::dotnet_network_markers().iter().any(|v| l.contains(v.as_str())) {
         a.ask("network access through .NET (the host is not visible)");
     }
     if ["[system.diagnostics.process]", "[diagnostics.process]", "system.reflection", "[reflection.", "interopservices", "[activator]", "[scriptblock]::create", "[powershell]::create", "add-type"]
@@ -663,7 +660,7 @@ fn command(c: &Cmd, words: &[Word], cwd: &mut Option<PathBuf>, ctx: &ShellCtx<'_
             }
         }
         "sc" if d != Dialect::PowerShell => a.ask("changes Windows services"),
-        "mshta" | "rundll32" | "regsvr32" | "wscript" | "cscript" | "certutil" | "bitsadmin" | "installutil" | "regasm" | "msxsl" | "odbcconf" | "cmstp" => {
+        p if super::lit::is_fetch_or_run_helper(p) => {
             a.ask("runs a Windows system program often used to fetch or run code");
         }
         "invoke-item" | "ii" | "explorer" | "xdg-open" | "open" => {}

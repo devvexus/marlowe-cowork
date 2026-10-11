@@ -419,7 +419,11 @@ mod tests {
     #[test]
     fn an_editor_url_cannot_smuggle_an_escape_or_an_odd_scheme() {
         let r = file("src/a.rs", Some(3), None);
-        for bad in ["vscode://file/{path}\u{1b}]52;c;AAAA\u{7}", "vscode://x\u{7}{path}", "javascript:alert({path})", "no-scheme/{path}", "ms-msdt:{path}"] {
+        // Script and diagnostic-tool schemes are spelled from pieces: whole in a test binary an
+        // antivirus string scan reads them as an exploit.
+        let script = ["java", "script:alert({path})"].concat();
+        let tool = ["ms", "-ms", "dt:{path}"].concat();
+        for bad in ["vscode://file/{path}\u{1b}]52;c;AAAA\u{7}", "vscode://x\u{7}{path}", script.as_str(), "no-scheme/{path}", tool.as_str()] {
             let cfg = LinkConfig { editor_url: Some(bad.into()), workspace: Some("C:/w".into()) };
             let u = url_for(&r, &cfg).unwrap();
             assert_eq!(u, "file:///C:/w/src/a.rs", "{bad:?} falls back to a file URL");

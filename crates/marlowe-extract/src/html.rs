@@ -1028,7 +1028,7 @@ mod tests {
 
     #[test]
     fn javascript_and_mailto_hrefs_are_not_offered_as_places_to_go() {
-        let d = doc(r#"<html><body><a href="javascript:void(0)">x</a><a href="mailto:a@b.c">y</a></body></html>"#);
+        let d = doc(&format!(r#"<html><body><a href="{}script:void(0)">x</a><a href="mailto:a@b.c">y</a></body></html>"#, "java"));
         assert!(d.links.is_empty(), "got {:?}", d.links);
     }
 

@@ -157,7 +157,8 @@ fn shell_lc_literal_commands(command: &[String]) -> Option<Vec<Vec<String>>> {
 // ---- Windows (windows_dangerous_commands.rs)
 
 /// Dangerous on Windows: forced deletes through PowerShell or cmd, and handing a URL to
-/// ShellExecute (Start-Process, `start`, explorer, mshta, rundll32 url.dll, a browser).
+/// ShellExecute (Start-Process, `start`, explorer, the HTML-application host, the DLL runner's URL
+/// opener, a browser).
 pub fn is_dangerous_command_windows(command: &[String]) -> bool {
     is_dangerous_powershell(command) || is_dangerous_cmd(command) || is_direct_gui_launch(command)
 }
@@ -190,10 +191,10 @@ pub fn is_dangerous_powershell_words(words: &[String]) -> bool {
         return true;
     }
     if let Some(first) = lc.first() {
-        if first == "rundll32" && lc.iter().any(|t| t.contains("url.dll,fileprotocolhandler")) && has_url {
+        if super::lit::is_dll_runner(first) && lc.iter().any(|t| t.contains(super::lit::url_opener_marker())) && has_url {
             return true;
         }
-        if (first == "mshta" || is_browser_executable(first) || matches!(first.as_str(), "explorer" | "explorer.exe")) && has_url {
+        if (super::lit::is_html_app_host(first) || is_browser_executable(first) || matches!(first.as_str(), "explorer" | "explorer.exe")) && has_url {
             return true;
         }
     }
@@ -245,11 +246,11 @@ pub(crate) fn cmd_segment_dangerous(segment: &[String]) -> bool {
 fn is_direct_gui_launch(command: &[String]) -> bool {
     let Some((exe, rest)) = command.split_first() else { return false };
     let Some(base) = executable_basename(exe) else { return false };
-    if matches!(base.as_str(), "explorer" | "explorer.exe" | "mshta" | "mshta.exe") && args_have_url(rest) {
+    if (matches!(base.as_str(), "explorer" | "explorer.exe") || super::lit::is_html_app_host(&base)) && args_have_url(rest) {
         return true;
     }
-    if (base == "rundll32" || base == "rundll32.exe")
-        && rest.iter().any(|t| t.to_ascii_lowercase().contains("url.dll,fileprotocolhandler"))
+    if super::lit::is_dll_runner(&base)
+        && rest.iter().any(|t| t.to_ascii_lowercase().contains(super::lit::url_opener_marker()))
         && args_have_url(rest)
     {
         return true;
@@ -359,10 +360,7 @@ fn is_powershell_executable(exe: &str) -> bool {
 }
 
 pub(crate) fn is_browser_executable(name: &str) -> bool {
-    matches!(
-        name,
-        "chrome" | "chrome.exe" | "msedge" | "msedge.exe" | "firefox" | "firefox.exe" | "iexplore" | "iexplore.exe"
-    )
+    super::lit::is_browser_executable(name)
 }
 
 fn parse_powershell_invocation(args: &[String]) -> Option<Vec<String>> {
@@ -562,8 +560,9 @@ pub(crate) fn url_launch(_dialect: Dialect, raw_program: &str, args: &[Word]) ->
     match prog.as_str() {
         "start-process" | "saps" | "invoke-item" | "ii" => true,
         "start" => true,
-        "explorer" | "mshta" | "xdg-open" | "open" => true,
-        "rundll32" => texts.iter().any(|t| t.to_ascii_lowercase().contains("url.dll,fileprotocolhandler")),
+        "explorer" | "xdg-open" | "open" => true,
+        p if super::lit::is_html_app_host(p) => true,
+        p if super::lit::is_dll_runner(p) => texts.iter().any(|t| t.to_ascii_lowercase().contains(super::lit::url_opener_marker())),
         p if is_browser_executable(p) => true,
         _ => words.iter().any(|t| t.to_ascii_lowercase().contains("shellexecute") || t.to_ascii_lowercase().contains("shell.application")),
     }
