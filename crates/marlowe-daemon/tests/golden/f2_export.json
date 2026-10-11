@@ -1,0 +1,170 @@
+{
+  "cost": {
+    "by_model": [
+      {
+        "calls": 3,
+        "model": "ollama/marlowe-dusk",
+        "usage": {
+          "cached_input": 0,
+          "cost_usd": 0.0,
+          "input": 4000,
+          "output": 72,
+          "reasoning": 0
+        }
+      }
+    ],
+    "calls": 3,
+    "usage": {
+      "cached_input": 0,
+      "cost_usd": 0.0,
+      "input": 4000,
+      "output": 72,
+      "reasoning": 0
+    }
+  },
+  "format": "marlowe-session/1",
+  "messages": [
+    {
+      "at_ms": 1760000000000,
+      "content": [
+        {
+          "text": "what does main.rs do?",
+          "type": "text"
+        }
+      ],
+      "idx": 0,
+      "role": "user",
+      "turn": 0
+    },
+    {
+      "at_ms": 1760000001000,
+      "content": [
+        {
+          "text": "private reasoning",
+          "type": "thinking"
+        },
+        {
+          "text": "Let me read it.",
+          "type": "text"
+        },
+        {
+          "args": {
+            "path": "src/main.rs"
+          },
+          "id": "c1",
+          "name": "read",
+          "type": "tool_call"
+        }
+      ],
+      "idx": 1,
+      "latency_ms": 900,
+      "model": "marlowe-dusk",
+      "provider": "ollama",
+      "role": "assistant",
+      "step": 1,
+      "turn": 0,
+      "usage": {
+        "cached_input": 0,
+        "input": 1200,
+        "output": 40,
+        "reasoning": 0
+      }
+    },
+    {
+      "at_ms": 1760000002000,
+      "content": [
+        {
+          "call_id": "c1",
+          "content": "fn main() {}\n",
+          "is_error": false,
+          "type": "tool_result"
+        }
+      ],
+      "idx": 2,
+      "role": "tool",
+      "turn": 0
+    },
+    {
+      "at_ms": 1760000003000,
+      "content": [
+        {
+          "text": "It is an empty entry point.",
+          "type": "text"
+        }
+      ],
+      "idx": 3,
+      "latency_ms": 400,
+      "model": "marlowe-dusk",
+      "provider": "ollama",
+      "role": "assistant",
+      "step": 1,
+      "turn": 0,
+      "usage": {
+        "cached_input": 0,
+        "input": 1300,
+        "output": 12,
+        "reasoning": 0
+      }
+    },
+    {
+      "at_ms": 1760000100000,
+      "content": [
+        {
+          "text": "run the tests",
+          "type": "text"
+        }
+      ],
+      "idx": 4,
+      "role": "user",
+      "turn": 1
+    },
+    {
+      "at_ms": 1760000101000,
+      "content": [
+        {
+          "args": {
+            "command": "cargo test"
+          },
+          "id": "c2",
+          "name": "bash",
+          "type": "tool_call"
+        }
+      ],
+      "idx": 5,
+      "latency_ms": 600,
+      "model": "marlowe-dusk",
+      "provider": "ollama",
+      "role": "assistant",
+      "step": 1,
+      "turn": 1,
+      "usage": {
+        "cached_input": 0,
+        "input": 1500,
+        "output": 20,
+        "reasoning": 0
+      }
+    },
+    {
+      "at_ms": 1760000102000,
+      "content": [
+        {
+          "call_id": "c2",
+          "content": "error: no `Cargo.toml` here\n```\nnested fence\n```\n",
+          "is_error": true,
+          "type": "tool_result"
+        }
+      ],
+      "idx": 6,
+      "role": "tool",
+      "turn": 1
+    }
+  ],
+  "session": {
+    "created_ms": 1760000000000,
+    "id": "0123456789abcdef",
+    "title": "main.rs",
+    "turns": 2,
+    "updated_ms": 1760000102000,
+    "workspace": "C:/ws/demo"
+  }
+}

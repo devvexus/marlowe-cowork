@@ -108,6 +108,9 @@ pub enum EventKind {
     SessionSummarized,
     SessionSpawned,
     SessionClosed,
+    /// `/rewind` dropped turns from a session: what the session recorded from those turns stays
+    /// in the journal but is never retrieved again (M4.6, a minor version bump).
+    Retracted,
 
     // -- trust ledger: appendable ONLY by Actor::Permission ----------------------------
     ActionObserved,

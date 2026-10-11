@@ -1,12 +1,22 @@
 //! The store actor: sessions and their messages in `cowork.db`.
 //!
 //! One thread owns the connection; callers send a command and wait for its reply.
+//!
+//! A session's transcript is one row per message, written as the loop produces it (track F2): an
+//! assistant row per model call with its `provider`, `model`, `usage` and `latency_ms`, a row per
+//! tool batch with its results, and the user's words when the turn begins. Every row carries the
+//! `turn` it belongs to, and a turn's first row the memory journal's `mem_seq` at that moment, so
+//! `/rewind` can drop a turn and `Retracted` can name what it wrote. A tool call that finished
+//! while its batch was still running is kept in `call_results`, so a daemon killed mid-batch
+//! loses no completed call. Rewound rows move to `rewound_turns` with their model, usage and
+//! latency; nothing is deleted. A model call that left no row (an empty answer) keeps its usage
+//! in `extra_calls`. Both still count in `/cost`: a rewind does not give the money back.
 
 use std::path::Path;
 use std::thread::JoinHandle;
 
 use crossbeam_channel::{bounded, unbounded, Sender};
-use marlowe_model::{Message, Part, Role};
+use marlowe_model::{Message, Part, Role, Usage};
 use marlowe_proto::{SessionId, SessionSummary, StoredTurn};
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -33,14 +43,134 @@ CREATE TABLE IF NOT EXISTS daemon_kv (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS call_results (
+    session  TEXT NOT NULL,
+    call_id  TEXT NOT NULL,
+    content  TEXT NOT NULL,
+    is_error INTEGER NOT NULL,
+    at       INTEGER NOT NULL,
+    PRIMARY KEY (session, call_id)
+);
+CREATE TABLE IF NOT EXISTS extra_calls (
+    session    TEXT NOT NULL,
+    turn       INTEGER NOT NULL,
+    step       INTEGER,
+    at         INTEGER NOT NULL,
+    provider   TEXT NOT NULL,
+    model      TEXT NOT NULL,
+    usage      TEXT NOT NULL,
+    latency_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rewound_turns (
+    session     TEXT NOT NULL,
+    idx         INTEGER NOT NULL,
+    role        TEXT NOT NULL,
+    content     TEXT NOT NULL,
+    at          INTEGER NOT NULL,
+    turn        INTEGER,
+    rewound_at  INTEGER NOT NULL
+);
 ";
 
+/// Columns added after the first schema: `(table, column, declaration)`. `migrate` adds the ones
+/// an older database lacks.
+const ADDED: &[(&str, &str, &str)] = &[
+    ("sessions", "tainted", "INTEGER NOT NULL DEFAULT 0"),
+    ("sessions", "parent", "TEXT"),
+    ("turns", "turn", "INTEGER"),
+    ("turns", "step", "INTEGER"),
+    ("turns", "provider", "TEXT"),
+    ("turns", "model", "TEXT"),
+    ("turns", "usage", "TEXT"),
+    ("turns", "latency_ms", "INTEGER"),
+    ("turns", "mem_seq", "INTEGER"),
+    ("rewound_turns", "step", "INTEGER"),
+    ("rewound_turns", "provider", "TEXT"),
+    ("rewound_turns", "model", "TEXT"),
+    ("rewound_turns", "usage", "TEXT"),
+    ("rewound_turns", "latency_ms", "INTEGER"),
+    ("rewound_turns", "mem_seq", "INTEGER"),
+];
+
 pub(crate) type StoreResult<T> = Result<T, String>;
+
+/// What a model call cost and how long it took, kept on its assistant row.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CallMeta {
+    /// `ollama`, `openrouter`, ... (a [`marlowe_model::ProviderKind`] id).
+    pub provider: String,
+    /// The provider-native model id.
+    pub model: String,
+    pub usage: Usage,
+    pub latency_ms: u64,
+}
+
+/// One message to persist, with where it came from.
+#[derive(Debug, Clone)]
+pub(crate) struct RowIn {
+    pub message: Message,
+    pub turn: u32,
+    /// The model call (1-based) within the turn this row belongs to, when it has one.
+    pub step: Option<u32>,
+    /// When it happened, Unix epoch ms.
+    pub at: i64,
+    pub meta: Option<CallMeta>,
+    /// The memory journal's last seq when the turn began (a turn's first row only).
+    pub mem_seq: Option<u64>,
+}
+
+/// A stored message with its provenance.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RowOut {
+    pub idx: u32,
+    pub role: Role,
+    pub content: Vec<Part>,
+    pub at_ms: i64,
+    pub turn: u32,
+    pub step: Option<u32>,
+    pub meta: Option<CallMeta>,
+    pub mem_seq: Option<u64>,
+}
+
+impl RowOut {
+    pub fn message(&self) -> Message {
+        Message { role: self.role, content: self.content.clone() }
+    }
+}
+
+/// A tool call that finished before its batch did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CallResultRow {
+    pub call_id: String,
+    pub content: String,
+    pub is_error: bool,
+}
+
+/// What dropping a session's turns removed.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct Dropped {
+    pub removed: u32,
+    /// The earliest memory journal seq the dropped turns recorded.
+    pub mem_seq: Option<u64>,
+    /// When the last kept row happened (the dropped turns began after it), for turns stored
+    /// without a `mem_seq`.
+    pub kept_until_ms: Option<i64>,
+    /// When the first dropped row happened.
+    pub first_ms: Option<i64>,
+}
 
 enum Cmd {
     Create(SessionSummary, Sender<StoreResult<()>>),
     SetTitle(SessionId, String, Sender<StoreResult<()>>),
-    Append { session: SessionId, messages: Vec<Message>, next_turn: u32, tainted: bool, at: i64, reply: Sender<StoreResult<()>> },
+    AppendRows { session: SessionId, rows: Vec<RowIn>, next_turn: u32, tainted: bool, at: i64, reply: Sender<StoreResult<()>> },
+    PutCallResult { session: SessionId, row: CallResultRow, at: i64, reply: Sender<StoreResult<()>> },
+    CallResults(SessionId, Sender<StoreResult<Vec<CallResultRow>>>),
+    PutSpend { session: SessionId, turn: u32, step: Option<u32>, at: i64, meta: CallMeta, reply: Sender<StoreResult<()>> },
+    HiddenSpend(SessionId, Sender<StoreResult<Vec<CallMeta>>>),
+    Rows(SessionId, Sender<StoreResult<Vec<RowOut>>>),
+    ReplaceLast(SessionId, Message, Sender<StoreResult<()>>),
+    DropFrom { session: SessionId, turn: u32, at: i64, reply: Sender<StoreResult<Dropped>> },
+    Fork { from: SessionId, to: SessionSummary, before_turn: Option<u32>, reply: Sender<StoreResult<SessionSummary>> },
     Get(SessionId, Sender<StoreResult<Option<SessionSummary>>>),
     Tainted(SessionId, Sender<StoreResult<bool>>),
     List(u32, Sender<StoreResult<Vec<SessionSummary>>>),
@@ -100,8 +230,64 @@ fn serve(conn: &mut Connection, cmd: Cmd) -> bool {
                 .map_err(e);
             let _ = reply.send(r);
         }
-        Cmd::Append { session, messages, next_turn, tainted, at, reply } => {
-            let _ = reply.send(append(conn, &session, &messages, next_turn, tainted, at).map_err(e));
+        Cmd::AppendRows { session, rows, next_turn, tainted, at, reply } => {
+            let _ = reply.send(append_rows(conn, &session, &rows, next_turn, tainted, at).map_err(e));
+        }
+        Cmd::PutCallResult { session, row, at, reply } => {
+            let r = conn
+                .execute(
+                    "INSERT INTO call_results (session, call_id, content, is_error, at) VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(session, call_id) DO UPDATE SET content = excluded.content, is_error = excluded.is_error",
+                    params![session.as_str(), row.call_id, row.content, row.is_error as i64, at],
+                )
+                .map(|_| ())
+                .map_err(e);
+            let _ = reply.send(r);
+        }
+        Cmd::PutSpend { session, turn, step, at, meta, reply } => {
+            let usage = serde_json::to_string(&meta.usage).unwrap_or_else(|_| "{}".into());
+            let r = conn
+                .execute(
+                    "INSERT INTO extra_calls (session, turn, step, at, provider, model, usage, latency_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![session.as_str(), turn, step, at, meta.provider, meta.model, usage, meta.latency_ms as i64],
+                )
+                .map(|_| ())
+                .map_err(e);
+            let _ = reply.send(r);
+        }
+        Cmd::HiddenSpend(session, reply) => {
+            let _ = reply.send(hidden_spend(conn, &session).map_err(e));
+        }
+        Cmd::CallResults(session, reply) => {
+            let r = (|| {
+                let mut st = conn.prepare("SELECT call_id, content, is_error FROM call_results WHERE session = ?1 ORDER BY at, call_id")?;
+                let rows = st.query_map([session.as_str()], |r| {
+                    Ok(CallResultRow { call_id: r.get(0)?, content: r.get(1)?, is_error: r.get::<_, i64>(2)? != 0 })
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()
+            })()
+            .map_err(e);
+            let _ = reply.send(r);
+        }
+        Cmd::Rows(session, reply) => {
+            let _ = reply.send(rows(conn, &session));
+        }
+        Cmd::ReplaceLast(session, message, reply) => {
+            let content = serde_json::to_string(&message.content).unwrap_or_else(|_| "[]".into());
+            let r = conn
+                .execute(
+                    "UPDATE turns SET content = ?2 WHERE session = ?1 AND idx = (SELECT MAX(idx) FROM turns WHERE session = ?1)",
+                    params![session.as_str(), content],
+                )
+                .map(|_| ())
+                .map_err(e);
+            let _ = reply.send(r);
+        }
+        Cmd::DropFrom { session, turn, at, reply } => {
+            let _ = reply.send(drop_from(conn, &session, turn, at).map_err(e));
+        }
+        Cmd::Fork { from, to, before_turn, reply } => {
+            let _ = reply.send(fork(conn, &from, to, before_turn));
         }
         Cmd::Tainted(id, reply) => {
             let r = conn
@@ -169,20 +355,45 @@ fn summary_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionSummary> {
     })
 }
 
-/// Adds `sessions.tainted` to a database created before it existed.
+/// Adds the columns an older database lacks, and numbers the turns of rows saved before rows
+/// carried one: a turn starts at each user-role message (a mid-turn steer counts as one there,
+/// which only matters for rewinding sessions saved by an older build).
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    let has: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'tainted'")?
-        .exists([])?;
-    if !has {
-        conn.execute_batch("ALTER TABLE sessions ADD COLUMN tainted INTEGER NOT NULL DEFAULT 0")?;
+    for (table, column, decl) in ADDED {
+        let has: bool = conn
+            .prepare(&format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = '{column}'"))?
+            .exists([])?;
+        if !has {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))?;
+        }
     }
+    conn.execute_batch(
+        "UPDATE turns SET turn = MAX(0, (SELECT COUNT(*) FROM turns t2 WHERE t2.session = turns.session AND t2.idx <= turns.idx AND t2.role = 'user') - 1)
+         WHERE turn IS NULL",
+    )?;
     Ok(())
 }
 
-/// Appends a turn's messages. `tainted` latches: once a session read untrusted content it stays
-/// tainted across reloads, including taint that left no trace in its messages (an injected memory).
-fn append(conn: &mut Connection, session: &SessionId, messages: &[Message], next_turn: u32, tainted: bool, at: i64) -> rusqlite::Result<()> {
+type MetaColumns<'a> = (Option<&'a str>, Option<&'a str>, Option<String>, Option<i64>);
+
+fn meta_columns(m: &Option<CallMeta>) -> MetaColumns<'_> {
+    match m {
+        Some(m) => (Some(m.provider.as_str()), Some(m.model.as_str()), serde_json::to_string(&m.usage).ok(), Some(m.latency_ms as i64)),
+        None => (None, None, None, None),
+    }
+}
+
+/// Appends rows. `tainted` latches: once a session read untrusted content it stays tainted across
+/// reloads, including taint that left no trace in its messages (an injected memory). A row of tool
+/// results also settles the `call_results` kept for its calls.
+fn append_rows(
+    conn: &mut Connection,
+    session: &SessionId,
+    rows: &[RowIn],
+    next_turn: u32,
+    tainted: bool,
+    at: i64,
+) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     let mut idx: i64 = tx.query_row(
         "SELECT COALESCE(MAX(idx) + 1, 0) FROM turns WHERE session = ?1",
@@ -190,11 +401,32 @@ fn append(conn: &mut Connection, session: &SessionId, messages: &[Message], next
         |r| r.get(0),
     )?;
     {
-        let mut ins = tx.prepare("INSERT INTO turns (session, idx, role, content, at) VALUES (?1, ?2, ?3, ?4, ?5)")?;
-        for m in messages {
-            let content = serde_json::to_string(&m.content).unwrap_or_else(|_| "[]".into());
-            ins.execute(params![session.as_str(), idx, role_str(m.role), content, at])?;
+        let mut ins = tx.prepare(
+            "INSERT INTO turns (session, idx, role, content, at, turn, step, provider, model, usage, latency_ms, mem_seq)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        )?;
+        let mut settle = tx.prepare("DELETE FROM call_results WHERE session = ?1 AND call_id = ?2")?;
+        for row in rows {
+            let content = serde_json::to_string(&row.message.content).unwrap_or_else(|_| "[]".into());
+            let (provider, model, usage, latency) = meta_columns(&row.meta);
+            ins.execute(params![
+                session.as_str(),
+                idx,
+                role_str(row.message.role),
+                content,
+                row.at,
+                row.turn,
+                row.step,
+                provider,
+                model,
+                usage,
+                latency,
+                row.mem_seq.map(|s| s as i64),
+            ])?;
             idx += 1;
+            for r in row.message.tool_results_iter() {
+                settle.execute(params![session.as_str(), r.call_id])?;
+            }
         }
     }
     tx.execute(
@@ -202,6 +434,148 @@ fn append(conn: &mut Connection, session: &SessionId, messages: &[Message], next
         params![session.as_str(), at, next_turn, tainted as i64],
     )?;
     tx.commit()
+}
+
+type RowTuple = (u32, String, String, i64, u32, Option<u32>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<i64>);
+
+fn rows(conn: &Connection, id: &SessionId) -> StoreResult<Vec<RowOut>> {
+    let mut st = conn
+        .prepare(
+            "SELECT idx, role, content, at, COALESCE(turn, 0), step, provider, model, usage, latency_ms, mem_seq
+             FROM turns WHERE session = ?1 ORDER BY idx",
+        )
+        .map_err(|e| e.to_string())?;
+    let found = st
+        .query_map([id.as_str()], |r| -> rusqlite::Result<RowTuple> {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in found {
+        let (idx, role, content, at_ms, turn, step, provider, model, usage, latency, mem_seq) = row.map_err(|e| e.to_string())?;
+        let role = parse_role(&role).ok_or_else(|| format!("bad role '{role}' in turn {idx}"))?;
+        let content: Vec<Part> = serde_json::from_str(&content).map_err(|e| format!("turn {idx}: {e}"))?;
+        let meta = match (provider, model) {
+            (Some(provider), Some(model)) => Some(CallMeta {
+                provider,
+                model,
+                usage: usage.and_then(|u| serde_json::from_str(&u).ok()).unwrap_or_default(),
+                latency_ms: latency.unwrap_or(0).max(0) as u64,
+            }),
+            _ => None,
+        };
+        out.push(RowOut { idx, role, content, at_ms, turn, step, meta, mem_seq: mem_seq.map(|s| s.max(0) as u64) });
+    }
+    Ok(out)
+}
+
+/// The model calls of a session that no longer show in its transcript: rows a rewind moved aside
+/// and calls that produced no row.
+fn hidden_spend(conn: &Connection, session: &SessionId) -> rusqlite::Result<Vec<CallMeta>> {
+    let mut st = conn.prepare(
+        "SELECT provider, model, usage, latency_ms FROM rewound_turns WHERE session = ?1 AND provider IS NOT NULL AND model IS NOT NULL
+         UNION ALL
+         SELECT provider, model, usage, latency_ms FROM extra_calls WHERE session = ?1",
+    )?;
+    let found = st.query_map([session.as_str()], |r| {
+        Ok(CallMeta {
+            provider: r.get(0)?,
+            model: r.get(1)?,
+            usage: r.get::<_, Option<String>>(2)?.and_then(|u| serde_json::from_str(&u).ok()).unwrap_or_default(),
+            latency_ms: r.get::<_, Option<i64>>(3)?.unwrap_or(0).max(0) as u64,
+        })
+    })?;
+    found.collect()
+}
+
+/// Moves every row of turns `turn..` to `rewound_turns` and sets the session's next turn back.
+fn drop_from(conn: &mut Connection, session: &SessionId, turn: u32, at: i64) -> rusqlite::Result<Dropped> {
+    let tx = conn.transaction()?;
+    let first: Option<(i64, i64)> = tx
+        .query_row(
+            "SELECT idx, at FROM turns WHERE session = ?1 AND COALESCE(turn, 0) >= ?2 ORDER BY idx LIMIT 1",
+            params![session.as_str(), turn],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let mut out = Dropped::default();
+    if let Some((first_idx, first_ms)) = first {
+        out.first_ms = Some(first_ms);
+        out.kept_until_ms = tx.query_row(
+            "SELECT MAX(at) FROM turns WHERE session = ?1 AND idx < ?2",
+            params![session.as_str(), first_idx],
+            |r| r.get(0),
+        )?;
+        out.mem_seq = tx
+            .query_row(
+                "SELECT MIN(mem_seq) FROM turns WHERE session = ?1 AND idx >= ?2 AND mem_seq IS NOT NULL",
+                params![session.as_str(), first_idx],
+                |r| r.get::<_, Option<i64>>(0),
+            )?
+            .map(|s| s.max(0) as u64);
+        out.removed = tx.execute(
+            "INSERT INTO rewound_turns (session, idx, role, content, at, turn, rewound_at, step, provider, model, usage, latency_ms, mem_seq)
+             SELECT session, idx, role, content, at, turn, ?3, step, provider, model, usage, latency_ms, mem_seq FROM turns WHERE session = ?1 AND idx >= ?2",
+            params![session.as_str(), first_idx, at],
+        )? as u32;
+        tx.execute("DELETE FROM turns WHERE session = ?1 AND idx >= ?2", params![session.as_str(), first_idx])?;
+    }
+    tx.execute("DELETE FROM call_results WHERE session = ?1", [session.as_str()])?;
+    tx.execute(
+        "UPDATE sessions SET next_turn = MIN(next_turn, ?2), updated = ?3 WHERE id = ?1",
+        params![session.as_str(), turn, at],
+    )?;
+    tx.commit()?;
+    Ok(out)
+}
+
+/// A copy of `from` under `to`'s id: its rows of turns before `before_turn` (all of them for
+/// `None`), the workspace, the taint latch and a link to the original.
+fn fork(conn: &mut Connection, from: &SessionId, to: SessionSummary, before_turn: Option<u32>) -> StoreResult<SessionSummary> {
+    let source = rows(conn, from)?;
+    let tainted: i64 = conn
+        .query_row("SELECT tainted FROM sessions WHERE id = ?1", [from.as_str()], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let kept: Vec<&RowOut> = source.iter().filter(|r| before_turn.is_none_or(|t| r.turn < t)).collect();
+    let next_turn = match before_turn {
+        Some(t) => t,
+        None => kept.iter().map(|r| r.turn + 1).max().unwrap_or(0),
+    };
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO sessions (id, title, workspace, created, updated, next_turn, tainted, parent) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![to.id.as_str(), to.title, to.workspace, to.created_ms, to.updated_ms, next_turn, tainted, from.as_str()],
+    )
+    .map_err(|e| e.to_string())?;
+    {
+        let mut ins = tx
+            .prepare(
+                "INSERT INTO turns (session, idx, role, content, at, turn, step, provider, model, usage, latency_ms, mem_seq)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            )
+            .map_err(|e| e.to_string())?;
+        for (i, row) in kept.iter().enumerate() {
+            let content = serde_json::to_string(&row.content).map_err(|e| e.to_string())?;
+            let (provider, model, usage, latency) = meta_columns(&row.meta);
+            ins.execute(params![
+                to.id.as_str(),
+                i as i64,
+                role_str(row.role),
+                content,
+                row.at_ms,
+                row.turn,
+                row.step,
+                provider,
+                model,
+                usage,
+                latency,
+                row.mem_seq.map(|s| s as i64),
+            ])
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(SessionSummary { turns: next_turn, ..to })
 }
 
 fn load(conn: &Connection, id: &SessionId) -> StoreResult<Vec<StoredTurn>> {
@@ -257,8 +631,60 @@ impl Store {
         self.call(|r| Cmd::SetTitle(id.clone(), title.to_string(), r))
     }
 
+    /// Appends whole messages with no per-call provenance, all of turn `next_turn - 1`.
     pub fn append(&self, session: &SessionId, messages: Vec<Message>, next_turn: u32, tainted: bool, at: i64) -> StoreResult<()> {
-        self.call(|reply| Cmd::Append { session: session.clone(), messages, next_turn, tainted, at, reply })
+        let turn = next_turn.saturating_sub(1);
+        let rows = messages.into_iter().map(|message| RowIn { message, turn, step: None, at, meta: None, mem_seq: None }).collect();
+        self.append_rows(session, rows, next_turn, tainted, at)
+    }
+
+    /// Appends rows in one transaction and moves the session's `updated`, `next_turn` (never
+    /// back) and taint latch.
+    pub fn append_rows(&self, session: &SessionId, rows: Vec<RowIn>, next_turn: u32, tainted: bool, at: i64) -> StoreResult<()> {
+        self.call(|reply| Cmd::AppendRows { session: session.clone(), rows, next_turn, tainted, at, reply })
+    }
+
+    /// Keeps a tool call's outcome the moment it finishes, before its batch is complete.
+    pub fn put_call_result(&self, session: &SessionId, row: CallResultRow, at: i64) -> StoreResult<()> {
+        self.call(|reply| Cmd::PutCallResult { session: session.clone(), row, at, reply })
+    }
+
+    /// Outcomes of calls that finished in a batch that never completed.
+    pub fn call_results(&self, session: &SessionId) -> StoreResult<Vec<CallResultRow>> {
+        self.call(|r| Cmd::CallResults(session.clone(), r))
+    }
+
+    /// Keeps the usage of a model call that left no row (it answered with nothing).
+    pub fn put_spend(&self, session: &SessionId, turn: u32, step: Option<u32>, meta: CallMeta, at: i64) -> StoreResult<()> {
+        self.call(|reply| Cmd::PutSpend { session: session.clone(), turn, step, at, meta, reply })
+    }
+
+    /// Model calls that cost something but are not in [`Store::rows`]: rewound rows and calls
+    /// without one.
+    pub fn hidden_spend(&self, session: &SessionId) -> StoreResult<Vec<CallMeta>> {
+        self.call(|r| Cmd::HiddenSpend(session.clone(), r))
+    }
+
+    /// Every row of a session with its provenance.
+    pub fn rows(&self, session: &SessionId) -> StoreResult<Vec<RowOut>> {
+        self.call(|r| Cmd::Rows(session.clone(), r))
+    }
+
+    /// Replaces the content of the session's last row (the stored prompt turned out to differ
+    /// from what the loop used).
+    pub fn replace_last(&self, session: &SessionId, message: Message) -> StoreResult<()> {
+        self.call(|reply| Cmd::ReplaceLast(session.clone(), message, reply))
+    }
+
+    /// `/rewind`: moves turns `turn..` out of the transcript (to `rewound_turns`) and sets the
+    /// session's next turn back to `turn`.
+    pub fn drop_from(&self, session: &SessionId, turn: u32, at: i64) -> StoreResult<Dropped> {
+        self.call(|reply| Cmd::DropFrom { session: session.clone(), turn, at, reply })
+    }
+
+    /// `/fork`: registers `to` as a copy of `from` up to (not including) `before_turn`.
+    pub fn fork(&self, from: &SessionId, to: SessionSummary, before_turn: Option<u32>) -> StoreResult<SessionSummary> {
+        self.call(|reply| Cmd::Fork { from: from.clone(), to, before_turn, reply })
     }
 
     /// Whether the session has read untrusted content.
@@ -302,16 +728,23 @@ impl Store {
 mod tests {
     use super::*;
 
-    #[test]
-    fn sessions_and_turns_round_trip() {
-        let dir = std::env::temp_dir().join(format!("marlowe-daemon-store-{}", std::process::id()));
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("marlowe-daemon-store-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn summary(id: &SessionId, ws: &str) -> SessionSummary {
+        SessionSummary { id: id.clone(), title: String::new(), workspace: Some(ws.into()), created_ms: 1, updated_ms: 1, turns: 0 }
+    }
+
+    #[test]
+    fn sessions_and_turns_round_trip() {
+        let dir = scratch("round");
         let (store, handle) = open(&dir.join("cowork.db")).unwrap();
         let id = SessionId("s1".into());
-        store
-            .create(SessionSummary { id: id.clone(), title: String::new(), workspace: Some("C:/w".into()), created_ms: 1, updated_ms: 1, turns: 0 })
-            .unwrap();
+        store.create(summary(&id, "C:/w")).unwrap();
         store.set_title(&id, "hello").unwrap();
         store.append(&id, vec![Message::user("hi"), Message::assistant("hey")], 1, false, 5).unwrap();
         assert!(!store.tainted(&id).unwrap());
@@ -333,6 +766,132 @@ mod tests {
         store.close();
         handle.join().unwrap();
         assert!(store.list(1).is_err(), "a closed store refuses");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn row(m: Message, turn: u32, at: i64) -> RowIn {
+        RowIn { message: m, turn, step: None, at, meta: None, mem_seq: None }
+    }
+
+    #[test]
+    fn rows_carry_their_turn_and_provenance_and_a_rewind_moves_them_aside() {
+        let dir = scratch("rows");
+        let (store, handle) = open(&dir.join("cowork.db")).unwrap();
+        let id = SessionId("s".into());
+        store.create(summary(&id, "C:/w")).unwrap();
+        let meta = CallMeta {
+            provider: "ollama".into(),
+            model: "dusk".into(),
+            usage: Usage { input: 100, output: 20, ..Usage::default() },
+            latency_ms: 42,
+        };
+        store
+            .append_rows(
+                &id,
+                vec![
+                    RowIn { mem_seq: Some(7), ..row(Message::user("one"), 0, 10) },
+                    RowIn { step: Some(1), meta: Some(meta.clone()), ..row(Message::assistant("a1"), 0, 11) },
+                    RowIn { mem_seq: Some(9), ..row(Message::user("two"), 1, 20) },
+                    RowIn { step: Some(1), meta: Some(meta.clone()), ..row(Message::assistant("a2"), 1, 21) },
+                ],
+                2,
+                false,
+                21,
+            )
+            .unwrap();
+        let rows = store.rows(&id).unwrap();
+        assert_eq!(rows.iter().map(|r| (r.turn, r.mem_seq)).collect::<Vec<_>>(), vec![(0, Some(7)), (0, None), (1, Some(9)), (1, None)]);
+        assert_eq!(rows[1].meta.as_ref().unwrap(), &meta);
+        assert_eq!(rows[1].step, Some(1));
+
+        let dropped = store.drop_from(&id, 1, 30).unwrap();
+        assert_eq!(dropped, Dropped { removed: 2, mem_seq: Some(9), kept_until_ms: Some(11), first_ms: Some(20) });
+        assert_eq!(store.load(&id).unwrap().len(), 2);
+        assert_eq!(store.get(&id).unwrap().unwrap().turns, 1, "the next turn is the one that was dropped");
+        // New rows continue the numbering with no gap.
+        store.append_rows(&id, vec![row(Message::user("two again"), 1, 40)], 2, false, 40).unwrap();
+        assert_eq!(store.load(&id).unwrap().iter().map(|t| t.idx).collect::<Vec<_>>(), vec![0, 1, 2]);
+        // The spend of the dropped call is still on record, and so is a call that left no row.
+        assert_eq!(store.hidden_spend(&id).unwrap(), vec![meta.clone()]);
+        let rowless = CallMeta { latency_ms: 7, ..meta.clone() };
+        store.put_spend(&id, 1, Some(2), rowless.clone(), 45).unwrap();
+        assert_eq!(store.hidden_spend(&id).unwrap(), vec![meta.clone(), rowless]);
+        assert!(store.hidden_spend(&SessionId("other".into())).unwrap().is_empty());
+        // Dropping past the end removes nothing.
+        assert_eq!(store.drop_from(&id, 9, 50).unwrap(), Dropped::default());
+        assert_eq!(store.get(&id).unwrap().unwrap().turns, 2);
+        store.close();
+        handle.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_fork_copies_the_turns_before_the_cut_and_is_independent() {
+        let dir = scratch("fork");
+        let (store, handle) = open(&dir.join("cowork.db")).unwrap();
+        let id = SessionId("orig".into());
+        store.create(summary(&id, "C:/w")).unwrap();
+        let rows = (0..3)
+            .flat_map(|t| [row(Message::user(format!("q{t}")), t, 10 + t as i64), row(Message::assistant(format!("a{t}")), t, 11 + t as i64)])
+            .collect();
+        store.append_rows(&id, rows, 3, true, 20).unwrap();
+        let copy = store.fork(&id, summary(&SessionId("copy".into()), "C:/w"), Some(2)).unwrap();
+        assert_eq!(copy.turns, 2);
+        let copied = store.load(&copy.id).unwrap();
+        assert_eq!(copied.len(), 4);
+        assert!(store.tainted(&copy.id).unwrap(), "taint travels with the history");
+        store.append_rows(&copy.id, vec![row(Message::user("only in the copy"), 2, 99)], 3, false, 99).unwrap();
+        assert_eq!(store.load(&id).unwrap().len(), 6, "the original is untouched");
+        let whole = store.fork(&id, summary(&SessionId("whole".into()), "C:/w"), None).unwrap();
+        assert_eq!((whole.turns, store.load(&whole.id).unwrap().len()), (3, 6));
+        store.close();
+        handle.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn call_results_wait_for_their_batch_and_settle_with_it() {
+        let dir = scratch("calls");
+        let (store, handle) = open(&dir.join("cowork.db")).unwrap();
+        let id = SessionId("s".into());
+        store.create(summary(&id, "C:/w")).unwrap();
+        let done = |call: &str| CallResultRow { call_id: call.into(), content: format!("{call} output"), is_error: false };
+        store.put_call_result(&id, done("a"), 1).unwrap();
+        store.put_call_result(&id, done("b"), 2).unwrap();
+        assert_eq!(store.call_results(&id).unwrap().len(), 2);
+        let batch = Message::tool_results([marlowe_model::ToolResult::text("a", "a output", false)]);
+        store.append_rows(&id, vec![row(batch, 0, 3)], 1, false, 3).unwrap();
+        assert_eq!(store.call_results(&id).unwrap(), vec![done("b")], "only the call in the stored batch settled");
+        store.close();
+        handle.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_older_database_gains_the_columns_and_its_turns_are_numbered() {
+        let dir = scratch("migrate");
+        let db = dir.join("cowork.db");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL, workspace TEXT, created INTEGER NOT NULL, updated INTEGER NOT NULL, next_turn INTEGER NOT NULL DEFAULT 0);
+                 CREATE TABLE turns (session TEXT NOT NULL, idx INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (session, idx));
+                 INSERT INTO sessions VALUES ('old', 't', NULL, 1, 1, 2);
+                 INSERT INTO turns VALUES ('old', 0, 'user', '[{\"type\":\"text\",\"text\":\"q0\"}]', 1);
+                 INSERT INTO turns VALUES ('old', 1, 'assistant', '[{\"type\":\"text\",\"text\":\"a0\"}]', 2);
+                 INSERT INTO turns VALUES ('old', 2, 'user', '[{\"type\":\"text\",\"text\":\"q1\"}]', 3);
+                 INSERT INTO turns VALUES ('old', 3, 'assistant', '[{\"type\":\"text\",\"text\":\"a1\"}]', 4);",
+            )
+            .unwrap();
+        }
+        let (store, handle) = open(&db).unwrap();
+        let id = SessionId("old".into());
+        let rows = store.rows(&id).unwrap();
+        assert_eq!(rows.iter().map(|r| r.turn).collect::<Vec<_>>(), vec![0, 0, 1, 1]);
+        assert!(rows.iter().all(|r| r.meta.is_none() && r.mem_seq.is_none()));
+        assert!(!store.tainted(&id).unwrap());
+        store.close();
+        handle.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

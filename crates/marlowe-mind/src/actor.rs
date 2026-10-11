@@ -26,7 +26,7 @@ use crate::profile::{self, Profile as UserProfile, ProfileQuery};
 use crate::store::{self, Boot};
 use crate::tags::{belief_kind, belief_scope, is_episode_summary, short};
 use crate::types::{
-    wire_trust, ConsolidateReport, Episode, Kind, MemoryIn, MindConfig, Provenance, Remembered,
+    wire_trust, ConsolidateReport, Episode, Kind, MemoryIn, MindConfig, Provenance, Remembered, Retraction,
     SnapshotInfo, TurnIn, TurnRole,
 };
 use crate::workspaces::{is_user_request, Workspaces};
@@ -55,6 +55,10 @@ pub(crate) enum Cmd {
     Stats(Reply<Result<MemoryStatsReport, MindError>>),
     Consolidate(Reply<Result<ConsolidateReport, MindError>>),
     Snapshot(Reply<Result<SnapshotInfo, MindError>>),
+    /// A `/rewind` dropped turns: retract what the session recorded from them.
+    Retract(Retraction, Reply<Result<usize, MindError>>),
+    /// The journal's last seq.
+    JournalSeq(Reply<u64>),
     ImportChunk(Vec<ImportOp>, Reply<Result<ChunkResult, MindError>>),
     /// Test hook: how the store was booted.
     #[cfg(test)]
@@ -256,6 +260,8 @@ impl Actor {
             Cmd::Stats(r) => drop(r.send(Ok(self.stats()))),
             Cmd::Consolidate(r) => drop(r.send(self.consolidate())),
             Cmd::Snapshot(r) => drop(r.send(self.snapshot())),
+            Cmd::Retract(p, r) => drop(r.send(self.retract(p))),
+            Cmd::JournalSeq(r) => drop(r.send(self.journal.last_seq())),
             Cmd::ImportChunk(ops, r) => drop(r.send(self.import_chunk(ops))),
             #[cfg(test)]
             Cmd::BootInfo(r) => drop(r.send(self.boot)),
@@ -478,6 +484,23 @@ impl Actor {
         Ok(())
     }
 
+    /// Journals `Retracted` and folds it: the session's beliefs from the rewound turns stay in the
+    /// journal and leave every retrieval path. The snapshot is rewritten so a boot never sees
+    /// them live between the rewind and the next periodic snapshot.
+    fn retract(&mut self, r: Retraction) -> Result<usize, MindError> {
+        let payload = marlowe_memory::store::RetractedPayload {
+            session: r.session,
+            turns: r.turns,
+            after_seq: r.after_seq,
+            from_ms: r.from_ms,
+        };
+        let n = marlowe_memory::store::append_retraction(&mut self.journal, &mut self.beliefs, clock(), &payload)?;
+        if let Err(e) = self.snapshot() {
+            eprintln!("marlowe-mind: snapshot after retract failed: {e}");
+        }
+        Ok(n)
+    }
+
     /// Journals the tombstone and drops the text and vector from memory.
     fn forget_entry(&mut self, id: &str) -> Result<(), MindError> {
         if let Err(rejected) =
@@ -492,9 +515,15 @@ impl Actor {
         Ok(())
     }
 
-    /// A memory by id, live or superseded; `None` for an unknown id or a tombstone.
+    /// A memory by id, live or superseded; `None` for an unknown id, a tombstone or a retraction.
     fn get(&self, id: &str) -> Option<MemoryHit> {
-        self.beliefs.get(id).filter(|e| e.fidelity > Fidelity::Tombstone).map(|e| crate::select::hit(e, 0.0))
+        let retracted = |e: &MemoryEntry| {
+            e.superseded_by.as_deref().is_some_and(|b| b.starts_with(marlowe_memory::store::RETRACTED_BY_PREFIX))
+        };
+        self.beliefs
+            .get(id)
+            .filter(|e| e.fidelity > Fidelity::Tombstone && !retracted(e))
+            .map(|e| crate::select::hit(e, 0.0))
     }
 
     fn episodes(&self, range: Range<i64>) -> Vec<Episode> {

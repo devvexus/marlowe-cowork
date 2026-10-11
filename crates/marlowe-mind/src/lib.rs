@@ -51,7 +51,7 @@ pub use profile::{Profile, ProfileQuery, DEFAULT_PROFILE_TOKENS};
 pub use marlowe_memory::ep::{judge_gpu, GpuLoad, GpuVerdict};
 pub use types::{
     wire_trust, ConsolidateReport, Episode, GpuProbe, ImportProgress, InjectQuery, Injection, Kind,
-    LegacyStatus, MemoryIn, MindConfig, Provenance, RecallQuery, Remembered, SnapshotInfo,
+    LegacyStatus, MemoryIn, MindConfig, Provenance, RecallQuery, Remembered, Retraction, SnapshotInfo,
     TurnIn, TurnRole,
 };
 
@@ -252,6 +252,19 @@ impl Mind {
     /// Writes a BeliefStore snapshot with its journal-seq watermark.
     pub fn snapshot(&self) -> Result<SnapshotInfo, MindError> {
         self.call(Cmd::Snapshot)?
+    }
+
+    /// Retracts what `retraction.session` recorded from its rewound turns (`/rewind`): the beliefs
+    /// stay in the journal, behind a `Retracted` event, and are never injected, recalled, listed
+    /// in the profile or consolidated again. Returns how many beliefs it retracted.
+    pub fn retract(&self, retraction: Retraction) -> Result<usize, MindError> {
+        self.call(|r| Cmd::Retract(retraction, r))?
+    }
+
+    /// The journal's last seq: a turn records it when it begins, so a rewind can tell what the
+    /// turn went on to write ([`Retraction::after_seq`]).
+    pub fn journal_seq(&self) -> Result<u64, MindError> {
+        self.call(Cmd::JournalSeq)
     }
 
     /// Whether an old profile exists at `dir` (default: [`default_legacy_profile`]) and was
