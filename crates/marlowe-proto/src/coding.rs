@@ -143,40 +143,85 @@ pub struct Question {
     /// A short label for the modal's tab.
     #[serde(default)]
     pub header: String,
+    /// The option labels (always filled, so a client that does not know `option_details` works).
     #[serde(default)]
     pub options: Vec<String>,
     #[serde(default)]
     pub multi_select: bool,
+    /// A description and a preview per option, parallel to `options` (T33). Empty: labels only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub option_details: Vec<QuestionOption>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// What `ask_user` can say about one option beyond its label (T33).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionOption {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// A monospace block shown beside the focused option (a snippet, a layout, a diff).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoStatus {
+    #[default]
     Pending,
     InProgress,
     Completed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TodoItem {
+    /// The subject.
     pub content: String,
     pub status: TodoStatus,
     /// Present-tense form shown while in progress.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_form: Option<String>,
+    /// Stable id of a task-list item (`todo_add`, T34); `None` for a `todo{items}` entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Who works on it: `conductor`, a subagent's or a workflow agent's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// Ids that must complete before this one can start.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<String>,
 }
 
-/// A `/loop` or scheduled task (the daemon's `schedules` table).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A `/loop`, cron or one-shot schedule (the daemon's `schedules` table).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleInfo {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionId>,
+    /// The interval of a `/loop`; 0 for a cron or a one-shot.
     pub every_secs: u64,
     /// The prompt or slash command it runs.
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_at_ms: Option<i64>,
+    /// A 5-field cron expression, local time (BG5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cron: Option<String>,
+    /// A one-shot's fire time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub once_at_ms: Option<i64>,
+    /// Survives a daemon restart; the others are dropped when their session ends.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub durable: bool,
+    /// Fires missed while the machine slept, reported once at wake.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub missed: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// What `/rewind` restores.

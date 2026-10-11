@@ -649,7 +649,7 @@ fn parity_slash_commands_are_there_offline_and_the_mode_command_sets_the_mode() 
 // ---- T22, T23 --------------------------------------------------------------------------------------
 
 fn todo(content: &str, status: TodoStatus, active: Option<&str>) -> TodoItem {
-    TodoItem { content: content.into(), status, active_form: active.map(str::to_string) }
+    TodoItem { content: content.into(), status, active_form: active.map(str::to_string), ..Default::default() }
 }
 
 #[test]
@@ -687,8 +687,8 @@ fn parity_T22_the_todo_list_is_pinned_while_anything_is_open() {
 
 fn questions() -> Vec<Question> {
     vec![
-        Question { question: "Which test runner should I use?".into(), header: "Runner".into(), options: vec!["cargo test".into(), "cargo nextest".into()], multi_select: false },
-        Question { question: "Which crates should the change touch?".into(), header: "Crates".into(), options: vec!["marlowe-tui".into(), "marlowe-agent".into(), "marlowe-proto".into()], multi_select: true },
+        Question { question: "Which test runner should I use?".into(), header: "Runner".into(), options: vec!["cargo test".into(), "cargo nextest".into()], multi_select: false, option_details: vec![] },
+        Question { question: "Which crates should the change touch?".into(), header: "Crates".into(), options: vec!["marlowe-tui".into(), "marlowe-agent".into(), "marlowe-proto".into()], multi_select: true, option_details: vec![] },
     ]
 }
 

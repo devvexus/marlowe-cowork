@@ -6,9 +6,9 @@
 //! | Hook | Track constructors |
 //! |---|---|
 //! | [`tools`] | `mcp_ops::compose` (K: the MCP host beside the built-ins) |
-//! | [`Stack`] middleware | `mode_ops::middleware` (E: hooks, modes, rules), `conductor_ops::middleware` (F: todo and verify reminders), `checkpoint::middleware` (F2: snapshots in `pre_mutation`) |
+//! | [`Stack`] middleware | `mode_ops::middleware` (E: hooks, modes, rules), `conductor_ops::middleware` (F: todo and verify reminders), `checkpoint::middleware` (F2: snapshots in `pre_mutation`), `task_ops::middleware` (N: background news at a step boundary) |
 //! | [`Stack`] observers | `mode_ops::observers` (E: SessionStart and Notification hooks), `checkpoint::observers` (F2: per-call and per-batch turn rows) |
-//! | [`Stack`] services | `mode_ops::services` (E: the hook runner), `conductor_ops::services` (F: `ask_user`, subagents, worktrees) |
+//! | [`Stack`] services | `mode_ops::services` (E: the hook runner), `conductor_ops::services` (F: `ask_user`, subagents, worktrees), `task_ops::services` (N: the task registry), `notify_ops::services` (N), `workflow_ops::services` (W), `f3_ops::services` (F3) |
 //!
 //! The exec-side middleware (A's `FileState`, B's job notices, C's diagnostics) comes from the
 //! tool host itself (`ToolHost::middleware`, seeded by `Agent::new`), built next to its state.
@@ -40,11 +40,18 @@ impl Stack {
             crate::mode_ops::middleware(core, convo),
             crate::conductor_ops::middleware(core, convo),
             crate::checkpoint::middleware(core, convo),
+            crate::task_ops::middleware(core, convo),
         ]
         .concat();
         let observers = [crate::mode_ops::observers(core, convo), crate::checkpoint::observers(core, convo)].concat();
-        let adders: [fn(&Arc<Core>, &Conversation, Services) -> Services; 2] =
-            [crate::mode_ops::services, crate::conductor_ops::services];
+        let adders: [fn(&Arc<Core>, &Conversation, Services) -> Services; 6] = [
+            crate::mode_ops::services,
+            crate::conductor_ops::services,
+            crate::task_ops::services,
+            crate::notify_ops::services,
+            crate::workflow_ops::services,
+            crate::f3_ops::services,
+        ];
         let services = adders.iter().fold(Services::new(), |s, add| add(core, convo, s));
         Self { middleware, observers, services }
     }

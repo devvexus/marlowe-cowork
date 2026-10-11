@@ -3,6 +3,9 @@
 use marlowe_model::{Effort, ModelInfo, ModelRef, Part, ProviderKind, Role, Usage};
 use serde::{Deserialize, Serialize};
 
+use crate::background::{
+    FastState, Finding, NotifyState, RuleSuggestion, SavedWorkflow, SentFile, TaskInfo, Urgency, WorkflowInfo,
+};
 use crate::context::{ContextPlan, ContextPolicy, ModelContext, PlannedChange};
 use crate::crew::{CrewRunInfo, CrewStep, Dispatch, RoleInfo, RunId};
 use crate::ids::{ApprovalId, SessionId};
@@ -327,6 +330,49 @@ pub enum Event {
         id: String,
         code: i32,
     },
+
+    // ---- M4.6 wave 2 (types in `background.rs`).
+    /// Reply to `ListTasks`.
+    Tasks { list: Vec<TaskInfo> },
+    /// A task started or changed state (broadcast).
+    TaskUpdated(TaskInfo),
+    /// Reply to `TaskOutput`: `next_since` is the offset to ask from next; `done` once the task
+    /// ended and nothing is left.
+    TaskOutput { id: String, text: String, next_since: u64, done: bool },
+    /// Reply to `ListWorkflows`.
+    WorkflowList { saved: Vec<SavedWorkflow>, runs: Vec<WorkflowInfo> },
+    /// A workflow run's phase, agents or budget changed (broadcast; also the reply to
+    /// `WatchWorkflow`).
+    WorkflowUpdated(WorkflowInfo),
+    /// One `log()` line of a workflow (broadcast).
+    WorkflowLog { run: RunId, line: String },
+    /// `report_findings` stored findings (broadcast), and the reply to `ListFindings`.
+    Findings {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run: Option<RunId>,
+        findings: Vec<Finding>,
+    },
+    /// `notify` raised a notification (broadcast); the toast and the spoken line are the daemon's.
+    Notified {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        title: String,
+        #[serde(default)]
+        body: String,
+        urgency: Urgency,
+    },
+    /// Reply to `NotifySettings` (also broadcast on change).
+    NotifyState(NotifyState),
+    /// `send_file` copied a file to the outbox (broadcast): the client shows a file card.
+    FileSent { session: SessionId, file: SentFile },
+    /// `exit_plan` wrote a plan file and waits for `AnswerPlan` (broadcast).
+    PlanReady { session: SessionId, id: String, path: String, text: String },
+    /// `/fast` changed (broadcast).
+    FastChanged { session: SessionId, state: FastState },
+    /// Reply to `SuggestRules`.
+    RuleSuggestions { list: Vec<RuleSuggestion> },
 }
 
 impl Event {
@@ -352,11 +398,17 @@ impl Event {
             | Event::Checkpoints { session, .. }
             | Event::SessionDiff { session, .. }
             | Event::SessionCost { session, .. }
-            | Event::SessionExported { session, .. } => Some(session),
+            | Event::SessionExported { session, .. }
+            | Event::FileSent { session, .. }
+            | Event::PlanReady { session, .. }
+            | Event::FastChanged { session, .. } => Some(session),
             Event::Error { session, .. }
             | Event::JobOutput { session, .. }
-            | Event::JobExited { session, .. } => session.as_ref(),
+            | Event::JobExited { session, .. }
+            | Event::Findings { session, .. }
+            | Event::Notified { session, .. } => session.as_ref(),
             Event::JobStarted { job } => job.session.as_ref(),
+            Event::TaskUpdated(task) => task.session.as_ref(),
             _ => None,
         }
     }

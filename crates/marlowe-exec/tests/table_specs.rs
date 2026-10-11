@@ -26,7 +26,18 @@ fn m45_groups(t: &BuiltinTools) -> Vec<ToolSpec> {
         .into_iter()
         .filter(|s| {
             t.manifest(&s.name)
-                .is_some_and(|m| !matches!(m.group, ToolGroup::Verify | ToolGroup::Code | ToolGroup::Agent | ToolGroup::Git))
+                .is_some_and(|m| {
+                    !matches!(
+                        m.group,
+                        ToolGroup::Verify
+                            | ToolGroup::Code
+                            | ToolGroup::Agent
+                            | ToolGroup::Git
+                            | ToolGroup::Workflow
+                            | ToolGroup::Tasks
+                            | ToolGroup::Notify
+                    )
+                })
         })
         .collect()
 }

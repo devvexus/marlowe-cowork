@@ -29,6 +29,10 @@ chrono.workspace = true
 # crate: those are injected through DaemonDeps.
 marlowe-settings.workspace = true
 marlowe-mcp.workspace = true
+# Wave 2 (seam2): W's engine behind `workflow_ops.rs`; N and W's `regex` and `blake3`.
+marlowe-workflow.workspace = true
+regex.workspace = true
+blake3.workspace = true
 
 [dev-dependencies]
 marlowe-research.workspace = true

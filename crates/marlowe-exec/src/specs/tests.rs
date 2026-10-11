@@ -218,11 +218,21 @@ fn every_tool_answers_as_the_old_dispatch_did() {
 
 #[test]
 fn every_tool_is_registered_once_in_its_group_in_the_old_order() {
-    // The git (track J) and verify (track D) groups pin their own lists in their own tests.
+    // The git (track J) and verify (track D) groups pin their own lists in their own tests, and so
+    // do the wave-2 groups (workflow, tasks, notify).
     let names: Vec<&str> = table()
         .defs
         .iter()
-        .filter(|d| !matches!(d.manifest.group, marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Verify))
+        .filter(|d| {
+            !matches!(
+                d.manifest.group,
+                marlowe_agent::ToolGroup::Git
+                    | marlowe_agent::ToolGroup::Verify
+                    | marlowe_agent::ToolGroup::Workflow
+                    | marlowe_agent::ToolGroup::Tasks
+                    | marlowe_agent::ToolGroup::Notify
+            )
+        })
         .map(|d| d.name())
         .collect();
     assert_eq!(

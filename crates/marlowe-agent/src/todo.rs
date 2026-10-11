@@ -85,7 +85,7 @@ pub fn parse_todos(args: &Value) -> Result<Vec<TodoItem>, String> {
             other => return Err(format!("item {}: status `{other}` is not pending, in_progress or completed", n + 1)),
         };
         let active_form = it.get("active_form").or_else(|| it.get("activeForm")).and_then(Value::as_str).map(str::to_string);
-        out.push(TodoItem { content: content.to_string(), status, active_form });
+        out.push(TodoItem { content: content.to_string(), status, active_form, ..Default::default() });
     }
     Ok(out)
 }
@@ -163,7 +163,7 @@ pub fn parse_questions(args: &Value) -> Result<Vec<Question>, String> {
             })
             .unwrap_or_default();
         let multi_select = q.get("multi_select").or_else(|| q.get("multiSelect")).and_then(Value::as_bool).unwrap_or(false);
-        out.push(Question { question: question.to_string(), header, options, multi_select });
+        out.push(Question { question: question.to_string(), header, options, multi_select, option_details: Vec::new() });
     }
     Ok(out)
 }

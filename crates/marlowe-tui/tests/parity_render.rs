@@ -392,6 +392,7 @@ fn build_run() -> CrewRunInfo {
         created_ms: 1_800_000_000_000 - 20 * 60_000,
         updated_ms: 1_800_000_000_000 - 60_000,
         result: None,
+        workflow: None,
     }
 }
 
@@ -497,7 +498,7 @@ fn every_coding_screen_stays_inside_the_palette() {
     feed(&mut s, 3, tool_started("c1", "edit", "edit src/gate.rs"));
     feed(&mut s, 4, tool_finished("c1", true, "edited src/gate.rs · exact"));
     end_turn_and_fetch(&mut s, 6, &[(gate_edit(), "edited src/gate.rs · exact")]);
-    feed(&mut s, 7, Event::Todos { session: sid(), items: vec![marlowe_proto::TodoItem { content: "x".into(), status: marlowe_proto::TodoStatus::InProgress, active_form: None }] });
+    feed(&mut s, 7, Event::Todos { session: sid(), items: vec![marlowe_proto::TodoItem { content: "x".into(), status: marlowe_proto::TodoStatus::InProgress, active_form: None, ..Default::default() }] });
     keys(&mut s, "'one' enter");
     palette_frame(&s);
     for cmd in ["/help", "/config", "/permissions", "/hooks", "/agents", "/mcp", "/memory", "/context", "/cost", "/diff", "/rewind", "/jobs"] {

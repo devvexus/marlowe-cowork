@@ -450,6 +450,12 @@ impl Daemon {
         self.core.addr
     }
 
+    /// The background task registry (design 3.12): what the `task_*` tools and the `/tasks` panel
+    /// list. The binary and tests register tasks through it.
+    pub fn tasks(&self) -> Arc<dyn marlowe_agent::TaskRegistry> {
+        crate::tasks::handle(&self.core)
+    }
+
     /// What `daemon.json` says.
     pub fn info(&self) -> DaemonInfo {
         DaemonInfo { port: self.core.addr.port(), token: self.core.token.clone(), pid: std::process::id() }

@@ -14,6 +14,8 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 crossbeam-channel.workspace = true
+# N: `task_output`'s `filter`.
+regex.workspace = true
 chrono.workspace = true
 # Pre-declared by the seam (M4.6) so wave-1 tracks do not edit this block or Cargo.lock's
 # dependency list for it; integ regenerates Cargo.lock rather than hand-merging it.

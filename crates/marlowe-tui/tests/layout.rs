@@ -37,6 +37,7 @@ fn crew_run(id: &str, role: &str, title: &str, status: CrewRunStatus) -> CrewRun
         created_ms: NOW - 20 * 60_000,
         updated_ms: NOW - 60_000,
         result: None,
+        workflow: None,
     }
 }
 

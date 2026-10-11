@@ -2806,6 +2806,7 @@ dependencies = [
  "marlowe-proto",
  "marlowe-settings",
  "marlowe-tools",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -2883,6 +2884,7 @@ dependencies = [
  "marlowe-proto",
  "marlowe-provider",
  "marlowe-research",
+ "marlowe-workflow",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2894,6 +2896,7 @@ dependencies = [
 name = "marlowe-daemon"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "chrono",
  "crossbeam-channel",
  "marlowe-agent",
@@ -2912,6 +2915,8 @@ dependencies = [
  "marlowe-sentinel",
  "marlowe-settings",
  "marlowe-voice",
+ "marlowe-workflow",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",
@@ -3084,6 +3089,7 @@ name = "marlowe-os"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.19",
+ "windows",
  "windows-sys 0.61.2",
 ]
 
@@ -3274,6 +3280,20 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
  "windows",
+]
+
+[[package]]
+name = "marlowe-workflow"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "crossbeam-channel",
+ "marlowe-model",
+ "marlowe-proto",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

@@ -70,6 +70,7 @@ fn load(core: &Core) -> Result<Vec<ScheduleInfo>, String> {
                 every_secs: r.get::<_, i64>(2)? as u64,
                 text: r.get(3)?,
                 next_at_ms: Some(r.get(4)?),
+                ..Default::default()
             })
         })?;
         let all: rusqlite::Result<Vec<ScheduleInfo>> = rows.collect();
@@ -106,6 +107,7 @@ pub(crate) fn add(core: &Arc<Core>, session: Option<SessionId>, every_secs: u64,
         every_secs,
         text: text.to_string(),
         next_at_ms: Some(now_ms() + (every_secs * 1_000) as i64),
+        ..Default::default()
     };
     save(core, &info)?;
     lock(&s.rows).push(info.clone());

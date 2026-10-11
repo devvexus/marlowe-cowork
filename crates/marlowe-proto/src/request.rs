@@ -6,6 +6,7 @@ use std::str::FromStr;
 use marlowe_model::{Effort, ImageRef, ModelRef, ProviderKind};
 use serde::{Deserialize, Serialize};
 
+use crate::background::PlanFileDecision;
 use crate::coding::{ExportFormat, HeadlessOptions, PermissionMode, RewindScope, SettingsScope};
 use crate::context::{ContextPolicy, KvType};
 use crate::crew::{CrewBudget, Playbook, RunId};
@@ -467,4 +468,97 @@ pub enum Request {
     KillJob { id: String },
     /// U8 `!cmd`: runs as the user (no approval), its output goes into the session's context.
     UserShell { session: SessionId, command: String },
+
+    // ---- M4.6 wave 2 (seam2). Same routing rule: one arm per owning track in `client.rs`, a stub
+    // `*_ops.rs` that answers with an `Error` until that track lands.
+
+    // N: the task registry, cron, notifications (`task_ops.rs`, `notify_ops.rs`).
+    /// `/tasks`: every background task (jobs, agents, workflows, monitors, crons); answered with
+    /// `Tasks`. `session: None` lists all sessions'.
+    ListTasks {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+    },
+    /// Stops a task by its typed id; the change arrives as `TaskUpdated`.
+    StopTask { id: String },
+    /// Reads a task's output from byte offset `since` (default: the start); answered with
+    /// `TaskOutput`.
+    TaskOutput {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
+    },
+    /// `cron_create`: a 5-field cron in local time, or a one-shot at `once_at_ms`. `durable` rows
+    /// survive a restart; the others die with their session. Answered with `Schedules`.
+    CronCreate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cron: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        once_at_ms: Option<i64>,
+        text: String,
+        #[serde(default)]
+        durable: bool,
+    },
+    /// The `/config` notification switches; `None` leaves one as it is. Answered with
+    /// `NotifyState`, so both `None` is a query.
+    NotifySettings {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        toast: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        voice: Option<bool>,
+    },
+    /// A file card's action: open in the default app, or reveal in Explorer. Only files in the
+    /// outbox.
+    OpenFile {
+        path: String,
+        #[serde(default)]
+        reveal: bool,
+    },
+
+    // W: workflows and findings (`workflow_ops.rs`).
+    /// Answered with `WorkflowList`.
+    ListWorkflows,
+    /// Answered with `WorkflowUpdated` to this client; later changes are broadcast.
+    WatchWorkflow { run: RunId },
+    /// `/workflow <name> [args]`: starts a workflow (as the `workflow` tool does) and answers
+    /// with `RunUpdated`.
+    RunWorkflow {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        script_path: Option<String>,
+        /// JSON, verbatim.
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+        args: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resume_from: Option<RunId>,
+    },
+    /// Skips an in-flight or queued agent: its `agent()` returns `null`.
+    SkipWorkflowAgent { run: RunId, agent: u32 },
+    /// Findings stored on a run or reported in a session; answered with `Findings`.
+    ListFindings {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run: Option<RunId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+    },
+
+    // F3: the conductor's plan file, `/fast`, rule suggestions (`f3_ops.rs`).
+    /// `/fast`: the conductor runs on the `Quick` slot's model, or back; answered with
+    /// `FastChanged` (broadcast).
+    SetFast { session: SessionId, on: bool },
+    /// Answers a `PlanReady`.
+    AnswerPlan { session: SessionId, id: String, decision: PlanFileDecision },
+    /// `/fewer-permission-prompts`: scans the project's transcripts; answered with
+    /// `RuleSuggestions`. Applying one is an `AddRule`.
+    SuggestRules {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
 }

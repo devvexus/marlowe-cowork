@@ -4,6 +4,13 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### M4.6 wave 2: seam2
+
+- **Added.** Wave-2 protocol (`marlowe-proto/src/background.rs`): `TaskInfo`/`TaskKind`/`TaskStatus` (typed ids `job_`, `agent_`, `wf_`, `mon_`, `cron_`), workflow views (`WorkflowInfo`, `SavedWorkflow`, `WorkflowRef`), `Finding`, `SentFile`, `NotifyState`, `PlanFileDecision`, `RuleSuggestion`, `FastState`; 14 requests (`ListTasks`, `StopTask`, `TaskOutput`, `CronCreate`, `NotifySettings`, `OpenFile`, `ListWorkflows`, `WatchWorkflow`, `RunWorkflow`, `SkipWorkflowAgent`, `ListFindings`, `SetFast`, `AnswerPlan`, `SuggestRules`) and 13 events, routed to stub `task_ops`/`notify_ops` (N), `workflow_ops` (W) and `f3_ops` (F3) that answer with an error naming the track.
+- **Added.** The background `TaskRegistry` (`marlowe-agent/src/tasks.rs`): register/stop/output with line-safe, filterable output reads, `TaskSource`s for tasks that live elsewhere, change listeners, and the per-session injection queue (bounded, waker, untrusted-with-lineage for messages). The daemon holds one, installs it as the `Tasks` session service and broadcasts `TaskUpdated`.
+- **Added.** Tool groups `workflow`, `tasks`, `notify` (empty until W and N land), the `marlowe-workflow` crate skeleton (member; a dependency of the crew and the daemon), stubs for F3's and N's files, and the `windows` features for toasts (`UI_Notifications`, `Data_Xml_Dom`, `Win32_System_Registry`).
+- **Changed (additive, serde-default).** `Question.option_details`, `TodoItem` task-list fields (`id`, `description`, `owner`, `blocked_by`), `ScheduleInfo` `cron`/`once_at_ms`/`durable`/`missed`, `Run.workflow` and `CrewRunInfo.workflow`. Older JSON loads and an unchanged value is written as before.
+
 ### M4.6 wave 1: the coding surface (tracks A-M, integrated)
 
 - **Added (A, files).** `read`/`write`/`edit`/`multi_edit`/`notebook_edit` (and the `edit_lines` bench arm, off by default) on `marlowe-code`'s edit engine: exact, line-ending and indentation tiers, all-or-nothing multi-file edits, BOM and CRLF kept. Read windows continue by offset; read shows CRLF as LF; the window byte cap grows with the context (32 KB at 32k to 100 KB); the old `replacing`/`content` argument names still work. FileState refuses an edit of an unread or changed file; an external change is reported once per turn (whole only when shown whole, stat-only above 4 MB). Notebooks with outputs, PDFs by page, images as parts. Secret-shaped targets and off-machine paths ask every time.

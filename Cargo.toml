@@ -47,6 +47,8 @@ members = [
     "crates/marlowe-verify",
     "crates/marlowe-settings",
     "crates/marlowe-anthropic",
+    # M4.6 wave 2: the workflow engine (track W).
+    "crates/marlowe-workflow",
 ]
 # Reference sources only; never built.
 exclude = ["legacy"]
@@ -89,6 +91,7 @@ marlowe-code = { path = "crates/marlowe-code" }
 marlowe-verify = { path = "crates/marlowe-verify" }
 marlowe-settings = { path = "crates/marlowe-settings" }
 marlowe-anthropic = { path = "crates/marlowe-anthropic" }
+marlowe-workflow = { path = "crates/marlowe-workflow" }
 
 # Terminal. crossterm, not termion: Windows is the primary platform.
 ratatui = "0.30"
@@ -128,15 +131,20 @@ notify = "8.2"
 nvml-wrapper = "0.13"
 # WinRT speech and playback for the in-daemon voice, plus the Win32 process query the Sentinel
 # uses to ask whether a pid is alive (query-limited rights; never signals). Pinned exactly.
+# M4.6 (9.1-k): toast notifications (`marlowe-os/src/toast.rs`: `ToastNotificationManager`, its XML
+# document) and the one HKCU key that names the sender (`Software\Classes\AppUserModelId`).
 windows = { version = "=0.62.2", features = [
+    "Data_Xml_Dom",
     "Foundation",
     "Foundation_Collections",
     "Media_Core",
     "Media_Playback",
     "Media_SpeechSynthesis",
     "Storage_Streams",
+    "UI_Notifications",
     "Win32_Foundation",
     "Win32_System_Performance",
+    "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ] }
