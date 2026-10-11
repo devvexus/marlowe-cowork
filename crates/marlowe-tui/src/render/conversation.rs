@@ -242,10 +242,16 @@ fn transcript(state: &State, width: usize, theme: &Theme) -> (Vec<Line<'static>>
     // The entry still being written: its unclosed maths is held behind a placeholder.
     let streaming = state.live.as_ref().map(|_| state.entries.len().saturating_sub(1));
     for (idx, e) in state.entries.iter().enumerate() {
+        // An expanded reasoning block ends with a blank row, so the tool call under it does not
+        // read as one more line of it.
+        let after_open_thought = idx > 0
+            && matches!(prev, Some(Entry::Thinking { text, .. }) if !text.trim().is_empty())
+            && state.thought_open(idx - 1);
         let gap = match (prev, e) {
             (None, _) => false,
             (Some(_), Entry::User { .. }) => true,
             (Some(Entry::User { .. }), _) => false,
+            _ if after_open_thought => true,
             (Some(Entry::Tool { .. } | Entry::Thinking { .. }), Entry::Prose { .. }) => true,
             (Some(Entry::Prose { .. }), Entry::Tool { .. } | Entry::Thinking { .. }) => true,
             _ => false,
@@ -291,6 +297,16 @@ fn transcript(state: &State, width: usize, theme: &Theme) -> (Vec<Line<'static>>
         ]));
     }
     (out, maths, marks)
+}
+
+/// A tool call's inks: its marker's, then its call's. The accent marks every call (red one that
+/// failed) and the call is the body weight, so a call never shares the reasoning block's dim
+/// weight and dimmer rule, open or closed.
+fn tool_ink(status: &ToolStatus) -> (Ink, Ink) {
+    match status {
+        ToolStatus::Failed(_) => (Ink::Red, Ink::Body),
+        ToolStatus::Running | ToolStatus::Done(_) => (Ink::Accent, Ink::Body),
+    }
 }
 
 fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, theme: &Theme, live: bool, out: &mut Vec<Line<'static>>) {
@@ -347,20 +363,23 @@ fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, theme: &Theme
             }
         }
         Entry::Tool { summary, status, .. } => {
+            // A tool call is an action, not reasoning: the accent's marker and the body weight,
+            // where a reasoning block is the dim weight behind a dimmer rule ([`tool_ink`]).
             let marker = format!("{} ", chrome::TOOL_MARKER);
             let summary = text::clean(summary.lines().next().unwrap_or(""));
-            let (marker_style, tail) = match status {
-                ToolStatus::Running => (ink(Ink::Accent, theme), Some(("…".to_string(), ink(Ink::Dim, theme)))),
-                ToolStatus::Done(s) if s.trim().is_empty() => (ink(Ink::Dim, theme), None),
-                ToolStatus::Done(s) => (ink(Ink::Dim, theme), Some((text::clean(s), ink(Ink::Dim, theme)))),
+            let (marker_ink, call_ink) = tool_ink(status);
+            let tail = match status {
+                ToolStatus::Running => Some(("…".to_string(), ink(Ink::Dim, theme))),
+                ToolStatus::Done(s) if s.trim().is_empty() => None,
+                ToolStatus::Done(s) => Some((text::clean(s), ink(Ink::Dim, theme))),
                 ToolStatus::Failed(s) => {
                     let s = if s.trim().is_empty() { "failed".to_string() } else { text::clean(s) };
-                    (ink(Ink::Red, theme), Some((s, ink(Ink::Red, theme))))
+                    Some((s, ink(Ink::Red, theme)))
                 }
             };
             let tail_w = tail.as_ref().map_or(0, |(t, _)| text::width(t) + 3);
             let head = text::truncate(&summary, width.saturating_sub(2 + tail_w.min(width / 2)).max(8));
-            let mut spans = vec![Span::styled(marker, marker_style), Span::styled(head, ink(Ink::Dim, theme))];
+            let mut spans = vec![Span::styled(marker, ink(marker_ink, theme)), Span::styled(head, ink(call_ink, theme))];
             if let Some((t, st)) = tail {
                 let room = width.saturating_sub(2 + text::width(&spans[1].content) + 3);
                 if t == "…" {

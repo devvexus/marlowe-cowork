@@ -132,6 +132,52 @@ fn streamed_turn() -> State {
     s
 }
 
+/// ui-preview5: "a tool call directly under thinking (when thinking is expanded) reads as thinking
+/// (same colour)". Expanded, the reasoning is the dim weight behind a dimmer rule and ends with a
+/// blank row; the call under it has the accent's marker and the body weight.
+#[test]
+fn a_tool_call_under_expanded_thinking_has_its_own_ink_and_a_boundary() {
+    use marlowe_surface::chrome::Ink;
+    let mut s = streamed_turn();
+    feed(&mut s, 6, Event::ToolStarted { session: sid(), turn: 1, call_id: "c1".into(), tool: "bash".into(), summary: "bash git log --since=yesterday".into() });
+    feed(&mut s, 7, Event::ToolFinished { session: sid(), turn: 1, call_id: "c1".into(), ok: true, summary: "3 commits".into() });
+    s.on_key(ctrl('t'));
+    let buf = render(&s, W, H);
+    let text = dump(&buf);
+    let rows: Vec<&str> = text.lines().collect();
+    let think = rows.iter().position(|r| r.contains("Check the log and the gate module.")).expect(&text);
+    let tool = rows.iter().position(|r| r.contains("⋯ bash git log --since=yesterday")).expect(&text);
+    assert_eq!(tool, think + 2, "one blank row between the reasoning and the call:
+{text}");
+    assert!(!rows[think + 1].contains('▏') && !rows[think + 1].contains('⋯'), "{text}");
+    let th = theme();
+    let cell_of = |row: usize, needle: &str| {
+        let x = (0..buf.area.width)
+            .find(|&x| {
+                let mut l = String::new();
+                for k in x..buf.area.width {
+                    l.push_str(buf.cell((k, row as u16)).unwrap().symbol());
+                }
+                l.starts_with(needle)
+            })
+            .unwrap_or_else(|| panic!("{needle:?} not on row {row}"));
+        buf.cell((x, row as u16)).unwrap().clone()
+    };
+    assert_eq!(cell_of(think, "Check").fg, Ink::Dim.color(&th), "reasoning is the dim weight");
+    assert_eq!(cell_of(think, "▏").fg, Ink::Dimmer.color(&th));
+    assert_eq!(cell_of(tool, "⋯").fg, Ink::Accent.color(&th), "the call's marker is the accent");
+    assert_eq!(cell_of(tool, "bash git").fg, Ink::Body.color(&th), "the call is the body weight");
+    assert_ne!(cell_of(tool, "bash git").fg, cell_of(think, "Check").fg);
+    assert_palette_only(&buf);
+
+    // Folded, the call sits straight under the marker as before.
+    s.on_key(ctrl('t'));
+    let text = dump(&render(&s, W, H));
+    let rows: Vec<&str> = text.lines().collect();
+    let mark = rows.iter().position(|r| r.contains("▸ thought")).expect(&text);
+    assert!(rows[mark + 1].contains("⋯ bash git log"), "{text}");
+}
+
 #[test]
 fn streamed_turn_with_thinking_tools_and_markdown() {
     let mut s = streamed_turn();

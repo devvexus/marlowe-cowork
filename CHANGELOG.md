@@ -4,6 +4,13 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### A tool call no longer reads as reasoning
+
+Matthew (ui-preview5): a tool call directly under an expanded thinking block read as more thinking (same colour).
+
+- **Changed.** A tool call's marker is the accent (red when it failed) and its call is the body weight; reasoning stays the dim weight behind the dimmer rule. An expanded reasoning block ends with a blank row before whatever follows it; folded, nothing moves.
+- **Tests.** `screens.rs::a_tool_call_under_expanded_thinking_has_its_own_ink_and_a_boundary` checks the cells' inks and the blank row, open and folded, and the palette.
+
 ### A word in a script is maths, not prose
 
 Matthew (ui-preview5): `$G = -L'(f(X_{batch}))$` was printed raw, dollars and all. The dollar heuristic (`math::looks_like_inline_maths`) refused any span with a three-letter run outside a command, so `batch` read as a word in a sentence about prices.
