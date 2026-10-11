@@ -24,6 +24,7 @@ use crate::playbook::{
 use crate::role::RoleCard;
 use crate::run::{call_line, clip, Run, StepRecord};
 use crate::sandbox::{Sandbox, ShellVerdict};
+use crate::shell_policy::{Dialect, Verdict};
 use crate::supervisor::{extend_budget, result_memory, Control, CrewEvent, Inner, PendingPlan};
 use crate::CrewError;
 
@@ -100,6 +101,7 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
     let models: playbook::ModelResolver = Arc::new(move |card| resolver.resolve(card));
     let tools = (inner.deps.tools)(&sandbox, run.workspace.as_deref());
     let mut runner = AgentRunner::new(id.clone(), roles.clone(), models, tools, sandbox, run.workspace.clone());
+    runner.tool_factory = Some(inner.deps.tools.clone());
     runner.approvals = Arc::new(RunGate { inner: inner.clone(), id: id.clone(), session: run.session.clone() });
     runner.cancel = ctl.cancel.clone();
     runner.inbox = inbox;
@@ -779,6 +781,10 @@ fn ask_for_run(inner: &Inner, id: &RunId, session: Option<&SessionId>, req: Appr
 fn guarded_shell(inner: Arc<Inner>, id: RunId, session: Option<SessionId>) -> playbook::ShellFn {
     Arc::new(move |sandbox: &Sandbox, command: &str, cancel: &CancelToken| -> Result<ShellResult, CrewError> {
         let tainted = inner.run(&id).is_ok_and(|r| r.tainted);
+        // A hard deny (force push, `--no-verify`, shared git config) is refused, not asked.
+        if let Verdict::Deny(why) = sandbox.shell_verdict(Dialect::Bash, command, false) {
+            return Ok(ShellResult { ok: false, exit_code: None, output: format!("not run: refused ({why})") });
+        }
         if let ShellVerdict::Ask(summary) = sandbox.classify_shell(command, tainted) {
             let req = ApprovalReq {
                 session: crew_session(&id),

@@ -675,3 +675,96 @@ fn the_sandbox_shell_runs_in_the_sandbox_without_api_keys() {
     assert!(matches!(sandbox_shell(&sb, "exit 0", &cancel), Err(CrewError::Cancelled)));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------- per-step sandbox
+
+/// `write` into a fixed root, whatever the model's path.
+struct Rooted {
+    root: PathBuf,
+}
+
+impl ToolHost for Rooted {
+    fn specs(&self) -> Vec<ToolSpec> {
+        vec![spec("write")]
+    }
+
+    fn call(&self, call: &ToolCallReq, _ctx: &ToolCtx) -> ToolOutcome {
+        let path = self.root.join(call.args.get("path").and_then(Value::as_str).unwrap_or("out.txt"));
+        match std::fs::write(path, "hi") {
+            Ok(()) => ToolOutcome::ok("written", "1 file"),
+            Err(e) => ToolOutcome::error(e.to_string()),
+        }
+    }
+
+    fn consequence(&self, _call: &ToolCallReq) -> Consequence {
+        Consequence::Free
+    }
+}
+
+fn writer_step(key: &str, sandbox: Option<Sandbox>) -> StepSpec {
+    StepSpec {
+        key: key.into(),
+        role: "engineer".into(),
+        label: "implement".into(),
+        prompt: "Write hello.txt".into(),
+        tools: None,
+        effort: None,
+        max_output: None,
+        sandbox,
+    }
+}
+
+fn writing_engineer() -> Arc<Scripted> {
+    Scripted::new(|req, _| if after_tool(req) { answer("done") } else { call("write", json!({"path": "hello.txt"})) })
+}
+
+#[test]
+fn a_step_with_its_own_sandbox_runs_its_tools_and_prompt_there() {
+    let (run_dir, step_dir) = (temp_dir("step-run"), temp_dir("step-own"));
+    let engineer = writing_engineer();
+    let mut runner = AgentRunner::new(
+        RunId::new_random(),
+        Roles::builtin(),
+        resolver(vec![("engineer", engineer.clone())]),
+        Arc::new(Rooted { root: run_dir.clone() }),
+        scratch(&run_dir),
+        None,
+    );
+    runner.tool_factory = Some(Arc::new(|sb: &Sandbox, _ws: Option<&Path>| {
+        Arc::new(Rooted { root: sb.root.clone() }) as Arc<dyn ToolHost>
+    }));
+
+    // No sandbox on the step: the run's own.
+    runner.step(writer_step("implement:t1", None)).unwrap();
+    assert!(run_dir.join("hello.txt").exists() && !step_dir.join("hello.txt").exists());
+    std::fs::remove_file(run_dir.join("hello.txt")).unwrap();
+
+    // Its own: the tools are rooted there and the prompt names it.
+    runner.step(writer_step("implement:t2", Some(scratch(&step_dir)))).unwrap();
+    assert!(step_dir.join("hello.txt").exists() && !run_dir.join("hello.txt").exists());
+    let sys: String = engineer.requests().last().unwrap().system.iter().map(|b| b.text.clone()).collect();
+    assert!(sys.contains(&step_dir.display().to_string()), "{sys}");
+    let _ = std::fs::remove_dir_all(&run_dir);
+    let _ = std::fs::remove_dir_all(&step_dir);
+}
+
+#[test]
+fn a_step_with_its_own_sandbox_and_no_tool_factory_fails_instead_of_writing_elsewhere() {
+    let (run_dir, step_dir) = (temp_dir("nofactory-run"), temp_dir("nofactory-own"));
+    let runner = AgentRunner::new(
+        RunId::new_random(),
+        Roles::builtin(),
+        resolver(vec![("engineer", writing_engineer())]),
+        Arc::new(Rooted { root: run_dir.clone() }),
+        scratch(&run_dir),
+        None,
+    );
+    let err = runner.step(writer_step("implement:t1", Some(scratch(&step_dir)))).unwrap_err();
+    assert!(
+        matches!(&err, CrewError::Step { step, message } if step == "implement:t1" && message.contains("tool factory")),
+        "{err}"
+    );
+    assert!(!run_dir.join("hello.txt").exists() && !step_dir.join("hello.txt").exists());
+    let _ = std::fs::remove_dir_all(&run_dir);
+    let _ = std::fs::remove_dir_all(&step_dir);
+}

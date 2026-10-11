@@ -212,3 +212,175 @@ fn test_commands_are_detected_from_the_manifest() {
     assert_eq!(detect_test_command(&dir).as_deref(), Some("cargo test"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------- seam-crew: tool host, policy
+
+mod seam {
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use marlowe_agent::{
+        CallCtx, Consequence, Exposure, Mutation, SandboxView, ToolCallReq, ToolCtx, ToolHost, ToolMiddleware, ToolOutcome,
+    };
+    use marlowe_model::{CancelToken, ToolSpec};
+    use marlowe_proto::{SandboxKind, SessionId};
+    use serde_json::{json, Value};
+
+    use crate::shell_policy::{classify_sandbox_shell, Dialect, Verdict};
+    use crate::{CrewTools, Sandbox, ShellVerdict};
+
+    fn sandbox() -> Sandbox {
+        let root = std::env::temp_dir().join("marlowe-seam-crew-sandbox");
+        Sandbox { kind: SandboxKind::Worktree, root, origin: None, branch: None, base: None, repo_digest: None }
+    }
+
+    fn req(name: &str, args: Value) -> ToolCallReq {
+        ToolCallReq { id: "c".into(), name: name.into(), args }
+    }
+
+    fn ctx() -> ToolCtx {
+        ToolCtx { session: SessionId("s".into()), turn: 0, workspace: None, cancel: CancelToken::new(), tainted: false }
+    }
+
+    /// An inner host with a table-style crew consequence for `mark`, a plain one for the rest, and
+    /// a `call_scoped` that answers differently from `call`.
+    #[derive(Default)]
+    struct Inner {
+        calls: AtomicUsize,
+        scoped: AtomicUsize,
+    }
+
+    impl ToolHost for Inner {
+        fn specs(&self) -> Vec<ToolSpec> {
+            ["mark", "other", "bash", "powershell", "hidden"]
+                .map(|n| ToolSpec { name: n.into(), description: n.into(), input_schema: json!({"type": "object"}) })
+                .to_vec()
+        }
+
+        fn call(&self, _call: &ToolCallReq, _ctx: &ToolCtx) -> ToolOutcome {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            ToolOutcome::ok("plain", "plain")
+        }
+
+        fn call_scoped(&self, _call: &ToolCallReq, _cx: &CallCtx) -> ToolOutcome {
+            self.scoped.fetch_add(1, Ordering::SeqCst);
+            ToolOutcome::ok("scoped", "scoped")
+        }
+
+        fn consequence(&self, call: &ToolCallReq) -> Consequence {
+            Consequence::Ask { summary: format!("plain {}", call.name) }
+        }
+
+        fn consequence_in_sandbox(
+            &self,
+            call: &ToolCallReq,
+            _exposure: &Exposure,
+            sandbox: &dyn SandboxView,
+        ) -> Option<Consequence> {
+            (call.name == "mark").then(|| Consequence::Ask { summary: format!("mark in {}", sandbox.root().display()) })
+        }
+
+        fn mutation(&self, _call: &ToolCallReq, _ctx: &ToolCtx) -> Mutation {
+            Mutation::Under(Path::new("x").into())
+        }
+
+        fn middleware(&self) -> Vec<Arc<dyn ToolMiddleware>> {
+            vec![Arc::new(Nop)]
+        }
+    }
+
+    struct Nop;
+    impl ToolMiddleware for Nop {
+        fn name(&self) -> &str {
+            "nop"
+        }
+    }
+
+    fn host(allow: &[&str]) -> (Arc<Inner>, CrewTools) {
+        let inner = Arc::new(Inner::default());
+        let tools = CrewTools::new(inner.clone(), allow.iter().map(|s| s.to_string()).collect(), sandbox());
+        (inner, tools)
+    }
+
+    fn ran(inner: &Inner) -> (usize, usize) {
+        (inner.scoped.load(Ordering::SeqCst), inner.calls.load(Ordering::SeqCst))
+    }
+
+    #[test]
+    fn the_crew_host_forwards_the_loops_session_scope_and_what_belongs_to_the_tools() {
+        let (inner, tools) = host(&["mark", "other"]);
+        let cx = CallCtx::detached(ctx());
+        assert_eq!(tools.call_scoped(&req("other", json!({})), &cx).content, "scoped");
+        assert_eq!(tools.call(&req("other", json!({})), &ctx()).content, "plain");
+        assert_eq!(ran(&inner), (1, 1));
+        // Off the allowlist is refused on both paths, without reaching the inner host.
+        for out in [tools.call_scoped(&req("hidden", json!({})), &cx), tools.call(&req("hidden", json!({})), &ctx())] {
+            assert!(out.is_error && out.content.contains("not on this role's tool list"), "{}", out.content);
+        }
+        assert_eq!(ran(&inner), (1, 1));
+        assert_eq!(tools.middleware().len(), 1);
+        assert_eq!(tools.mutation(&req("other", json!({})), &ctx()), Mutation::Under("x".into()));
+        let names: Vec<_> = tools.specs().into_iter().map(|s| s.name).collect();
+        assert_eq!(names, ["mark", "other"]);
+    }
+
+    #[test]
+    fn crew_consequences_come_from_the_tool_table_and_fall_back_to_the_plain_one() {
+        let (_, tools) = host(&["mark", "other", "bash", "powershell"]);
+        let sb = sandbox();
+        let clean = Exposure::default();
+        let tainted = Exposure { tainted: true, ..Default::default() };
+        let of = |name: &str, args: Value, e: &Exposure| tools.consequence_exposed(&req(name, args), e);
+        assert_eq!(of("mark", json!({}), &clean), Consequence::Ask { summary: format!("mark in {}", sb.root.display()) });
+        assert_eq!(of("other", json!({}), &clean), Consequence::Ask { summary: "plain other".into() });
+        // Shells are decided by the sandbox policy in the tool's dialect, with the run's taint.
+        assert_eq!(of("bash", json!({"command": "cargo test"}), &clean), Consequence::Free);
+        let push = ["git", "push"].join(" ");
+        assert!(matches!(of("bash", json!({"command": push}), &clean), Consequence::Ask { summary } if summary.starts_with("bash: ")));
+        assert!(matches!(of("bash", json!({"command": "ls"}), &tainted), Consequence::Ask { summary } if summary.contains("untrusted")));
+        assert!(matches!(of("powershell", json!({"command": "Get-ChildItem"}), &tainted), Consequence::Ask { .. }));
+        assert_eq!(of("powershell", json!({"command": "Get-ChildItem"}), &clean), Consequence::Free);
+    }
+
+    #[test]
+    fn hard_denies_are_refused_in_the_crew_host_whatever_the_run_has_read() {
+        let (inner, tools) = host(&["bash", "powershell"]);
+        let force = ["git", "push", "--force", "origin", "main"].join(" ");
+        let skip_hooks = ["git", "commit", "--no-verify", "-m", "x"].join(" ");
+        for (tool, cmd) in [("bash", &force), ("bash", &skip_hooks), ("powershell", &force)] {
+            let out = tools.call_scoped(&req(tool, json!({"command": cmd})), &CallCtx::detached(ctx()));
+            assert!(out.is_error && out.content.contains("refused"), "{tool} {cmd}: {}", out.content);
+            let out = tools.call(&req(tool, json!({"command": cmd})), &ctx());
+            assert!(out.is_error && out.content.contains("refused"), "{tool} {cmd}: {}", out.content);
+        }
+        assert_eq!(ran(&inner), (0, 0), "nothing ran");
+        // Asked about, a denied command is a fixed approval, never a free one.
+        let c = tools.consequence_exposed(&req("bash", json!({"command": force})), &Exposure::default());
+        assert!(matches!(c, Consequence::AskEvery { .. }), "{c:?}");
+        // The legacy verdict never reads a deny as free.
+        assert!(matches!(sandbox().classify_shell(&force, false), ShellVerdict::Ask(_)));
+    }
+
+    #[test]
+    fn the_sandbox_is_the_policys_view_and_the_re_export_is_the_permission_crates() {
+        let sb = sandbox();
+        let view: &dyn SandboxView = &sb;
+        assert_eq!(view.root(), sb.root.as_path());
+        assert!(view.allows_write(Path::new("src/main.rs")) && !view.allows_write(Path::new("../escape.txt")));
+        assert_eq!(view.classify_shell("cargo build", false), Consequence::Free);
+        assert!(view.classify_shell("rm -rf ../other", false).asks());
+        assert_eq!(view.classify_code("print(1)"), Consequence::Free);
+        // The same function the conductor's policy exports.
+        let direct = classify_sandbox_shell(
+            Dialect::Bash,
+            &sb.root,
+            marlowe_permission::shell::SandboxKind::Worktree,
+            &|p| sb.allows_write(p),
+            "cargo build",
+            false,
+        );
+        assert_eq!(direct, Verdict::Free);
+        assert_eq!(sb.shell_verdict(Dialect::Bash, "cargo build", false), direct);
+    }
+}

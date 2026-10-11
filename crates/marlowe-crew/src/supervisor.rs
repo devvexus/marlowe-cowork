@@ -54,6 +54,16 @@ pub trait RunApprovals: Send + Sync {
 /// Whether the Sentinel reports the GPU busy right now.
 pub type GpuBusy = Arc<dyn Fn() -> bool + Send + Sync>;
 
+/// A message for a running crew run from outside it: another session, a subagent, a workflow
+/// agent, a monitor or a finished job. It carries who sent it so the run's journal and prompt can
+/// show the lineage; it never carries user trust.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunNotice {
+    /// Who sent it: `session:<id>`, `agent:<id>`, `job:<id>`, `monitor:<id>`.
+    pub from: String,
+    pub text: String,
+}
+
 /// Supervisor tunables. `Default` is what the daemon runs with.
 #[derive(Debug, Clone)]
 pub struct CrewConfig {
@@ -636,6 +646,16 @@ impl Supervisor {
         };
         let steer = Steer::admit(text).map_err(|e| bad_state(run, live.run.status, &e.to_string()))?;
         live.steer_tx.send(steer).map_err(|_| CrewError::Stopped)
+    }
+
+    /// Delivers a message from another agent, session or background task to the run's inbox, to
+    /// reach the run at its next step boundary at agent trust with the sender's lineage (never
+    /// user trust; contrast [`Supervisor::steer`]). A seam stub: the run inbox lands with the
+    /// crew-mechanics track, and until then this only checks that the run exists.
+    pub fn notify_run(&self, run: &RunId, notice: RunNotice) -> Result<(), CrewError> {
+        let _ = notice;
+        self.inner.run(run)?;
+        Err(CrewError::NotWired("the run inbox"))
     }
 
     /// Cancels the run's token; the run ends `cancelled` and keeps its sandbox until discarded.

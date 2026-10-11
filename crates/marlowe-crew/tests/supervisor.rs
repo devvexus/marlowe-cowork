@@ -924,3 +924,32 @@ fn the_result_memory_carries_the_run_as_provenance() {
     assert_eq!(m.scope, marlowe_proto::MemoryScope::Project("C:/w".into()));
     assert_eq!(m.source, marlowe_mind::Provenance::Agent { session: format!("crew:{}", run.id), turn: 0, tainted: true });
 }
+
+#[test]
+fn notify_run_is_a_stub_that_checks_the_run_and_never_injects_at_user_trust() {
+    let home = home("notify");
+    let (release, gate) = crossbeam_channel::bounded::<()>(1);
+    let provider = cloud(move |_, n, cancel| {
+        if n == 0 {
+            while gate.recv_timeout(Duration::from_millis(10)).is_err() {
+                if cancel.is_cancelled() {
+                    return Err(ProviderError::cancelled());
+                }
+            }
+            Ok(call("note", json!({"text": "first look"})))
+        } else {
+            Ok(answer("Done."))
+        }
+    });
+    let fx = start(&home, &provider);
+    let notice = RunNotice { from: "session:other".into(), text: "the hub file moved".into() };
+    assert!(matches!(fx.sup.notify_run(&RunId::new_random(), notice.clone()), Err(CrewError::UnknownRun(_))));
+    let id = fx.sup.dispatch(None, args("tester", "Evaluate the model", None, None)).unwrap().run_id;
+    wait("the first model call", || provider.calls.load(Ordering::SeqCst) == 1);
+    assert!(matches!(fx.sup.notify_run(&id, notice), Err(CrewError::NotWired(_))));
+    release.send(()).unwrap();
+    wait_status(&fx.sup, &id, CrewRunStatus::Done);
+    let reqs = provider.requests();
+    assert!(!reqs.iter().any(|r| r.messages.iter().any(|m| m.joined_text().contains("the hub file moved"))));
+    finish(fx, &[&home]);
+}

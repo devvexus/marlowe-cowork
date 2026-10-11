@@ -39,6 +39,10 @@ pub struct StepSpec {
     /// Caps the reply, thinking included, in tokens. The runner lowers it to the room the
     /// prompt leaves in the model's window; `None` keeps the provider's default.
     pub max_output: Option<u32>,
+    /// Runs the step in this sandbox (a child worktree for one task of a build) instead of the
+    /// run's own. The runner needs a tool factory to root the step's tools there; `None` keeps
+    /// the run's sandbox.
+    pub sandbox: Option<Sandbox>,
 }
 
 /// What one agent call produced.
@@ -144,6 +148,7 @@ pub fn single(runner: &dyn StepRunner, role: &str, goal: &str) -> Result<Dispatc
         tools: None,
         effort: None,
         max_output: None,
+        sandbox: None,
     })?;
     let diff = if runner.sandbox().kind == SandboxKind::Worktree {
         Some(runner.sandbox().diff_summary()?).filter(|d| !d.files.is_empty())

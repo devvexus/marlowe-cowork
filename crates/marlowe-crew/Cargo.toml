@@ -9,6 +9,7 @@ description = "The Crew: role cards, durable sandboxed runs, the supervisor, and
 marlowe-model.workspace = true
 marlowe-proto.workspace = true
 marlowe-agent.workspace = true
+marlowe-permission.workspace = true
 marlowe-brains.workspace = true
 marlowe-mind.workspace = true
 marlowe-research.workspace = true
