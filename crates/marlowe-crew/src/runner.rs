@@ -8,7 +8,6 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crossbeam_channel::RecvTimeoutError;
 use marlowe_agent::{AgentEvent, ApprovalGate, ApprovalReq, Budget, MAX_STEPS};
 use marlowe_mind::{Kind, MemoryIn, ProfileQuery, Provenance, RecallQuery};
 use marlowe_model::{CancelToken, Message, Pricing, Usage};
@@ -19,7 +18,8 @@ use marlowe_proto::{
 
 use crate::playbook::research_v2::{Finding, Recalled};
 use crate::playbook::{
-    self, sandbox_shell, AgentRunner, PlaybookConfig, ResearchIo, ShellResult, StepHooks, StepModel, StepResult, StepSpec,
+    self, sandbox_shell, AgentRunner, PlaybookConfig, ResearchIo, ShellResult, StepFailure, StepHooks, StepModel,
+    StepResult, StepSpec,
 };
 use crate::role::RoleCard;
 use crate::run::{call_line, clip, Run, StepRecord};
@@ -77,7 +77,10 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
         .store()
         .steps(id)?
         .into_iter()
-        .filter_map(|s| s.output.clone().map(|text| (s.key, StepResult { text, usage: s.usage, tainted: s.tainted })))
+        .filter_map(|s| {
+            let (tainted, truncated) = (s.tainted, s.truncated);
+            s.output.clone().map(|text| (s.key, StepResult { text, usage: s.usage, tainted, truncated }))
+        })
         .collect();
     let rows = inner.store().steps(id)?.iter().map(|s| s.step).max().unwrap_or(0);
     let hooks = Arc::new(Hooks {
@@ -145,6 +148,30 @@ fn finish(inner: &Arc<Inner>, id: &RunId, provider: &'static str, outcome: Resul
         live.running = false;
         let ctl = live.ctl.clone();
         let user_cancel = ctl.user_cancel.load(Ordering::SeqCst);
+        // Parked at the plan gate: the run stays `needs_you` with no thread, unless the answer
+        // came while the thread was still ending, which queues it again now.
+        if ctl.parked.swap(false, Ordering::SeqCst) && !user_cancel {
+            let answered = inner.decided.lock().unwrap_or_else(|e| e.into_inner()).contains_key(id);
+            let ev = if answered && !ctl.stop.load(Ordering::SeqCst) {
+                if !st.queue.contains(id) {
+                    st.queue.push_back(id.clone());
+                }
+                inner.touch(&mut st, id, |r| {
+                    r.status = CrewRunStatus::Queued;
+                    r.note = Some("plan approved; waiting for a slot to explore".into());
+                    r.current_action = None;
+                })
+            } else {
+                let ev = inner.touch(&mut st, id, |r| r.current_action = None);
+                st.live.remove(id);
+                ev
+            };
+            drop(st);
+            if let Some(ev) = ev {
+                inner.emit(ev);
+            }
+            return;
+        }
         if ctl.stop.load(Ordering::SeqCst) && !user_cancel {
             st.live.remove(id);
             return;
@@ -270,7 +297,7 @@ impl Hooks {
         let mut cache = self.pricing.lock().unwrap_or_else(|e| e.into_inner());
         let price = *cache.entry(role.to_string()).or_insert_with(|| {
             let roles = self.inner.roles.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            roles.get(role).and_then(|card| self.inner.choose(card).ok()).and_then(|c| c.model.model.pricing)
+            roles.get(role).and_then(|card| self.inner.priced_model(card)).and_then(|m| m.pricing)
         });
         price.map_or(0.0, |p| p.cost(usage.input, usage.output))
     }
@@ -496,6 +523,7 @@ impl StepHooks for Hooks {
             output: Some(result.text.clone()),
             usage: result.usage,
             tainted: result.tainted,
+            truncated: result.truncated,
             at_ms: crate::now_ms(),
         };
         let _ = self.inner.store().append_step(&rec);
@@ -503,6 +531,36 @@ impl StepHooks for Hooks {
         if result.tainted {
             self.inner.update(&self.id, |r| r.tainted = true);
         }
+        self.inner.emit(CrewEvent::Step { run: self.id.clone(), step, action: rec.action, text_delta: None });
+    }
+
+    /// A step with no answer gets a transcript row with what it spent and how its last call
+    /// stopped, and no output: a resumed run asks again.
+    fn failed(&self, spec: &StepSpec, messages: &[Message], f: &StepFailure) {
+        let step = self.row(&spec.key);
+        self.live_rows.lock().unwrap_or_else(|e| e.into_inner()).remove(&spec.key);
+        let mut action = format!(
+            "{} · {} ({} output tokens, {} of them reasoning",
+            spec.label, f.why, f.usage.output, f.usage.reasoning
+        );
+        if let Some(cap) = f.max_output {
+            action.push_str(&format!(", cap {cap}"));
+        }
+        action.push_str(if f.truncated { "; stopped at the output limit)" } else { ")" });
+        let rec = StepRecord {
+            run: self.id.clone(),
+            step,
+            key: spec.key.clone(),
+            role: spec.role.clone(),
+            action: clip(&action, 200),
+            messages: messages.to_vec(),
+            output: None,
+            usage: f.usage,
+            tainted: self.tainted(),
+            truncated: f.truncated,
+            at_ms: crate::now_ms(),
+        };
+        let _ = self.inner.store().append_step(&rec);
         self.inner.emit(CrewEvent::Step { run: self.id.clone(), step, action: rec.action, text_delta: None });
     }
 
@@ -527,6 +585,7 @@ impl Hooks {
             output: Some(data.to_string()),
             usage: Usage::default(),
             tainted: false,
+            truncated: false,
             at_ms: crate::now_ms(),
         };
         let _ = self.inner.store().append_step(&rec);
@@ -579,12 +638,18 @@ impl playbook::ResearchHost for RunResearch {
         self.hooks.inner.emit(CrewEvent::Research { run: self.hooks.id.clone(), progress: p.clone() });
     }
 
-    /// The run is `needs_you` until [`crate::Supervisor::approve_plan`] answers; cancel, pause
-    /// and shutdown end the wait.
+    /// The plan gate. An answer given while the run was parked is taken at once. Otherwise the
+    /// plan is pending, the run is `needs_you`, and the thread ends (`Stopped` with `parked` set):
+    /// a waiting plan holds no thread and no concurrency slot, and
+    /// [`crate::Supervisor::approve_plan`] queues the run again with its answer.
     fn propose_plan(&self, plan: &ResearchPlan, quote: &CostQuote) -> Result<PlanDecision, CrewError> {
         let (inner, id) = (&self.hooks.inner, &self.hooks.id);
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        let pending = PendingPlan { plan: plan.clone(), quote: quote.clone(), tx };
+        if let Some(d) = inner.decided.lock().unwrap_or_else(|e| e.into_inner()).remove(id) {
+            return Ok(d);
+        }
+        self.hooks.check()?;
+        self.hooks.ctl.parked.store(true, Ordering::SeqCst);
+        let pending = PendingPlan { plan: plan.clone(), quote: quote.clone() };
         inner.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), pending);
         let note = format!(
             "research plan ready: {} sub-questions, about {} model tokens, {} fetches, {} min; approve, edit or reject it",
@@ -596,6 +661,7 @@ impl playbook::ResearchHost for RunResearch {
         inner.update(id, |r| {
             r.status = CrewRunStatus::NeedsYou;
             r.note = Some(note);
+            r.current_action = None;
         });
         inner.emit(CrewEvent::PlanProposed {
             run: id.clone(),
@@ -603,25 +669,7 @@ impl playbook::ResearchHost for RunResearch {
             plan: plan.clone(),
             quote: quote.clone(),
         });
-        let decided = loop {
-            match rx.recv_timeout(Duration::from_millis(200)) {
-                Ok(d) => break Ok(d),
-                Err(RecvTimeoutError::Timeout) => {
-                    if let Err(e) = self.hooks.check() {
-                        break Err(e);
-                    }
-                }
-                Err(RecvTimeoutError::Disconnected) => break Err(CrewError::Stopped),
-            }
-        };
-        inner.plans.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
-        inner.update(id, |r| {
-            if r.status == CrewRunStatus::NeedsYou {
-                r.status = CrewRunStatus::Running;
-                r.note = None;
-            }
-        });
-        decided
+        Err(CrewError::Stopped)
     }
 
     /// Approving the plan approves its quote: limits rise to cover it (+25% tokens), never fall,
@@ -667,7 +715,7 @@ impl playbook::ResearchHost for RunResearch {
         mind.recall(q)
             .unwrap_or_default()
             .into_iter()
-            .map(|h| Recalled { id: h.id, text: h.text, provenance: h.provenance })
+            .map(|h| Recalled { id: h.id, text: h.text, provenance: h.provenance, trust: h.trust })
             .collect()
     }
 
@@ -677,16 +725,23 @@ impl playbook::ResearchHost for RunResearch {
         }
     }
 
+    fn tainted(&self) -> bool {
+        self.hooks.tainted()
+    }
+
+    /// Worst case over lineage: the run's own taint latch counts whatever the playbook says, and
+    /// the recalled memories the finding rests on are its parents in the store.
     fn remember(&self, finding: &Finding, tainted: bool) -> Result<String, String> {
         let mind = self.hooks.inner.deps.mind.as_ref().ok_or("no memory store is open")?;
         let turn = self.hooks.run().map(|r| r.step).unwrap_or(0);
+        let tainted = tainted || self.hooks.tainted();
         let memory = MemoryIn {
             text: finding.text.clone(),
             kind: Kind::Result,
             scope: self.scope().unwrap_or(MemoryScope::Global),
             source: Provenance::Agent { session: format!("crew:{}", self.hooks.id), turn, tainted },
         };
-        mind.remember(memory).map(|r| r.id).map_err(|e| e.to_string())
+        mind.remember_derived(memory, finding.derived_from.clone()).map(|r| r.id).map_err(|e| e.to_string())
     }
 }
 

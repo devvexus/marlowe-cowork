@@ -1,6 +1,8 @@
 //! The two trafilatura ports as [`MainContent`] candidates. Each is behind a cargo feature of the
 //! same name; without it the type still exists and reports `Unavailable`.
 
+// Used only when a candidate's feature is on.
+#[allow(unused_imports)]
 use std::time::Instant;
 
 #[allow(unused_imports)]

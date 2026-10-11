@@ -8,8 +8,8 @@ use crate::library::LibStep;
 use crate::render::geometry;
 use crate::render::BoardMode;
 use crate::state::{
-    BoardTab, Command, Focus, NoteTone, Overlay, State, Target, View, APPROVAL_CHOICES, APPROVAL_DETAIL_ROWS,
-    APPROVAL_GUARD_MS,
+    pick_thought, Anchor, BoardTab, Command, Entry, Focus, NoteTone, Overlay, State, Target, View, APPROVAL_CHOICES,
+    APPROVAL_DETAIL_ROWS, APPROVAL_GUARD_MS,
 };
 
 /// Lines one wheel notch scrolls.
@@ -18,6 +18,7 @@ const WHEEL_LINES: usize = 3;
 impl State {
     /// Handles a key press. Returns requests to send.
     pub fn on_key(&mut self, k: KeyEvent) -> Vec<Request> {
+        self.settle_scroll();
         let mut out = Vec::new();
         if k.kind == KeyEventKind::Release {
             return out;
@@ -184,6 +185,7 @@ impl State {
 
     /// The wheel scrolls whatever is reading: the conversation, a run's transcript, an approval.
     fn wheel(&mut self, up: bool) {
+        self.settle_scroll();
         if let Some(a) = self.approvals.first() {
             let max = a.detail_scroll_max();
             self.approval_scroll =
@@ -395,7 +397,58 @@ impl State {
                     self.open_context(m, out);
                 }
             }
+            // A fold marker opens or closes its block where it is; the keys stay where they were,
+            // so Enter in the Message box still sends.
+            Target::Thought(entry) => self.toggle_thought(entry),
+            Target::Plan(run, action) => {
+                self.flash = None;
+                self.plan_action(run, action, out);
+            }
+            Target::PlanRow(i) => self.plan_row_click(i),
             Target::Button(_) | Target::PlanCell(..) | Target::PlanField(_) => {}
+        }
+    }
+
+    /// Opens or closes reasoning block `entry`. The next frame keeps its marker on the row it was
+    /// drawn on, so only the lines under it move.
+    pub(crate) fn toggle_thought(&mut self, entry: usize) {
+        if !matches!(self.entries.get(entry), Some(Entry::Thinking { .. })) {
+            return;
+        }
+        let open = self.thought_open(entry);
+        self.folds.insert(entry, !open);
+        self.thought = Some(entry);
+        let v = self.viewport.get();
+        let rows = v.size.1 as usize;
+        let line = self.marks.borrow().iter().find(|m| m.entry == entry).map(|m| m.line);
+        if let Some(line) = line.filter(|l| v.epoch == self.epoch && (v.top..v.top + rows).contains(l)) {
+            self.anchor.set(Some(Anchor { entry, row: line - v.top, epoch: self.epoch }));
+        }
+    }
+
+    /// Shift+Up/Down in the Conversation box: the cursor to the reasoning block above or below,
+    /// with the pane brought to it when it is off screen. With no reasoning to step between, a line.
+    fn step_thought(&mut self, up: bool) {
+        let marks = self.marks.borrow().clone();
+        let v = self.viewport.get();
+        let rows = v.size.1 as usize;
+        if marks.is_empty() || rows == 0 {
+            self.scroll = if up { (self.scroll + 1).min(self.scroll_max.get()) } else { self.scroll.saturating_sub(1) };
+            return;
+        }
+        let at = pick_thought(&marks, v.top, rows, self.thought).and_then(|e| marks.iter().position(|m| m.entry == e));
+        let next = match (at, up) {
+            (Some(i), true) => i.saturating_sub(1),
+            (Some(i), false) => (i + 1).min(marks.len() - 1),
+            (None, true) => marks.iter().rposition(|m| m.line < v.top).unwrap_or(0),
+            (None, false) => marks.iter().position(|m| m.line >= v.top + rows).unwrap_or(marks.len() - 1),
+        };
+        let m = marks[next];
+        self.thought = Some(m.entry);
+        if !(v.top..v.top + rows).contains(&m.line) {
+            // A third of the way down the pane, so what follows the marker shows too.
+            let top = m.line.saturating_sub(rows / 3);
+            self.scroll = self.scroll_max.get().saturating_sub(top);
         }
     }
 
@@ -547,7 +600,14 @@ impl State {
                 self.view = View::Conversation;
                 self.open_onboarding(false, out);
             }
-            Command::ToggleThinking => self.show_thinking = !self.show_thinking,
+            Command::ToggleThinking => {
+                self.show_thinking = !self.show_thinking;
+                // Every block follows ^t again, whatever was opened or closed on its own.
+                self.folds.clear();
+                // Every reasoning block opens or closes: the pane starts again from the tail, or
+                // from the same distance above it, rather than hold a line index from before.
+                self.epoch = self.epoch.wrapping_add(1);
+            }
             Command::Interrupt => {
                 if let (Some(s), true) = (self.session.clone(), self.is_busy()) {
                     out.push(Request::Interrupt { session: s });
@@ -825,7 +885,7 @@ impl State {
             }
             KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(self.page()),
             KeyCode::Home if ctrl => self.scroll = self.scroll_max.get(),
-            KeyCode::End if ctrl => self.scroll = 0,
+            KeyCode::End if ctrl => self.follow_tail(),
             KeyCode::Backspace if ctrl || alt => self.composer.backspace_word(),
             KeyCode::Char('w') | KeyCode::Char('h') if ctrl => self.composer.backspace_word(),
             KeyCode::Char('u') if ctrl => self.composer.clear(),
@@ -854,11 +914,22 @@ impl State {
     /// keys, and any other character goes back to the Message box and is typed there.
     fn region_key(&mut self, k: KeyEvent, out: &mut Vec<Request>) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = k.modifiers.contains(KeyModifiers::SHIFT);
         let focus = self.focus;
         match k.code {
             KeyCode::Esc => {
                 self.focus = Focus::Message;
-                self.scroll = 0;
+                self.follow_tail();
+            }
+            // Enter on the Conversation box folds the reasoning block its cursor is on, as Enter
+            // on the old harness's conversation region did; with none on screen it goes to type.
+            KeyCode::Enter if focus == Focus::Conversation => {
+                let v = self.viewport.get();
+                let marks = self.marks.borrow().clone();
+                match pick_thought(&marks, v.top, v.size.1 as usize, self.thought) {
+                    Some(entry) => self.toggle_thought(entry),
+                    None => self.focus = Focus::Message,
+                }
             }
             KeyCode::Enter => match focus {
                 Focus::Model => self.open_model_picker(),
@@ -866,6 +937,9 @@ impl State {
                 Focus::Board => self.open_board_view(out),
                 Focus::Conversation | Focus::Message => self.focus = Focus::Message,
             },
+            KeyCode::Up | KeyCode::Down if shift && focus == Focus::Conversation => {
+                self.step_thought(k.code == KeyCode::Up)
+            }
             KeyCode::Char('i') if !ctrl => self.focus = Focus::Message,
             KeyCode::Char('c') if !ctrl => self.focus = Focus::Conversation,
             KeyCode::Char('m') if !ctrl => {
@@ -891,7 +965,7 @@ impl State {
             KeyCode::PageUp => self.scroll = (self.scroll + self.page()).min(self.scroll_max.get()),
             KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(self.page()),
             KeyCode::Home => self.scroll = self.scroll_max.get(),
-            KeyCode::End => self.scroll = 0,
+            KeyCode::End => self.follow_tail(),
             KeyCode::Char(c) if !ctrl => {
                 self.focus = Focus::Message;
                 self.composer.insert(c);
@@ -941,7 +1015,7 @@ impl State {
                 });
             }
         }
-        self.scroll = 0;
+        self.follow_tail();
     }
 }
 

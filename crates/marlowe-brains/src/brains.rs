@@ -119,15 +119,20 @@ impl Brains {
     /// so the agent compacts against it.
     pub fn agent_parts(&self, slot: &Slot) -> Result<(Arc<dyn Provider>, ModelInfo, Effort), BrainsError> {
         let (model, effort) = self.resolve(slot)?;
-        let mut info = self.model_info(&model)?;
+        self.model_parts(&model, effort)
+    }
+
+    /// [`Brains::agent_parts`] for a model already chosen (e.g. by [`Brains::background_model`]).
+    pub fn model_parts(&self, model: &ModelRef, effort: Effort) -> Result<(Arc<dyn Provider>, ModelInfo, Effort), BrainsError> {
+        let mut info = self.model_info(model)?;
         // A model with no known window and no policy keeps the agent's own default.
-        let saved = self.with_library(|l| l.policy(&model))?.is_some();
+        let saved = self.with_library(|l| l.policy(model))?.is_some();
         if saved || info.context_window.is_some() {
-            if let Ok(window) = self.context().allowed_ctx(&model, None) {
+            if let Ok(window) = self.context().allowed_ctx(model, None) {
                 info.context_window = Some(window);
             }
         }
-        Ok((self.provider_for(&model)?, info, effort))
+        Ok((self.provider_for(model)?, info, effort))
     }
 }
 

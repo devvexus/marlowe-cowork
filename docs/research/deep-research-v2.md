@@ -182,12 +182,76 @@ until Matthew reviews them.**
 - **Cost.** A judge call took 1.8 s on average (median 1.6 s, max 8.4 s), so a 10-report run with
   about 30 citations each should take about 10 minutes of judging.
 
-**Not yet run:** the full 10-question research eval. The integrator runs it after the v2 playbook
-can write bundles:
+**Not yet run (pending GPU):** the 10-question research eval. The playbook writes bundles now, but
+the judge is local `marlowe-dusk`, and the GPU was handed to a training job on 2026-10-09 at about
+20:50 (OpenRouter answers 403, so there is no cloud judge either). When the GPU is free:
 
 ```
-python tools/research_eval.py run --bundles <dir> --label v2-first
+python tools/research_eval.py run --bundles <dir> --label v2-first \
+  --produce "python tools/research_produce.py {qid} {question} {bundle}"
+python tools/research_eval.py score --bundle <home>\scratch\fe527eba...\bundle.json
 ```
+
+## 3. First live run (run `fe527eba`, 2026-10-09)
+
+Goal: "What are the strongest 2025–2026 methods for structured and unstructured pruning of LLMs in
+the 20–30B range, and how do they compare on perplexity/KL retention at 20–30% sparsity?" Debug
+build, `marlowe-dusk:27b-super`, keyless channels only (no SearXNG; Semantic Scholar rate-limited).
+
+| | Quote | Actual |
+|---|---:|---:|
+| Model tokens | 674k | 744k (110%) |
+| Minutes | 124 | 131 (106%) |
+| Fetches / steps | 106 fetches | 104 steps |
+
+Plan, approved as proposed: 5 sub-questions, breadth 4, depth 1, source budget 40 (quote basis:
+15 nodes, 66 queries, 40 sources).
+1. Structured methods: best perplexity/KL retention at 20–30% sparsity, model families, validation
+   sets (arxiv, semantic_scholar, open_alex, crossref, web).
+2. Unstructured methods, same question (arxiv, semantic_scholar, github, web).
+3. Head-to-head ranking on comparable 20–30B backbones, with repair and calibration (arxiv,
+   semantic_scholar, open_alex, github, web).
+4. Are the numbers comparable; which papers ship code or checkpoints (arxiv, github, web,
+   hacker_news).
+5. Scale trends from smaller or larger models (arxiv, open_alex, web, wikipedia).
+
+Recorded in `research.json`:
+- 66 queries, 180 sources found after dedup, 23 read, 5 unreadable; 29 channel queries or page
+  reads failed (Semantic Scholar 429, web search had no backend).
+- 114 claims with verbatim quotes (1 quote not in its source, dropped); 75 groups over 23
+  independent roots: 7 established (2 roots), 68 suggested (1 root), 0 contested.
+- Review: 73 groups upheld, 2 weakened, 0 refuted. 3 report-verification calls gave no answer.
+- 39 cited sentences checked: 35 supported, 4 partial, 0 unsupported; citation accuracy 0.949
+  with partial as half (printed as 0.95), **0.897 strict** (this eval's rule, §2); 18 of the 39
+  verdicts came from retries asked without reasoning, all "supported". 60 effective citations;
+  12 references, of which [11] (the HTML page of [10]) carried no identifier. Confidence medium;
+  with the abs/html pair merged nothing is established and it is low.
+
+Read by hand, the report is not yet good enough:
+- **Coverage.** 23 of 40 planned sources; no general web search; it missed Wanda/SparseGPT-family
+  results on 13B–70B models and OWL, so "nothing settles it" is partly an artefact of retrieval.
+- **False corroboration.** arXiv's abs page and HTML page of one paper (NOT, 2601.13580) counted
+  as two independent roots, and the answer called them "two independent sources".
+- **Off-topic.** NOT is not a pruning method but filled sub-question 4.
+- **Sections.** Sub-question 3 is empty and sub-question 5 ends mid-sentence (a reply cut off at
+  the output limit).
+- **Empty answers.** Several compression calls and 3 verification calls returned nothing: dusk's
+  thinking spent the whole `num_predict` (8,192, a quarter of the 32k window) before answering.
+
+Fixed on CPU after this run (CHANGELOG M4.5, "Fixed (fe527eba)"); the live re-run waits for the
+GPU:
+- Web search is probed before planning and left out with the reason shown; a 429 is waited out
+  (Retry-After, at most 60 s) and retried; a node whose queries all fail is widened to other
+  live channels; thin coverage caps confidence and leads the report.
+- 2-4 keyword queries per channel from the plan (method and model names), arXiv field syntax, the
+  goal's years as a date floor, and citation chasing through Semantic Scholar / OpenAlex.
+- Proceedings landing/PDF URLs fold (ACL, OpenReview, PMLR, NeurIPS); a page's `citation_*` tags
+  and arXiv stamp pair it with the work it names before corroboration; grading words are held to
+  the root count.
+- The reviewer marks off-goal groups, which reach neither a section nor memory; follow-ups keep
+  the goal's terms.
+- Steps are sized to the window (12,288 tokens, doubled on retry, same effort); a reply still cut
+  off is cut back to its last sentence and marked; grouping runs run-wide with a merge pass.
 
 **Known limit:** when the judge and the report writer are the same model (marlowe-dusk), the score
 may carry self-preference bias. `--judge-model` takes another local model for a cross-check.

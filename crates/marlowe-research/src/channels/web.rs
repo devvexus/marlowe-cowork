@@ -355,6 +355,36 @@ impl Channel for WebChannel {
         }
         Err(ChannelError::NoBackend { channel: ChannelId::Web, detail: misses.join("; ") })
     }
+
+    /// SearXNG is asked for `/healthz`; DuckDuckGo and a hosted search cannot be probed without
+    /// spending a search, so they count as up unless resting after a failure.
+    fn ready(&self, ctx: &ChannelCtx<'_>) -> Result<(), String> {
+        let backends = self.backends();
+        if backends.is_empty() {
+            return Err("no web search backend is configured (SearXNG, DuckDuckGo and hosted search are all off)".into());
+        }
+        let mut why = Vec::new();
+        for b in backends {
+            if self.is_resting(&b, ctx) {
+                why.push(format!("{b:?} is resting after an earlier failure"));
+                continue;
+            }
+            match &b {
+                WebBackend::Searxng { base_url } => {
+                    match get_raw(ctx, ChannelId::Web, HttpRequest::get(format!("{base_url}/healthz"))) {
+                        Ok(r) if r.status < 500 => return Ok(()),
+                        Ok(r) => why.push(format!("SearXNG at {base_url} answered HTTP {}", r.status)),
+                        Err(e) => {
+                            self.rest(&b, DOWN_FOR);
+                            why.push(format!("SearXNG at {base_url} is not reachable ({e})"));
+                        }
+                    }
+                }
+                WebBackend::DuckDuckGoLite | WebBackend::Hosted(_) => return Ok(()),
+            }
+        }
+        Err(format!("no web search backend answers: {}", why.join("; ")))
+    }
 }
 
 #[cfg(test)]
@@ -379,6 +409,28 @@ mod tests {
         let picked = w.select_backend(&|b| !matches!(b, WebBackend::Searxng { .. }));
         assert!(matches!(picked, Some(WebBackend::DuckDuckGoLite)));
         assert!(w.select_backend(&|_| false).is_none());
+    }
+
+    struct Refused;
+    impl crate::channel::HttpGet for Refused {
+        fn get(&self, r: &HttpRequest, _: &CancelToken) -> Result<crate::channel::HttpResponse, String> {
+            Err(format!("connection refused: {}", r.url))
+        }
+    }
+
+    /// Found live: SearXNG down and the other backends off, and every web query of a run failed.
+    #[test]
+    fn readiness_names_a_web_channel_that_cannot_answer() {
+        let cancel = CancelToken::new();
+        let ctx = ChannelCtx { http: &Refused, cache: None, cancel: &cancel };
+        let off = WebChannel::new(WebConfig { searxng_url: None, duckduckgo: false }, None);
+        assert!(off.ready(&ctx).unwrap_err().contains("all off"));
+        let down = WebChannel::new(WebConfig { searxng_url: Some(DEFAULT_SEARXNG.into()), duckduckgo: false }, None);
+        let why = down.ready(&ctx).unwrap_err();
+        assert!(why.contains("SearXNG at http://127.0.0.1:8080 is not reachable"), "{why}");
+        let fallback = WebChannel::new(WebConfig::default(), None);
+        assert_eq!(fallback.ready(&ctx), Ok(()), "DuckDuckGo is taken as up until it fails");
+        assert!(WebChannel::new(WebConfig::default(), Some(Arc::new(Fake))).ready(&ctx).is_ok());
     }
 
     #[test]

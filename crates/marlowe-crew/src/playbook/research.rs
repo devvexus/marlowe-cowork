@@ -52,6 +52,7 @@ pub fn deep_research(runner: &dyn StepRunner, goal: &str, cfg: &PlaybookConfig) 
         prompt: plan_prompt(goal),
         tools: Some(LOOK.iter().map(|t| t.to_string()).collect()),
         effort: None,
+        max_output: None,
     })?;
     let mut subs: Vec<String> = list_items(&plan.text);
     subs.truncate(cfg.max_scouts.max(1));
@@ -71,6 +72,7 @@ pub fn deep_research(runner: &dyn StepRunner, goal: &str, cfg: &PlaybookConfig) 
             prompt: scout_prompt(goal, q),
             tools: None,
             effort: None,
+            max_output: None,
         })
         .collect();
     let mut claims: Vec<Claim> = Vec::new();
@@ -110,6 +112,7 @@ pub fn deep_research(runner: &dyn StepRunner, goal: &str, cfg: &PlaybookConfig) 
             prompt: verify_prompt(goal, &claims),
             tools: None,
             effort: None,
+            max_output: None,
         })?;
         parse_verdicts(&review.text)
     };
@@ -129,6 +132,7 @@ pub fn deep_research(runner: &dyn StepRunner, goal: &str, cfg: &PlaybookConfig) 
         prompt: synth_prompt(goal, &subs, &kept, &dropped, &empty, &verdict_of),
         tools: Some(LOOK.iter().map(|t| t.to_string()).collect()),
         effort: None,
+        max_output: None,
     })?;
     let report = synth.text.trim().to_string();
     let root = &runner.sandbox().root;

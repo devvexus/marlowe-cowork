@@ -6,13 +6,19 @@
 //! persist in `<home>\voice.json`. With no backend the handle still works and reports itself
 //! unavailable; nothing is an error the caller must handle to keep going.
 //!
-//! The full voice (Kokoro, push-to-talk) replaces the backend in M6 as a sidecar.
+//! `engine: "chatterbox"` in `voice.json` (or `MARLOWE_VOICE_ENGINE=chatterbox`) swaps synthesis
+//! for a Chatterbox voice clone run as a Python sidecar ([`ChatterboxBackend`]), a placeholder:
+//! WinRT still plays every utterance and speaks whenever the clone cannot (or is still loading).
+//! The clone delivers an utterance clause by clause ([`Part`]), so long text starts at once. The
+//! full voice (Kokoro, push-to-talk) replaces both in M6 as a sidecar.
 
 #![forbid(unsafe_code)]
 
 mod actor;
+mod chatterbox;
 mod select;
 mod settings;
+mod sidecar;
 mod wav;
 #[cfg(windows)]
 mod winrt;
@@ -21,14 +27,17 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use crossbeam_channel::Sender;
 
 use actor::{Cmd, Shared};
 
 pub use marlowe_proto::{VoiceStatus, ENVELOPE_HZ};
+pub use chatterbox::{ChatterboxBackend, CLONE_ID};
 pub use select::pick_voice;
-pub use settings::VoiceSettings;
+pub use settings::{ChatterboxSettings, Engine, Loaded, VoiceSettings};
+pub use sidecar::{owns_process, VramCheck};
 pub use wav::{envelope, parse_wav, Wav};
 #[cfg(windows)]
 pub use winrt::WinRtBackend;
@@ -70,6 +79,8 @@ pub enum VoiceEvent {
     Spoken { id: u64, interrupted: bool },
     /// Utterance `id` could not be spoken.
     Failed { id: u64, message: String },
+    /// The configured engine is not speaking and a fallback is (reported once per cause).
+    Degraded { message: String },
 }
 
 /// A voice failure.
@@ -91,12 +102,55 @@ pub enum VoiceError {
     Stopped,
 }
 
+/// One piece of an utterance: a WAV file, and whether it is the last piece.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Part {
+    pub wav: Vec<u8>,
+    pub last: bool,
+}
+
 /// A speech engine. Runs on the voice actor's thread.
 pub trait Backend: Send {
     /// Installed voices.
     fn voices(&self) -> Vec<VoiceInfo>;
     /// Synthesizes `text` with voice `voice_id` to WAV bytes.
     fn synthesize(&mut self, text: &str, voice_id: &str) -> Result<Vec<u8>, VoiceError>;
+    /// [`Backend::synthesize`] that may give up early once `cancelled()` is true (barge-in,
+    /// shutdown). The default ignores it.
+    fn synthesize_until(&mut self, text: &str, voice_id: &str, cancelled: &dyn Fn() -> bool) -> Result<Vec<u8>, VoiceError> {
+        let _ = cancelled;
+        self.synthesize(text, voice_id)
+    }
+    /// Streaming synthesis: the first part of `text` (blocking; may give up once `cancelled()`).
+    /// When it is not `last`, the rest come from [`Backend::next_part`]. Default: all of
+    /// [`Backend::synthesize_until`] as one part.
+    fn begin_parts(&mut self, text: &str, voice_id: &str, cancelled: &dyn Fn() -> bool) -> Result<Part, VoiceError> {
+        self.synthesize_until(text, voice_id, cancelled).map(|wav| Part { wav, last: true })
+    }
+    /// The next part of the utterance [`Backend::begin_parts`] started, if it is ready within
+    /// `wait` (`Ok(None)`: not yet). Called only after a part that was not `last`.
+    fn next_part(&mut self, wait: Duration, cancelled: &dyn Fn() -> bool) -> Result<Option<Part>, VoiceError> {
+        let _ = (wait, cancelled);
+        Err(VoiceError::Backend("this engine speaks in one part".into()))
+    }
+    /// Drops the rest of a streamed utterance (barge-in, shutdown). Default: nothing.
+    fn abandon(&mut self) {}
+    /// [`Backend::begin_parts`] for speech nobody asked for (a notice): it must not load an
+    /// engine, so an engine that is not loaded hands the line to one that is. Default: the same.
+    fn begin_background_parts(&mut self, text: &str, voice_id: &str, cancelled: &dyn Fn() -> bool) -> Result<Part, VoiceError> {
+        self.begin_parts(text, voice_id, cancelled)
+    }
+    /// Gets ready to speak soon without blocking (a sidecar starts loading). Default: nothing.
+    fn prewarm(&mut self) {}
+    /// A degradation to report once (the engine fell back), taken by the actor.
+    fn take_notice(&mut self) -> Option<String> {
+        None
+    }
+    /// While the configured engine is not the one speaking: the voice that is, as clients should
+    /// see it (`George (en-GB) - clone unavailable`). Default: never.
+    fn degraded(&self) -> Option<String> {
+        None
+    }
     /// Starts playing WAV bytes; returns once playback has started.
     fn play(&mut self, wav: Vec<u8>) -> Result<(), VoiceError>;
     /// Stops playback now (barge-in). Idempotent.
@@ -118,6 +172,61 @@ pub fn default_backend() -> Option<Box<dyn Backend>> {
     #[cfg(not(windows))]
     {
         None
+    }
+}
+
+/// The backend `settings` (with environment overrides already applied) ask for: WinRT, or the
+/// Chatterbox clone over WinRT playback. `scrub` names environment variables a sidecar must not
+/// inherit. `None` without WinRT (the clone needs its player).
+pub fn engine_backend(home: &Path, settings: &VoiceSettings, scrub: &[&str]) -> Option<Box<dyn Backend>> {
+    engine_backend_gated(home, settings, scrub, None)
+}
+
+/// [`engine_backend`] whose voice sidecar starts on the GPU only when `vram` says it fits.
+pub fn engine_backend_gated(home: &Path, settings: &VoiceSettings, scrub: &[&str], vram: Option<VramCheck>) -> Option<Box<dyn Backend>> {
+    let player = default_backend()?;
+    match settings.engine {
+        Engine::Winrt => Some(player),
+        Engine::Chatterbox => {
+            let cb = settings.chatterbox.clone().unwrap_or_default();
+            let mut cfg = sidecar::SidecarConfig::from_settings(home, &cb, scrub);
+            cfg.vram = vram;
+            eprintln!(
+                "marlowe: voice: Chatterbox clone (placeholder) with {} cloning {}; WinRT plays and stands in",
+                cb.python.as_deref().map_or("no python set".into(), |p| p.display().to_string()),
+                cb.reference.as_deref().map_or("no sample set".into(), |p| p.display().to_string()),
+            );
+            Some(Box::new(ChatterboxBackend::new(player, cfg, settings.voice.clone())))
+        }
+    }
+}
+
+/// A static check of the configured engine for `marlowe doctor`: `Ok(description)` when it looks
+/// runnable, `Err(what is missing)` otherwise. Starts nothing.
+pub fn engine_check(settings: &VoiceSettings) -> Result<String, String> {
+    match settings.engine {
+        Engine::Winrt => Ok("WinRT (Windows voices)".into()),
+        Engine::Chatterbox => {
+            let cb = settings.chatterbox.clone().unwrap_or_default();
+            let python = cb.python.ok_or("Chatterbox: no python set (chatterbox.python or MARLOWE_VOICE_PYTHON)")?;
+            let reference = cb.reference.ok_or("Chatterbox: no voice sample set (chatterbox.reference or MARLOWE_VOICE_REF)")?;
+            // A bare name (`python`) is looked up on PATH at spawn; only a path can be checked here.
+            if python.components().count() > 1 && !python.is_file() {
+                return Err(format!("Chatterbox: {} does not exist", python.display()));
+            }
+            if !reference.is_file() {
+                return Err(format!("Chatterbox: the sample {} does not exist", reference.display()));
+            }
+            if let Some(script) = cb.script.as_deref().filter(|s| !s.is_file()) {
+                return Err(format!("Chatterbox: the script {} does not exist", script.display()));
+            }
+            Ok(format!(
+                "Chatterbox clone (placeholder) of {} via {}, device {}; WinRT fallback",
+                reference.display(),
+                python.display(),
+                cb.device
+            ))
+        }
     }
 }
 
@@ -172,10 +281,23 @@ fn is_auto(name: &str) -> bool {
 }
 
 impl Voice {
-    /// Starts the actor with [`default_backend`] and the settings in `<home>\voice.json`.
-    /// Never fails: without a backend the voice reports itself unavailable.
+    /// Starts the actor with the engine `<home>\voice.json` (and the `MARLOWE_VOICE_*`
+    /// environment) choose. Never fails: without a backend the voice reports itself unavailable.
     pub fn start(home: &Path, sink: Sender<VoiceEvent>) -> Voice {
-        Self::with_backend(home, sink, default_backend())
+        Self::start_with(home, sink, &[])
+    }
+
+    /// [`Voice::start`]; `scrub` names environment variables (API keys) a voice sidecar must not
+    /// inherit.
+    pub fn start_with(home: &Path, sink: Sender<VoiceEvent>, scrub: &[&str]) -> Voice {
+        Self::start_gated(home, sink, scrub, None)
+    }
+
+    /// [`Voice::start_with`]; a voice sidecar loads onto the GPU only when `vram` says its
+    /// footprint fits beside what is there (otherwise the Windows voice speaks).
+    pub fn start_gated(home: &Path, sink: Sender<VoiceEvent>, scrub: &[&str], vram: Option<VramCheck>) -> Voice {
+        let settings = VoiceSettings::load(home).with_env(&|k| std::env::var(k).ok());
+        Self::with_backend(home, sink, engine_backend_gated(home, &settings, scrub, vram))
     }
 
     /// [`Voice::start`] with an explicit backend (tests pass a fake, or `None`).
@@ -183,7 +305,11 @@ impl Voice {
         let voices = backend.as_ref().map(|b| b.voices()).unwrap_or_default();
         // A backend with no installed voices cannot speak.
         let backend = backend.filter(|_| !voices.is_empty());
-        let shared = Arc::new(Shared::new(backend.is_some(), voices, VoiceSettings::load(home)));
+        let loaded = VoiceSettings::read(home);
+        let shared = Arc::new(Shared::new(backend.is_some(), voices, loaded.settings));
+        if !loaded.problems.is_empty() {
+            *lock(&shared.unsaved) = Some(loaded.problems.join("; "));
+        }
         let (mut tx, mut join, mut idle_sink) = (None, None, Some(sink.clone()));
         if let Some(backend) = backend {
             let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
@@ -214,15 +340,17 @@ impl Voice {
         }
     }
 
-    /// Availability, settings, chosen voice and whether it is speaking (empty envelope).
+    /// Availability, settings, the voice speaking (the fallback's, while the configured engine
+    /// cannot) and whether it is speaking (empty envelope).
     pub fn status(&self) -> VoiceStatus {
         let sh = &self.inner.shared;
         // Read apart from the literal: a guard there would live across `current()`.
         let enabled = lock(&sh.settings).enabled;
+        let degraded = lock(&sh.degraded).clone();
         VoiceStatus {
             available: sh.available.load(Ordering::SeqCst),
             enabled,
-            voice: self.current().map(|v| v.display()),
+            voice: degraded.or_else(|| self.current().map(|v| v.display())),
             speaking: sh.speaking.load(Ordering::SeqCst),
             envelope: Vec::new(),
         }
@@ -245,7 +373,8 @@ impl Voice {
 
     /// Changes and persists settings; `None` leaves a field as it is. An unknown voice name is
     /// refused and nothing changes; `""`, `auto` or `default` returns to automatic choice.
-    /// Turning the voice off stops what it is saying.
+    /// Turning the voice off stops what it is saying. A `voice.json` with fields that could not be
+    /// read is not overwritten: the change then lasts until the daemon restarts.
     pub fn configure(&self, enabled: Option<bool>, voice: Option<String>) -> Result<VoiceStatus, VoiceError> {
         let sh = &self.inner.shared;
         {
@@ -264,8 +393,16 @@ impl Voice {
                 };
             }
             if next != *cur {
-                std::fs::create_dir_all(&self.inner.home)?;
-                next.save(&self.inner.home)?;
+                match lock(&sh.unsaved).as_deref() {
+                    Some(why) => eprintln!(
+                        "marlowe: voice: not saving {} ({why}); fix it to keep this change",
+                        VoiceSettings::path(&self.inner.home).display()
+                    ),
+                    None => {
+                        std::fs::create_dir_all(&self.inner.home)?;
+                        next.save(&self.inner.home)?;
+                    }
+                }
                 *cur = next;
             }
         }
@@ -277,6 +414,16 @@ impl Voice {
 
     /// Queues `text`; returns its utterance id. A new utterance does not interrupt one playing.
     pub fn speak(&self, text: &str) -> Result<u64, VoiceError> {
+        self.queue(text, false)
+    }
+
+    /// [`Voice::speak`] for a line nobody asked for (a notice): it never loads a voice model. A
+    /// clone that is not loaded leaves the line to the Windows voice.
+    pub fn speak_background(&self, text: &str) -> Result<u64, VoiceError> {
+        self.queue(text, true)
+    }
+
+    fn queue(&self, text: &str, background: bool) -> Result<u64, VoiceError> {
         let inner = &self.inner;
         if inner.down.load(Ordering::SeqCst) {
             return Err(VoiceError::Stopped);
@@ -291,8 +438,21 @@ impl Voice {
         let voice_id = self.current().map(|v| v.id).ok_or(VoiceError::Unavailable)?;
         let id = inner.next_id.fetch_add(1, Ordering::SeqCst);
         let epoch = sh.epoch.load(Ordering::SeqCst);
-        tx.send(Cmd::Speak { id, text: text.to_string(), voice_id, epoch }).map_err(|_| VoiceError::Stopped)?;
+        tx.send(Cmd::Speak { id, text: text.to_string(), voice_id, epoch, background }).map_err(|_| VoiceError::Stopped)?;
         Ok(id)
+    }
+
+    /// Lets the engine get ready to speak (a voice sidecar starts loading its model) when the
+    /// voice is on. Never blocks.
+    pub fn prewarm(&self) {
+        let inner = &self.inner;
+        let sh = &inner.shared;
+        if inner.down.load(Ordering::SeqCst) || !sh.available.load(Ordering::SeqCst) || !lock(&sh.settings).enabled {
+            return;
+        }
+        if let Some(tx) = &inner.tx {
+            let _ = tx.send(Cmd::Prewarm);
+        }
     }
 
     /// Barge-in: stops the current utterance and drops the queue.

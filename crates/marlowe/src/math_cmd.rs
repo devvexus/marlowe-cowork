@@ -52,7 +52,17 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     let mut img: Option<(Helper, Caps)> = None;
     if images {
         match image_setup() {
-            Ok(x) => img = Some(x),
+            Ok((h, caps, reply)) => {
+                // What the terminal said, raw, and what was read from it: Windows Terminal should
+                // answer `16 t` with its 10x20 Sixel cell whatever the font.
+                let said = format!(
+                    "terminal: cell {}x{} px, fg #{:02x}{:02x}{:02x}, bg #{:02x}{:02x}{:02x}; reply {}",
+                    caps.cell_w, caps.cell_h, caps.fg[0], caps.fg[1], caps.fg[2], caps.bg[0], caps.bg[1], caps.bg[2],
+                    reply.escape_debug()
+                );
+                line(&mut out, &Line::styled(said, dim))?;
+                img = Some((h, caps));
+            }
             Err(why) => {
                 line(&mut out, &Line::styled(format!("images off: {why}. Showing the grid."), dim))?;
                 grid = true;
@@ -74,7 +84,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             None => Some("no image: at this width it is set as lines".to_string()),
             Some(b) => {
                 let t = Instant::now();
-                match render(h, *caps, b) {
+                match render(h, *caps, b, tw) {
                     Ok(strips) => {
                         timings.push(t.elapsed().as_secs_f64() * 1e3);
                         if grid {
@@ -114,8 +124,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     Ok(0)
 }
 
-/// The terminal's caps and the helper, or why there are no images.
-fn image_setup() -> Result<(Helper, Caps), String> {
+/// The helper, the terminal's caps and its raw reply to the probe, or why there are no images.
+fn image_setup() -> Result<(Helper, Caps, String), String> {
     let setting = std::env::var("MARLOWE_MATH_IMAGES").unwrap_or_default();
     if setting == "0" {
         return Err("MARLOWE_MATH_IMAGES=0".into());
@@ -127,18 +137,19 @@ fn image_setup() -> Result<(Helper, Caps), String> {
     let reply = marlowe_os::console::query(probe::QUERIES, probe::complete, Duration::from_millis(400))
         .map_err(|e| format!("the terminal did not answer ({e})"))?;
     let caps = probe::caps(&reply, setting == "1").ok_or("the terminal does not report Sixel (DA1 has no 4)")?;
-    Ok((Helper::new(path), caps))
+    Ok((Helper::new(path), caps, reply))
 }
 
-/// The block's strips, one per reserved row, from the helper.
-fn render(h: &mut Helper, caps: Caps, b: &MathBlock) -> Result<Vec<std::sync::Arc<[u8]>>, String> {
+/// The block's strips, one per reserved row, from the helper. The box is the block's rows and the
+/// text column's width from the block's column, as in the pane.
+fn render(h: &mut Helper, caps: Caps, b: &MathBlock, tw: usize) -> Result<Vec<std::sync::Arc<[u8]>>, String> {
     let markup = b.formula.typst.clone().ok_or("no Typst form")?;
     // The grid's colour, or the terminal's own foreground for the default weight: as the pane.
     let fg = match b.fg {
         Color::Rgb(r, g, bl) => [r, g, bl],
         _ => caps.fg,
     };
-    let job = Job { markup, fg, cols: b.cols as u16, rows: b.rows as u16 };
+    let job = Job { markup, fg, cols: tw.saturating_sub(b.col) as u16, rows: b.rows as u16 };
     Ok(h.render(&job, caps)?.strips)
 }
 

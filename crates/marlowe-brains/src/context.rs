@@ -225,7 +225,7 @@ impl Brains {
         Ok(self.model_info(model)?.context_window.unwrap_or(DEFAULT_WINDOW))
     }
 
-    fn is_local_ollama(&self, model: &ModelRef) -> bool {
+    pub(crate) fn is_local_ollama(&self, model: &ModelRef) -> bool {
         model.provider == ProviderKind::Ollama && self.model_info(model).map(|i| i.local).unwrap_or(true)
     }
 
@@ -478,6 +478,20 @@ impl Brains {
     /// Every model the local engine has loaded now (all unload when its server restarts).
     pub fn loaded_local_models(&self) -> Vec<String> {
         self.factory().hardware().map(|hw| hw.models.loaded_models()).unwrap_or_default()
+    }
+
+    /// [`Brains::loaded_local_models`], with `None` when the engine did not answer (what is
+    /// loaded is unknown) and `Some(empty)` when there is no hardware probe in this build.
+    pub fn resident_local_models(&self) -> Option<Vec<String>> {
+        match self.factory().hardware() {
+            Some(hw) => hw.models.resident(),
+            None => Some(Vec::new()),
+        }
+    }
+
+    /// Whether this build can measure the machine (a hardware probe is set).
+    pub(crate) fn has_hardware(&self) -> bool {
+        self.factory().hardware().is_some()
     }
 
     /// Applies an approved server change. The daemon calls this only after an Allow.

@@ -111,6 +111,10 @@ pub struct SubQuestion {
     /// Why these channels, in one line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rationale: Option<String>,
+    /// Short keyword queries for the channels (named methods, model families, benchmarks), as
+    /// a search engine would match them. Empty: the question itself is searched.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queries: Vec<String>,
 }
 
 /// Bounds a plan must respect. An edited plan outside them is refused, not clamped.
@@ -118,6 +122,7 @@ pub const PLAN_MAX_SUBQUESTIONS: usize = 12;
 pub const PLAN_MAX_BREADTH: u32 = 8;
 pub const PLAN_MAX_DEPTH: u32 = 4;
 pub const PLAN_MAX_SOURCES: u32 = 500;
+pub const PLAN_MAX_QUERIES: usize = 6;
 
 /// What a deep research run intends to do, composed in a clean run before any channel is read
 /// (ADR-043 §5) and approved by the user before it spends.
@@ -160,6 +165,8 @@ pub enum PlanError {
     Depth(u32),
     #[error("source budget {0} is outside 1..={PLAN_MAX_SOURCES}")]
     SourceBudget(u32),
+    #[error("sub-question {0} has more than {PLAN_MAX_QUERIES} queries or one over 200 characters")]
+    Queries(u32),
 }
 
 impl ResearchPlan {
@@ -185,6 +192,9 @@ impl ResearchPlan {
             }
             if q.channels.is_empty() {
                 return Err(PlanError::NoChannels(q.id));
+            }
+            if q.queries.len() > PLAN_MAX_QUERIES || q.queries.iter().any(|s| s.chars().count() > 200) {
+                return Err(PlanError::Queries(q.id));
             }
         }
         if !(1..=PLAN_MAX_BREADTH).contains(&self.breadth) {

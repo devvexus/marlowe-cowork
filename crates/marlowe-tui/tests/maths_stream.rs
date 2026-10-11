@@ -68,8 +68,10 @@ fn a_streamed_reply_never_shows_source_and_a_landed_block_never_moves() {
         if landed_at.is_none() && so_far.matches("$$").count() >= 2 {
             let last = now.iter().rposition(|l| l.contains('⎯')).expect("the fraction bar is on screen");
             landed_at = Some(last + 1);
-        }
-        if let Some(n) = landed_at {
+            // It lands in place of its one-row placeholder, growing downward: nothing above moves.
+            let held = prev.iter().position(|l| l.contains('…')).expect("the block was held before it landed");
+            assert_eq!(&now[..held], &prev[..held], "frame {k}: landing moved a row above the block");
+        } else if let Some(n) = landed_at {
             // Everything from the top of the screen to the end of the landed block is fixed.
             assert_eq!(&now[..n], &prev[..n], "frame {k} moved a row at or above a landed display block");
         }

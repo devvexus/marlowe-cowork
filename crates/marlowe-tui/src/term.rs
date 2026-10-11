@@ -104,6 +104,10 @@ pub fn run(client: Client, mut state: State, theme: Theme) -> Result<(), TuiErro
 /// executable, starts the maths image worker. The helper process itself starts on the first
 /// formula. The receiver wakes the loop when an image is ready.
 ///
+/// On by default, Windows Terminal included: an image is drawn to match the grid maths beside it
+/// (its colour, a sans maths font at the terminal font's x-height, pixel-snapped to the cell the
+/// terminal lays Sixel out on; see `marlowe-typeset-helper/src/raster.rs`).
+///
 /// `MARLOWE_MATH_IMAGES=0` keeps every formula on the character grid; `=1` skips the Sixel check
 /// (for a terminal that supports it without saying so in DA1).
 fn start_images() -> Option<Receiver<()>> {
@@ -208,18 +212,17 @@ fn draw(
     typeset: bool,
     emitter: &mut Emitter,
 ) -> Result<(), TuiError> {
+    // Every frame is one synchronised update (DEC mode 2026): the terminal shows it whole, never
+    // half-written while a reply streams. ratatui sends only the cells that changed. A terminal
+    // without the mode ignores both sequences.
+    let mut out = io::stdout();
+    out.write_all(b"\x1b[?2026h")?;
+    let frame = term.draw(|f| render::draw(f, state, theme))?;
     if typeset {
-        // One synchronised update for the frame and its images, where the terminal supports
-        // it (DEC mode 2026); elsewhere these are ignored.
-        let _ = io::stdout().write_all(b"\x1b[?2026h");
-        let frame = term.draw(|f| render::draw(f, state, theme))?;
-        let mut out = io::stdout();
         emitter.flush(frame.buffer, &mut out)?;
-        out.write_all(b"\x1b[?2026l")?;
-        out.flush()?;
-    } else {
-        term.draw(|f| render::draw(f, state, theme))?;
     }
+    out.write_all(b"\x1b[?2026l")?;
+    out.flush()?;
     Ok(())
 }
 

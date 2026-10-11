@@ -27,3 +27,6 @@ tiny-skia = "0.11"
 marlowe-surface.workspace = true
 crossbeam-channel.workspace = true
 serde_json.workspace = true
+# The side-by-side check (`tests/side_by_side.rs`) draws grid rows in the system's Cascadia Mono.
+# Already in the tree through Typst.
+ttf-parser = "0.25"

@@ -155,6 +155,7 @@ fn parse(
         headings: p.headings,
         lang: p.lang,
         description: p.description,
+        meta: p.meta,
         bytes_in: bytes.len(),
         encoding: decoded.encoding,
         warnings,
@@ -237,6 +238,7 @@ struct Parser<'a> {
     title: Option<String>,
     lang: Option<String>,
     description: Option<String>,
+    meta: Vec<(String, String)>,
     links: Vec<Link>,
     headings: Vec<Heading>,
     script_chars: usize,
@@ -258,6 +260,9 @@ const MAX_LINKS: usize = 5_000;
 /// document, not a title.
 const MAX_TITLE_BYTES: usize = 4_096;
 const MAX_HEADINGS: usize = 2_000;
+/// Scholarly `<meta>` tags kept, and characters of each one's content.
+const MAX_META: usize = 64;
+const MAX_META_CHARS: usize = 512;
 
 impl<'a> Parser<'a> {
     fn new(text: &'a str, base: Option<&'a str>) -> Self {
@@ -277,6 +282,7 @@ impl<'a> Parser<'a> {
             title: None,
             lang: None,
             description: None,
+            meta: Vec::new(),
             links: Vec::new(),
             headings: Vec::new(),
             script_chars: 0,
@@ -405,6 +411,16 @@ impl<'a> Parser<'a> {
                     self.description = attr(raw, "content")
                         .map(|c| collapse(&decode_entities(&c)))
                         .filter(|c| !c.is_empty());
+                }
+                let name = attr(raw, "name").map(|n| n.trim().to_ascii_lowercase()).unwrap_or_default();
+                let scholarly = ["citation_", "dc.", "prism."].iter().any(|p| name.starts_with(p));
+                if scholarly && name.len() <= 40 && self.meta.len() < MAX_META {
+                    if let Some(c) = attr(raw, "content").map(|c| collapse(&decode_entities(&c))) {
+                        if !c.is_empty() {
+                            let end = c.char_indices().nth(MAX_META_CHARS).map_or(c.len(), |(i, _)| i);
+                            self.meta.push((name, c[..end].to_string()));
+                        }
+                    }
                 }
             }
             "img" => {
@@ -1034,6 +1050,14 @@ mod tests {
         // A pure link index is ALL chrome. Returning nothing would read as "this page is blank".
         let d = doc("<html><body><nav><a href='/a'>Alpha</a><a href='/b'>Beta</a></nav></body></html>");
         assert!(d.has_text(), "content selection ate the whole document");
+    }
+
+    #[test]
+    fn scholarly_meta_tags_are_kept_in_order_and_others_are_not() {
+        let d = doc("<html><head><meta name=\"citation_title\" content=\"SparseGPT &amp; friends\">             <meta name=\"Citation_Author\" content=\"Frantar, Elias\"><meta name=\"citation_author\" content=\"Alistarh, Dan\">             <meta name=\"citation_arxiv_id\" content=\"2301.00774\"><meta name=\"viewport\" content=\"width=device-width\">             <meta property=\"og:title\" content=\"x\"></head><body><p>Body text.</p></body></html>");
+        let names: Vec<&str> = d.meta.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["citation_title", "citation_author", "citation_author", "citation_arxiv_id"]);
+        assert_eq!(d.meta[0].1, "SparseGPT & friends");
     }
 
     #[test]

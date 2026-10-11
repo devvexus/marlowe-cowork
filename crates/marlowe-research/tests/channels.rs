@@ -5,6 +5,7 @@
 //! exercised together.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use marlowe_model::CancelToken;
 use marlowe_research::channels::{RssChannel, StackExchangeChannel, WebChannel, WebConfig};
@@ -55,7 +56,8 @@ impl HttpGet for Replay {
 }
 
 fn search(id: ChannelId, q: &str, n: usize, http: &Replay) -> Result<Vec<SourceRef>, ChannelError> {
-    let reg = ChannelRegistry::keyless_with(&KeylessConfig::default(), None);
+    // Recorded 429s are not waited out (the product waits up to a minute and asks again).
+    let reg = ChannelRegistry::keyless_with(&KeylessConfig::default(), None).with_max_retry_wait(Duration::ZERO);
     let cancel = CancelToken::new();
     reg.search(id, &ChannelQuery::new(q, n), &ChannelCtx { http, cache: None, cancel: &cancel })
 }
@@ -121,7 +123,8 @@ fn crossref_search_and_doi_lookup() {
 #[test]
 fn semantic_scholar_rate_limits_hold_the_channel() {
     let http = Replay::new(&[("api.semanticscholar.org", 429, "s2_429.json")]);
-    let reg = ChannelRegistry::keyless(WebConfig::default(), None);
+    // The registry waits out holds up to a minute and asks again; not in a unit test.
+    let reg = ChannelRegistry::keyless(WebConfig::default(), None).with_max_retry_wait(std::time::Duration::ZERO);
     let cancel = CancelToken::new();
     let ctx = ChannelCtx { http: &http, cache: None, cancel: &cancel };
     let e = reg.search(ChannelId::SemanticScholar, &ChannelQuery::new("lora", 3), &ctx).unwrap_err();
@@ -216,12 +219,20 @@ fn pubmed_esearch_then_efetch_in_rank_order() {
 }
 
 #[test]
-fn rss_reads_a_feed_url_and_searches_configured_feeds_under_robots() {
+fn rss_reads_only_named_feeds_and_searches_configured_feeds_under_robots() {
     let http = Replay::new(&[
         ("lwn.net/robots.txt", 200, "lwn_robots.txt"),
         ("lwn.net/headlines/rss", 200, "lwn_headlines.rss"),
     ]);
-    let r = search(ChannelId::Rss, "https://lwn.net/headlines/rss", 3, &http).unwrap();
+    // A URL in the query text (a model's follow-up question can carry one) is never fetched.
+    let refused = search(ChannelId::Rss, "https://attacker.example/feed?leak=secret", 3, &http).unwrap_err();
+    assert!(refused.to_string().contains("not read as a feed"), "{refused}");
+    assert!(http.seen().is_empty(), "nothing was requested");
+    // A feed the user names is.
+    let reg = ChannelRegistry::keyless_with(&KeylessConfig::default(), None);
+    let cancel = CancelToken::new();
+    let named = ChannelQuery { feed_url: Some("https://lwn.net/headlines/rss".into()), ..ChannelQuery::new("", 3) };
+    let r = reg.search(ChannelId::Rss, &named, &ChannelCtx { http: &http, cache: None, cancel: &cancel }).unwrap();
     assert_eq!(r[0].title, "[$] The state of systemd: 2026 edition");
     assert_eq!(r[0].date.as_deref(), Some("2026-10-09"));
     assert_eq!(http.seen()[0], "https://lwn.net/robots.txt", "robots.txt is read first");

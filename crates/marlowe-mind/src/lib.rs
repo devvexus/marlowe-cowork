@@ -16,6 +16,7 @@
 
 mod actor;
 mod capture;
+mod episode;
 mod error;
 mod legacy;
 mod models;
@@ -174,7 +175,14 @@ impl Mind {
 
     /// Writes one explicit memory. Trust comes from `memory.source`.
     pub fn remember(&self, memory: MemoryIn) -> Result<Remembered, MindError> {
-        self.call(|r| Cmd::Remember(memory, r))?
+        self.call(|r| Cmd::Remember(memory, Vec::new(), r))?
+    }
+
+    /// [`Mind::remember`] for a memory derived from others (a research finding resting on
+    /// recalled memories): their ids become its lineage, and its trust is the worst over them.
+    /// Ids no longer in the store are dropped.
+    pub fn remember_derived(&self, memory: MemoryIn, derived_from: Vec<String>) -> Result<Remembered, MindError> {
+        self.call(|r| Cmd::Remember(memory, derived_from, r))?
     }
 
     /// Selects memories for a turn: Profile scope, dense cue, cross-encoder rerank, gate and
@@ -215,6 +223,14 @@ impl Mind {
     /// Episodes whose `at_ms` falls in `range`, oldest first.
     pub fn episodes(&self, range: Range<i64>) -> Result<Vec<Episode>, MindError> {
         self.call(|r| Cmd::Episodes(range, r))?
+    }
+
+    /// Writes the session's episode from its ingested turns, with no model: the opening request,
+    /// when and where it ran, its most salient lines and keywords (see `episode`). Supersedes the
+    /// session's earlier episode, so a session evicted twice keeps one. `Ok(None)` when the
+    /// session has no ingested turns. `tainted`: the session read untrusted content.
+    pub fn write_session_episode(&self, session: &str, tainted: bool) -> Result<Option<String>, MindError> {
+        self.call(|r| Cmd::WriteSessionEpisode(session.to_string(), tainted, r))?
     }
 
     /// Writes a session summary as an Episode memory; returns its id. `tainted`: the session

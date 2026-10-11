@@ -948,18 +948,17 @@ pub(crate) fn polish_request(model: &str, system: Vec<SystemBlock>, inputs: &Bri
     req
 }
 
-/// Whether the polish may call this provider now. A local model (Ollama, GGUF) loads onto the
-/// GPU the user's own jobs are using, so it is skipped unless explicitly allowed, and even then
-/// only while no watched run is live and every GPU is idle (an unknown GPU is not idle).
-pub(crate) fn polish_allowed(kind: ProviderKind, allow_local: bool, runs: &[RunInfo], gpu: &GpuReport) -> bool {
+/// Whether the polish may call this provider now. The model is already loaded (the caller never
+/// picks one that would load), but a local one shares the GPU with the user's own work, so it is
+/// skipped unless explicitly allowed, and even then only while no turn or crew run is using it,
+/// no watched run is live and every GPU is idle (an unknown GPU is not idle).
+pub(crate) fn polish_allowed(kind: ProviderKind, allow_local: bool, foreground_busy: bool, runs: &[RunInfo], gpu: &GpuReport) -> bool {
     const IDLE_UTIL_PCT: u32 = 10;
-    const IDLE_MEM_PCT: u64 = 25;
     if !matches!(kind, ProviderKind::Ollama | ProviderKind::LocalGguf) {
         return true;
     }
-    let gpu_idle = !gpu.devices.is_empty()
-        && gpu.devices.iter().all(|d| d.util_pct < IDLE_UTIL_PCT && d.mem_used_mb * 100 < d.mem_total_mb.max(1) * IDLE_MEM_PCT);
-    allow_local && gpu_idle && !runs.iter().any(|r| r.status.is_live())
+    let gpu_idle = !gpu.devices.is_empty() && gpu.devices.iter().all(|d| d.util_pct < IDLE_UTIL_PCT);
+    allow_local && !foreground_busy && gpu_idle && !runs.iter().any(|r| r.status.is_live())
 }
 
 /// One polish call with a deadline. `None` on any failure, timeout, or a reply that fails

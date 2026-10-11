@@ -186,6 +186,16 @@ pub fn cost(v: f64) -> String {
     }
 }
 
+/// How long something took: `12s`, `1m05s`.
+pub fn took(ms: u64) -> String {
+    let s = ms / 1000;
+    if s < 60 {
+        format!("{s}s")
+    } else {
+        format!("{}m{:02}s", s / 60, s % 60)
+    }
+}
+
 /// How long ago `then_ms` was, relative to `now_ms`.
 pub fn ago(then_ms: i64, now_ms: i64) -> String {
     let s = (now_ms - then_ms).max(0) / 1000;

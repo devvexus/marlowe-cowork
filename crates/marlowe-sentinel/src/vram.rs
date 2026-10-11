@@ -157,24 +157,33 @@ impl SentinelGpu {
     }
 }
 
+/// A unified-memory device's totals from system RAM `(total, available)`: `(total, used, free)`.
+pub fn unified_memory((total, free): (f64, f64)) -> (f64, f64, f64) {
+    (total, (total - free).max(0.0), free)
+}
+
 impl GpuSource for SentinelGpu {
     fn snapshot(&self) -> Option<GpuSnapshot> {
         let nvml = self.nvml.as_ref().ok()?;
         let d = nvml.device_by_index(0).ok()?;
-        let mem = d.memory_info().ok()?;
+        let ram = system_ram_mib();
+        let (total_mib, used_mib, free_mib) = match d.memory_info() {
+            Ok(mem) => (mem.total as f64 / MIB, mem.used as f64 / MIB, mem.free as f64 / MIB),
+            // Unified memory (GB10): NVML has no device memory to report; the GPU's is system RAM.
+            Err(_) => unified_memory(ram?),
+        };
         // Peak bandwidth: bus width (bits) / 8 × max memory clock (MHz) × 2 (double data rate).
         let bandwidth_gbs = match (d.memory_bus_width(), d.max_clock_info(Clock::Memory)) {
             (Ok(bits), Ok(mhz)) if bits > 0 && mhz > 0 => Some(f64::from(bits) / 8.0 * f64::from(mhz) * 2.0 / 1000.0),
             _ => None,
         };
         let runners = self.runner_memory();
-        let ram = system_ram_mib();
         Some(GpuSnapshot {
             gpu: GpuBudget {
                 name: d.name().unwrap_or_else(|_| "GPU 0".into()),
-                total_mib: mem.total as f64 / MIB,
-                used_mib: mem.used as f64 / MIB,
-                free_mib: mem.free as f64 / MIB,
+                total_mib,
+                used_mib,
+                free_mib,
                 runners_mib: runners.iter().map(|r| r.1).sum(),
                 runners_shared_mib: runners.iter().map(|r| r.2).sum(),
                 headroom_mib: HEADROOM_MIB,
@@ -208,6 +217,11 @@ mod tests {
         assert!(!is_ollama_runner(r"C:\src\llama.cpp\build\bin\Release\llama-server.exe"));
         assert!(!is_ollama_runner(r"C:\Users\m\AppData\Local\Programs\Ollama\ollama app.exe"));
         assert!(!is_ollama_runner(r"C:\tools\python.exe"));
+    }
+
+    #[test]
+    fn unified_memory_is_budgeted_from_system_ram() {
+        assert_eq!(unified_memory((131_072.0, 100_000.0)), (131_072.0, 31_072.0, 100_000.0));
     }
 
     /// Reads NVML and PDH on this machine. Ignored by default (machine-specific).

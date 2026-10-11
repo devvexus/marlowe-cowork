@@ -301,6 +301,34 @@ impl LexicalIndex {
     pub fn vocabulary(&self) -> usize {
         self.vocab.len()
     }
+
+    /// How many indexed documents contain each of `terms` (already tokenized), in order. Read-only
+    /// statistics for extractive summaries; not on the scored path.
+    pub fn document_frequencies(&self, terms: &[&str]) -> Vec<usize> {
+        let ids: Vec<Option<u32>> = terms.iter().map(|t| self.vocab.get(*t).copied()).collect();
+        let mut wanted: Vec<(u32, usize)> = ids.iter().enumerate().filter_map(|(i, id)| id.map(|id| (id, i))).collect();
+        wanted.sort_unstable();
+        let mut out = vec![0usize; terms.len()];
+        if wanted.is_empty() {
+            return out;
+        }
+        for doc in self.docs.values() {
+            for (term, _) in &doc.terms {
+                if let Ok(k) = wanted.binary_search_by_key(term, |(id, _)| *id) {
+                    // Equal ids sit together; count every position that asked for this term.
+                    let mut j = k;
+                    while j > 0 && wanted[j - 1].0 == *term {
+                        j -= 1;
+                    }
+                    while j < wanted.len() && wanted[j].0 == *term {
+                        out[wanted[j].1] += 1;
+                        j += 1;
+                    }
+                }
+            }
+        }
+        out
+    }
 }
 
 /// [`score_all`] over cached statistics. **Bit-identical to `score_all`** for any documents whose
@@ -391,6 +419,17 @@ mod tests {
     ///
     /// `assert_eq` on `f32`, not an epsilon: the claim is *identical*, not *close*. `repro`
     /// compares two runs byte for byte, so "close" is not the property the scored path needs.
+    #[test]
+    fn document_frequencies_count_documents_not_occurrences() {
+        let mut ix = LexicalIndex::default();
+        ix.upsert("a", "gate gate ablation");
+        ix.upsert("b", "the gate features");
+        ix.upsert("c", "unrelated");
+        assert_eq!(ix.document_frequencies(&["gate", "ablation", "missing", "gate"]), vec![2, 1, 0, 2]);
+        ix.remove("b");
+        assert_eq!(ix.document_frequencies(&["gate"]), vec![1]);
+    }
+
     #[test]
     fn the_belief_path_and_the_text_path_are_the_same_arithmetic() {
         let entries = [

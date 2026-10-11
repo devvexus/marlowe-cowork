@@ -12,6 +12,10 @@
 //! per model call too: at most `per_local_provider` local streams at once across all runs, and
 //! while the GPU is busy a local step moves to a cloud slot or waits ("waiting for the GPU").
 //!
+//! A deep research run waiting on its plan is parked: no thread, no slot. `approve_plan` queues
+//! it with the answer, which its plan gate takes on the next start; at boot a parked plan is
+//! pending again straight from its checkpoint.
+//!
 //! [`AgentRunner`]: crate::playbook::AgentRunner
 
 use std::collections::{HashMap, VecDeque};
@@ -22,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 use marlowe_agent::{ApprovalReq, Steer};
-use marlowe_brains::Brains;
+use marlowe_brains::{Admission, Brains, Priority};
 use marlowe_mind::{Kind, MemoryIn, Mind, Provenance};
 use marlowe_model::{CancelToken, ModelRef};
 use marlowe_proto::{
@@ -140,13 +144,15 @@ pub(crate) struct Control {
     pub stop: AtomicBool,
     /// The note a cancelled run ends with (a rejected plan says so).
     pub end_note: Mutex<Option<String>>,
+    /// The run thread stopped at the plan gate: the run waits `needs_you` with no thread.
+    pub parked: AtomicBool,
 }
 
-/// A research plan waiting on the user.
+/// A research plan waiting on the user. No thread waits with it: the run is parked at its plan
+/// gate, holding no concurrency slot, and the answer queues it again.
 pub(crate) struct PendingPlan {
     pub plan: ResearchPlan,
     pub quote: CostQuote,
-    pub tx: Sender<PlanDecision>,
 }
 
 /// A run this process is responsible for: queued, running, paused or waiting on the user.
@@ -182,6 +188,8 @@ pub(crate) struct Inner {
     pub local_free: Condvar,
     /// Research plans waiting on the user, by run.
     pub plans: Mutex<HashMap<RunId, PendingPlan>>,
+    /// Answers to parked plans, taken by the run's plan gate when it runs again.
+    pub decided: Mutex<HashMap<RunId, PlanDecision>>,
     wake: Sender<()>,
 }
 
@@ -198,6 +206,25 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 impl Inner {
     pub(crate) fn state(&self) -> MutexGuard<'_, State> {
         lock(&self.state)
+    }
+
+    /// The checkpointed proposal of a deep research run that stopped at its plan gate: proposed,
+    /// never approved.
+    fn parked_proposal(&self, run: &Run) -> Option<crate::playbook::research_v2::Proposal> {
+        use crate::playbook::research_v2::checkpoint_key;
+        use marlowe_proto::ResearchStage;
+        if run.playbook != Some(crate::Playbook::DeepResearch) {
+            return None;
+        }
+        let steps = self.store().steps(&run.id).ok()?;
+        let output = |part: &str| {
+            let key = checkpoint_key(ResearchStage::Plan, Some(part));
+            steps.iter().find(|s| s.key == key).and_then(|s| s.output.clone())
+        };
+        if output("approved").is_some() {
+            return None;
+        }
+        serde_json::from_str(&output("proposed")?).ok()
     }
 
     pub(crate) fn store(&self) -> MutexGuard<'_, RunStore> {
@@ -251,62 +278,106 @@ impl Inner {
         Ok(run)
     }
 
-    /// The model for `card`: the first explicitly assigned slot of its chain, else the library
-    /// default. A local model while the GPU is busy moves to the first slot assigned a cloud
-    /// model, or reports that it must wait.
+    /// The model for `card`: the first explicitly assigned slot of its chain, else the
+    /// conductor's model. A local model while the GPU is busy moves to the first slot assigned a
+    /// cloud model, or reports that it must wait. A local model that is not loaded loads only when
+    /// the planner says it fits beside what is ([`Priority::Crew`]); otherwise the step is refused
+    /// with the cost. The agent's window is the context gate's (`allowed_ctx`), never above it.
     pub(crate) fn choose(&self, card: &RoleCard) -> Result<Choice, CrewError> {
         let brains = &self.deps.brains;
         let slots = brains.slots().unwrap_or_default();
-        let explicit = card
-            .slot_chain()
-            .into_iter()
-            .find_map(|slot| slots.iter().find(|a| a.slot == slot && !a.inherited).and_then(|a| a.model.clone()));
-        let mut model: ModelRef = match explicit {
-            Some(m) => m,
-            None => brains.resolve(&card.slot)?.0,
-        };
-        let mut info = brains.model_info(&model)?;
+        let mut model = self.pick(card, &slots)?;
+        let local = brains.model_info(&model)?.local;
         let mut waits_for_gpu = false;
-        if (info.local || model.provider.is_local()) && (self.deps.gpu_busy)() {
+        if (local || model.provider.is_local()) && (self.deps.gpu_busy)() {
             let cloud = slots
                 .iter()
                 .filter_map(|a| a.model.clone())
                 .find(|m| !m.provider.is_local() && m.provider.is_available_now());
             match cloud {
-                Some(m) => {
-                    info = brains.model_info(&m)?;
-                    model = m;
-                }
+                Some(m) => model = m,
                 None => waits_for_gpu = true,
             }
         }
-        let provider = brains.provider_for(&model)?;
+        if !waits_for_gpu {
+            match brains.admit(&model, Priority::Crew) {
+                Admission::Refused(why) => {
+                    return Err(marlowe_brains::BrainsError::Invalid(format!("not loading {model}: {why}")).into());
+                }
+                // The engine did not say what is loaded: ask again shortly rather than guess.
+                Admission::Wait(_) => waits_for_gpu = true,
+                _ => {}
+            }
+        }
+        let (provider, info, _) = brains.model_parts(&model, marlowe_model::Effort::Medium)?;
         Ok(Choice { model: StepModel { provider, model: info }, waits_for_gpu })
+    }
+
+    /// The card's model before any GPU or load decision: the first explicitly assigned slot of its
+    /// chain, else the conductor's model.
+    fn pick(&self, card: &RoleCard, slots: &[marlowe_proto::SlotAssignment]) -> Result<ModelRef, CrewError> {
+        let explicit = card
+            .slot_chain()
+            .into_iter()
+            .find_map(|slot| slots.iter().find(|a| a.slot == slot && !a.inherited).and_then(|a| a.model.clone()));
+        Ok(match explicit {
+            Some(m) => m,
+            None => self.deps.brains.resolve(&card.slot)?.0,
+        })
+    }
+
+    /// The card's model as the library stores it, for pricing: a library read, no admission.
+    pub(crate) fn priced_model(&self, card: &RoleCard) -> Option<marlowe_model::ModelInfo> {
+        let slots = self.deps.brains.slots().unwrap_or_default();
+        let model = self.pick(card, &slots).ok()?;
+        self.deps.brains.model_info(&model).ok()
     }
 
     /// Starts every queued run that has a provider slot free.
     fn schedule(self: &Arc<Self>) {
+        // Choosing a model can block for seconds (Ollama's /api/ps, the planner's probes), so it
+        // runs with the state lock released: dispatch, the run list and `running()` never wait
+        // on it. What changed meanwhile is checked again under the lock before a run starts.
+        let (queued, roles) = {
+            let mut st = self.state();
+            if st.stopping {
+                return;
+            }
+            let ids: Vec<RunId> = st.queue.iter().cloned().collect();
+            let mut queued = Vec::new();
+            for id in ids {
+                match st.live.get(&id) {
+                    Some(l) if l.run.status == CrewRunStatus::Queued && !l.running => {
+                        queued.push((id, l.run.role.clone(), l.run.current_action.clone()))
+                    }
+                    _ => st.queue.retain(|q| *q != id),
+                }
+            }
+            (queued, lock(&self.roles).clone())
+        };
+        if queued.is_empty() {
+            return;
+        }
+        let choices: Vec<(RunId, Option<String>, Result<Choice, CrewError>)> = queued
+            .into_iter()
+            .map(|(id, role, action)| {
+                let choice = roles.get(&role).ok_or_else(|| CrewError::UnknownRole(role.clone())).and_then(|card| self.choose(card));
+                (id, action, choice)
+            })
+            .collect();
+
         let mut events = Vec::new();
         {
             let mut st = self.state();
             if st.stopping {
                 return;
             }
-            let roles = lock(&self.roles).clone();
-            let queued: Vec<RunId> = st.queue.iter().cloned().collect();
-            for id in queued {
-                let Some(live) = st.live.get(&id) else {
-                    st.queue.retain(|q| *q != id);
-                    continue;
-                };
-                if live.run.status != CrewRunStatus::Queued || live.running {
-                    st.queue.retain(|q| *q != id);
+            for (id, action, choice) in choices {
+                let still = st.queue.contains(&id)
+                    && st.live.get(&id).is_some_and(|l| l.run.status == CrewRunStatus::Queued && !l.running);
+                if !still {
                     continue;
                 }
-                let choice = roles
-                    .get(&live.run.role)
-                    .ok_or_else(|| CrewError::UnknownRole(live.run.role.clone()))
-                    .and_then(|card| self.choose(card));
                 let choice = match choice {
                     Ok(c) => c,
                     Err(e) => {
@@ -323,14 +394,21 @@ impl Inner {
                 };
                 if choice.waits_for_gpu {
                     let waiting = "waiting for the GPU";
-                    if live.run.current_action.as_deref() != Some(waiting) {
+                    if action.as_deref() != Some(waiting) {
                         events.extend(self.touch(&mut st, &id, |r| r.current_action = Some(waiting.into())));
                     }
                     continue;
                 }
                 let kind = choice.model.model.provider;
                 let local = choice.model.model.local || kind.is_local();
-                let limit = if local { self.cfg.per_local_provider } else { self.cfg.per_provider }.max(1);
+                // A local model runs no more agents at once than its policy's slots.
+                let limit = if local {
+                    let slots = self.deps.brains.context().slots(&choice.model.model.model_ref()).unwrap_or(1);
+                    self.cfg.per_local_provider.min(usize::from(slots))
+                } else {
+                    self.cfg.per_provider
+                }
+                .max(1);
                 let busy = st.active.get(kind.as_str()).copied().unwrap_or(0);
                 if busy >= limit {
                     continue;
@@ -393,6 +471,7 @@ impl Control {
             pause: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             end_note: Mutex::new(None),
+            parked: AtomicBool::new(false),
         }
     }
 }
@@ -430,11 +509,14 @@ impl Supervisor {
             local_streams: Mutex::new(0),
             local_free: Condvar::new(),
             plans: Mutex::new(HashMap::new()),
+            decided: Mutex::new(HashMap::new()),
             wake: wake_tx,
         });
 
-        // Runs a previous daemon left mid-flight. One that was waiting on an approval lost it:
-        // it pauses, and resuming asks again.
+        // Runs a previous daemon left mid-flight (a crash: a clean stop leaves them running). One
+        // waiting on an approval lost it: it pauses, and resuming asks again. One parked at its
+        // research plan gate waits on as it was: its checkpointed proposal is pending again
+        // straight from the store, with no model, GPU or concurrency slot, and the answer queues it.
         let resumable = inner.store().resumable()?;
         let stranded: Vec<Run> = inner
             .store()
@@ -442,12 +524,17 @@ impl Supervisor {
             .into_iter()
             .filter(|r| r.status == CrewRunStatus::NeedsYou && r.result.is_none())
             .collect();
+        let mut events = Vec::new();
         for mut run in stranded {
+            if let Some(p) = inner.parked_proposal(&run) {
+                lock(&inner.plans).insert(run.id.clone(), PendingPlan { plan: p.plan.clone(), quote: p.quote.clone() });
+                events.push(CrewEvent::PlanProposed { run: run.id.clone(), session: run.session.clone(), plan: p.plan, quote: p.quote });
+                continue;
+            }
             run.status = CrewRunStatus::Paused;
             run.note = Some("the daemon restarted while this run waited on you; resume it to ask again".into());
             inner.save_detached(run)?;
         }
-        let mut events = Vec::new();
         {
             let mut st = inner.state();
             for mut run in resumable {
@@ -479,7 +566,8 @@ impl Supervisor {
         let workspace = args.workspace.as_deref().map(str::trim).filter(|w| !w.is_empty()).map(PathBuf::from);
         let mut run = Run::new(session, &card, &args.goal, args.playbook, workspace, budget);
         run.tainted = args.tainted;
-        let pricing = self.inner.choose(&card).ok().and_then(|c| c.model.model.pricing);
+        // Pricing only: no admission, no GPU probe, nothing that blocks the conductor.
+        let pricing = self.inner.priced_model(&card).and_then(|m| m.pricing);
         let receipt = DispatchReceipt {
             run_id: run.id.clone(),
             role: card.name.clone(),
@@ -501,6 +589,11 @@ impl Supervisor {
     }
 
     /// The role cards in force.
+    /// Runs with a live thread now (running, or waiting on the user mid-run).
+    pub fn running(&self) -> usize {
+        self.inner.state().live.values().filter(|l| l.running).count()
+    }
+
     pub fn roles(&self) -> Vec<RoleInfo> {
         lock(&self.inner.roles).infos()
     }
@@ -547,6 +640,9 @@ impl Supervisor {
 
     /// Cancels the run's token; the run ends `cancelled` and keeps its sandbox until discarded.
     pub fn cancel(&self, run: &RunId) -> Result<(), CrewError> {
+        // A plan it waited on goes with it.
+        lock(&self.inner.plans).remove(run);
+        lock(&self.inner.decided).remove(run);
         let ev = {
             let mut st = self.inner.state();
             match st.live.get(run) {
@@ -613,29 +709,74 @@ impl Supervisor {
     /// Answers a research run's proposed plan. An edit must validate (the run keeps waiting when
     /// it does not); a rejection ends the run cancelled.
     pub fn approve_plan(&self, run: &RunId, decision: PlanDecision) -> Result<(), CrewError> {
-        let mut plans = lock(&self.inner.plans);
-        let Some(pending) = plans.get(run) else {
-            drop(plans);
-            let status = self.inner.run(run)?.status;
-            return Err(bad_state(run, status, "it has no plan awaiting approval"));
-        };
-        if let PlanDecision::Edit { .. } = &decision {
-            if let Err(e) = apply_decision(pending.plan.clone(), decision.clone()) {
-                return Err(bad_state(run, CrewRunStatus::NeedsYou, &format!("the edited plan is not runnable: {e}")));
+        let mut events = Vec::new();
+        {
+            let mut st = self.inner.state();
+            {
+                let mut plans = lock(&self.inner.plans);
+                let Some(pending) = plans.get(run) else {
+                    drop(plans);
+                    drop(st);
+                    let status = self.inner.run(run)?.status;
+                    return Err(bad_state(run, status, "it has no plan awaiting approval"));
+                };
+                if let PlanDecision::Edit { .. } = &decision {
+                    if let Err(e) = apply_decision(pending.plan.clone(), decision.clone()) {
+                        return Err(bad_state(run, CrewRunStatus::NeedsYou, &format!("the edited plan is not runnable: {e}")));
+                    }
+                }
+                plans.remove(run);
             }
-        }
-        if let PlanDecision::Reject { reason } = &decision {
-            if let Some(live) = self.inner.state().live.get(run) {
-                let note = match reason.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+            let rejected = match &decision {
+                PlanDecision::Reject { reason } => Some(match reason.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
                     Some(r) => format!("plan rejected: {r}"),
                     None => "plan rejected".to_string(),
-                };
-                *lock(&live.ctl.end_note) = Some(note);
-                live.ctl.user_cancel.store(true, Ordering::SeqCst);
+                }),
+                _ => None,
+            };
+            match st.live.get(run) {
+                // The thread is still parking: `finish` reads the answer.
+                Some(live) if live.running => match rejected {
+                    Some(note) => {
+                        *lock(&live.ctl.end_note) = Some(note);
+                        live.ctl.user_cancel.store(true, Ordering::SeqCst);
+                    }
+                    None => {
+                        lock(&self.inner.decided).insert(run.clone(), decision);
+                    }
+                },
+                _ => {
+                    st.queue.retain(|q| q != run);
+                    let mut stored = match st.live.get(run) {
+                        Some(l) => l.run.clone(),
+                        None => self.inner.store().get(run)?.ok_or_else(|| CrewError::UnknownRun(run.clone()))?,
+                    };
+                    stored.current_action = None;
+                    match rejected {
+                        Some(note) => {
+                            st.live.remove(run);
+                            stored.status = CrewRunStatus::Cancelled;
+                            stored.note = Some(note);
+                            stored.updated_ms = crate::now_ms();
+                            self.inner.store().save(&stored)?;
+                            events.push(CrewEvent::Updated(stored.info()));
+                        }
+                        None => {
+                            lock(&self.inner.decided).insert(run.clone(), decision);
+                            stored.status = CrewRunStatus::Queued;
+                            stored.note = Some("plan approved; waiting for a slot to explore".into());
+                            self.inner.enqueue(&mut st, stored);
+                            events.extend(self.inner.touch(&mut st, run, |_| {}));
+                        }
+                    }
+                }
             }
         }
-        let pending = plans.remove(run).ok_or_else(|| bad_state(run, CrewRunStatus::NeedsYou, "the plan was already answered"))?;
-        pending.tx.send(decision).map_err(|_| CrewError::Stopped)
+        for ev in events {
+            self.inner.emit(ev);
+        }
+        self.inner.wake();
+        Ok(())
     }
 
     /// The plan a research run is waiting on, with its quote.

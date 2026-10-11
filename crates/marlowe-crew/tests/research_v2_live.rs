@@ -77,6 +77,7 @@ fn page(url: &str, title: &str, body: &str, links: Vec<Link>) -> FetchedPage {
         title: Some(title.into()),
         text: format!("# {title}\n\n{body}\n\n{FILLER}\n"),
         links,
+        meta: Vec::new(),
         error: None,
     }
 }
@@ -254,10 +255,15 @@ impl ResearchHost for Host {
             id: "m-1".into(),
             text: "Matthew used rank 16 for the 7B Mistral run and saw no gain over rank 8.".into(),
             provenance: "you".into(),
+            trust: marlowe_proto::MemoryTrust::User,
         }]
     }
 
     fn taint(&self) {}
+
+    fn tainted(&self) -> bool {
+        true
+    }
 
     fn remember(&self, finding: &Finding, _tainted: bool) -> Result<String, String> {
         eprintln!("remember: {}", finding.text);

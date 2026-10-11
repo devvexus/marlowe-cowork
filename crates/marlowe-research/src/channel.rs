@@ -9,7 +9,7 @@ use marlowe_model::CancelToken;
 use marlowe_proto::ChannelId;
 
 use crate::cache::ResearchCache;
-use crate::source::{Namespace, SourceRef};
+use crate::source::{Identity, Namespace, SourceRef};
 
 /// Sent with every research request: names the agent and says it is automated.
 pub const USER_AGENT: &str =
@@ -198,6 +198,32 @@ impl ChannelSpec {
     }
 }
 
+/// Which way a citation query follows the graph from its work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CitationDirection {
+    /// Works that cite it (forward).
+    CitedBy,
+    /// Works it cites (backward).
+    References,
+}
+
+impl CitationDirection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CitationDirection::CitedBy => "cited_by",
+            CitationDirection::References => "references",
+        }
+    }
+}
+
+/// Citation expansion from one work. Built by the harness from a source's identity, never
+/// parsed out of query text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CitationQuery {
+    pub work: Identity,
+    pub direction: CitationDirection,
+}
+
 /// One channel search.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelQuery {
@@ -206,21 +232,38 @@ pub struct ChannelQuery {
     pub limit: usize,
     /// Only results on or after this year, where the channel can filter.
     pub since_year: Option<u16>,
+    /// A feed to read (RSS). Only the user sets this; a URL in `text` is never fetched.
+    pub feed_url: Option<String>,
+    /// Citation expansion instead of a text search (Semantic Scholar, OpenAlex).
+    pub citations: Option<CitationQuery>,
 }
 
 impl ChannelQuery {
     pub fn new(text: impl Into<String>, limit: usize) -> Self {
-        Self { text: text.into(), limit, since_year: None }
+        Self { text: text.into(), limit, since_year: None, feed_url: None, citations: None }
+    }
+
+    /// Works citing (or cited by) `work`.
+    pub fn citations(work: Identity, direction: CitationDirection, limit: usize) -> Self {
+        Self { citations: Some(CitationQuery { work, direction }), ..Self::new("", limit) }
     }
 
     /// The cache key parts for this query on `channel`.
-    pub fn cache_parts(&self, channel: ChannelId) -> [String; 4] {
-        [
+    pub fn cache_parts(&self, channel: ChannelId) -> Vec<String> {
+        let mut parts = vec![
             channel.as_str().to_string(),
             self.text.trim().to_lowercase(),
             self.limit.to_string(),
             self.since_year.map_or_else(String::new, |y| y.to_string()),
-        ]
+        ];
+        if let Some(f) = &self.feed_url {
+            parts.push(format!("feed:{}", f.trim()));
+        }
+        if let Some(c) = &self.citations {
+            let keys: Vec<String> = c.work.keys().into_iter().map(|(ns, v)| format!("{ns:?}={v}")).collect();
+            parts.push(format!("{}:{}", c.direction.as_str(), keys.join(",")));
+        }
+        parts
     }
 }
 
@@ -267,6 +310,12 @@ pub trait Channel: Send + Sync {
     /// `Ok(None)` when the authority has no such record.
     fn lookup(&self, ns: Namespace, _id: &str, _ctx: &ChannelCtx<'_>) -> Result<Option<SourceRef>, ChannelError> {
         Err(ChannelError::NoLookup { channel: self.spec().id, namespace: ns })
+    }
+
+    /// Whether the channel can answer at all, checked cheaply before a plan routes to it (no
+    /// search is spent). `Err` says why not. Most channels are a public API: assumed ready.
+    fn ready(&self, _ctx: &ChannelCtx<'_>) -> Result<(), String> {
+        Ok(())
     }
 }
 

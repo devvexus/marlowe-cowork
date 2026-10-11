@@ -236,6 +236,11 @@ impl Channel for KeylessChannel {
     }
 
     fn search(&self, query: &ChannelQuery, ctx: &ChannelCtx<'_>) -> Result<Vec<SourceRef>, ChannelError> {
+        let id = self.spec().id;
+        // Only the scholarly graphs answer a citation query; elsewhere it would be an empty search.
+        if query.citations.is_some() && !matches!(id, ChannelId::SemanticScholar | ChannelId::OpenAlex) {
+            return Err(ChannelError::NotImplemented(id));
+        }
         self.inner.search(query, ctx)
     }
 

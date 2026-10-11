@@ -2766,6 +2766,7 @@ dependencies = [
  "marlowe-mind",
  "marlowe-model",
  "marlowe-proto",
+ "marlowe-research",
  "marlowe-sentinel",
  "marlowe-settings",
  "marlowe-voice",
@@ -2871,6 +2872,7 @@ name = "marlowe-mind"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "chrono",
  "crossbeam-channel",
  "marlowe-contract",
  "marlowe-journal",
@@ -3069,6 +3071,7 @@ dependencies = [
  "marlowe-typeset",
  "serde_json",
  "tiny-skia",
+ "ttf-parser",
  "typst",
  "typst-render",
 ]
@@ -3093,6 +3096,7 @@ name = "marlowe-voice"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "marlowe-os",
  "marlowe-proto",
  "serde",
  "serde_json",

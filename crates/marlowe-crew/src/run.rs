@@ -141,6 +141,10 @@ pub struct StepRecord {
     pub output: Option<String>,
     pub usage: Usage,
     pub tainted: bool,
+    /// The output stopped at the model's output limit: a resumed run retries it, as the live
+    /// run would have.
+    #[serde(default)]
+    pub truncated: bool,
     pub at_ms: i64,
 }
 

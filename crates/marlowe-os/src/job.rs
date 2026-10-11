@@ -11,12 +11,15 @@ use windows_sys::Win32::{
         CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
     },
     System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
+        AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JobObjectBasicAccountingInformation,
         JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
         TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     },
-    System::Threading::{OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME},
+    System::Threading::{
+        OpenProcess, OpenThread, ResumeThread, CREATE_SUSPENDED, PROCESS_QUERY_LIMITED_INFORMATION,
+        THREAD_SUSPEND_RESUME,
+    },
 };
 
 /// A Job Object whose processes are all terminated when its last handle closes.
@@ -119,6 +122,32 @@ impl JobObject {
     #[cfg(not(windows))]
     pub fn active_processes(&self) -> Result<u32, OsError> {
         Err(OsError::Unsupported("job objects"))
+    }
+
+    /// Whether process `pid` runs in this job (the child and everything it started). A pid that
+    /// cannot be opened (gone, or another user's) is not in it.
+    #[cfg(windows)]
+    pub fn contains(&self, pid: u32) -> bool {
+        if pid == 0 {
+            return false;
+        }
+        // SAFETY: opens a process by id for limited query only; checked for null, closed below.
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process.is_null() {
+            return false;
+        }
+        let mut inside = 0;
+        // SAFETY: both handles are open; `inside` is a writable BOOL.
+        let ok = unsafe { IsProcessInJob(process, self.handle, &mut inside) };
+        // SAFETY: `process` was opened above and is closed exactly once.
+        unsafe { CloseHandle(process) };
+        ok != 0 && inside != 0
+    }
+
+    #[cfg(not(windows))]
+    pub fn contains(&self, pid: u32) -> bool {
+        let _ = pid;
+        false
     }
 
     /// Closes the job without killing anything: kill-on-close is cleared first, so processes

@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use marlowe_model::CancelToken;
 
@@ -17,6 +17,12 @@ pub const DEFAULT_HOST_GAP: Duration = Duration::from_secs(1);
 pub const MAX_CRAWL_DELAY: Duration = Duration::from_secs(30);
 /// robots.txt bodies above this are read only this far (RFC 9309 §2.5: at least 500 KiB).
 pub const MAX_ROBOTS_BYTES: usize = 512 * 1024;
+/// A fetched robots.txt is used this long (RFC 9309 §2.4: at most 24 hours).
+pub const ROBOTS_TTL: Duration = Duration::from_secs(24 * 3600);
+/// An unreachable or 5xx robots.txt denies everything, and is asked again after this.
+pub const ROBOTS_RETRY: Duration = Duration::from_secs(5 * 60);
+/// Hosts remembered at once; the least recently used is dropped beyond this.
+pub const MAX_HOSTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Rule {
@@ -158,8 +164,13 @@ pub enum Refusal {
     Cancelled,
 }
 
-/// One origin's robots and limiter.
-type HostEntry = (Arc<Robots>, Arc<Limiter>);
+/// One origin's robots, its limiter, when the robots expire and when the host was last used.
+struct HostEntry {
+    robots: Arc<Robots>,
+    limiter: Arc<Limiter>,
+    expires: Instant,
+    used: Instant,
+}
 
 /// Per-host robots and spacing for one process. Clone-cheap.
 #[derive(Clone, Default)]
@@ -191,47 +202,80 @@ impl HostGate {
         Self::default()
     }
 
-    /// Seeds a host's robots (tests, or a robots.txt fetched elsewhere).
+    /// Seeds a host's robots (tests, or a robots.txt fetched elsewhere), kept for [`ROBOTS_TTL`].
     pub fn insert(&self, origin: &str, robots: Robots) {
-        let gap = robots.crawl_delay.unwrap_or(DEFAULT_HOST_GAP).max(DEFAULT_HOST_GAP);
-        let limiter = Arc::new(Limiter::new(&[RateLimit::every(gap)]));
-        self.inner
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(origin.to_ascii_lowercase(), (Arc::new(robots), limiter));
+        self.insert_for(origin, robots, ROBOTS_TTL);
     }
 
-    /// The robots for `origin`, fetching `/robots.txt` once: 2xx parses, 4xx allows all,
-    /// anything else (5xx, unreachable) disallows all.
-    pub fn robots(&self, origin: &str, http: &dyn HttpGet, cancel: &CancelToken) -> Arc<Robots> {
-        if let Some((r, _)) = self.inner.lock().unwrap_or_else(|p| p.into_inner()).get(origin) {
-            return r.clone();
+    fn insert_for(&self, origin: &str, robots: Robots, ttl: Duration) {
+        let gap = robots.crawl_delay.unwrap_or(DEFAULT_HOST_GAP).max(DEFAULT_HOST_GAP);
+        let now = Instant::now();
+        let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let origin = origin.to_ascii_lowercase();
+        // A refreshed host keeps its schedule unless its crawl delay changed.
+        let limiter = match map.get(&origin) {
+            Some(e) if e.limiter.limits() == [RateLimit::every(gap)] => e.limiter.clone(),
+            _ => Arc::new(Limiter::new(&[RateLimit::every(gap)])),
+        };
+        if map.len() >= MAX_HOSTS && !map.contains_key(&origin) {
+            if let Some(oldest) = map.iter().min_by_key(|(_, e)| e.used).map(|(k, _)| k.clone()) {
+                map.remove(&oldest);
+            }
+        }
+        map.insert(origin, HostEntry { robots: Arc::new(robots), limiter, expires: now + ttl, used: now });
+    }
+
+    /// Hosts remembered now.
+    pub fn len(&self) -> usize {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The robots for `origin`, fetching `/robots.txt` when none is cached or it expired: 2xx
+    /// parses and 4xx allows all (both kept [`ROBOTS_TTL`]); anything else (5xx, unreachable)
+    /// disallows all for [`ROBOTS_RETRY`]. `None` when cancelled: nothing is cached then, so a
+    /// cancelled run cannot leave a host refused for every later fetch.
+    pub fn robots(&self, origin: &str, http: &dyn HttpGet, cancel: &CancelToken) -> Option<Arc<Robots>> {
+        {
+            let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(e) = map.get_mut(origin).filter(|e| e.expires > Instant::now()) {
+                e.used = Instant::now();
+                return Some(e.robots.clone());
+            }
         }
         let req =
             HttpRequest { url: format!("{origin}/robots.txt"), accept: Some("text/plain"), user_agent: USER_AGENT };
-        let robots = match http.get(&req, cancel) {
+        let got = http.get(&req, cancel);
+        if cancel.is_cancelled() {
+            return None;
+        }
+        let (robots, ttl) = match got {
             Ok(r) if (200..300).contains(&r.status) => {
                 let n = r.bytes.len().min(MAX_ROBOTS_BYTES);
-                Robots::parse(&String::from_utf8_lossy(&r.bytes[..n]))
+                (Robots::parse(&String::from_utf8_lossy(&r.bytes[..n])), ROBOTS_TTL)
             }
-            Ok(r) if (400..500).contains(&r.status) => Robots::allow_all(),
-            _ => Robots::deny_all(),
+            Ok(r) if (400..500).contains(&r.status) => (Robots::allow_all(), ROBOTS_TTL),
+            _ => (Robots::deny_all(), ROBOTS_RETRY),
         };
-        self.insert(origin, robots);
-        self.robots(origin, http, cancel)
+        let out = Arc::new(robots.clone());
+        self.insert_for(origin, robots, ttl);
+        Some(out)
     }
 
     /// Checks robots for `url` and waits for the host's slot. `Ok` means fetch now.
     pub fn admit(&self, url: &str, http: &dyn HttpGet, cancel: &CancelToken) -> Result<(), Refusal> {
         let (origin, path) = split_url(url).ok_or_else(|| Refusal::NotHttp(url.to_string()))?;
-        let robots = self.robots(&origin, http, cancel);
+        let robots = self.robots(&origin, http, cancel).ok_or(Refusal::Cancelled)?;
         if robots.crawl_delay.is_some_and(|d| d > MAX_CRAWL_DELAY) {
             return Err(Refusal::CrawlDelay { host: origin, delay: robots.crawl_delay.unwrap_or_default() });
         }
         if !robots.allowed(&path) {
             return Err(Refusal::Robots { host: origin, path });
         }
-        let limiter = self.inner.lock().unwrap_or_else(|p| p.into_inner()).get(&origin).map(|(_, l)| l.clone());
+        let limiter = self.inner.lock().unwrap_or_else(|p| p.into_inner()).get(&origin).map(|e| e.limiter.clone());
         match limiter {
             Some(l) if !l.wait(cancel) => Err(Refusal::Cancelled),
             _ => Ok(()),
@@ -303,5 +347,41 @@ Disallow: /
         assert!(matches!(slow.admit("https://d.org/", &Fixed(500, ""), &cancel), Err(Refusal::CrawlDelay { .. })));
         assert!(matches!(g.admit("ftp://a.org/x", &Fixed(200, ""), &cancel), Err(Refusal::NotHttp(_))));
         assert_eq!(split_url("HTTPS://Ex.org?q=1#f"), Some(("https://ex.org".into(), "/?q=1".into())));
+    }
+
+    /// Cancels the token during the robots.txt GET, as `NetHttp` answers "cancelled".
+    struct CancelsMidFetch(CancelToken);
+    impl HttpGet for CancelsMidFetch {
+        fn get(&self, _: &HttpRequest, _: &CancelToken) -> Result<HttpResponse, String> {
+            self.0.cancel();
+            Err("cancelled".into())
+        }
+    }
+
+    struct Counting(std::sync::atomic::AtomicU32);
+    impl HttpGet for Counting {
+        fn get(&self, req: &HttpRequest, _: &CancelToken) -> Result<HttpResponse, String> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Fixed(404, "").get(req, &CancelToken::new())
+        }
+    }
+
+    /// Found in review: a cancelled run's robots fetch was cached as "disallow everything" for
+    /// the life of the process (arxiv.org refused to every later fetch).
+    #[test]
+    fn a_cancelled_robots_fetch_is_not_cached_and_entries_expire() {
+        let g = HostGate::new();
+        let cancel = CancelToken::new();
+        let r = g.admit("https://arxiv.org/abs/1", &CancelsMidFetch(cancel.clone()), &cancel);
+        assert_eq!(r, Err(Refusal::Cancelled));
+        assert!(g.is_empty(), "nothing was cached");
+        let live = CancelToken::new();
+        let http = Counting(Default::default());
+        assert!(g.admit("https://arxiv.org/abs/1", &http, &live).is_ok(), "the next run fetches robots.txt again");
+        assert_eq!(http.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // An unreachable robots.txt denies for a few minutes, not for the life of the process.
+        g.insert_for("https://down.org", Robots::deny_all(), Duration::ZERO);
+        assert!(g.admit("https://down.org/x", &http, &live).is_ok(), "expired: asked again (and 404 allows)");
+        assert_eq!(http.0.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 }

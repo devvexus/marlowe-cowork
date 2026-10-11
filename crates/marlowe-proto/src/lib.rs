@@ -48,7 +48,8 @@ pub use paths::DaemonInfo;
 pub use request::{ApprovalDecision, Request, Secret, Slot, SlotParseError};
 pub use research::{
     ChannelId, ChannelParseError, CostQuote, PlanDecision, PlanError, ResearchCounts, ResearchPlan, ResearchProgress,
-    ResearchStage, StageState, SubQuestion, PLAN_MAX_BREADTH, PLAN_MAX_DEPTH, PLAN_MAX_SOURCES, PLAN_MAX_SUBQUESTIONS,
+    ResearchStage, StageState, SubQuestion, PLAN_MAX_BREADTH, PLAN_MAX_DEPTH, PLAN_MAX_QUERIES, PLAN_MAX_SOURCES,
+    PLAN_MAX_SUBQUESTIONS,
 };
 pub use user::{clean_user_field, AddressForm, AddressParseError, USER_FIELD_MAX};
 pub use watch::{

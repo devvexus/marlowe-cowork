@@ -4,6 +4,7 @@
 //! socket or a terminal.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 
 use marlowe_model::{Part, Role, Usage};
 use marlowe_proto::{
@@ -66,8 +67,9 @@ pub enum Entry {
     User { text: String, steer: bool },
     /// Marlowe's prose (markdown).
     Prose { text: String },
-    /// Reasoning. `live` while it is still streaming.
-    Thinking { text: String, tokens: u64, live: bool },
+    /// Reasoning. `live` while it is still streaming; `ms` is how long it took, from its first
+    /// delta to what closed it (0 when not known, as in a stored transcript).
+    Thinking { text: String, tokens: u64, live: bool, ms: u64 },
     Tool { call_id: String, summary: String, status: ToolStatus },
     Note { text: String, tone: NoteTone },
     /// Usage footer for a finished turn.
@@ -84,6 +86,76 @@ pub struct LiveTurn {
     pub turn: u32,
     pub model: marlowe_model::ModelRef,
     pub started_ms: i64,
+}
+
+/// Where the last frame put the conversation pane. Written by the renderer, which needs the
+/// previous frame to keep the view steady while a reply streams.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Viewport {
+    /// The transcript line at the top of the pane.
+    pub top: usize,
+    /// The transcript's length in lines.
+    pub total: usize,
+    /// The pane's size: a resize lays everything out again, so a line index from another size
+    /// means nothing.
+    pub size: (u16, u16),
+    /// [`State::scroll`] when this frame was drawn. While it is unchanged and non-zero, the view
+    /// stays on [`Self::top`] however much arrives below.
+    pub scroll: usize,
+    /// The turn streaming when it was drawn.
+    pub turn: Option<u32>,
+    /// [`State::epoch`] when it was drawn.
+    pub epoch: u32,
+    /// Held where a fold put it ([`Pin`]).
+    pub pin: Pin,
+}
+
+/// A view a fold toggle placed: the toggled marker stayed on its row, so the pane may no longer
+/// be at the tail, or may stand past it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Pin {
+    #[default]
+    None,
+    /// Above the tail with [`State::scroll`] still 0: held like a scrolled-up view until the
+    /// reader scrolls.
+    Above,
+    /// Past the tail: the rows under a fold closed near the end stay empty rather than pull every
+    /// line down, until new text fills them or the reader scrolls.
+    Tail,
+}
+
+impl Pin {
+    pub(crate) fn of(top: usize, max: usize) -> Pin {
+        match top.cmp(&max) {
+            std::cmp::Ordering::Less => Pin::Above,
+            std::cmp::Ordering::Equal => Pin::None,
+            std::cmp::Ordering::Greater => Pin::Tail,
+        }
+    }
+}
+
+/// Where a frame drew a reasoning block's fold marker: the entry and its transcript line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mark {
+    pub entry: usize,
+    pub line: usize,
+}
+
+/// A fold just toggled: the next frame draws its marker on the same pane row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Anchor {
+    pub entry: usize,
+    pub row: usize,
+    pub epoch: u32,
+}
+
+/// The reasoning block Enter folds: the one the reader picked while its marker is on screen, else
+/// the lowest marker on screen. `rows` is the pane's height and `top` its first transcript line.
+pub fn pick_thought(marks: &[Mark], top: usize, rows: usize, picked: Option<usize>) -> Option<usize> {
+    let shown = |m: &&Mark| m.line >= top && m.line < top + rows;
+    picked
+        .filter(|p| marks.iter().filter(shown).any(|m| m.entry == *p))
+        .or_else(|| marks.iter().rfind(shown).map(|m| m.entry))
 }
 
 /// A pending approval.
@@ -213,6 +285,13 @@ pub enum Target {
     PlanCell(usize, Option<usize>),
     /// A planner control: focus it.
     PlanField(crate::context::PlanField),
+    /// A reasoning block's fold marker, by entry index: opens or closes it.
+    Thought(usize),
+    /// A control on a research plan that waits for the user: the main window's banner and the
+    /// Run view's plan panel.
+    Plan(RunId, crate::crew::PlanAction),
+    /// A row of the plan editor (questions, then add, breadth, depth, sources).
+    PlanRow(usize),
 }
 
 /// A palette command.
@@ -437,11 +516,32 @@ pub struct State {
     pub board_tab: BoardTab,
     pub overlay: Option<Overlay>,
     pub composer: Composer,
+    /// Every reasoning block open (^t). [`Self::folds`] overrides it block by block.
     pub show_thinking: bool,
-    /// Lines scrolled up from the bottom of the conversation; 0 follows the stream.
+    /// Reasoning blocks opened or closed one at a time (Enter or a click on the marker), by entry
+    /// index. ^t clears them, so every block follows it again.
+    pub folds: BTreeMap<usize, bool>,
+    /// The reasoning block the Conversation box's cursor is on (entry index), while its marker is
+    /// on screen; otherwise the lowest marker on screen has it ([`pick_thought`]).
+    pub thought: Option<usize>,
+    /// Where the last frame drew each foldable block's marker. Written by the renderer.
+    pub marks: RefCell<Vec<Mark>>,
+    /// Set by a fold toggle, taken by the next frame, which keeps the marker on its row.
+    pub anchor: Cell<Option<Anchor>>,
+    /// When the live reasoning block's first delta arrived.
+    thinking_since: Option<i64>,
+    /// Lines scrolled up from the bottom of the conversation; 0 follows the stream. Scrolled up,
+    /// the pane stays on the lines it shows while text arrives below ([`Viewport`]), so the lines
+    /// from the bottom grow; [`State::settle_scroll`] brings this back in step before input uses it.
     pub scroll: usize,
     /// Largest useful scroll, written back by the renderer.
     pub scroll_max: Cell<usize>,
+    /// The conversation pane as last drawn, written back by the renderer.
+    pub viewport: Cell<Viewport>,
+    /// Bumped whenever the transcript is replaced wholesale (a new or reopened session) or laid
+    /// out anew by the reader (reasoning shown or hidden), so the renderer does not hold a view
+    /// from the old layout.
+    pub epoch: u32,
     pub flash: Option<Flash>,
     /// What the pointer is over, as of the last mouse event.
     pub hover: Option<Target>,
@@ -503,8 +603,15 @@ impl State {
             overlay: None,
             composer: Composer::default(),
             show_thinking: false,
+            folds: BTreeMap::new(),
+            thought: None,
+            marks: RefCell::new(Vec::new()),
+            anchor: Cell::new(None),
+            thinking_since: None,
             scroll: 0,
             scroll_max: Cell::new(0),
+            viewport: Cell::new(Viewport::default()),
+            epoch: 0,
             flash: None,
             hover: None,
             hits: RefCell::new(Vec::new()),
@@ -624,16 +731,56 @@ impl State {
         self.session.as_ref() == Some(s)
     }
 
+    /// Brings [`Self::scroll`] in step with what is on screen. Scrolled up, the renderer keeps the
+    /// pane on the same lines while text arrives below, so the lines from the bottom have grown
+    /// since `scroll` was set; input adjusts from what the reader sees, not from the stale count.
+    pub(crate) fn settle_scroll(&mut self) {
+        let mut v = self.viewport.get();
+        // A fold can leave the view above the tail with `scroll` still 0.
+        if v.scroll != self.scroll || (self.scroll == 0 && v.pin != Pin::Above) {
+            return;
+        }
+        self.scroll = self.scroll_max.get().saturating_sub(v.top);
+        v.scroll = self.scroll;
+        self.viewport.set(v);
+    }
+
+    /// Back to following the tail, from wherever the reader or a fold left the view. A fold toggled
+    /// earlier in the same batch of input no longer holds its marker's row.
+    pub(crate) fn follow_tail(&mut self) {
+        self.anchor.set(None);
+        self.scroll = 0;
+        let mut v = self.viewport.get();
+        v.pin = Pin::None;
+        self.viewport.set(v);
+    }
+
+    /// Whether reasoning block `entry` is open: its own fold if it has one, else ^t's.
+    pub fn thought_open(&self, entry: usize) -> bool {
+        self.folds.get(&entry).copied().unwrap_or(self.show_thinking)
+    }
+
+    /// The transcript was replaced: entry indices mean something else now.
+    fn forget_folds(&mut self) {
+        self.folds.clear();
+        self.thought = None;
+        self.anchor.set(None);
+        self.marks.borrow_mut().clear();
+        self.thinking_since = None;
+    }
+
     /// Clears the conversation for a new session.
     pub(crate) fn reset_conversation(&mut self) {
         self.session = None;
         self.title = None;
         self.workspace = None;
         self.entries.clear();
+        self.forget_folds();
+        self.epoch = self.epoch.wrapping_add(1);
         self.live = None;
         self.pending_user = None;
         self.awaiting_new = false;
-        self.scroll = 0;
+        self.follow_tail();
     }
 
     /// Marks that an Ask with no session was sent; the next new session is ours.
@@ -703,6 +850,9 @@ impl State {
                         self.note("the daemon restarted; the turn was lost", NoteTone::Amber);
                     }
                     self.approvals.clear();
+                    // A plan that still waits comes back with the run list (and is proposed
+                    // again by a daemon that crashed); one answered meanwhile must not linger.
+                    self.crew.plans.clear();
                     self.reload(out);
                 } else {
                     self.check_gap = true;
@@ -721,6 +871,7 @@ impl State {
                     if !self.mine(session) && self.pending_open.as_ref() != Some(session) {
                         // The brief stays as the conversation's opening.
                         self.entries.retain(|e| matches!(e, Entry::Brief { .. }));
+                        self.forget_folds();
                     }
                     self.session = Some(session.clone());
                     self.title = Some(title.clone()).filter(|t| !t.is_empty());
@@ -739,9 +890,11 @@ impl State {
                     self.pending_open = None;
                     self.session = Some(session.clone());
                     self.entries = entries_from_transcript(turns);
+                    self.forget_folds();
+                    self.epoch = self.epoch.wrapping_add(1);
                     self.live = None;
                     self.pending_user = None;
-                    self.scroll = 0;
+                    self.follow_tail();
                     self.view = View::Conversation;
                 }
             }
@@ -750,7 +903,7 @@ impl State {
                     if self.title.is_none() {
                         self.title = Some(first_line(user));
                     }
-                    self.close_thinking();
+                    self.close_thinking(at_ms);
                     self.pending_user = None;
                     // A steer typed here is already on screen; do not show it twice.
                     let shown = matches!(self.entries.last(),
@@ -759,11 +912,11 @@ impl State {
                         self.entries.push(Entry::User { text: user.clone(), steer: false });
                     }
                     self.live = Some(LiveTurn { turn: *turn, model: model.clone(), started_ms: at_ms });
-                    self.scroll = 0;
+                    self.follow_tail();
                 }
             }
             Event::TextDelta { session, text, .. } if self.mine(session) => {
-                self.close_thinking();
+                self.close_thinking(at_ms);
                 match self.entries.last_mut() {
                     Some(Entry::Prose { text: t }) => t.push_str(text),
                     _ => self.entries.push(Entry::Prose { text: text.clone() }),
@@ -782,15 +935,17 @@ impl State {
             }
             Event::ReasoningDelta { session, text, tokens, .. } if self.mine(session) => {
                 match self.entries.last_mut() {
-                    Some(Entry::Thinking { text: t, tokens: n, live: true }) => {
+                    Some(Entry::Thinking { text: t, tokens: n, live: true, ms }) => {
                         t.push_str(text);
                         *n += *tokens;
+                        if let Some(since) = self.thinking_since {
+                            *ms = at_ms.saturating_sub(since).max(0) as u64;
+                        }
                     }
-                    _ => self.entries.push(Entry::Thinking {
-                        text: text.clone(),
-                        tokens: *tokens,
-                        live: true,
-                    }),
+                    _ => {
+                        self.thinking_since = Some(at_ms);
+                        self.entries.push(Entry::Thinking { text: text.clone(), tokens: *tokens, live: true, ms: 0 })
+                    }
                 }
             }
             Event::TextRetracted { session, tokens, .. } if self.mine(session) => {
@@ -801,12 +956,12 @@ impl State {
                             t.push_str(&text);
                             *n += tokens;
                         }
-                        _ => self.entries.push(Entry::Thinking { text, tokens: *tokens, live: false }),
+                        _ => self.entries.push(Entry::Thinking { text, tokens: *tokens, live: false, ms: 0 }),
                     }
                 }
             }
             Event::ToolStarted { session, call_id, tool, summary, .. } if self.mine(session) => {
-                self.close_thinking();
+                self.close_thinking(at_ms);
                 let summary = if summary.trim().is_empty() { tool.clone() } else { summary.clone() };
                 self.entries.push(Entry::Tool {
                     call_id: call_id.clone(),
@@ -834,7 +989,7 @@ impl State {
                 }
             }
             Event::TurnFinished { session, usage, stop, .. } if self.mine(session) => {
-                self.close_thinking();
+                self.close_thinking(at_ms);
                 for e in &mut self.entries {
                     if let Entry::Tool { status: s @ ToolStatus::Running, .. } = e {
                         *s = ToolStatus::Failed("no result".into());
@@ -1024,9 +1179,14 @@ impl State {
         self.entries.push(Entry::Note { text: text.to_string(), tone });
     }
 
-    fn close_thinking(&mut self) {
+    /// The last reasoning block stops streaming at `at_ms`, which settles how long it took.
+    fn close_thinking(&mut self, at_ms: i64) {
+        let since = self.thinking_since.take();
         for e in self.entries.iter_mut().rev() {
-            if let Entry::Thinking { live, .. } = e {
+            if let Entry::Thinking { live, ms, .. } = e {
+                if let (true, Some(since)) = (*live, since) {
+                    *ms = at_ms.saturating_sub(since).max(0) as u64;
+                }
                 *live = false;
                 break;
             }
@@ -1124,6 +1284,7 @@ pub fn entries_from_transcript(turns: &[StoredTurn]) -> Vec<Entry> {
                                 text: th.text.clone(),
                                 tokens: crate::text::width(&th.text) as u64 / 4,
                                 live: false,
+                                ms: 0,
                             })
                         }
                         Part::Text { text } if !text.trim().is_empty() => {

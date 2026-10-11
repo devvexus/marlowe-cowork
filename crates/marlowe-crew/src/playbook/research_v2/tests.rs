@@ -22,6 +22,11 @@ use serde_json::Value;
 
 use super::*;
 use crate::playbook::{AgentRunner, ModelResolver, StepHooks, StepModel, StepResult, StepSpec, REPORT_FILE};
+
+#[path = "tests_quality.rs"]
+mod quality;
+#[path = "tests_plan.rs"]
+mod plan_and_budget;
 use crate::role::{RoleCard, Roles};
 use crate::sandbox::Sandbox;
 use crate::CrewError;
@@ -30,12 +35,16 @@ use crate::CrewError;
 
 type Respond = dyn Fn(&str) -> String + Send + Sync;
 
+const CUT: &str = "\u{0}CUT:";
+
 /// Answers each step prompt with `respond(prompt)`; records prompts and tool counts.
 struct Scripted {
     respond: Box<Respond>,
     prompts: Mutex<Vec<String>>,
     tools: Mutex<Vec<usize>>,
     efforts: Mutex<Vec<Effort>>,
+    /// The reply cap each call carried.
+    budgets: Mutex<Vec<Option<u32>>>,
 }
 
 impl Scripted {
@@ -45,7 +54,22 @@ impl Scripted {
             prompts: Mutex::new(Vec::new()),
             tools: Mutex::new(Vec::new()),
             efforts: Mutex::new(Vec::new()),
+            budgets: Mutex::new(Vec::new()),
         })
+    }
+
+    /// (prompt, effort, reply cap) of every call whose prompt contains `marker`.
+    fn calls_with(&self, marker: &str) -> Vec<(String, Effort, Option<u32>)> {
+        let prompts = self.prompts();
+        let efforts = self.efforts.lock().unwrap().clone();
+        let budgets = self.budgets.lock().unwrap().clone();
+        prompts
+            .into_iter()
+            .zip(efforts)
+            .zip(budgets)
+            .filter(|((p, _), _)| p.contains(marker))
+            .map(|((p, e), b)| (p, e, b))
+            .collect()
     }
 
     fn prompts(&self) -> Vec<String> {
@@ -60,6 +84,8 @@ impl Scripted {
 fn model() -> ModelInfo {
     let mut m = ModelInfo::bare(ProviderKind::OpenRouter, "scripted");
     m.supports_tools = true;
+    // A window wide enough that the reply budgets the steps ask for are not lowered.
+    m.context_window = Some(200_000);
     m
 }
 
@@ -82,7 +108,14 @@ impl Provider for Scripted {
         self.prompts.lock().unwrap().push(prompt.clone());
         self.tools.lock().unwrap().push(req.tools.len());
         self.efforts.lock().unwrap().push(req.effort);
-        let evs = vec![StreamEvent::TextDelta((self.respond)(&prompt)), StreamEvent::Stop(StopReason::EndTurn)];
+        self.budgets.lock().unwrap().push(req.max_output_tokens);
+        // A reply starting with CUT ends at the output limit, as a local thinking model's can.
+        let reply = (self.respond)(&prompt);
+        let (text, stop) = match reply.strip_prefix(CUT) {
+            Some(t) => (t.to_string(), StopReason::MaxTokens),
+            None => (reply, StopReason::EndTurn),
+        };
+        let evs = vec![StreamEvent::TextDelta(text), StreamEvent::Stop(stop)];
         for ev in &evs {
             on(ev.clone());
         }
@@ -181,13 +214,23 @@ struct World {
     results: HashMap<ChannelId, Vec<SourceRef>>,
     pages: HashMap<String, FetchedPage>,
     searches: Mutex<Vec<(ChannelId, String)>>,
+    /// Every query in full (date floor, citation expansion).
+    queries: Mutex<Vec<(ChannelId, ChannelQuery)>>,
     fetches: Mutex<Vec<(Vec<String>, usize)>>,
+    /// Channels whose every search fails with this error.
+    failing: HashMap<ChannelId, ChannelError>,
+    /// Channels reported unavailable before planning, with why.
+    down: Vec<(ChannelId, String)>,
+    /// Answers to citation queries, by channel.
+    citing: HashMap<ChannelId, Vec<SourceRef>>,
 }
 
 impl ResearchIo for World {
     fn channels(&self) -> Vec<ChannelId> {
-        let mut v: Vec<ChannelId> = self.results.keys().copied().collect();
+        let mut v: Vec<ChannelId> =
+            self.results.keys().chain(self.failing.keys()).chain(self.citing.keys()).copied().collect();
         v.sort();
+        v.dedup();
         v
     }
 
@@ -198,7 +241,18 @@ impl ResearchIo for World {
         _cancel: &CancelToken,
     ) -> Result<Vec<SourceRef>, ChannelError> {
         self.searches.lock().unwrap().push((channel, query.text.clone()));
+        self.queries.lock().unwrap().push((channel, query.clone()));
+        if let Some(e) = self.failing.get(&channel) {
+            return Err(e.clone());
+        }
+        if query.citations.is_some() {
+            return Ok(self.citing.get(&channel).cloned().unwrap_or_default());
+        }
         Ok(self.results.get(&channel).cloned().unwrap_or_default())
+    }
+
+    fn unavailable(&self, _cancel: &CancelToken) -> Vec<(ChannelId, String)> {
+        self.down.clone()
     }
 
     fn fetch(&self, urls: &[String], concurrency: usize, _cancel: &CancelToken) -> Vec<FetchedPage> {
@@ -310,6 +364,10 @@ impl ResearchHost for Host {
         self.tainted.store(true, Ordering::SeqCst);
     }
 
+    fn tainted(&self) -> bool {
+        self.tainted.load(Ordering::SeqCst)
+    }
+
     fn remember(&self, finding: &Finding, tainted: bool) -> Result<String, String> {
         let mut r = self.remembered.lock().unwrap();
         r.push((finding.clone(), tainted));
@@ -329,6 +387,7 @@ fn page(url: &str, title: &str, body: &str, links: Vec<Link>) -> FetchedPage {
         title: Some(title.into()),
         text: format!("# {title}\n\n{body}\n\n{FILLER}\n"),
         links,
+        meta: Vec::new(),
         error: None,
     }
 }
@@ -364,6 +423,8 @@ struct VerifierScript {
     garbage: bool,
     /// Give no answer at all (the step fails) when a call carries more than this many items.
     empty_over: Option<usize>,
+    /// Groups judged off the goal.
+    off_goal: Vec<u32>,
 }
 
 fn ids_after(prompt: &str, tag: char) -> Vec<u32> {
@@ -397,9 +458,16 @@ fn verifier(s: VerifierScript) -> Arc<Scripted> {
             let first = ids.len() > 1;
             ids.iter()
                 .filter(|g| !(first && s.omit_first == Some(**g)))
-                .map(|g| match s.weakened.iter().find(|(w, _)| w == g) {
-                    Some((_, why)) => format!("G{g}: weakened: {why}"),
-                    None => format!("G{g}: upheld"),
+                .map(|g| {
+                    let v = match s.weakened.iter().find(|(w, _)| w == g) {
+                        Some((_, why)) => format!("G{g}: weakened: {why}"),
+                        None => format!("G{g}: upheld"),
+                    };
+                    if s.off_goal.contains(g) {
+                        format!("{v}; off-goal: a layer-transplant adaptation method, not pruning")
+                    } else {
+                        v
+                    }
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -629,12 +697,18 @@ fn lora_verifier() -> VerifierScript {
         weakened: vec![(2, "the gain is on DeBERTaV3-base only")],
         garbage: false,
         empty_over: None,
+        off_goal: vec![],
     }
 }
 
 fn lora_host(world: Arc<World>) -> Host {
     let mut host = Host::new(world);
-    host.recalled = vec![Recalled { id: "m-1".into(), text: MEMORY.into(), provenance: "you, session 3f2a".into() }];
+    host.recalled = vec![Recalled {
+        id: "m-1".into(),
+        text: MEMORY.into(),
+        provenance: "you, session 3f2a".into(),
+        trust: marlowe_proto::MemoryTrust::User,
+    }];
     host.profile = Some("Matthew fine-tunes 7B decoder models on one RTX 4080.".into());
     host
 }
@@ -754,7 +828,11 @@ fn the_full_run_plans_explores_by_selection_verifies_and_writes_a_checked_report
     assert!(body.contains("over rank 8 (partly supported) [5]."), "{body}");
     assert!(report.contains("## Contested") && report.contains("the gain is on DeBERTaV3-base only"));
     assert!(report.contains("1 quotes were not in their source"), "{report}");
-    assert!(report.contains("2 unsupported (removed); citation accuracy 0.58"), "{report}");
+    assert!(
+        report.contains("2 unsupported (removed); citation accuracy 0.500 strict, 0.583 with partial as half"),
+        "{report}"
+    );
+    assert!(!report.contains("Coverage warning"), "7 of 8 planned sources read: {report}");
     assert!(report.trim_end().ends_with("Confidence: low"));
     assert_eq!(d.confidence, Confidence::Low, "accuracy 0.58 caps it");
     assert!(d.summary.starts_with("Rank 8 is enough for GLUE-style fine-tuning"));
@@ -988,10 +1066,50 @@ fn a_step_that_gives_no_answer_runs_once_more() {
         .collect();
     assert_eq!(asked.len(), 2);
     assert_ne!(asked[0].1, Effort::Off, "the first ask uses the card's effort");
-    assert_eq!(asked[1].1, Effort::Off, "the second answers directly");
+    assert_eq!(asked[1].1, asked[0].1, "the second keeps it: never asked without reasoning");
+    let budgets: Vec<Option<u32>> = crew.compressor.calls_with("Group the claims").into_iter().map(|c| c.2).collect();
+    assert_eq!(budgets, [Some(FIRST_OUTPUT), Some(2 * FIRST_OUTPUT)], "the retry gets twice the budget");
     assert_eq!(record(&dir)["corroboration"][0]["standing"], "contested", "the retried grouping was used");
     let report = std::fs::read_to_string(dir.join(REPORT_FILE)).unwrap();
-    assert!(!report.contains("model steps failed"), "{report}");
+    assert!(!report.contains("model calls failed"), "{report}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Found live: a section reply cut off at the output limit reached the report mid-sentence.
+#[test]
+fn an_answer_cut_off_at_the_output_limit_is_asked_again_with_a_larger_budget() {
+    let dir = temp_dir("cut");
+    let host = Host::new(Arc::new(imagenet_world()));
+    let mut crew = imagenet_crew(
+        r#"[{"statement": "Model M reaches 91.2% top-1 on ImageNet", "supports": [1], "contradicts": [2]}]"#,
+        VerifierScript::default(),
+    );
+    let inner = crew.researcher.clone();
+    let tries = Arc::new(AtomicUsize::new(0));
+    let t = tries.clone();
+    crew.researcher = Scripted::new(move |p| {
+        if p.contains("Write the report's section") && t.fetch_add(1, Ordering::SeqCst) == 0 {
+            return format!("{CUT}Model M is reported at 91.2% top-1, which it addresses with power transformation, sign");
+        }
+        (inner.respond)(p)
+    });
+    let cfg = ResearchV2Config { auto_approve_under_tokens: Some(10_000_000), ..Default::default() };
+    deep_research_v2(&runner(&crew, &dir, Arc::new(Checkpoints::default())), &host, QM, &cfg).unwrap();
+    assert_eq!(tries.load(Ordering::SeqCst), 2, "asked once more");
+    let efforts: Vec<Effort> = crew
+        .researcher
+        .prompts()
+        .into_iter()
+        .zip(crew.researcher.efforts.lock().unwrap().iter().copied())
+        .filter(|(p, _)| p.contains("Write the report's section"))
+        .map(|(_, e)| e)
+        .collect();
+    assert!(efforts.iter().all(|e| *e != Effort::Off), "never asked without reasoning: {efforts:?}");
+    let budgets: Vec<Option<u32>> =
+        crew.researcher.calls_with("Write the report's section").into_iter().map(|c| c.2).collect();
+    assert_eq!(budgets, [Some(FIRST_OUTPUT), Some(2 * FIRST_OUTPUT)]);
+    let report = std::fs::read_to_string(dir.join(REPORT_FILE)).unwrap();
+    assert!(!report.contains("sign\n") && !report.contains("power transformation"), "{report}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1027,156 +1145,6 @@ fn agreeing_independent_sources_and_clean_citations_give_high_confidence() {
     let cfg = ResearchV2Config { auto_approve_under_tokens: Some(10_000_000), ..Default::default() };
     let d = deep_research_v2(&runner(&crew, &dir, Arc::new(Checkpoints::default())), &host, QM, &cfg).unwrap();
     assert_eq!(d.confidence, Confidence::High, "{}", d.summary);
-    assert!(d.summary.contains("citation accuracy 1.00"), "{}", d.summary);
+    assert!(d.summary.contains("citation accuracy 1.000 strict, 1.000 with partial as half"), "{}", d.summary);
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn the_user_decides_the_plan_reject_edit_and_a_bad_edit_asked_again() {
-    // Rejected: nothing is searched, the run ends cancelled.
-    let dir = temp_dir("reject");
-    let world = Arc::new(imagenet_world());
-    let host = Host::new(world.clone());
-    host.decisions.lock().unwrap().push_back(PlanDecision::Reject { reason: Some("too broad".into()) });
-    let crew = imagenet_crew("[]", VerifierScript::default());
-    let r = deep_research_v2(
-        &runner(&crew, &dir, Arc::new(Checkpoints::default())),
-        &host,
-        QM,
-        &ResearchV2Config::default(),
-    );
-    assert!(matches!(r, Err(CrewError::Cancelled)), "{r:?}");
-    assert!(world.searches.lock().unwrap().is_empty() && world.fetches.lock().unwrap().is_empty());
-    assert!(host.stages().contains(&(ResearchStage::Plan, StageState::Failed)));
-    assert!(host.approved.lock().unwrap().is_empty(), "a rejected plan approves no budget");
-
-    // A bad edit is asked again; the valid edit is the plan that runs.
-    let dir2 = temp_dir("edit");
-    let world = Arc::new(imagenet_world());
-    let host = Host::new(world.clone());
-    let edited = ResearchPlan {
-        goal: String::new(),
-        sub_questions: vec![SubQuestion {
-            id: 1,
-            question: QM.into(),
-            channels: vec![ChannelId::Web],
-            rationale: None,
-        }],
-        breadth: 1,
-        depth: 0,
-        source_budget: 1,
-        recalled: vec![],
-        notes: Some("one source is enough".into()),
-    };
-    let bad = ResearchPlan { breadth: 0, ..edited.clone() };
-    host.decisions.lock().unwrap().extend([PlanDecision::Edit { plan: bad }, PlanDecision::Edit { plan: edited }]);
-    let crew = imagenet_crew("[]", VerifierScript::default());
-    deep_research_v2(&runner(&crew, &dir2, Arc::new(Checkpoints::default())), &host, QM, &ResearchV2Config::default())
-        .unwrap();
-    assert_eq!(host.proposals.lock().unwrap().len(), 2, "the bad edit was not run; the plan was proposed again");
-    let approved: ResearchPlan =
-        serde_json::from_str(&host.store.lock().unwrap()[&checkpoint_key(ResearchStage::Plan, Some("approved"))])
-            .unwrap();
-    assert_eq!((approved.goal.as_str(), approved.breadth, approved.source_budget), (QM, 1, 1));
-    assert_eq!(world.fetched_urls().len(), 1, "the edited budget of one source holds");
-    // The edit is priced again, and that price is what the approval covers.
-    let (plan, quote, steps) = host.approved.lock().unwrap()[0].clone();
-    assert_eq!(plan, approved);
-    let proposed = host.proposals.lock().unwrap()[0].1.clone();
-    assert!(quote.model_tokens < proposed.model_tokens, "{quote:?} vs {proposed:?}");
-    assert_eq!(steps, step_estimate(&approved, &ResearchV2Config::default()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&dir2);
-}
-
-#[test]
-fn one_source_budget_holds_across_parallel_scouts() {
-    let dir = temp_dir("budget");
-    let mut w = World::default();
-    let urls: Vec<String> = (1..=6).map(|i| format!("https://s{i}.example/page")).collect();
-    w.results.insert(ChannelId::Github, urls[..3].iter().map(|u| web(u, "github result")).collect());
-    w.results.insert(ChannelId::StackExchange, urls[3..].iter().map(|u| web(u, "stack exchange result")).collect());
-    for u in &urls {
-        w.pages.insert(u.clone(), page(u, "A page", "Nothing in particular is claimed on this page.", vec![]));
-    }
-    let world = Arc::new(w);
-    let host = Host::new(world.clone());
-    let plan = r#"{"sub_questions": [{"question": "How do I pin a crate version?", "channels": ["github"]},
-                                     {"question": "Why does cargo pick a newer patch release?", "channels": ["stack_exchange"]}],
-                   "breadth": 3, "depth": 0, "source_budget": 4}"#;
-    let crew = Crew {
-        researcher: Scripted::new(move |p| if p.contains("Draft") { plan.into() } else { "Nothing found.".into() }),
-        scout: Scripted::new(|_| "PICK: 1, 2, 3".into()),
-        compressor: Scripted::new(|_| "[]".into()),
-        verifier: verifier(VerifierScript::default()),
-    };
-    let r = deep_research_v2(
-        &runner(&crew, &dir, Arc::new(Checkpoints::default())),
-        &host,
-        "Pin a crate",
-        &ResearchV2Config::default(),
-    );
-    // Two scouts wanted three each; the run may read four.
-    assert_eq!(world.fetched_urls().len(), 4, "{:?}", world.fetched_urls());
-    assert_eq!(world.fetches.lock().unwrap().len(), 1, "one fetch for the wave");
-    assert_eq!(host.last_counts().sources_fetched, 4);
-    // Nothing claimed: there is nothing to verify, so there is no report either.
-    assert!(matches!(r, Err(CrewError::Step { ref step, .. }) if step == "verify"), "{r:?}");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-// ---------------------------------------------------------------- pure parts
-
-#[test]
-fn a_plan_reply_parses_leniently_and_is_clamped() {
-    let available = [ChannelId::Arxiv, ChannelId::Web, ChannelId::Wikipedia, ChannelId::Memory];
-    let p = parse_plan("goal", "1. How does attention scale?\n2. Who invented the transformer?", &[], &available);
-    assert_eq!(p.sub_questions.len(), 2);
-    assert!(p.sub_questions.iter().all(|q| !q.channels.is_empty() && q.channels.iter().all(|c| available.contains(c))));
-    assert_eq!((p.breadth, p.depth), (4, 1));
-    p.validate().unwrap();
-    let p = parse_plan(
-        "goal",
-        r#"{"sub_questions": [{"question": "q", "channels": ["s2", "nonsense"]}], "breadth": 99, "depth": 9, "source_budget": 0}"#,
-        &[],
-        &available,
-    );
-    assert_eq!((p.breadth, p.depth, p.source_budget), (8, 4, 1));
-    assert!(!p.sub_questions[0].channels.is_empty(), "an unavailable channel falls back to routing");
-    p.validate().unwrap();
-    let p = parse_plan("Is the sky blue?", "I would rather not.", &[], &available);
-    assert_eq!(p.sub_questions[0].question, "Is the sky blue?");
-}
-
-#[test]
-fn attributions_chunks_and_queries() {
-    let r = attribution_route("Hu et al. 2021 (arXiv:2106.09685v2)").unwrap();
-    assert_eq!(r.identity.unwrap().arxiv_id.as_deref(), Some("2106.09685"));
-    assert!(r.url.is_empty(), "an identifier in content never merges by URL");
-    let r = attribution_route("doi:10.1000/XYZ.1.").unwrap();
-    assert_eq!(r.identity.unwrap().doi.as_deref(), Some("10.1000/xyz.1"));
-    assert_eq!(attribution_route("https://x.example/p").unwrap().url, "https://x.example/p");
-    assert!(attribution_route("Smith 2020").is_none());
-
-    let text = format!("{}\n\n{}", "a".repeat(60), "b".repeat(60));
-    let c = chunks(&text, 100, 4);
-    assert_eq!(c.len(), 2);
-    assert!(c[0].ends_with("\n\n") && c[1] == "b".repeat(60));
-    assert_eq!(chunks(&"x".repeat(500), 100, 3).len(), 3, "at most the limit");
-    assert_eq!(search_text("What is the best LoRA rank for a 7B model?"), "best LoRA rank 7B model");
-
-    use super::synth::{drop_open_markers, mark_partial, strip_heading};
-    assert_eq!(strip_heading("## Answer\n\nRank 8 [C1].\n\n**Confidence:** medium"), "Rank 8 [C1].");
-    assert_eq!(strip_heading("Section 1/5: The run used rank 16 [C1]."), "The run used rank 16 [C1].");
-    assert_eq!(strip_heading("Confidence in rank 8 is high [C2]."), "Confidence in rank 8 is high [C2].");
-    assert_eq!(drop_open_markers("Rank 8 is common [C3, C6, C7,"), "Rank 8 is common");
-    assert_eq!(drop_open_markers("Kept [C1].\nCut [C2, C"), "Kept [C1].\nCut");
-    assert_eq!(drop_open_markers("A list [C4] and [Ccc] stay."), "A list [C4] and [Ccc] stay.");
-    assert_eq!(mark_partial("Rank 8 is enough [C1]."), "Rank 8 is enough (partly supported) [C1].");
-    assert_eq!(mark_partial("Rank 8 is enough. [C1][C2]"), "Rank 8 is enough (partly supported). [C1][C2]");
-    assert_eq!(mark_partial("No stop [C4]"), "No stop (partly supported) [C4]");
-
-    let cited = cited_sentences("First claim [C1]. Uncited sentence. Second [C2, C3].");
-    assert_eq!(cited.len(), 2);
-    assert_eq!(cited[1].claims.iter().map(|c| c.0).collect::<Vec<_>>(), [2, 3]);
 }

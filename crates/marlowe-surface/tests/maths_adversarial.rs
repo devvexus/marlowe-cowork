@@ -53,6 +53,8 @@ const NEVER_RAW: &[&str] = &[
     "so that $$\\frac{a}{b",
     "ends with $$",
     "Let $\\alpha$, then $\\beta, the rest.",
+    "Let $ \\alpha $ be the rate.",
+    "So $ \\frac{1}{2} $ of it, and $x = \\beta $ too.",
 ];
 
 fn assert_clean(shown: &str, case: &str, mode: &str) {
@@ -84,6 +86,14 @@ fn a_dollar_that_never_closed_before_a_command_is_maths_up_to_the_prose() {
     // A dollar sign before a number or a word is still a dollar sign.
     assert_eq!(prose("It costs $5 and $10.", false, 60), "It costs $5 and $10.");
     assert_eq!(prose("Price \\$5 and \\$10 total.", false, 60), "Price $5 and $10 total.");
+}
+
+#[test]
+fn a_padded_span_with_a_command_is_set_without_its_padding() {
+    assert_eq!(prose("Let $ \\alpha $ be the rate.", false, 60), "Let α be the rate.");
+    assert_eq!(prose("Let $ \\alpha $ be the rate.", true, 60), "Let α be the rate.");
+    // Padding with no command is still two dollar signs in prose.
+    assert_eq!(prose("from $ 5 to $ 10", false, 60), "from $ 5 to $ 10");
 }
 
 #[test]
@@ -122,9 +132,12 @@ fn code_stays_exactly_as_written() {
 }
 
 #[test]
-fn display_maths_mid_paragraph_reserves_its_rows_while_it_streams() {
+fn display_maths_mid_paragraph_is_held_on_one_row_while_it_streams() {
+    // One row whatever has arrived: a height estimated from the partial rose and fell token by
+    // token, and the pane jumped with it. Landing only grows the reply downward.
     let live = prose("so that $$\\frac{a}{b", true, 60);
     let done = prose("so that $$\\frac{a}{b}$$", false, 60);
-    assert_eq!(live.lines().count(), done.lines().count(), "live:\n{live}\ndone:\n{done}");
+    assert_eq!(live.lines().count(), 1, "live:\n{live}");
+    assert!(done.lines().count() > 1, "done:\n{done}");
     assert!(live.contains('…'));
 }

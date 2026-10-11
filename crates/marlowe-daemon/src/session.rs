@@ -19,7 +19,8 @@ use marlowe_agent::{
     Agent, AgentEvent, ApprovalGate, ApprovalReq, Conversation, Environment, NoMemory, Notification, NotificationKind,
     PersonaBlock, Steer, SteerRefused, SystemPrompt, ToolHost, TurnObserver, TurnOutcome, TurnStop,
 };
-use marlowe_model::{CancelToken, Message, Usage};
+use marlowe_brains::{Admission, Priority};
+use marlowe_model::{CancelToken, Message, ModelRef, Usage};
 use marlowe_proto::{ApprovalDecision, Event, SessionId, Slot};
 
 use crate::daemon::Core;
@@ -287,6 +288,11 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
             let cancel = lock(&handle.state).cancel.clone();
             run_one(core, handle, &mut convo, &tools, &stack, &input, &cancel);
             turns_run += 1;
+            // The user's turn brought the conductor's model up: crew results that could not
+            // load it themselves go out now (this session's land in the queue read below).
+            if !input.relay {
+                crate::crew::retry_deferred(core);
+            }
             // Decide under the lock so an ask arriving now either lands in `left` or starts a
             // fresh turn through the command channel.
             let mut st = lock(&handle.state);
@@ -365,6 +371,18 @@ fn run_one(
         }
     };
     let model = info.model_ref();
+    // A relay turn runs with nobody waiting on it (at start, at 3am): it never loads a model.
+    let who = if input.relay { Priority::Background } else { Priority::Foreground };
+    if let Err(message) = admit_conductor(core, &session, &model, cancel, who) {
+        if input.relay {
+            // The run stays due; the user's next turn delivers it on a loaded model.
+            eprintln!("marlowe: a crew result waits for the next turn: {message}");
+            crate::crew::defer(core, &input.text);
+        } else {
+            core.bus.publish(Event::Error { session: Some(session), message });
+        }
+        return;
+    }
     let workspace = workspace_of(convo);
     let mut system = SystemPrompt::new();
     // The memory block describes the profile and memory tools, so only when a Mind is attached.
@@ -419,6 +437,7 @@ fn run_one(
         text: String::new(),
         error: Some(format!("the turn failed: {e}")),
         blocked: false,
+        truncated: false,
     });
     if outcome.blocked {
         // A hook refused the prompt before anything ran: nothing to store, and it is not kept.
@@ -494,6 +513,45 @@ fn guard<T>(f: impl FnOnce() -> T) -> Result<T, String> {
 }
 
 /// Approvals as an ApprovalRequested / Approve round trip. Denies on timeout, cancel, shutdown.
+/// The conductor's model may be used for this turn: hosted, already loaded, or a cold load the
+/// planner says fits. A load that does not fit beside what is resident asks, with its cost (once
+/// per model and resident set).
+fn admit_conductor(core: &Arc<Core>, session: &SessionId, model: &ModelRef, cancel: &CancelToken, who: Priority) -> Result<(), String> {
+    let admission = guard(|| core.brains.admit(model, who))?;
+    let cost = match admission {
+        Admission::Hosted | Admission::Resident => return Ok(()),
+        Admission::Load(cost) => {
+            eprintln!("marlowe: loading {model} for the conductor: {}", cost.describe());
+            return Ok(());
+        }
+        Admission::Refused(why) | Admission::Wait(why) => return Err(format!("not loading {model}: {why}")),
+        // Only the user's own turn asks, and only it counts loads approved earlier.
+        Admission::Ask(cost) if who == Priority::Foreground => cost,
+        Admission::Ask(cost) => return Err(format!("not loading {model}: {}", cost.describe())),
+    };
+    let key = format!("{model}|{}", cost.resident.join(","));
+    if lock(&core.approved_loads).contains(&key) {
+        return Ok(());
+    }
+    let gate = Gate { core: core.clone(), cancel: cancel.clone(), observers: Vec::new() };
+    let decision = gate.ask(ApprovalReq {
+        session: session.clone(),
+        call_id: format!("load-{}", model.model_id),
+        tool: "load model".into(),
+        summary: format!("Load {} for this turn? It does not fit beside what is loaded.", model.model_id),
+        detail: format!(
+            "{}.\nLoading it anyway can spill into system memory and slow the whole machine.\nAssign a smaller conductor in the Library to avoid this.",
+            cost.describe()
+        ),
+    });
+    if decision.is_allowed() {
+        lock(&core.approved_loads).insert(key);
+        Ok(())
+    } else {
+        Err(format!("not loading {model}: {}", cost.describe()))
+    }
+}
+
 /// Observers hear about each request (E's Notification hook).
 struct Gate {
     core: Arc<Core>,

@@ -176,6 +176,7 @@ mod tests {
                 question: "Which ranks work for 7B?".into(),
                 channels: vec![ChannelId::Arxiv],
                 rationale: Some("papers".into()),
+                queries: Vec::new(),
             }],
             breadth: 4,
             depth: 1,

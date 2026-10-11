@@ -18,6 +18,7 @@ use marlowe_memory::{
 use marlowe_proto::{MemoryHit, MemoryStatsReport};
 
 use crate::capture::{classify, Capture};
+use crate::episode;
 use crate::error::MindError;
 use crate::legacy::{ChunkResult, ImportOp, Speaker};
 use crate::models::Models;
@@ -38,7 +39,8 @@ const EMBED_RETRY: Duration = Duration::from_secs(30);
 
 pub(crate) enum Cmd {
     Ingest(TurnIn, Reply<Result<(), MindError>>),
-    Remember(MemoryIn, Reply<Result<Remembered, MindError>>),
+    /// The memory and the ids of memories it was derived from (its lineage).
+    Remember(MemoryIn, Vec<String>, Reply<Result<Remembered, MindError>>),
     Inject(InjectQuery, Reply<Injection>),
     Profile(ProfileQuery, Reply<UserProfile>),
     Recall(RecallQuery, Reply<Result<Vec<RecallHit>, MindError>>),
@@ -48,6 +50,8 @@ pub(crate) enum Cmd {
     Episodes(Range<i64>, Reply<Result<Vec<Episode>, MindError>>),
     /// Session, summary, at_ms, whether the session read untrusted content.
     WriteEpisode(String, String, i64, bool, Reply<Result<String, MindError>>),
+    /// Session, whether it read untrusted content. Extractive: no model.
+    WriteSessionEpisode(String, bool, Reply<Result<Option<String>, MindError>>),
     Stats(Reply<Result<MemoryStatsReport, MindError>>),
     Consolidate(Reply<Result<ConsolidateReport, MindError>>),
     Snapshot(Reply<Result<SnapshotInfo, MindError>>),
@@ -239,7 +243,7 @@ impl Actor {
     fn handle(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::Ingest(t, r) => drop(r.send(self.ingest(t))),
-            Cmd::Remember(m, r) => drop(r.send(self.remember(m))),
+            Cmd::Remember(m, parents, r) => drop(r.send(self.remember(m, &parents))),
             Cmd::Inject(q, r) => drop(r.send(self.inject(q))),
             Cmd::Profile(q, r) => drop(r.send(profile::build(self.beliefs.entries(), &q, now_ms()))),
             Cmd::Recall(q, r) => drop(r.send(self.recall(q))),
@@ -248,6 +252,7 @@ impl Actor {
             Cmd::Get(id, r) => drop(r.send(self.get(&id))),
             Cmd::Episodes(range, r) => drop(r.send(Ok(self.episodes(range)))),
             Cmd::WriteEpisode(s, text, at, tainted, r) => drop(r.send(self.write_episode(&s, &text, at, tainted))),
+            Cmd::WriteSessionEpisode(s, tainted, r) => drop(r.send(self.write_session_episode(&s, tainted))),
             Cmd::Stats(r) => drop(r.send(Ok(self.stats()))),
             Cmd::Consolidate(r) => drop(r.send(self.consolidate())),
             Cmd::Snapshot(r) => drop(r.send(self.snapshot())),
@@ -354,7 +359,9 @@ impl Actor {
         Ok(())
     }
 
-    fn remember(&mut self, m: MemoryIn) -> Result<Remembered, MindError> {
+    /// `parents`: memories this one was derived from. Those still in the store become its
+    /// lineage, so its trust is the worst over them and a correction can find it.
+    fn remember(&mut self, m: MemoryIn, parents: &[String]) -> Result<Remembered, MindError> {
         let text = m.text.trim();
         let reason = match &m.kind {
             Kind::Decision { reason } if !reason.trim().is_empty() => Some(reason.trim().to_string()),
@@ -391,13 +398,14 @@ impl Actor {
         // A deliberate write from a session that never read untrusted content cannot have been
         // steered by it (the taint latch guarantees that), so it is live at once; a tainted one
         // is UntrustedContent, keeps the maturation window and never enters the profile.
+        let lineage: Vec<String> = parents.iter().filter(|p| self.beliefs.get(p).is_some()).cloned().collect();
         let r = self.write(&BeliefWrite {
             session_id: &session,
             turn_id: kind.label(),
             run_id: run_id.as_deref(),
             text: &text,
             author,
-            derived_from: &[],
+            derived_from: &lineage,
             occurred_at_ms: now_ms(),
             tags: Tags { kind: Some(belief_kind(kind)), scope, utterance: None, source: source_note(&m.source), reason },
             maturation: MaturationPolicy::Deliberate,
@@ -509,19 +517,68 @@ impl Actor {
         out
     }
 
-    /// The summary is model-written, so agent-inferred at best, and its lineage is every turn
-    /// of the session: the core takes the worst trust over it. A session that read untrusted
-    /// content (tool output is in the summariser's transcript) writes an untrusted episode.
-    fn write_episode(&mut self, session: &str, summary: &str, at_ms: i64, tainted: bool) -> Result<String, MindError> {
+    /// The session's ingested turns, oldest first.
+    fn session_turns(&self, session: &str) -> Vec<&MemoryEntry> {
         let mut turns: Vec<&MemoryEntry> = self
             .beliefs
             .entries()
             .filter(|e| e.source_session_id == session && e.fidelity > Fidelity::Tombstone && e.tags.utterance.is_some())
             .collect();
         turns.sort_by(|a, b| a.occurred_at_ms.cmp(&b.occurred_at_ms).then_with(|| a.id.cmp(&b.id)));
+        turns
+    }
+
+    /// An episode is built from the session's own turns, so agent-inferred at best, and its
+    /// lineage is every turn of the session: the core takes the worst trust over it. A session
+    /// that read untrusted content writes an untrusted episode.
+    fn write_episode(&mut self, session: &str, summary: &str, at_ms: i64, tainted: bool) -> Result<String, MindError> {
+        self.write_episode_over(session, summary, at_ms, tainted, None)
+    }
+
+    /// Extracts and writes the session's episode (no model), superseding its earlier one.
+    fn write_session_episode(&mut self, session: &str, tainted: bool) -> Result<Option<String>, MindError> {
+        let (text, at_ms, earlier) = {
+            let turns = self.session_turns(session);
+            let Some(last) = turns.last() else { return Ok(None) };
+            let at_ms = last.occurred_at_ms;
+            let view: Vec<episode::Turn<'_>> = turns
+                .iter()
+                .map(|e| episode::Turn { user: e.tags.utterance == Some(Utterance::User), at_ms: e.occurred_at_ms, text: &e.text })
+                .collect();
+            let lexicon = self.beliefs.lexicon();
+            let text = episode::compose(&view, self.workspaces.of(session), lexicon.len(), |t| lexicon.document_frequencies(t));
+            let earlier = self
+                .beliefs
+                .entries()
+                .filter(|e| is_live(e) && is_episode_summary(e) && e.source_session_id == session)
+                .max_by_key(|e| e.occurred_at_ms)
+                .map(|e| (e.id.clone(), e.text.clone()));
+            (text, at_ms, earlier)
+        };
+        let Some(text) = text else { return Ok(None) };
+        if let Some((id, old)) = &earlier {
+            if *old == text {
+                return Ok(Some(id.clone()));
+            }
+        }
+        self.write_episode_over(session, &text, at_ms, tainted, earlier.map(|(id, _)| id)).map(Some)
+    }
+
+    /// Writes an episode; with `supersede`, as the correction of that earlier episode (a plain
+    /// write when the correction would carry less trust, e.g. the session became tainted).
+    fn write_episode_over(
+        &mut self,
+        session: &str,
+        summary: &str,
+        at_ms: i64,
+        tainted: bool,
+        supersede: Option<String>,
+    ) -> Result<String, MindError> {
+        let turns = self.session_turns(session);
         let scope = turns.last().map(|e| e.scope().clone()).unwrap_or_default();
         let lineage: Vec<String> = turns.iter().map(|e| e.id.clone()).collect();
-        let r = self.write(&BeliefWrite {
+        let source = Some(format!("episode summary, session {}", short(session)));
+        let write = BeliefWrite {
             session_id: session,
             turn_id: "episode",
             run_id: None,
@@ -531,16 +588,16 @@ impl Actor {
             },
             derived_from: &lineage,
             occurred_at_ms: at_ms,
-            tags: Tags {
-                kind: Some(BeliefKind::Episode),
-                scope,
-                utterance: None,
-                source: Some(format!("episode summary, session {}", short(session))),
-                reason: None,
-            },
+            tags: Tags { kind: Some(BeliefKind::Episode), scope, utterance: None, source, reason: None },
             maturation: MaturationPolicy::ByTrust,
-        })?;
-        Ok(r.id)
+        };
+        if let Some(target) = supersede {
+            if let Ok(r) = correct_belief(&mut self.journal, &mut self.beliefs, clock(), &write, &target)? {
+                self.queue.push(r.id.clone());
+                return Ok(r.id);
+            }
+        }
+        Ok(self.write(&write)?.id)
     }
 
     fn stats(&self) -> MemoryStatsReport {

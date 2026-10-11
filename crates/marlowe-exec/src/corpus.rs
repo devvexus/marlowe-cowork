@@ -632,7 +632,7 @@ impl std::fmt::Display for NotRendered {
         f.write_str("the page is rendered client-side and ")?;
         match self {
             NotRendered::NoBrowser => f.write_str("no browser is available (Microsoft Edge not found)"),
-            NotRendered::Refused => f.write_str("a second request to the host was refused"),
+            NotRendered::Refused => f.write_str("the host refused a second request, or the page left the public web"),
             NotRendered::Browser(kind) => write!(f, "the browser could not render it ({kind})"),
             NotRendered::StillThin => f.write_str("it was still thin after rendering"),
             NotRendered::Unreadable => f.write_str("the rendered HTML could not be read"),
@@ -653,7 +653,10 @@ fn render_into(
         return Err(NotRendered::NoBrowser);
     };
     cfg.gate.admit(url, cfg.robots_http.as_ref(), cancel).map_err(|_| NotRendered::Refused)?;
-    let rendered = r.render(url, cancel).map_err(|e| NotRendered::Browser(e.kind()))?;
+    let rendered = r.render(url, cancel).map_err(|e| match e {
+        crate::render::RenderError::Refused => NotRendered::Refused,
+        e => NotRendered::Browser(e.kind()),
+    })?;
     let m = selector
         .read(rendered.html.as_bytes(), Some("text/html; charset=utf-8"), Some(&rendered.final_url))
         .map_err(|_| NotRendered::Unreadable)?;

@@ -37,6 +37,11 @@ pub fn run(home: &Path) -> i32 {
     line(ps.is_some(), "powershell", ps.map(|p| p.display().to_string()).unwrap_or_default());
     let py = on_path(&["python.exe", "python3.exe", "python", "python3"]);
     line(py.is_some(), "python", py.map(|p| p.display().to_string()).unwrap_or_default());
+    let voice = marlowe_voice::VoiceSettings::load(home).with_env(&|k| std::env::var(k).ok());
+    match marlowe_voice::engine_check(&voice) {
+        Ok(d) => line(true, "voice", d),
+        Err(e) => line(false, "voice", format!("{e}; WinRT speaks instead")),
+    }
     let bash = on_path(&["bash.exe", "bash"]);
     line(bash.is_some(), "bash", bash.map(|p| p.display().to_string()).unwrap_or_default());
 

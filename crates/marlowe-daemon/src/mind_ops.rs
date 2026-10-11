@@ -11,11 +11,10 @@ use marlowe_mind::{
     default_legacy_profile, InjectQuery, LegacyStatus, MemoryChange, Mind, ProfileQuery, Provenance, RecallQuery,
     MAX_INJECT_TOKENS,
 };
-use marlowe_model::{CancelToken, ChatRequest, Message, Part, Role, SystemBlock};
-use marlowe_proto::{Event, Request, Slot};
+use marlowe_proto::{Event, Request};
 
 use crate::daemon::Core;
-use crate::{lock, now_ms};
+use crate::lock;
 
 /// Most hits a `MemorySearch` returns.
 const SEARCH_MAX: usize = 200;
@@ -25,21 +24,6 @@ const PROBE_SESSION: &str = "probe";
 
 /// `ImportProgress` is broadcast at most this often.
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
-
-/// Transcript tail shown to the episode summariser, in characters.
-const EPISODE_TRANSCRIPT_CHARS: usize = 24_000;
-
-/// Longest tool result shown to the summariser, in characters.
-const EPISODE_RESULT_CHARS: usize = 400;
-
-/// Output cap for an episode summary.
-const EPISODE_MAX_TOKENS: u32 = 700;
-
-/// Instruction for the episode summariser (a harness call, not the persona).
-const EPISODE_PROMPT: &str = "Summarise this work session as a durable episode for later recall: \
-what the user wanted, what was decided and why, what was found or produced, and what was left \
-open. Name files, commands, numbers and dates exactly. Plain prose, at most 200 words. Do not \
-address the user.";
 
 /// Daemon-side memory state.
 #[derive(Default)]
@@ -188,91 +172,15 @@ pub(crate) fn offer_legacy(core: &Arc<Core>, client: u64) {
     });
 }
 
-/// Summarises an evicted session into an Episode memory via the Reflection slot (falling back to
-/// the Conductor). Failures are reported on the bus, never fatal.
+/// Writes an evicted session's episode. Extractive, in the memory engine: the opening request,
+/// when and where, the salient lines and keywords of the turns already ingested. No model is
+/// called, so nothing loads. Failures are reported on the bus, never fatal.
 pub(crate) fn write_episode(core: &Core, mind: &Mind, convo: &Conversation) {
     let session = convo.session.clone();
-    let summary = match summarise(core, convo) {
-        Ok(s) if !s.trim().is_empty() => s,
-        Ok(_) => return,
-        Err(e) => {
-            core.bus.publish(Event::Error { session: Some(session), message: format!("episode not written: {e}") });
-            return;
-        }
-    };
-    // The transcript includes tool output, so a tainted session's summary is untrusted.
-    if let Err(e) = mind.write_episode(session.as_str(), summary.trim(), now_ms(), convo.exposure.tainted) {
+    // A session that read untrusted content writes an untrusted episode.
+    if let Err(e) = mind.write_session_episode(session.as_str(), convo.exposure.tainted) {
         if !matches!(e, marlowe_mind::MindError::Closed) {
             core.bus.publish(Event::Error { session: Some(session), message: format!("episode not written: {e}") });
         }
-    }
-}
-
-fn summarise(core: &Core, convo: &Conversation) -> Result<String, String> {
-    let parts = catch_unwind(AssertUnwindSafe(|| {
-        core.brains.agent_parts(&Slot::Reflection).or_else(|_| core.brains.agent_parts(&Slot::Conductor))
-    }))
-    .map_err(|_| "the model library failed".to_string())?;
-    let (provider, info, _effort) = parts.map_err(|e| e.to_string())?;
-    let mut req = ChatRequest::new(info.id.clone(), vec![Message::user(transcript(convo))]);
-    req.effort = marlowe_model::Effort::Off;
-    req.max_output_tokens = Some(EPISODE_MAX_TOKENS);
-    req.system = vec![SystemBlock { text: EPISODE_PROMPT.into(), cache: false }];
-    let cancel = CancelToken::new();
-    let done = catch_unwind(AssertUnwindSafe(|| provider.stream(&req, &cancel, &mut |_| {})))
-        .map_err(|_| "the summariser failed".to_string())?
-        .map_err(|e| e.to_string())?;
-    Ok(done.text)
-}
-
-/// The conversation as plain labelled text, keeping the most recent part when it is long.
-pub(crate) fn transcript(convo: &Conversation) -> String {
-    let mut out = String::new();
-    if let Some(s) = &convo.summary {
-        out.push_str("Earlier (condensed): ");
-        out.push_str(s.trim());
-        out.push_str("\n\n");
-    }
-    for m in &convo.messages {
-        let who = match m.role {
-            Role::User => "User",
-            Role::Assistant => "Assistant",
-            Role::Tool => "Tool",
-            Role::System => continue,
-        };
-        for p in &m.content {
-            match p {
-                Part::Text { text } if !text.trim().is_empty() => out.push_str(&format!("{who}: {}\n", text.trim())),
-                Part::ToolCall(c) => out.push_str(&format!("{who} called {} {}\n", c.name, c.args)),
-                Part::ToolResult(r) => {
-                    let body: String = r.content.chars().take(EPISODE_RESULT_CHARS).collect();
-                    out.push_str(&format!("Result: {}\n", body.trim()));
-                }
-                _ => {}
-            }
-        }
-    }
-    let n = out.chars().count();
-    if n > EPISODE_TRANSCRIPT_CHARS {
-        let tail: String = out.chars().skip(n - EPISODE_TRANSCRIPT_CHARS).collect();
-        return format!("[earlier turns omitted]\n{tail}");
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use marlowe_proto::SessionId;
-
-    #[test]
-    fn the_transcript_labels_turns_and_keeps_the_tail() {
-        let mut c = Conversation::new(SessionId("s".into()), None);
-        c.push(Message::user("first"));
-        c.push(Message::assistant("reply"));
-        assert_eq!(transcript(&c), "User: first\nAssistant: reply\n");
-        c.push(Message::user("y".repeat(EPISODE_TRANSCRIPT_CHARS)));
-        let t = transcript(&c);
-        assert!(t.starts_with("[earlier turns omitted]\n") && !t.contains("first"));
     }
 }

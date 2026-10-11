@@ -245,10 +245,18 @@ pub fn start_sentinel(home: &Path) -> Option<SentinelLink> {
 }
 
 /// Spoken voice. Without a speech backend the voice reports itself unavailable; only a panic
-/// leaves the daemon silent.
+/// leaves the daemon silent. A voice sidecar (the Chatterbox clone) never sees an API key, and
+/// starts on the GPU only when its footprint fits in the memory free there, less headroom.
 pub fn start_voice(home: &Path) -> Option<VoiceLink> {
     let (tx, events) = crossbeam_channel::bounded(VOICE_QUEUE);
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| marlowe_voice::Voice::start(home, tx))) {
+    let gpu = marlowe_sentinel::vram::SentinelGpu::open();
+    let vram = marlowe_voice::VramCheck(Arc::new(move |need_mib| {
+        use marlowe_hw::GpuSource;
+        let g = gpu.snapshot()?.gpu;
+        Some(g.free_mib - g.headroom_mib.max(marlowe_hw::plan::HEADROOM_MIB) >= need_mib)
+    }));
+    let start = || marlowe_voice::Voice::start_gated(home, tx, marlowe_brains::scrubbed_env(), Some(vram));
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(start)) {
         Ok(voice) => Some(VoiceLink { voice, events }),
         Err(_) => {
             eprintln!("marlowe: voice failed to start");
@@ -287,24 +295,33 @@ pub fn gpu_probe(sentinel: Option<marlowe_sentinel::Sentinel>) -> marlowe_mind::
         let state = s.state();
         let compute = {
             let mut g = nvml.lock().unwrap_or_else(|e| e.into_inner());
-            g.get_or_insert_with(marlowe_sentinel::gpu::Gpu::open).compute_only()
+            g.get_or_insert_with(marlowe_sentinel::gpu::Gpu::open).compute_only_except(&marlowe_voice::owns_process)
         };
         gpu_verdict(&state, &compute)
     })
 }
 
-/// The pure half of [`gpu_probe`].
-pub fn gpu_verdict(state: &marlowe_proto::WatchState, compute: &[(u32, Vec<String>)]) -> marlowe_mind::GpuVerdict {
-    let loads: Vec<marlowe_mind::GpuLoad> = state
-        .gpu
-        .devices
-        .iter()
-        .map(|d| marlowe_mind::GpuLoad {
-            name: d.name.clone(),
-            util_pct: d.util_pct,
-            compute_only: compute.iter().find(|(i, _)| *i == d.index).map(|(_, n)| n.clone()).unwrap_or_default(),
-        })
-        .collect();
+/// Per device index, other processes computing on it (`None`: the list could not be read), or
+/// why NVML could not be asked at all.
+pub type ComputeLists = Result<Vec<(u32, Option<Vec<String>>)>, String>;
+
+/// The pure half of [`gpu_probe`]. Fails closed: NVML that could not be opened, or a device
+/// whose compute processes could not be read, is `Unknown` (CPU), never "nothing running". A
+/// training job's python.exe is invisible otherwise, and its quiet moments (data loading, eval,
+/// checkpoints) read as idle.
+pub fn gpu_verdict(state: &marlowe_proto::WatchState, compute: &ComputeLists) -> marlowe_mind::GpuVerdict {
+    use marlowe_mind::GpuVerdict;
+    let compute = match compute {
+        Ok(c) => c,
+        Err(why) => return GpuVerdict::Unknown(format!("NVML: {why}")),
+    };
+    let mut loads: Vec<marlowe_mind::GpuLoad> = Vec::new();
+    for d in &state.gpu.devices {
+        let Some(Some(names)) = compute.iter().find(|(i, _)| *i == d.index).map(|(_, n)| n.clone()) else {
+            return GpuVerdict::Unknown(format!("the compute processes on {} could not be read", d.name));
+        };
+        loads.push(marlowe_mind::GpuLoad { name: d.name.clone(), util_pct: d.util_pct, compute_only: names });
+    }
     let live = state.runs.iter().filter(|r| r.status.is_live()).count();
     marlowe_mind::judge_gpu(&loads, live)
 }
@@ -353,13 +370,18 @@ mod tests {
     fn the_gpu_verdict_reads_util_compute_processes_and_live_runs() {
         use marlowe_mind::GpuVerdict;
         let mut st = marlowe_proto::WatchState::default();
-        assert!(matches!(super::gpu_verdict(&st, &[]), GpuVerdict::Unknown(_)), "no device is unknown");
+        assert!(matches!(super::gpu_verdict(&st, &Ok(vec![])), GpuVerdict::Unknown(_)), "no device is unknown");
         let dev = serde_json::json!({"index": 0, "name": "RTX", "util_pct": 3, "mem_used_mb": 2000, "mem_total_mb": 16000});
         st.gpu.devices.push(serde_json::from_value(dev).unwrap());
-        assert_eq!(super::gpu_verdict(&st, &[(0, vec![])]), GpuVerdict::Idle);
-        assert!(matches!(super::gpu_verdict(&st, &[(0, vec!["python.exe".into()])]), GpuVerdict::Busy(_)));
+        assert_eq!(super::gpu_verdict(&st, &Ok(vec![(0, Some(vec![]))])), GpuVerdict::Idle);
+        assert!(matches!(super::gpu_verdict(&st, &Ok(vec![(0, Some(vec!["python.exe".into()]))])), GpuVerdict::Busy(_)));
+        // Found in review: could not look is not nothing running. A quiet training job (3% util)
+        // with an unreadable compute list, a device missing from the list, or no NVML: unknown.
+        assert!(matches!(super::gpu_verdict(&st, &Ok(vec![(0, None)])), GpuVerdict::Unknown(_)));
+        assert!(matches!(super::gpu_verdict(&st, &Ok(vec![])), GpuVerdict::Unknown(_)));
+        assert!(matches!(super::gpu_verdict(&st, &Err("nvml.dll not found".into())), GpuVerdict::Unknown(_)));
         st.gpu.devices[0].util_pct = 37;
-        assert!(matches!(super::gpu_verdict(&st, &[(0, vec![])]), GpuVerdict::Busy(_)));
+        assert!(matches!(super::gpu_verdict(&st, &Ok(vec![(0, Some(vec![]))])), GpuVerdict::Busy(_)));
     }
 
     #[test]

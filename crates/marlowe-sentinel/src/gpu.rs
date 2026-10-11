@@ -31,30 +31,45 @@ impl Gpu {
     /// Per device index, the names of other processes doing compute only: on NVML's compute list
     /// but not its graphics list. Desktop apps (browsers, the shell) show up on both under WDDM;
     /// a training job or an inference server shows up on the compute list alone. This process is
-    /// left out. Unreadable devices are skipped; no NVML gives an empty list. Ollama's runners are
-    /// labelled by [`compute_label`] so callers can tell them from other compute.
-    pub fn compute_only(&self) -> Vec<(u32, Vec<String>)> {
-        let Ok(nvml) = &self.nvml else { return Vec::new() };
+    /// left out. Ollama's runners are labelled by [`compute_label`] so callers can tell them from
+    /// other compute.
+    ///
+    /// Unknown is never empty: no NVML (or no device count) is `Err`, and a device whose lists
+    /// cannot be read is `None`, so a caller cannot mistake "could not look" for "nothing there".
+    pub fn compute_only(&self) -> Result<Vec<(u32, Option<Vec<String>>)>, String> {
+        self.compute_only_except(&|_| false)
+    }
+
+    /// [`Gpu::compute_only`] leaving out, too, every pid `own` claims: Marlowe's own processes
+    /// (the voice sidecar's tree), which are not a reason to wait for the GPU.
+    pub fn compute_only_except(&self, own: &dyn Fn(u32) -> bool) -> Result<Vec<(u32, Option<Vec<String>>)>, String> {
+        let nvml = self.nvml.as_ref().map_err(String::clone)?;
+        let count = nvml.device_count().map_err(|e| e.to_string())?;
         let me = std::process::id();
         let mut out = Vec::new();
-        for index in 0..nvml.device_count().unwrap_or(0) {
-            let Ok(d) = nvml.device_by_index(index) else { continue };
-            let graphics: Vec<u32> = d.running_graphics_processes().unwrap_or_default().iter().map(|p| p.pid).collect();
+        for index in 0..count {
+            let Ok(d) = nvml.device_by_index(index) else {
+                out.push((index, None));
+                continue;
+            };
+            let (Ok(graphics), Ok(compute)) = (d.running_graphics_processes(), d.running_compute_processes()) else {
+                out.push((index, None));
+                continue;
+            };
+            let graphics: Vec<u32> = graphics.iter().map(|p| p.pid).collect();
+            let compute: Vec<u32> = compute.iter().map(|p| p.pid).collect();
             let mut names: Vec<String> = Vec::new();
-            for p in d.running_compute_processes().unwrap_or_default() {
-                if p.pid == me || graphics.contains(&p.pid) {
-                    continue;
-                }
-                let name = crate::process::image_path(p.pid)
+            for pid in foreign_compute(&compute, &graphics, me, own) {
+                let name = crate::process::image_path(pid)
                     .map(|path| compute_label(&path))
-                    .unwrap_or_else(|| format!("pid {}", p.pid));
+                    .unwrap_or_else(|| format!("pid {pid}"));
                 if !names.contains(&name) {
                     names.push(name);
                 }
             }
-            out.push((index, names));
+            out.push((index, Some(names)));
         }
-        out
+        Ok(out)
     }
 
     /// Utilisation, memory, temperature and (when readable) top process names per device.
@@ -106,6 +121,12 @@ impl Gpu {
     }
 }
 
+/// The pids on a device's compute list that are someone else's work: not on its graphics list,
+/// not `me`, not claimed by `own`.
+fn foreign_compute(compute: &[u32], graphics: &[u32], me: u32, own: &dyn Fn(u32) -> bool) -> Vec<u32> {
+    compute.iter().copied().filter(|&pid| pid != me && !graphics.contains(&pid) && !own(pid)).collect()
+}
+
 /// The name a compute process is reported under: its executable name, prefixed `ollama:` when it
 /// is one of Ollama's runners. Current Ollama computes in `lib\ollama\llama-server.exe`, a name
 /// that alone cannot be told from a llama.cpp build Matthew runs himself.
@@ -150,7 +171,19 @@ mod tests {
     }
 
     #[test]
+    fn compute_only_leaves_out_this_process_desktop_apps_and_marlowes_own_tree() {
+        // 10: this daemon. 20: a browser (on both lists). 30 and 31: the voice sidecar's venv
+        // launcher and the interpreter it started. 40: a training job.
+        let compute = [10, 20, 30, 31, 40];
+        let graphics = [20];
+        let own = |pid: u32| pid == 30 || pid == 31;
+        assert_eq!(foreign_compute(&compute, &graphics, 10, &own), vec![40]);
+        assert_eq!(foreign_compute(&compute, &graphics, 10, &|_| false), vec![30, 31, 40], "without the voice, all of it counts");
+        assert!(foreign_compute(&[10, 30], &[], 10, &own).is_empty(), "the voice alone is not foreign");
+    }
+
+    #[test]
     fn disabled_has_no_compute_processes() {
-        assert!(Gpu::disabled("off").compute_only().is_empty());
+        assert_eq!(Gpu::disabled("off").compute_only(), Err("off".to_string()), "unknown, never an empty list");
     }
 }

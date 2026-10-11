@@ -6,7 +6,7 @@ use marlowe_proto::ChannelId;
 use serde_json::Value;
 
 use super::{clip, enc, get_json, limit, num, s, spec_of, SNIPPET_CHARS};
-use crate::channel::{Channel, ChannelCtx, ChannelError, ChannelQuery, ChannelSpec};
+use crate::channel::{Channel, ChannelCtx, ChannelError, ChannelQuery, ChannelSpec, CitationDirection, CitationQuery};
 use crate::source::{normalize_arxiv, Identity, Namespace, SourceRef};
 use crate::xml::strip_tags;
 
@@ -102,6 +102,25 @@ impl OpenAlexChannel {
         Self { spec: spec_of(ChannelId::OpenAlex) }
     }
 
+    /// The works-list URL for a citation query: `cites:W…` (forward) or `cited_by:W…`
+    /// (backward), most cited first. `None` without an OpenAlex id for the work.
+    pub fn citations_url(&self, c: &CitationQuery, q: &ChannelQuery) -> Option<String> {
+        let w = c.work.openalex.as_ref()?;
+        let filter = match c.direction {
+            CitationDirection::CitedBy => format!("cites:{w}"),
+            CitationDirection::References => format!("cited_by:{w}"),
+        };
+        let mut u = format!(
+            "{}/works?filter={filter}&sort=cited_by_count:desc&per_page={}&select={OPENALEX_SELECT}",
+            self.spec.endpoint,
+            limit(q).min(50)
+        );
+        if let Some(y) = q.since_year {
+            u.push_str(&format!(",from_publication_date:{y}-01-01"));
+        }
+        Some(u)
+    }
+
     pub fn search_url(&self, q: &ChannelQuery) -> String {
         let mut u = format!(
             "{}/works?search={}&per_page={}&select={OPENALEX_SELECT}",
@@ -122,7 +141,14 @@ impl Channel for OpenAlexChannel {
     }
 
     fn search(&self, query: &ChannelQuery, ctx: &ChannelCtx<'_>) -> Result<Vec<SourceRef>, ChannelError> {
-        let v = get_json(ctx, ChannelId::OpenAlex, self.search_url(query))?;
+        let url = match &query.citations {
+            Some(c) => self.citations_url(c, query).ok_or_else(|| ChannelError::Parse {
+                channel: ChannelId::OpenAlex,
+                detail: "a citation query needs the work's OpenAlex id".into(),
+            })?,
+            None => self.search_url(query),
+        };
+        let v = get_json(ctx, ChannelId::OpenAlex, url)?;
         let results = v
             .get("results")
             .and_then(Value::as_array)
@@ -323,6 +349,28 @@ impl SemanticScholarChannel {
         Self { spec: spec_of(ChannelId::SemanticScholar) }
     }
 
+    /// The paper key S2 accepts for a work: its S2 id, else `ARXIV:`, `DOI:` or `PMID:`.
+    pub fn paper_key(work: &Identity) -> Option<String> {
+        work.s2
+            .clone()
+            .or_else(|| work.arxiv_id.as_ref().map(|a| format!("ARXIV:{a}")))
+            .or_else(|| work.doi.as_ref().map(|d| format!("DOI:{d}")))
+            .or_else(|| work.pmid.as_ref().map(|p| format!("PMID:{p}")))
+    }
+
+    /// `/paper/{key}/citations` (forward) or `/references` (backward).
+    pub fn citations_url(&self, c: &CitationQuery, q: &ChannelQuery) -> Option<String> {
+        let key = Self::paper_key(&c.work)?;
+        let edge = match c.direction {
+            CitationDirection::CitedBy => "citations",
+            CitationDirection::References => "references",
+        };
+        // `:` and `/` stay literal: S2 routes `DOI:10.18653/v1/N18-3011` as one path parameter.
+        let key: String = key.split(['/', ':']).map(enc).collect::<Vec<_>>().join("/");
+        let key = key.replacen('/', ":", 1);
+        Some(format!("{}/paper/{key}/{edge}?limit={}&fields={S2_FIELDS}", self.spec.endpoint, limit(q).min(100)))
+    }
+
     pub fn search_url(&self, q: &ChannelQuery) -> String {
         let mut u = format!(
             "{}/paper/search?query={}&limit={}&fields={S2_FIELDS}",
@@ -343,6 +391,17 @@ impl Channel for SemanticScholarChannel {
     }
 
     fn search(&self, query: &ChannelQuery, ctx: &ChannelCtx<'_>) -> Result<Vec<SourceRef>, ChannelError> {
+        if let Some(c) = &query.citations {
+            let url = self.citations_url(c, query).ok_or_else(|| ChannelError::Parse {
+                channel: ChannelId::SemanticScholar,
+                detail: "a citation query needs an S2, arXiv, DOI or PubMed id".into(),
+            })?;
+            let v = get_json(ctx, ChannelId::SemanticScholar, url)?;
+            let side = if c.direction == CitationDirection::CitedBy { "citingPaper" } else { "citedPaper" };
+            let data = v.get("data").and_then(Value::as_array).cloned().unwrap_or_default();
+            let since = |r: &SourceRef| query.since_year.is_none_or(|y| r.year().is_none_or(|ry| ry >= y));
+            return Ok(data.iter().filter_map(|e| e.get(side)).filter_map(s2_paper).filter(since).take(limit(query)).collect());
+        }
         let v = get_json(ctx, ChannelId::SemanticScholar, self.search_url(query))?;
         // No match is `{"total": 0, ...}` without `data`.
         let data = v.get("data").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -376,6 +435,35 @@ mod tests {
         let inv = json!({"rank": [1], "Low": [0], "adaptation": [2, 4], "is": [3]});
         assert_eq!(openalex_abstract(&inv), "Low rank adaptation is adaptation");
         assert_eq!(openalex_abstract(&Value::Null), "");
+    }
+
+    #[test]
+    fn citation_queries_follow_the_graph_by_identity() {
+        let work = Identity::default().with_arxiv("2301.00774v3").with_openalex("W4317553041");
+        let fwd = ChannelQuery {
+            since_year: Some(2025),
+            ..ChannelQuery::citations(work.clone(), CitationDirection::CitedBy, 10)
+        };
+        let s2 = SemanticScholarChannel::new();
+        let u = s2.citations_url(fwd.citations.as_ref().unwrap(), &fwd).unwrap();
+        assert!(u.contains("/paper/ARXIV:2301.00774/citations?limit=10&fields="), "{u}");
+        let doi = CitationQuery { work: Identity::default().with_doi("10.18653/v1/N18-3011"), direction: CitationDirection::CitedBy };
+        let u = s2.citations_url(&doi, &fwd).unwrap();
+        assert!(u.contains("/paper/DOI:10.18653/v1/n18-3011/citations"), "{u}");
+        let back = ChannelQuery::citations(work.clone(), CitationDirection::References, 5);
+        let u = s2.citations_url(back.citations.as_ref().unwrap(), &back).unwrap();
+        assert!(u.contains("/references?limit=5"), "{u}");
+        let oa = OpenAlexChannel::new();
+        let u = oa.citations_url(fwd.citations.as_ref().unwrap(), &fwd).unwrap();
+        assert!(u.contains("filter=cites:W4317553041&sort=cited_by_count:desc") && u.contains(",from_publication_date:2025-01-01"), "{u}");
+        let u = oa.citations_url(back.citations.as_ref().unwrap(), &back).unwrap();
+        assert!(u.contains("filter=cited_by:W4317553041"), "{u}");
+        let bare = CitationQuery { work: Identity::default().with_url("https://x.org/p"), direction: CitationDirection::CitedBy };
+        assert!(oa.citations_url(&bare, &back).is_none() && s2.citations_url(&bare, &back).is_none());
+        // The S2 citations shape: each row wraps the paper.
+        let row = json!({"citingPaper": {"paperId": "abc", "title": "OWL", "externalIds": {"ArXiv": "2310.05175"}}});
+        let r = s2_paper(row.get("citingPaper").unwrap()).unwrap();
+        assert_eq!(r.identity.unwrap().arxiv_id.as_deref(), Some("2310.05175"));
     }
 
     #[test]

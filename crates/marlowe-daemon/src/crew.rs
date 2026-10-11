@@ -41,6 +41,9 @@ pub(crate) struct CrewLink {
     awaiting: Mutex<HashMap<String, RunId>>,
     /// Approvals pending per run, denied when the run is cancelled.
     pending: Mutex<HashMap<RunId, Vec<ApprovalId>>>,
+    /// A relay turn found no model it could run without loading one: its run stays due, and
+    /// the user's next turn delivers it.
+    deferred: std::sync::atomic::AtomicBool,
 }
 
 impl CrewLink {
@@ -74,6 +77,7 @@ pub(crate) fn start(core: &Arc<Core>, setup: CrewSetup) -> Result<JoinHandle<()>
         relayed: Mutex::new(HashSet::new()),
         awaiting: Mutex::new(HashMap::new()),
         pending: Mutex::new(HashMap::new()),
+        deferred: std::sync::atomic::AtomicBool::new(false),
     };
     if core.crew.set(link).is_err() {
         return Err("the crew was already started".into());
@@ -138,11 +142,35 @@ fn on_event(core: &Arc<Core>, ev: CrewEvent) {
             core.bus.publish(Event::RunFinished { run, dispatch });
         }
         CrewEvent::PlanProposed { run, plan, quote, .. } => {
+            crate::brief::speak_notice(core, &plan_notice(&run, &plan, &quote));
             core.bus.publish(Event::PlanProposed { run, plan, quote });
         }
         CrewEvent::Research { run, progress } => {
             core.bus.publish(Event::ResearchProgress { run, progress });
         }
+    }
+}
+
+/// A waiting research plan as a notice, for the voice: said once per run (outside quiet hours,
+/// when voice is on), the same way an urgent Sentinel notice is. The client shows the plan itself.
+fn plan_notice(run: &RunId, plan: &marlowe_proto::ResearchPlan, quote: &marlowe_proto::CostQuote) -> marlowe_proto::Notice {
+    let n = plan.sub_questions.len();
+    marlowe_proto::Notice {
+        id: format!("crew-plan-{}", run.as_str()),
+        at_ms: crate::now_ms(),
+        source: marlowe_proto::NoticeSource::Run,
+        severity: marlowe_proto::Severity::Attention,
+        kind: "plan_waiting".into(),
+        title: "a research plan is waiting for your approval".into(),
+        detail: format!(
+            "{n} sub-question{} · about {} tokens · {} fetches · {} min",
+            if n == 1 { "" } else { "s" },
+            quote.model_tokens,
+            quote.fetches,
+            quote.minutes
+        ),
+        subject: run.as_str().to_string(),
+        seen: false,
     }
 }
 
@@ -155,6 +183,24 @@ pub(crate) fn relay_due(core: &Arc<Core>) {
             let id = info.id.clone();
             relay(core, &session, &id, None, Some(info));
         }
+    }
+}
+
+/// A relay turn could not run (relays never load a model): its run stays due and is relayed
+/// again after the user's next turn, when the conductor's model is up.
+pub(crate) fn defer(core: &Core, text: &str) {
+    let Some(link) = core.crew.get() else { return };
+    if let Some(run) = lock(&link.awaiting).remove(text) {
+        lock(&link.relayed).remove(&run);
+        link.deferred.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// After a user's turn: relays deferred for want of a loaded model go out now.
+pub(crate) fn retry_deferred(core: &Arc<Core>) {
+    let Some(link) = core.crew.get() else { return };
+    if link.deferred.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        relay_due(core);
     }
 }
 
@@ -346,15 +392,23 @@ impl RunApprovals for RunGate {
 /// training job, another inference server: NVML's compute list minus its graphics list, the same
 /// signal the reranker's GPU gate reads), or when graphics load is heavy with no Ollama runner on
 /// the device. Ollama is Marlowe's own (crew steps check before every step and must not wait on
-/// the model a previous step left loaded). No Sentinel, or no GPU reported: not busy.
+/// the model a previous step left loaded), and so is the voice sidecar's process tree
+/// ([`marlowe_voice::owns_process`]). No Sentinel, or no GPU reported: not busy.
 fn gpu_probe(core: Weak<Core>) -> GpuBusy {
     let nvml = Mutex::new(None::<marlowe_sentinel::gpu::Gpu>);
     Arc::new(move || {
         let Some(core) = core.upgrade() else { return false };
         let Some(s) = core.sentinel.as_ref() else { return false };
         catch_unwind(AssertUnwindSafe(|| {
-            let compute = lock(&nvml).get_or_insert_with(marlowe_sentinel::gpu::Gpu::open).compute_only();
-            gpu_busy(&s.state(), &compute)
+            let compute = lock(&nvml)
+                .get_or_insert_with(marlowe_sentinel::gpu::Gpu::open)
+                .compute_only_except(&marlowe_voice::owns_process);
+            // A device whose compute processes cannot be read may hold a training job: busy.
+            // No NVML at all keeps the no-GPU rule above.
+            let unreadable = compute.as_ref().is_ok_and(|c| c.iter().any(|(_, n)| n.is_none()));
+            let lists: Vec<(u32, Vec<String>)> =
+                compute.unwrap_or_default().into_iter().filter_map(|(i, n)| n.map(|n| (i, n))).collect();
+            unreadable || gpu_busy(&s.state(), &lists)
         }))
         .unwrap_or(false)
     })

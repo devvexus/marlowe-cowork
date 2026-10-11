@@ -275,11 +275,21 @@ impl Channel for RssChannel {
         let text = query.text.trim();
         let n = limit(query);
         let since = |r: &SourceRef| query.since_year.is_none_or(|y| r.year().is_none_or(|ry| ry >= y));
-        if text.starts_with("https://") || text.starts_with("http://") {
-            let items = self.read_feed(text, ctx)?;
-            let mut out: Vec<SourceRef> = items.iter().map(|i| item_ref(i, text)).filter(since).collect();
+        // One feed is read directly only when the user named it: `feed_url`, or query text that
+        // is one of the configured feeds. A URL composed elsewhere (a model's follow-up question)
+        // is never fetched: that would let a prompt-injected line make the harness GET any host.
+        let named = query.feed_url.as_deref().map(str::trim).or_else(|| self.feeds.iter().map(String::as_str).find(|f| *f == text));
+        if let Some(url) = named {
+            let items = self.read_feed(url, ctx)?;
+            let mut out: Vec<SourceRef> = items.iter().map(|i| item_ref(i, url)).filter(since).collect();
             out.truncate(n);
             return Ok(out);
+        }
+        if text.starts_with("https://") || text.starts_with("http://") {
+            return Err(ChannelError::Network {
+                channel: ChannelId::Rss,
+                detail: "a URL in the query text is not read as a feed; name a feed in research.json".into(),
+            });
         }
         if self.feeds.is_empty() {
             return Err(ChannelError::NoBackend { channel: ChannelId::Rss, detail: "no feeds configured".into() });

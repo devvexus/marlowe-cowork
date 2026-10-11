@@ -60,7 +60,14 @@ impl ResearchSettings {
             searxng_url: match self.searxng_url.as_deref().map(str::trim) {
                 None => d.searxng_url,
                 Some("") => None,
-                Some(u) => Some(u.to_string()),
+                Some(u) if searxng_url_ok(u) => Some(u.to_string()),
+                Some(u) => {
+                    eprintln!(
+                        "marlowe: research.json searxng_url {u} is neither https nor http on this machine \
+                         (127.0.0.1, localhost, [::1]); SearXNG is skipped"
+                    );
+                    None
+                }
             },
             duckduckgo: self.duckduckgo.unwrap_or(d.duckduckgo),
         };
@@ -85,6 +92,19 @@ impl ResearchSettings {
     }
 }
 
+/// A SearXNG URL the registry accepts: https anywhere, plain http only to this machine (a LAN
+/// SearXNG would carry queries in the clear).
+pub fn searxng_url_ok(url: &str) -> bool {
+    let u = url.trim().to_ascii_lowercase();
+    if u.starts_with("https://") {
+        return u.len() > "https://".len();
+    }
+    let Some(rest) = u.strip_prefix("http://") else { return false };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = if host.starts_with('[') { host.split(']').next().map(|h| format!("{h}]")).unwrap_or_default() } else { host.split(':').next().unwrap_or("").to_string() };
+    matches!(host.as_str(), "127.0.0.1" | "localhost" | "[::1]")
+}
+
 /// The corpus fetcher as crew's [`PageFetcher`]: a read page becomes its markdown and links;
 /// anything else carries only the harness-written reason.
 pub struct CorpusPages(pub Corpus);
@@ -103,6 +123,7 @@ pub fn page_of(o: Outcome) -> FetchedPage {
             title: p.document.title.clone(),
             text: p.markdown.clone(),
             links: p.links().to_vec(),
+            meta: p.document.meta.clone(),
             error: None,
         },
         other => FetchedPage {
@@ -167,6 +188,28 @@ mod tests {
         assert_eq!(s.v2().auto_approve_under_tokens, Some(50_000));
         assert_eq!(s.v2().fetch_concurrency, 64);
         assert!(serde_json::from_str::<ResearchSettings>(r#"{"api_key": "x"}"#).is_err(), "no credential field");
+    }
+
+    /// Found in review: a LAN SearXNG in research.json panicked the daemon at boot.
+    #[test]
+    fn a_searxng_url_off_this_machine_over_http_is_skipped_not_fatal() {
+        for (u, ok) in [
+            ("http://127.0.0.1:8080", true),
+            ("http://localhost:8888/", true),
+            ("http://[::1]:8080", true),
+            ("https://searx.example.org", true),
+            ("http://192.168.1.10:8080", false),
+            ("http://searxng.local:8080", false),
+            ("http://127.0.0.1.evil.example/", false),
+            ("ftp://127.0.0.1", false),
+        ] {
+            assert_eq!(searxng_url_ok(u), ok, "{u}");
+        }
+        let s: ResearchSettings = serde_json::from_str(r#"{"searxng_url": "http://192.168.1.10:8080"}"#).unwrap();
+        assert_eq!(s.keyless().web.searxng_url, None);
+        // The whole registry still builds, web included (DuckDuckGo stays on).
+        let r = ChannelRegistry::keyless_with(&s.keyless(), None);
+        assert!(r.ids().contains(&ChannelId::Web) && r.skipped().is_empty());
     }
 
     #[test]

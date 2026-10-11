@@ -190,6 +190,7 @@ mod tests {
             headings: vec![],
             lang: None,
             description: None,
+            meta: Vec::new(),
             bytes_in: 0,
             encoding: "utf-8",
             warnings: vec![],

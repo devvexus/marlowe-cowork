@@ -502,6 +502,16 @@ mod tests {
         }
         assert_eq!(n.len(), 4);
         assert!(n.unresolved().is_empty());
+
+        // Found live: an arXiv paper and its HTML page picked off a link table are one source.
+        let mut x = Deduper::default();
+        let paper = x.add(SourceRef {
+            identity: Some(Identity::default().with_arxiv("2601.13580").with_url("https://arxiv.org/abs/2601.13580")),
+            ..SourceRef::new(ChannelId::Arxiv, "https://arxiv.org/abs/2601.13580", "Neural Organ Transplantation")
+        });
+        let html = x.add(SourceRef::new(ChannelId::Web, "https://arxiv.org/html/2601.13580v1", "HTML (experimental)"));
+        assert_eq!((html.resolution, html.source), (Resolution::Same, paper.source));
+        assert_eq!(x.len(), 1);
     }
     #[test]
     fn two_indexes_sharing_a_doi_wait_for_the_authority_then_fold() {

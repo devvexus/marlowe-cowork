@@ -339,6 +339,20 @@ pub fn canonical_url(raw: &str) -> Option<String> {
     if host.is_empty() {
         return None;
     }
+    // arXiv's abs, pdf and html pages of one id (any version) are one record on the authority's
+    // own host: found live, a paper and its `html/<id>v1` page counted as two independent roots.
+    if host == "arxiv.org" || host == "export.arxiv.org" {
+        let id = ["/abs/", "/pdf/", "/html/"].iter().find_map(|p| path.strip_prefix(p)).and_then(|r| {
+            let r = r.trim_end_matches('/');
+            normalize_arxiv(r.strip_suffix(".pdf").unwrap_or(r))
+        });
+        if let Some(id) = id {
+            return Some(format!("https://arxiv.org/abs/{id}"));
+        }
+    }
+    if let Some(landing) = scholarly_landing(host, path, query) {
+        return Some(landing);
+    }
     let mut path = path.to_string();
     for suffix in ["/index.html", "/index.htm"] {
         if path.to_ascii_lowercase().ends_with(suffix) {
@@ -359,6 +373,42 @@ pub fn canonical_url(raw: &str) -> Option<String> {
     params.sort_unstable();
     let q = if params.is_empty() { String::new() } else { format!("?{}", params.join("&")) };
     Some(format!("https://{host}{path}{q}"))
+}
+
+/// One paper's landing page and its PDF on the proceedings hosts, as one URL. Found live: one
+/// work fetched as four routes (abs, versioned abs, pdf, html) spent four sources of the budget
+/// and counted as independent roots.
+fn scholarly_landing(host: &str, path: &str, query: &str) -> Option<String> {
+    let trimmed = path.trim_end_matches('/');
+    match host {
+        // `/2026.acl-long.276/` and `/2026.acl-long.276.pdf`.
+        "aclanthology.org" => {
+            let id = trimmed.strip_prefix('/')?;
+            let id = id.strip_suffix(".pdf").unwrap_or(id);
+            (!id.is_empty() && !id.contains('/') && id.contains('.')).then(|| format!("https://aclanthology.org/{id}"))
+        }
+        // `/forum?id=X` and `/pdf?id=X` (a `noteId` names a comment on the same paper).
+        "openreview.net" if matches!(trimmed, "/forum" | "/pdf") => {
+            let id = query.split('&').find_map(|p| p.strip_prefix("id="))?;
+            (!id.is_empty()).then(|| format!("https://openreview.net/forum?id={id}"))
+        }
+        // `/v202/name23a.html` and `/v202/name23a/name23a.pdf`.
+        "proceedings.mlr.press" => {
+            let mut parts = trimmed.trim_start_matches('/').split('/');
+            let volume = parts.next().filter(|v| v.starts_with('v'))?;
+            let name = parts.next()?;
+            let name = name.strip_suffix(".html").or_else(|| name.strip_suffix(".pdf")).unwrap_or(name);
+            Some(format!("https://proceedings.mlr.press/{volume}/{name}"))
+        }
+        // `.../hash/<32 hex>-Abstract-Conference.html` and `.../file/<32 hex>-Paper-Conference.pdf`.
+        "proceedings.neurips.cc" | "papers.nips.cc" | "papers.neurips.cc" => {
+            let last = trimmed.rsplit('/').next()?;
+            let hash = last.split('-').next()?;
+            (hash.len() == 32 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+                .then(|| format!("https://proceedings.neurips.cc/paper/{}", hash.to_ascii_lowercase()))
+        }
+        _ => None,
+    }
 }
 
 /// ADR-036 §4.2 tier 2: NFKC, casefold, diacritics stripped, non-alphanumerics removed,
@@ -424,6 +474,37 @@ mod tests {
         assert_eq!(canonical_url("https://example.com/?b=2&a=1").as_deref(), Some("https://example.com?a=1&b=2"));
         assert_ne!(canonical_url("https://x.org/?id=1"), canonical_url("https://x.org/?id=2"));
         assert_eq!(canonical_url("ftp://x.org/a"), None);
+        for u in [
+            "https://arxiv.org/abs/2601.13580",
+            "https://arxiv.org/html/2601.13580v1",
+            "https://arxiv.org/html/2601.13580v1/#S2",
+            "http://export.arxiv.org/pdf/2601.13580v2.pdf",
+            "https://www.arxiv.org/abs/2601.13580v3?context=cs",
+        ] {
+            assert_eq!(canonical_url(u).as_deref(), Some("https://arxiv.org/abs/2601.13580"), "{u}");
+        }
+        assert_eq!(canonical_url("https://arxiv.org/list/cs.CL/recent").as_deref(), Some("https://arxiv.org/list/cs.CL/recent"));
+    }
+
+    #[test]
+    fn proceedings_landing_pages_and_their_pdfs_are_one_url() {
+        let same = |a: &str, b: &str| {
+            assert_eq!(canonical_url(a), canonical_url(b), "{a} vs {b}");
+            assert!(canonical_url(a).is_some());
+        };
+        same("https://aclanthology.org/2026.acl-long.276/", "https://aclanthology.org/2026.acl-long.276.pdf");
+        same("https://openreview.net/forum?id=AbC123", "https://openreview.net/pdf?id=AbC123");
+        same("https://openreview.net/forum?id=AbC123&noteId=Zz9", "https://openreview.net/forum?id=AbC123");
+        same("https://proceedings.mlr.press/v202/frantar23a.html", "https://proceedings.mlr.press/v202/frantar23a/frantar23a.pdf");
+        same(
+            "https://proceedings.neurips.cc/paper_files/paper/2023/hash/0123456789abcdef0123456789abcdef-Abstract-Conference.html",
+            "https://papers.nips.cc/paper_files/paper/2023/file/0123456789ABCDEF0123456789abcdef-Paper-Conference.pdf",
+        );
+        // Different papers stay apart, and other pages of these hosts are left alone.
+        assert_ne!(canonical_url("https://aclanthology.org/2026.acl-long.276"), canonical_url("https://aclanthology.org/2026.acl-long.277"));
+        assert_ne!(canonical_url("https://openreview.net/forum?id=A"), canonical_url("https://openreview.net/forum?id=B"));
+        assert_eq!(canonical_url("https://aclanthology.org/events/acl-2026/").as_deref(), Some("https://aclanthology.org/events/acl-2026"));
+        assert_eq!(canonical_url("https://openreview.net/group?id=ICLR.cc").as_deref(), Some("https://openreview.net/group?id=ICLR.cc"));
     }
 
     #[test]

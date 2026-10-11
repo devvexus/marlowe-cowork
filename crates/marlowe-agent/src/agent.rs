@@ -49,6 +49,9 @@ pub struct Agent {
     pub observers: Vec<Arc<dyn TurnObserver>>,
     /// Daemon services lent to every call through [`crate::CallCtx::scope`]. Empty by default.
     pub services: Services,
+    /// Caps every reply of this agent (thinking included), overriding the catalog's
+    /// `max_output`. A no-tool step sizes it to the room its prompt leaves in the window.
+    pub max_output: Option<u32>,
 }
 
 /// How one model call ended.
@@ -78,6 +81,7 @@ impl Agent {
             middleware,
             observers: Vec::new(),
             services: Services::default(),
+            max_output: None,
         }
     }
 
@@ -132,11 +136,12 @@ impl Agent {
         system.set_environment(env);
         let specs = self.tools.specs();
         let spec_tokens = context::tool_spec_tokens(&specs);
-        let max_output_tokens = self.model.max_output.map(|_| self.context.reserve_output);
+        let max_output_tokens = self.max_output.or(self.model.max_output.map(|_| self.context.reserve_output));
 
         let mut spent = Spent::default();
         let mut texts: Vec<String> = Vec::new();
         let mut error = None;
+        let mut truncated = false;
 
         let stop = loop {
             if cancel.is_cancelled() {
@@ -192,6 +197,7 @@ impl Agent {
             };
             spent.record(&c.usage);
             sink(AgentEvent::Usage(c.usage));
+            truncated = c.stop == StopReason::MaxTokens;
 
             let interrupted = cancel.is_cancelled() || c.stop == StopReason::Cancelled;
             if interrupted {
@@ -263,7 +269,7 @@ impl Agent {
         if stop != TurnStop::Error {
             self.memory.after_turn(&convo.session, user_text, &text);
         }
-        TurnOutcome { stop, usage: spent.usage, steps: spent.steps, text, error, blocked: false }
+        TurnOutcome { stop, usage: spent.usage, steps: spent.steps, text, error, blocked: false, truncated }
     }
 
     /// The first middleware that wants the turn to continue, and its reminder.

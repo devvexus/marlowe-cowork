@@ -64,6 +64,8 @@ pub(super) fn bundle(ctx: &Ctx<'_>, plan: &ResearchPlan, syn: &Synthesis, ex: &E
             "counts": ctx.counts(),
             "effective_citations": syn.cited_claims.len(),
             "run_citation_accuracy": syn.report_checks.citation_accuracy(),
+            "run_citation_accuracy_strict": syn.report_checks.strict_accuracy(),
+            "coverage": syn.coverage,
             "removed_sentences": syn.removed.len(),
         },
     })

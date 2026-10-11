@@ -35,8 +35,20 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
                 Err(m) => fail(m),
             }
         }
+        // Then every listed run's waiting plan: a client that attached after the broadcast (a
+        // restart, a reconnect past the replay ring) has it without opening that run.
         Request::ListRuns { limit } => match sup.list(limit.clamp(1, LIST_MAX)) {
-            Ok(list) => reply(Event::Runs { list }),
+            Ok(list) => {
+                let plans: Vec<Event> = list
+                    .iter()
+                    .filter(|r| r.status == CrewRunStatus::NeedsYou)
+                    .filter_map(|r| sup.pending_plan(&r.id).map(|(plan, quote)| Event::PlanProposed { run: r.id.clone(), plan, quote }))
+                    .collect();
+                reply(Event::Runs { list });
+                for ev in plans {
+                    reply(ev);
+                }
+            }
             Err(e) => fail(e.to_string()),
         },
         // A plan still waiting for the user comes first, so a client that (re)opens the run can

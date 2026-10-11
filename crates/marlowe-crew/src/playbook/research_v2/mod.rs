@@ -22,6 +22,12 @@
 //!
 //! Everything a channel or page returns is untrusted: the run is tainted from the first search,
 //! fetched text only reaches prompts fenced as data, and the model never writes a URL.
+//!
+//! Output budget: every step is sized ([`FIRST_OUTPUT`], lowered by the runner to the room its
+//! prompt leaves in the window). A local thinking model spends that budget on reasoning first,
+//! so a step that comes back empty or cut off is asked again with twice the budget and the same
+//! effort; nothing is ever re-asked with reasoning off (a verifier that does not think
+//! rubber-stamps). Coverage ([`Coverage`]) is measured as the run goes and caps confidence.
 
 mod bundle;
 mod compress;
@@ -29,6 +35,9 @@ mod explore;
 mod host;
 mod parse;
 mod plan;
+mod queries;
+mod remember;
+mod standing;
 mod synth;
 mod types;
 mod verify;
@@ -44,16 +53,17 @@ use std::sync::Mutex;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use marlowe_model::Effort;
 use marlowe_proto::{Dispatch, ResearchCounts, ResearchProgress, ResearchStage, StageState};
 use marlowe_research::DocRef;
 
 pub use bundle::{BUNDLE_FILE, BUNDLE_SCHEMA};
 pub use compress::{attribution_route, chunks, Compressed, Corroborated, CHUNK_CHARS, MAX_CHUNKS};
 pub use explore::{search_text, ExploreState, MIN_READABLE_CHARS};
+pub use queries::{looks_like_url, query_text, since_year, QUERIES_PER_CHANNEL};
 pub use host::{ChannelIo, FetchedPage, PageFetcher, Recalled, ResearchHost, ResearchIo};
-pub use plan::{parse_plan, Proposal};
-pub use synth::{cited_sentences, RECORD_FILE};
+pub use plan::{not_searched, parse_plan, Proposal, NOT_SEARCHED};
+pub use synth::{cited_sentences, CUT_NOTE, RECORD_FILE};
+pub use verify::VERIFY_OUTPUT;
 pub use types::*;
 
 use super::{StepResult, StepRunner, StepSpec};
@@ -61,6 +71,27 @@ use crate::CrewError;
 
 /// Where fetched documents are stored, under the run's sandbox.
 pub const SOURCES_DIR: &str = "sources";
+/// Reply budget of a research step's first attempt, thinking included (Ollama's default for a
+/// 32k window is 8,192, which dusk spent on reasoning alone in the live run).
+pub const FIRST_OUTPUT: u32 = 12_288;
+
+/// A no-tool research step: the card's effort and a [`FIRST_OUTPUT`] reply budget.
+pub(crate) fn step_spec(key: String, role: &str, label: String, prompt: String) -> StepSpec {
+    StepSpec {
+        key,
+        role: role.to_string(),
+        label,
+        prompt,
+        tools: Some(Vec::new()),
+        effort: None,
+        max_output: Some(FIRST_OUTPUT),
+    }
+}
+
+/// The budget of a retry: twice the last one.
+pub(crate) fn retry_output(last: Option<u32>) -> u32 {
+    last.unwrap_or(FIRST_OUTPUT).saturating_mul(2)
+}
 
 /// What every stage shares.
 pub(crate) struct Ctx<'a> {
@@ -97,15 +128,21 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// Runs `specs` in parallel. A step that fails runs once more under `<key>:again` without
-    /// reasoning (a local model can spend its whole output budget thinking and give no answer;
-    /// answered directly, it replies in seconds). Cancel and stop are not retried.
+    /// Runs `specs` in parallel. A step that fails, or whose answer was cut off at the output
+    /// limit, runs once more under `<key>:again` with twice the reply budget and the same effort
+    /// (a local model can spend its whole budget thinking and give no answer, or half of one).
+    /// A complete retry wins; a failed one keeps the cut-off first answer; when both are cut off
+    /// the longer stays, still marked `truncated` for the caller to handle. Cancel and stop are
+    /// not retried.
     pub fn parallel(&self, specs: Vec<StepSpec>) -> Vec<Result<StepResult, CrewError>> {
         let mut out = self.runner.parallel(specs.clone());
         let again: Vec<usize> = out
             .iter()
             .enumerate()
-            .filter(|(_, r)| matches!(r, Err(e) if !matches!(e, CrewError::Cancelled | CrewError::Stopped)))
+            .filter(|(_, r)| match r {
+                Ok(r) => r.truncated,
+                Err(e) => !matches!(e, CrewError::Cancelled | CrewError::Stopped),
+            })
             .map(|(i, _)| i)
             .collect();
         if again.is_empty() || self.host.cancel().is_cancelled() {
@@ -115,12 +152,20 @@ impl<'a> Ctx<'a> {
             .iter()
             .map(|&i| StepSpec {
                 key: format!("{}:again", specs[i].key),
-                effort: Some(Effort::Off),
+                max_output: Some(retry_output(specs[i].max_output)),
                 ..specs[i].clone()
             })
             .collect();
         for (i, r) in again.into_iter().zip(self.runner.parallel(retry)) {
-            out[i] = r;
+            let better = match (&out[i], &r) {
+                (_, Ok(b)) if !b.truncated => true,
+                (Err(_), Ok(_)) => true,
+                (Ok(a), Ok(b)) => b.text.trim().len() > a.text.trim().len(),
+                _ => false,
+            };
+            if better {
+                out[i] = r;
+            }
         }
         out
     }
@@ -240,7 +285,8 @@ pub fn deep_research_v2(
     }
     host.check()?;
     let ev = synth::evidence(&ex, &comp, &cor, &ver);
-    let syn = synth::synthesise(&ctx, &plan, &ex, &comp, &ev, &ver, &passages)?;
+    let coverage = explore::coverage(&plan, &ex);
+    let syn = synth::synthesise(&ctx, &plan, &ex, &comp, &ev, &ver, &passages, coverage)?;
     let (s, p, u) = verify::tally(&syn.report_checks.citations);
     ctx.count(|c| {
         c.citations_supported = s;
@@ -249,7 +295,7 @@ pub fn deep_research_v2(
     });
     let dispatch = synth::dispatch(&ctx, &syn, &ex, &ev)?;
     bundle::write_bundle(&ctx, &plan, &syn, &ex, &comp)?;
-    synth::remember(&ctx, &syn, &ex, &comp, &ev)?;
+    remember::remember(&ctx, &syn, &ex, &comp, &ev)?;
     Ok(dispatch)
 }
 

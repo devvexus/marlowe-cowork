@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use serde::{Deserialize, Serialize};
 
 use marlowe_proto::{ChannelId, Confidence, CostQuote, PlanDecision, PlanError, ResearchPlan, ResearchStage, RunId};
-use marlowe_research::{Claim, ClaimId, Corroboration, DocRef, Identity, SourceId, Standing};
+use marlowe_research::{Claim, ClaimId, Corroboration, DocRef, Identity, SourceId, SourceRef, Standing};
 
 /// Deep research v2 settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,6 +197,10 @@ pub struct ExploreNode {
     /// Sources selected for this node, after dedup.
     #[serde(default)]
     pub sources: Vec<SourceId>,
+    /// A citation-chasing node: it searches the citation graph around its parent's papers
+    /// instead of the question text.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chase: bool,
 }
 
 /// Why a follow-up was not added.
@@ -236,6 +240,7 @@ impl ExploreTree {
                 depth: 0,
                 channels: q.channels.clone(),
                 sources: Vec::new(),
+                chase: false,
             })
             .collect();
         Self { breadth: plan.breadth, depth: plan.depth, max_followups: cfg.max_followups_per_node, nodes }
@@ -275,6 +280,7 @@ impl ExploreTree {
             depth: p.depth + 1,
             channels: p.channels,
             sources: Vec::new(),
+            chase: false,
         });
         Ok(id)
     }
@@ -286,7 +292,7 @@ impl ExploreTree {
 }
 
 /// A source the explore stage fetched (or failed to read).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FetchedSource {
     pub source: SourceId,
     pub node: NodeId,
@@ -300,6 +306,10 @@ pub struct FetchedSource {
     /// Why it could not be read (robots, render failure, no text).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unreadable: Option<String>,
+    /// What the page says it is (its `citation_*` tags, arXiv's stamp): a claim, paired with the
+    /// work it names before corroboration so two copies of one paper are one root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<SourceRef>,
 }
 
 /// What the compression role returned for one source. Claims whose quote is not verbatim in
@@ -371,6 +381,23 @@ impl Verification {
             .sum();
         Some(score / self.citations.len() as f64)
     }
+
+    /// Supported citations over all checked, partial counting as not supported (the research
+    /// eval's rule). `None` if none.
+    pub fn strict_accuracy(&self) -> Option<f64> {
+        let n = self.citations.len();
+        (n > 0).then(|| {
+            self.citations.iter().filter(|c| c.support == CitationSupport::Supported).count() as f64 / n as f64
+        })
+    }
+
+    /// Both readings, to three decimals: `0.897 strict, 0.949 with partial as half`.
+    pub fn accuracy_line(&self) -> String {
+        match (self.strict_accuracy(), self.citation_accuracy()) {
+            (Some(s), Some(h)) => format!("{s:.3} strict, {h:.3} with partial as half"),
+            _ => "n/a".into(),
+        }
+    }
 }
 
 /// A run that cannot produce a report, naming what is missing.
@@ -432,14 +459,76 @@ pub struct Report {
     pub confidence: Confidence,
 }
 
-/// Confidence from verification and corroboration: High needs citation accuracy >= 0.95 and
-/// most groups established; Low when accuracy is under 0.8 or nothing is established.
-pub fn derive_confidence(corroboration: &[Corroboration], v: &Verification) -> Confidence {
+/// How much of the planned ground a run covered. Thin coverage caps confidence at Low and is
+/// said at the top of the report and in the dispatch summary: a run never reads as settled when
+/// it went in half-blind.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Coverage {
+    pub sources_read: u32,
+    /// What the run could have read: the source budget, or explored nodes x breadth if fewer.
+    pub sources_expected: u32,
+    pub queries: u32,
+    pub queries_failed: u32,
+    /// Sub-questions for which every channel query failed.
+    pub blind_sub_questions: Vec<u32>,
+    /// Sections with no evidence of their own.
+    pub empty_sections: Vec<u32>,
+    /// Sections (0 for the answer) still cut off at the output limit after the retry.
+    pub truncated_sections: Vec<u32>,
+    /// Channels left out before planning, with why.
+    pub unavailable: Vec<String>,
+}
+
+impl Coverage {
+    /// Read under this share of what the run could read is thin.
+    pub const MIN_READ_SHARE: f64 = 0.6;
+    /// More than this share of channel queries failing is thin.
+    pub const MAX_FAILED_SHARE: f64 = 0.25;
+
+    /// Why the run's coverage caps its confidence, one line each; empty when it does not.
+    pub fn caps(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.sources_expected > 0 && (self.sources_read as f64) < Self::MIN_READ_SHARE * self.sources_expected as f64 {
+            out.push(format!("{} of {} planned sources were read", self.sources_read, self.sources_expected));
+        }
+        if self.queries > 0 && self.queries_failed as f64 > Self::MAX_FAILED_SHARE * self.queries as f64 {
+            out.push(format!("{} of {} channel queries failed", self.queries_failed, self.queries));
+        }
+        let list = |v: &[u32]| v.iter().map(|q| q.to_string()).collect::<Vec<_>>().join(", ");
+        if !self.blind_sub_questions.is_empty() {
+            out.push(format!("every query failed for sub-question {}", list(&self.blind_sub_questions)));
+        }
+        if !self.empty_sections.is_empty() {
+            out.push(format!("no evidence of its own for section {}", list(&self.empty_sections)));
+        }
+        if !self.truncated_sections.is_empty() {
+            let named: Vec<String> = self
+                .truncated_sections
+                .iter()
+                .map(|s| if *s == 0 { "the answer".to_string() } else { format!("section {s}") })
+                .collect();
+            out.push(format!("{} cut off at the model's output limit", named.join(", ")));
+        }
+        out
+    }
+
+    /// Everything the reader should know first: the caps, then channels that were not searched.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut out = self.caps();
+        out.extend(self.unavailable.iter().map(|u| format!("not searched: {u}")));
+        out
+    }
+}
+
+/// Confidence from verification, corroboration and coverage: High needs citation accuracy >=
+/// 0.95 and most groups established; Low when accuracy is under 0.8, nothing is established,
+/// or coverage is thin ([`Coverage::caps`]).
+pub fn derive_confidence(corroboration: &[Corroboration], v: &Verification, coverage: &Coverage) -> Confidence {
     let acc = v.citation_accuracy().unwrap_or(0.0);
     let refuted = v.reviews.iter().filter(|r| matches!(r.verdict, ClaimVerdict::Refuted(_))).count();
     let total = corroboration.len().max(1);
     let established = corroboration.iter().filter(|c| c.standing == Standing::Established).count();
-    if acc < 0.8 || established == 0 || refuted * 4 > total {
+    if acc < 0.8 || established == 0 || refuted * 4 > total || !coverage.caps().is_empty() {
         Confidence::Low
     } else if acc >= 0.95 && established * 2 > total && refuted == 0 {
         Confidence::High
@@ -455,6 +544,12 @@ pub struct Finding {
     pub text: String,
     pub standing: Standing,
     pub references: Vec<u32>,
+    /// Ids of recalled memories it rests on: its lineage in the store.
+    #[serde(default)]
+    pub derived_from: Vec<String>,
+    /// URLs (or `memory:<id>`) of the sources it rests on.
+    #[serde(default)]
+    pub sources: Vec<String>,
 }
 
 /// The checkpoint key for a stage (and an optional part, e.g. a node id).

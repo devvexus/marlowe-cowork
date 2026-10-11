@@ -19,6 +19,10 @@ use crate::source::{Namespace, SourceRef};
 
 /// Back-off applied when a server rate-limits without saying for how long.
 pub const DEFAULT_BACKOFF: Duration = Duration::from_secs(30);
+/// A rate-limited query waits out the server's hold and is asked again at most this often.
+pub const RATE_LIMIT_RETRIES: u32 = 2;
+/// Holds longer than this are honoured but not waited for: the query fails and says so.
+pub const MAX_RETRY_WAIT: Duration = Duration::from_secs(60);
 
 /// The HTTP port a channel sees inside one registry call: every request takes a limiter slot,
 /// except the first, whose slot the registry already waited for.
@@ -161,6 +165,10 @@ struct Entry {
 #[derive(Default)]
 pub struct ChannelRegistry {
     entries: BTreeMap<ChannelId, Entry>,
+    /// Channels that could not be registered from settings, with why.
+    skipped: Vec<(ChannelId, String)>,
+    /// Longest server hold waited out before a retry; `None` is [`MAX_RETRY_WAIT`].
+    max_retry_wait: Option<Duration>,
 }
 
 impl ChannelRegistry {
@@ -175,15 +183,46 @@ impl ChannelRegistry {
     }
 
     /// [`ChannelRegistry::keyless`] with every channel setting (feeds, Wikipedia edition, ...).
+    /// A web channel whose settings do not register (a LAN SearXNG over plain http) is left
+    /// out and listed in [`ChannelRegistry::skipped`]; it never takes the daemon down.
     pub fn keyless_with(cfg: &KeylessConfig, hosted: Option<Arc<dyn HostedSearch>>) -> Self {
         let mut r = Self::empty();
         for id in ChannelId::ALL {
             if let Some(c) = KeylessChannel::with_config(id, cfg) {
-                r.register(Arc::new(c)).expect("built-in specs are valid");
+                if let Err(e) = r.register(Arc::new(c)) {
+                    r.skipped.push((id, e.to_string()));
+                }
             }
         }
-        r.register(Arc::new(WebChannel::new(cfg.web.clone(), hosted))).expect("the web spec is valid");
+        if let Err(e) = r.register(Arc::new(WebChannel::new(cfg.web.clone(), hosted))) {
+            r.skipped.push((ChannelId::Web, e.to_string()));
+        }
         r
+    }
+
+    /// Waits out holds up to `d` before retrying (zero: never retry). Tests use it to keep a
+    /// recorded 429 from waiting out the real back-off.
+    pub fn with_max_retry_wait(mut self, d: Duration) -> Self {
+        self.max_retry_wait = Some(d);
+        self
+    }
+
+    /// Channels left out at construction, with why.
+    pub fn skipped(&self) -> &[(ChannelId, String)] {
+        &self.skipped
+    }
+
+    /// Whether `id` can answer at all right now (see [`Channel::ready`]): cheap, no search is
+    /// spent. `Err` names why not.
+    pub fn ready(&self, id: ChannelId, ctx: &ChannelCtx<'_>) -> Result<(), String> {
+        match self.entries.get(&id) {
+            Some(e) => e.channel.ready(ctx),
+            None => Err(self
+                .skipped
+                .iter()
+                .find(|(c, _)| *c == id)
+                .map_or_else(|| format!("{id} is not registered"), |(_, why)| why.clone())),
+        }
     }
 
     /// Adds a channel after checking its declaration.
@@ -281,23 +320,32 @@ impl ChannelRegistry {
     }
 
     /// Waits for a slot, runs `f` with a paced HTTP port, and turns a rate-limit answer into a
-    /// hold on the limiter.
+    /// hold on the limiter. A hold up to [`MAX_RETRY_WAIT`] is waited out and the call asked
+    /// again, up to [`RATE_LIMIT_RETRIES`] times: the server's own backoff, honoured, so one
+    /// burst of 429s does not drop every query of a wave. A longer hold fails the call.
     fn paced<T>(
         &self,
         e: &Entry,
         ctx: &ChannelCtx<'_>,
-        f: impl FnOnce(&ChannelCtx<'_>) -> Result<T, ChannelError>,
+        f: impl Fn(&ChannelCtx<'_>) -> Result<T, ChannelError>,
     ) -> Result<T, ChannelError> {
-        if !e.limiter.wait(ctx.cancel) {
-            return Err(ChannelError::Cancelled);
+        let mut attempt = 0;
+        loop {
+            if !e.limiter.wait(ctx.cancel) {
+                return Err(ChannelError::Cancelled);
+            }
+            let paced = Paced { inner: ctx.http, limiter: &e.limiter, prepaid: AtomicBool::new(true) };
+            let inner = ChannelCtx { http: &paced, cache: ctx.cache, cancel: ctx.cancel };
+            let out = f(&inner);
+            let Err(ChannelError::RateLimited { retry_after, .. }) = &out else { return out };
+            let hold = retry_after.unwrap_or(DEFAULT_BACKOFF);
+            e.limiter.penalise(hold);
+            let max_wait = self.max_retry_wait.unwrap_or(MAX_RETRY_WAIT);
+            if attempt >= RATE_LIMIT_RETRIES || hold > max_wait || ctx.cancel.is_cancelled() {
+                return out;
+            }
+            attempt += 1;
         }
-        let paced = Paced { inner: ctx.http, limiter: &e.limiter, prepaid: AtomicBool::new(true) };
-        let inner = ChannelCtx { http: &paced, cache: ctx.cache, cancel: ctx.cancel };
-        let out = f(&inner);
-        if let Err(ChannelError::RateLimited { retry_after, .. }) = &out {
-            e.limiter.penalise(retry_after.unwrap_or(DEFAULT_BACKOFF));
-        }
-        out
     }
 }
 
@@ -398,8 +446,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// Answers 429 with `Retry-After: 1` once, then 200 with an empty JSON object.
-    struct Busy(std::sync::Mutex<Vec<std::time::Instant>>);
+    /// Answers 429 with `Retry-After: <.1>` once, then 200 with an empty JSON object.
+    struct Busy(std::sync::Mutex<Vec<std::time::Instant>>, Duration);
     impl HttpGet for Busy {
         fn get(&self, r: &HttpRequest, _: &CancelToken) -> Result<HttpResponse, String> {
             let mut seen = self.0.lock().unwrap();
@@ -410,7 +458,7 @@ mod tests {
                 content_type: None,
                 bytes: b"{}".to_vec(),
                 final_url: r.url.clone(),
-                retry_after: first.then_some(Duration::from_millis(400)),
+                retry_after: first.then_some(self.1),
             })
         }
     }
@@ -433,20 +481,52 @@ mod tests {
     }
 
     #[test]
-    fn every_request_is_paced_and_rate_limits_hold_the_channel() {
+    fn every_request_is_paced_and_a_rate_limit_is_waited_out_then_retried() {
         let mut sp = spec(ChannelId::Rss, "https://e.org");
         sp.rate_limits = vec![RateLimit::every(Duration::from_millis(150))];
         let mut r = ChannelRegistry::empty();
         r.register(Arc::new(TwoStep(sp))).unwrap();
-        let http = Busy(Default::default());
+        let http = Busy(Default::default(), Duration::from_millis(400));
         let cancel = CancelToken::new();
         let ctx = ChannelCtx { http: &http, cache: None, cancel: &cancel };
         let q = ChannelQuery::new("x", 1);
-        assert!(matches!(r.search(ChannelId::Rss, &q, &ctx), Err(ChannelError::RateLimited { .. })));
+        // 429 then 200: the query waits out Retry-After and answers; it is not dropped.
         assert_eq!(r.search(ChannelId::Rss, &q, &ctx), Ok(vec![]));
         let t = http.0.lock().unwrap().clone();
-        assert_eq!(t.len(), 3);
+        assert_eq!(t.len(), 3, "one 429, then the retry's two requests");
         assert!(t[1] - t[0] >= Duration::from_millis(380), "Retry-After held the channel: {:?}", t[1] - t[0]);
         assert!(t[2] - t[1] >= Duration::from_millis(140), "the second request took its own slot: {:?}", t[2] - t[1]);
+    }
+
+    #[test]
+    fn a_hold_longer_than_a_minute_is_honoured_not_waited_for() {
+        let mut sp = spec(ChannelId::Rss, "https://e.org");
+        sp.rate_limits = vec![RateLimit::every(Duration::from_millis(151))];
+        let mut r = ChannelRegistry::empty();
+        r.register(Arc::new(TwoStep(sp))).unwrap();
+        let http = Busy(Default::default(), Duration::from_secs(3_600));
+        let cancel = CancelToken::new();
+        let ctx = ChannelCtx { http: &http, cache: None, cancel: &cancel };
+        let t = std::time::Instant::now();
+        let e = r.search(ChannelId::Rss, &ChannelQuery::new("x", 1), &ctx).unwrap_err();
+        assert!(matches!(e, ChannelError::RateLimited { .. }), "{e:?}");
+        assert!(t.elapsed() < Duration::from_secs(5));
+        assert_eq!(http.0.lock().unwrap().len(), 1, "no retry inside the server's hold");
+        assert!(r.limiter(ChannelId::Rss).unwrap().reserve() > Duration::from_secs(3_000), "the hold stands");
+    }
+
+    #[test]
+    fn a_web_setting_that_cannot_register_is_skipped_not_a_panic() {
+        let cfg = KeylessConfig {
+            web: WebConfig { searxng_url: Some("http://192.168.1.10:8080".into()), duckduckgo: false },
+            ..KeylessConfig::default()
+        };
+        let r = ChannelRegistry::keyless_with(&cfg, None);
+        assert!(r.get(ChannelId::Web).is_none());
+        assert_eq!(r.ids().len(), 11, "every other channel is there");
+        assert!(r.skipped()[0].1.contains("https or loopback"), "{:?}", r.skipped());
+        let cancel = CancelToken::new();
+        let ctx = ChannelCtx { http: &NoNet, cache: None, cancel: &cancel };
+        assert!(r.ready(ChannelId::Web, &ctx).unwrap_err().contains("192.168.1.10"));
     }
 }

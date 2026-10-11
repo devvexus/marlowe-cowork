@@ -1,5 +1,5 @@
 //! The seam's stage-type tests: quote, gate, decisions, tree bounds, the shared budget, the
-//! verification rule and checkpoint keys.
+//! verification rule and checkpoint keys, plus plan parsing and the report clean-up helpers.
 
 use marlowe_proto::{ChannelId, Confidence, PlanDecision, PlanError, ResearchPlan, SubQuestion};
 use marlowe_research::{Claim, ClaimId, Corroboration, Quote, SourceId, Standing};
@@ -15,12 +15,14 @@ fn plan() -> ResearchPlan {
                 question: "ablations?".into(),
                 channels: vec![ChannelId::Arxiv, ChannelId::Memory],
                 rationale: None,
+                queries: Vec::new(),
             },
             SubQuestion {
                 id: 2,
                 question: "practice?".into(),
                 channels: vec![ChannelId::Github, ChannelId::Web],
                 rationale: None,
+                queries: Vec::new(),
             },
         ],
         breadth: 3,
@@ -118,13 +120,19 @@ fn no_verification_means_no_report_and_confidence_follows_it() {
         citations: vec![cit(CitationSupport::Supported); 20],
     };
     assert!(require_verification(Some(&v), 2).is_ok());
-    assert_eq!(derive_confidence(&[est(1), est(2)], &v), Confidence::High);
+    let full = Coverage::default();
+    assert_eq!(derive_confidence(&[est(1), est(2)], &v, &full), Confidence::High);
     let mut weak = v.clone();
     weak.citations.extend([cit(CitationSupport::Partial), cit(CitationSupport::Unsupported)]);
     assert_eq!(weak.citation_accuracy(), Some(20.5 / 22.0));
-    assert_eq!(derive_confidence(&[est(1), est(2)], &weak), Confidence::Medium);
+    assert_eq!(weak.strict_accuracy(), Some(20.0 / 22.0));
+    assert_eq!(weak.accuracy_line(), "0.909 strict, 0.932 with partial as half");
+    assert_eq!(derive_confidence(&[est(1), est(2)], &weak, &full), Confidence::Medium);
     weak.citations.extend(vec![cit(CitationSupport::Unsupported); 10]);
-    assert_eq!(derive_confidence(&[est(1), est(2)], &weak), Confidence::Low);
+    assert_eq!(derive_confidence(&[est(1), est(2)], &weak, &full), Confidence::Low);
+    // Thin coverage caps an otherwise high run.
+    let thin = Coverage { sources_read: 3, sources_expected: 10, ..Coverage::default() };
+    assert_eq!(derive_confidence(&[est(1), est(2)], &v, &thin), Confidence::Low);
     let json = serde_json::to_string(&ClaimVerdict::Refuted("v3 retracts it".into())).unwrap();
     assert_eq!(json, r#"{"verdict":"refuted","reason":"v3 retracts it"}"#);
 }
@@ -148,4 +156,99 @@ fn checkpoint_keys_and_stage_types_serialise() {
     };
     let back: CompressedSource = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
     assert_eq!(back, c);
+}
+
+// ---------------------------------------------------------------- parsing and report clean-up
+
+#[test]
+fn a_plan_reply_parses_leniently_and_is_clamped() {
+    let available = [ChannelId::Arxiv, ChannelId::Web, ChannelId::Wikipedia, ChannelId::Memory];
+    let p = parse_plan("goal", "1. How does attention scale?\n2. Who invented the transformer?", &[], &available);
+    assert_eq!(p.sub_questions.len(), 2);
+    assert!(p.sub_questions.iter().all(|q| !q.channels.is_empty() && q.channels.iter().all(|c| available.contains(c))));
+    assert_eq!((p.breadth, p.depth), (4, 1));
+    p.validate().unwrap();
+    let p = parse_plan(
+        "goal",
+        r#"{"sub_questions": [{"question": "q", "channels": ["s2", "nonsense"]}], "breadth": 99, "depth": 9, "source_budget": 0}"#,
+        &[],
+        &available,
+    );
+    assert_eq!((p.breadth, p.depth, p.source_budget), (8, 4, 1));
+    assert!(!p.sub_questions[0].channels.is_empty(), "an unavailable channel falls back to routing");
+    p.validate().unwrap();
+    let p = parse_plan("Is the sky blue?", "I would rather not.", &[], &available);
+    assert_eq!(p.sub_questions[0].question, "Is the sky blue?");
+}
+
+#[test]
+fn attributions_chunks_and_queries() {
+    let r = attribution_route("Hu et al. 2021 (arXiv:2106.09685v2)").unwrap();
+    assert_eq!(r.identity.unwrap().arxiv_id.as_deref(), Some("2106.09685"));
+    assert!(r.url.is_empty(), "an identifier in content never merges by URL");
+    let r = attribution_route("doi:10.1000/XYZ.1.").unwrap();
+    assert_eq!(r.identity.unwrap().doi.as_deref(), Some("10.1000/xyz.1"));
+    assert_eq!(attribution_route("https://x.example/p").unwrap().url, "https://x.example/p");
+    assert!(attribution_route("Smith 2020").is_none());
+
+    let text = format!("{}\n\n{}", "a".repeat(60), "b".repeat(60));
+    let c = chunks(&text, 100, 4);
+    assert_eq!(c.len(), 2);
+    assert!(c[0].ends_with("\n\n") && c[1] == "b".repeat(60));
+    assert_eq!(chunks(&"x".repeat(500), 100, 3).len(), 3, "at most the limit");
+    assert_eq!(search_text("What is the best LoRA rank for a 7B model?"), "best LoRA rank 7B model");
+
+    use super::synth::{drop_open_markers, mark_partial, strip_heading};
+    assert_eq!(strip_heading("## Answer\n\nRank 8 [C1].\n\n**Confidence:** medium"), "Rank 8 [C1].");
+    assert_eq!(strip_heading("Section 1/5: The run used rank 16 [C1]."), "The run used rank 16 [C1].");
+    assert_eq!(strip_heading("Confidence in rank 8 is high [C2]."), "Confidence in rank 8 is high [C2].");
+    assert_eq!(drop_open_markers("Rank 8 is common [C3, C6, C7,"), "Rank 8 is common");
+    assert_eq!(drop_open_markers("Kept [C1].\nCut [C2, C"), "Kept [C1].\nCut");
+    assert_eq!(drop_open_markers("A list [C4] and [Ccc] stay."), "A list [C4] and [Ccc] stay.");
+    assert_eq!(mark_partial("Rank 8 is enough [C1]."), "Rank 8 is enough (partly supported) [C1].");
+    assert_eq!(mark_partial("Rank 8 is enough. [C1][C2]"), "Rank 8 is enough (partly supported). [C1][C2]");
+    assert_eq!(mark_partial("No stop [C4]"), "No stop (partly supported) [C4]");
+
+    let cited = cited_sentences("First claim [C1]. Uncited sentence. Second [C2, C3].");
+    assert_eq!(cited.len(), 2);
+    assert_eq!(cited[1].claims.iter().map(|c| c.0).collect::<Vec<_>>(), [2, 3]);
+}
+
+/// The live run fe527eba, rebuilt from its counts with the NOT pair (abs and html of one arXiv
+/// paper) merged: every "established" group had those two pages as its roots, so none is left;
+/// 23 of 40 planned sources were read, 24 of 66 queries failed (the web had no backend and
+/// Semantic Scholar answered 429), section 3 had no evidence and section 5 was cut off. Each
+/// alone gives Low; the published report said Medium.
+#[test]
+fn the_fe527eba_counts_give_low_confidence() {
+    let one_root = |g| Corroboration {
+        group: g,
+        supporting_roots: 1,
+        contradicting_roots: 0,
+        memory_support: 0,
+        standing: Standing::Suggested,
+    };
+    let groups: Vec<Corroboration> = (1..=75).map(one_root).collect();
+    let mut citations = vec![cit(CitationSupport::Supported); 35];
+    citations.extend(vec![cit(CitationSupport::Partial); 4]);
+    let reviews: Vec<ClaimReview> = (1..=75).map(|g| ClaimReview { group: g, verdict: ClaimVerdict::Upheld }).collect();
+    let v = Verification { reviews, citations };
+    assert_eq!(v.accuracy_line(), "0.897 strict, 0.949 with partial as half");
+    let coverage = Coverage {
+        sources_read: 23,
+        sources_expected: 40,
+        queries: 66,
+        queries_failed: 24,
+        blind_sub_questions: vec![],
+        empty_sections: vec![3],
+        truncated_sections: vec![5],
+        unavailable: vec!["web: no web search backend answers".into()],
+    };
+    let caps = coverage.caps();
+    assert_eq!(caps.len(), 4, "{caps:?}");
+    assert!(caps[0].contains("23 of 40") && caps[1].contains("24 of 66"), "{caps:?}");
+    assert!(coverage.warnings().last().unwrap().starts_with("not searched: web"));
+    assert_eq!(derive_confidence(&groups, &v, &coverage), Confidence::Low);
+    // Even with full coverage, nothing established is Low.
+    assert_eq!(derive_confidence(&groups, &v, &Coverage::default()), Confidence::Low);
 }

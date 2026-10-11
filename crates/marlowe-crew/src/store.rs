@@ -31,9 +31,23 @@ CREATE TABLE IF NOT EXISTS crew_run_steps (
     usage     TEXT NOT NULL,
     tainted   INTEGER NOT NULL,
     at_ms     INTEGER NOT NULL,
+    truncated INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (run, step)
 );
 ";
+
+/// Columns added after a table first shipped: `ALTER TABLE` on an older `cowork.db`.
+const MIGRATIONS: [&str; 1] = ["ALTER TABLE crew_run_steps ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0"];
+
+/// Applies [`SCHEMA`], then each migration whose column is missing.
+fn apply_schema(conn: &Connection) -> Result<(), CrewError> {
+    conn.execute_batch(SCHEMA)?;
+    let has_truncated = conn.prepare("SELECT truncated FROM crew_run_steps LIMIT 0").is_ok();
+    if !has_truncated {
+        conn.execute_batch(MIGRATIONS[0])?;
+    }
+    Ok(())
+}
 
 /// The crew's view of `cowork.db`.
 pub struct RunStore {
@@ -49,14 +63,14 @@ impl RunStore {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        conn.execute_batch(SCHEMA)?;
+        apply_schema(&conn)?;
         Ok(RunStore { conn })
     }
 
     /// An in-memory store (tests).
     pub fn open_in_memory() -> Result<RunStore, CrewError> {
         let conn = Connection::open_in_memory()?;
-        conn.execute_batch(SCHEMA)?;
+        apply_schema(&conn)?;
         Ok(RunStore { conn })
     }
 
@@ -104,8 +118,9 @@ impl RunStore {
     /// Appends one step checkpoint.
     pub fn append_step(&self, rec: &StepRecord) -> Result<(), CrewError> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO crew_run_steps (run, step, key, role, action, messages, output, usage, tainted, at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT OR REPLACE INTO crew_run_steps
+                 (run, step, key, role, action, messages, output, usage, tainted, at_ms, truncated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 rec.run.as_str(),
                 rec.step,
@@ -117,6 +132,7 @@ impl RunStore {
                 to_json(&rec.usage)?,
                 rec.tainted,
                 rec.at_ms,
+                rec.truncated,
             ],
         )?;
         Ok(())
@@ -125,7 +141,7 @@ impl RunStore {
     /// Every checkpoint of a run, in step order.
     pub fn steps(&self, id: &RunId) -> Result<Vec<StepRecord>, CrewError> {
         let mut st = self.conn.prepare(
-            "SELECT step, key, role, action, messages, output, usage, tainted, at_ms
+            "SELECT step, key, role, action, messages, output, usage, tainted, at_ms, truncated
              FROM crew_run_steps WHERE run = ?1 ORDER BY step",
         )?;
         let rows = st.query_map([id.as_str()], |r| {
@@ -139,11 +155,12 @@ impl RunStore {
                 r.get::<_, String>(6)?,
                 r.get::<_, bool>(7)?,
                 r.get::<_, i64>(8)?,
+                r.get::<_, bool>(9)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (step, key, role, action, messages, output, usage, tainted, at_ms) = row?;
+            let (step, key, role, action, messages, output, usage, tainted, at_ms, truncated) = row?;
             out.push(StepRecord {
                 run: id.clone(),
                 step,
@@ -154,6 +171,7 @@ impl RunStore {
                 output,
                 usage: from_json(&usage)?,
                 tainted,
+                truncated,
                 at_ms,
             });
         }
@@ -173,4 +191,53 @@ fn to_json<T: serde::Serialize>(v: &T) -> Result<String, CrewError> {
 
 fn from_json<T: serde::de::DeserializeOwned>(s: &str) -> Result<T, CrewError> {
     serde_json::from_str(s).map_err(|e| CrewError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use marlowe_model::Usage;
+
+    fn rec(run: &RunId, step: u32, truncated: bool) -> StepRecord {
+        StepRecord {
+            run: run.clone(),
+            step,
+            key: format!("k{step}"),
+            role: "researcher".into(),
+            action: "a".into(),
+            messages: Vec::new(),
+            output: Some("cut off mid-sent".into()),
+            usage: Usage::default(),
+            tainted: false,
+            truncated,
+            at_ms: 1,
+        }
+    }
+
+    /// A cut-off output is stored as cut off, so a resumed run retries it.
+    #[test]
+    fn truncation_survives_the_store_and_old_databases_migrate() {
+        let dir = std::env::temp_dir().join(format!("marlowe-crew-store-{}", RunId::new_random().short()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cowork.db");
+        {
+            // A database from before the column existed.
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(&SCHEMA.replace("    truncated INTEGER NOT NULL DEFAULT 0,
+", "")).unwrap();
+            assert!(old.prepare("SELECT truncated FROM crew_run_steps LIMIT 0").is_err());
+        }
+        let store = RunStore::open(&path).unwrap();
+        let roles = crate::role::Roles::builtin();
+        let r = crate::run::Run::new(None, roles.get("scout").unwrap(), "g", None, None, Default::default());
+        let run = r.id.clone();
+        store.save(&r).unwrap();
+        store.append_step(&rec(&run, 1, true)).unwrap();
+        store.append_step(&rec(&run, 2, false)).unwrap();
+        let steps = store.steps(&run).unwrap();
+        assert_eq!(steps.iter().map(|s| s.truncated).collect::<Vec<_>>(), [true, false]);
+        drop(store);
+        RunStore::open(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

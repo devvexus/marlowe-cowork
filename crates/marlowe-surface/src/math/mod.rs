@@ -11,8 +11,7 @@
 //!    paraphrase from the lenient parser: `\foo{x}` reads `foo(x)`. No path returns the source.
 //! 3. **Smooth.** Rendering is a pure function of the source, memoised by it, so a formula is laid
 //!    out once and every later frame (scrolling included) is a lookup. Holding an unclosed span
-//!    back until it closes is the caller's job (`markdown.rs`); [`reserve_rows`] tells it how many
-//!    rows a display block will need, so the rows below do not move when the block lands.
+//!    back until it closes is the caller's job (`markdown.rs`), behind a one-row placeholder.
 //!
 //! # The grid first, images on top
 //!
@@ -177,8 +176,9 @@ pub fn display(src: &str) -> Arc<Formula> {
     cached(src, true)
 }
 
-/// How many rows a display block still being streamed will need, from what has arrived so far.
-/// Not memoised: a partial source changes every token and would only evict real formulas.
+/// The rows a display laid out from `partial` takes in `avail` columns. Not memoised. Not a height
+/// to reserve while a block streams: a partial's height rises and falls token by token, which is
+/// why a held block is one placeholder row (`tests/stream_replay.rs` in `marlowe-tui`).
 pub fn reserve_rows(partial: &str, avail: usize) -> usize {
     build(partial, true).rows_in(avail)
 }
@@ -294,22 +294,23 @@ fn safe(s: &str) -> String {
 ///
 /// | rule | the sentence it protects |
 /// |---|---|
-/// | no leading or trailing space in the content | `$5 to $10` -- content `5 to ` |
+/// | no leading or trailing space in the content, unless it holds a command | `$5 to $10` -- content `5 to ` |
 /// | no run of three or more letters outside a command | `$5 and $10` -- content `5 and ` |
 /// | at least one maths signal, a single letter, or a plain number | `$100–$200` -- content `100–` |
 /// | no newline, and a bounded length | a `$` at the top of a reply closing at the end |
 ///
-/// A backslash command settles it before the letter-run test: `\operatorname{softmax}` is a
-/// seven-letter run inside a command, and prose does not contain `\` followed by a letter.
+/// A backslash command settles it before the space and letter-run tests: `\operatorname{softmax}`
+/// is a seven-letter run inside a command, `$ \alpha $` is padded, and prose does not contain `\`
+/// followed by a letter. The caller sets the content trimmed.
 pub fn looks_like_inline_maths(content: &str) -> bool {
-    if content.is_empty() || content.len() > 400 || content.contains('\n') {
-        return false;
-    }
-    if content.starts_with(' ') || content.ends_with(' ') {
+    if content.trim().is_empty() || content.len() > 400 || content.contains('\n') {
         return false;
     }
     if has_command(content) {
         return true;
+    }
+    if content.starts_with(' ') || content.ends_with(' ') {
+        return false;
     }
     if !letter_runs_ok(content, false) {
         return false;
@@ -322,24 +323,33 @@ pub fn looks_like_inline_maths(content: &str) -> bool {
     // `$5$`, `$x$`, `$2x$`: nobody writes two dollar signs around a price, and a short
     // alphanumeric token between them is a symbol.
     let token = chars.iter().all(|c| c.is_alphanumeric() || *c == '.');
-    // Braces, `&` and `#` are TeX syntax and never part of a price.
-    let signal =
-        content.contains(['\\', '^', '_', '=', '+', '<', '>', '/', '*', '(', '|', '{', '}', '&', '#']);
+    // Braces, `&` and `#` are TeX syntax and never part of a price. `-`, `,`, `[`, `]`, `'` and
+    // `!` make `$n-1$`, `$x,y$`, `$[0,1]$`, `$f'$` and `$n!$`; prices stay out by the space and
+    // operator-at-the-end rules (`$5-$10` holds `5-`, `$5, $10` holds `5, `).
+    let signal = content.contains([
+        '\\', '^', '_', '=', '+', '<', '>', '/', '*', '(', '|', '{', '}', '&', '#', '-', ',', '[', ']', '\'', '!',
+    ]);
     token || signal
 }
 
 /// Whether an **unclosed** `$` span, still streaming, could yet turn out to be maths -- in which
 /// case the caller holds it behind a placeholder rather than showing a `$` that may be a delimiter.
 ///
-/// Prose disqualifies it as soon as it shows: a space straight after the `$`, a newline, or a
-/// finished word of three or more letters. A trailing run that may still become `\max` or `\log`
-/// is not yet a word.
+/// Prose disqualifies it as soon as it shows: a space straight after the `$` and then anything
+/// but a command, a newline, or a finished word of three or more letters. A trailing run that may
+/// still become `\max` or `\log` is not yet a word.
 pub fn could_become_inline_maths(partial: &str) -> bool {
-    if partial.starts_with(' ') || partial.contains('\n') || partial.len() > 400 {
+    if partial.contains('\n') || partial.len() > 400 {
         return false;
     }
-    if has_command(partial) {
+    // A command settles it, padded or not (`$ \frac{1}{2} $`), and padding alone, or padding
+    // before a lone `\`, could still be one.
+    let t = partial.trim_start();
+    if has_command(partial) || t.is_empty() || t == "\\" {
         return true;
+    }
+    if partial.starts_with(' ') {
+        return false;
     }
     letter_runs_ok(partial, true)
 }
@@ -422,31 +432,46 @@ fn has_command(s: &str) -> bool {
 
 /// No run of three or more letters outside a command, unless it is an operator name -- or, when
 /// `streaming`, the run at the very end could still grow into one.
+///
+/// A script is a label, not prose: a run straight after `_` or `^`, or anywhere inside a group
+/// they open, is allowed at any length. `$G = -L'(f(X_{batch}))$` was shown as source because
+/// `batch` read as a word, and no sentence about prices puts a word in `_{…}`.
 fn letter_runs_ok(s: &str, streaming: bool) -> bool {
     let chars: Vec<char> = s.chars().collect();
+    // One entry per open brace: whether it opened a script group.
+    let mut groups: Vec<bool> = Vec::new();
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] == '\\' {
-            i += 1;
-            while i < chars.len() && chars[i].is_ascii_alphabetic() {
+        match chars[i] {
+            '\\' => {
                 i += 1;
+                while i < chars.len() && chars[i].is_ascii_alphabetic() {
+                    i += 1;
+                }
+                continue;
             }
-            continue;
-        }
-        if chars[i].is_ascii_alphabetic() {
-            let start = i;
-            while i < chars.len() && chars[i].is_ascii_alphabetic() {
-                i += 1;
+            '{' => groups.push(i > 0 && matches!(chars[i - 1], '_' | '^')),
+            '}' => {
+                groups.pop();
             }
-            let word: String = chars[start..i].iter().collect();
-            let at_end = i == chars.len();
-            let ok = word.len() < 3
-                || symbols::is_function_word(&word)
-                || (streaming && at_end && symbols::is_function_prefix(&word));
-            if !ok {
-                return false;
+            c if c.is_ascii_alphabetic() => {
+                let start = i;
+                while i < chars.len() && chars[i].is_ascii_alphabetic() {
+                    i += 1;
+                }
+                let script = groups.contains(&true) || (start > 0 && matches!(chars[start - 1], '_' | '^'));
+                let word: String = chars[start..i].iter().collect();
+                let at_end = i == chars.len();
+                let ok = script
+                    || word.len() < 3
+                    || symbols::is_function_word(&word)
+                    || (streaming && at_end && symbols::is_function_prefix(&word));
+                if !ok {
+                    return false;
+                }
+                continue;
             }
-            continue;
+            _ => {}
         }
         i += 1;
     }

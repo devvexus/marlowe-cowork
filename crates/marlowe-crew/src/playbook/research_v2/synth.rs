@@ -1,44 +1,56 @@
-//! SYNTHESISE and REMEMBER.
+//! SYNTHESISE.
 //!
-//! Synthesis sees only verified evidence: groups the review did not refute, members whose
-//! passage supports them, re-counted over independent roots. The report model writes one section
-//! per sub-question (in parallel) and then the answer, citing claim ids (`[C12]`). Every cited
-//! sentence is then checked against the passages it cites ([`audit`]): unsupported sentences are
-//! removed and listed, partly supported ones are marked. Claim ids become numbered references
-//! the harness builds from source identities; the model never writes a reference or a URL.
-//! Confidence comes from verification and corroboration, not from the prose.
+//! Synthesis sees only verified evidence on the goal: groups the review did not refute or judge
+//! off the goal, members whose passage supports them, re-counted over independent roots. The
+//! report model writes one section per sub-question (in parallel) and then the answer, citing
+//! claim ids (`[C12]`). A section with no evidence of its own is written from the closest
+//! evidence read for other sub-questions, labelled indirect. A reply still cut off after its
+//! retry is cut back to its last full sentence and marked, never published mid-sentence. Every
+//! cited sentence is then checked against the passages it cites ([`audit`]): unsupported
+//! sentences are removed and listed, partly supported ones marked, and grading words held to
+//! the harness's count of independent roots ([`super::standing`]). Claim ids become numbered
+//! references the harness builds from source identities; the model never writes a reference or
+//! a URL. Confidence comes from verification, corroboration and coverage, not from the prose;
+//! thin coverage is said first.
 
 use std::collections::{BTreeSet, HashMap};
 
 use marlowe_proto::{Citation, Confidence, Dispatch, ResearchPlan, ResearchStage, StageState};
 use marlowe_research::{
-    corroborate, Claim, ClaimGroup, ClaimId, Corroboration, SourceId, Stance, Standing, TrustBucket,
+    corroborate, Claim, ClaimGroup, ClaimId, Corroboration, DerivationGraph, SourceId, Stance, Standing, TrustBucket,
 };
 
 use super::compress::{Compressed, Corroborated};
 use super::explore::Explored;
 use super::parse::{clip, markers, sentences};
+use super::standing::{backing, correct_text};
 use super::types::{
-    checkpoint_key, derive_confidence, CitationCheck, CitationSupport, ClaimVerdict, Finding, Reference, Report,
+    checkpoint_key, derive_confidence, CitationCheck, CitationSupport, ClaimVerdict, Coverage, Reference, Report,
     ReportSection, Verification,
 };
 use super::verify::{audit, tally, Cited, Passages, Verified};
-use super::Ctx;
-use crate::playbook::{first_paragraph, StepSpec, REPORT_FILE};
+use super::{step_spec, Ctx};
+use crate::playbook::{first_paragraph, REPORT_FILE};
 use crate::CrewError;
 
 /// The machine-readable record next to the report (for evals and the Run view).
 pub const RECORD_FILE: &str = "research.json";
 /// Evidence claims one section call sees.
 const EVIDENCE_PER_SECTION: usize = 40;
-/// Established findings stored as memories, besides the answer.
-const FINDINGS_STORED: usize = 5;
+/// Groups from other sub-questions offered to a section with none of its own.
+const INDIRECT_GROUPS: usize = 8;
+/// The note a section or answer cut off at the output limit ends with.
+pub const CUT_NOTE: &str = "(This part was cut off at the model's output limit; what follows the last full sentence was dropped.)";
 
 /// Evidence after verification.
 pub struct Evidence {
     pub groups: Vec<ClaimGroup>,
     pub corroboration: Vec<Corroboration>,
     pub group_sub: HashMap<u32, u32>,
+    /// Derivation edges and the pairs counted once (dedup, page identities).
+    pub graph: DerivationGraph,
+    /// Groups the review judged off the goal, with why: left out of everything above.
+    pub off_goal: HashMap<u32, String>,
 }
 
 impl Evidence {
@@ -47,12 +59,14 @@ impl Evidence {
     }
 }
 
-/// Drops refuted groups and members whose passage does not support them, then re-counts roots.
+/// Drops refuted and off-goal groups and members whose passage does not support them, then
+/// re-counts roots.
 pub fn evidence(ex: &Explored, comp: &Compressed, cor: &Corroborated, ver: &Verified) -> Evidence {
     let groups: Vec<ClaimGroup> = cor
         .groups
         .iter()
         .filter(|g| !matches!(ver.review.get(&g.id), Some(ClaimVerdict::Refuted(_))))
+        .filter(|g| !ver.off_goal.contains_key(&g.id))
         .map(|g| ClaimGroup {
             id: g.id,
             statement: g.statement.clone(),
@@ -63,7 +77,41 @@ pub fn evidence(ex: &Explored, comp: &Compressed, cor: &Corroborated, ver: &Veri
     let bucket =
         |s: SourceId| ex.dedup.get(s).and_then(|s| s.routes.first()).map_or(TrustBucket::Untrusted, |r| r.bucket());
     let corroboration = corroborate(&groups, &comp.claims, &cor.graph, &bucket);
-    Evidence { groups, corroboration, group_sub: cor.group_sub.clone() }
+    Evidence {
+        groups,
+        corroboration,
+        group_sub: cor.group_sub.clone(),
+        graph: cor.graph.clone(),
+        off_goal: ver.off_goal.clone(),
+    }
+}
+
+/// The independent roots behind cited claims.
+fn backing_of<'a>(ex: &'a Explored, comp: &'a Compressed, ev: &'a Evidence) -> impl Fn(&[ClaimId]) -> super::standing::Backing + 'a {
+    move |claims: &[ClaimId]| {
+        let source_of = |c: ClaimId| comp.claim(c).map(|c| c.source);
+        let bucket = |s: SourceId| {
+            ex.dedup.get(s).and_then(|s| s.routes.first()).map_or(TrustBucket::Untrusted, |r| r.bucket())
+        };
+        backing(claims, &source_of, &bucket, &ev.graph)
+    }
+}
+
+/// `text` cut back to its last complete sentence (a reply stopped at the output limit).
+pub(super) fn cut_to_sentence(text: &str) -> String {
+    let t = text.trim_end();
+    let mut end = 0;
+    let mut offset = 0;
+    for line in t.split_inclusive('\n') {
+        for (_, b) in sentences(line.trim_end_matches('\n')) {
+            let s = line[..b].trim_end();
+            if s.ends_with(['.', '!', '?', ']', ')']) {
+                end = offset + b;
+            }
+        }
+        offset += line.len();
+    }
+    t[..end].trim_end().to_string()
 }
 
 fn rank(s: Standing) -> u8 {
@@ -94,6 +142,24 @@ pub struct Synthesis {
     pub report_checks: Verification,
     pub removed: Vec<(String, String)>,
     pub cited_claims: BTreeSet<ClaimId>,
+    pub coverage: Coverage,
+    /// Sentences whose grading words were brought down to the root count (before, after).
+    pub regraded: Vec<(String, String)>,
+}
+
+/// A reply as published: heading and stray markers stripped; one still cut off at the output
+/// limit is cut back to its last full sentence and says so.
+fn published(text: &str, truncated: bool) -> String {
+    let body = strip_heading(text);
+    if !truncated {
+        return body;
+    }
+    let kept = cut_to_sentence(&body);
+    if kept.is_empty() {
+        CUT_NOTE.to_string()
+    } else {
+        format!("{kept}\n\n*{CUT_NOTE}*")
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -105,31 +171,45 @@ pub(super) fn synthesise(
     ev: &Evidence,
     ver: &Verified,
     passages: &Passages<'_>,
+    mut coverage: Coverage,
 ) -> Result<Synthesis, CrewError> {
     let n = plan.sub_questions.len() as u32;
     ctx.stage(ResearchStage::Synthesise, StageState::Started, 0, n + 1, Some("writing the sections".into()));
     let mut specs = Vec::new();
     let mut bodies: Vec<Option<String>> = Vec::new();
+    let mut asked: Vec<u32> = Vec::new();
     for q in &plan.sub_questions {
-        let block = evidence_block(q.id, ex, comp, ev, ver);
+        let mut block = evidence_block(q.id, ex, comp, ev, ver);
+        let mut indirect = false;
+        if block.is_empty() {
+            coverage.empty_sections.push(q.id);
+            block = indirect_block(q.id, &q.question, ex, comp, ev, ver);
+            indirect = true;
+        }
         if block.is_empty() {
             bodies.push(Some("Nothing the run read answers this.".into()));
             continue;
         }
         bodies.push(None);
-        specs.push(StepSpec {
-            key: checkpoint_key(ResearchStage::Synthesise, Some(&format!("q{}", q.id))),
-            role: "researcher".into(),
-            label: format!("write section {}/{n}", q.id),
-            prompt: section_prompt(ctx.goal, q.id, &q.question, &block),
-            tools: Some(Vec::new()),
-            effort: None,
-        });
+        asked.push(q.id);
+        specs.push(step_spec(
+            checkpoint_key(ResearchStage::Synthesise, Some(&format!("q{}", q.id))),
+            "researcher",
+            format!("write section {}/{n}", q.id),
+            section_prompt(ctx.goal, q.id, &q.question, &block, indirect),
+        ));
     }
     let mut replies = ctx.parallel(specs).into_iter();
+    let mut asked = asked.into_iter();
     for b in bodies.iter_mut().filter(|b| b.is_none()) {
+        let id = asked.next().unwrap_or(0);
         *b = Some(match replies.next() {
-            Some(Ok(r)) => strip_heading(&r.text),
+            Some(Ok(r)) => {
+                if r.truncated {
+                    coverage.truncated_sections.push(id);
+                }
+                published(&r.text, r.truncated)
+            }
             Some(Err(e @ (CrewError::Cancelled | CrewError::Stopped))) => return Err(e),
             Some(Err(e)) => format!("This section could not be written: {e}."),
             None => String::new(),
@@ -146,17 +226,16 @@ pub(super) fn synthesise(
         })
         .collect();
     ctx.stage(ResearchStage::Synthesise, StageState::Running, n, n + 1, Some("writing the answer".into()));
-    let answer = ctx
-        .step(StepSpec {
-            key: checkpoint_key(ResearchStage::Synthesise, Some("answer")),
-            role: "researcher".into(),
-            label: "write the answer".into(),
-            prompt: answer_prompt(ctx.goal, &sections),
-            tools: Some(Vec::new()),
-            effort: None,
-        })?
-        .text;
-    let mut answer = strip_heading(&answer);
+    let answer = ctx.step(step_spec(
+        checkpoint_key(ResearchStage::Synthesise, Some("answer")),
+        "researcher",
+        "write the answer".into(),
+        answer_prompt(ctx.goal, &sections),
+    ))?;
+    if answer.truncated {
+        coverage.truncated_sections.push(0);
+    }
+    let mut answer = published(&answer.text, answer.truncated);
 
     // Every cited sentence, checked against the passages it cites.
     ctx.stage(ResearchStage::Synthesise, StageState::Running, n, n + 1, Some("checking every citation".into()));
@@ -175,6 +254,13 @@ pub(super) fn synthesise(
             s.body = "Nothing that survived checking answers this.".into();
         }
     }
+    // Grading words against the root count: "two independent sources" over one paper is not.
+    let roots = backing_of(ex, comp, ev);
+    let mut regraded = Vec::new();
+    answer = correct_text(&answer, &roots, &mut regraded);
+    for s in &mut sections {
+        s.body = correct_text(&s.body, &roots, &mut regraded);
+    }
 
     // Claim ids -> numbered references, in order of first citation.
     let mut refs: Vec<Reference> = Vec::new();
@@ -185,7 +271,7 @@ pub(super) fn synthesise(
     }
 
     let report_checks = Verification { reviews: ver.verification.reviews.clone(), citations: checks };
-    let confidence = derive_confidence(&ev.corroboration, &report_checks);
+    let confidence = derive_confidence(&ev.corroboration, &report_checks, &coverage);
     let contested: Vec<(u32, String)> = ev
         .corroboration
         .iter()
@@ -199,7 +285,8 @@ pub(super) fn synthesise(
         })
         .collect();
     let report = Report { answer, sections, contested, references: refs, confidence };
-    let markdown = render(ctx, plan, ex, comp, ev, ver, &report, &report_checks, &removed);
+    let notes = Notes { removed: &removed, regraded: &regraded, coverage: &coverage };
+    let markdown = render(ctx, plan, ex, comp, ev, ver, &report, &report_checks, &notes);
     ctx.stage(
         ResearchStage::Synthesise,
         StageState::Done,
@@ -207,15 +294,46 @@ pub(super) fn synthesise(
         n + 1,
         Some(format!("{} references", report.references.len())),
     );
-    Ok(Synthesis { report, markdown, report_checks, removed, cited_claims })
+    Ok(Synthesis { report, markdown, report_checks, removed, cited_claims, coverage, regraded })
+}
+
+/// Lexical stems of a text (4-character prefixes of its longer words), for ranking evidence
+/// from other sub-questions against a section's question.
+fn stems(text: &str) -> BTreeSet<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.chars().count() >= 4)
+        .map(|w| w.to_lowercase().chars().take(4).collect())
+        .collect()
+}
+
+/// For a section with no evidence of its own: the groups read for other sub-questions that
+/// share the most words with its question, labelled indirect.
+fn indirect_block(sub: u32, question: &str, ex: &Explored, comp: &Compressed, ev: &Evidence, ver: &Verified) -> String {
+    let want = stems(question);
+    let mut scored: Vec<(usize, u32)> = ev
+        .groups
+        .iter()
+        .filter(|g| ev.group_sub.get(&g.id).is_some_and(|s| *s != sub))
+        .map(|g| (stems(&g.statement).intersection(&want).count(), g.id))
+        .filter(|(n, _)| *n > 0)
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let ids: Vec<u32> = scored.into_iter().take(INDIRECT_GROUPS).map(|(_, g)| g).collect();
+    group_lines(&ids, ex, comp, ev, ver, "indirect: read for another sub-question")
 }
 
 fn evidence_block(sub: u32, ex: &Explored, comp: &Compressed, ev: &Evidence, ver: &Verified) -> String {
     let mut groups: Vec<&ClaimGroup> = ev.groups.iter().filter(|g| ev.group_sub.get(&g.id) == Some(&sub)).collect();
     groups.sort_by_key(|g| ev.standing(g.id).map_or((9, 0), |c| (rank(c.standing), usize::MAX - c.supporting_roots)));
+    let ids: Vec<u32> = groups.iter().map(|g| g.id).collect();
+    group_lines(&ids, ex, comp, ev, ver, "")
+}
+
+/// The evidence lines of groups `ids`, in order, up to [`EVIDENCE_PER_SECTION`] claims.
+fn group_lines(ids: &[u32], ex: &Explored, comp: &Compressed, ev: &Evidence, ver: &Verified, label: &str) -> String {
     let mut out = String::new();
     let mut shown = 0;
-    for g in groups {
+    for g in ids.iter().filter_map(|id| ev.groups.iter().find(|g| g.id == *id)) {
         if shown >= EVIDENCE_PER_SECTION {
             break;
         }
@@ -225,7 +343,8 @@ fn evidence_block(sub: u32, ex: &Explored, comp: &Compressed, ev: &Evidence, ver
             Some(ClaimVerdict::Upheld) => " · review: upheld".into(),
             _ => String::new(),
         };
-        out.push_str(&format!("G{} · {standing}{review}\n  statement: {}\n", g.id, clip(&g.statement, 300)));
+        let label = if label.is_empty() { String::new() } else { format!(" · {label}") };
+        out.push_str(&format!("G{} · {standing}{review}{label}\n  statement: {}\n", g.id, clip(&g.statement, 300)));
         for (id, stance) in &g.members {
             let Some(c) = comp.claim(*id) else { continue };
             shown += 1;
@@ -254,9 +373,16 @@ fn source_line(ex: &Explored, c: &Claim) -> String {
     format!("{}{year}", clip(s.title(), 80))
 }
 
-fn section_prompt(goal: &str, id: u32, question: &str, block: &str) -> String {
+fn section_prompt(goal: &str, id: u32, question: &str, block: &str, indirect: bool) -> String {
+    let indirect = if indirect {
+        "Nothing the run read was found for this sub-question itself. The evidence below was read for \
+         other sub-questions: say first that the evidence is indirect, then what it does and does not \
+         settle here.\n\n"
+    } else {
+        ""
+    };
     format!(
-        "Goal: {goal}\n\nWrite the report's section for sub-question {id}: {question}\n\n\
+        "Goal: {goal}\n\nWrite the report's section for sub-question {id}: {question}\n\n{indirect}\
          Use the evidence below and nothing else. Every sentence that states a finding cites the claim ids \
          it rests on, in square brackets right after it: [C12] or [C12, C15]. Say how firm each finding is \
          in plain words inside the finding's own sentence (\"two independent sources show...\", \"one survey \
@@ -416,7 +542,7 @@ fn strip_markers(text: &str) -> String {
     out
 }
 
-fn confidence_word(c: Confidence) -> &'static str {
+pub(super) fn confidence_word(c: Confidence) -> &'static str {
     match c {
         Confidence::Low => "low",
         Confidence::Medium => "medium",
@@ -455,7 +581,16 @@ fn renumber(
                             .or_else(|| src.map(|s| s.title().to_string()))
                             .unwrap_or_default(),
                         url: fetched.map(|f| f.url.clone()).unwrap_or_default(),
-                        identity: src.map(|s| s.identity.clone()).filter(|i| !i.is_empty()),
+                        // The page's own identifiers (citation tags) fill what the routes lacked.
+                        identity: src
+                            .map(|s| {
+                                let mut id = s.identity.clone();
+                                if let Some(p) = fetched.and_then(|f| f.page.as_ref()).and_then(|p| p.identity.as_ref()) {
+                                    id.absorb(p);
+                                }
+                                id
+                            })
+                            .filter(|i| !i.is_empty()),
                     });
                     n
                 }
@@ -472,6 +607,19 @@ fn renumber(
     out
 }
 
+/// What the checks changed, for the report.
+struct Notes<'a> {
+    removed: &'a [(String, String)],
+    regraded: &'a [(String, String)],
+    coverage: &'a Coverage,
+}
+
+/// The coverage warning that leads the report, when coverage is thin or a channel was left out.
+fn coverage_warning(c: &Coverage) -> Option<String> {
+    let w = c.warnings();
+    (!w.is_empty()).then(|| format!("**Coverage warning.** This run did not see all of the ground it planned: {}.", w.join("; ")))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render(
     ctx: &Ctx<'_>,
@@ -482,10 +630,14 @@ fn render(
     ver: &Verified,
     report: &Report,
     checks: &Verification,
-    removed: &[(String, String)],
+    notes: &Notes<'_>,
 ) -> String {
-    let mut md =
-        format!("# {}\n\n## Answer\n\n{}\n\n## Evidence\n", crate::run::title_from_goal(ctx.goal), report.answer);
+    let removed = notes.removed;
+    let mut md = format!("# {}\n\n", crate::run::title_from_goal(ctx.goal));
+    if let Some(w) = coverage_warning(notes.coverage) {
+        md.push_str(&format!("> {w}\n\n"));
+    }
+    md.push_str(&format!("## Answer\n\n{}\n\n## Evidence\n", report.answer));
     for s in &report.sections {
         md.push_str(&format!("\n### {}\n\n{}\n", s.heading, s.body));
     }
@@ -502,14 +654,16 @@ fn render(
     let count = |s: Standing| ev.corroboration.iter().filter(|c| c.standing == s).count();
     let refuted = ver.verification.reviews.iter().filter(|r| matches!(r.verdict, ClaimVerdict::Refuted(_))).count();
     let (s, p, u) = tally(&checks.citations);
-    let acc = checks.citation_accuracy().map_or("n/a".to_string(), |a| format!("{a:.2}"));
+    let acc = checks.accuracy_line();
+    let off = ev.off_goal.len();
     md.push_str(&format!(
         "\n## How this was checked\n\n\
          - {read} sources read ({unreadable} unreadable) over {} channels: {}.\n\
          - {} claims kept with verbatim quotes; {rejected} quotes were not in their source and were dropped.\n\
-         - Claim groups: {} established, {} suggested, {} contested; {refuted} refuted in review and left out.\n\
+         - Claim groups: {} established, {} suggested, {} contested; {refuted} refuted in review and {off} judged \
+         off the goal, both left out.\n\
          - Cited sentences checked against their passages: {s} supported, {p} partial, {u} unsupported \
-         (removed); citation accuracy {acc}.\n",
+         (removed); citation accuracy {acc} (judged by the run's own verifier).\n",
         plan.channels().len(),
         plan.channels().iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", "),
         comp.claims.len(),
@@ -520,7 +674,11 @@ fn render(
     let failed = ctx.failures();
     if !failed.is_empty() {
         let shown: Vec<String> = failed.iter().take(5).map(|f| clip(f, 160)).collect();
-        md.push_str(&format!("- {} model steps failed: {}.\n", failed.len(), shown.join("; ")));
+        md.push_str(&format!(
+            "- {} model calls failed and were asked again (a verdict still missing counts as unsupported above): {}.\n",
+            failed.len(),
+            shown.join("; ")
+        ));
     }
     if !ex.state.failures.is_empty() {
         let shown: Vec<String> = ex.state.failures.iter().take(5).map(|f| clip(f, 160)).collect();
@@ -529,6 +687,15 @@ fn render(
             ex.state.failures.len(),
             shown.join("; ")
         ));
+    }
+    for w in &ex.state.widened {
+        md.push_str(&format!("- Every query failed, so the search was widened: {}.\n", clip(w, 200)));
+    }
+    if !notes.regraded.is_empty() {
+        md.push_str("- Grading words brought down to the count of independent sources:\n");
+        for (before, after) in notes.regraded {
+            md.push_str(&format!("  - \"{}\" became \"{}\"\n", clip(&strip_markers(before), 160), clip(&strip_markers(after), 160)));
+        }
     }
     if !removed.is_empty() {
         md.push_str("- Removed in checking:\n");
@@ -610,19 +777,25 @@ pub(super) fn dispatch(ctx: &Ctx<'_>, syn: &Synthesis, ex: &Explored, ev: &Evide
         "corroboration": ev.corroboration,
         "counts": ctx.counts(),
         "removed": syn.removed,
+        "regraded": syn.regraded,
+        "coverage": syn.coverage,
+        "off_goal": ev.off_goal,
         "effective_citations": syn.cited_claims.len(),
     });
     std::fs::write(&record_path, serde_json::to_string_pretty(&record).unwrap_or_default())?;
-    let acc = syn.report_checks.citation_accuracy();
     let established = ev.corroboration.iter().filter(|c| c.standing == Standing::Established).count();
     let contested = ev.corroboration.iter().filter(|c| c.standing == Standing::Contested).count();
-    let mut summary = first_paragraph(&syn.report.answer, 700);
+    let mut summary = String::new();
+    if let Some(w) = coverage_warning(&syn.coverage) {
+        summary.push_str(&format!("{w}\n\n"));
+    }
+    summary.push_str(&first_paragraph(&syn.report.answer, 700));
     summary.push_str(&format!(
         "\n\n{} sources read, {} findings ({established} established, {contested} contested); {} cited sentences checked, citation accuracy {}.",
         ex.readable().count(),
         ev.groups.len(),
         syn.report_checks.citations.len(),
-        acc.map_or("n/a".to_string(), |a| format!("{a:.2}")),
+        syn.report_checks.accuracy_line(),
     ));
     Ok(Dispatch {
         summary,
@@ -639,115 +812,3 @@ pub(super) fn dispatch(ctx: &Ctx<'_>, syn: &Synthesis, ex: &Explored, ev: &Evide
     })
 }
 
-/// REMEMBER: the answer and the strongest established findings as Result memories, once.
-pub(super) fn remember(
-    ctx: &Ctx<'_>,
-    syn: &Synthesis,
-    ex: &Explored,
-    comp: &Compressed,
-    ev: &Evidence,
-) -> Result<Vec<String>, CrewError> {
-    let key = checkpoint_key(ResearchStage::Remember, None);
-    if let Some(ids) = ctx.load::<Vec<String>>(&key) {
-        ctx.stage(
-            ResearchStage::Remember,
-            StageState::Done,
-            ids.len() as u32,
-            ids.len() as u32,
-            Some("stored earlier".into()),
-        );
-        return Ok(ids);
-    }
-    let run = ctx.host.run_id();
-    let tainted = ex.readable().any(|f| {
-        ex.dedup.get(f.source).and_then(|s| s.routes.first()).is_some_and(|r| r.bucket() == TrustBucket::Untrusted)
-    });
-    let cite = |n: &[u32]| -> String {
-        let parts: Vec<String> = syn
-            .report
-            .references
-            .iter()
-            .filter(|r| n.contains(&r.n))
-            .take(6)
-            .map(|r| format!("{} <{}>", clip(&r.title, 80), r.url))
-            .collect();
-        if parts.is_empty() {
-            String::new()
-        } else {
-            format!(" Sources: {}.", parts.join("; "))
-        }
-    };
-    let refs_in = |text: &str| -> Vec<u32> {
-        let mut v: Vec<u32> = Vec::new();
-        let mut rest = text;
-        while let Some(i) = rest.find('[') {
-            let Some(j) = rest[i..].find(']') else { break };
-            for n in super::parse::numbers(&rest[i + 1..i + j]) {
-                if !v.contains(&n) {
-                    v.push(n);
-                }
-            }
-            rest = &rest[i + j + 1..];
-        }
-        v
-    };
-    let title = crate::run::title_from_goal(ctx.goal);
-    let mut findings = Vec::new();
-    let answer_refs = refs_in(&syn.report.answer);
-    findings.push(Finding {
-        run: run.clone(),
-        text: format!(
-            "Research \"{title}\" (run {}, confidence {}): {}{}",
-            run.short(),
-            confidence_word(syn.report.confidence),
-            clip(&syn.report.answer, 1_000),
-            cite(&answer_refs)
-        ),
-        standing: if syn.report.confidence == Confidence::High { Standing::Established } else { Standing::Suggested },
-        references: answer_refs,
-    });
-    let mut strong: Vec<&Corroboration> =
-        ev.corroboration.iter().filter(|c| c.standing == Standing::Established).collect();
-    strong.sort_by_key(|c| usize::MAX - c.supporting_roots);
-    for c in strong.into_iter().take(FINDINGS_STORED) {
-        let Some(g) = ev.groups.iter().find(|g| g.id == c.group) else { continue };
-        let sources: BTreeSet<SourceId> =
-            g.members.iter().filter_map(|(id, _)| comp.claim(*id)).map(|cl| cl.source).collect();
-        let refs: Vec<u32> =
-            syn.report.references.iter().filter(|r| sources.contains(&r.source)).map(|r| r.n).collect();
-        findings.push(Finding {
-            run: run.clone(),
-            text: format!(
-                "Research finding (\"{title}\", run {}; established by {} independent sources): {}{}",
-                run.short(),
-                c.supporting_roots,
-                clip(&g.statement, 600),
-                cite(&refs)
-            ),
-            standing: Standing::Established,
-            references: refs,
-        });
-    }
-    let mut ids = Vec::new();
-    for f in &findings {
-        match ctx.host.remember(f, tainted) {
-            Ok(id) => ids.push(id),
-            Err(e) => ctx.stage(
-                ResearchStage::Remember,
-                StageState::Running,
-                ids.len() as u32,
-                findings.len() as u32,
-                Some(format!("not stored: {e}")),
-            ),
-        }
-    }
-    ctx.save(&key, &format!("remembered {} findings", ids.len()), &ids);
-    ctx.stage(
-        ResearchStage::Remember,
-        StageState::Done,
-        ids.len() as u32,
-        findings.len() as u32,
-        Some(format!("{} findings stored as memories", ids.len())),
-    );
-    Ok(ids)
-}

@@ -29,6 +29,7 @@ marlowe-settings.workspace = true
 marlowe-mcp.workspace = true
 
 [dev-dependencies]
+marlowe-research.workspace = true
 marlowe-contract.workspace = true
 marlowe-journal.workspace = true
 marlowe-memory.workspace = true

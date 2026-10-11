@@ -114,7 +114,7 @@ impl Library {
         Ok(self.conn.execute("DELETE FROM models WHERE ref = ?1", [&key])? > 0)
     }
 
-    /// The default model: the first one added.
+    /// The first model added: the Conductor's model until one is assigned (onboarding).
     pub fn default_model(&self) -> Result<Option<ModelRef>, BrainsError> {
         let s: Option<String> = self
             .conn
@@ -124,7 +124,7 @@ impl Library {
             .transpose()
     }
 
-    /// Sets a slot. `model: None` makes it inherit the default.
+    /// Sets a slot. `model: None` makes it inherit (see [`Library::resolve`]).
     pub fn set_slot(&self, slot: &Slot, model: Option<&ModelRef>, effort: Effort) -> Result<(), BrainsError> {
         if let Some(m) = model {
             if self.get(m)?.is_none() {
@@ -149,24 +149,40 @@ impl Library {
                 slots.push(slot);
             }
         }
-        let default = self.default_model()?;
+        let inherit = self.inherited_model()?;
         let mut out = Vec::new();
         for slot in slots {
             let (model, effort) = self.stored(&slot)?;
             let inherited = model.is_none();
-            out.push(SlotAssignment { slot, model: model.or_else(|| default.clone()), effort, inherited });
+            let model = match (model, &slot) {
+                (Some(m), _) => Some(m),
+                (None, Slot::Conductor) => self.default_model()?,
+                (None, _) => inherit.clone(),
+            };
+            out.push(SlotAssignment { slot, model, effort, inherited });
         }
         Ok(out)
     }
 
-    /// The model and effort for `slot`; unset slots fall back to the default model.
+    /// The model and effort for `slot`. An unset Conductor takes the first model added; every
+    /// other unset slot takes the Conductor's model, never a different (perhaps larger) one that
+    /// happens to have been added first.
     pub fn resolve(&self, slot: &Slot) -> Result<(ModelRef, Effort), BrainsError> {
         let (model, effort) = self.stored(slot)?;
         let model = match model {
             Some(m) => m,
-            None => self.default_model()?.ok_or(BrainsError::NoModels)?,
+            None if *slot == Slot::Conductor => self.default_model()?.ok_or(BrainsError::NoModels)?,
+            None => self.inherited_model()?.ok_or(BrainsError::NoModels)?,
         };
         Ok((model, effort))
+    }
+
+    /// What an unset non-Conductor slot runs: the Conductor's model.
+    fn inherited_model(&self) -> Result<Option<ModelRef>, BrainsError> {
+        match self.stored(&Slot::Conductor)?.0 {
+            Some(m) => Ok(Some(m)),
+            None => self.default_model(),
+        }
     }
 
     /// Stored (model, effort) for a slot; defaults when absent.
@@ -294,6 +310,20 @@ mod tests {
         let slots = lib.slots().unwrap();
         assert_eq!(slots.len(), 3);
         assert!(slots[0].inherited && !slots[2].inherited);
+    }
+
+    #[test]
+    fn unset_slots_follow_the_conductor_not_the_first_model_added() {
+        let lib = Library::open_in_memory().unwrap();
+        let big = lib.add(&info("marlowe-valiance:22b")).unwrap();
+        let small = lib.add(&info("marlowe-dawn:9b")).unwrap();
+        lib.set_slot(&Slot::Conductor, Some(&small), Effort::Medium).unwrap();
+        lib.set_slot(&Slot::Reflection, None, Effort::Low).unwrap();
+        for slot in [Slot::Reflection, Slot::Quick, Slot::Crew("general".into())] {
+            assert_eq!(lib.resolve(&slot).unwrap().0, small, "{slot}");
+        }
+        assert!(lib.slots().unwrap().iter().all(|a| a.model.as_ref() == Some(&small)));
+        assert_eq!(lib.default_model().unwrap(), Some(big));
     }
 
     #[test]

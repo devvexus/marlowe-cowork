@@ -22,9 +22,11 @@ fn caps() -> Caps {
     Caps { cell_w: probe::DEFAULT_CELL.0, cell_h: probe::DEFAULT_CELL.1, fg: probe::DEFAULT_FG, bg: probe::DEFAULT_BG }
 }
 
+/// The pane's box for a display block: its grid rows, and the text column from the block's column
+/// (90 cells in a 140-column terminal).
 fn job(src: &str) -> Job {
     let f = math::display(src);
-    Job { markup: f.typst.clone().expect("a Typst form"), fg: [0xcd, 0xc9, 0xd6], cols: f.width as u16, rows: f.rows.len() as u16 }
+    Job { markup: f.typst.clone().expect("a Typst form"), fg: [0xcd, 0xc9, 0xd6], cols: 90, rows: f.rows.len() as u16 }
 }
 
 include!("../../marlowe-surface/tests/data/maths_corpus.rs");
@@ -66,7 +68,8 @@ fn the_helper_renders_restarts_once_and_then_leaves_formulas_on_the_grid() {
         samples[samples.len() - 1],
         samples.len()
     );
-    assert!(fitted * 10 >= displays.len() * 9, "only {fitted}/{} fit", displays.len());
+    // Below 0.9x a formula stays on the grid; see `typeset_corpus.rs`.
+    assert!(fitted * 10 >= displays.len() * 8, "only {fitted}/{} fit", displays.len());
 
     // Markup Typst refuses: an error reply, and the helper stays up.
     let bad = Job { markup: "frac(".into(), fg: [1, 2, 3], cols: 10, rows: 2 };

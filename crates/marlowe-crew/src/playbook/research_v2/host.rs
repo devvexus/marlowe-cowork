@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use marlowe_extract::Link;
 use marlowe_model::CancelToken;
-use marlowe_proto::{ChannelId, CostQuote, PlanDecision, ResearchPlan, ResearchProgress, RunId};
+use marlowe_proto::{ChannelId, CostQuote, MemoryTrust, PlanDecision, ResearchPlan, ResearchProgress, RunId};
 use marlowe_research::{ChannelCtx, ChannelError, ChannelQuery, ChannelRegistry, HttpGet, ResearchCache, SourceRef};
 
 use super::types::Finding;
@@ -24,6 +24,8 @@ pub struct FetchedPage {
     pub text: String,
     /// Links found on the page, resolved against it. They become the page's link table.
     pub links: Vec<Link>,
+    /// The page's scholarly identity `<meta>` tags (`citation_doi`, `citation_title`, ...).
+    pub meta: Vec<(String, String)>,
     /// Why it could not be read: robots.txt, HTTP status, render failure, no text.
     pub error: Option<String>,
 }
@@ -51,6 +53,12 @@ pub trait ResearchIo: Send + Sync {
 
     /// One result per url, in order (see [`PageFetcher::fetch`]).
     fn fetch(&self, urls: &[String], concurrency: usize, cancel: &CancelToken) -> Vec<FetchedPage>;
+
+    /// Channels that cannot answer now, with why (a web channel with no live backend). Checked
+    /// before planning, cheaply; a plan never routes to them.
+    fn unavailable(&self, _cancel: &CancelToken) -> Vec<(ChannelId, String)> {
+        Vec::new()
+    }
 }
 
 /// The product [`ResearchIo`]: the keyless channel registry (rate limits and caches inside it)
@@ -80,6 +88,18 @@ impl ResearchIo for ChannelIo {
     fn fetch(&self, urls: &[String], concurrency: usize, cancel: &CancelToken) -> Vec<FetchedPage> {
         self.pages.fetch(urls, concurrency, cancel)
     }
+
+    /// Channels the settings left out, and web search when no backend answers its probe.
+    fn unavailable(&self, cancel: &CancelToken) -> Vec<(ChannelId, String)> {
+        let mut out: Vec<(ChannelId, String)> = self.registry.skipped().to_vec();
+        if self.registry.ids().contains(&ChannelId::Web) {
+            let ctx = ChannelCtx { http: self.http.as_ref(), cache: self.cache.as_deref(), cancel };
+            if let Err(why) = self.registry.ready(ChannelId::Web, &ctx) {
+                out.push((ChannelId::Web, why));
+            }
+        }
+        out
+    }
 }
 
 /// A memory recalled for research. It is a source in its own trust bucket, never instructions.
@@ -89,6 +109,16 @@ pub struct Recalled {
     pub text: String,
     /// Human-readable origin (`you, session 3f2a…`).
     pub provenance: String,
+    /// Its trust in the store. A finding resting on an untrusted memory is untrusted like a web
+    /// source; an inferred one is capped by lineage (the memory id is the finding's parent).
+    pub trust: MemoryTrust,
+}
+
+impl Recalled {
+    /// Not untrusted content.
+    pub fn trusted(&self) -> bool {
+        self.trust != MemoryTrust::Untrusted
+    }
 }
 
 /// The run a research playbook runs in. The supervisor implements it; tests script it.
@@ -112,8 +142,9 @@ pub trait ResearchHost: Send + Sync {
     /// A stage moved.
     fn progress(&self, progress: &ResearchProgress);
 
-    /// Shows the plan and its quote, and blocks until the user decides (the run is `needs_you`
-    /// meanwhile). `Err` on cancel, pause or shutdown.
+    /// Shows the plan and its quote and returns the user's decision. The supervisor's host does
+    /// not wait for it: it parks the run (`Err(Stopped)`) and the answer, given later, is returned
+    /// here when the run starts again. `Err` on cancel, pause or shutdown.
     fn propose_plan(&self, plan: &ResearchPlan, quote: &CostQuote) -> Result<PlanDecision, CrewError>;
 
     /// The plan was approved, by the user or under their auto-approve threshold: the run's
@@ -138,6 +169,10 @@ pub trait ResearchHost: Send + Sync {
 
     /// Untrusted content (channel results, pages) has entered the run.
     fn taint(&self);
+
+    /// The run's taint latch: untrusted content entered it at some point (this run's searches,
+    /// or before it was dispatched). Everything the run remembers is then untrusted.
+    fn tainted(&self) -> bool;
 
     /// Stores a finding as a Result memory with the run's provenance; returns its id.
     fn remember(&self, finding: &Finding, tainted: bool) -> Result<String, String>;

@@ -8,8 +8,8 @@ mod research;
 pub mod research_v2;
 
 pub use agent::{
-    sandbox_shell, tail_chars, AgentRunner, ModelResolver, NoHooks, ShellFn, StepHooks, StepModel, CONTINUE_PROMPT,
-    MAX_CONTINUES, SHELL_OUTPUT_CHARS, SHELL_TIMEOUT,
+    output_cap, sandbox_shell, tail_chars, AgentRunner, ModelResolver, NoHooks, ShellFn, StepFailure, StepHooks,
+    StepModel, CONTINUE_PROMPT, MAX_CONTINUES, MIN_OUTPUT, OUTPUT_MARGIN, SHELL_OUTPUT_CHARS, SHELL_TIMEOUT,
 };
 pub use build::{build, detect_test_command};
 pub use research::{deep_research, first_paragraph, min_confidence, parse_verdicts, Verdict, REPORT_FILE};
@@ -36,6 +36,9 @@ pub struct StepSpec {
     pub tools: Option<Vec<String>>,
     /// Overrides the card's effort for this step; `None` keeps it.
     pub effort: Option<Effort>,
+    /// Caps the reply, thinking included, in tokens. The runner lowers it to the room the
+    /// prompt leaves in the model's window; `None` keeps the provider's default.
+    pub max_output: Option<u32>,
 }
 
 /// What one agent call produced.
@@ -46,6 +49,8 @@ pub struct StepResult {
     pub usage: Usage,
     /// The step read untrusted content.
     pub tainted: bool,
+    /// The final model call stopped at the output limit: the text may end mid-sentence.
+    pub truncated: bool,
 }
 
 /// A shell command's result in the sandbox.
@@ -138,6 +143,7 @@ pub fn single(runner: &dyn StepRunner, role: &str, goal: &str) -> Result<Dispatc
         prompt: format!("Goal: {goal}"),
         tools: None,
         effort: None,
+        max_output: None,
     })?;
     let diff = if runner.sandbox().kind == SandboxKind::Worktree {
         Some(runner.sandbox().diff_summary()?).filter(|d| !d.files.is_empty())

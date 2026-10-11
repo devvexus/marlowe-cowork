@@ -11,6 +11,7 @@
 //! - [`links`] — link tables for navigation by selection; the model never composes a URL.
 //! - [`cache`] — `<home>\cache\research`.
 //! - [`politeness`] — robots.txt and per-host spacing for page fetches.
+//! - [`page_identity`] — what a fetched page says it is (`citation_*` meta tags, arXiv's stamp).
 //! - [`net`] — the real network behind [`HttpGet`]: marlowe-net for https, the loopback client
 //!   for a local SearXNG.
 //!
@@ -26,6 +27,7 @@ pub mod corroboration;
 pub mod dedup;
 pub mod links;
 pub mod net;
+pub mod page_identity;
 pub mod politeness;
 pub mod registry;
 pub mod source;
@@ -33,8 +35,8 @@ pub mod xml;
 
 pub use cache::{CacheKey, ResearchCache};
 pub use channel::{
-    Assertion, Channel, ChannelCtx, ChannelError, ChannelQuery, ChannelSpec, HttpGet, HttpRequest, HttpResponse,
-    Limiter, RateLimit, ResultShape, USER_AGENT,
+    Assertion, Channel, ChannelCtx, ChannelError, ChannelQuery, ChannelSpec, CitationDirection, CitationQuery, HttpGet,
+    HttpRequest, HttpResponse, Limiter, RateLimit, ResultShape, USER_AGENT,
 };
 pub use channels::arxiv::{self, ArxivEntry, ArxivFeed};
 pub use channels::{
@@ -51,8 +53,11 @@ pub use dedup::{
 pub use links::{DocRef, LinkRow, LinkTable, Navigator, SelectError};
 pub use marlowe_proto::ChannelId;
 pub use net::NetHttp;
+pub use page_identity::{is_identity_meta, page_route};
 pub use politeness::{HostGate, Refusal, Robots};
-pub use registry::{classify, route, ChannelRegistry, QuestionType, RegistryError, DEFAULT_BACKOFF};
+pub use registry::{
+    classify, route, ChannelRegistry, QuestionType, RegistryError, DEFAULT_BACKOFF, MAX_RETRY_WAIT, RATE_LIMIT_RETRIES,
+};
 pub use source::{
     canonical_url, normalize_arxiv, normalize_doi, normalize_title, Identity, Namespace, RepoAt, SourceRef, TrustBucket,
 };

@@ -217,6 +217,9 @@ pub struct Document {
     /// From `<html lang>` or an equivalent, when stated. Never guessed.
     pub lang: Option<String>,
     pub description: Option<String>,
+    /// Scholarly identity `<meta>` tags (`citation_*`, `dc.*`, `prism.*`): name lower-cased,
+    /// content decoded, in page order. What the page claims to be, never trusted; bounded.
+    pub meta: Vec<(String, String)>,
     /// Bytes handed in.
     pub bytes_in: usize,
     /// The encoding actually used to decode, for the record.
@@ -235,6 +238,7 @@ impl Document {
             headings: Vec::new(),
             lang: None,
             description: None,
+            meta: Vec::new(),
             bytes_in,
             encoding: "none",
             warnings: Vec::new(),

@@ -118,6 +118,7 @@ impl ResearchIo for Web {
                     title: Some("Benchmark".into()),
                     text: format!("# Benchmark\n\n{body}\n\n{}", "Setup details follow. ".repeat(12)),
                     links: Vec::new(),
+                    meta: Vec::new(),
                     error: None,
                 }
             })
@@ -150,20 +151,28 @@ impl RunApprovals for Deny {
 }
 
 fn start(home: &Path) -> (Supervisor, Receiver<CrewEvent>) {
+    start_with(home, true, false, CrewConfig::default())
+}
+
+/// `models: false` leaves the library empty, so no run can be given a model (as when admission
+/// refuses every load); `gpu_busy` reports the GPU taken.
+fn start_with(home: &Path, models: bool, gpu_busy: bool, cfg: CrewConfig) -> (Supervisor, Receiver<CrewEvent>) {
     let mut factory = ProviderFactory::new(Arc::new(MemoryStore::new()));
     factory.register(ProviderKind::OpenRouter, |_| Ok(Arc::new(Scripted) as Arc<dyn Provider>));
     let lib = Library::open_in_memory().unwrap();
-    lib.add(&ModelInfo::bare(ProviderKind::OpenRouter, "m")).unwrap();
+    if models {
+        lib.add(&ModelInfo::bare(ProviderKind::OpenRouter, "m")).unwrap();
+    }
     let deps = CrewDeps {
         brains: Arc::new(Brains::new(lib, factory)),
         tools: Arc::new(|_: &Sandbox, _: Option<&Path>| Arc::new(NoTools) as Arc<dyn ToolHost>),
         approvals: Arc::new(Deny),
         mind: None,
-        gpu_busy: Arc::new(|| false),
+        gpu_busy: Arc::new(move || gpu_busy),
         research: Some(Arc::new(Web)),
     };
     let (tx, rx) = crossbeam_channel::unbounded();
-    (Supervisor::start(home, deps, CrewConfig::default(), tx).unwrap(), rx)
+    (Supervisor::start(home, deps, cfg, tx).unwrap(), rx)
 }
 
 fn temp_home(name: &str) -> PathBuf {
@@ -264,6 +273,109 @@ fn a_rejected_plan_ends_the_run_cancelled_with_the_reason() {
     let run = wait_for(&sup, &id, CrewRunStatus::Cancelled);
     assert_eq!(run.note.as_deref(), Some("plan rejected: too broad"));
     assert!(run.result.is_none());
+    sup.shutdown();
+    drop(sup);
+    remove(&home);
+}
+
+/// The PC crashed with a plan waiting (ui-preview5): the stored run is still `needs_you` and the
+/// plan lived only in memory. The next start has it pending again from its checkpoint, with no
+/// second draft, and approving it runs the research.
+#[test]
+fn a_plan_waiting_through_a_crash_is_asked_for_again_on_the_next_start() {
+    let home = temp_home("crash");
+    let (sup, _events) = start(&home);
+    let id = dispatch(&sup, "What top-1 accuracy does model M reach on ImageNet?");
+    let waiting = wait_for(&sup, &id, CrewRunStatus::NeedsYou);
+    let (plan, _) = sup.pending_plan(&id).expect("a plan awaits approval");
+    sup.shutdown();
+    drop(sup);
+    // A crash leaves the record as it was while waiting; a clean stop would have marked it running.
+    let store = RunStore::open(&home.join("cowork.db")).unwrap();
+    let mut run = store.get(&id).unwrap().unwrap();
+    run.status = CrewRunStatus::NeedsYou;
+    run.note = waiting.note.clone();
+    store.save(&run).unwrap();
+    let drafts = |s: &RunStore| s.steps(&id).unwrap().iter().filter(|r| r.key == "v2:plan").count();
+    let before = drafts(&store);
+    drop(store);
+
+    let (sup, events) = start(&home);
+    wait_for(&sup, &id, CrewRunStatus::NeedsYou);
+    let (again, _) = sup.pending_plan(&id).expect("the plan is waiting again, not paused");
+    assert_eq!(again, plan, "the checkpointed proposal, not a new draft");
+    assert!(events.try_iter().any(|e| matches!(e, CrewEvent::PlanProposed { run, .. } if run == id)));
+    sup.approve_plan(&id, PlanDecision::Approve).unwrap();
+    wait_for(&sup, &id, CrewRunStatus::Done);
+    sup.shutdown();
+    drop(sup);
+    let store = RunStore::open(&home.join("cowork.db")).unwrap();
+    assert_eq!(drafts(&store), before, "no second model call drafted the plan");
+    drop(store);
+    remove(&home);
+}
+
+/// A waiting plan holds no concurrency slot: with one run per provider, a second research run
+/// still drafts its plan while the first waits, and neither has a thread.
+#[test]
+fn a_waiting_plan_frees_its_slot_for_the_next_run() {
+    let home = temp_home("slot");
+    let cfg = CrewConfig { per_provider: 1, ..CrewConfig::default() };
+    let (sup, _events) = start_with(&home, true, false, cfg);
+    let a = dispatch(&sup, "What top-1 accuracy does model M reach on ImageNet?");
+    let b = dispatch(&sup, "What top-5 accuracy does model M reach on ImageNet?");
+    wait_for(&sup, &a, CrewRunStatus::NeedsYou);
+    wait_for(&sup, &b, CrewRunStatus::NeedsYou);
+    assert!(sup.pending_plan(&a).is_some() && sup.pending_plan(&b).is_some());
+    let end = Instant::now() + Duration::from_secs(10);
+    while sup.running() > 0 {
+        assert!(Instant::now() < end, "a parked run keeps no thread");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    sup.approve_plan(&b, PlanDecision::Approve).unwrap();
+    wait_for(&sup, &b, CrewRunStatus::Done);
+    assert!(sup.pending_plan(&a).is_some(), "a still waits");
+    sup.shutdown();
+    drop(sup);
+    remove(&home);
+}
+
+/// After a crash, every waiting plan is back from its checkpoint without a model, the GPU or a
+/// slot: with the GPU busy and no model to be had, both plans are pending again, both runs
+/// `needs_you`, and none was failed or queued for want of a model.
+#[test]
+fn every_waiting_plan_is_back_after_a_crash_with_no_model_and_the_gpu_busy() {
+    let home = temp_home("crash2");
+    let (sup, _events) = start(&home);
+    let a = dispatch(&sup, "What top-1 accuracy does model M reach on ImageNet?");
+    let b = dispatch(&sup, "What top-5 accuracy does model M reach on ImageNet?");
+    wait_for(&sup, &a, CrewRunStatus::NeedsYou);
+    wait_for(&sup, &b, CrewRunStatus::NeedsYou);
+    let (plan_a, _) = sup.pending_plan(&a).unwrap();
+    let (plan_b, _) = sup.pending_plan(&b).unwrap();
+    // A crash: no shutdown, the store as it was.
+    drop(sup);
+
+    let (sup, events) = start_with(&home, false, true, CrewConfig::default());
+    std::thread::sleep(Duration::from_millis(1500)); // the scheduler has run
+    let listed = sup.list(50).unwrap();
+    for (id, plan) in [(&a, &plan_a), (&b, &plan_b)] {
+        let info = listed.iter().find(|r| &r.id == id).expect("listed");
+        assert_eq!(info.status, CrewRunStatus::NeedsYou, "{:?}", info.note);
+        assert_eq!(sup.pending_plan(id).map(|(p, _)| p).as_ref(), Some(plan));
+    }
+    let proposed: Vec<RunId> = events
+        .try_iter()
+        .filter_map(|e| match e {
+            CrewEvent::PlanProposed { run, .. } => Some(run),
+            _ => None,
+        })
+        .collect();
+    assert!(proposed.contains(&a) && proposed.contains(&b), "{proposed:?}");
+    // Rejecting a parked plan ends its run at once, with no thread.
+    sup.approve_plan(&a, PlanDecision::Reject { reason: None }).unwrap();
+    assert_eq!(sup.get(&a).unwrap().unwrap().status, CrewRunStatus::Cancelled);
+    assert_eq!(sup.get(&a).unwrap().unwrap().note.as_deref(), Some("plan rejected"));
     sup.shutdown();
     drop(sup);
     remove(&home);

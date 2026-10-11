@@ -8,8 +8,8 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::{ink, note_style, put};
-use crate::state::{Conn, Entry, State, ToolStatus};
+use super::{hit, hovered, ink, lit, note_style, put};
+use crate::state::{pick_thought, Conn, Entry, Focus, Mark, Pin, State, Target, ToolStatus, Viewport};
 use crate::text;
 
 /// Left padding inside the pane.
@@ -23,32 +23,133 @@ pub fn draw(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     }
     // Text column: padding on the left, one blank column and the scrollbar on the right.
     let tw = r.width.saturating_sub(PAD + 2) as usize;
-    let (mut lines, maths) = transcript(state, tw, theme);
+    let (mut lines, maths, marks) = transcript(state, tw, theme);
     if lines.is_empty() {
+        state.marks.borrow_mut().clear();
         empty_state(r, state, theme, buf);
         return;
     }
     let h = r.height as usize;
     let total = lines.len();
     let max = total.saturating_sub(h);
-    state.scroll_max.set(max);
-    let scroll = state.scroll.min(max);
-    let start = total.saturating_sub(h + scroll);
+    // A fold toggled since the last frame: its marker's line now, and the row it was on.
+    let anchor = state
+        .anchor
+        .take()
+        .filter(|a| a.epoch == state.epoch)
+        .and_then(|a| marks.iter().find(|m| m.entry == a.entry).map(|m| (m.line, a.row)));
+    let start = view_top(state, (r.width, r.height), total, max, anchor);
+    // Past the tail the reader can still scroll up to the first line: the range runs from here.
+    let past = state.viewport.get().pin == Pin::Tail;
+    state.scroll_max.set(if past { start + state.scroll } else { max });
+    let scroll = max.saturating_sub(start);
     if let Some(svc) = marlowe_typeset::installed() {
         let origin = (r.x + PAD, r.y);
         typeset_images(&mut lines, &maths, svc, origin, start, h, tw, theme);
     }
+    // The Conversation box's cursor: the fold marker Enter acts on.
+    let keys = state.focus == Focus::Conversation && state.overlay.is_none() && state.approvals.is_empty();
+    let cursor = if keys { pick_thought(&marks, start, h, state.thought) } else { None };
     for (i, l) in lines.iter().skip(start).take(h).enumerate() {
-        put(buf, r.x + PAD, r.y + i as u16, l, tw as u16);
+        let y = r.y + i as u16;
+        match marks.iter().find(|m| m.line == start + i) {
+            Some(m) => {
+                let on = cursor == Some(m.entry);
+                marker_row(state, buf, (r.x + PAD, y, tw as u16), l.clone(), m.entry, on, theme)
+            }
+            None => put(buf, r.x + PAD, y, l, tw as u16),
+        }
     }
+    state.marks.replace(marks);
     if total > h {
-        scrollbar(r, total, h, start, max, theme, buf);
+        scrollbar(r, total, h, start.min(max), max, theme, buf);
     }
     if scroll > 0 {
         let tag = Line::from(Span::styled(format!(" ↓ {scroll} more "), ink(Ink::Dim, theme)));
         let w = tag.width() as u16;
         put(buf, r.right().saturating_sub(w + 2), r.bottom() - 1, &tag, w);
     }
+}
+
+/// Lines the transcript may lose from one frame to the next while the pane following a reply
+/// holds its place. A bigger loss is a real change of layout, and the view goes to the tail.
+const HOLD_LINES: usize = 3;
+
+/// A reasoning block's fold marker on screen: a click target, lit under the pointer, and with the
+/// accent and Enter's keycap while the Conversation box's cursor is on it. Restyling only: the
+/// marker is one row whatever its state, so nothing under it moves.
+fn marker_row(
+    state: &State,
+    buf: &mut Buffer,
+    at: (u16, u16, u16),
+    mut line: Line<'static>,
+    entry: usize,
+    cursor: bool,
+    theme: &Theme,
+) {
+    let (x, y, max) = at;
+    if cursor {
+        if let Some(glyph) = line.spans.first_mut() {
+            glyph.style = ink(Ink::Accent, theme);
+        }
+        line.spans.push(Span::styled(format!("  {}", chrome::KEYCAP_ENTER), ink(Ink::Dim, theme)));
+    }
+    let t = Target::Thought(entry);
+    hit(state, Rect { x, y, width: (line.width() as u16).min(max), height: 1 }, t.clone());
+    let line = if hovered(state, &t) { lit(line, theme) } else { line };
+    put(buf, x, y, &line, max);
+}
+
+/// The transcript line at the top of the pane, and the record of it for the next frame.
+///
+/// **Steady while a reply streams.** Following the tail, the view moves down with new text and
+/// never back up: if the transcript got a few lines shorter mid-reply, the pane would keep its
+/// place and leave the rows below empty until text fills them, rather than pull every line on
+/// screen down. A larger loss (reasoning collapsed, a reflow) is followed to the new tail.
+/// Scrolled up, the view stays on the lines it shows while the reply grows below them, until the
+/// reader scrolls again, and through a pane that changes height (a resize, a composer grown by a
+/// paste). After a width change it keeps the same fraction of the transcript above it, since
+/// every line has wrapped again. `tests/stream_replay.rs` replays a streamed maths reply.
+///
+/// **A fold opens or closes in place.** `anchor` is a toggled marker's line and the pane row it was
+/// on: the view keeps it there, so only the lines under it move. That can leave the view above the
+/// tail ([`Pin::Above`], held like a scrolled-up view) or past it ([`Pin::Tail`], empty rows under
+/// a fold closed near the end, until text fills them). `tests/folds.rs` replays both.
+fn view_top(state: &State, size: (u16, u16), total: usize, max: usize, anchor: Option<(usize, usize)>) -> usize {
+    let prev = state.viewport.get();
+    let turn = state.live.as_ref().map(|l| l.turn);
+    let same = prev.size == size && prev.epoch == state.epoch;
+    let kept = prev.scroll == state.scroll && prev.epoch == state.epoch && prev.total > 0;
+    let last = total.saturating_sub(1);
+    let (top, pin) = if let Some((line, row)) = anchor {
+        let top = line.saturating_sub(row);
+        (top, Pin::of(top, max))
+    } else if same && prev.pin == Pin::Tail {
+        // Past the tail: scrolling moves from here, and once text has filled the empty rows the
+        // view follows the tail again.
+        let top = (prev.top + prev.scroll).saturating_sub(state.scroll).min(last);
+        match Pin::of(top, max) {
+            Pin::Tail => (top, Pin::Tail),
+            _ if state.scroll == 0 => (max, Pin::None),
+            _ => (top, Pin::None),
+        }
+    } else if kept && (state.scroll != 0 || prev.pin == Pin::Above) {
+        // The reader's place as last drawn: `state.scroll` has gone stale while text arrived.
+        let top = if prev.size.0 == size.0 { prev.top.min(max) } else { (prev.top * total / prev.total).min(max) };
+        (top, if prev.pin == Pin::Above { Pin::of(top, max) } else { Pin::None })
+    } else if state.scroll == 0 {
+        let streaming = turn.is_some() && prev.turn == turn && prev.scroll == 0;
+        let held = prev.total.saturating_sub(total) <= HOLD_LINES;
+        if same && streaming && held {
+            (max.max(prev.top.min(last)), Pin::None)
+        } else {
+            (max, Pin::None)
+        }
+    } else {
+        (max - state.scroll.min(max), Pin::None)
+    };
+    state.viewport.set(Viewport { top, total, size, scroll: state.scroll, turn, epoch: state.epoch, pin });
+    top
 }
 
 fn scrollbar(r: Rect, total: usize, h: usize, start: usize, max: usize, theme: &Theme, buf: &mut Buffer) {
@@ -69,9 +170,9 @@ fn scrollbar(r: Rect, total: usize, h: usize, start: usize, max: usize, theme: &
 
 /// Display formulas on screen that have a typeset image: the grid rows give way to it.
 ///
-/// The image fills exactly the rows and columns the grid layout reserved, so nothing moves when
-/// it lands. Until it does, the block shows the held-maths placeholder over the same rows rather
-/// than the grid, so a formula appears once. One Typst refuses keeps its grid rows.
+/// The image fills exactly the rows the grid layout reserved, so nothing moves when it lands.
+/// Until it does, the block shows the held-maths placeholder over the same rows rather than the
+/// grid, so a formula appears once. One Typst refuses keeps its grid rows.
 #[allow(clippy::too_many_arguments)]
 fn typeset_images(
     lines: &mut [Line<'static>],
@@ -96,7 +197,10 @@ fn typeset_images(
         if end <= start || b.line >= start + h || end > lines.len() {
             continue;
         }
-        let cols = b.cols.min(tw.saturating_sub(b.col));
+        // The grid's rows, and the text column's width from the block's column: a display block
+        // is alone on its rows, so the image may run wider than the grid did rather than shrink.
+        // The cache is not keyed on this width: a resize re-renders only an image it no longer fits.
+        let cols = tw.saturating_sub(b.col);
         let job = Job { markup: markup.clone(), fg, cols: cols as u16, rows: b.rows as u16 };
         match svc.get(&job) {
             Slot::Failed => {}
@@ -128,19 +232,26 @@ fn typeset_images(
     }
 }
 
-/// The whole transcript as styled lines wrapped to `width`, and the display formulas in Marlowe's
-/// replies that an image may replace.
-fn transcript(state: &State, width: usize, theme: &Theme) -> (Vec<Line<'static>>, Vec<MathBlock>) {
+/// The whole transcript as styled lines wrapped to `width`, the display formulas in Marlowe's
+/// replies that an image may replace, and where each foldable reasoning block's marker is.
+fn transcript(state: &State, width: usize, theme: &Theme) -> (Vec<Line<'static>>, Vec<MathBlock>, Vec<Mark>) {
     let mut maths: Vec<MathBlock> = Vec::new();
+    let mut marks: Vec<Mark> = Vec::new();
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut prev: Option<&Entry> = None;
     // The entry still being written: its unclosed maths is held behind a placeholder.
     let streaming = state.live.as_ref().map(|_| state.entries.len().saturating_sub(1));
     for (idx, e) in state.entries.iter().enumerate() {
+        // An expanded reasoning block ends with a blank row, so the tool call under it does not
+        // read as one more line of it.
+        let after_open_thought = idx > 0
+            && matches!(prev, Some(Entry::Thinking { text, .. }) if !text.trim().is_empty())
+            && state.thought_open(idx - 1);
         let gap = match (prev, e) {
             (None, _) => false,
             (Some(_), Entry::User { .. }) => true,
             (Some(Entry::User { .. }), _) => false,
+            _ if after_open_thought => true,
             (Some(Entry::Tool { .. } | Entry::Thinking { .. }), Entry::Prose { .. }) => true,
             (Some(Entry::Prose { .. }), Entry::Tool { .. } | Entry::Thinking { .. }) => true,
             _ => false,
@@ -159,7 +270,10 @@ fn transcript(state: &State, width: usize, theme: &Theme) -> (Vec<Line<'static>>
             }));
             out.extend(lines);
         } else {
-            entry_lines(e, state, width, theme, streaming == Some(idx), &mut out);
+            if matches!(e, Entry::Thinking { text, .. } if !text.trim().is_empty()) {
+                marks.push(Mark { entry: idx, line: out.len() });
+            }
+            entry_lines(e, idx, state, width, theme, streaming == Some(idx), &mut out);
         }
         prev = Some(e);
     }
@@ -182,10 +296,20 @@ fn transcript(state: &State, width: usize, theme: &Theme) -> (Vec<Line<'static>>
             Span::styled("thinking…", ink(Ink::Dim, theme)),
         ]));
     }
-    (out, maths)
+    (out, maths, marks)
 }
 
-fn entry_lines(e: &Entry, state: &State, width: usize, theme: &Theme, live: bool, out: &mut Vec<Line<'static>>) {
+/// A tool call's inks: its marker's, then its call's. The accent marks every call (red one that
+/// failed) and the call is the body weight, so a call never shares the reasoning block's dim
+/// weight and dimmer rule, open or closed.
+fn tool_ink(status: &ToolStatus) -> (Ink, Ink) {
+    match status {
+        ToolStatus::Failed(_) => (Ink::Red, Ink::Body),
+        ToolStatus::Running | ToolStatus::Done(_) => (Ink::Accent, Ink::Body),
+    }
+}
+
+fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, theme: &Theme, live: bool, out: &mut Vec<Line<'static>>) {
     match e {
         Entry::User { text, steer } => {
             let label = if *steer { "steer" } else { "you" };
@@ -199,9 +323,9 @@ fn entry_lines(e: &Entry, state: &State, width: usize, theme: &Theme, live: bool
                 out.extend(markdown::render_prose(text, width, theme, base));
             }
         }
-        Entry::Thinking { text, tokens, live } => {
+        Entry::Thinking { text, tokens, live, ms } => {
             let n = if *tokens > 0 { *tokens } else { (text.chars().count() as u64).div_ceil(4) };
-            let open = state.show_thinking && !text.trim().is_empty();
+            let open = state.thought_open(idx) && !text.trim().is_empty();
             let marker = if open { chrome::DISCLOSURE_OPEN } else { chrome::DISCLOSURE_CLOSED };
             let head = if *live {
                 vec![
@@ -210,9 +334,11 @@ fn entry_lines(e: &Entry, state: &State, width: usize, theme: &Theme, live: bool
                     Span::styled(format!("{} tokens", text::thousands(n)), ink(Ink::Dimmer, theme)),
                 ]
             } else {
+                // How long it took, once that is known and at least a second.
+                let took = if *ms >= 1000 { format!(" for {}", text::took(*ms)) } else { String::new() };
                 vec![
                     Span::styled(format!("{marker} "), ink(Ink::Dimmer, theme)),
-                    Span::styled(format!("thought · {} tokens", text::thousands(n)), ink(Ink::Dimmer, theme)),
+                    Span::styled(format!("thought{took} · {} tokens", text::thousands(n)), ink(Ink::Dimmer, theme)),
                 ]
             };
             out.push(Line::from(head));
@@ -237,20 +363,23 @@ fn entry_lines(e: &Entry, state: &State, width: usize, theme: &Theme, live: bool
             }
         }
         Entry::Tool { summary, status, .. } => {
+            // A tool call is an action, not reasoning: the accent's marker and the body weight,
+            // where a reasoning block is the dim weight behind a dimmer rule ([`tool_ink`]).
             let marker = format!("{} ", chrome::TOOL_MARKER);
             let summary = text::clean(summary.lines().next().unwrap_or(""));
-            let (marker_style, tail) = match status {
-                ToolStatus::Running => (ink(Ink::Accent, theme), Some(("…".to_string(), ink(Ink::Dim, theme)))),
-                ToolStatus::Done(s) if s.trim().is_empty() => (ink(Ink::Dim, theme), None),
-                ToolStatus::Done(s) => (ink(Ink::Dim, theme), Some((text::clean(s), ink(Ink::Dim, theme)))),
+            let (marker_ink, call_ink) = tool_ink(status);
+            let tail = match status {
+                ToolStatus::Running => Some(("…".to_string(), ink(Ink::Dim, theme))),
+                ToolStatus::Done(s) if s.trim().is_empty() => None,
+                ToolStatus::Done(s) => Some((text::clean(s), ink(Ink::Dim, theme))),
                 ToolStatus::Failed(s) => {
                     let s = if s.trim().is_empty() { "failed".to_string() } else { text::clean(s) };
-                    (ink(Ink::Red, theme), Some((s, ink(Ink::Red, theme))))
+                    Some((s, ink(Ink::Red, theme)))
                 }
             };
             let tail_w = tail.as_ref().map_or(0, |(t, _)| text::width(t) + 3);
             let head = text::truncate(&summary, width.saturating_sub(2 + tail_w.min(width / 2)).max(8));
-            let mut spans = vec![Span::styled(marker, marker_style), Span::styled(head, ink(Ink::Dim, theme))];
+            let mut spans = vec![Span::styled(marker, ink(marker_ink, theme)), Span::styled(head, ink(call_ink, theme))];
             if let Some((t, st)) = tail {
                 let room = width.saturating_sub(2 + text::width(&spans[1].content) + 3);
                 if t == "…" {

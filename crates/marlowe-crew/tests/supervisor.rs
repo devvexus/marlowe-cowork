@@ -890,6 +890,7 @@ fn the_store_round_trips_runs_and_steps() {
         output: Some("1. do it".into()),
         usage: Usage { input: 5, output: 3, ..Default::default() },
         tainted: false,
+        truncated: false,
         at_ms: 1,
     };
     store.append_step(&rec).unwrap();
