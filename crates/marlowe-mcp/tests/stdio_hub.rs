@@ -120,8 +120,10 @@ fn parity_x12_a_server_that_exits_reports_why_and_a_crashed_one_is_restarted_by_
     let home = tmp("crash");
     let hub = hub_with(&home, None, &[("dies", entry(&["--stderr-note", "--exit-after-init"]))]);
     let st = &hub.statuses()[0];
-    // It exited right after the handshake: the list may already have failed.
-    assert!(matches!(&st.status, SlotStatus::Failed(why) if why.contains("exiting as asked") || why.contains("exited")) || st.status == SlotStatus::Connected, "{st:?}");
+    // It exited right after the handshake: the list may already have failed, with the reason
+    // its stderr gave (which of its lines was read first is a race under load).
+    let from_stderr = |why: &str| why.contains("exiting as asked") || why.contains("exited") || why.contains("fake server booting");
+    assert!(matches!(&st.status, SlotStatus::Failed(why) if from_stderr(why)) || st.status == SlotStatus::Connected, "{st:?}");
 
     let home = tmp("restart");
     let hub = hub_with(&home, None, &[("fake", entry(&[]))]);
