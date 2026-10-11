@@ -36,6 +36,9 @@ pub struct HookContext {
     /// Set inside a subagent.
     pub agent_id: Option<String>,
     pub agent_type: Option<String>,
+    /// What started the turn, for `UserPromptSubmit`: `monitor`, `cron`, `wakeup`... when it was
+    /// background news and not the user typing (X22).
+    pub source: Option<String>,
 }
 
 /// Claude Code's name for a Marlowe mode.
@@ -232,6 +235,9 @@ pub fn input_json(ctx: &HookContext, data: &EventData) -> Value {
         }
         EventData::UserPromptSubmit { prompt } => {
             m.insert("prompt".into(), json!(prompt));
+            if let Some(s) = &ctx.source {
+                m.insert("source".into(), json!(s));
+            }
         }
         EventData::Notification { message, notification_type } => {
             m.insert("message".into(), json!(message));

@@ -480,6 +480,28 @@ impl Brains {
         self.factory().hardware().map(|hw| hw.models.loaded_models()).unwrap_or_default()
     }
 
+    /// Unloads every model in the library that the local engine has loaded, so the GPU is free
+    /// before anything else shuts down (the window closed). A model the library does not list is
+    /// someone else's and stays. Returns what was unloaded and what could not be.
+    pub fn unload_local_models(&self) -> (Vec<String>, Vec<String>) {
+        let Some(hw) = self.factory().hardware() else { return (Vec::new(), Vec::new()) };
+        let ours: Vec<String> = self
+            .with_library(|l| l.models())
+            .map(|ms| ms.into_iter().filter(|m| m.model.provider == ProviderKind::Ollama).map(|m| m.model.model_id).collect())
+            .unwrap_or_default();
+        let (mut done, mut failed) = (Vec::new(), Vec::new());
+        for name in hw.models.loaded_models() {
+            if !ours.iter().any(|o| same_model(o, &name)) {
+                continue;
+            }
+            match hw.models.unload(&name) {
+                Ok(()) => done.push(name),
+                Err(e) => failed.push(e),
+            }
+        }
+        (done, failed)
+    }
+
     /// [`Brains::loaded_local_models`], with `None` when the engine did not answer (what is
     /// loaded is unknown) and `Some(empty)` when there is no hardware probe in this build.
     pub fn resident_local_models(&self) -> Option<Vec<String>> {
@@ -501,4 +523,11 @@ impl Brains {
         self.ctx.seen.lock().unwrap_or_else(|e| e.into_inner()).clear();
         r
     }
+}
+
+/// Ollama names a model `name:tag` and `/api/ps` always spells the tag; a library id may omit
+/// `:latest`.
+fn same_model(a: &str, b: &str) -> bool {
+    let norm = |s: &str| if s.contains(':') { s.to_string() } else { format!("{s}:latest") };
+    norm(a) == norm(b)
 }

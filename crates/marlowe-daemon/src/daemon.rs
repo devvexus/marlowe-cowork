@@ -167,6 +167,11 @@ impl Core {
         self.crew.get().is_some_and(|c| c.supervisor.running() > 0)
     }
 
+    /// Whether the live session `id` has a turn running; `None` when it is not live.
+    pub fn live_busy(&self, id: &SessionId) -> Option<bool> {
+        lock(&self.sessions).get(id).map(|h| h.is_busy())
+    }
+
     /// True while `id` has a running session runner (its conversation lives in memory).
     pub fn is_live(&self, id: &SessionId) -> bool {
         lock(&self.sessions).contains_key(id)
@@ -344,6 +349,62 @@ impl Core {
     }
 }
 
+/// What a test or the binary can reach of a running daemon beyond the wire: [`Daemon::wait`]
+/// consumes the daemon, this does not.
+#[derive(Clone)]
+pub struct DaemonControl {
+    core: Arc<Core>,
+}
+
+impl DaemonControl {
+    /// The background operations a session's tools reach (schedules, messages, notifications,
+    /// the outbox, notices, watches). The real tools get theirs from the session's services.
+    pub fn background(&self) -> Arc<dyn marlowe_agent::BackgroundOps> {
+        self.background_with(None, None)
+    }
+
+    /// The same, with the session's hook runner (the Notification hook fires on `notify`) and an
+    /// asker for the first-message-to-a-session question.
+    pub fn background_with(
+        &self,
+        hooks: Option<Arc<marlowe_agent::hooks::HookRunner>>,
+        questions: Option<marlowe_agent::todo::Questions>,
+    ) -> Arc<dyn marlowe_agent::BackgroundOps> {
+        Arc::new(crate::bg_ops::DaemonBackground { core: self.core.clone(), hooks, questions })
+    }
+
+    /// What replaces the toast, the voice and the file opener (tests).
+    pub fn notify_hooks(&self) -> crate::NotifyHooks {
+        crate::NotifyHooks(crate::notify_ops::notify_state(&self.core))
+    }
+
+    /// What replaces the tray icon and the model unloader, and the log of a close (tests).
+    pub fn close_hooks(&self) -> crate::CloseHooks {
+        crate::CloseHooks(crate::close_ops::close_state_of(&self.core))
+    }
+
+    /// The task registry.
+    pub fn tasks(&self) -> Arc<dyn marlowe_agent::TaskRegistry> {
+        crate::tasks::handle(&self.core)
+    }
+
+    /// The memory service, when the binary gave the daemon one.
+    pub fn mind(&self) -> Option<marlowe_mind::Mind> {
+        self.core.mind.clone()
+    }
+
+    /// Fires every schedule due at `now` (a fake clock for tests; the daemon's own thread uses
+    /// the real one).
+    pub fn tick_schedules_at(&self, now_ms: i64) {
+        crate::schedule_ops::tick_at(&self.core, now_ms);
+    }
+
+    /// Asks the daemon to stop, as `Request::Shutdown` does.
+    pub fn shutdown(&self) {
+        self.core.request_shutdown();
+    }
+}
+
 /// A running daemon. [`crate::run`] is `start` + `wait`; tests drive it directly.
 pub struct Daemon {
     core: Arc<Core>,
@@ -456,6 +517,12 @@ impl Daemon {
         crate::tasks::handle(&self.core)
     }
 
+    /// A handle for tests and the binary: the daemon's background operations, notification and
+    /// close hooks, and a fake clock for schedules. It stays valid while `wait` runs.
+    pub fn control(&self) -> DaemonControl {
+        DaemonControl { core: self.core.clone() }
+    }
+
     /// What `daemon.json` says.
     pub fn info(&self) -> DaemonInfo {
         DaemonInfo { port: self.core.addr.port(), token: self.core.token.clone(), pid: std::process::id() }
@@ -481,16 +548,20 @@ impl Daemon {
         if let Some(a) = self.acceptor.take() {
             let _ = a.join();
         }
+        // 1. Pause: running turns and crew runs are told to stop where they are (in-flight model
+        // requests end now; every completed step stays checkpointed).
         let handles: Vec<Arc<SessionHandle>> = lock(&core.sessions).values().cloned().collect();
         for h in &handles {
             h.stop();
         }
         // Before approvals are denied: a run waiting on one sees the stop, not a refusal.
-        crate::crew::shutdown(&core);
+        let in_flight = crate::close_ops::pause(&core);
         core.approvals.deny_all();
-        if let Some(v) = &core.voice {
-            v.shutdown();
-        }
+        // 2. Unload: the models Marlowe loaded and the voice sidecar go before anything is saved,
+        // so the GPU is free within seconds of the close.
+        crate::close_ops::unload(&core);
+        // 3. Save: the crew's runs, then the sessions, the journal and the memory snapshot.
+        crate::close_ops::settle(&core, &in_flight);
         if let Some(s) = &core.sentinel {
             s.shutdown();
         }
@@ -511,6 +582,8 @@ impl Daemon {
             let _ = s.join();
         }
         DaemonInfo::remove_if_ours(&core.home, std::process::id())?;
+        // 4. Exit.
+        crate::close_ops::finished(&core);
         Ok(())
     }
 }

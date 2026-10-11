@@ -207,6 +207,7 @@ fn ctx() -> HookContext {
         turn_id: "7".into(),
         agent_id: Some("a1".into()),
         agent_type: Some("explore".into()),
+        source: None,
     }
 }
 

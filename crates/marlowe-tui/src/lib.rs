@@ -12,6 +12,7 @@ use marlowe_proto::DaemonInfo;
 
 pub mod attach;
 pub mod client;
+pub mod closing;
 pub mod code_events;
 pub mod coding;
 pub mod compose;

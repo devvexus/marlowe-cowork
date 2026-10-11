@@ -479,6 +479,9 @@ pub enum Overlay {
     /// A coding panel (`/config`, the transcript, `ask_user`, ...); its state is
     /// `State::code.panel`.
     Panel,
+    /// A question with buttons: quit with work running, or resume what a close interrupted. What
+    /// it asks is `State::closing.dialog`.
+    Choice { sel: usize },
     /// The context and hardware planner for `model`: the field ←/→ adjust, the policy being
     /// edited (`None` until the plan arrives), and whether the review screen is up.
     ContextPlan {
@@ -637,6 +640,8 @@ pub struct State {
     pub code: crate::coding::Coding,
     /// Context windows, the live meter, the planner's plan.
     pub context: crate::context::ContextUi,
+    /// Quitting, closing the window and resuming what a close interrupted (track N).
+    pub closing: crate::closing::Closing,
 
     pub view: View,
     /// Which box on the conversation screen has the keys.
@@ -727,6 +732,7 @@ impl State {
             crew: Crew::default(),
             code: crate::coding::Coding::default(),
             context: crate::context::ContextUi::default(),
+            closing: Default::default(),
             view: View::Conversation,
             focus: Focus::Message,
             board_tab: BoardTab::Crew,
@@ -960,6 +966,7 @@ impl State {
             }
             self.last_seq = env.seq;
         }
+        self.closing_observe(&env.event);
         self.event(&env.event, env.at_ms, env.seq == 0, &mut out);
         out
     }
@@ -1288,6 +1295,7 @@ impl State {
                 }
             }
             Event::Status(_) => {}
+            Event::Interrupted { .. } | Event::KeepRunning { .. } | Event::Closing { .. } => self.closing_event(ev),
             Event::Brief { text, offers, .. } => self.on_brief(text, offers),
             Event::Notice(n) => self.on_notice(n),
             Event::Notices { list } => self.on_notices(list),

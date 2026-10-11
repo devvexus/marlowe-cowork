@@ -27,7 +27,7 @@ mod user;
 mod watch;
 
 pub use background::{
-    Finding, FindingSeverity, FastState, NotifyState, PlanFileDecision, RuleSuggestion, SavedWorkflow, SentFile, TaskInfo,
+    Finding, FindingSeverity, FastState, InterruptedRun, NotifyState, PlanFileDecision, RuleSuggestion, SavedWorkflow, SentFile, TaskInfo,
     TaskKind, TaskStatus, Urgency, WorkflowAgentInfo, WorkflowAgentStatus, WorkflowInfo, WorkflowRef,
 };
 pub use coding::{

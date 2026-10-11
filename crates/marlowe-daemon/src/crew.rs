@@ -126,12 +126,14 @@ fn on_event(core: &Arc<Core>, ev: CrewEvent) {
         CrewEvent::Updated(info) => {
             let failed = info.status == CrewRunStatus::Failed;
             core.bus.publish(Event::RunUpdated(info.clone()));
+            crate::tasks::crew_changed(core, &info);
             if let (true, Some(session)) = (failed, info.session.clone()) {
                 let id = info.id.clone();
                 relay(core, &session, &id, None, Some(info));
             }
         }
         CrewEvent::Step { run, step, action, text_delta } => {
+            crate::tasks::crew_step(core, &run, step, &action, text_delta.as_deref());
             core.bus.publish(Event::RunStep { run, step, action, text_delta });
         }
         CrewEvent::Finished { run, session, dispatch } => {

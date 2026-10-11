@@ -408,13 +408,17 @@ fn parity_g7_the_shell_guard_holds_without_the_git_group() {
 fn every_group_file_registers_its_hooks() {
     let setup = super::HostSetup { home: Path::new("C:/home"), workspace: None };
     let host = super::configure(BuiltinTools::new(None), &setup);
-    // Configuring adds the git group (track J), the agent group (track F) and, where Edge is
-    // installed, the browser (D).
+    // Configuring adds the git group (track J), the agent group (track F), the tasks and notify
+    // groups (track N) and, where Edge is installed, the browser (D).
     let rest = |h: &BuiltinTools| {
         h.specs()
             .iter()
             .filter(|s| !matches!(s.name.as_str(), "git" | "gh" | "ci_status" | "browser"))
-            .filter(|s| h.manifest(&s.name).is_some_and(|m| m.group != marlowe_agent::ToolGroup::Agent))
+            .filter(|s| {
+                h.manifest(&s.name).is_some_and(|m| {
+                    !matches!(m.group, marlowe_agent::ToolGroup::Agent | marlowe_agent::ToolGroup::Tasks | marlowe_agent::ToolGroup::Notify)
+                })
+            })
             .count()
     };
     assert_eq!(rest(&host), rest(&BuiltinTools::new(None)), "the other configures change nothing here");
@@ -432,7 +436,10 @@ fn every_group_file_registers_its_hooks() {
             (g.persona_block)().is_some(),
             matches!(
                 g.group,
-                marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Verify | marlowe_agent::ToolGroup::Agent
+                marlowe_agent::ToolGroup::Git
+                    | marlowe_agent::ToolGroup::Verify
+                    | marlowe_agent::ToolGroup::Agent
+                    | marlowe_agent::ToolGroup::Tasks
             ),
             "{:?}: a block needs its capability live first",
             g.group

@@ -26,6 +26,7 @@
 pub mod corpus;
 pub mod git;
 pub mod jobs;
+mod monitor;
 mod paper;
 pub mod paths;
 pub mod render;

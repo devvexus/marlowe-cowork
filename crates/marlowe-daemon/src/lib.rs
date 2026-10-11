@@ -13,12 +13,14 @@
 #![forbid(unsafe_code)]
 
 pub mod brief;
+mod bg_ops;
 mod blob_ops;
 mod boot;
 mod brief_ops;
 mod bus;
 mod checkpoint;
 mod client;
+mod close_ops;
 mod conductor_ops;
 mod context_ops;
 mod crew;
@@ -56,7 +58,9 @@ use marlowe_model::ModelInfo;
 use marlowe_sentinel::{Sentinel, SentinelEvent};
 use marlowe_voice::{Voice, VoiceEvent};
 
-pub use daemon::Daemon;
+pub use close_ops::{resume_prompt, CloseHooks, Unloader};
+pub use daemon::{Daemon, DaemonControl};
+pub use notify_ops::{NotifyHooks, Opener, ShellOpener, Speaker};
 pub use mind::{ComposedTools, MindMemory, MindTools, RecallSink, MEMORY_TOOLS};
 
 /// What the daemon knows when it builds a session's tool host.
@@ -135,6 +139,9 @@ pub struct DaemonConfig {
     /// model onto the GPU the user's jobs use. Even when on, it waits for an idle GPU and no live
     /// run. `MARLOWE_BRIEF_LOCAL_POLISH=1` turns it on for `marlowe daemon`.
     pub local_polish: bool,
+    /// How long after the last window disconnects without saying goodbye the daemon waits for
+    /// one to reconnect before it stops everything (a closed window).
+    pub close_grace: Duration,
 }
 
 impl Default for DaemonConfig {
@@ -149,6 +156,7 @@ impl Default for DaemonConfig {
             session_idle: Duration::from_secs(30 * 60),
             legacy_offer: true,
             local_polish: false,
+            close_grace: Duration::from_secs(2),
         }
     }
 }

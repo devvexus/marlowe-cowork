@@ -44,7 +44,7 @@ impl State {
         // The approval modal takes every key while it is up, except quit (the daemon then times
         // the request out to Deny).
         if ctrl && k.code == KeyCode::Char('q') {
-            self.quit = true;
+            self.request_quit();
             return out;
         }
         if !self.approvals.is_empty() {
@@ -356,6 +356,12 @@ impl State {
                 }
                 return;
             }
+            Some(Overlay::Choice { .. }) => {
+                if let (Some(Target::Button(i)), Some(dialog)) = (self.target_at(at), self.closing.dialog.clone()) {
+                    self.choose(&dialog, i.min(dialog.choices().len() - 1), out);
+                }
+                return;
+            }
             Some(_) => return,
             None => {}
         }
@@ -641,7 +647,7 @@ impl State {
                     self.code.interrupting = true;
                 }
             }
-            Command::Quit => self.quit = true,
+            Command::Quit => self.request_quit(),
             Command::Transcript => self.open_transcript(out),
             Command::HistorySearch => {
                 self.view = View::Conversation;
@@ -757,6 +763,9 @@ impl State {
             if matches!(self.overlay, Some(Overlay::ImportOffer { .. })) {
                 self.legacy_dismissed = true;
             }
+            if matches!(self.overlay, Some(Overlay::Choice { .. })) {
+                self.closing.dialog = None;
+            }
             if matches!(self.overlay, Some(Overlay::ModelPicker { .. } | Overlay::WorkspacePicker { .. })) {
                 self.focus = Focus::Message;
             }
@@ -823,6 +832,7 @@ impl State {
                 }
             }
             Overlay::ImportOffer { sel } => self.offer_key(k, sel, out),
+            Overlay::Choice { sel } => self.choice_key(k, sel, out),
             Overlay::Onboard | Overlay::Dispatch | Overlay::Panel | Overlay::ContextPlan { .. } => {}
             Overlay::Sessions { sel } => {
                 let n = self.session_rows().len();

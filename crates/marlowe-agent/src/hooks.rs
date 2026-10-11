@@ -154,6 +154,7 @@ impl HookRunner {
             turn_id: turn.map(|t| t.to_string()).unwrap_or_default(),
             agent_id: None,
             agent_type: None,
+            source: None,
         }
     }
 
@@ -345,6 +346,16 @@ impl HookRunner {
         self.run(&EventData::PostCompact { trigger: trigger.to_string() }, &self.context(None), &|| false)
     }
 
+    /// Notification hooks for a `notify` call (type `agent_notification`). Informational: the
+    /// hook's output is not used.
+    pub fn notification(&self, message: &str) -> HookOutcome {
+        if !self.has(HookEvent::Notification) {
+            return HookOutcome::default();
+        }
+        let data = EventData::Notification { message: message.to_string(), notification_type: "agent_notification".into() };
+        self.run(&data, &self.context(None), &|| false)
+    }
+
     /// SubagentStart hooks (the subagent runner calls this); their context goes to the subagent.
     pub fn subagent_start(&self, agent_id: &str, agent_type: &str) -> HookOutcome {
         let mut ctx = self.context(None);
@@ -448,7 +459,10 @@ impl ToolMiddleware for HookMiddleware {
     fn before_turn(&self, convo: &mut Conversation, text: &mut String) -> TurnFlow {
         let mut context = Vec::new();
         if self.runner.has(HookEvent::UserPromptSubmit) {
-            let o = self.runner.run(&EventData::UserPromptSubmit { prompt: text.clone() }, &self.ctx(Some(convo.next_turn)), &|| false);
+            // A turn that background news started says so (X22): monitor, cron, wakeup...
+            let mut ctx = self.ctx(Some(convo.next_turn));
+            ctx.source = crate::background::relay_source(text);
+            let o = self.runner.run(&EventData::UserPromptSubmit { prompt: text.clone() }, &ctx, &|| false);
             if let Some(why) = o.stop.clone().or_else(|| o.block.clone()) {
                 return TurnFlow::Block(why);
             }

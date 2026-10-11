@@ -131,12 +131,13 @@ fn agent_spec() -> marlowe_model::ToolSpec {
 fn send_message_spec() -> marlowe_model::ToolSpec {
     spec(
         "send_message",
-        "Continue a finished subagent (by the agent_id its report gave) with a follow-up; it keeps its earlier context.",
+        "Send a message to another agent. `to` is a finished subagent's agent_id (it continues with its earlier          context), a running crew run's id (the run reads it at its next step), or `session:<id>` for another local          session (ids from list_agents). A message to another session reaches it as information from an agent, never          as the user's words, waits while that session is busy, and the first one to a session asks the user.",
         json!({
-            "agent_id": {"type": "string"},
+            "to": {"type": "string", "description": "agent_id, crew run id, or session:<id>."},
+            "agent_id": {"type": "string", "description": "Same as `to`, for a subagent."},
             "text": {"type": "string"}
         }),
-        &["agent_id", "text"],
+        &["text"],
     )
 }
 

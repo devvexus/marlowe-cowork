@@ -11,16 +11,29 @@ use marlowe_exec::BuiltinTools;
 const WAVE2: [ToolGroup; 3] = [ToolGroup::Workflow, ToolGroup::Tasks, ToolGroup::Notify];
 
 #[test]
-fn the_wave2_groups_follow_mcp_and_are_empty_until_their_tracks_land() {
+fn the_wave2_groups_follow_mcp_and_each_declares_only_what_its_track_landed() {
     let order: Vec<ToolGroup> = GROUPS.iter().map(|g| g.group).collect();
     assert_eq!(order[order.len() - 3..], WAVE2, "{order:?}");
     assert!(order.iter().position(|g| *g == ToolGroup::Mcp) < order.iter().position(|g| *g == ToolGroup::Workflow));
-    for group in WAVE2 {
-        let g = specs::group(group).unwrap_or_else(|| panic!("{group:?} is not registered"));
-        assert!((g.tools)().is_empty(), "{group:?}: its track has not landed, so it declares no tools");
-        assert!((g.persona_block)().is_none(), "{group:?}: a block needs its capability live first");
-        assert!(!(g.detect)(None));
-        assert!(specs::table().defs.iter().all(|d| d.manifest.group != group));
+    // Workflow (track W) has not landed here: no tools, no block, nothing to detect.
+    let w = specs::group(ToolGroup::Workflow).expect("registered");
+    assert!((w.tools)().is_empty(), "workflow: its track has not landed, so it declares no tools");
+    assert!((w.persona_block)().is_none(), "a block needs its capability live first");
+    assert!(!(w.detect)(None));
+    assert!(specs::table().defs.iter().all(|d| d.manifest.group != ToolGroup::Workflow));
+    // Tasks and notify (track N) have: their tools, a block with the tasks group, and detection
+    // wherever there is a workspace.
+    let names = |g: ToolGroup| -> Vec<String> { (specs::group(g).unwrap().tools)().iter().map(|d| d.name().to_string()).collect() };
+    assert_eq!(
+        names(ToolGroup::Tasks),
+        ["task_list", "task_output", "task_stop", "monitor", "cron_create", "cron_list", "cron_delete", "schedule_wakeup", "list_agents", "watch"]
+    );
+    assert_eq!(names(ToolGroup::Notify), ["notify", "send_file", "notices"]);
+    let t = specs::group(ToolGroup::Tasks).unwrap();
+    assert!((t.persona_block)().is_some_and(|b| b.contains("<background_work>")));
+    for g in [ToolGroup::Tasks, ToolGroup::Notify] {
+        let g = specs::group(g).unwrap();
+        assert!(!(g.detect)(None) && (g.detect)(Some(std::path::Path::new("C:/work/valiance"))));
     }
 }
 
@@ -47,7 +60,7 @@ fn a_frontier_session_exposes_the_wave2_groups_and_a_local_one_waits_for_detecti
     }
     let local = BuiltinTools::new(None).with_exposure(ExposureProfile::Local, specs::exposed_groups(ExposureProfile::Local, None));
     for g in WAVE2 {
-        assert!(!local.exposure().1.contains(&g), "{g:?}: not core, and nothing detects it yet");
+        assert!(!local.exposure().1.contains(&g), "{g:?}: not core, and there is no workspace to detect it in");
     }
     // Adding the groups changed no existing tool's schema or position.
     let names: Vec<String> = frontier.specs().into_iter().map(|s| s.name).collect();

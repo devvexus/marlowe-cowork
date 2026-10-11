@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 marlowe-agent.workspace = true
+# N: SessionId and the notice, schedule and sent-file types the background tools shape.
+marlowe-proto.workspace = true
 marlowe-model.workspace = true
 marlowe-brains.workspace = true
 marlowe-net.workspace = true
@@ -33,5 +35,4 @@ grep-regex = "0.1.14"
 grep-matcher = "0.1.9"
 
 [dev-dependencies]
-marlowe-proto.workspace = true
 crossbeam-channel.workspace = true

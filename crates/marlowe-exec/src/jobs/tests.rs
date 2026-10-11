@@ -74,6 +74,7 @@ fn start(jobs: &HostJobs, tools: &crate::BuiltinTools, script: &str, cap: u64) -
             foreground: false,
             cap,
             user: false,
+            hidden: false,
             leftovers: Leftovers::Release,
             timeout: None,
         },

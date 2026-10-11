@@ -54,6 +54,7 @@ pub const BUILTINS: &[Builtin] = &[
     b("loop", &[], Args::Optional("interval prompt"), "run a prompt on a schedule, e.g. /loop 10m check the build"),
     b("todos", &[], Args::None, "show or hide the todo list"),
     b("jobs", &[], Args::None, "background jobs"),
+    b("keep-running", &[], Args::Optional("on|off"), "keep Marlowe running after its window closes (off by default)"),
     b("exit", &["quit"], Args::None, "leave Marlowe"),
 ];
 
@@ -202,6 +203,11 @@ impl State {
             self.flash(format!("/{} needs {hint}", b.name), NoteTone::Amber);
             return Outcome::Handled;
         }
+        // `/loop <prompt>` with no interval is self-paced (BG6): the daemon expands it, and the
+        // model re-arms itself with `schedule_wakeup` until it has nothing left to watch.
+        if b.name == "loop" && !args.is_empty() && !args.split_whitespace().next().is_some_and(|w| parse_interval(w).is_some()) {
+            return Outcome::Forward;
+        }
         match b.name {
             "help" => self.open_help(out),
             "config" => self.open_config(out),
@@ -275,7 +281,8 @@ impl State {
                 }
             }
             "jobs" => self.open_jobs(out),
-            "exit" => self.quit = true,
+            "keep-running" => self.slash_keep_running(&args, out),
+            "exit" => self.request_quit(),
             other => return Outcome::Unknown(other.to_string()),
         }
         Outcome::Handled

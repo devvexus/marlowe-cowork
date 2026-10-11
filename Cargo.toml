@@ -143,10 +143,15 @@ windows = { version = "=0.62.2", features = [
     "Storage_Streams",
     "UI_Notifications",
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
     "Win32_System_Performance",
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 # M4. Job Objects for marlowe-os (kill-on-close process trees). Same family as `windows` above.

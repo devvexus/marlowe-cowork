@@ -331,6 +331,47 @@ fn parity_x6_notification_runs_off_the_asking_thread() {
     assert_eq!(v["message"], "bash: cargo build");
 }
 
+/// BG7: a `notify` call fires the Notification hook too, as `agent_notification`.
+#[test]
+fn parity_bg7_notify_fires_the_notification_hook() {
+    let s = setup(
+        "bg7",
+        PermissionMode::Default,
+        vec![
+            hook(HookEvent::Notification, Some("agent_notification"), "cat > notify.tmp && mv notify.tmp notify.json"),
+            hook(HookEvent::Notification, Some("permission_prompt"), "echo wrong > wrong.json"),
+        ],
+    );
+    s.runner.notification("Run finished: val loss 0.41");
+    let v: Value = serde_json::from_str(&s.read("notify.json")).unwrap();
+    assert_eq!(v["hook_event_name"], "Notification");
+    assert_eq!(v["notification_type"], "agent_notification");
+    assert_eq!(v["message"], "Run finished: val loss 0.41");
+    assert!(s.read("wrong.json").is_empty(), "only the matching hook ran");
+    // No hook configured for the event: nothing runs, nothing fails.
+    let none = setup("bg7-none", PermissionMode::Default, Vec::new());
+    assert!(none.runner.notification("x").notes.is_empty());
+}
+
+/// X22: a turn that background news started says so to its UserPromptSubmit hook; the user
+/// typing does not.
+#[test]
+fn parity_x22_a_background_turn_tells_its_hook_what_started_it() {
+    let s = setup("x22", PermissionMode::Default, vec![hook(HookEvent::UserPromptSubmit, None, "cat > prompt.json")]);
+    let mut convo = s.convo();
+    let mut text = "[crew · run background · cron]\n[schedule cron_9 fired · cron `0 9 * * *`]\ncheck the nightly run".to_string();
+    assert_eq!(s.mw.before_turn(&mut convo, &mut text), crate::TurnFlow::Continue);
+    let v: Value = serde_json::from_str(&s.read("prompt.json")).unwrap();
+    assert_eq!(v["hook_event_name"], "UserPromptSubmit");
+    assert_eq!(v["source"], "cron");
+    assert!(v["prompt"].as_str().unwrap().contains("check the nightly run"));
+    std::fs::remove_file(s.root().join("prompt.json")).unwrap();
+    let mut typed = "fix the gate".to_string();
+    s.mw.before_turn(&mut convo, &mut typed);
+    let v: Value = serde_json::from_str(&s.read("prompt.json")).unwrap();
+    assert!(v.get("source").is_none(), "{v}");
+}
+
 // ---- X7 PreCompact
 
 #[test]
