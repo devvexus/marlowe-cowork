@@ -303,6 +303,7 @@ fn crew_shell_consequence(
     match sandbox.classify_shell(str_arg(&call.args, "command").unwrap_or(""), exposure.tainted) {
         Consequence::Free => Consequence::Free,
         Consequence::Ask { summary } => Consequence::Ask { summary: format!("{}: {summary}", call.name) },
+        Consequence::AskEvery { summary } => Consequence::AskEvery { summary: format!("{}: {summary}", call.name) },
     }
 }
 
@@ -328,6 +329,7 @@ fn crew_python_consequence(
     };
     match code.map(|c| sandbox.classify_code(&c)) {
         Some(Consequence::Ask { summary }) => Consequence::Ask { summary: format!("python: {summary}") },
+        Some(Consequence::AskEvery { summary }) => Consequence::AskEvery { summary: format!("python: {summary}") },
         _ => Consequence::Free,
     }
 }

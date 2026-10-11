@@ -691,7 +691,12 @@ fn consequence(tools: &BuiltinTools, call: &ToolCallReq, exposure: &Exposure, sa
         if secrets.is_empty() {
             return Consequence::Free;
         }
-        return Consequence::Ask { summary: with_secrets(summary, &secrets) };
+        return Consequence::AskEvery { summary: with_secrets(summary, &secrets) };
+    }
+    // A push, a branch delete and anything that stages a secret ask every time: a session allow
+    // keyed on `git` never covers them.
+    if matches!(class, Class::Push | Class::BranchDelete) || !secrets.is_empty() {
+        return Consequence::AskEvery { summary: with_secrets(summary, &secrets) };
     }
     Consequence::Ask { summary: with_secrets(summary, &secrets) }
 }

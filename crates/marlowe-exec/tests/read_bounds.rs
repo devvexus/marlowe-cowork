@@ -63,18 +63,27 @@ fn a_range_past_the_end_says_how_long_the_file_is() {
     assert!(o.content.contains("the file has 10"), "{}", o.content);
 }
 
+/// A file past the old 4 MB prefix is read by window and its tail is reachable (track A's review
+/// finding): a range returns exactly its lines, an offset at the last line returns it, and the
+/// default window continues by offset.
 #[test]
-fn an_oversized_file_is_capped_and_the_truncation_is_stated() {
+fn an_oversized_file_is_windowed_and_its_tail_is_reachable() {
     let ws = Ws::new("rb-big");
     let line = "x".repeat(99) + "\n";
     let n = (MAX_READ_BYTES as usize / line.len()) + 100;
     ws.put("big.txt", line.repeat(n));
+    let numbered = |content: &str| -> Vec<usize> {
+        content.lines().filter_map(|l| l.split_once('\t')).filter_map(|(k, _)| k.trim().parse().ok()).collect()
+    };
     let o = call(&ws.tools(), "read", json!({"path": "big.txt", "range": "1-3"}));
-    assert!(!o.is_error);
-    assert!(o.content.contains("stopped reading"), "cap must be stated");
+    assert!(!o.is_error, "{}", o.content);
+    assert!(!o.content.contains("stopped reading"), "{}", o.content);
+    assert_eq!(numbered(&o.content), [1, 2, 3]);
+    let o = call(&ws.tools(), "read", json!({"path": "big.txt", "offset": n}));
+    assert!(!o.is_error, "{}", o.content);
+    assert_eq!(numbered(&o.content), [n], "the last line is reachable");
     let o = call(&ws.tools(), "read", json!({"path": "big.txt"}));
-    assert!(o.content.contains("stopped reading"));
-    assert!(o.content.contains("Continue with range"), "windowing notice");
+    assert!(o.content.contains("Continue with offset"), "windowing notice");
 }
 
 #[test]

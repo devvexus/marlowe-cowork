@@ -262,6 +262,24 @@ pub enum Consequence {
     Free,
     /// Needs approval; `summary` is the one line shown in the approval modal.
     Ask { summary: String },
+    /// A fixed approval, asked every time: no session allow, rule, hook or mode frees it (a
+    /// secret-shaped file, an off-machine path, a push, a pull request or a comment on one).
+    AskEvery { summary: String },
+}
+
+impl Consequence {
+    /// The approval line, when the call asks.
+    pub fn summary(&self) -> Option<&str> {
+        match self {
+            Consequence::Free => None,
+            Consequence::Ask { summary } | Consequence::AskEvery { summary } => Some(summary),
+        }
+    }
+
+    /// The call needs approval (either kind).
+    pub fn asks(&self) -> bool {
+        !matches!(self, Consequence::Free)
+    }
 }
 
 /// What a session has been exposed to. It changes which calls need approval.

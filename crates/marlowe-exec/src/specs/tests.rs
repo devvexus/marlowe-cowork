@@ -228,8 +228,10 @@ fn every_tool_is_registered_once_in_its_group_in_the_old_order() {
     assert_eq!(
         names,
         [
-            "read", "write", "edit", "glob", "grep", "bash", "powershell", "python", "job_output", "job_watch", "job_kill",
-            "web_fetch", "arxiv", "paper", "web_search"
+            "read", "write", "edit", "multi_edit", "edit_lines", "notebook_edit", "glob", "grep", "bash", "powershell",
+            "python", "job_output", "job_watch", "job_kill", "web_fetch", "arxiv", "paper", "web_search", "symbols",
+            "definition", "references", "hover", "diagnostics", "rename_symbol", "todo", "ask_user", "skill", "agent",
+            "send_message", "exit_plan", "enter_worktree", "exit_worktree"
         ]
     );
     let git: Vec<&str> = table().defs.iter().filter(|d| d.manifest.group == marlowe_agent::ToolGroup::Git).map(|d| d.name()).collect();
@@ -309,7 +311,7 @@ fn crew_consequences_match_the_crew_host() {
     // Tainted python falls back to the plain consequence, which asks.
     assert!(matches!(
         host.consequence_in_sandbox(&call("python", json!({"code": "print(1)"})), &tainted, &sb),
-        Some(Consequence::Ask { .. })
+        Some(Consequence::Ask { .. } | Consequence::AskEvery { .. })
     ));
     // Tools without a crew consequence defer to the plain one.
     assert_eq!(host.consequence_in_sandbox(&call("read", json!({"path": "a"})), &clean, &sb), None);
@@ -365,34 +367,46 @@ fn exposure_fixes_the_tool_set_and_refuses_the_rest() {
     assert_eq!(BuiltinTools::new(None).with_model_exposure(&frontier).exposure().1, ToolGroup::ALL.as_slice());
 
     let files_only = BuiltinTools::new(None).with_exposure(ExposureProfile::Local, vec![ToolGroup::Files]);
-    assert_eq!(names(&files_only), vec!["read", "write", "edit"]);
+    // `edit_lines` is off unless a host asks for it (`with_edit_lines`).
+    assert_eq!(names(&files_only), vec!["read", "write", "edit", "multi_edit", "notebook_edit"]);
     let ctx = ToolCtx { session: SessionId("s".into()), turn: 0, workspace: None, cancel: CancelToken::new(), tainted: false };
     let out = files_only.call(&ToolCallReq { id: "c".into(), name: "bash".into(), args: json!({"command": "echo hi"}) }, &ctx);
     assert!(out.is_error && out.content.contains("not available in this session"), "{}", out.content);
-    assert!(files_only.middleware().is_empty());
-    assert!(files_only.persona_blocks().is_empty(), "no group has a persona block yet");
+    // The files group's one middleware is its FileState guard (read-before-edit, stale refusals).
+    assert_eq!(files_only.middleware().len(), 1);
+    assert!(files_only.persona_blocks().is_empty(), "the files group has no persona block");
 }
 
 #[test]
 fn every_group_file_registers_its_hooks() {
     let setup = super::HostSetup { home: Path::new("C:/home"), workspace: None };
     let host = super::configure(BuiltinTools::new(None), &setup);
-    // Configuring adds the git group (track J) and, where Edge is installed, the browser (D).
+    // Configuring adds the git group (track J), the agent group (track F) and, where Edge is
+    // installed, the browser (D).
     let rest = |h: &BuiltinTools| {
-        h.specs().iter().filter(|s| !matches!(s.name.as_str(), "git" | "gh" | "ci_status" | "browser")).count()
+        h.specs()
+            .iter()
+            .filter(|s| !matches!(s.name.as_str(), "git" | "gh" | "ci_status" | "browser"))
+            .filter(|s| h.manifest(&s.name).is_some_and(|m| m.group != marlowe_agent::ToolGroup::Agent))
+            .count()
     };
     assert_eq!(rest(&host), rest(&BuiltinTools::new(None)), "the other configures change nothing here");
     assert!(host.specs().iter().any(|s| s.name == "git"), "the git group (track J) is live once configured");
     for g in super::GROUPS {
         assert_eq!(super::group(g.group).map(|r| r.group), Some(g.group));
+        // Files: the FileState guard (A). Shell: job notices (B). Git: the git guard (J). Code
+        // adds post-edit diagnostics only with a local workspace (C).
         let expected = match g.group {
-            marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Shell => 1,
+            marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Shell | marlowe_agent::ToolGroup::Files => 1,
             _ => 0,
         };
         assert_eq!((g.middleware)(&host).len(), expected, "{:?}", g.group);
         assert_eq!(
             (g.persona_block)().is_some(),
-            matches!(g.group, marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Verify),
+            matches!(
+                g.group,
+                marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Verify | marlowe_agent::ToolGroup::Agent
+            ),
             "{:?}: a block needs its capability live first",
             g.group
         );

@@ -728,9 +728,9 @@ fn parity_b6_secret_writes_need_approval() {
     let root = temp("b6");
     let tools = BuiltinTools::new(Some(root.clone()));
     let call = |name: &str, args: Value| ToolCall { id: "c".into(), name: name.into(), args };
-    let asks = |c: &ToolCall| matches!(tools.consequence(c), Consequence::Ask { .. });
+    let asks = |c: &ToolCall| matches!(tools.consequence(c), Consequence::Ask { .. } | Consequence::AskEvery { .. });
     let crew_asks = |c: &ToolCall| {
-        matches!(tools.consequence_in_sandbox(c, &Exposure::default(), &Sandbox(root.clone())), Some(Consequence::Ask { .. }))
+        matches!(tools.consequence_in_sandbox(c, &Exposure::default(), &Sandbox(root.clone())), Some(Consequence::Ask { .. } | Consequence::AskEvery { .. }))
     };
     let key = format!("ghp_{}", "a".repeat(36));
     let cases = [
@@ -753,7 +753,7 @@ fn parity_b6_secret_writes_need_approval() {
         assert_eq!(crew_asks(c), *ask, "crew: {}", c.args);
     }
     match tools.consequence(&cases[0].0) {
-        Consequence::Ask { summary } => assert!(summary.contains("secrets need approval"), "{summary}"),
+        Consequence::Ask { summary } | Consequence::AskEvery { summary } => assert!(summary.contains("secrets need approval"), "{summary}"),
         other => panic!("{other:?}"),
     }
     let _ = std::fs::remove_dir_all(&root);
@@ -830,7 +830,7 @@ fn parity_t5_a_unc_write_is_never_touched_before_approval() {
                 assert!(matches!(m.before_approval(&mut call, &cx), CallFlow::Continue), "{name} {spelling}");
             }
             match s.tools.consequence_exposed(&call, &Exposure::default()) {
-                Consequence::Ask { summary } => assert!(summary.contains(&format!("reaches network host {HOST}")), "{summary}"),
+                Consequence::Ask { summary } | Consequence::AskEvery { summary } => assert!(summary.contains(&format!("reaches network host {HOST}")), "{summary}"),
                 other => panic!("{name} {spelling}: {other:?}"),
             }
             assert_eq!(s.tools.egress_host(&call).as_deref(), Some(HOST), "{name} {spelling}");
@@ -850,7 +850,7 @@ fn parity_t5_a_unc_write_is_never_touched_before_approval() {
         &Exposure::default(),
         &Sandbox(s.root.clone()),
     );
-    assert!(matches!(crew, Some(Consequence::Ask { summary }) if summary.contains(HOST)));
+    assert!(matches!(crew, Some(Consequence::Ask { summary } | Consequence::AskEvery { summary }) if summary.contains(HOST)));
     assert_eq!(port.hits(), 0);
 
     // Approved: before_call clears it, the tool goes to the share (the fake refuses), once.
@@ -867,7 +867,7 @@ fn parity_t5_a_unc_write_is_never_touched_before_approval() {
     // A device path asks with no host to allow.
     let pipe = ToolCall { id: "c".into(), name: "read".into(), args: json!({"path": r"\\.\pipe\marlowe-test"}) };
     match s.tools.consequence(&pipe) {
-        Consequence::Ask { summary } => assert!(summary.contains("device or namespace `pipe`"), "{summary}"),
+        Consequence::Ask { summary } | Consequence::AskEvery { summary } => assert!(summary.contains("device or namespace `pipe`"), "{summary}"),
         other => panic!("{other:?}"),
     }
     assert_eq!(s.tools.egress_host(&pipe), None);

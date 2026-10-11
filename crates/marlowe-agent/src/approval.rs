@@ -293,9 +293,15 @@ impl Permissions {
         let root = self.inner.workspace.clone().or_else(|| roots.first().cloned());
         let manifest = host.manifest(&call.name);
         let is_mcp = call.name.starts_with("mcp__") || manifest.as_ref().is_some_and(|m| m.group == ToolGroup::Mcp);
+        // A fixed ask (`AskEvery`) is a tripwire: no rule, hook, root or mode lifts it.
+        let mut fixed: Option<String> = None;
         let says = match host.consequence_exposed(call, exposure) {
             Consequence::Free => ToolSays::Free,
             Consequence::Ask { summary } => ToolSays::Ask(summary),
+            Consequence::AskEvery { summary } => {
+                fixed = Some(summary.clone());
+                ToolSays::Ask(summary)
+            }
         };
         // A tool with no manifest is judged by its own answer: one that asks is treated as
         // running something (plan mode refuses it), one that does not as a read.
@@ -373,6 +379,7 @@ impl Permissions {
         // settings allow (`network.allow_hosts`, a `domain:` allow rule), a file call whose every
         // path is inside a root (`additional_directories`, `/add-dir`) and not protected.
         let says = match (&says, kind) {
+            _ if fixed.is_some() => says,
             (ToolSays::Ask(_), Kind::Web)
                 if subject.domain.as_deref().is_some_and(|h| {
                     loaded.allow_hosts.iter().any(|d| domain_matches(d, h))
@@ -416,10 +423,10 @@ impl Permissions {
                         })
                 })
         });
-        let extra_ask = code.and_then(|c| match shell::classify_code(c) {
+        let extra_ask = fixed.or_else(|| code.and_then(|c| match shell::classify_code(c) {
             shell::Verdict::Ask(why) => Some(why),
             _ => None,
-        });
+        }));
         // The workspace's own permission files and hook scripts: editing them could drop its
         // deny rules or its guard hooks, so a file tool asks in every mode (the shell analysis
         // asks the same through `guarded`).

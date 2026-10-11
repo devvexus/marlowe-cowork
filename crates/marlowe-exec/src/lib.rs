@@ -24,7 +24,6 @@
 #![forbid(unsafe_code)]
 
 pub mod corpus;
-mod fs_tools;
 pub mod git;
 pub mod jobs;
 mod paper;

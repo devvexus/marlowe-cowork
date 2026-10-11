@@ -423,6 +423,8 @@ pub(crate) fn net_read(what: &str, exposure: &Exposure) -> Consequence {
     Consequence::Free
 }
 
+/// Posting (a PR, a comment, a reply, a review) asks every time: a session allow keyed on `gh`
+/// never covers it.
 pub(crate) fn gh_consequence(tools: &BuiltinTools, call: &ToolCallReq, exposure: &Exposure) -> Consequence {
     if policy::deny_structured("gh", &call.args).is_some() {
         return Consequence::Free;
@@ -446,18 +448,18 @@ pub(crate) fn gh_consequence(tools: &BuiltinTools, call: &ToolCallReq, exposure:
             let cancel = || false;
             let c = Ctx { env: &env, dir: &dir, cancel: &cancel };
             match pr::plan(&c, args) {
-                Ok(plan) => Consequence::Ask { summary: plan.summary() },
+                Ok(plan) => Consequence::AskEvery { summary: plan.summary() },
                 // The call reports what is missing; asking first would only be noise.
                 Err(_) => Consequence::Free,
             }
         }
-        "pr_comment" => Consequence::Ask { summary: format!("post a comment on {target}: {}", first_line(str_arg(args, "body").unwrap_or(""), 80)) },
-        "pr_reply" => Consequence::Ask {
+        "pr_comment" => Consequence::AskEvery { summary: format!("post a comment on {target}: {}", first_line(str_arg(args, "body").unwrap_or(""), 80)) },
+        "pr_reply" => Consequence::AskEvery {
             summary: format!("reply on {target} (comment {}): {}", int_arg(args, "comment_id").unwrap_or(0), first_line(str_arg(args, "body").unwrap_or(""), 80)),
         },
         _ => {
             let n = args.get("comments").and_then(Value::as_array).map_or(0, Vec::len);
-            Consequence::Ask {
+            Consequence::AskEvery {
                 summary: format!(
                     "post a {} review on {target} with {n} inline comments: {}",
                     str_arg(args, "event").unwrap_or("comment"),

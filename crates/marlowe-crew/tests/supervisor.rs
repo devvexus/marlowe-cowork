@@ -603,7 +603,7 @@ fn a_dispatch_after_untrusted_content_asks_and_starts_a_tainted_run() {
     };
     assert_eq!(tools.consequence_exposed(&call, &Exposure::default()), Consequence::Free);
     let tainted = Exposure { tainted: true, ..Default::default() };
-    assert!(matches!(tools.consequence_exposed(&call, &tainted), Consequence::Ask { summary } if summary.contains("after untrusted content")));
+    assert!(matches!(tools.consequence_exposed(&call, &tainted), Consequence::Ask { summary } | Consequence::AskEvery { summary } if summary.contains("after untrusted content")));
 
     let ctx = ToolCtx { session: SessionId("s".into()), turn: 1, workspace: None, cancel: CancelToken::new(), tainted: true };
     let out = tools.call(&call, &ctx);

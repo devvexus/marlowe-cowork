@@ -364,3 +364,103 @@ fn tool_persona_blocks_append_once_and_render_their_text() {
     assert_eq!(t.matches("Use the git tool").count(), 1, "{t}");
     assert_eq!(SystemPrompt::with_core("core").blocks().len(), 0);
 }
+
+/// A file host for the integration fixes: `edit` replaces `old` with `new` in one shared text
+/// (it fails when `old` is absent, so order matters), `write` stores `path` and asks every time
+/// for a secret-shaped or off-machine path (`AskEvery`) and ordinarily otherwise.
+#[derive(Default)]
+struct Files {
+    text: Mutex<String>,
+    written: Mutex<Vec<String>>,
+}
+
+impl ToolHost for Files {
+    fn specs(&self) -> Vec<ToolSpec> {
+        ["edit", "write", "echo"]
+            .iter()
+            .map(|n| ToolSpec { name: n.to_string(), description: format!("{n} tool"), input_schema: json!({"type": "object"}) })
+            .collect()
+    }
+    fn call(&self, call: &ToolCallReq, _ctx: &ToolCtx) -> ToolOutcome {
+        match call.name.as_str() {
+            "edit" => {
+                let (old, new) = (call.args["old"].as_str().unwrap_or(""), call.args["new"].as_str().unwrap_or(""));
+                // Widen the window for a race: a parallel second edit would run inside it.
+                std::thread::sleep(Duration::from_millis(1));
+                let mut t = self.text.lock().unwrap();
+                if !t.contains(old) {
+                    return ToolOutcome::error(format!("{old} not found"));
+                }
+                *t = t.replacen(old, new, 1);
+                ToolOutcome::ok("edited", "edited")
+            }
+            "write" => {
+                self.written.lock().unwrap().push(call.args["path"].as_str().unwrap_or("").to_string());
+                ToolOutcome::ok("written", "written")
+            }
+            _ => ToolOutcome::ok("echo", "echo"),
+        }
+    }
+    fn consequence(&self, call: &ToolCallReq) -> Consequence {
+        let path = call.args["path"].as_str().unwrap_or("");
+        match call.name.as_str() {
+            "write" if path == ".env" || path.starts_with(r"\\") => Consequence::AskEvery { summary: format!("write {path}") },
+            "write" => Consequence::Ask { summary: format!("write {path}") },
+            _ => Consequence::Free,
+        }
+    }
+    fn manifest(&self, name: &str) -> Option<ToolManifest> {
+        let effects = match name {
+            "edit" | "write" => Effects::WRITE,
+            _ => Effects::READ,
+        };
+        Some(ToolManifest { group: ToolGroup::Files, profiles: Profiles::ALL, effects, path_args: &["path"] })
+    }
+}
+
+/// Track A's review finding 4: two edits of one file in one message apply in call order (the
+/// second edit's `old` exists only after the first), every time.
+#[test]
+fn free_writes_in_one_message_run_in_call_order() {
+    for round in 0..50 {
+        let mut first = call(0, "a", "edit", json!({"old": "one", "new": "two"}));
+        first.extend(call(1, "b", "edit", json!({"old": "two", "new": "three"})));
+        first.extend(call(2, "c", "echo", json!({})));
+        first.push(StreamEvent::Stop(StopReason::ToolUse));
+        let p = ScriptedProvider::new(vec![Step::Events(first), answer("ok")]);
+        let files = Arc::new(Files { text: Mutex::new("one".into()), ..Files::default() });
+        let a = Agent::new(p, model(), files.clone(), SystemPrompt::with_core("core"));
+        let mut c = convo();
+        run(&a, &mut c, "edit");
+        let results = tool_results(&c.messages[2]);
+        assert!(results.iter().all(|r| !r.is_error), "round {round}: {results:?}");
+        assert_eq!(*files.text.lock().unwrap(), "three", "round {round}");
+    }
+}
+
+/// Track A's review finding 1: a session allow for `write` frees later ordinary writes, but a
+/// secret-shaped or off-machine write (`AskEvery`) still reaches the gate, in the same batch and
+/// in later ones.
+#[test]
+fn a_session_allow_never_frees_a_fixed_ask() {
+    let batch = |id: &str| {
+        let mut ev = call(0, &format!("{id}0"), "write", json!({"path": "src/a.rs"}));
+        ev.extend(call(1, &format!("{id}1"), "write", json!({"path": ".env"})));
+        ev.extend(call(2, &format!("{id}2"), "write", json!({"path": r"\\host\share\x"})));
+        ev.extend(call(3, &format!("{id}3"), "write", json!({"path": "src/b.rs"})));
+        ev.push(StreamEvent::Stop(StopReason::ToolUse));
+        Step::Events(ev)
+    };
+    let p = ScriptedProvider::new(vec![batch("a"), batch("b"), answer("ok")]);
+    let files = Arc::new(Files::default());
+    let gate = RecordingGate::new(ApprovalDecision::AllowForSession);
+    let mut a = Agent::new(p, model(), files.clone(), SystemPrompt::with_core("core"));
+    a.approvals = gate.clone();
+    let mut c = convo();
+    run(&a, &mut c, "write");
+    let asked: Vec<String> = gate.asked.lock().unwrap().iter().map(|r| r.summary.clone()).collect();
+    // Batch one: the first ordinary write asks (and is allowed for the session), src/b.rs is then
+    // freed, the two fixed asks ask. Batch two: only the fixed asks ask.
+    assert_eq!(asked, ["write src/a.rs", "write .env", r"write \\host\share\x", "write .env", r"write \\host\share\x"]);
+    assert_eq!(files.written.lock().unwrap().len(), 8, "every allowed write ran");
+}

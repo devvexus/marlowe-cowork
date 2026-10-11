@@ -142,7 +142,7 @@ fn off_machine_ask(root: Option<&Path>, call: &ToolCallReq, exposure: &Exposure)
         if om.host().is_some_and(|h| exposure.approved_hosts.contains(h)) {
             continue;
         }
-        return Some(Consequence::Ask {
+        return Some(Consequence::AskEvery {
             summary: format!("{} {} ({}; nothing leaves this machine without approval)", call.name, clip(&raw, 100), om.describe()),
         });
     }
@@ -234,12 +234,13 @@ fn secret_target(root: Option<&Path>, raw: &str) -> Option<&'static str> {
     })
 }
 
-/// Asks for a secret-shaped target or credential-shaped content (design 2.1 B6).
+/// Asks for a secret-shaped target or credential-shaped content (design 2.1 B6), every time: no
+/// session allow, rule or mode frees it.
 fn secret_ask(root: Option<&Path>, call: &ToolCallReq) -> Option<Consequence> {
     let ts = targets(&call.args);
     for p in &ts {
         if let Some(why) = secret_target(root, p) {
-            return Some(Consequence::Ask {
+            return Some(Consequence::AskEvery {
                 summary: format!("{} {} ({why}; secrets need approval)", call.name, crate::first_line(p, 100)),
             });
         }
@@ -247,7 +248,7 @@ fn secret_ask(root: Option<&Path>, call: &ToolCallReq) -> Option<Consequence> {
     for t in written_text(&call.args) {
         if let Some(why) = secret_content(t) {
             let p = ts.first().map(String::as_str).unwrap_or("");
-            return Some(Consequence::Ask {
+            return Some(Consequence::AskEvery {
                 summary: format!("{} {} (writes what looks like {why})", call.name, crate::first_line(p, 100)),
             });
         }

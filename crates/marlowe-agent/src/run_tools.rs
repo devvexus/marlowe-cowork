@@ -1,6 +1,8 @@
-//! Runs every tool call of one assistant message: free calls start at once in parallel, calls
+//! Runs every tool call of one assistant message: free reads start at once in parallel, calls
 //! that need approval are asked one at a time (so a "don't ask again" answer covers later calls)
-//! and start as soon as they are allowed.
+//! and start as soon as they are allowed. Calls that write (by their manifest) run one after
+//! another on a single worker, free ones in call order and approved ones as they are allowed, so
+//! two edits of one file in one message apply in sequence.
 //!
 //! Middleware sees every call twice: `before_approval` on the turn thread before the gate
 //! decides (it may rewrite the arguments, and the gate, taint and egress judge the rewritten
@@ -117,10 +119,15 @@ pub(crate) fn run_calls(
                     Gate::Ask { summary, proposal, hosts, tripwire } => ask.push(Pending { i, summary, proposal, hosts, tripwire }),
                 }
             }
+            // Without the permission layer (the crew, tests) a session allow is keyed on the tool
+            // name, so it frees only an ordinary ask: a fixed one (`AskEvery`) asks every time.
             None => match host.consequence_exposed(c, &convo.exposure) {
                 Consequence::Free => free.push(i),
                 Consequence::Ask { .. } if convo.is_allowed_for_session(&c.name) => free.push(i),
                 Consequence::Ask { summary } => ask.push(Pending { i, summary, proposal: Vec::new(), hosts: Vec::new(), tripwire: false }),
+                Consequence::AskEvery { summary } => {
+                    ask.push(Pending { i, summary, proposal: Vec::new(), hosts: Vec::new(), tripwire: true })
+                }
             },
         }
     }
@@ -136,15 +143,30 @@ pub(crate) fn run_calls(
     let (tx, rx) = crossbeam_channel::unbounded::<Msg>();
     let calls: &[ToolCall] = &effective;
     let ctx = &cx;
+    let writes = move |i: usize| host.manifest(&calls[i].name).is_some_and(|m| m.effects.writes);
+    let (wtx, wrx) = crossbeam_channel::unbounded::<usize>();
     thread::scope(|s| {
         for &i in &free {
+            if writes(i) {
+                let _ = wtx.send(i);
+                continue;
+            }
             let tx = tx.clone();
             s.spawn(move || {
                 let _ = tx.send(Msg::Done { i, out: run_one(host, middleware, &calls[i], ctx), ran: true });
             });
         }
+        {
+            let tx = tx.clone();
+            s.spawn(move || {
+                for i in wrx {
+                    let _ = tx.send(Msg::Done { i, out: run_one(host, middleware, &calls[i], ctx), ran: true });
+                }
+            });
+        }
         if !ask.is_empty() {
             let tx = tx.clone();
+            let wtx = wtx.clone();
             s.spawn(move || {
                 let mut allowed: HashSet<String> = allowed;
                 for Pending { i, summary, proposal, hosts, tripwire } in ask {
@@ -170,7 +192,7 @@ pub(crate) fn run_calls(
                                 _ => gate.ask_with(req(ctx, c, summary), (!proposal.is_empty()).then(|| proposal.join("\n"))),
                             }
                         }
-                        None if allowed.contains(&c.name) => ApprovalDecision::Allow,
+                        None if !tripwire && allowed.contains(&c.name) => ApprovalDecision::Allow,
                         None => gate.ask(req(ctx, c, summary)),
                     };
                     if !decision.is_allowed() {
@@ -194,10 +216,14 @@ pub(crate) fn run_calls(
                                 let _ = p.grant(&proposal, SettingsScope::Session);
                             }
                         }
-                        (None, ApprovalDecision::AllowForSession) if allowed.insert(c.name.clone()) => {
+                        (None, ApprovalDecision::AllowForSession) if !tripwire && allowed.insert(c.name.clone()) => {
                             let _ = tx.send(Msg::AllowForSession(c.name.clone()));
                         }
                         _ => {}
+                    }
+                    if writes(i) {
+                        let _ = wtx.send(i);
+                        continue;
                     }
                     let tx = tx.clone();
                     s.spawn(move || {
@@ -206,6 +232,7 @@ pub(crate) fn run_calls(
                 }
             });
         }
+        drop(wtx);
         drop(tx);
         for msg in rx {
             match msg {

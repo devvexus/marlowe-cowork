@@ -57,13 +57,13 @@ fn req(name: &str, args: Value) -> ToolCallReq {
 
 fn ask(c: &Consequence) -> &str {
     match c {
-        Consequence::Ask { summary } => summary,
+        Consequence::Ask { summary } | Consequence::AskEvery { summary } => summary,
         Consequence::Free => "",
     }
 }
 
 fn is_ask(c: &Consequence) -> bool {
-    matches!(c, Consequence::Ask { .. })
+    matches!(c, Consequence::Ask { .. } | Consequence::AskEvery { .. })
 }
 
 struct Crew(PathBuf);

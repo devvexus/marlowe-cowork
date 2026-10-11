@@ -235,8 +235,8 @@ fn research_tools_are_untrusted_content_with_egress_rules() {
     let clean = Exposure::default();
     assert_eq!(t.consequence_exposed(&other, &clean), Consequence::Free);
     let tainted = Exposure { tainted: true, ..Exposure::default() };
-    assert!(matches!(t.consequence_exposed(&a, &tainted), Consequence::Ask { .. }));
-    assert!(matches!(t.consequence_exposed(&other, &tainted), Consequence::Ask { .. }));
+    assert!(matches!(t.consequence_exposed(&a, &tainted), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
+    assert!(matches!(t.consequence_exposed(&other, &tainted), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
     let mut approved = Exposure { tainted: true, ..Exposure::default() };
     approved.approved_hosts.insert("example.org".into());
     assert_eq!(t.consequence_exposed(&other, &approved), Consequence::Free);

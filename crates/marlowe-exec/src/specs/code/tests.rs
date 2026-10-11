@@ -178,7 +178,7 @@ fn rename_asks_where_writes_are_not_free() {
     let req = ToolCall { id: "r".into(), name: "rename_symbol".into(), args: json!({"symbol": "a", "new_name": "b"}) };
     // A drive root frees nothing.
     let broad = BuiltinTools::new(Some(PathBuf::from(if cfg!(windows) { "C:\\" } else { "/" })));
-    assert!(matches!(broad.consequence(&req), Consequence::Ask { .. }));
+    assert!(matches!(broad.consequence(&req), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
     let w = project();
     let sb = BuiltinTools::new_sandbox(w.0.clone());
     assert_eq!(sb.consequence_in_sandbox(&req, &Exposure::default(), &Sandbox(w.0.clone())), Some(Consequence::Free));
