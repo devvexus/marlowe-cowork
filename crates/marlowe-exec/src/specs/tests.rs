@@ -435,12 +435,16 @@ fn every_group_file_registers_its_hooks() {
             (g.persona_block)().is_some(),
             matches!(
                 g.group,
-                marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Verify | marlowe_agent::ToolGroup::Agent
+                marlowe_agent::ToolGroup::Git
+                    | marlowe_agent::ToolGroup::Verify
+                    | marlowe_agent::ToolGroup::Agent
+                    | marlowe_agent::ToolGroup::Workflow
             ),
             "{:?}: a block needs its capability live first",
             g.group
         );
-        assert!(!(g.detect)(None));
+        // Workflows are offered to a local model in any workspace (W; deferred on 32k, T31).
+        assert_eq!((g.detect)(None), g.group == marlowe_agent::ToolGroup::Workflow, "{:?}", g.group);
     }
     assert!(super::group(marlowe_agent::ToolGroup::Memory).is_none(), "memory tools are the daemon's");
 }
