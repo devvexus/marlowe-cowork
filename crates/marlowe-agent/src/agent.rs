@@ -259,7 +259,6 @@ impl Agent {
                 convo.ext.get_or_default::<TailReminders>().0.push((user_index, tail));
             }
         }
-        let max_output_tokens = self.max_output.or(live.model.max_output.map(|_| live.context.reserve_output));
 
         let mut spent = Spent::default();
         let mut texts: Vec<String> = Vec::new();
@@ -339,7 +338,7 @@ impl Agent {
                 }
             }
 
-            let max_output_tokens = live.model.max_output.map(|_| cfg.reserve_output);
+            let max_output_tokens = self.max_output.or(live.model.max_output.map(|_| cfg.reserve_output));
             let req = ChatRequest {
                 model: live.model.id.clone(),
                 effort: live.effort,
