@@ -1,12 +1,19 @@
 //! Runs every tool call of one assistant message: free calls start at once in parallel, calls
-//! that need approval are asked one at a time (so "allow for session" covers later calls) and
-//! start as soon as they are allowed.
+//! that need approval are asked one at a time (so a "don't ask again" answer covers later calls)
+//! and start as soon as they are allowed.
 //!
 //! Middleware sees every call twice: `before_approval` on the turn thread before the gate
 //! decides (it may rewrite the arguments, and the gate, taint and egress judge the rewritten
 //! call), then `before_call` / `pre_mutation` / `after_call` around the run itself. The
 //! conversation's extensions are lent to the batch through [`CallCtx::scope`] and taken back when
 //! it ends.
+//!
+//! With a [`Permissions`] service (every conductor session) the decision is the permission
+//! layer's: mode, rules, tripwires, hooks; a denial's reason goes back to the model and the turn
+//! goes on. "Don't ask again" grants the proposed rule (tool plus command prefix, path glob or
+//! domain, never a bare tool) for the session or into a settings file. PermissionRequest hooks
+//! may answer an approval before the user sees it, but only the user allows a tripwire. Without
+//! the service (the crew, tests) the tool's own consequence decides, as before.
 
 use std::collections::HashSet;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -14,11 +21,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use marlowe_model::{CancelToken, ToolCall, ToolResult};
+use marlowe_proto::SettingsScope;
 use serde_json::Value;
 
-use crate::approval::{ApprovalGate, ApprovalReq};
+use crate::approval::{ApprovalGate, ApprovalReq, Gate, HookVerdicts, Permissions};
 use crate::convo::Conversation;
 use crate::events::AgentEvent;
+use crate::hooks::HookRunner;
 use crate::middleware::{CallFlow, ToolMiddleware};
 use crate::tools::{CallCtx, Consequence, Mutation, Services, SessionScope, ToolCtx, ToolHost, ToolOutcome};
 use crate::ApprovalDecision;
@@ -30,11 +39,31 @@ pub(crate) const DENIED: &str =
 /// Content returned to the model for a call skipped because the turn was interrupted.
 pub(crate) const INTERRUPTED: &str = "Not run: the user interrupted the turn.";
 
+/// Content for a call the permission layer refused without asking.
+fn refused(why: &str) -> ToolOutcome {
+    ToolOutcome {
+        summary: "not allowed".into(),
+        ..ToolOutcome::error(format!(
+            "Not run: {why}. Do not retry it unchanged; continue another way, or tell the user what you need."
+        ))
+    }
+}
+
 enum Msg {
     /// A call's outcome; `ran` is false for denied or interrupted calls.
     Done { i: usize, out: ToolOutcome, ran: bool },
     AllowForSession(String),
     HostApproved(String),
+}
+
+/// One call waiting for approval.
+struct Pending {
+    i: usize,
+    summary: String,
+    proposal: Vec<String>,
+    hosts: Vec<String>,
+    /// Only the user may allow it (a PermissionRequest hook may still deny it).
+    tripwire: bool,
 }
 
 /// Runs `calls` and returns one result per call, in call order. Emits `ToolStarted` for every
@@ -59,12 +88,13 @@ pub(crate) fn run_calls(
     for c in calls {
         sink(AgentEvent::ToolStarted { call_id: c.id.clone(), tool: c.name.clone(), summary: host.describe(c) });
     }
+    let perms = services.get::<Permissions>();
 
     let mut outcomes: Vec<Option<ToolOutcome>> = vec![None; calls.len()];
     // The calls as they will run: `before_approval` may have rewritten their arguments.
     let mut effective: Vec<ToolCall> = calls.to_vec();
     let mut free = Vec::new();
-    let mut ask = Vec::new();
+    let mut ask: Vec<Pending> = Vec::new();
     for (i, c) in effective.iter_mut().enumerate() {
         if let Some(bad) = invalid_args(c) {
             outcomes[i] = Some(bad);
@@ -78,10 +108,20 @@ pub(crate) fn run_calls(
             outcomes[i] = Some(bad);
             continue;
         }
-        match host.consequence_exposed(c, &convo.exposure) {
-            Consequence::Free => free.push(i),
-            Consequence::Ask { .. } if convo.is_allowed_for_session(&c.name) => free.push(i),
-            Consequence::Ask { summary } => ask.push((i, summary)),
+        match perms {
+            Some(p) => {
+                let hook = cx.scope.with_ext(|e| e.get_mut::<HookVerdicts>().and_then(|v| v.0.remove(&c.id)));
+                match p.decide(host, c, &convo.exposure, hook) {
+                    Gate::Free => free.push(i),
+                    Gate::Deny(why) => outcomes[i] = Some(refused(&why)),
+                    Gate::Ask { summary, proposal, hosts, tripwire } => ask.push(Pending { i, summary, proposal, hosts, tripwire }),
+                }
+            }
+            None => match host.consequence_exposed(c, &convo.exposure) {
+                Consequence::Free => free.push(i),
+                Consequence::Ask { .. } if convo.is_allowed_for_session(&c.name) => free.push(i),
+                Consequence::Ask { summary } => ask.push(Pending { i, summary, proposal: Vec::new(), hosts: Vec::new(), tripwire: false }),
+            },
         }
     }
     // Precomputed outcomes still report a finish.
@@ -92,6 +132,7 @@ pub(crate) fn run_calls(
     }
 
     let allowed = convo.session_allows.clone();
+    let hooks = services.get::<Arc<HookRunner>>();
     let (tx, rx) = crossbeam_channel::unbounded::<Msg>();
     let calls: &[ToolCall] = &effective;
     let ctx = &cx;
@@ -106,22 +147,31 @@ pub(crate) fn run_calls(
             let tx = tx.clone();
             s.spawn(move || {
                 let mut allowed: HashSet<String> = allowed;
-                for (i, summary) in ask {
+                for Pending { i, summary, proposal, hosts, tripwire } in ask {
                     let c = &calls[i];
                     if cancel.is_cancelled() {
                         let _ = tx.send(Msg::Done { i, out: interrupted(), ran: false });
                         continue;
                     }
-                    let decision = if allowed.contains(&c.name) {
-                        ApprovalDecision::Allow
-                    } else {
-                        gate.ask(ApprovalReq {
-                            session: ctx.session.clone(),
-                            call_id: c.id.clone(),
-                            tool: c.name.clone(),
-                            summary,
-                            detail: serde_json::to_string_pretty(&c.args).unwrap_or_else(|_| c.args.to_string()),
-                        })
+                    let decision = match perms {
+                        // A rule granted earlier in this batch already covers it.
+                        Some(p) if p.granted(&proposal) => ApprovalDecision::Allow,
+                        Some(p) => {
+                            // PermissionRequest hooks may answer before the user is asked; a
+                            // tripwire (push, delete outside, new host, after taint) only the
+                            // user may allow, so a hook's `allow` there still asks.
+                            match hooks.and_then(|h| h.permission_request(&c.name, &c.args, ctx, p.mode())) {
+                                Some((true, _)) if !tripwire => ApprovalDecision::Allow,
+                                Some((false, why)) => {
+                                    let out = refused(&why.unwrap_or_else(|| "a PermissionRequest hook denied it".into()));
+                                    let _ = tx.send(Msg::Done { i, out, ran: false });
+                                    continue;
+                                }
+                                _ => gate.ask_with(req(ctx, c, summary), (!proposal.is_empty()).then(|| proposal.join("\n"))),
+                            }
+                        }
+                        None if allowed.contains(&c.name) => ApprovalDecision::Allow,
+                        None => gate.ask(req(ctx, c, summary)),
                     };
                     if !decision.is_allowed() {
                         let denied = ToolOutcome { summary: "denied".into(), ..ToolOutcome::error(DENIED) };
@@ -131,8 +181,23 @@ pub(crate) fn run_calls(
                     if let Some(h) = host.egress_host(c) {
                         let _ = tx.send(Msg::HostApproved(h));
                     }
-                    if decision == ApprovalDecision::AllowForSession && allowed.insert(c.name.clone()) {
-                        let _ = tx.send(Msg::AllowForSession(c.name.clone()));
+                    for h in hosts {
+                        let _ = tx.send(Msg::HostApproved(h));
+                    }
+                    match (perms, decision) {
+                        (Some(p), ApprovalDecision::AllowForSession) if !proposal.is_empty() => {
+                            let _ = p.grant(&proposal, SettingsScope::Session);
+                        }
+                        (Some(p), ApprovalDecision::AllowPattern { scope }) if !proposal.is_empty() => {
+                            // If the rule cannot be saved it still holds for this session.
+                            if p.grant(&proposal, scope).is_err() {
+                                let _ = p.grant(&proposal, SettingsScope::Session);
+                            }
+                        }
+                        (None, ApprovalDecision::AllowForSession) if allowed.insert(c.name.clone()) => {
+                            let _ = tx.send(Msg::AllowForSession(c.name.clone()));
+                        }
+                        _ => {}
                     }
                     let tx = tx.clone();
                     s.spawn(move || {
@@ -169,6 +234,16 @@ pub(crate) fn run_calls(
             ToolResult { call_id: c.id.clone(), content: o.content, is_error: o.is_error, parts: o.parts }
         })
         .collect()
+}
+
+fn req(cx: &CallCtx, c: &ToolCall, summary: String) -> ApprovalReq {
+    ApprovalReq {
+        session: cx.session.clone(),
+        call_id: c.id.clone(),
+        tool: c.name.clone(),
+        summary,
+        detail: serde_json::to_string_pretty(&c.args).unwrap_or_else(|_| c.args.to_string()),
+    }
 }
 
 fn finished(c: &ToolCall, o: &ToolOutcome) -> AgentEvent {
