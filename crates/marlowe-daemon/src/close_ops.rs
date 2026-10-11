@@ -223,6 +223,15 @@ pub(crate) fn client_gone(core: &Arc<Core>, client: u64, name: &str) {
 /// The window is gone: stop everything, or run on in the background if the user chose that.
 pub(crate) fn window_gone(core: &Arc<Core>, reason: &str) {
     let c = close_state(core);
+    // Only the last window's close stops everything: another tab still attached keeps the daemon.
+    let others = {
+        let clean = lock(&c.clean);
+        lock(&c.screens).iter().filter(|s| !clean.contains(s)).count()
+    };
+    if others > 0 {
+        note(&c, "another window is attached");
+        return;
+    }
     if !c.seen_screen.load(Ordering::SeqCst) || background(&c) {
         if background(&c) {
             enter_background(core);

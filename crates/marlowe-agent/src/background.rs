@@ -97,7 +97,7 @@ pub trait BackgroundOps: Send + Sync {
     /// Delivers `text` to a subagent's continuation, a crew run, a workflow agent or another
     /// session (`session:<id>`). Returns what happened, for the model. Cross-session text arrives
     /// at agent trust with `from` as its lineage, never at user trust.
-    fn send_message(&self, from: &SessionId, to: &str, text: &str, cancel: &CancelToken) -> Result<String, String>;
+    fn send_message(&self, from: &SessionId, to: &str, text: &str, tainted: bool, cancel: &CancelToken) -> Result<String, String>;
     /// A toast (when on), a spoken line outside quiet hours for `Normal` and up, and a notice.
     /// Returns what was done, or that it was rate limited.
     fn notify(&self, session: &SessionId, title: &str, body: &str, urgency: Urgency) -> Result<String, String>;
@@ -190,7 +190,7 @@ impl BackgroundOps for FakeBackground {
         guard(&self.agents).clone()
     }
 
-    fn send_message(&self, from: &SessionId, to: &str, text: &str, _cancel: &CancelToken) -> Result<String, String> {
+    fn send_message(&self, from: &SessionId, to: &str, text: &str, _tainted: bool, _cancel: &CancelToken) -> Result<String, String> {
         guard(&self.messages).push((from.to_string(), to.to_string(), text.to_string()));
         Ok(format!("Delivered to {to}."))
     }

@@ -73,14 +73,16 @@ pub(crate) fn framed(from: &SessionId, text: &str) -> String {
 }
 
 impl DaemonBackground {
-    /// Writes the message to memory at agent trust, with the sender's session as its lineage.
-    fn journal(&self, from: &SessionId, to_label: &str, text: &str) {
+    /// Writes a session-to-session message to memory at agent trust, with the sender's session as
+    /// its lineage, tainted when the sender had read untrusted content (worst case over lineage).
+    /// A message to a crew run stays in that run's transcript and is not journalled.
+    fn journal(&self, from: &SessionId, to_label: &str, text: &str, tainted: bool) {
         let Some(mind) = &self.core.mind else { return };
         let memory = MemoryIn {
             text: format!("Message from session {from} to {to_label}: {}", clip(text.trim(), 600)),
             kind: Kind::Note,
             scope: Scope::Global,
-            source: Provenance::Agent { session: from.to_string(), turn: 0, tainted: false },
+            source: Provenance::Agent { session: from.to_string(), turn: 0, tainted },
         };
         if let Ok(r) = mind.remember(memory) {
             self.core.bus.publish(Event::MemoryChanged { id: r.id, change: MemoryChange::Remembered });
@@ -163,7 +165,7 @@ impl BackgroundOps for DaemonBackground {
         rows
     }
 
-    fn send_message(&self, from: &SessionId, to: &str, text: &str, cancel: &CancelToken) -> Result<String, String> {
+    fn send_message(&self, from: &SessionId, to: &str, text: &str, tainted: bool, cancel: &CancelToken) -> Result<String, String> {
         let text = text.trim();
         if text.is_empty() {
             return Err("`text` is required".into());
@@ -183,7 +185,6 @@ impl BackgroundOps for DaemonBackground {
             };
             return match delivered {
                 Ok(()) => {
-                    self.journal(from, &format!("crew run {}", run.short()), text);
                     Ok(format!("Delivered to run {}: it reads it at its next step.", run.short()))
                 }
                 Err(e) => Err(format!("run {} did not take it: {e}", run.short())),
@@ -209,7 +210,7 @@ impl BackgroundOps for DaemonBackground {
                 _ => return Err(format!("the user did not allow messages from this session to {target}; do not try again unprompted")),
             }
         }
-        self.journal(from, &format!("session {target}"), text);
+        self.journal(from, &format!("session {target}"), text, tainted);
         if let Some(s) = &self.core.sentinel {
             let draft = marlowe_sentinel::NoticeDraft::new(
                 marlowe_proto::NoticeSource::Message,

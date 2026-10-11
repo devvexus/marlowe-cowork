@@ -236,10 +236,12 @@ impl Pump {
         let mut out = OpenOptions::new().create(true).append(true).open(&self.out_file).ok();
         let started = Instant::now();
         let end = loop {
+            // The exit first, then the log: the exit is recorded after the output has been copied
+            // in, so a read that follows it sees every line (the other order can miss the last).
+            let exited = self.job.exit_code();
             let more = self.job.read_range(offset, 1 << 20);
             offset += more.len() as u64;
             carry.extend_from_slice(&more);
-            let exited = self.job.exit_code();
             // After the exit, whatever is left unterminated is a last line.
             let all_read = exited.is_some() && more.is_empty();
             let lines = take_lines(&mut carry, all_read);
@@ -266,6 +268,32 @@ impl Pump {
             }
             self.job.wait_tick(POLL);
         };
+        // A kill or a stop is a moment, not a boundary: what the command printed before it still
+        // belongs in the file, and a timeout still reports it.
+        if matches!(end, End::TimedOut | End::Stopped) {
+            self.job.wait_exit(Duration::from_millis(500));
+            loop {
+                let more = self.job.read_range(offset, 1 << 20);
+                if more.is_empty() {
+                    break;
+                }
+                offset += more.len() as u64;
+                carry.extend_from_slice(&more);
+            }
+            let lines = take_lines(&mut carry, true);
+            if !lines.is_empty() {
+                if let Some(f) = out.as_mut() {
+                    for l in &lines {
+                        let _ = writeln!(f, "{l}");
+                    }
+                }
+                if matches!(end, End::TimedOut) {
+                    self.deliver(&lines);
+                } else {
+                    self.line_no += lines.len() as u64;
+                }
+            }
+        }
         lock(&self.monitors.map).entry(self.raw_id.clone()).and_modify(|a| {
             a.running = false;
             a.lines = self.line_no;

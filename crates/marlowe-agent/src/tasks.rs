@@ -219,6 +219,9 @@ pub trait TaskRegistry: Send + Sync {
     fn inject(&self, injection: Injection);
     /// Removes and returns up to `max` pending injections for the session, oldest first.
     fn take_injections(&self, session: &SessionId, max: usize) -> Vec<Injection>;
+    /// Puts injections `take_injections` returned back at the front of the session's queue, in
+    /// order (a drain that could not hand them all over). It does not wake the session.
+    fn requeue_front(&self, session: &SessionId, items: Vec<Injection>);
     fn pending_injections(&self, session: &SessionId) -> usize;
     fn set_waker(&self, waker: InjectionWaker);
 
@@ -480,6 +483,17 @@ impl TaskRegistry for MemoryTaskRegistry {
             g.queues.remove(session);
         }
         out
+    }
+
+    fn requeue_front(&self, session: &SessionId, items: Vec<Injection>) {
+        if items.is_empty() {
+            return;
+        }
+        let mut g = self.lock();
+        let q = g.queues.entry(session.clone()).or_default();
+        for i in items.into_iter().rev() {
+            q.push_front(i);
+        }
     }
 
     fn pending_injections(&self, session: &SessionId) -> usize {

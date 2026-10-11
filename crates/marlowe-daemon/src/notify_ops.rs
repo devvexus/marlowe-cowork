@@ -222,11 +222,12 @@ fn open_file(core: &Core, path: &Path, reveal: bool) -> Result<(), String> {
     if !real.starts_with(&root) {
         return Err(format!("{} is not in the outbox; only files Marlowe sent can be opened from a card", path.display()));
     }
-    // Opening runs whatever the file is. A file the model made that would run as a program is
-    // shown in Explorer instead; the user can decide there.
-    if !reveal && runs_as_a_program(&real) {
+    // Opening does whatever Windows does with the type, which for many is to run it. Only plain
+    // documents and images open from a card; everything else is shown in Explorer, where the user
+    // decides.
+    if !reveal && !opens_safely(&real) {
         return Err(format!(
-            "{} would run as a program, so Marlowe will not open it from a card; reveal it in Explorer and open it yourself if you mean to",
+            "{} is not a plain document or image, so Marlowe will not open it from a card; reveal it in Explorer and open it yourself if you mean to",
             real.display()
         ));
     }
@@ -238,14 +239,16 @@ fn open_file(core: &Core, path: &Path, reveal: bool) -> Result<(), String> {
     }
 }
 
-/// Extensions that run as programs, scripts or shortcuts when opened.
-const PROGRAM_EXTENSIONS: &[&str] = &[
-    "exe", "com", "scr", "msi", "msix", "bat", "cmd", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "hta", "jar", "reg",
-    "lnk", "url", "dll", "cpl", "sh", "py", "pyw",
+/// The types a card may open: text, data, images and documents a viewer shows without running
+/// anything of the file's. A list of what is safe, not of what is known to be dangerous: a type
+/// not named here, and a file with no extension, is reveal-only.
+const OPENABLE_EXTENSIONS: &[&str] = &[
+    "txt", "md", "markdown", "rst", "log", "csv", "tsv", "json", "jsonl", "yaml", "yml", "toml", "tex", "bib", "png", "jpg", "jpeg",
+    "gif", "webp", "bmp", "svg", "pdf", "html", "htm",
 ];
 
-fn runs_as_a_program(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()).is_some_and(|e| PROGRAM_EXTENSIONS.iter().any(|p| p.eq_ignore_ascii_case(e)))
+fn opens_safely(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| OPENABLE_EXTENSIONS.iter().any(|p| p.eq_ignore_ascii_case(e)))
 }
 
 /// `notify` for `session`: what was done, in a line for the model.

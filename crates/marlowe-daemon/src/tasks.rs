@@ -32,7 +32,7 @@ use marlowe_proto::{Event, NoticeSource, SessionId, Severity};
 use crate::daemon::Core;
 use crate::{lock, now_ms};
 
-/// Injections one drain hands over (the rest wait for the next step).
+/// Injections one drain takes (what the character budget cannot carry goes back to the queue).
 const DRAIN_MAX: usize = 64;
 /// Most characters of news one step carries; the rest waits for the next.
 const DRAIN_CHARS: usize = 12_000;
@@ -450,16 +450,59 @@ pub(crate) fn batch_text(items: &[Injection]) -> (String, bool) {
         }
         out.push_str(&i.text);
         untrusted |= i.untrusted;
-        if out.len() > DRAIN_CHARS {
-            break;
-        }
     }
     (out, untrusted)
 }
 
+/// Splits taken news into what one message carries (at most [`DRAIN_CHARS`] of text) and what
+/// waits for the next step. The first item is always sent: one longer than the budget is cut at a
+/// line end and its tail leads the rest, so nothing is ever dropped.
+pub(crate) fn fit_budget(items: Vec<Injection>) -> (Vec<Injection>, Vec<Injection>) {
+    let mut sent: Vec<Injection> = Vec::new();
+    let mut rest: Vec<Injection> = Vec::new();
+    let mut used = 0usize;
+    let mut it = items.into_iter();
+    while let Some(i) = it.next() {
+        let sep = if sent.is_empty() { 0 } else { 2 };
+        if used + sep + i.text.len() <= DRAIN_CHARS {
+            used += sep + i.text.len();
+            sent.push(i);
+        } else if sent.is_empty() {
+            let mut cut = DRAIN_CHARS;
+            while !i.text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            if let Some(nl) = i.text[..cut].rfind('\n').filter(|n| *n > cut / 2) {
+                cut = nl + 1;
+            }
+            let head = format!("{}\n[... continues in the next message]", &i.text[..cut]);
+            let tail = format!("[... continued]\n{}", &i.text[cut..]);
+            let mut first = i.clone();
+            first.text = head;
+            let mut next = i;
+            next.text = tail;
+            sent.push(first);
+            rest.push(next);
+            break;
+        } else {
+            rest.push(i);
+            break;
+        }
+    }
+    rest.extend(it);
+    (sent, rest)
+}
+
+/// Takes a session's pending news for one message; what does not fit goes back to the front.
+pub(crate) fn drain(reg: &dyn TaskRegistry, session: &SessionId) -> Vec<Injection> {
+    let (sent, rest) = fit_budget(reg.take_injections(session, DRAIN_MAX));
+    reg.requeue_front(session, rest);
+    sent
+}
+
 impl DrainMiddleware {
     fn take(&self) -> Option<(String, bool)> {
-        let items = self.registry.take_injections(&self.session, DRAIN_MAX);
+        let items = drain(self.registry.as_ref(), &self.session);
         if items.is_empty() {
             return None;
         }
@@ -548,7 +591,7 @@ impl Waker {
             if session.is_busy() {
                 continue;
             }
-            let items = reg.take_injections(&id, DRAIN_MAX);
+            let items = drain(reg.as_ref(), &id);
             if items.is_empty() {
                 self.pending.remove(&id);
                 continue;
@@ -561,11 +604,70 @@ impl Waker {
                 || core.session(&id).is_ok_and(|h| h.relay(text, untrusted).is_ok());
             if !delivered {
                 // Put it back: the session closed under us.
-                for i in items {
-                    reg.inject(i);
-                }
+                reg.requeue_front(&id, items);
                 *self.pending.entry(id.clone()).or_insert(0) += 1;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use marlowe_agent::InjectionSource;
+
+    fn sid() -> SessionId {
+        SessionId("s-drain".into())
+    }
+
+    fn big(marker: &str, kb: usize) -> String {
+        let mut t = format!("[monitor mon_a · lines 1-50] {marker}\n");
+        while t.len() < kb * 1024 {
+            t.push_str("a log line with a few words in it, 0123456789\n");
+        }
+        t
+    }
+
+    #[test]
+    fn a_flood_larger_than_the_budget_is_all_delivered_over_the_next_drains() {
+        let reg: Arc<MemoryTaskRegistry> = Arc::new(MemoryTaskRegistry::new());
+        for (i, m) in ["FIRST", "SECOND", "THIRD"].into_iter().enumerate() {
+            let mut inj = Injection::new(sid(), InjectionSource::Monitor, big(m, 20));
+            inj.at_ms = i as i64;
+            reg.inject(inj);
+        }
+        reg.inject(Injection::new(sid(), InjectionSource::Monitor, "[monitor mon_a ended: `x` exited with code 0 after 1 s]"));
+        let sent_total: usize = 3 * 20 * 1024;
+        let mw = DrainMiddleware { registry: reg.clone(), session: sid() };
+        let mut messages = Vec::new();
+        while let Some((text, _)) = mw.take() {
+            assert!(text.len() <= DRAIN_CHARS + 200, "a message stays within the budget: {}", text.len());
+            messages.push(text);
+            assert!(messages.len() < 50, "drains must make progress");
+        }
+        assert!(messages.len() >= 2, "{}", messages.len());
+        assert_eq!(reg.pending_injections(&sid()), 0, "nothing is left behind");
+        let all = messages.join("\n");
+        for want in ["FIRST", "SECOND", "THIRD", "ended: `x` exited with code 0"] {
+            assert!(all.contains(want), "{want} was lost");
+        }
+        assert!(all.len() >= sent_total, "no text was dropped: {} of {sent_total}", all.len());
+        // In order: the end of the monitor comes last.
+        assert!(all.rfind("FIRST").unwrap() < all.rfind("SECOND").unwrap());
+        assert!(all.rfind("THIRD").unwrap() < all.rfind("ended: `x`").unwrap());
+    }
+
+    #[test]
+    fn small_news_goes_in_one_message_and_a_failed_delivery_goes_back_to_the_front() {
+        let reg: Arc<MemoryTaskRegistry> = Arc::new(MemoryTaskRegistry::new());
+        for t in ["one", "two", "three"] {
+            reg.inject(Injection::new(sid(), InjectionSource::Notice, t));
+        }
+        let sent = drain(reg.as_ref(), &sid());
+        assert_eq!(sent.iter().map(|i| i.text.as_str()).collect::<Vec<_>>(), ["one", "two", "three"]);
+        reg.inject(Injection::new(sid(), InjectionSource::Notice, "four"));
+        reg.requeue_front(&sid(), sent);
+        let again = drain(reg.as_ref(), &sid());
+        assert_eq!(again.iter().map(|i| i.text.as_str()).collect::<Vec<_>>(), ["one", "two", "three", "four"]);
     }
 }

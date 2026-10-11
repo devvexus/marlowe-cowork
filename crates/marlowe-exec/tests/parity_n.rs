@@ -343,6 +343,29 @@ fn parity_bg4_a_ten_thousand_line_flood_is_batched_and_the_file_is_complete() {
 }
 
 #[test]
+fn parity_bg4_a_hundred_fast_monitors_lose_no_last_line() {
+    // A command that prints and exits at once: the exit and the last lines land together, and the
+    // pump must not read the log before it has seen the exit and then trust "nothing more".
+    let r = rig("bg4-fast");
+    let n = 100;
+    for i in 0..n {
+        let o = r.call("monitor", json!({"command": "echo x; echo y", "id": format!("f{i}")}));
+        assert!(!o.is_error, "{}", o.content);
+    }
+    for i in 0..n {
+        wait_status(&r, &format!("mon_f{i}"), TaskStatus::Done, 60);
+    }
+    let events = r.take();
+    let shown: usize = events.iter().filter(|e| e.text.contains("· lines ") && e.text.contains("\nx\ny")).count();
+    assert_eq!(shown, n, "every monitor delivered both lines");
+    assert_eq!(events.iter().filter(|e| e.text.contains("ended")).count(), n);
+    for i in 0..n {
+        let file = r.tasks.get(&format!("mon_f{i}")).unwrap().output_file.unwrap();
+        assert_eq!(std::fs::read_to_string(file).unwrap().lines().collect::<Vec<_>>(), ["x", "y"], "monitor {i}");
+    }
+}
+
+#[test]
 fn parity_bg4_the_same_id_rearms_and_numbers_on_from_the_last_line() {
     let r = rig("bg4-rearm");
     r.call("monitor", json!({"command": "echo a; echo b", "id": "w"}));
@@ -582,6 +605,17 @@ fn the_watch_tool_adds_lists_and_removes_a_folder() {
     assert!(removed.content.contains("no folders"), "{}", removed.content);
     let bad = r.call("watch", json!({"action": "add"}));
     assert!(bad.is_error && bad.content.contains("`path` is required"), "{}", bad.content);
+    // A relative path is the workspace's: judged free by the consequence, and watched there.
+    assert_eq!(r.consequence("watch", json!({"action": "add", "path": "runs/exp1"})), Consequence::Free);
+    let rel = r.call("watch", json!({"action": "add", "path": "runs/exp1"}));
+    assert!(!rel.is_error && rel.content.contains("exp1"), "{}", rel.content);
+    let listed = r.call("watch", json!({"action": "list"}));
+    let root = posix(&r.ws.root);
+    assert!(listed.content.replace('\\', "/").contains(&format!("{root}/runs/exp1")), "{}", listed.content);
+    let rel_gone = r.call("watch", json!({"action": "remove", "path": "runs/exp1"}));
+    assert!(rel_gone.content.contains("no folders"), "{}", rel_gone.content);
+    let rel_missing = r.call("watch", json!({"action": "add", "path": "runs/nothing"}));
+    assert!(rel_missing.is_error && rel_missing.content.contains("not a folder"), "{}", rel_missing.content);
     let not_dir = r.call("watch", json!({"action": "add", "path": posix(&r.ws.path("nothing"))}));
     assert!(not_dir.is_error && not_dir.content.contains("not a folder"), "{}", not_dir.content);
 }

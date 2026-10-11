@@ -444,11 +444,19 @@ fn watch_consequence(tools: &BuiltinTools, call: &ToolCallReq, _e: &Exposure) ->
     }
 }
 
-fn watch_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
+fn watch_call(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
     let Some(bg) = cx.scope.services.get::<marlowe_agent::Background>() else { return ToolOutcome::error(NO_DAEMON) };
     let action = match watch_action(args) {
         Ok(a) => a,
         Err(e) => return ToolOutcome::error(e),
+    };
+    // A relative path is the workspace's, as `watch_consequence` judged it, never the daemon's cwd.
+    let root = tools.root_for(cx);
+    let absolute = |p: &str| crate::paths::resolve(root.as_deref(), p).to_string_lossy().into_owned();
+    let action = match action {
+        WatchAction::Add(p) => WatchAction::Add(absolute(&p)),
+        WatchAction::Remove(p) => WatchAction::Remove(absolute(&p)),
+        WatchAction::List => WatchAction::List,
     };
     let verb = match &action {
         WatchAction::List => "watching",
@@ -513,7 +521,7 @@ pub fn tools() -> Vec<ToolDef> {
             .describe(|c| describe_by(c, "prompt"))
             .enabled(live),
         ToolDef::new(list_agents_spec(), ToolGroup::Tasks, Effects::READ, |_, a, cx| list_agents_call(a, cx)).enabled(live),
-        ToolDef::new(watch_spec(), ToolGroup::Tasks, Effects::READ, |_, a, cx| watch_call(a, cx))
+        ToolDef::new(watch_spec(), ToolGroup::Tasks, Effects::READ, |t, a, cx| watch_call(t, a, cx))
             .consequence(watch_consequence)
             .describe(|c| describe_by(c, "path"))
             .enabled(live),

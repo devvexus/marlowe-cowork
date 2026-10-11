@@ -1007,7 +1007,7 @@ pub fn send_message_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
         };
     }
     match cx.scope.services.get::<crate::background::Background>() {
-        Some(b) => match b.0.send_message(&cx.session, id, text, &cx.cancel) {
+        Some(b) => match b.0.send_message(&cx.session, id, text, cx.tainted, &cx.cancel) {
             Ok(said) => ToolOutcome::ok(said, format!("sent to {id}")),
             Err(e) => ToolOutcome::error(e),
         },

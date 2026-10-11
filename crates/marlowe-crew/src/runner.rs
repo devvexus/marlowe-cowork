@@ -363,6 +363,15 @@ budget: {:?}
 spent: {:?}", self.id, run.goal, run.budget, spent),
         };
         let decision = self.inner.deps.approvals.ask(&self.id, self.session.as_ref(), req);
+        // A stop (shutdown, a closed window) beats the refusal that woke us: the run was working,
+        // not waiting on the user, so it stays `running` for the interrupted-run bookkeeping.
+        if self.ctl.stop.load(Ordering::SeqCst) && !self.ctl.user_cancel.load(Ordering::SeqCst) {
+            self.inner.update(&self.id, |r| {
+                r.status = CrewRunStatus::Running;
+                r.note = None;
+            });
+            return Err(CrewError::Stopped);
+        }
         if self.ctl.user_cancel.load(Ordering::SeqCst) || self.ctl.cancel.is_cancelled() {
             return Err(CrewError::Cancelled);
         }

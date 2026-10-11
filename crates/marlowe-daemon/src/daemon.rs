@@ -554,7 +554,9 @@ impl Daemon {
         for h in &handles {
             h.stop();
         }
-        // Before approvals are denied: a run waiting on one sees the stop, not a refusal.
+        // `pause` sets every run's stop flag before approvals are denied, so a run waiting on one
+        // wakes to a stop (the runner reads the flag before the refusal), not a refusal; the wait
+        // for the threads is in `settle`, after the models are unloaded.
         let in_flight = crate::close_ops::pause(&core);
         core.approvals.deny_all();
         // 2. Unload: the models Marlowe loaded and the voice sidecar go before anything is saved,
