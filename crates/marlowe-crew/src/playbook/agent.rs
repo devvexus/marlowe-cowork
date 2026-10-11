@@ -25,7 +25,7 @@ use marlowe_proto::{RunId, SandboxKind, SessionId};
 use super::{ShellResult, StepResult, StepRunner, StepSpec};
 use crate::role::{RoleCard, Roles};
 use crate::sandbox::Sandbox;
-use crate::tools::CrewTools;
+use crate::tools::{CrewToolFactory, CrewTools};
 use crate::CrewError;
 
 /// Continuation turns a step gets after stopping at its per-turn step or budget limit.
@@ -138,6 +138,9 @@ pub struct AgentRunner {
     pub models: ModelResolver,
     /// The run's inner tool host (from the `CrewToolFactory`), rooted in the sandbox.
     pub tools: Arc<dyn ToolHost>,
+    /// Builds a tool host for a step that runs in a sandbox of its own ([`StepSpec::sandbox`]).
+    /// Without one, such a step fails rather than run with tools rooted somewhere else.
+    pub tool_factory: Option<CrewToolFactory>,
     pub sandbox: Sandbox,
     /// The original workspace, read-only to the crew.
     pub workspace: Option<PathBuf>,
@@ -169,6 +172,7 @@ impl AgentRunner {
             roles,
             models,
             tools,
+            tool_factory: None,
             sandbox,
             workspace,
             approvals: Arc::new(DenyAll),
@@ -178,6 +182,22 @@ impl AgentRunner {
             shell: Arc::new(sandbox_shell),
             per_provider: 2,
             per_local_provider: 1,
+        }
+    }
+
+    /// The sandbox a step runs in and the tool host rooted in it: the run's own unless the step
+    /// names another.
+    fn step_sandbox(&self, spec: &StepSpec) -> Result<(Sandbox, Arc<dyn ToolHost>), CrewError> {
+        match &spec.sandbox {
+            None => Ok((self.sandbox.clone(), self.tools.clone())),
+            Some(sb) if *sb == self.sandbox => Ok((self.sandbox.clone(), self.tools.clone())),
+            Some(sb) => match &self.tool_factory {
+                Some(make) => Ok((sb.clone(), make(sb, self.workspace.as_deref()))),
+                None => Err(CrewError::Step {
+                    step: spec.key.clone(),
+                    message: "the step names its own sandbox but the run has no tool factory to root its tools there".into(),
+                }),
+            },
         }
     }
 
@@ -195,18 +215,18 @@ impl AgentRunner {
     }
 
     /// The system core for one step: the card, then a few lines on where the step runs.
-    fn system(&self, card: &RoleCard, spec: &StepSpec, allow: &[String]) -> SystemPrompt {
+    fn system(&self, card: &RoleCard, spec: &StepSpec, sandbox: &Sandbox, allow: &[String]) -> SystemPrompt {
         let mut ctx = format!(
             "\n\n## This run\n- Crew run {}; you are the {}, on the step `{}`.\n",
             self.run.short(),
             card.name,
             spec.label
         );
-        let root = self.sandbox.root.display();
-        match self.sandbox.kind {
+        let root = sandbox.root.display();
+        match sandbox.kind {
             SandboxKind::Worktree => ctx.push_str(&format!(
                 "- Your git worktree (yours to change, branch `{}`): {root}\n",
-                self.sandbox.branch.as_deref().unwrap_or("crew")
+                sandbox.branch.as_deref().unwrap_or("crew")
             )),
             SandboxKind::Scratch => ctx.push_str(&format!("- Your scratch directory (yours to write): {root}\n")),
             SandboxKind::None => ctx.push_str("- You have no writable directory on this step.\n"),
@@ -245,7 +265,8 @@ impl AgentRunner {
         let card = self.card(&spec.role)?;
         let allow = Self::allowlist(card, spec.tools.as_deref());
         let model = (self.models)(card)?;
-        let tools = CrewTools::new(self.tools.clone(), allow.clone(), self.sandbox.clone());
+        let (sandbox, inner_tools) = self.step_sandbox(spec)?;
+        let tools = CrewTools::new(inner_tools, allow.clone(), sandbox.clone());
         let failed = Arc::new(Mutex::new(None));
         let metered = Metered {
             local: model.model.local || model.provider.kind().is_local(),
@@ -254,7 +275,7 @@ impl AgentRunner {
             spec: spec.clone(),
             failed: failed.clone(),
         };
-        let system = self.system(card, spec, &allow);
+        let system = self.system(card, spec, &sandbox, &allow);
         let prompt_tokens = marlowe_agent::context::estimate_tokens(&system.render_text())
             + marlowe_agent::context::estimate_tokens(&spec.prompt);
         let mut agent = Agent::new(Arc::new(metered), model.model, Arc::new(tools), system);
@@ -269,7 +290,7 @@ impl AgentRunner {
         }
 
         let session = SessionId::from(format!("crew:{}", self.run).as_str());
-        let mut convo = Conversation::new(session, Some(self.sandbox.root.clone()));
+        let mut convo = Conversation::new(session, Some(sandbox.root.clone()));
         convo.exposure.tainted = self.hooks.tainted();
 
         self.hooks.progress(&spec.label);

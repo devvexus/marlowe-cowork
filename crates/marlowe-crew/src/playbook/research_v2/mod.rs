@@ -85,6 +85,7 @@ pub(crate) fn step_spec(key: String, role: &str, label: String, prompt: String) 
         tools: Some(Vec::new()),
         effort: None,
         max_output: Some(FIRST_OUTPUT),
+        sandbox: None,
     }
 }
 

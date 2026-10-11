@@ -2880,6 +2880,7 @@ dependencies = [
  "marlowe-mind",
  "marlowe-model",
  "marlowe-os",
+ "marlowe-permission",
  "marlowe-proto",
  "marlowe-provider",
  "marlowe-research",
