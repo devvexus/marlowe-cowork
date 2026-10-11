@@ -82,7 +82,8 @@ fn call(name: &str, args: Value) -> Vec<StreamEvent> {
 }
 
 fn last_tool_result(req: &ChatRequest) -> Option<String> {
-    req.messages.last().filter(|m| m.role == Role::Tool).map(Message::joined_text)
+    // The whole message as JSON: tool results are not text parts.
+    req.messages.last().filter(|m| m.role == Role::Tool).map(|m| serde_json::to_string(m).unwrap_or_default())
 }
 
 fn prompt_of(req: &ChatRequest) -> String {
@@ -249,6 +250,62 @@ fn parity_wf5_resume_from_another_run_keeps_the_unchanged_prefix() {
     let live: Vec<String> = model.requests()[before..].iter().map(prompt_of).collect();
     assert_eq!(live.len(), 2, "{live:?}");
     assert!(live[0].starts_with('C') && live[1].starts_with('d'), "{live:?}");
+}
+
+struct Recording(Mutex<Vec<String>>);
+
+impl RunObserver for Recording {
+    fn agent_start(&self, _run: &RunId, call: &AgentCall) -> Option<String> {
+        self.0.lock().unwrap().push(format!("start {}", call.index));
+        Some("HOOK CONTEXT: keep it short".into())
+    }
+    fn agent_stop(&self, _run: &RunId, call: &AgentCall, result: &AgentResult) {
+        self.0.lock().unwrap().push(format!("stop {} {:?}", call.index, result.status));
+    }
+}
+
+#[test]
+fn parity_x22_every_workflow_agent_fires_start_and_stop_hooks() {
+    let model = Model::new(false, |req, _| {
+        assert!(prompt_of(req).contains("HOOK CONTEXT"), "SubagentStart context reaches the agent");
+        answer("ok")
+    });
+    let home = temp("x22");
+    let r = runner(model, &home);
+    let run = RunId::new_random();
+    let rec = Arc::new(Recording(Mutex::new(Vec::new())));
+    set_observer(&run, rec.clone());
+    let src = "META = {\"description\": \"two\"}\ndef main(args):\n    return parallel([lambda: agent(\"a\"), lambda: agent(\"b\")])\n";
+    let wf = job_script(&home, &run, src, json!({}), None);
+    go(&r, &home, &run, &wf).0.unwrap();
+    let mut seen = rec.0.lock().unwrap().clone();
+    seen.sort();
+    assert_eq!(seen, ["start 0", "start 1", "stop 0 Done", "stop 1 Done"]);
+}
+
+#[test]
+fn parity_wf8_a_workflow_shares_the_sessions_token_pool() {
+    let model = Model::new(false, |_, _| {
+        vec![
+            StreamEvent::TextDelta("x".into()),
+            StreamEvent::Usage(marlowe_model::Usage { output: 40, ..Default::default() }),
+            StreamEvent::Stop(StopReason::EndTurn),
+        ]
+    });
+    let home = temp("wf8");
+    let r = runner(model, &home);
+    let run = RunId::new_random();
+    let session = marlowe_proto::SessionId("pool-s".into());
+    let pool = marlowe_workflow::pools::set(&session, 100);
+    pool.add(30); // the main loop spent some first
+    let src = "META = {\"description\": \"loop\"}\ndef main(args):\n    n = 0\n    for i in range(10):\n        if budget.remaining() < 40:\n            break\n        agent(\"step\")\n        n += 1\n    return {\"n\": n, \"total\": budget.total}\n";
+    let wf = job_script(&home, &run, src, json!({}), None);
+    let events = Mutex::new(Vec::new());
+    let job = ScriptJob { home: &home, run: &run, session: Some(&session), workspace: None, workflow: &wf, plugins: vec![] };
+    let d = run_workflow(&r, job, &|e| events.lock().unwrap().push(e)).unwrap();
+    assert!(d.summary.contains("\"n\": 1") && d.summary.contains("\"total\": 100"), "{}", d.summary);
+    assert_eq!(pool.spent(), 70);
+    marlowe_workflow::pools::clear(&session);
 }
 
 #[test]

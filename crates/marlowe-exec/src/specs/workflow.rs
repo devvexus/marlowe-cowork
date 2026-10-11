@@ -81,11 +81,16 @@ fn s<'a>(a: &'a Value, k: &str) -> Option<&'a str> {
     a.get(k).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty())
 }
 
+/// The inline script exactly as given (its digest is the trust key, so it is not trimmed).
+fn script<'a>(a: &'a Value) -> Option<&'a str> {
+    a.get("script").and_then(Value::as_str).filter(|v| !v.trim().is_empty())
+}
+
 fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
     let Some(roots) = roots(t, cx.workspace.as_deref()) else {
         return ToolOutcome::error("workflows are not available on this host");
     };
-    let (script, script_path, name) = (s(a, "script"), s(a, "script_path"), s(a, "name"));
+    let (script, script_path, name) = (script(a), s(a, "script_path"), s(a, "name"));
     if a.get("validate_only").and_then(Value::as_bool).unwrap_or(false) {
         return match service::prepare(&roots, script, script_path, name) {
             Ok(p) => ToolOutcome::ok(format!("{} is valid. META: {}", p.filename, serde_json::to_string(&p.meta).unwrap_or_default()), "valid"),
@@ -157,7 +162,7 @@ fn workflow_consequence(t: &BuiltinTools, c: &ToolCallReq) -> Consequence {
     let (Some(home), Some(roots)) = (g.home.as_deref(), roots(t, None)) else {
         return Consequence::Ask { summary: "run a workflow".into() };
     };
-    match service::prepare(&roots, s(a, "script"), s(a, "script_path"), s(a, "name")) {
+    match service::prepare(&roots, script(a), s(a, "script_path"), s(a, "name")) {
         // Nothing will run: the call returns the errors.
         Err(_) => Consequence::Free,
         Ok(p) if service::is_trusted(home, &p) => Consequence::Free,
@@ -205,10 +210,14 @@ pub fn tools() -> Vec<ToolDef> {
             .consequence(|t, c, _| workflow_consequence(t, c))
             .describe(describe_workflow)
             .enabled(|t| group(t).conductor),
-        ToolDef::new(report_findings_spec(), ToolGroup::Workflow, Effects::NONE, report_findings_call).describe(|c| {
-            let n = c.args.get("findings").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
-            format!("report_findings {n}")
-        }),
+        ToolDef::new(report_findings_spec(), ToolGroup::Workflow, Effects::NONE, report_findings_call)
+            .describe(|c| {
+                let n = c.args.get("findings").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
+                format!("report_findings {n}")
+            })
+            // Configured hosts (the conductor's and the crew's) only: findings are stored under
+            // the profile home.
+            .enabled(|t| group(t).home.is_some()),
     ]
 }
 

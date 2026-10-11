@@ -147,6 +147,22 @@ pub(crate) fn services(core: &Arc<Core>, convo: &Conversation, services: Service
 /// Lists workflow runs as `wf_<run>` tasks (BG1-BG3). Must not block.
 pub(crate) fn on_boot(core: &Arc<Core>) {
     crate::tasks::registry(core).add_source(Arc::new(WorkflowTasks { core: Arc::downgrade(core) }));
+    install_skill(&core.home);
+}
+
+/// The `workflow-authoring` skill (WF9: the long reference and examples), shipped as a user-level
+/// skill on first start; a copy the user edited is left alone.
+pub(crate) const AUTHORING_SKILL: &str = include_str!("../../../workflows/workflow-authoring.md");
+
+pub(crate) fn install_skill(home: &Path) {
+    let path = home.join("skills").join("workflow-authoring").join("SKILL.md");
+    if path.exists() {
+        return;
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&path, AUTHORING_SKILL);
 }
 
 // ---------------------------------------------------------------- the launcher

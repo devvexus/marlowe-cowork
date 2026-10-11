@@ -92,8 +92,19 @@ impl AgentHost for CrewAgentHost {
                 let c = child.clone();
                 move || c.cancel()
             });
+            // A panicking agent still answers, so the workflow never waits on it forever.
             let result = match role {
-                Ok(role) => run_agent(&runner, &home, &run, &call, &role, &child, observer.as_deref()),
+                Ok(role) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_agent(&runner, &home, &run, &call, &role, &child, observer.as_deref())
+                }))
+                .unwrap_or_else(|p| {
+                    let why = p
+                        .downcast_ref::<&str>()
+                        .map(|s| s.to_string())
+                        .or_else(|| p.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "unknown panic".into());
+                    AgentResult::failed(format!("the agent panicked: {why}"), 0)
+                }),
                 Err(why) => AgentResult::failed(why, 0),
             };
             let _ = done.send(Completion { index, result });
