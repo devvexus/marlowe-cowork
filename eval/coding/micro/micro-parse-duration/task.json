@@ -1,0 +1,25 @@
+{
+  "id": "micro-parse-duration",
+  "tier": "micro",
+  "language": "python",
+  "prompt": "`parse_duration` in timeparse.py handles hours and seconds but ignores minutes. Make \"1h30m\", \"45m\" and \"2h5m10s\" work; it returns a number of seconds. Run the tests to check your work.",
+  "setup": {
+    "kind": "dir",
+    "path": "repo"
+  },
+  "hidden": {
+    "test_hidden.py": "hidden/test_hidden.py"
+  },
+  "tests": [
+    [
+      "{python}",
+      "-m",
+      "pytest",
+      "-q",
+      "-p",
+      "no:cacheprovider"
+    ]
+  ],
+  "timeout": 600,
+  "test_timeout": 120
+}

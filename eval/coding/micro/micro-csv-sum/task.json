@@ -1,0 +1,25 @@
+{
+  "id": "micro-csv-sum",
+  "tier": "micro",
+  "language": "python",
+  "prompt": "`column_sum(path, column)` in report.py should add up the numbers in one column of a CSV file that has a header row, but it currently fails on the header. Fix it; blank cells count as zero. Run the tests to check your work.",
+  "setup": {
+    "kind": "dir",
+    "path": "repo"
+  },
+  "hidden": {
+    "test_hidden.py": "hidden/test_hidden.py"
+  },
+  "tests": [
+    [
+      "{python}",
+      "-m",
+      "pytest",
+      "-q",
+      "-p",
+      "no:cacheprovider"
+    ]
+  ],
+  "timeout": 600,
+  "test_timeout": 120
+}

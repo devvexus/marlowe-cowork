@@ -74,7 +74,10 @@ pub fn run(home: &Path, raw: &[String]) -> Result<i32, String> {
         stdin_grace: driver::STDIN_GRACE,
     };
     let connect = connector(home, &args);
-    Ok(driver::run(args, env, connect))
+    let code = driver::run(args, env, connect);
+    // Eval runs read the tool-call repair counts from here (`MARLOWE_EVAL_STATS`).
+    crate::eval_entry::write_run_stats();
+    Ok(code)
 }
 
 /// The shared daemon (started on demand), or one inside this process.

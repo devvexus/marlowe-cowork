@@ -1,0 +1,25 @@
+{
+  "id": "micro-dedupe",
+  "tier": "micro",
+  "language": "python",
+  "prompt": "Add `dedupe(items)` to listutil.py: return the items with duplicates removed, keeping the first occurrence of each and the original order. The items may be unhashable (lists), so do not rely on a set. Run the tests to check your work.",
+  "setup": {
+    "kind": "dir",
+    "path": "repo"
+  },
+  "hidden": {
+    "test_hidden.py": "hidden/test_hidden.py"
+  },
+  "tests": [
+    [
+      "{python}",
+      "-m",
+      "pytest",
+      "-q",
+      "-p",
+      "no:cacheprovider"
+    ]
+  ],
+  "timeout": 600,
+  "test_timeout": 120
+}

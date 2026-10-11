@@ -1,0 +1,25 @@
+{
+  "id": "micro-roman",
+  "tier": "micro",
+  "language": "python",
+  "prompt": "Implement `from_roman(s)` in roman.py: convert a Roman numeral (I V X L C D M, with subtractive pairs like IV and CM) to an int. `from_roman(\"MCMXCIV\")` is 1994. Run the tests to check your work.",
+  "setup": {
+    "kind": "dir",
+    "path": "repo"
+  },
+  "hidden": {
+    "test_hidden.py": "hidden/test_hidden.py"
+  },
+  "tests": [
+    [
+      "{python}",
+      "-m",
+      "pytest",
+      "-q",
+      "-p",
+      "no:cacheprovider"
+    ]
+  ],
+  "timeout": 600,
+  "test_timeout": 120
+}

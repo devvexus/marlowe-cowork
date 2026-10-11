@@ -1,0 +1,25 @@
+{
+  "id": "micro-counter-reset",
+  "tier": "micro",
+  "language": "python",
+  "prompt": "The `Counter` class in counter.py needs a `reset()` method that sets the count back to zero and returns the count it had before the reset. Run the tests to check your work.",
+  "setup": {
+    "kind": "dir",
+    "path": "repo"
+  },
+  "hidden": {
+    "test_hidden.py": "hidden/test_hidden.py"
+  },
+  "tests": [
+    [
+      "{python}",
+      "-m",
+      "pytest",
+      "-q",
+      "-p",
+      "no:cacheprovider"
+    ]
+  ],
+  "timeout": 600,
+  "test_timeout": 120
+}

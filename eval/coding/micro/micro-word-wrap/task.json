@@ -1,0 +1,25 @@
+{
+  "id": "micro-word-wrap",
+  "tier": "micro",
+  "language": "python",
+  "prompt": "Implement `wrap(text, width)` in wrapper.py: break the text at spaces into lines of at most `width` characters, joining with newlines. A single word longer than `width` stays on its own line. Words are separated by single spaces in the output. Run the tests to check your work.",
+  "setup": {
+    "kind": "dir",
+    "path": "repo"
+  },
+  "hidden": {
+    "test_hidden.py": "hidden/test_hidden.py"
+  },
+  "tests": [
+    [
+      "{python}",
+      "-m",
+      "pytest",
+      "-q",
+      "-p",
+      "no:cacheprovider"
+    ]
+  ],
+  "timeout": 600,
+  "test_timeout": 120
+}
