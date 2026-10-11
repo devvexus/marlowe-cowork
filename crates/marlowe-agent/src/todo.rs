@@ -1,1 +1,502 @@
-//! The `todo` tool state (in `Conversation::ext`) and its stale reminder (design 2.1 T22). Track F; empty until it lands (declared by the seam so no track edits `lib.rs`).
+//! The session's working set (design 2.1 T22-T23, 2.4 C7, 2.10 B2-B4), kept in
+//! `Conversation::ext`:
+//! - [`TodoState`] behind the `todo` tool, broadcast through the [`TodoSink`] service; a
+//!   reminder when open todos go [`TODO_STALE_STEPS`] steps without an update.
+//! - `ask_user` through the [`Questions`] service (the daemon's modal; refused where nobody can
+//!   answer, so a headless run continues on its own judgement).
+//! - [`PlanState`] for `exit_plan`.
+//! - [`Pinned`]: the edit ledger and the last failing output, which with the todos, the plan
+//!   and the user's own words form the pinned working set that compaction never drops
+//!   ([`pinned_block`]).
+//!
+//! [`WorkingSet`] is the loop middleware: it records edits, checks and failures as calls run,
+//! reminds about stale todos after a step, and before the final answer applies the stop check
+//! ("you changed files and ran no check since") and keeps a turn with open todos going.
+
+use std::collections::{BTreeSet, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use marlowe_model::{CancelToken, Message, Part, Role};
+use marlowe_proto::{Question, SessionId, TodoItem, TodoStatus};
+use serde_json::Value;
+
+use crate::convo::Conversation;
+use crate::middleware::{FinalFlow, StepInfo, ToolMiddleware};
+use crate::tools::{CallCtx, Mutation, ToolCallReq, ToolOutcome};
+
+/// Steps with open todos and no `todo` update before the reminder.
+pub const TODO_STALE_STEPS: u32 = 10;
+/// Times one turn is pushed on because todos are still open.
+pub const MAX_TODO_NUDGES: u32 = 2;
+/// Longest single user message carried in the pinned working set, and all of them together
+/// (the first message and the most recent ones are kept when they do not all fit).
+const PINNED_USER_CHARS: usize = 600;
+const PINNED_USER_TOTAL: usize = 6_000;
+const PINNED_FAILURE_CHARS: usize = 2_000;
+
+/// The todo list and how fresh it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TodoState {
+    pub items: Vec<TodoItem>,
+    /// Steps since the last `todo` call.
+    pub steps_since_update: u32,
+    /// The step count at which the last stale reminder was sent (no repeat until it moves on).
+    pub reminded: bool,
+}
+
+impl TodoState {
+    pub fn open(&self) -> Vec<&TodoItem> {
+        self.items.iter().filter(|i| i.status != TodoStatus::Completed).collect()
+    }
+}
+
+/// Renders a todo list, one line per item.
+pub fn render_todos(items: &[TodoItem]) -> String {
+    items
+        .iter()
+        .map(|i| {
+            let mark = match i.status {
+                TodoStatus::Pending => "[ ]",
+                TodoStatus::InProgress => "[~]",
+                TodoStatus::Completed => "[x]",
+            };
+            format!("{mark} {}", i.content.trim())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Broadcasts a session's todo list (the daemon publishes `Event::Todos`).
+#[derive(Clone)]
+pub struct TodoSink(pub Arc<dyn Fn(&SessionId, &[TodoItem]) + Send + Sync>);
+
+/// Parses the `todo` tool's items (`items`, or Claude Code's `todos`).
+pub fn parse_todos(args: &Value) -> Result<Vec<TodoItem>, String> {
+    let list = args.get("items").or_else(|| args.get("todos")).and_then(Value::as_array).ok_or("`items` must be an array of {content, status, active_form}")?;
+    let mut out = Vec::new();
+    for (n, it) in list.iter().enumerate() {
+        let content = it.get("content").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+        let content = content.ok_or_else(|| format!("item {}: `content` is required", n + 1))?;
+        let status = match it.get("status").and_then(Value::as_str).unwrap_or("pending") {
+            "pending" => TodoStatus::Pending,
+            "in_progress" | "in-progress" => TodoStatus::InProgress,
+            "completed" | "done" => TodoStatus::Completed,
+            other => return Err(format!("item {}: status `{other}` is not pending, in_progress or completed", n + 1)),
+        };
+        let active_form = it.get("active_form").or_else(|| it.get("activeForm")).and_then(Value::as_str).map(str::to_string);
+        out.push(TodoItem { content: content.to_string(), status, active_form });
+    }
+    Ok(out)
+}
+
+/// The `todo` tool: replaces the list in the session's extensions and broadcasts it.
+pub fn todo_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
+    let items = match parse_todos(args) {
+        Ok(i) => i,
+        Err(e) => return ToolOutcome::error(e),
+    };
+    cx.scope.with_ext(|e| {
+        let st = e.get_or_default::<TodoState>();
+        st.items = items.clone();
+        st.steps_since_update = 0;
+        st.reminded = false;
+    });
+    if let Some(sink) = cx.scope.services.get::<TodoSink>() {
+        (sink.0)(&cx.session, &items);
+    }
+    let open = items.iter().filter(|i| i.status != TodoStatus::Completed).count();
+    let doing = items.iter().filter(|i| i.status == TodoStatus::InProgress).count();
+    let mut msg = format!("Todo list updated ({} items, {open} open).", items.len());
+    if doing > 1 {
+        msg.push_str(" More than one item is in progress; keep exactly one in progress at a time.");
+    }
+    if open > 0 {
+        msg.push_str(" Keep it current: mark each item completed as soon as it is done.");
+    }
+    ToolOutcome::ok(msg, format!("{} todos, {open} open", items.len()))
+}
+
+/// Answers `ask_user` questions: the daemon shows a modal and waits for `AnswerQuestion`.
+pub trait QuestionAsker: Send + Sync {
+    /// One answer per question, in order; `Err` when nobody answered (timeout, cancel).
+    fn ask(&self, session: &SessionId, questions: &[Question], cancel: &CancelToken) -> Result<Vec<String>, String>;
+}
+
+/// The `ask_user` service in `Services`.
+#[derive(Clone)]
+pub struct Questions(pub Arc<dyn QuestionAsker>);
+
+/// What `ask_user` returns where nobody can answer (headless, crew).
+pub const NO_ONE_TO_ASK: &str = "No one can answer questions in this session. Do not ask again: make the most \
+reasonable choice, state the assumption in your reply, and continue.";
+
+/// Parses `ask_user` questions (Claude Code's `AskUserQuestion` shape: `question`, `header`,
+/// `options` as strings or `{label, description}`, `multiSelect`).
+pub fn parse_questions(args: &Value) -> Result<Vec<Question>, String> {
+    let list = args.get("questions").and_then(Value::as_array).ok_or("`questions` must be an array")?;
+    if list.is_empty() || list.len() > 4 {
+        return Err("ask 1 to 4 questions at a time".into());
+    }
+    let mut out = Vec::new();
+    for (n, q) in list.iter().enumerate() {
+        let question = q.get("question").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+        let question = question.ok_or_else(|| format!("question {}: `question` is required", n + 1))?;
+        let header = q.get("header").and_then(Value::as_str).unwrap_or("").chars().take(24).collect();
+        let options = q
+            .get("options")
+            .and_then(Value::as_array)
+            .map(|opts| {
+                opts.iter()
+                    .filter_map(|o| match o {
+                        Value::String(s) => Some(s.clone()),
+                        Value::Object(_) => {
+                            let label = o.get("label").and_then(Value::as_str)?;
+                            Some(match o.get("description").and_then(Value::as_str).filter(|d| !d.trim().is_empty()) {
+                                Some(d) => format!("{label} — {d}"),
+                                None => label.to_string(),
+                            })
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let multi_select = q.get("multi_select").or_else(|| q.get("multiSelect")).and_then(Value::as_bool).unwrap_or(false);
+        out.push(Question { question: question.to_string(), header, options, multi_select });
+    }
+    Ok(out)
+}
+
+/// The `ask_user` tool.
+pub fn ask_user_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
+    let questions = match parse_questions(args) {
+        Ok(q) => q,
+        Err(e) => return ToolOutcome::error(e),
+    };
+    let Some(asker) = cx.scope.services.get::<Questions>() else {
+        return ToolOutcome { summary: "no one to ask".into(), ..ToolOutcome::error(NO_ONE_TO_ASK) };
+    };
+    match asker.0.ask(&cx.session, &questions, &cx.cancel) {
+        Ok(answers) => {
+            let pairs: Vec<String> = questions
+                .iter()
+                .zip(answers.iter().map(String::as_str).chain(std::iter::repeat("(no answer)")))
+                .map(|(q, a)| format!("\"{}\" = \"{}\"", q.question, a.trim()))
+                .collect();
+            ToolOutcome::ok(
+                format!("The user answered: {}. Continue with these answers in mind.", pairs.join("; ")),
+                format!("{} answered", questions.len()),
+            )
+        }
+        Err(e) => ToolOutcome::error(format!("The question was not answered ({e}). {NO_ONE_TO_ASK}")),
+    }
+}
+
+/// The approved plan (`exit_plan`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlanState {
+    pub plan: Option<String>,
+    /// Set when the user approved leaving plan mode with it (the mode switch is track E's).
+    pub approved: bool,
+}
+
+/// The `exit_plan` tool: it only runs once the approval gate let it through (its consequence is
+/// Ask), so running it means the user approved the plan.
+pub fn exit_plan_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
+    let Some(plan) = args.get("plan").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty()) else {
+        return ToolOutcome::error("`plan` is required: the steps you will take and the files you will change");
+    };
+    cx.scope.with_ext(|e| {
+        *e.get_or_default::<PlanState>() = PlanState { plan: Some(plan.to_string()), approved: true };
+    });
+    ToolOutcome::ok("The user approved the plan. Leave plan mode and carry it out, keeping the todo list current.", "plan approved")
+}
+
+/// The edit ledger and the last failure.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Pinned {
+    /// Files changed by tools this session.
+    pub edits: BTreeSet<PathBuf>,
+    /// `(call id, tool, output excerpt)` of the last call that failed.
+    pub last_failure: Option<(String, String, String)>,
+}
+
+/// Whether files changed since the last check (build, test, lint) ran, and if the stop check
+/// already fired this turn.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VerifyState {
+    pub dirty: BTreeSet<PathBuf>,
+    pub reminded_turn: Option<u32>,
+    /// `(turn, nudges)` for open-todo continuations.
+    pub nudges: (u32, u32),
+}
+
+/// Commands that check work (a build, test, lint or type check). A shell call matching one
+/// clears the stop check.
+const GATE_COMMANDS: &[&str] = &[
+    "cargo test", "cargo check", "cargo build", "cargo clippy", "cargo nextest", "cargo-idle.ps1", "pytest", "py.test",
+    "unittest", "tox", "nox", "npm test", "npm run test", "npm run build", "npm run lint", "npm run check",
+    "npm run typecheck", "pnpm test", "pnpm run", "yarn test", "yarn build", "yarn lint", "bun test", "deno test", "npx tsc", "tsc ",
+    "jest", "vitest", "eslint", "go test", "go build", "go vet", "ruff", "mypy", "pyright", "make", "ctest", "cmake --build",
+    "dotnet test", "dotnet build", "mvn ", "gradle", "swift test", "swift build", "rspec", "phpunit",
+];
+
+/// Whether a shell command runs a check.
+pub fn is_gate_command(cmd: &str) -> bool {
+    let c = cmd.to_ascii_lowercase();
+    GATE_COMMANDS.iter().any(|g| c.contains(g)) || c.trim() == "tsc"
+}
+
+fn is_gate_call(call: &ToolCallReq) -> bool {
+    match call.name.as_str() {
+        // The verify group's project runner (track D) is a check by definition.
+        "project" => true,
+        _ => ["command", "code", "script"].iter().filter_map(|k| call.args.get(*k).and_then(Value::as_str)).any(is_gate_command),
+    }
+}
+
+/// The user's own words from before earlier compactions, so they outlive any number of them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CarriedWords(pub Vec<String>);
+
+/// The pinned working set, rendered for a compaction summary (empty when there is nothing).
+pub fn pinned_block(convo: &Conversation) -> String {
+    render_pinned(convo, &all_user_words(convo))
+}
+
+/// [`pinned_block`] for the compaction about to run: the user's words are also carried to the
+/// next one, since the messages holding them are about to be folded away.
+pub fn pin_for_compaction(convo: &mut Conversation) -> String {
+    let words = all_user_words(convo);
+    let block = render_pinned(convo, &words);
+    convo.ext.insert(CarriedWords(words));
+    block
+}
+
+fn all_user_words(convo: &Conversation) -> Vec<String> {
+    let mut all = convo.ext.get::<CarriedWords>().map(|c| c.0.clone()).unwrap_or_default();
+    for w in user_words(&convo.messages) {
+        if !all.contains(&w) {
+            all.push(w);
+        }
+    }
+    let total: usize = all.iter().map(|w| w.chars().count()).sum();
+    if total <= PINNED_USER_TOTAL || all.len() < 2 {
+        return all;
+    }
+    // The first message (the task) and then the most recent ones that fit.
+    let first = all.remove(0);
+    let mut used = first.chars().count();
+    let mut recent: Vec<String> = Vec::new();
+    for w in all.into_iter().rev() {
+        let n = w.chars().count();
+        if used + n > PINNED_USER_TOTAL {
+            break;
+        }
+        used += n;
+        recent.push(w);
+    }
+    recent.reverse();
+    std::iter::once(first).chain(recent).collect()
+}
+
+fn render_pinned(convo: &Conversation, users: &[String]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(t) = convo.ext.get::<TodoState>().filter(|t| !t.items.is_empty()) {
+        parts.push(format!("Todos:
+{}", render_todos(&t.items)));
+    }
+    if let Some(p) = convo.ext.get::<PlanState>().and_then(|p| p.plan.as_deref()) {
+        parts.push(format!("Approved plan:
+{}", p.trim()));
+    }
+    if let Some(pin) = convo.ext.get::<Pinned>() {
+        if !pin.edits.is_empty() {
+            let files: Vec<String> = pin.edits.iter().map(|p| p.display().to_string()).collect();
+            parts.push(format!("Files changed this session:
+{}", files.join("
+")));
+        }
+        if let Some((_, tool, out)) = &pin.last_failure {
+            parts.push(format!("Last failing output ({tool}):
+{}", out.trim()));
+        }
+    }
+    if !users.is_empty() {
+        let lines: Vec<String> = users.iter().map(|u| format!("- {u}")).collect();
+        parts.push(format!("The user's own words this session, verbatim:
+{}", lines.join("
+")));
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    format!("<pinned_working_set>
+{}
+</pinned_working_set>", parts.join("
+
+"))
+}
+
+/// The user's own messages (not reminders, relays or tool results), most recent last.
+fn user_words(messages: &[Message]) -> Vec<String> {
+    let out: Vec<String> = messages
+        .iter()
+        .filter(|m| m.role == Role::User)
+        .filter_map(|m| {
+            let t: String = m
+                .content
+                .iter()
+                .filter_map(|p| match p {
+                    Part::Text { text } if !is_harness_text(text) => Some(text.trim()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let t = t.trim();
+            (!t.is_empty()).then(|| {
+                let mut s: String = t.chars().take(PINNED_USER_CHARS).collect();
+                if t.chars().count() > PINNED_USER_CHARS {
+                    s.push('…');
+                }
+                s
+            })
+        })
+        .collect();
+    out
+}
+
+fn is_harness_text(t: &str) -> bool {
+    let t = t.trim_start();
+    t.starts_with("<system-reminder>") || t.starts_with("<reminder>") || t.starts_with("[crew · run ") || t.starts_with("[agent ")
+}
+
+/// Call ids whose results compaction must not mask.
+pub fn pinned_ids(convo: &Conversation) -> HashSet<String> {
+    convo.ext.get::<Pinned>().and_then(|p| p.last_failure.as_ref()).map(|(id, _, _)| id.clone()).into_iter().collect()
+}
+
+/// The working-set middleware (see the module docs).
+#[derive(Debug, Default)]
+pub struct WorkingSet;
+
+impl WorkingSet {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self)
+    }
+}
+
+impl ToolMiddleware for WorkingSet {
+    fn name(&self) -> &str {
+        "working-set"
+    }
+
+    fn pre_mutation(&self, _call: &ToolCallReq, cx: &CallCtx, mutation: &Mutation) -> Result<(), ToolOutcome> {
+        if let Mutation::Paths(paths) = mutation {
+            cx.scope.with_ext(|e| {
+                e.get_or_default::<Pinned>().edits.extend(paths.iter().cloned());
+                e.get_or_default::<VerifyState>().dirty.extend(paths.iter().cloned());
+            });
+        }
+        Ok(())
+    }
+
+    fn after_call(&self, call: &ToolCallReq, cx: &CallCtx, outcome: &mut ToolOutcome) {
+        let gate = is_gate_call(call);
+        cx.scope.with_ext(|e| {
+            if outcome.is_error {
+                let excerpt: String = outcome.content.chars().rev().take(PINNED_FAILURE_CHARS).collect::<Vec<_>>().into_iter().rev().collect();
+                e.get_or_default::<Pinned>().last_failure = Some((call.id.clone(), call.name.clone(), excerpt));
+            } else if gate {
+                // A passing check after the last failure: the failure is history now.
+                if let Some(p) = e.get_mut::<Pinned>() {
+                    p.last_failure = None;
+                }
+            }
+            if gate {
+                e.get_or_default::<VerifyState>().dirty.clear();
+            }
+        });
+    }
+
+    fn after_step(&self, _info: StepInfo, convo: &mut Conversation) -> Vec<Message> {
+        let Some(st) = convo.ext.get_mut::<TodoState>() else { return Vec::new() };
+        st.steps_since_update += 1;
+        if st.open().is_empty() || st.reminded || st.steps_since_update < TODO_STALE_STEPS {
+            return Vec::new();
+        }
+        st.reminded = true;
+        vec![Message::user(format!(
+            "<system-reminder>\nThe todo list has not been updated in {} steps. If items are done, mark them completed; if \
+             the plan changed, rewrite the list. Current list:\n{}\n</system-reminder>",
+            st.steps_since_update,
+            render_todos(&st.items)
+        ))]
+    }
+
+    fn before_final(&self, info: StepInfo, convo: &mut Conversation, _text: &str) -> FinalFlow {
+        let vs = convo.ext.get_or_default::<VerifyState>();
+        if !vs.dirty.is_empty() && vs.reminded_turn != Some(info.turn) {
+            vs.reminded_turn = Some(info.turn);
+            let files: Vec<String> = vs.dirty.iter().take(8).map(|p| p.display().to_string()).collect();
+            return FinalFlow::Continue(format!(
+                "<system-reminder>\nYou changed files ({}) and have not run a build, test or check since. Run the project's \
+                 checks and fix what fails before you finish, or say plainly why they cannot be run.\n</system-reminder>",
+                files.join(", ")
+            ));
+        }
+        let open: Vec<String> = convo
+            .ext
+            .get::<TodoState>()
+            .map(|t| t.open().iter().map(|i| format!("- {}", i.content)).collect())
+            .unwrap_or_default();
+        if open.is_empty() {
+            return FinalFlow::Accept;
+        }
+        let vs = convo.ext.get_or_default::<VerifyState>();
+        if vs.nudges.0 != info.turn {
+            vs.nudges = (info.turn, 0);
+        }
+        if vs.nudges.1 >= MAX_TODO_NUDGES {
+            return FinalFlow::Accept;
+        }
+        vs.nudges.1 += 1;
+        FinalFlow::Continue(format!(
+            "<system-reminder>\nThese todos are still open:\n{}\nKeep working on them. If one is done, mark it completed; if \
+             it no longer applies or you are blocked, update the list and say what is blocking.\n</system-reminder>",
+            open.join("\n")
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn todos_parse_both_spellings_and_reject_bad_status() {
+        let a = parse_todos(&json!({"todos": [{"content": "x", "status": "in_progress", "activeForm": "Doing x"}]})).unwrap();
+        assert_eq!(a[0].status, TodoStatus::InProgress);
+        assert_eq!(a[0].active_form.as_deref(), Some("Doing x"));
+        assert!(parse_todos(&json!({"items": [{"content": "x", "status": "maybe"}]})).is_err());
+    }
+
+    #[test]
+    fn questions_take_claude_code_options() {
+        let q = parse_questions(&json!({"questions": [{"question": "Which DB?", "header": "DB", "options": [{"label": "sqlite", "description": "local"}, "postgres"], "multiSelect": true}]})).unwrap();
+        assert_eq!(q[0].options, ["sqlite — local", "postgres"]);
+        assert!(q[0].multi_select);
+        assert!(parse_questions(&json!({"questions": []})).is_err());
+    }
+
+    #[test]
+    fn gate_commands_are_recognised() {
+        assert!(is_gate_command("cargo test -p x"));
+        assert!(is_gate_command("python -m pytest -q"));
+        assert!(is_gate_command("powershell -NoProfile -File scripts/cargo-idle.ps1 check"));
+        assert!(!is_gate_command("git status"));
+        assert!(!is_gate_command("ls -la"));
+    }
+}

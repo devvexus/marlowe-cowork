@@ -1,21 +1,31 @@
-//! Context assembly: tiered system prompt, tool-result masking, compaction.
+//! Context assembly: tiered system prompt, append-only history, compaction, the prefix budget.
 //!
-//! Tiers: stable (persona core + blocks + user, cached) -> context (profile, compaction summary,
-//! retrieved memory blocks) -> volatile (environment, history). Only the last [`KEEP_TOOL_RESULTS`] tool
-//! results keep their bodies; older ones are masked. At [`COMPACTION_TRIGGER`] of the window a
-//! summariser call condenses older history.
+//! Tiers: stable (persona core + blocks + project sections + user + output style, cached) ->
+//! context (profile, compaction summary) -> per-turn (retrieved memory, environment) -> history.
+//! With [`ContextConfig::volatile_tail`] the per-turn tier rides on its turn's user message as a
+//! `<system-reminder>` instead, so the system prompt is byte-identical from turn to turn.
+//!
+//! History is append-only between compactions ([`Masking::AppendOnly`], design 3.4): nothing in
+//! it changes per step, so a provider's prefix cache holds. At [`COMPACTION_TRIGGER`] of the
+//! window every eligible tool result is masked in one chunk (the last [`KEEP_TOOL_RESULTS`] and
+//! the pinned working set stay); if that is not enough a summariser call condenses older history,
+//! and the pinned working set ([`crate::todo::pinned_block`]) is carried into the summary verbatim.
+//! [`Masking::Rolling`] (the pre-M4.6 behaviour, masking all but the last results on every call)
+//! stays as an eval arm.
+
+use std::collections::HashSet;
 
 use marlowe_model::{
     CancelToken, ChatRequest, Effort, Message, ModelInfo, Part, Provider, ProviderError, Role, SystemBlock, ToolSpec,
 };
 
 use crate::convo::Conversation;
-use crate::system::SystemPrompt;
+use crate::system::{PromptSections, SystemPrompt};
 
 /// Fraction of the effective window at which history is compacted.
 pub const COMPACTION_TRIGGER: f32 = 0.70;
 
-/// Tool results that keep their full body; older ones are masked.
+/// Tool results that keep their full body through a masking chunk; older ones are masked.
 pub const KEEP_TOOL_RESULTS: usize = 8;
 
 /// Window assumed when the model does not report one.
@@ -38,6 +48,15 @@ const MESSAGE_OVERHEAD: u32 = 4;
 /// Longest tool result body shown to the summariser, in characters.
 const SUMMARY_RESULT_CHARS: usize = 1_500;
 
+/// How tool results leave the context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Masking {
+    /// Masked only at the compaction trigger, all eligible results in one chunk (default).
+    AppendOnly,
+    /// All but the last `keep_tool_results` masked on every call (pre-M4.6; eval arm).
+    Rolling,
+}
+
 /// Context sizing for one model.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ContextConfig {
@@ -46,6 +65,10 @@ pub struct ContextConfig {
     pub reserve_output: u32,
     pub keep_tool_results: usize,
     pub compaction_trigger: f32,
+    pub masking: Masking,
+    /// Per-turn memory and environment ride on the turn's user message instead of the system
+    /// prompt (design 3.4), so the system prompt never changes between turns.
+    pub volatile_tail: bool,
 }
 
 impl ContextConfig {
@@ -58,7 +81,14 @@ impl ContextConfig {
             reserve_output: reserve,
             keep_tool_results: KEEP_TOOL_RESULTS,
             compaction_trigger: COMPACTION_TRIGGER,
+            masking: Masking::AppendOnly,
+            volatile_tail: false,
         }
+    }
+
+    /// The same policy for another model (`/model` mid-session): window and reserve change.
+    pub fn for_switch(&self, info: &ModelInfo) -> Self {
+        Self { masking: self.masking, volatile_tail: self.volatile_tail, ..Self::for_model(info) }
     }
 
     /// Window minus the output reserve.
@@ -129,6 +159,36 @@ pub fn summary_block(summary: &str) -> SystemBlock {
     SystemBlock { text: format!("{SUMMARY_PREFACE}\n\n{}", summary.trim()), cache: true }
 }
 
+/// The pinned working set as it stood at the last compaction, rendered after the summary (so it
+/// is stable until the next compaction, and the summary itself stays the model's text).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PinnedSnapshot(pub String);
+
+/// Per-turn context (memory, environment) attached to a turn's user message when
+/// [`ContextConfig::volatile_tail`] is on: `(message index, text)`. Kept in `Conversation::ext`
+/// so earlier turns render exactly as they did (append-only); cleared by compaction.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TailReminders(pub Vec<(usize, String)>);
+
+/// The index of the running turn's own user message (its query) in `Conversation::ext`. Thinking
+/// is kept on every assistant message after it: the loop's mid-turn reminders (todos, lazy rules,
+/// guard nudges) are user-role messages too, and must not strip the turn's reasoning, or each
+/// request would stop extending the last one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TurnQuery(pub usize);
+
+/// The per-turn tail text: retrieved memory blocks and the environment.
+pub fn tail_text(system: &SystemPrompt, memory: &[String]) -> String {
+    let mut parts: Vec<String> = memory.iter().filter(|m| !m.trim().is_empty()).map(|m| m.trim().to_string()).collect();
+    if let Some(env) = system.render_environment() {
+        parts.push(env.text);
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    format!("<system-reminder>\n{}\n</system-reminder>", parts.join("\n\n"))
+}
+
 /// [`assemble_with`] without a profile block.
 pub fn assemble(system: &SystemPrompt, memory: &[String], convo: &Conversation, cfg: &ContextConfig) -> Assembled {
     assemble_with(system, "", memory, convo, cfg)
@@ -136,10 +196,11 @@ pub fn assemble(system: &SystemPrompt, memory: &[String], convo: &Conversation, 
 
 /// Builds the system blocks and message list for the next model call.
 ///
-/// System: stable tier (core, blocks, user), the profile (cached), the compaction summary,
-/// retrieved memory blocks, then the environment. Messages: the history with thinking dropped
-/// from assistant messages before the last user message, and all but the last
-/// `keep_tool_results` tool results masked.
+/// System: stable tier (core, blocks, project sections, user, output style), the profile
+/// (cached), the compaction summary, then (unless `volatile_tail`) retrieved memory blocks and
+/// the environment. Messages: the history with thinking dropped from assistant messages before
+/// the turn's query ([`TurnQuery`], else the last user message); with `volatile_tail`, each turn's recorded tail prefixed to its user
+/// message; with [`Masking::Rolling`], all but the last `keep_tool_results` results masked.
 pub fn assemble_with(
     system: &SystemPrompt,
     profile: &str,
@@ -152,18 +213,33 @@ pub fn assemble_with(
         blocks.push(SystemBlock { text: profile.trim().to_string(), cache: true });
     }
     if let Some(s) = convo.summary.as_deref().filter(|s| !s.trim().is_empty()) {
-        blocks.push(summary_block(s));
+        match convo.ext.get::<PinnedSnapshot>().filter(|p| !p.0.is_empty()) {
+            Some(p) => blocks.push(summary_block(&format!("{}\n\n{}", s.trim(), p.0))),
+            None => blocks.push(summary_block(s)),
+        }
     }
-    blocks.extend(
-        memory
-            .iter()
-            .filter(|m| !m.trim().is_empty())
-            .map(|m| SystemBlock { text: m.trim().to_string(), cache: false }),
-    );
-    blocks.extend(system.render_environment());
+    if !cfg.volatile_tail {
+        blocks.extend(
+            memory
+                .iter()
+                .filter(|m| !m.trim().is_empty())
+                .map(|m| SystemBlock { text: m.trim().to_string(), cache: false }),
+        );
+        blocks.extend(system.render_environment());
+    }
 
     let mut messages = convo.messages.clone();
-    if let Some(last_user) = messages.iter().rposition(|m| m.role == Role::User) {
+    if cfg.volatile_tail {
+        if let Some(tails) = convo.ext.get::<TailReminders>() {
+            for (i, text) in &tails.0 {
+                if let Some(m) = messages.get_mut(*i).filter(|m| m.role == Role::User) {
+                    m.content.insert(0, Part::Text { text: text.clone() });
+                }
+            }
+        }
+    }
+    let query = convo.ext.get::<TurnQuery>().map(|q| q.0).filter(|&i| messages.get(i).is_some_and(|m| m.role == Role::User));
+    if let Some(last_user) = query.or_else(|| messages.iter().rposition(|m| m.role == Role::User)) {
         for m in &mut messages[..last_user] {
             if m.role == Role::Assistant {
                 m.content.retain(|p| !matches!(p, Part::Thinking(_)));
@@ -177,7 +253,9 @@ pub fn assemble_with(
             keep
         });
     }
-    mask_tool_results(&mut messages, cfg.keep_tool_results);
+    if cfg.masking == Masking::Rolling {
+        mask_tool_results(&mut messages, cfg.keep_tool_results);
+    }
 
     let tokens = system_tokens(&blocks) + messages.iter().map(estimate_message_tokens).sum::<u32>();
     Assembled { system: blocks, messages, tokens }
@@ -186,13 +264,19 @@ pub fn assemble_with(
 /// Masks the bodies of all but the last `keep` tool results; returns how many were masked.
 /// Results already masked are not counted again.
 pub fn mask_tool_results(messages: &mut [Message], keep: usize) -> usize {
+    mask_chunk(messages, keep, &HashSet::new())
+}
+
+/// Masks every tool result except the last `keep` and those whose call id is in `pinned`, in one
+/// pass (the append-only chunk). Returns how many were newly masked.
+pub fn mask_chunk(messages: &mut [Message], keep: usize, pinned: &HashSet<String>) -> usize {
     let mut seen = 0usize;
     let mut masked = 0usize;
     for m in messages.iter_mut().rev() {
         for p in m.content.iter_mut().rev() {
             if let Part::ToolResult(r) = p {
                 seen += 1;
-                if seen > keep && r.content != MASKED_RESULT {
+                if seen > keep && r.content != MASKED_RESULT && !pinned.contains(&r.call_id) {
                     r.content = MASKED_RESULT.to_string();
                     masked += 1;
                 }
@@ -228,16 +312,32 @@ fn kept_indices(messages: &[Message]) -> Vec<usize> {
     keep
 }
 
-/// Condenses older history with a summariser call; returns (before, after) token estimates
-/// of the summary plus messages. Everything except the live user message and the last tool
-/// step is folded, together with any earlier summary, into `convo.summary`. When nothing can be
-/// condensed it makes no call and returns equal numbers. On error the conversation is unchanged.
+/// [`compact_with`] with no focus and no pinned set.
 pub fn compact(
     convo: &mut Conversation,
     provider: &dyn Provider,
     model: &str,
     cfg: &ContextConfig,
     cancel: &CancelToken,
+) -> Result<(u32, u32), ProviderError> {
+    compact_with(convo, provider, model, cfg, cancel, None, "")
+}
+
+/// Condenses older history with a summariser call; returns (before, after) token estimates
+/// of the summary plus messages. Everything except the live user message and the last tool
+/// step is folded, together with any earlier summary, into `convo.summary`. `focus` (from
+/// `/compact <focus>`) is given to the summariser; `pinned` (the working set) is kept beside the
+/// summary verbatim ([`PinnedSnapshot`]), so todos, the plan, the edit ledger, the last failure and the user's own
+/// instructions survive any number of compactions. With nothing to condense it makes no call and
+/// returns equal numbers. On error the conversation is unchanged.
+pub fn compact_with(
+    convo: &mut Conversation,
+    provider: &dyn Provider,
+    model: &str,
+    cfg: &ContextConfig,
+    cancel: &CancelToken,
+    focus: Option<&str>,
+    pinned: &str,
 ) -> Result<(u32, u32), ProviderError> {
     let before = history_tokens(convo);
     let keep = kept_indices(&convo.messages);
@@ -259,6 +359,9 @@ pub fn compact(
     prompt.push_str(&transcript(&dropped, budget_chars));
     prompt.push_str("\n</transcript>\n\n");
     prompt.push_str(SUMMARY_PROMPT);
+    if let Some(f) = focus.map(str::trim).filter(|f| !f.is_empty()) {
+        prompt.push_str(&format!("\n\nThe user asked this summary to focus on: {f}"));
+    }
 
     let mut req = ChatRequest::new(model, vec![Message::user(prompt)]);
     req.effort = Effort::Off;
@@ -274,8 +377,24 @@ pub fn compact(
         return Err(ProviderError::server("the summariser returned nothing"));
     }
 
+    let live_user = keep.first().copied();
+    let query = convo.ext.get::<TurnQuery>().and_then(|q| keep.iter().position(|&i| i == q.0));
     convo.messages = keep.iter().map(|&i| convo.messages[i].clone()).collect();
+    match query {
+        Some(i) => {
+            convo.ext.insert(TurnQuery(i));
+        }
+        None => {
+            convo.ext.remove::<TurnQuery>();
+        }
+    }
     convo.summary = Some(summary.to_string());
+    convo.ext.insert(PinnedSnapshot(pinned.trim().to_string()));
+    // Indices moved: the live turn's tail (if any) is now at 0; older turns' tails are gone.
+    if let Some(t) = convo.ext.get_mut::<TailReminders>() {
+        let live = live_user.and_then(|lu| t.0.iter().find(|(i, _)| *i == lu).map(|(_, s)| s.clone()));
+        t.0 = live.map(|s| vec![(0, s)]).unwrap_or_default();
+    }
     Ok((before, history_tokens(convo)))
 }
 
@@ -324,6 +443,149 @@ fn transcript(messages: &[&Message], max_chars: usize) -> String {
     out.trim_end().to_string()
 }
 
+// ---------------------------------------------------------------- prefix budget (design 3.4)
+
+/// Token budget for the stable prefix (system prompt + tool schemas) by context window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrefixBudget {
+    pub window: u32,
+    pub total: u32,
+    pub persona: u32,
+    pub tools: u32,
+    /// `None`: uncapped (windows of 200k and more).
+    pub instructions: Option<u32>,
+    pub profile: u32,
+    pub repo_map: u32,
+    pub skills: u32,
+    pub style: u32,
+    /// The per-turn tail reminder (memory + environment).
+    pub tail: u32,
+}
+
+impl PrefixBudget {
+    /// 32k class: 9k (persona+blocks 2.0k, tools 3.0k, instructions 1.5k, profile 0.3k, repo map
+    /// 1.2k, skills 0.4k, style 0.2k, slack 0.4k); 64-128k: 16k; 200k and more: 30k with
+    /// instructions uncapped.
+    pub fn for_window(window: u32) -> Self {
+        if window >= 200_000 {
+            Self { window, total: 30_000, persona: 3_000, tools: 12_000, instructions: None, profile: 1_000, repo_map: 4_000, skills: 2_000, style: 1_000, tail: 2_000 }
+        } else if window > 48_000 {
+            Self { window, total: 16_000, persona: 2_500, tools: 6_000, instructions: Some(4_000), profile: 500, repo_map: 2_000, skills: 600, style: 300, tail: 1_500 }
+        } else {
+            Self { window, total: 9_000, persona: 2_000, tools: 3_000, instructions: Some(1_500), profile: 300, repo_map: 1_200, skills: 400, style: 200, tail: 1_000 }
+        }
+    }
+}
+
+/// What [`fit_prefix`] kept, and what it had to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrefixFit {
+    pub sections: PromptSections,
+    /// Estimated tokens of persona + tool schemas + the fitted sections.
+    pub tokens: u32,
+    pub budget: PrefixBudget,
+    /// Every cut, in words (`/context`, session-start notice). Never silent.
+    pub warnings: Vec<String>,
+    /// Tool schemas alone are over their budget: MCP tools should go behind `tool_search`.
+    pub wants_tool_search: bool,
+}
+
+/// The least of the instruction budget that survives the over-budget cut.
+const INSTRUCTION_FLOOR_SHARE: u32 = 4;
+
+/// Cuts `text` to about `max_tokens`, keeping its head and a visible marker (and a closing tag
+/// when the text is a tagged block). Returns whether it cut.
+fn cut_to(text: &mut String, max_tokens: u32, what: &str, window: u32) -> bool {
+    let have = estimate_tokens(text);
+    if have <= max_tokens {
+        return false;
+    }
+    let close = text.trim_end().rsplit_once("</").map(|(_, t)| format!("</{t}")).filter(|t| t.ends_with('>') && !t.contains('\n'));
+    let marker = format!(
+        "\n[{what} truncated by the harness: about {max_tokens} of {have} tokens fit the prefix budget for a {window}-token window; see /context]\n"
+    );
+    let room = (max_tokens as usize * 3).saturating_sub(marker.chars().count() + close.as_ref().map_or(0, |c| c.len()));
+    let mut cut: String = text.chars().take(room).collect();
+    if let Some(nl) = cut.rfind('\n') {
+        if nl > room / 2 {
+            cut.truncate(nl);
+        }
+    }
+    cut.push_str(&marker);
+    if let Some(c) = close {
+        cut.push_str(&c);
+    }
+    *text = cut;
+    true
+}
+
+/// Fits the project sections into `budget` beside the persona and tool schemas (design 3.4):
+/// per-section caps first, then over the total drop the skills index, then the repo map's tail,
+/// then flag MCP tools for `tool_search`, then truncate instructions (to no less than a quarter
+/// of their cap). Every cut is a warning.
+pub fn fit_prefix(persona_tokens: u32, tool_tokens: u32, sections: &PromptSections, budget: PrefixBudget) -> PrefixFit {
+    let w = budget.window;
+    let mut s = sections.clone();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut warn = |cut: bool, msg: String| {
+        if cut {
+            warnings.push(msg);
+        }
+    };
+    let c = cut_to(&mut s.skills_index, budget.skills, "skills index", w);
+    warn(c, format!("skills index cut to {} tokens", budget.skills));
+    let c = cut_to(&mut s.output_style, budget.style, "output style", w);
+    warn(c, format!("output style cut to {} tokens", budget.style));
+    let c = cut_to(&mut s.repo_map, budget.repo_map, "repo map", w);
+    warn(c, format!("repo map cut to {} tokens", budget.repo_map));
+    let c = cut_to(&mut s.project_profile, budget.profile, "project profile", w);
+    warn(c, format!("project profile cut to {} tokens", budget.profile));
+    if let Some(cap) = budget.instructions {
+        let have = estimate_tokens(&s.instructions);
+        let c = cut_to(&mut s.instructions, cap, "instructions", w);
+        warn(c, format!("instruction files are {have} tokens, over the {cap}-token budget for a {w}-token window: truncated"));
+    }
+
+    let sections_tokens = |s: &PromptSections| {
+        [&s.instructions, &s.project_profile, &s.repo_map, &s.skills_index, &s.output_style].iter().map(|t| estimate_tokens(t)).sum::<u32>()
+    };
+    let total = |s: &PromptSections| persona_tokens + tool_tokens + sections_tokens(s);
+    if total(&s) > budget.total && !s.skills_index.is_empty() {
+        s.skills_index.clear();
+        warn(true, "over the prefix budget: skills index dropped (skills stay callable by name)".into());
+    }
+    if total(&s) > budget.total && !s.repo_map.is_empty() {
+        let over = total(&s) - budget.total;
+        let keep = estimate_tokens(&s.repo_map).saturating_sub(over);
+        if keep < 100 {
+            s.repo_map.clear();
+            warn(true, "over the prefix budget: repo map dropped".into());
+        } else {
+            cut_to(&mut s.repo_map, keep, "repo map", w);
+            warn(true, format!("over the prefix budget: repo map tail cut to {keep} tokens"));
+        }
+    }
+    let wants_tool_search = total(&s) > budget.total && tool_tokens > budget.tools;
+    if wants_tool_search {
+        warn(true, format!("tool schemas are {tool_tokens} tokens, over their {}-token budget: MCP tools belong behind tool_search", budget.tools));
+    }
+    if total(&s) > budget.total && !s.instructions.is_empty() {
+        let over = total(&s) - budget.total;
+        let have = estimate_tokens(&s.instructions);
+        let floor = budget.instructions.unwrap_or(have) / INSTRUCTION_FLOOR_SHARE;
+        let keep = have.saturating_sub(over).max(floor.min(have));
+        if keep < have {
+            cut_to(&mut s.instructions, keep, "instructions", w);
+            warn(true, format!("over the prefix budget: instruction files truncated to {keep} tokens"));
+        }
+    }
+    let tokens = total(&s);
+    if tokens > budget.total {
+        warn(true, format!("the prefix is {tokens} tokens, over the {}-token budget for a {w}-token window", budget.total));
+    }
+    PrefixFit { sections: s, tokens, budget, warnings, wants_tool_search }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,6 +617,36 @@ mod tests {
             msgs.iter().flat_map(|m| m.tool_results_iter().map(|r| r.content.clone())).collect();
         assert_eq!(bodies[..3], [MASKED_RESULT, MASKED_RESULT, MASKED_RESULT]);
         assert_eq!(bodies[3..], ["body 3", "body 4"]);
+    }
+
+    #[test]
+    fn a_chunk_spares_pinned_results() {
+        let mut msgs = Vec::new();
+        for i in 0..5 {
+            msgs.push(call(&i.to_string()));
+            msgs.push(result(&i.to_string()));
+        }
+        let pinned: HashSet<String> = ["1".to_string()].into();
+        assert_eq!(mask_chunk(&mut msgs, 1, &pinned), 3);
+        let bodies: Vec<String> = msgs.iter().flat_map(|m| m.tool_results_iter().map(|r| r.content.clone())).collect();
+        assert_eq!(bodies, [MASKED_RESULT, "body 1", MASKED_RESULT, MASKED_RESULT, "body 4"]);
+    }
+
+    #[test]
+    fn append_only_assembly_masks_nothing_and_rolling_does() {
+        let sys = SystemPrompt::with_core("core");
+        let mut convo = Conversation::new(SessionId::from("s"), None);
+        convo.push(Message::user("go"));
+        for i in 0..12 {
+            convo.push(call(&i.to_string()));
+            convo.push(result(&i.to_string()));
+        }
+        let mut cfg = ContextConfig::for_model(&ModelInfo::bare(ProviderKind::Ollama, "m"));
+        let a = assemble(&sys, &[], &convo, &cfg);
+        assert!(!a.messages.iter().flat_map(|m| m.tool_results_iter()).any(|r| r.content == MASKED_RESULT));
+        cfg.masking = Masking::Rolling;
+        let a = assemble(&sys, &[], &convo, &cfg);
+        assert_eq!(a.messages.iter().flat_map(|m| m.tool_results_iter()).filter(|r| r.content == MASKED_RESULT).count(), 4);
     }
 
     #[test]
@@ -392,6 +684,21 @@ mod tests {
     }
 
     #[test]
+    fn a_volatile_tail_rides_on_its_turn_and_leaves_the_system_alone() {
+        let sys = SystemPrompt::with_core("core").environment(crate::Environment { now: "t1".into(), ..Default::default() });
+        let mut convo = Conversation::new(SessionId::from("s"), None);
+        convo.push(Message::user("first"));
+        convo.ext.get_or_default::<TailReminders>().0.push((0, tail_text(&sys, &["[Memory m1] x".into()])));
+        let mut cfg = ContextConfig::for_model(&ModelInfo::bare(ProviderKind::Ollama, "m"));
+        cfg.volatile_tail = true;
+        let a = assemble(&sys, &["[Memory m1] x".into()], &convo, &cfg);
+        assert_eq!(a.system.len(), 1, "memory and environment are not in the system prompt");
+        let first = a.messages[0].joined_text();
+        assert!(first.contains("[Memory m1] x") && first.contains("Now: t1") && first.ends_with("first"), "{first}");
+        assert_eq!(convo.messages[0].joined_text(), "first", "the stored history is untouched");
+    }
+
+    #[test]
     fn the_profile_sits_after_the_stable_tier_and_is_cached() {
         let sys = SystemPrompt::with_core("core");
         let convo = Conversation::new(SessionId::from("s"), None);
@@ -406,8 +713,14 @@ mod tests {
 
     #[test]
     fn compaction_triggers_at_seventy_percent_not_at_exhaustion() {
-        let cfg =
-            ContextConfig { window_tokens: 1_100, reserve_output: 100, keep_tool_results: 8, compaction_trigger: 0.7 };
+        let cfg = ContextConfig {
+            window_tokens: 1_100,
+            reserve_output: 100,
+            keep_tool_results: 8,
+            compaction_trigger: 0.7,
+            masking: Masking::AppendOnly,
+            volatile_tail: false,
+        };
         assert!(!needs_compaction(699, &cfg));
         assert!(needs_compaction(700, &cfg));
     }
@@ -443,5 +756,33 @@ mod tests {
         let base = estimate_request_tokens(&req);
         req.tools.push(ToolSpec { name: "read".into(), description: "Read a file".into(), input_schema: json!({}) });
         assert!(estimate_request_tokens(&req) > base);
+    }
+
+    #[test]
+    fn the_budget_scales_with_the_window() {
+        assert_eq!(PrefixBudget::for_window(32_768).total, 9_000);
+        assert_eq!(PrefixBudget::for_window(131_072).total, 16_000);
+        let big = PrefixBudget::for_window(200_000);
+        assert_eq!((big.total, big.instructions), (30_000, None));
+    }
+
+    #[test]
+    fn over_budget_drops_skills_then_repo_map_then_cuts_instructions_never_silently() {
+        let sections = PromptSections {
+            instructions: format!("<instructions>\n{}\n</instructions>", "rule. ".repeat(600)),
+            repo_map: "map line\n".repeat(200),
+            skills_index: "- skill: does things\n".repeat(10),
+            ..Default::default()
+        };
+        let b = PrefixBudget::for_window(32_768);
+        let fit = fit_prefix(5_000, 3_000, &sections, b);
+        assert!(fit.sections.skills_index.is_empty(), "skills dropped first");
+        assert!(fit.tokens <= b.total, "{} > {}", fit.tokens, b.total);
+        assert!(fit.sections.instructions.ends_with("</instructions>"), "the block stays well-formed");
+        assert!(fit.sections.instructions.contains("truncated by the harness"), "the cut is visible");
+        assert!(fit.warnings.iter().any(|w| w.contains("skills index dropped")), "{:?}", fit.warnings);
+        assert!(!fit.wants_tool_search);
+        let roomy = fit_prefix(1_000, 1_000, &PromptSections { instructions: "short".into(), ..Default::default() }, b);
+        assert!(roomy.warnings.is_empty() && roomy.sections.instructions == "short");
     }
 }
