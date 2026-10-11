@@ -443,6 +443,16 @@ fn push(c: &Ctx, args: &Value) -> ToolOutcome {
     if c.out(&["remote", "get-url", &remote]).is_none() {
         return ToolOutcome::error(format!("no remote named `{remote}` (git remote -v lists them)"));
     }
+    if let Some(expected) = str_arg(args, "expect_sha").filter(|s| !s.is_empty()) {
+        let now = c.out(&["rev-parse", &format!("refs/heads/{branch}")]).unwrap_or_default();
+        if now != expected {
+            return ToolOutcome::error(format!(
+                "`{branch}` moved after the push was approved (approved {}, now {}); nothing was pushed. Ask again to push what is there now",
+                expected.chars().take(7).collect::<String>(),
+                now.chars().take(7).collect::<String>()
+            ));
+        }
+    }
     let has_upstream = c.out(&["rev-parse", "--abbrev-ref", &format!("{branch}@{{upstream}}")]).is_some();
     let spec = format!("refs/heads/{branch}:refs/heads/{branch}");
     let mut a = vec!["push"];

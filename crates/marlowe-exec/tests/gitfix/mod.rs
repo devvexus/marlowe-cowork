@@ -265,6 +265,30 @@ pub fn drive(tools: BuiltinTools, gate: Arc<Gate>, script: Vec<Turn>) -> Driven 
     Driven { outcome, convo, provider }
 }
 
+/// The real loop over `tools` in the work tree, with `middleware` after the host's own (or instead
+/// of it when `only` is set).
+pub fn drive_with(
+    fx: &Fx,
+    tools: BuiltinTools,
+    middleware: Vec<Arc<dyn marlowe_agent::ToolMiddleware>>,
+    only: bool,
+    gate: Arc<Gate>,
+    script: Vec<Turn>,
+) -> Driven {
+    let provider = Scripted::new(script);
+    let host: Arc<dyn ToolHost> = Arc::new(tools);
+    let mut agent = Agent::new(provider.clone(), model(), host, SystemPrompt::with_core("core"));
+    agent.approvals = gate;
+    if only {
+        agent.middleware.clear();
+    }
+    agent.middleware.extend(middleware);
+    let mut convo = Conversation::new(SessionId::from("s1"), Some(fx.work.clone()));
+    let (_tx, rx) = crossbeam_channel::unbounded::<Steer>();
+    let outcome = agent.run_turn(&mut convo, "go", &CancelToken::new(), &rx, &mut |_| {});
+    Driven { outcome, convo, provider }
+}
+
 /// `drive` with the work tree as the conversation's workspace.
 pub fn drive_in(fx: &Fx, gate: Arc<Gate>, script: Vec<Turn>) -> Driven {
     let provider = Scripted::new(script);

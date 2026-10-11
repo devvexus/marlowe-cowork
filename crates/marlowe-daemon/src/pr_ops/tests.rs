@@ -43,7 +43,7 @@ impl ToolHost for FakeGh {
     }
 }
 
-const PLAN: &str = "Pull request to open (one approval covers the push and the PR):\n  remote: origin (https://github.com/o/r.git)\n  branch: crew/abcd1234 @ 1a2b3c4 (2 commits, 3 files, +10 −1)\n  into:   main (origin/main)\n  title:  Fix the parser\n  body:\n    Parser fix.\n";
+const PLAN: &str = "Pull request to open (one approval covers the push and the PR):\n  remote: origin (https://github.com/o/r.git)\n  branch: crew/abcd1234 @ 1a2b3c4 (2 commits, 3 files, +10 −1)\n  commit: 1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d\n  into:   main (origin/main)\n  title:  Fix the parser\n  body:\n    Parser fix.\n";
 
 fn info(status: &str, note: Option<&str>, worktree: bool) -> CrewRunInfo {
     let sandbox = if worktree {
@@ -82,6 +82,8 @@ fn parity_g3_a_crew_pr_is_one_approval_then_the_push_and_the_pr() {
     assert_eq!(calls.len(), 2, "a dry run for the plan, then the real call");
     assert_eq!(calls[0]["dry_run"], true);
     assert!(calls[1].get("dry_run").is_none());
+    assert!(calls[0].get("expect_sha").is_none());
+    assert_eq!(calls[1]["expect_sha"], "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d", "the push is pinned to the commit the user was shown");
     for c in &calls {
         assert_eq!(c["op"], "pr_create");
         assert_eq!(c["head"], "crew/abcd1234");
@@ -89,6 +91,16 @@ fn parity_g3_a_crew_pr_is_one_approval_then_the_push_and_the_pr() {
         assert_eq!(c["title"], "Fix the parser");
         assert!(c["body"].as_str().unwrap().starts_with("Fixed the parser.") && c["body"].as_str().unwrap().contains("crew run abcd1234"), "{c}");
     }
+}
+
+#[test]
+fn a_plan_that_does_not_name_its_commit_is_not_pushed() {
+    let plan = PLAN.replace("  commit: 1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d\n", "");
+    let host = FakeGh::new(ToolOutcome::ok(plan, "plan"), ToolOutcome::ok("Opened pull request https://github.com/o/r/pull/9", "PR #9"));
+    let never = |_: String, _: String| -> ApprovalDecision { panic!("must not ask") };
+    let e = open_pr(&host, &SessionId("s".into()), &info("done", None, true), None, None, &never).unwrap_err();
+    assert!(e.contains("did not name the commit"), "{e}");
+    assert_eq!(host.calls().len(), 1, "only the dry run happened");
 }
 
 #[test]

@@ -404,11 +404,13 @@ fn an_impossible_pr_is_answered_without_asking() {
 fn pr_create_dry_run_prints_the_plan_and_changes_nothing() {
     let fx = Fx::new("g3d");
     fx.github_remote();
-    feature_branch(&fx);
+    let head = feature_branch(&fx);
     let t = fx.tools();
     assert_eq!(ask_summary(&t, "gh", json!({"op": "pr_create", "title": "T", "dry_run": true})), None, "a dry run is free");
     let o = call(&t, "gh", json!({"op": "pr_create", "title": "Dry", "dry_run": true}));
     assert!(!o.is_error, "{}", o.content);
+    // The full commit is printed so a caller can pin it as `expect_sha` (OpenPr does).
+    assert!(o.content.lines().any(|l| l.trim() == format!("commit: {head}")), "{}", o.content);
     for want in ["remote: origin (https://github.com/test/repo.git)", "branch: feat/x @", "2 commits, 2 files", "into:   main (origin/main)", "title:  Dry"] {
         assert!(o.content.contains(want), "{want}: {}", o.content);
     }
@@ -665,6 +667,17 @@ const DENIED_COMMANDS: &[&str] = &[
     "git push origin :master",
     "git commit --no-verify -m x",
     "git commit -nm x",
+    "git commit -m b --no-verif",
+    "git push --force-w origin main",
+    "git push --mirr --dry-run",
+    "git push --pru origin feat",
+    "git push --force>log",
+    "git -c core.hooksPath=.nohooks commit -m x",
+    "GIT_CONFIG_PARAMETERS=\"'core.hooksPath'='x'\" git commit -m x",
+    "git -c remote.origin.mirror=true push",
+    "git config remote.origin.push +refs/heads/*:refs/heads/*",
+    "git push --force origin main  # don't worry",
+    "echo \"a`\"b\"; git push --force",
     "cd . && git push -f",
     "bash -c 'git push --force'",
     "echo $(git push -f)",
@@ -738,6 +751,72 @@ fn a_rewrite_into_a_force_push_is_caught_right_before_the_call() {
     agent.run_turn(&mut convo, "go", &marlowe_model::CancelToken::new(), &rx, &mut |_| {});
     let r: Vec<_> = convo.messages.iter().flat_map(|m| m.tool_results_iter().map(|r| r.content.clone()).collect::<Vec<_>>()).collect();
     assert!(r[0].starts_with("refused:") && r[0].contains("force"), "{r:?}");
+}
+
+/// Commits to the work tree between the approval and the call, as another process or the user could.
+struct Mover(std::path::PathBuf);
+
+impl ToolMiddleware for Mover {
+    fn name(&self) -> &str {
+        "mover"
+    }
+
+    fn before_call(&self, call: &ToolCall, _cx: &CallCtx) -> CallFlow {
+        if call.name == "git" {
+            std::fs::write(self.0.join("late.txt"), "late\n").unwrap();
+            run_git(&self.0, &["add", "late.txt"]);
+            run_git(&self.0, &["commit", "-q", "-m", "late"]);
+        }
+        CallFlow::Continue
+    }
+}
+
+#[test]
+fn a_push_sends_the_commit_the_user_approved() {
+    let fx = Fx::new("pin");
+    fx.git(&["switch", "-q", "-c", "feat/pin"]);
+    let approved = fx.commit_file("p.txt", "p\n", "p");
+    let gate = Gate::new(ApprovalDecision::Allow);
+    let d = drive_with(&fx, fx.tools(), vec![std::sync::Arc::new(Mover(fx.work.clone()))], false, gate.clone(), vec![Turn::Calls(vec![("git", json!({"op": "push"}))]), Turn::Say("done")]);
+    let (content, is_error) = d.results().remove(0);
+    assert!(is_error && content.contains("moved after the push was approved"), "{content}");
+    assert!(content.contains(&approved[..7]), "names the approved commit: {content}");
+    assert!(!fx.remote_branches().contains(&"feat/pin".to_string()), "nothing reached the remote");
+    // The gate saw the commit it approved in the call.
+    assert!(gate.asks()[0].detail.contains(&approved), "{}", gate.asks()[0].detail);
+    // Without the move the same push goes through.
+    let d = drive_in(&fx, Gate::new(ApprovalDecision::Allow), vec![Turn::Calls(vec![("git", json!({"op": "push"}))]), Turn::Say("done")]);
+    assert!(!d.results()[0].1, "{:?}", d.results());
+    assert!(fx.remote_branches().contains(&"feat/pin".to_string()));
+}
+
+#[test]
+fn the_shell_guard_stands_alone_without_the_git_group() {
+    let fx = Fx::new("g7shell");
+    // A host with no git state, and the loop given only the shell half of the guard.
+    let bare = marlowe_exec::BuiltinTools::new(Some(fx.work.clone()));
+    let gate = Gate::new(ApprovalDecision::Allow);
+    let d = drive_with(
+        &fx,
+        bare,
+        vec![marlowe_exec::git::shell_guard()],
+        true,
+        gate.clone(),
+        vec![
+            Turn::Calls(vec![
+                ("bash", json!({"command": "git push --force origin main"})),
+                ("bash", json!({"command": "cd sub && git commit --no-verif -m x"})),
+                ("bash", json!({"command": "echo don't; git push -f"})),
+                ("bash", json!({"command": "echo fine"})),
+            ]),
+            Turn::Say("done"),
+        ],
+    );
+    let r = d.results();
+    for (content, is_error) in &r[..3] {
+        assert!(*is_error && content.starts_with("refused:"), "{content}");
+    }
+    assert!(!r[3].1 && r[3].0.contains("fine"), "{:?}", r[3]);
 }
 
 #[test]

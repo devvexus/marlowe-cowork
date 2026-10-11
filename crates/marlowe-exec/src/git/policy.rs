@@ -7,11 +7,17 @@
 //! - force in any spelling: `-f`, `--force`, `--force-with-lease[=..]`, `--force-if-includes`, a
 //!   `+refspec`, `--mirror`, `--prune`;
 //! - deleting a protected branch on a remote (`--delete`, `-d`, `:branch`);
-//! - skipping hooks: `--no-verify` anywhere, `commit -n`, `-c core.hooksPath=<nothing>`.
+//! - skipping hooks: `--no-verify` anywhere, `commit -n`, any one-shot `-c core.hooksPath=..`
+//!   (also through `GIT_CONFIG_PARAMETERS` / `GIT_CONFIG_KEY_n`), `core.hooksPath` set to nothing;
+//! - forcing through config: `remote.*.mirror`, a `remote.*.push` that starts with `+`.
 //!
-//! Command-line scanning is deliberately fail-open: a command it cannot read is left to the
-//! rules engine (which asks for anything unparseable). It looks for `git` only where a command
-//! can start, so `echo git push -f` and `git commit -m "no -f here"` pass.
+//! Long options count in git's abbreviated spellings too (`--no-verif`, `--force-w`, `--mirr`),
+//! and a redirect glued to an option (`--force>log`) does not hide it.
+//!
+//! Command-line scanning fails closed: it looks for `git` only where a command can start, so
+//! `echo git push -f` and `git commit -m "no -f here"` pass, but a line the splitter cannot read
+//! (an open quote, a PowerShell backtick escape) is re-scanned without quote handling and denied
+//! if any `git` word in it would be.
 
 use std::path::Path;
 
@@ -123,8 +129,10 @@ struct Word {
 }
 
 /// Splits `line` into commands (at `;`, `&`, `&&`, `|`, `||`, newlines and grouping) and each
-/// command into words, with POSIX-style quoting. `None` when a quote is left open.
-fn commands(line: &str) -> Option<Vec<Vec<Word>>> {
+/// command into words, with POSIX-style quoting; `#` at the start of a word begins a comment
+/// (returned too, for the caller to look at). `None` when a quote is left open.
+fn commands(line: &str) -> Option<(Vec<Vec<Word>>, Vec<String>)> {
+    let mut comments: Vec<String> = Vec::new();
     let mut out: Vec<Vec<Word>> = Vec::new();
     let mut cmd: Vec<Word> = Vec::new();
     let mut cur = String::new();
@@ -184,6 +192,13 @@ fn commands(line: &str) -> Option<Vec<Vec<Word>>> {
                 copy_substitution(&chars, &mut i, &mut cur);
                 continue;
             }
+            '#' if !started => {
+                let from = i + 1;
+                while i + 1 < chars.len() && chars[i + 1] != '\n' {
+                    i += 1;
+                }
+                comments.push(chars[from..(i + 1).max(from)].iter().collect());
+            }
             ' ' | '\t' | '\r' => flush(&mut cur, &mut started, &mut expands, &mut cmd),
             ';' | '&' | '|' | '\n' | '(' | ')' | '{' | '}' if c != '{' && c != '}' || cur.is_empty() => {
                 flush(&mut cur, &mut started, &mut expands, &mut cmd);
@@ -206,7 +221,7 @@ fn commands(line: &str) -> Option<Vec<Vec<Word>>> {
     if !cmd.is_empty() {
         out.push(cmd);
     }
-    Some(out)
+    Some((out, comments))
 }
 
 /// Copies the substitution starting at `chars[*i]` (`$(...)` with nested parentheses balanced, or
@@ -300,25 +315,32 @@ fn is_assignment(w: &str) -> bool {
 
 /// Judges every `git` invocation in a shell command line. `Some(reason)` is a denial.
 pub fn deny_command(line: &str) -> Option<String> {
-    scan_git(line, 0, &mut |args| deny_git(args))
+    scan_git(line, 0, &mut |env, args| deny_git_env(env, args))
 }
 
 /// Whether the command line runs `git push` for real (not a dry run).
 pub fn pushes(line: &str) -> bool {
-    scan_git(line, 0, &mut |args| (git_subcommand(args).is_some_and(|(sub, rest)| sub == "push" && !dry_run(rest))).then_some(())).is_some()
+    scan_git(line, 0, &mut |_, args| (git_subcommand(args).is_some_and(|(sub, rest)| sub == "push" && !dry_run(rest))).then_some(())).is_some()
 }
 
 fn dry_run(rest: &[&str]) -> bool {
     rest.iter().any(|a| *a == "--dry-run" || (a.starts_with('-') && !a.starts_with("--") && a[1..].chars().take_while(|c| *c != 'o').any(|c| c == 'n')))
 }
 
-/// Calls `f` with the arguments (after `git`) of every git invocation in `line`, looking inside
-/// shell wrappers and substitutions; the first `Some` wins.
-fn scan_git<T>(line: &str, depth: u8, f: &mut dyn FnMut(&[&str]) -> Option<T>) -> Option<T> {
+/// Calls `f` with the assignments that precede `git` and its arguments, for every git invocation
+/// in `line`, looking inside shell wrappers and substitutions; the first `Some` wins.
+fn scan_git<T>(line: &str, depth: u8, f: &mut dyn FnMut(&[&str], &[&str]) -> Option<T>) -> Option<T> {
     if depth > 4 {
-        return None;
+        return scan_loose(line, f);
     }
-    let cmds = commands(line)?;
+    let Some((cmds, comments)) = commands(line) else { return scan_loose(line, f) };
+    // `cmd /c echo #& git push -f`: a `#` comment to bash is no comment to cmd, so a comment that
+    // holds a command separator is read as code too.
+    for c in comments.iter().filter(|c| c.contains([';', '&', '|'])) {
+        if let Some(hit) = scan_loose(c, f) {
+            return Some(hit);
+        }
+    }
     for cmd in &cmds {
         for w in cmd {
             if w.expands {
@@ -331,6 +353,25 @@ fn scan_git<T>(line: &str, depth: u8, f: &mut dyn FnMut(&[&str]) -> Option<T>) -
         }
         if let Some(hit) = judge_command(cmd, depth, f) {
             return Some(hit);
+        }
+    }
+    None
+}
+
+/// The fallback for a line [`commands`] cannot read: quote characters and backticks dropped, split
+/// at separators and whitespace, and every `git` word judged with what follows it. It over-denies
+/// (`echo git push -f` hits here) because a denial must not depend on the line parsing.
+fn scan_loose<T>(line: &str, f: &mut dyn FnMut(&[&str], &[&str]) -> Option<T>) -> Option<T> {
+    let cleaned: String = line.chars().filter(|c| !matches!(c, '\'' | '"' | '`')).collect();
+    for seg in cleaned.split([';', '&', '|', '(', ')', '{', '}', '\n']) {
+        let words: Vec<&str> = seg.split_whitespace().collect();
+        for (i, w) in words.iter().enumerate() {
+            if base_name(w) == "git" {
+                let env: Vec<&str> = words[..i].iter().copied().filter(|w| is_assignment(w)).collect();
+                if let Some(hit) = f(&env, &words[i + 1..]) {
+                    return Some(hit);
+                }
+            }
         }
     }
     None
@@ -350,12 +391,14 @@ fn wrapper_value_flags(wrapper: &str) -> Option<&'static [&'static str]> {
     })
 }
 
-fn judge_command<T>(cmd: &[Word], depth: u8, f: &mut dyn FnMut(&[&str]) -> Option<T>) -> Option<T> {
+fn judge_command<T>(cmd: &[Word], depth: u8, f: &mut dyn FnMut(&[&str], &[&str]) -> Option<T>) -> Option<T> {
     let mut i = 0;
+    let mut env: Vec<&str> = Vec::new();
     // Skip what can precede the program: assignments and wrappers with their own arguments.
     while i < cmd.len() {
         let w = cmd[i].text.as_str();
         if is_assignment(w) {
+            env.push(w);
             i += 1;
             continue;
         }
@@ -365,7 +408,10 @@ fn judge_command<T>(cmd: &[Word], depth: u8, f: &mut dyn FnMut(&[&str]) -> Optio
         while let Some(n) = cmd.get(i).map(|w| w.text.as_str()) {
             let bare = n.trim_start_matches('-');
             let numeric = !bare.is_empty() && bare.chars().all(|c| c.is_ascii_digit() || c == '.') || (bare.len() > 1 && bare[..bare.len() - 1].chars().all(|c| c.is_ascii_digit()) && bare.ends_with(['s', 'm', 'h']));
-            if is_assignment(n) || (matches!(wrapper.as_str(), "timeout") && numeric && !n.starts_with('-')) {
+            if is_assignment(n) {
+                env.push(n);
+                i += 1;
+            } else if (matches!(wrapper.as_str(), "timeout") && numeric && !n.starts_with('-')) {
                 i += 1;
             } else if n.starts_with('-') && n.len() > 1 {
                 i += 1 + usize::from(value_flags.contains(&n));
@@ -389,7 +435,7 @@ fn judge_command<T>(cmd: &[Word], depth: u8, f: &mut dyn FnMut(&[&str]) -> Optio
         return scan_git(&rest.join(" "), depth + 1, f);
     }
     if program == "git" {
-        return f(&rest);
+        return f(&env, &rest);
     }
     None
 }
@@ -413,50 +459,136 @@ fn git_subcommand<'a, 'b>(args: &'b [&'a str]) -> Option<(&'a str, &'b [&'a str]
     None
 }
 
+/// A long option's name as git reads it: `--force-w>log` and `--no-verif=x` give `force-w` and
+/// `no-verif`. `None` for `--` and for short options.
+fn long_name(a: &str) -> Option<&str> {
+    let long = a.strip_prefix("--")?;
+    let end = long.find(['=', '<', '>', '|', '&', ';']).unwrap_or(long.len());
+    Some(&long[..end]).filter(|n| !n.is_empty())
+}
+
+/// Whether `name` is `full` or an abbreviation of it of at least `min` characters (`min` is
+/// rounded down from what git needs: a miss would let it through, a hit costs a denial).
+fn abbrev(name: &str, full: &str, min: usize) -> bool {
+    name.len() >= min && full.starts_with(name)
+}
+
+fn truthy(v: &str) -> bool {
+    matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "on" | "1")
+}
+
+/// Judges one config setting made on a command line or through the environment. `value` is `None`
+/// when it is not known (`--config-env`, `GIT_CONFIG_KEY_n`), which counts as the worst case.
+fn deny_setting(key: &str, value: Option<&str>) -> Option<String> {
+    let k = key.trim().to_ascii_lowercase();
+    if k == "core.hookspath" {
+        return Some(HOOKS_DENIED.to_string());
+    }
+    if k.starts_with("remote.") {
+        if k.ends_with(".mirror") && value.map_or(true, truthy) {
+            return Some(FORCE_DENIED.to_string());
+        }
+        if k.ends_with(".push") && value.map_or(true, |v| v.trim_start().starts_with('+')) {
+            return Some(FORCE_DENIED.to_string());
+        }
+    }
+    None
+}
+
+/// Judges the assignments before `git`: config injected through the environment.
+fn deny_env(env: &[&str]) -> Option<String> {
+    for a in env {
+        let Some((name, value)) = a.split_once('=') else { continue };
+        let name = name.to_ascii_uppercase();
+        if name == "GIT_CONFIG_PARAMETERS" {
+            // `'core.hooksPath'='x' 'remote.origin.mirror'='true'`: every key counts.
+            let v = value.to_ascii_lowercase();
+            if v.contains("hookspath") {
+                return Some(HOOKS_DENIED.to_string());
+            }
+            if v.contains("remote.") && (v.contains(".mirror") || v.contains(".push")) {
+                return Some(FORCE_DENIED.to_string());
+            }
+        } else if name.starts_with("GIT_CONFIG_KEY_") {
+            if let Some(why) = deny_setting(value, None) {
+                return Some(why);
+            }
+        }
+    }
+    None
+}
+
 /// Judges `git <args>`.
 pub fn deny_git(args: &[&str]) -> Option<String> {
-    // `-c core.hooksPath=<nothing>` before the subcommand.
+    deny_git_env(&[], args)
+}
+
+/// Judges `git <args>` run with the environment assignments `env` (`NAME=value`).
+pub fn deny_git_env(env: &[&str], args: &[&str]) -> Option<String> {
+    if let Some(why) = deny_env(env) {
+        return Some(why);
+    }
+    // Config set for one command, before the subcommand. A legitimate hooks setup is a
+    // persistent `git config core.hooksPath .husky`, never a one-shot `-c`.
     let mut i = 0;
     while i < args.len() {
         let a = args[i];
-        if a == "-c" || a == "--config-env" {
-            if let Some(kv) = args.get(i + 1) {
-                let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
-                if k.eq_ignore_ascii_case("core.hookspath") && matches!(v, "" | "/dev/null" | "NUL" | "nul" | "NUL:") {
-                    return Some(HOOKS_DENIED.to_string());
-                }
-            }
-            i += 2;
-        } else if GLOBAL_WITH_VALUE.contains(&a) {
-            i += 2;
-        } else if a.starts_with('-') {
+        let setting = if a == "-c" {
             i += 1;
+            args.get(i).map(|kv| match kv.split_once('=') {
+                Some((k, v)) => (k.to_string(), Some(v.to_string())),
+                None => (kv.to_string(), None),
+            })
+        } else if a == "--config-env" {
+            i += 1;
+            args.get(i).map(|kv| (kv.split_once('=').map_or(*kv, |(k, _)| k).to_string(), None))
+        } else if let Some(kv) = a.strip_prefix("--config-env=") {
+            Some((kv.split_once('=').map_or(kv, |(k, _)| k).to_string(), None))
+        } else if GLOBAL_WITH_VALUE.contains(&a) {
+            i += 1;
+            None
+        } else if a.starts_with('-') {
+            None
         } else {
             break;
+        };
+        if let Some((k, v)) = setting {
+            if let Some(why) = deny_setting(&k, v.as_deref()) {
+                return Some(why);
+            }
         }
+        i += 1;
     }
     let (sub, rest) = git_subcommand(args)?;
-    // `--no-verify` on anything that has hooks; exact spelling only.
-    if rest.iter().any(|a| *a == "--no-verify" || a.starts_with("--no-verify=")) {
+    // `--no-verify` on anything that has hooks, in any abbreviation git accepts.
+    if rest.iter().any(|a| long_name(a).is_some_and(|n| abbrev(n, "no-verify", 4))) {
         return Some(HOOKS_DENIED.to_string());
     }
     match sub {
         "push" => deny_push(rest),
         "commit" => deny_commit(rest),
         "config" => deny_config(rest),
+        "remote" if rest.iter().any(|a| long_name(a).is_some_and(|n| abbrev(n, "mirror", 1))) => Some(FORCE_DENIED.to_string()),
         _ => None,
     }
 }
 
 fn deny_config(rest: &[&str]) -> Option<String> {
-    let positional: Vec<&&str> = rest.iter().filter(|a| !a.starts_with("--")).collect();
-    match positional.as_slice() {
-        [key, value, ..] if key.eq_ignore_ascii_case("core.hookspath") && matches!(**value, "" | "/dev/null" | "NUL" | "nul") => {
-            Some(HOOKS_DENIED.to_string())
-        }
-        _ => None,
+    let mut positional: Vec<&str> = rest.iter().filter(|a| !a.starts_with('-')).copied().collect();
+    if positional.first() == Some(&"set") {
+        positional.remove(0);
     }
+    let [key, value, ..] = positional.as_slice() else { return None };
+    if key.eq_ignore_ascii_case("core.hookspath") {
+        // Persistent and pointing at a real directory is how husky works; pointing at nothing is a skip.
+        return matches!(*value, "" | "/dev/null" | "NUL" | "nul").then(|| HOOKS_DENIED.to_string());
+    }
+    deny_setting(key, Some(value))
 }
+
+const VALUE_LONG_COMMIT: &[&str] =
+    &["message", "file", "reuse-message", "reedit-message", "template", "author", "date", "cleanup", "fixup", "squash"];
+const FORCE_LONG: &[&str] = &["force", "force-with-lease", "force-if-includes"];
 
 fn deny_commit(rest: &[&str]) -> Option<String> {
     let mut i = 0;
@@ -480,12 +612,17 @@ fn deny_commit(rest: &[&str]) -> Option<String> {
                     _ => {}
                 }
             }
-        } else if matches!(a, "--message" | "--file" | "--reuse-message" | "--reedit-message" | "--template" | "--author" | "--date" | "--cleanup" | "--fixup" | "--squash") {
+        } else if long_name(a).is_some_and(|n| !a.contains('=') && VALUE_LONG_COMMIT.iter().any(|v| abbrev(n, v, 3))) {
             i += 1;
         }
         i += 1;
     }
     None
+}
+
+/// A word without a redirect glued to it (`:main>log` is `:main`).
+fn bare(a: &str) -> &str {
+    a.split(['<', '>', '|', '&', ';']).next().unwrap_or(a)
 }
 
 fn deny_push(rest: &[&str]) -> Option<String> {
@@ -495,16 +632,17 @@ fn deny_push(rest: &[&str]) -> Option<String> {
     while i < rest.len() {
         let a = rest[i];
         if a == "--" {
-            positional.extend(&rest[i + 1..]);
+            positional.extend(rest[i + 1..].iter().map(|a| bare(a)));
             break;
         }
-        if let Some(long) = a.strip_prefix("--") {
-            let name = long.split('=').next().unwrap_or(long);
-            match name {
-                "force" | "force-with-lease" | "force-if-includes" | "mirror" | "prune" => return Some(FORCE_DENIED.to_string()),
-                "delete" => delete = true,
-                "push-option" | "repo" | "receive-pack" | "exec" if !long.contains('=') => i += 1,
-                _ => {}
+        if let Some(name) = long_name(a) {
+            if FORCE_LONG.iter().any(|d| abbrev(name, d, 3)) || abbrev(name, "mirror", 1) || abbrev(name, "prune", 3) {
+                return Some(FORCE_DENIED.to_string());
+            }
+            if abbrev(name, "delete", 2) {
+                delete = true;
+            } else if !a.contains('=') && ["push-option", "repo", "receive-pack", "exec"].iter().any(|v| abbrev(name, v, 3)) {
+                i += 1;
             }
         } else if a.starts_with('-') && a.len() > 1 {
             for ch in a[1..].chars() {
@@ -521,13 +659,12 @@ fn deny_push(rest: &[&str]) -> Option<String> {
                 }
             }
         } else {
-            positional.push(a);
+            positional.push(bare(a));
         }
         i += 1;
     }
     // positional[0] is the remote; the rest are refspecs.
-    let specs = positional.iter().skip(1);
-    for spec in specs {
+    for spec in positional.iter().skip(1) {
         if spec.starts_with('+') {
             return Some(FORCE_DENIED.to_string());
         }

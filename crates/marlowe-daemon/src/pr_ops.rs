@@ -142,9 +142,15 @@ pub(crate) fn open_pr(
         field("remote:"),
         field("into:").split(" (").next().unwrap_or("the base branch"),
     );
+    // The commit the user is shown is the commit that goes: the run refuses if the branch moved.
+    let commit = field("commit:");
+    if commit.is_empty() {
+        return Err("the plan did not name the commit to push, so nothing was pushed".into());
+    }
     if ask(summary, plan.content.clone()) == ApprovalDecision::Deny {
         return Err(format!("opening the pull request for run {} was not approved; nothing was pushed", info.id.short()));
     }
+    args["expect_sha"] = json!(commit);
     let done = call(&args);
     if done.is_error {
         return Err(done.content);

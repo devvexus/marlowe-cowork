@@ -35,6 +35,13 @@ pub(crate) use git_tool::{
 };
 pub(crate) use run::Env;
 
+/// The hard denials for shell command lines, without the git group: for a host to install next to
+/// its `bash` / `powershell` whether or not `git` is offered (same name as the group's own guard,
+/// so a host with both runs one).
+pub fn shell_guard() -> std::sync::Arc<dyn marlowe_agent::ToolMiddleware> {
+    std::sync::Arc::new(guard::ShellGuard)
+}
+
 /// The git group's per-host configuration, installed by `specs::git::configure`. A host without
 /// it (a bare `BuiltinTools::new`) does not offer the group's tools at all.
 #[derive(Debug, Clone, Default)]

@@ -57,7 +57,7 @@ struct RecordingGh {
     calls: Mutex<Vec<(Value, Option<PathBuf>)>>,
 }
 
-const PLAN: &str = "Pull request to open (one approval covers the push and the PR):\n  remote: origin (https://github.com/o/r.git)\n  branch: BRANCH @ 1a2b3c4 (1 commits, 1 files, +1 −0)\n  into:   main (origin/main)\n  title:  Fix the parser\n  body:\n    Changed the parser.\n";
+const PLAN: &str = "Pull request to open (one approval covers the push and the PR):\n  remote: origin (https://github.com/o/r.git)\n  branch: BRANCH @ SHORT (1 commits, 1 files, +1 −0)\n  commit: SHA\n  into:   main (origin/main)\n  title:  Fix the parser\n  body:\n    Changed the parser.\n";
 
 impl ToolHost for RecordingGh {
     fn specs(&self) -> Vec<ToolSpec> {
@@ -67,9 +67,14 @@ impl ToolHost for RecordingGh {
     fn call(&self, call: &ToolCallReq, ctx: &ToolCtx) -> ToolOutcome {
         assert_eq!(call.name, "gh");
         self.calls.lock().unwrap().push((call.args.clone(), ctx.workspace.clone()));
+        // Like the real tool: the plan names the branch's commit, and a call pinned to another
+        // commit (the branch moved after the yes) is refused before anything is pushed.
+        let branch = call.args["head"].as_str().unwrap_or("?");
+        let sha = git(ctx.workspace.as_deref().unwrap(), &["rev-parse", &format!("refs/heads/{branch}")]);
         if call.args["dry_run"] == json!(true) {
-            let branch = call.args["head"].as_str().unwrap_or("?");
-            ToolOutcome::ok(PLAN.replace("BRANCH", branch), "plan")
+            ToolOutcome::ok(PLAN.replace("BRANCH", branch).replace("SHORT", &sha[..7]).replace("SHA", &sha), "plan")
+        } else if call.args.get("expect_sha").and_then(Value::as_str).is_some_and(|e| e != sha) {
+            ToolOutcome::error("the branch moved after the plan was shown; nothing was pushed")
         } else {
             ToolOutcome::ok("Opened pull request https://github.com/o/r/pull/21\npushed", "PR #21")
         }
@@ -223,6 +228,7 @@ fn parity_g3_open_pr_asks_once_then_pushes_and_opens() {
         assert_eq!(calls[0].0["dry_run"], json!(true));
         assert_eq!(calls[1].0.get("dry_run"), None);
         assert_eq!(calls[1].0["head"], json!(branch));
+        assert_eq!(calls[1].0["expect_sha"], json!(git(&worktree, &["rev-parse", "HEAD"])), "pinned to the commit shown");
         assert_eq!(calls[1].0["op"], "pr_create");
         let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
         assert_eq!(calls[1].1.as_deref().map(norm), Some(norm(&repo)), "run in the original checkout");
@@ -239,6 +245,20 @@ fn parity_g3_open_pr_asks_once_then_pushes_and_opens() {
         other => panic!("{other:?}"),
     }
     assert_eq!(gh.calls.lock().unwrap().len(), 3, "the second request only made a dry run");
+
+    // The branch moves between the ask and the answer: the yes was for another commit.
+    c.send(&Request::OpenPr { run: run.clone(), title: None, body: None });
+    let got = c.until_event(|e| matches!(e, Event::ApprovalRequested { .. }));
+    let Event::ApprovalRequested { approval, .. } = got.last().unwrap().event.clone() else { unreachable!() };
+    std::fs::write(worktree.join("late.rs"), "fn late() {}\n").unwrap();
+    git(&worktree, &["add", "late.rs"]);
+    git(&worktree, &["commit", "-q", "-m", "late"]);
+    c.send(&Request::Approve { approval, decision: ApprovalDecision::Allow });
+    let got = c.until_event(|e| matches!(e, Event::PrOpened { .. } | Event::Error { .. }));
+    match &got.last().unwrap().event {
+        Event::Error { message, .. } => assert!(message.contains("moved") && message.contains("nothing was pushed"), "{message}"),
+        other => panic!("an unapproved commit must not be proposed: {other:?}"),
+    }
 
     // A run that does not exist.
     c.send(&Request::OpenPr { run: RunId("nope".into()), title: None, body: None });

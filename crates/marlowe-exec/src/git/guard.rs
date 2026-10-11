@@ -40,6 +40,38 @@ fn denied(why: String) -> CallFlow {
     CallFlow::Done(ToolOutcome::error(format!("refused: {why}")))
 }
 
+/// The shell half of [`GitGuard`] alone: `bash` and `powershell` command lines are refused when
+/// they force a push or skip hooks. It needs no git state, so a host installs it whether or not
+/// the git group is exposed (a local model outside a repository, a crew agent). It has the same
+/// name as [`GitGuard`] so a host that has both runs one.
+pub(crate) struct ShellGuard;
+
+impl ShellGuard {
+    fn check(call: &ToolCall) -> CallFlow {
+        match call.name.as_str() {
+            "bash" | "powershell" => match str_arg(&call.args, "command").and_then(policy::deny_command) {
+                Some(why) => denied(why),
+                None => CallFlow::Continue,
+            },
+            _ => CallFlow::Continue,
+        }
+    }
+}
+
+impl ToolMiddleware for ShellGuard {
+    fn name(&self) -> &str {
+        "git-guard"
+    }
+
+    fn before_approval(&self, call: &mut ToolCall, _cx: &CallCtx) -> CallFlow {
+        Self::check(call)
+    }
+
+    fn before_call(&self, call: &ToolCall, _cx: &CallCtx) -> CallFlow {
+        Self::check(call)
+    }
+}
+
 impl ToolMiddleware for GitGuard {
     fn name(&self) -> &str {
         "git-guard"
@@ -74,9 +106,14 @@ impl ToolMiddleware for GitGuard {
             return CallFlow::Continue;
         };
         let remote = remote_for(&c, &call.args, &branch);
+        let sha = c.out(&["rev-parse", &format!("refs/heads/{branch}")]).filter(|s| !s.is_empty());
         if let Some(o) = call.args.as_object_mut() {
             o.insert("branch".into(), json!(branch));
             o.insert("remote".into(), json!(remote));
+            // The commit the user approves is the one pushed, even if the branch moves after the yes.
+            if let Some(sha) = sha {
+                o.insert("expect_sha".into(), json!(sha));
+            }
         }
         CallFlow::Continue
     }

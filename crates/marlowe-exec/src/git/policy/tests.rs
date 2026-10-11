@@ -20,6 +20,32 @@ fn every_spelling_of_force_is_denied() {
         "git push origin HEAD:+main",
         "git push --mirror",
         "git push --mirror origin",
+        // git reads any unambiguous prefix of a long option.
+        "git push --force-w origin main",
+        "git push --force-with origin main",
+        "git push --force-if origin main",
+        "git push --forc origin main",
+        "git push --mirr --dry-run",
+        "git push --mir origin",
+        "git push --m origin",
+        "git push --pru origin 'refs/heads/*'",
+        "git push --force>out",
+        "git push --force-w>out origin main",
+        "git push -f>out",
+        "git push origin :main>out",
+        "git remote add --mirror=push backup ../x.git",
+        "git remote add --mirr=push backup ../x.git",
+        // Force through config.
+        "git -c remote.origin.mirror=true push",
+        "git -c remote.origin.mirror push",
+        "git -c remote.origin.push=+refs/heads/*:refs/heads/* push",
+        "git --config-env=remote.origin.push=PUSHSPEC push",
+        "git config remote.origin.push +refs/heads/*:refs/heads/*",
+        "git config --add remote.origin.push +HEAD",
+        "git config remote.origin.mirror true",
+        "git config set remote.backup.mirror yes",
+        "GIT_CONFIG_PARAMETERS=\"'remote.origin.mirror'='true'\" git push",
+        "GIT_CONFIG_KEY_0=remote.origin.push GIT_CONFIG_VALUE_0=+HEAD git push",
         "git push --prune origin 'refs/heads/*'",
         "git push -fu origin feat",
         "git push -uf origin feat",
@@ -78,6 +104,21 @@ fn hook_skipping_is_denied() {
         "git -c core.hookspath=NUL commit -m x",
         "git config core.hooksPath /dev/null",
         "bash -c 'git commit -n -m wip'",
+        // Any one-shot hooksPath, whatever it points at.
+        "git -c core.hooksPath=.nohooks commit --allow-empty -m d",
+        "git -c core.hooksPath=.husky commit -m x",
+        "git --config-env=core.hooksPath=HOOKS commit -m x",
+        "git --config-env core.hookspath=HOOKS commit -m x",
+        // Through the environment.
+        "GIT_CONFIG_PARAMETERS=\"'core.hooksPath'='x'\" git commit -m x",
+        "env GIT_CONFIG_PARAMETERS=\"'core.hooksPath'='x'\" git commit -m x",
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/none git commit -m x",
+        // Abbreviated long options and a redirect glued to an option.
+        "git commit -m b --no-verif",
+        "git commit -m b --no-ver=",
+        "git commit -m b --no-v",
+        "git commit --no-verify>log -m b",
+        "git commit --no-verif>log -m b",
     ] {
         assert!(denied(cmd), "should deny: {cmd}");
     }
@@ -130,7 +171,21 @@ fn ordinary_git_is_not_denied() {
         "git stash push -u",
         "git config user.name Matthew",
         "git config core.hooksPath .husky",
-        "git -c core.hooksPath=.husky commit -m x",
+        "git config remote.origin.push refs/heads/main",
+        "git config remote.origin.mirror false",
+        "git config remote.origin.mirror",
+        "git config --get remote.origin.push",
+        "git -c remote.origin.mirror=false push",
+        "git -c user.name=x -c push.default=simple push",
+        "git push --follow-tags",
+        "git push --dry-run origin main",
+        "git push --delete origin feat/x",
+        "git push --set-upstream origin feat",
+        "git push --set-upstream-to=x",
+        "git log --no-verbose",
+        "git commit -m 'mention --no-verify'",
+        "git commit -m x # fix: handle -n flag",
+        "git push origin main # not -f",
         "git -C repo status",
         "echo git push -f",
         "echo 'git push --force' > notes.txt",
@@ -147,9 +202,26 @@ fn ordinary_git_is_not_denied() {
 }
 
 #[test]
-fn unparseable_lines_are_left_to_the_rules() {
-    assert!(deny_command("git push -f 'unterminated").is_none());
-    assert!(deny_command("echo \"open").is_none());
+fn a_line_that_does_not_parse_is_still_denied() {
+    for cmd in [
+        "git push -f 'unterminated",
+        "git push --force origin main  # don't worry",
+        "git push origin main -f \"open",
+        "echo \"a`\"b\"; git push --force",
+        "echo \"it's\"; git push --force-with-lease origin main",
+        "echo don't; git commit --no-verify -m x",
+        "echo 'x; git commit -nm y",
+        "bash -c \"git push -f",
+        "echo \"$(git push -f",
+        "cmd /c echo hi #& git push -f",
+        "git push --for\"ce\" origin main 'x",
+    ] {
+        assert!(denied(cmd), "should deny: {cmd}");
+    }
+    // What would not be denied if it parsed is not denied when it does not.
+    for cmd in ["echo \"open", "echo don't; git status", "git push origin main  # don't worry", "git log 'x"] {
+        assert!(!denied(cmd), "should not deny: {cmd}");
+    }
 }
 
 #[test]

@@ -199,6 +199,7 @@ impl Plan {
             self.ins,
             self.del
         ));
+        out.push_str(&format!("  commit: {}\n", self.head_sha));
         out.push_str(&format!("  into:   {} ({}){}\n", self.base, self.base_ref, if self.draft { ", as a draft" } else { "" }));
         out.push_str(&format!("  title:  {}\n  body:\n", self.title));
         for l in self.body.lines() {
