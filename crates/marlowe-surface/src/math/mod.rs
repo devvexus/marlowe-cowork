@@ -422,31 +422,46 @@ fn has_command(s: &str) -> bool {
 
 /// No run of three or more letters outside a command, unless it is an operator name -- or, when
 /// `streaming`, the run at the very end could still grow into one.
+///
+/// A script is a label, not prose: a run straight after `_` or `^`, or anywhere inside a group
+/// they open, is allowed at any length. `$G = -L'(f(X_{batch}))$` was shown as source because
+/// `batch` read as a word, and no sentence about prices puts a word in `_{…}`.
 fn letter_runs_ok(s: &str, streaming: bool) -> bool {
     let chars: Vec<char> = s.chars().collect();
+    // One entry per open brace: whether it opened a script group.
+    let mut groups: Vec<bool> = Vec::new();
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] == '\\' {
-            i += 1;
-            while i < chars.len() && chars[i].is_ascii_alphabetic() {
+        match chars[i] {
+            '\\' => {
                 i += 1;
+                while i < chars.len() && chars[i].is_ascii_alphabetic() {
+                    i += 1;
+                }
+                continue;
             }
-            continue;
-        }
-        if chars[i].is_ascii_alphabetic() {
-            let start = i;
-            while i < chars.len() && chars[i].is_ascii_alphabetic() {
-                i += 1;
+            '{' => groups.push(i > 0 && matches!(chars[i - 1], '_' | '^')),
+            '}' => {
+                groups.pop();
             }
-            let word: String = chars[start..i].iter().collect();
-            let at_end = i == chars.len();
-            let ok = word.len() < 3
-                || symbols::is_function_word(&word)
-                || (streaming && at_end && symbols::is_function_prefix(&word));
-            if !ok {
-                return false;
+            c if c.is_ascii_alphabetic() => {
+                let start = i;
+                while i < chars.len() && chars[i].is_ascii_alphabetic() {
+                    i += 1;
+                }
+                let script = groups.contains(&true) || (start > 0 && matches!(chars[start - 1], '_' | '^'));
+                let word: String = chars[start..i].iter().collect();
+                let at_end = i == chars.len();
+                let ok = script
+                    || word.len() < 3
+                    || symbols::is_function_word(&word)
+                    || (streaming && at_end && symbols::is_function_prefix(&word));
+                if !ok {
+                    return false;
+                }
+                continue;
             }
-            continue;
+            _ => {}
         }
         i += 1;
     }

@@ -382,3 +382,64 @@ fn user_text_typesets_its_maths_and_leaves_everything_else_as_typed() {
     assert!(out.contains("$5 and $10"), "currency was eaten: {out}");
     assert!(!out.contains('\\'), "{out}");
 }
+
+/// Inline spans with **no command**, whose only TeX is scripts, primes and brackets: the shape of
+/// `$G = -L'(f(X_{batch}))$`, which ui-preview5 showed as source because `batch` read as a word.
+/// Each is set in a sentence after other inline maths, finished and streamed; no frame may show a
+/// dollar or a brace, and the prose around it stays as written.
+#[test]
+fn inline_spans_with_words_in_their_scripts_are_typeset_in_a_sentence() {
+    const SPANS: &[&str] = &[
+        "G = -L'(f(X_{batch}))",
+        "X_{batch}",
+        "L_{total} = L_{ce} + L_{reg}",
+        "W^{out} h_t",
+        "p_{model}(x)",
+        "y' = f'(x_{train})",
+        "x_batch",
+    ];
+    // Generated: a script word in each of the places a model writes one.
+    const WORDS: &[&str] = &["batch", "train", "test", "model", "out", "hidden", "total", "data", "prior", "post"];
+    const SHAPES: &[&str] = &[
+        "X_{@}",
+        "f(X_{@})",
+        "-L'(f(X_{@}))",
+        "W^{@}x",
+        "h_{@,t}",
+        "E_{@}[x^2]",
+        "(X_{@}, Y_{@})",
+        "a_{@}' = b",
+    ];
+    let mut all: Vec<String> = SPANS.iter().map(|s| s.to_string()).collect();
+    for w in WORDS {
+        for s in SHAPES {
+            all.push(s.replace('@', w));
+        }
+    }
+    let mut frames = 0;
+    for src in &all {
+        let md = format!(r"Take $X_b \subset X$, compute ${src}$, then update $\theta_j$ and stop.");
+        for (w, live) in [(120u16, false), (60, false), (120, true)] {
+            let shown = screen(&frame(&md, live, w, 12));
+            frames += 1;
+            assert!(!shown.contains('$'), "{src:?} at {w} (live {live}) showed a dollar:\n{shown}");
+            assert!(!shown.contains(['{', '}']), "{src:?} at {w} (live {live}) showed a brace:\n{shown}");
+            assert!(!shown.contains('\\'), "{src:?} at {w} (live {live}) showed a backslash:\n{shown}");
+            let flat = shown.split_whitespace().collect::<Vec<_>>().join(" ");
+            for word in ["Take", "compute", "then update", "and stop."] {
+                assert!(flat.contains(word), "{src:?}: the prose lost {word:?}:\n{shown}");
+            }
+        }
+        // Every prefix, as it streams: a held span is a placeholder, never its dollar.
+        let chars: Vec<char> = md.chars().collect();
+        for n in 1..=chars.len() {
+            let prefix: String = chars[..n].iter().collect();
+            let shown = screen(&frame(&prefix, true, 120, 12));
+            assert!(!shown.contains(['{', '}', '\\']), "{src:?} streamed to {prefix:?}:\n{shown}");
+        }
+    }
+    // Prices beside them are still prices.
+    let shown = screen(&frame("compute $X_{batch}$ for $5 and $10 a run", false, 120, 6));
+    assert!(shown.contains("$5 and $10"), "{shown}");
+    println!("inline script-word spans: {} sources, {frames} finished frames, every prefix streamed", all.len());
+}

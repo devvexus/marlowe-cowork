@@ -296,11 +296,19 @@ fn a_dollar_sign_in_prose_is_not_maths() {
     for content in ["x^2", r"\alpha", "a + b", "n", "E = mc^2", r"\sum_{i}", "5", "2x", "f(x)"] {
         assert!(looks_like_inline_maths(content), "{content:?} is maths");
     }
+    // A word in a script is a label (ui-preview5: the first was shown as source).
+    for content in ["G = -L'(f(X_{batch}))", "X_{train}", "W^{out}h", "L_{total} = L_{ce} + L_{reg}", "x_batch", "p_{model}(x)"] {
+        assert!(looks_like_inline_maths(content), "{content:?} is maths");
+    }
+    // A word outside a script is still prose, even next to one.
+    for content in ["5 and x_{i}", "x_{i} and y"] {
+        assert!(!looks_like_inline_maths(content), "{content:?} would be read as maths");
+    }
 }
 
 #[test]
 fn an_unclosed_dollar_is_held_only_while_it_could_still_be_maths() {
-    for partial in ["", "5", "x", r"\fra", "x + ", "5 ar"] {
+    for partial in ["", "5", "x", r"\fra", "x + ", "5 ar", "G = -L'(f(X_{bat", "X_{batch"] {
         assert!(could_become_inline_maths(partial), "{partial:?}");
     }
     for partial in [" 5", "5 and", "10 with tax", "x\ny"] {

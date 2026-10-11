@@ -4,6 +4,13 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### A word in a script is maths, not prose
+
+Matthew (ui-preview5): `$G = -L'(f(X_{batch}))$` was printed raw, dollars and all. The dollar heuristic (`math::looks_like_inline_maths`) refused any span with a three-letter run outside a command, so `batch` read as a word in a sentence about prices.
+
+- **Fixed.** A letter run straight after `_` or `^`, or anywhere inside a group they open, is a label and passes at any length; outside a script the rule is unchanged (`$5 and $10` stays prices, `$x_{i} and y$` stays prose). The streaming check (`could_become_inline_maths`) follows the same rule, so `$X_{bat` is held, not shown.
+- **Tests.** `maths_corpus.rs::inline_spans_with_words_in_their_scripts_are_typeset_in_a_sentence`: the preview's span and 86 generated ones (ten script words in eight shapes: primes, nested brackets, pairs, expectations), each after other inline maths in a sentence, finished at two widths and streamed prefix by prefix; no dollar, brace or backslash on any frame, prose intact, prices beside them untouched. Without the fix it fails on the preview's span.
+
 ### No surprise model loads; memory runs no model
 
 Matthew (ui-preview5): "Marlowe decided to load valiance randomly during use and destroyed the PC's resources." The library held valiance (added first) and dawn; conductor and quick were on dawn, reflection unset. When a session went idle and was evicted, its episode summary resolved the unset Reflection slot to the library's first model, so valiance loaded beside dawn with no fit check. Matthew's decision: the memory system needs no LLM.
