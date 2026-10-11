@@ -152,6 +152,10 @@ pub const BUILTINS: &[(&str, &str, Option<&str>)] = &[
     ("pr-comments", "Read a pull request's review feedback and address it", Some("[number]")),
     ("review", "Review a pull request or the pending diff", Some("[pr]")),
     ("security-review", "Security review of the pending changes", None),
+    ("code-review", "Review the diff, a PR or a branch for bugs with verified findings", Some("[low|medium|high|xhigh|max|default] [pr|base] [--fix] [--comment] [--max-findings n|all|default]")),
+    ("simplify", "Find and apply reuse, simplification and efficiency cleanups in the changed code", Some("[base]")),
+    ("workflow", "Run a saved workflow, or convert a Claude Code one", Some("<name> [json args] | convert <name>")),
+    ("workflows", "Workflow runs and saved workflows", None),
     ("todos", "Show the todo list", None),
     ("help", "List commands", None),
 ];
@@ -1082,7 +1086,8 @@ impl ToolMiddleware for CommandsMiddleware {
         let catalog = Catalog::load(&sources);
         let Some(found) = catalog.find(&name).filter(|c| c.user_invocable) else {
             // The built-in git commands (track J), unless a command file of that name exists.
-            if let Some(expand) = crate::git_prompts::builtin(&name) {
+            // The git commands (track J) and the workflow commands (track W).
+            if let Some(expand) = crate::git_prompts::builtin(&name).or_else(|| crate::workflow_prompts::builtin(&name)) {
                 let mut out = format!("<command-name>/{name}</command-name>\n");
                 if !args.is_empty() {
                     out.push_str(&format!("<command-args>{args}</command-args>\n"));

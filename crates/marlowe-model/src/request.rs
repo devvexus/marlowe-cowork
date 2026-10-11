@@ -95,6 +95,10 @@ pub struct ChatRequest {
     pub tools: Vec<ToolSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+    /// Constrains the reply to this JSON Schema (Ollama `format`, OpenRouter `response_format`).
+    /// A workflow agent's finalisation call uses it (WF3); providers without it ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<Value>,
 }
 
 impl ChatRequest {
@@ -108,6 +112,7 @@ impl ChatRequest {
             messages,
             tools: Vec::new(),
             temperature: None,
+            format: None,
         }
     }
 

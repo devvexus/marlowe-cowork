@@ -274,6 +274,10 @@ fn build(req: &ChatRequest, opts: &BodyOptions<'_>) -> Built {
     if let Some(tools) = tools {
         body["tools"] = tools;
     }
+    // Structured output: Ollama constrains decoding to the schema.
+    if let Some(schema) = &req.format {
+        body["format"] = schema.clone();
+    }
     Built { body, prompt_tokens, num_predict }
 }
 
@@ -484,6 +488,14 @@ mod tests {
         let body = request_body(&req, 8_192, None);
         let content = body["messages"][1]["content"].as_str().unwrap();
         assert!(!content.contains("<function"), "{content}");
+    }
+
+    #[test]
+    fn a_schema_rides_as_format_and_is_absent_otherwise() {
+        let mut req = convo();
+        assert!(request_body(&req, 32_768, None).get("format").is_none());
+        req.format = Some(json!({"type": "object", "properties": {"n": {"type": "integer"}}, "required": ["n"]}));
+        assert_eq!(request_body(&req, 32_768, None)["format"]["required"][0], "n");
     }
 
     #[test]

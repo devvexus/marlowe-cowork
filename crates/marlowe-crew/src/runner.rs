@@ -117,6 +117,26 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
         research: inner.cfg.research.clone(),
     };
     hooks.check()?;
+    // A workflow script (track W): its agents are this run's steps.
+    if let Some(wf) = run.workflow.clone() {
+        let (sink, run_id, session) = (inner.clone(), id.clone(), run.session.clone());
+        let emit = move |ev: playbook::script::ScriptEvent| match ev {
+            playbook::script::ScriptEvent::Progress(info) => sink.emit(CrewEvent::Workflow(info)),
+            playbook::script::ScriptEvent::Log(line) => sink.emit(CrewEvent::WorkflowLog { run: run_id.clone(), line }),
+            playbook::script::ScriptEvent::Findings(findings) => {
+                sink.emit(CrewEvent::Findings { run: run_id.clone(), session: session.clone(), findings })
+            }
+        };
+        let job = playbook::script::ScriptJob {
+            home: &inner.home,
+            run: id,
+            session: run.session.as_ref(),
+            workspace: run.workspace.as_deref(),
+            workflow: &wf,
+            plugins: Vec::new(),
+        };
+        return playbook::script::run_workflow(&runner, job, &emit);
+    }
     let research = match (&run.playbook, &inner.deps.research) {
         (Some(Playbook::DeepResearch), Some(io)) => Some(RunResearch {
             hooks: hooks.clone(),

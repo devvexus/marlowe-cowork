@@ -6,10 +6,12 @@ mod agent;
 mod build;
 mod research;
 pub mod research_v2;
+/// Workflow scripts as crew runs (track W).
+pub mod script;
 
 pub use agent::{
     output_cap, sandbox_shell, tail_chars, AgentRunner, ModelResolver, NoHooks, ShellFn, StepFailure, StepHooks,
-    StepModel, CONTINUE_PROMPT, MAX_CONTINUES, MIN_OUTPUT, OUTPUT_MARGIN, SHELL_OUTPUT_CHARS, SHELL_TIMEOUT,
+    StepModel, StepToolsFn, CONTINUE_PROMPT, MAX_CONTINUES, MIN_OUTPUT, OUTPUT_MARGIN, SHELL_OUTPUT_CHARS, SHELL_TIMEOUT,
 };
 pub use build::{build, detect_test_command};
 pub use research::{deep_research, first_paragraph, min_confidence, parse_verdicts, Verdict, REPORT_FILE};

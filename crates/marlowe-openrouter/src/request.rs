@@ -187,6 +187,10 @@ pub fn request_body_with(req: &ChatRequest, opts: &BodyOptions<'_>) -> Value {
     if let Some(r) = &opts.reasoning {
         body["reasoning"] = r.clone();
     }
+    // Structured output (a workflow agent's finalisation call).
+    if let Some(schema) = &req.format {
+        body["response_format"] = json!({"type": "json_schema", "json_schema": {"name": "answer", "strict": true, "schema": schema}});
+    }
     body
 }
 

@@ -129,8 +129,13 @@ pub struct NoHooks;
 
 impl StepHooks for NoHooks {}
 
+/// Wraps a step's tool host before the agent sees it (a workflow agent's `structured_output`).
+pub type StepToolsFn = Arc<dyn Fn(&StepSpec, Arc<dyn ToolHost>) -> Arc<dyn ToolHost> + Send + Sync>;
+
 /// A [`StepRunner`] that runs every step as an agent turn. Fields are public so the supervisor
-/// can set what it owns; [`AgentRunner::new`] fills the rest with safe defaults.
+/// can set what it owns; [`AgentRunner::new`] fills the rest with safe defaults. Cloning shares
+/// everything (a workflow gives each agent a clone with its own cancel token).
+#[derive(Clone)]
 pub struct AgentRunner {
     pub run: RunId,
     /// The cards the run started with.
@@ -154,6 +159,8 @@ pub struct AgentRunner {
     pub per_provider: usize,
     /// Concurrent steps per local provider.
     pub per_local_provider: usize,
+    /// Wraps each step's tool host; `None` keeps it.
+    pub step_tools: Option<StepToolsFn>,
 }
 
 impl AgentRunner {
@@ -182,7 +189,53 @@ impl AgentRunner {
             shell: Arc::new(sandbox_shell),
             per_provider: 2,
             per_local_provider: 1,
+            step_tools: None,
         }
+    }
+
+    /// The model `role` resolves to now.
+    pub fn model_for(&self, role: &str) -> Result<StepModel, CrewError> {
+        (self.models)(self.card(role)?)
+    }
+
+    /// One model call that turns an agent's final text into an object matching `schema`, with
+    /// decoding constrained to it (`ChatRequest::format`) and no tools (WF3's finalisation for an
+    /// agent that ended without a valid `structured_output` call). Metered like any step call.
+    pub fn finalise(&self, spec: &StepSpec, answer: &str, schema: &serde_json::Value) -> Result<(serde_json::Value, Usage), CrewError> {
+        let card = self.card(&spec.role)?;
+        let model = (self.models)(card)?;
+        let failed = Arc::new(Mutex::new(None));
+        let metered = Metered {
+            local: model.model.local || model.provider.kind().is_local(),
+            inner: model.provider,
+            hooks: self.hooks.clone(),
+            spec: spec.clone(),
+            failed: failed.clone(),
+        };
+        let mut req = ChatRequest::new(
+            model.model.id.clone(),
+            vec![marlowe_model::Message::user(format!(
+                "The agent's final report:\n\n{answer}\n\nReturn it as one JSON object matching the schema. Use only what the report says; \
+                 an empty list where it found nothing."
+            ))],
+        );
+        req.system = vec![marlowe_model::SystemBlock {
+            text: "You convert an agent's final report into a single JSON object that matches the schema you are given. Output the JSON only.".into(),
+            cache: false,
+        }];
+        req.format = Some(schema.clone());
+        req.effort = marlowe_model::Effort::Low;
+        req.max_output_tokens = Some(4_096);
+        let c = metered.stream(&req, &self.cancel, &mut |_| {});
+        if let Some(e) = failed.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            return Err(e);
+        }
+        let c = c.map_err(|e| CrewError::Step { step: spec.key.clone(), message: format!("the finalisation call failed: {e}") })?;
+        let text = c.text.trim();
+        let body = text.trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+        let value: serde_json::Value = serde_json::from_str(body)
+            .map_err(|e| CrewError::Step { step: spec.key.clone(), message: format!("the finalisation call did not return JSON: {e}") })?;
+        Ok((value, c.usage))
     }
 
     /// The sandbox a step runs in and the tool host rooted in it: the run's own unless the step
@@ -266,7 +319,11 @@ impl AgentRunner {
         let allow = Self::allowlist(card, spec.tools.as_deref());
         let model = (self.models)(card)?;
         let (sandbox, inner_tools) = self.step_sandbox(spec)?;
-        let tools = CrewTools::new(inner_tools, allow.clone(), sandbox.clone());
+        let tools: Arc<dyn ToolHost> = Arc::new(CrewTools::new(inner_tools, allow.clone(), sandbox.clone()));
+        let tools = match &self.step_tools {
+            Some(wrap) => wrap(spec, tools),
+            None => tools,
+        };
         let failed = Arc::new(Mutex::new(None));
         let metered = Metered {
             local: model.model.local || model.provider.kind().is_local(),
@@ -278,7 +335,7 @@ impl AgentRunner {
         let system = self.system(card, spec, &sandbox, &allow);
         let prompt_tokens = marlowe_agent::context::estimate_tokens(&system.render_text())
             + marlowe_agent::context::estimate_tokens(&spec.prompt);
-        let mut agent = Agent::new(Arc::new(metered), model.model, Arc::new(tools), system);
+        let mut agent = Agent::new(Arc::new(metered), model.model, tools, system);
         agent.effort = spec.effort.unwrap_or(card.effort);
         agent.approvals = self.approvals.clone();
         // A sized step gets the room its prompt leaves, not the provider's default (Ollama's is

@@ -74,6 +74,16 @@ impl std::fmt::Debug for Workflows {
     }
 }
 
+/// Where `report_findings` announces what it stored (the daemon broadcasts `Event::Findings`).
+#[derive(Clone)]
+pub struct FindingsSink(pub Arc<dyn Fn(&SessionId, &[marlowe_proto::Finding]) + Send + Sync>);
+
+impl std::fmt::Debug for FindingsSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FindingsSink")
+    }
+}
+
 /// A script ready to run: its text, where it came from, and its checked META.
 #[derive(Debug, Clone)]
 pub struct Prepared {
@@ -159,6 +169,53 @@ pub fn trust(home: &Path, prepared: &Prepared) -> std::io::Result<()> {
         std::fs::write(p, serde_json::to_string_pretty(&m).map_err(std::io::Error::other)?)?;
     }
     Ok(())
+}
+
+/// Arguments a built-in remembers per project until the user says `default` (G11: the
+/// code-review level and finding cap).
+const REMEMBERED: [(&str, &[&str]); 1] = [("code-review", &["level", "max_findings"])];
+
+fn prefs_path(home: &Path) -> PathBuf {
+    home.join("workflows").join("prefs.json")
+}
+
+/// Fills `args` with what `name` remembers for `project`, and remembers what the user set now
+/// (`"default"` forgets it and leaves the script's default).
+pub fn remembered_args(home: &Path, project: Option<&Path>, name: &str, args: Value) -> Value {
+    let Some((_, keys)) = REMEMBERED.iter().find(|(n, _)| *n == name) else { return args };
+    let project = project.map(|p| p.display().to_string().to_lowercase()).unwrap_or_default();
+    let mut all: BTreeMap<String, BTreeMap<String, serde_json::Map<String, Value>>> =
+        std::fs::read_to_string(prefs_path(home)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let mut args = match args {
+        Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    let stored = all.entry(project).or_default().entry(name.to_string()).or_default();
+    let mut changed = false;
+    for key in keys.iter() {
+        match args.get(*key).cloned() {
+            Some(Value::String(s)) if s == "default" => {
+                args.remove(*key);
+                changed |= stored.remove(*key).is_some();
+            }
+            Some(v) if !v.is_null() => {
+                changed |= stored.insert(key.to_string(), v.clone()).as_ref() != Some(&v);
+            }
+            _ => {
+                if let Some(v) = stored.get(*key) {
+                    args.insert(key.to_string(), v.clone());
+                }
+            }
+        }
+    }
+    if changed {
+        let p = prefs_path(home);
+        if let Some(d) = p.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(p, serde_json::to_string_pretty(&all).unwrap_or_default());
+    }
+    Value::Object(args)
 }
 
 /// The approval line for a first run: what the script says it is and what it may do.

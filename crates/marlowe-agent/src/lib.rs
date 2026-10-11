@@ -30,6 +30,7 @@ pub mod tasklist;
 pub mod tasks;
 pub mod todo;
 pub mod tools;
+pub mod workflow_prompts;
 pub mod worktree;
 
 pub use agent::{Agent, MAX_STEPS};

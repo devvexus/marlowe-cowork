@@ -358,6 +358,7 @@ impl Agent {
                 messages: asm.messages,
                 tools: specs.clone(),
                 temperature: None,
+                format: None,
             };
             let call_started = Instant::now();
             let mut c = match call_model(live.provider.as_ref(), &req, cancel, sink) {
