@@ -12,7 +12,7 @@ use marlowe_brains::{MemoryStore, ProviderFactory};
 use marlowe_daemon::{Daemon, DaemonConfig, DaemonDeps};
 use marlowe_model::ToolSpec;
 use marlowe_proto::{
-    write_line, Envelope, Event, LineReader, PermissionMode, Request, RunId, SessionId, SettingsScope,
+    write_line, Envelope, Event, ExportFormat, LineReader, PermissionMode, Request, RewindScope, RunId, SessionId, SettingsScope,
 };
 
 struct NoTools;
@@ -69,7 +69,6 @@ fn every_m46_request_reaches_its_tracks_stub() {
         (Request::ListSchedules, "list_schedules", "F"),
         (Request::OpenPr { run: RunId("r".into()), title: None, body: None }, "open_pr", "J"),
         (Request::ListExperiments { limit: 5 }, "list_experiments", "J2"),
-        (Request::McpRemove { name: "x".into(), scope: SettingsScope::User, workspace: None }, "mcp_remove", "K"),
         (Request::PutBlob { mime: "image/png".into(), base64: "iVBORw0KGgo=".into() }, "put_blob", "G"),
     ];
     for (req, op, track) in cases {

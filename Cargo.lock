@@ -2649,6 +2649,7 @@ dependencies = [
  "marlowe-exec",
  "marlowe-hw",
  "marlowe-journal",
+ "marlowe-mcp",
  "marlowe-memory",
  "marlowe-mind",
  "marlowe-model",
@@ -2846,9 +2847,16 @@ dependencies = [
 name = "marlowe-mcp"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
+ "getrandom 0.2.17",
+ "keyring",
+ "marlowe-mcp",
+ "marlowe-net",
+ "marlowe-os",
  "marlowe-tools",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.19",
 ]
 

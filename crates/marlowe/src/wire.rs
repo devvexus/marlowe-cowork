@@ -218,6 +218,22 @@ pub fn daemon_deps(home: &Path) -> DaemonDeps {
     }
 }
 
+/// The daemon `marlowe -p --standalone` runs inside its own process: the same providers, tools and
+/// user, but no Sentinel, voice or crew (nothing there outlives a print run). Memory only when asked.
+pub fn standalone_deps(home: &Path, memory: bool) -> DaemonDeps {
+    let credentials: Arc<dyn CredentialStore> =
+        if scripted() { Arc::new(MemoryStore::new()) } else { Arc::new(KeyringStore::new()) };
+    DaemonDeps {
+        providers: provider_factory(credentials.clone()),
+        tools: tool_factory(credentials, home),
+        user: user_info(home),
+        mind: if memory { open_mind(home, None) } else { None },
+        sentinel: None,
+        voice: None,
+        crew: None,
+    }
+}
+
 /// The crew: tools, config, and deep research v2's I/O with `<home>\research.json` applied. A
 /// scripted run has no network, so it keeps deep research on v1.
 fn crew_setup(credentials: Arc<dyn CredentialStore>, home: &Path) -> CrewSetup {
