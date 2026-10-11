@@ -166,10 +166,8 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
             }
             None => refuse(Some(session), format!("question {id} is not waiting for an answer")),
         },
-        // Moving a running shell to the job table is track B's (`marlowe-exec` jobs).
-        Request::DetachCall { session, call_id } => {
-            refuse(Some(session), format!("detaching {call_id} needs the background job table (M4.6 track B)"))
-        }
+        // Moving a running shell to the job table: the jobs live in the tool host (track B).
+        Request::DetachCall { session, call_id } => crate::job_ops::detach(core, client, session, call_id),
         other => crate::client::not_yet(core, client, &other, "F"),
     }
 }

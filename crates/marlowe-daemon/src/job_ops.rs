@@ -66,6 +66,23 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
     }
 }
 
+/// Ctrl+B: the session's running foreground shell call becomes a background job. Its start is
+/// broadcast by the forwarder; the asking client gets `JobStarted` too, or why nothing moved.
+pub(crate) fn detach(core: &Arc<Core>, client: u64, session: SessionId, call_id: String) {
+    start(core);
+    match bg_hub().detach(&session.0, Some(&call_id)) {
+        Some(id) => {
+            if let Some(j) = bg_hub().list(Some(&session.0)).iter().find(|j| j.id == id) {
+                core.bus.reply(client, Event::JobStarted { job: info(j) });
+            }
+        }
+        None => core.bus.reply(
+            client,
+            Event::Error { session: Some(session), message: format!("`{call_id}` is not a running shell command") },
+        ),
+    }
+}
+
 /// How long a `!` waits for a session's runner to build its tool host.
 const HOST_WAIT: Duration = Duration::from_secs(5);
 

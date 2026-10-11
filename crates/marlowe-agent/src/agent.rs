@@ -219,6 +219,7 @@ impl Agent {
                     text: String::new(),
                     error: Some(reason),
                     blocked: true,
+                    truncated: false,
                 };
             }
         }

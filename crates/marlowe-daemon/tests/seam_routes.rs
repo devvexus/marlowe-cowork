@@ -12,7 +12,7 @@ use marlowe_brains::{MemoryStore, ProviderFactory};
 use marlowe_daemon::{Daemon, DaemonConfig, DaemonDeps};
 use marlowe_model::ToolSpec;
 use marlowe_proto::{
-    write_line, Envelope, Event, ExportFormat, LineReader, PermissionMode, Request, RewindScope, RunId, SessionId, SettingsScope,
+    write_line, Envelope, Event, LineReader, Request, SessionId,
 };
 
 struct NoTools;
@@ -60,16 +60,8 @@ fn every_m46_request_reaches_its_tracks_stub() {
     write_line(&mut w, &Request::Hello { token: info.token.clone(), client: "test".into(), since_seq: None }).unwrap();
 
     let s = || SessionId("s-1".into());
-    let cases: Vec<(Request, &str, &str)> = vec![
-        (Request::SetMode { session: s(), mode: PermissionMode::Plan }, "set_mode", "E"),
-        (Request::ListRules { workspace: None }, "list_rules", "E"),
-        (Request::GetSettings { workspace: None }, "get_settings", "E"),
-        (Request::Compact { session: s(), focus: None }, "compact", "F"),
-        (Request::DetachCall { session: s(), call_id: "c".into() }, "detach_call", "F"),
-        (Request::ListSchedules, "list_schedules", "F"),
-        (Request::ListExperiments { limit: 5 }, "list_experiments", "J2"),
-        (Request::PutBlob { mime: "image/png".into(), base64: "iVBORw0KGgo=".into() }, "put_blob", "G"),
-    ];
+    // Wave 1 answers every other M4.6 request; what is left is a later track's.
+    let cases: Vec<(Request, &str, &str)> = vec![(Request::ListExperiments { limit: 5 }, "list_experiments", "J2")];
     for (req, op, track) in cases {
         write_line(&mut w, &req).unwrap();
         let message = loop {
@@ -84,6 +76,21 @@ fn every_m46_request_reaches_its_tracks_stub() {
             }
         };
         assert!(message.contains(&format!("track {track}")), "{op}: {message}");
+    }
+
+    // PutBlob (track G) stores the image and answers with its reference.
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    write_line(&mut w, &Request::PutBlob { mime: "image/png".into(), base64: png.into() }).unwrap();
+    loop {
+        let env: Envelope = r.next().unwrap().expect("an event");
+        match env.event {
+            Event::BlobStored { blob, w: 1, h: 1, .. } => {
+                assert!(home.join("blobs").join(&blob).is_file(), "stored under its hash");
+                break;
+            }
+            Event::Error { message, .. } => panic!("put_blob: {message}"),
+            _ => {}
+        }
     }
 
     // The connection is still good.

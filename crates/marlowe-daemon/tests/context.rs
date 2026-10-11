@@ -263,7 +263,7 @@ fn a_cold_load_that_does_not_fit_asks_with_its_cost() {
     let (info, join) = start_on(&h, Arc::default(), Arc::new(TightGpu));
     let mut c = Client::connect(&info);
 
-    c.send(&Request::Ask { session: None, text: "hi".into(), workspace: None });
+    c.send(&Request::Ask { session: None, text: "hi".into(), workspace: None, images: Vec::new(), options: None });
     let asked = c.until(|e| matches!(e, Event::ApprovalRequested { .. }));
     let Some(Event::ApprovalRequested { approval, tool, summary, detail, .. }) = asked.last() else { unreachable!() };
     assert_eq!(tool, "load model");
@@ -274,12 +274,12 @@ fn a_cold_load_that_does_not_fit_asks_with_its_cost() {
     assert!(matches!(refused.last(), Some(Event::Error { message, .. }) if message.contains("not loading")), "{refused:#?}");
     assert!(!refused.iter().any(|e| matches!(e, Event::TurnStarted { .. })), "denied: no model call");
 
-    c.send(&Request::Ask { session: None, text: "hi again".into(), workspace: None });
+    c.send(&Request::Ask { session: None, text: "hi again".into(), workspace: None, images: Vec::new(), options: None });
     let asked = c.until(|e| matches!(e, Event::ApprovalRequested { .. }));
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
     c.send(&Request::Approve { approval: *approval, decision: ApprovalDecision::Allow });
     c.until(|e| matches!(e, Event::TurnFinished { .. }));
-    c.send(&Request::Ask { session: None, text: "and again".into(), workspace: None });
+    c.send(&Request::Ask { session: None, text: "and again".into(), workspace: None, images: Vec::new(), options: None });
     let evs = c.until(|e| matches!(e, Event::TurnFinished { .. }));
     assert!(!evs.iter().any(|e| matches!(e, Event::ApprovalRequested { .. })), "asked once: {evs:#?}");
 

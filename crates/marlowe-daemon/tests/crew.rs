@@ -795,7 +795,7 @@ fn a_relay_never_loads_the_model_and_waits_for_the_users_next_turn() {
     let p = Arc::new(Routed::default());
     let d = start(&home, p.clone(), true);
     let mut a = Client::connect(&d.info);
-    a.send(&Request::Ask { session: None, text: "hello".into(), workspace: None });
+    a.send(&Request::Ask { session: None, text: "hello".into(), workspace: None, images: Vec::new(), options: None });
     let got = a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
     let session = got
         .iter()
@@ -835,7 +835,7 @@ fn a_relay_never_loads_the_model_and_waits_for_the_users_next_turn() {
     p.conductor(reply("Hi."));
     p.conductor(reply("Seven seeds fail."));
     let mut a = Client::connect(&d.info);
-    a.send(&Request::Ask { session: Some(session), text: "anything new?".into(), workspace: None });
+    a.send(&Request::Ask { session: Some(session), text: "anything new?".into(), workspace: None, images: Vec::new(), options: None });
     let deadline = Instant::now() + WAIT;
     while store.get(&run.id).unwrap().unwrap().relay_due {
         assert!(Instant::now() < deadline, "the held result was never relayed");

@@ -114,6 +114,7 @@ fn add_run(home: &Path, ws: &str, goal: &str, merged: bool, tainted: bool, steps
                 output: Some("done".into()),
                 usage: Usage::default(),
                 tainted,
+                truncated: false,
                 at_ms: T0,
             })
             .unwrap();

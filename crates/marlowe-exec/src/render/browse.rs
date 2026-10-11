@@ -91,6 +91,7 @@ fn error(e: RenderError) -> BrowseError {
         RenderError::Timeout(d) => BrowseError::Timeout(d),
         RenderError::Cancelled => BrowseError::Cancelled,
         RenderError::Navigation(m) => BrowseError::Navigation(m),
+        RenderError::Refused => BrowseError::Navigation("the page ended on a URL it may not reach".into()),
     }
 }
 

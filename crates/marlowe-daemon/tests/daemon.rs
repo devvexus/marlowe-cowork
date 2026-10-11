@@ -969,7 +969,7 @@ fn the_preview_library_never_calls_valiance_in_the_background() {
     let cfg = DaemonConfig { session_idle: Duration::from_millis(100), local_polish: true, ..mem_cfg() };
     let d = start_with(&home, p.clone(), cfg, Some(mind.clone()));
     let mut a = Client::connect(&d.info, None);
-    a.send(&Request::Ask { session: None, text: "plan the gate ablation".into(), workspace: None });
+    a.send(&Request::Ask { session: None, text: "plan the gate ablation".into(), workspace: None, images: Vec::new(), options: None });
     let sid = opened_session(&a.until(is_finished));
     let deadline = Instant::now() + WAIT;
     while !mind.episodes(0..i64::MAX).unwrap().iter().any(|e| e.session == sid.as_str()) {
