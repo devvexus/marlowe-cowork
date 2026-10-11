@@ -8,7 +8,6 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crossbeam_channel::RecvTimeoutError;
 use marlowe_agent::{AgentEvent, ApprovalGate, ApprovalReq, Budget, MAX_STEPS};
 use marlowe_mind::{Kind, MemoryIn, ProfileQuery, Provenance, RecallQuery};
 use marlowe_model::{CancelToken, Message, Pricing, Usage};
@@ -149,6 +148,30 @@ fn finish(inner: &Arc<Inner>, id: &RunId, provider: &'static str, outcome: Resul
         live.running = false;
         let ctl = live.ctl.clone();
         let user_cancel = ctl.user_cancel.load(Ordering::SeqCst);
+        // Parked at the plan gate: the run stays `needs_you` with no thread, unless the answer
+        // came while the thread was still ending, which queues it again now.
+        if ctl.parked.swap(false, Ordering::SeqCst) && !user_cancel {
+            let answered = inner.decided.lock().unwrap_or_else(|e| e.into_inner()).contains_key(id);
+            let ev = if answered && !ctl.stop.load(Ordering::SeqCst) {
+                if !st.queue.contains(id) {
+                    st.queue.push_back(id.clone());
+                }
+                inner.touch(&mut st, id, |r| {
+                    r.status = CrewRunStatus::Queued;
+                    r.note = Some("plan approved; waiting for a slot to explore".into());
+                    r.current_action = None;
+                })
+            } else {
+                let ev = inner.touch(&mut st, id, |r| r.current_action = None);
+                st.live.remove(id);
+                ev
+            };
+            drop(st);
+            if let Some(ev) = ev {
+                inner.emit(ev);
+            }
+            return;
+        }
         if ctl.stop.load(Ordering::SeqCst) && !user_cancel {
             st.live.remove(id);
             return;
@@ -274,7 +297,7 @@ impl Hooks {
         let mut cache = self.pricing.lock().unwrap_or_else(|e| e.into_inner());
         let price = *cache.entry(role.to_string()).or_insert_with(|| {
             let roles = self.inner.roles.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            roles.get(role).and_then(|card| self.inner.choose(card).ok()).and_then(|c| c.model.model.pricing)
+            roles.get(role).and_then(|card| self.inner.priced_model(card)).and_then(|m| m.pricing)
         });
         price.map_or(0.0, |p| p.cost(usage.input, usage.output))
     }
@@ -615,12 +638,18 @@ impl playbook::ResearchHost for RunResearch {
         self.hooks.inner.emit(CrewEvent::Research { run: self.hooks.id.clone(), progress: p.clone() });
     }
 
-    /// The run is `needs_you` until [`crate::Supervisor::approve_plan`] answers; cancel, pause
-    /// and shutdown end the wait.
+    /// The plan gate. An answer given while the run was parked is taken at once. Otherwise the
+    /// plan is pending, the run is `needs_you`, and the thread ends (`Stopped` with `parked` set):
+    /// a waiting plan holds no thread and no concurrency slot, and
+    /// [`crate::Supervisor::approve_plan`] queues the run again with its answer.
     fn propose_plan(&self, plan: &ResearchPlan, quote: &CostQuote) -> Result<PlanDecision, CrewError> {
         let (inner, id) = (&self.hooks.inner, &self.hooks.id);
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        let pending = PendingPlan { plan: plan.clone(), quote: quote.clone(), tx };
+        if let Some(d) = inner.decided.lock().unwrap_or_else(|e| e.into_inner()).remove(id) {
+            return Ok(d);
+        }
+        self.hooks.check()?;
+        self.hooks.ctl.parked.store(true, Ordering::SeqCst);
+        let pending = PendingPlan { plan: plan.clone(), quote: quote.clone() };
         inner.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), pending);
         let note = format!(
             "research plan ready: {} sub-questions, about {} model tokens, {} fetches, {} min; approve, edit or reject it",
@@ -632,6 +661,7 @@ impl playbook::ResearchHost for RunResearch {
         inner.update(id, |r| {
             r.status = CrewRunStatus::NeedsYou;
             r.note = Some(note);
+            r.current_action = None;
         });
         inner.emit(CrewEvent::PlanProposed {
             run: id.clone(),
@@ -639,25 +669,7 @@ impl playbook::ResearchHost for RunResearch {
             plan: plan.clone(),
             quote: quote.clone(),
         });
-        let decided = loop {
-            match rx.recv_timeout(Duration::from_millis(200)) {
-                Ok(d) => break Ok(d),
-                Err(RecvTimeoutError::Timeout) => {
-                    if let Err(e) = self.hooks.check() {
-                        break Err(e);
-                    }
-                }
-                Err(RecvTimeoutError::Disconnected) => break Err(CrewError::Stopped),
-            }
-        };
-        inner.plans.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
-        inner.update(id, |r| {
-            if r.status == CrewRunStatus::NeedsYou {
-                r.status = CrewRunStatus::Running;
-                r.note = None;
-            }
-        });
-        decided
+        Err(CrewError::Stopped)
     }
 
     /// Approving the plan approves its quote: limits rise to cover it (+25% tokens), never fall,

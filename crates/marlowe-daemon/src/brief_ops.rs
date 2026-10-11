@@ -398,6 +398,16 @@ fn speak(core: &Core, text: &str) {
     let _ = guard(|| v.speak(text));
 }
 
+/// [`speak`] for a notice nobody asked to hear: it never loads a voice model onto the GPU (a
+/// clone that is not up leaves it to the Windows voice).
+fn speak_background(core: &Core, text: &str) {
+    let Some(v) = &core.voice else { return };
+    if text.trim().is_empty() || quiet_hours(core).contains(local_minute()) {
+        return;
+    }
+    let _ = guard(|| v.speak_background(text));
+}
+
 pub(crate) fn speak_notice(core: &Arc<Core>, n: &Notice) {
     if core.voice.is_none() || core.uptime() < NOTICE_SPEECH_AFTER_START {
         return;
@@ -413,7 +423,7 @@ pub(crate) fn speak_notice(core: &Arc<Core>, n: &Notice) {
         Some(a) => format!("{}, {title}.", capitalize(a)),
         None => format!("{title}."),
     };
-    speak(core, &brief::spoken(&line));
+    speak_background(core, &brief::spoken(&line));
 }
 
 fn capitalize(s: &str) -> String {

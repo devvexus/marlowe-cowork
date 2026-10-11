@@ -62,6 +62,17 @@ pub(crate) fn is_secret_name(name: &str) -> bool {
     n.ends_with("_API_KEY") || n.ends_with("_ACCESS_KEY") || n.ends_with("_TOKEN") || n.contains("SECRET") || n.contains("PASSWORD")
 }
 
+/// Whether a load of this many MiB fits in GPU memory now (free less headroom): `Some(false)`
+/// keeps a voice model off the GPU; `None` (no reading) does not.
+#[derive(Clone)]
+pub struct VramCheck(pub Arc<dyn Fn(f64) -> Option<bool> + Send + Sync>);
+
+impl std::fmt::Debug for VramCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("VramCheck")
+    }
+}
+
 /// How to run the sidecar.
 #[derive(Debug, Clone)]
 pub(crate) struct SidecarConfig {
@@ -84,6 +95,10 @@ pub(crate) struct SidecarConfig {
     pub request_timeout: Duration,
     /// Extra time per character of a part.
     pub per_char: Duration,
+    /// GPU memory the loaded model holds, MiB, checked against `vram` before a GPU start.
+    pub vram_mib: f64,
+    /// The GPU memory check; `None` starts unchecked (tests, no GPU reading).
+    pub vram: Option<VramCheck>,
 }
 
 /// A finite value clamped to `lo..=hi`, else `default`.
@@ -128,6 +143,27 @@ impl SidecarConfig {
             ready_grace: Duration::from_secs(cb.ready_grace_s.min(900)),
             request_timeout: Duration::from_secs(cb.request_timeout_s.clamp(5, 900)),
             per_char: Duration::from_millis(200),
+            vram_mib: cb.vram_mib as f64,
+            vram: None,
+        }
+    }
+
+    /// The `--device` the sidecar is started with.
+    fn device(&self) -> &str {
+        self.args.iter().position(|a| a == "--device").and_then(|i| self.args.get(i + 1)).map_or("auto", String::as_str)
+    }
+
+    /// Refuses a GPU start the check says does not fit. A CPU start is never checked.
+    pub(crate) fn vram_gate(&self) -> Result<(), SidecarError> {
+        if self.device() == "cpu" {
+            return Ok(());
+        }
+        match self.vram.as_ref().and_then(|c| (c.0)(self.vram_mib)) {
+            Some(false) => Err(SidecarError::Start(format!(
+                "not enough free GPU memory for the voice model (about {:.1} GiB) beside what is loaded",
+                self.vram_mib / 1024.0
+            ))),
+            _ => Ok(()),
         }
     }
 
@@ -405,8 +441,18 @@ impl Sidecar {
                 return Err(SidecarError::Start(why));
             }
         }
+        self.cfg.vram_gate()?;
         self.proc = Some(self.spawn()?);
         Ok(())
+    }
+
+    /// Whether a sidecar is running with its model loaded: it can speak with nothing to load.
+    pub fn is_loaded(&mut self) -> bool {
+        let running = self.proc.as_mut().is_some_and(|p| !p.exited());
+        if !running {
+            return false;
+        }
+        matches!(self.ready(Duration::ZERO, &|| false), Ok(true))
     }
 
     /// Drops the process (its job kills the tree, freeing its VRAM) and any request.

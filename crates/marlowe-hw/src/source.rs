@@ -63,6 +63,11 @@ pub trait ModelSource: Send + Sync {
     fn loaded_models(&self) -> Vec<String> {
         Vec::new()
     }
+    /// [`ModelSource::loaded_models`], or `None` when the engine did not answer: what is loaded
+    /// is then unknown, which is not the same as nothing.
+    fn resident(&self) -> Option<Vec<String>> {
+        Some(self.loaded_models())
+    }
 }
 
 /// The GPU and system memory now.

@@ -443,3 +443,40 @@ fn inline_spans_with_words_in_their_scripts_are_typeset_in_a_sentence() {
     assert!(shown.contains("$5 and $10"), "{shown}");
     println!("inline script-word spans: {} sources, {frames} finished frames, every prefix streamed", all.len());
 }
+
+/// Inline spans whose only maths is a minus, a bracket, a comma, a prime or a factorial: `$n-1$`
+/// and the like were left as source with their dollars. Each is set in a sentence, finished and
+/// streamed, with no dollar on any frame; the prices they resemble stay as written beside them.
+#[test]
+fn inline_spans_of_minus_brackets_commas_primes_and_factorials_are_typeset_in_a_sentence() {
+    const SPANS: &[&str] = &["n-1", "t-1", "x-y", "-1", "[0,1]", "x,y", "f'", "n!"];
+    for src in SPANS {
+        let md = format!("Over ${src}$ steps the loss falls, as before.");
+        for (w, live) in [(120u16, false), (40, false), (120, true)] {
+            let shown = screen(&frame(&md, live, w, 6));
+            assert!(!shown.contains('$'), "{src:?} at {w} (live {live}) showed a dollar:\n{shown}");
+            let flat = shown.split_whitespace().collect::<Vec<_>>().join(" ");
+            for word in ["Over", "steps the loss falls, as before."] {
+                assert!(flat.contains(word), "{src:?}: the prose lost {word:?}:\n{shown}");
+            }
+        }
+        let chars: Vec<char> = md.chars().collect();
+        for n in 1..=chars.len() {
+            let prefix: String = chars[..n].iter().collect();
+            let shown = screen(&frame(&prefix, true, 120, 6));
+            assert!(!shown.contains('$'), "{src:?} streamed to {prefix:?}:\n{shown}");
+        }
+    }
+    for price in [
+        "It was $5-$10 a seat.",
+        "Pick $5, $10 or $20.",
+        "From $5,000-$10,000 a year.",
+        "Between $1,000 and $2,000 now.",
+        "Only $5! Then $10 later.",
+        "Tickets $5-10 vs $20 at the door.",
+    ] {
+        let shown = screen(&frame(price, false, 120, 4));
+        let flat = shown.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains(price), "a price was read as maths: {price:?}\n{shown}");
+    }
+}

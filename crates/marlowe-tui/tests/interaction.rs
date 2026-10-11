@@ -770,3 +770,42 @@ fn a_plan_proposed_before_the_client_attached_comes_with_the_run_list() {
     feed(&mut s, 0, Event::PlanProposed { run: RunId::from("aa11bb22"), plan, quote });
     assert!(contains(&frame(&s), "research plan waiting for your approval"));
 }
+
+/// The banner's edit and reject open the Run view, which asks the daemon to watch the run; the
+/// daemon's reply re-sends the plan first. That re-send (and a reconnect's) replaces the plan in
+/// place: the editor and the y/n stay open.
+#[test]
+fn the_plan_re_sent_on_watch_leaves_the_editor_and_the_reject_prompt_open() {
+    let run = RunId::from("aa11bb22");
+    let mut s = plan_waiting();
+    let buf = frame(&s);
+    let (x, y) = find_below(&buf, "research plan waiting for your approval", "edit");
+    let out = s.on_mouse(click(x, y), area());
+    assert!(out.contains(&Request::WatchRun { run: run.clone() }), "{out:?}");
+    assert!(contains(&frame(&s), "Edit the research plan"));
+    let (plan, quote) = waiting_plan();
+    feed(&mut s, 0, Event::PlanProposed { run: run.clone(), plan: plan.clone(), quote: quote.clone() });
+    let buf = frame(&s);
+    assert!(contains(&buf, "Edit the research plan"), "the reply must not close the editor\n{}", dump(&buf));
+    assert!(s.crew.open.as_ref().is_some_and(|v| v.plan_edit.is_some()));
+    // A reconnect's re-send too.
+    feed(&mut s, 0, Event::PlanProposed { run: run.clone(), plan: plan.clone(), quote: quote.clone() });
+    assert!(contains(&frame(&s), "Edit the research plan"));
+    s.on_key(key(KeyCode::Esc));
+    s.on_key(key(KeyCode::Esc));
+    s.on_key(key(KeyCode::Esc));
+    assert_eq!(s.view, View::Conversation, "{}", dump(&frame(&s)));
+
+    let buf = frame(&s);
+    let (x, y) = find_below(&buf, "research plan waiting for your approval", "reject");
+    s.on_mouse(click(x, y), area());
+    assert!(contains(&frame(&s), "reject this plan?"));
+    feed(&mut s, 0, Event::PlanProposed { run: run.clone(), plan, quote });
+    let buf = frame(&s);
+    assert!(contains(&buf, "reject this plan?"), "the reply must not drop the y/n\n{}", dump(&buf));
+    let out = s.on_key(key(KeyCode::Char('y')));
+    assert!(
+        out.contains(&Request::ApprovePlan { run, decision: marlowe_proto::PlanDecision::Reject { reason: None } }),
+        "{out:?}"
+    );
+}

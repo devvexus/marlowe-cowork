@@ -89,6 +89,9 @@ pub struct ChatterboxSettings {
     /// Base time one part of an utterance (a clause) may take; longer parts get more.
     #[serde(deserialize_with = "secs")]
     pub request_timeout_s: u64,
+    /// GPU memory the loaded clone holds, MiB. A GPU start needs this much free beside what is
+    /// loaded; otherwise the Windows voice speaks.
+    pub vram_mib: u64,
 }
 
 impl Default for ChatterboxSettings {
@@ -106,6 +109,7 @@ impl Default for ChatterboxSettings {
             load_timeout_s: 120,
             ready_grace_s: 5,
             request_timeout_s: 60,
+            vram_mib: 4_608,
         }
     }
 }

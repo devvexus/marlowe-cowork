@@ -304,11 +304,26 @@ fn a_dollar_sign_in_prose_is_not_maths() {
     for content in ["5 and x_{i}", "x_{i} and y"] {
         assert!(!looks_like_inline_maths(content), "{content:?} would be read as maths");
     }
+    // Minus, brackets, commas, primes and factorials are maths with no other signal.
+    for content in ["n-1", "t-1", "x-y", "-1", "[0,1]", "x,y", "f'", "n!"] {
+        assert!(looks_like_inline_maths(content), "{content:?} is maths");
+    }
+    // ...and the prices they could be mistaken for are not.
+    for content in ["5, ", "5,", "5,000-", "1,000 and ", "5! Then ", "5-10 vs "] {
+        assert!(!looks_like_inline_maths(content), "{content:?} would be read as maths");
+    }
+    // A command settles a padded span; padding without one is still a price.
+    for content in [r" \alpha ", r" \frac{a}{b} ", r"x = \beta "] {
+        assert!(looks_like_inline_maths(content), "{content:?} is maths");
+    }
+    for content in [" 5 ", " x "] {
+        assert!(!looks_like_inline_maths(content), "{content:?} would be read as maths");
+    }
 }
 
 #[test]
 fn an_unclosed_dollar_is_held_only_while_it_could_still_be_maths() {
-    for partial in ["", "5", "x", r"\fra", "x + ", "5 ar", "G = -L'(f(X_{bat", "X_{batch"] {
+    for partial in ["", "5", "x", r"\fra", "x + ", "5 ar", "G = -L'(f(X_{bat", "X_{batch", " ", r" \", r" \fr", r" \frac{1}{2} "] {
         assert!(could_become_inline_maths(partial), "{partial:?}");
     }
     for partial in [" 5", "5 and", "10 with tax", "x\ny"] {

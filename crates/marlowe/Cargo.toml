@@ -12,6 +12,7 @@ marlowe-agent.workspace = true
 marlowe-brains.workspace = true
 marlowe-daemon.workspace = true
 marlowe-mind.workspace = true
+marlowe-hw.workspace = true
 marlowe-sentinel.workspace = true
 marlowe-voice.workspace = true
 marlowe-crew.workspace = true
@@ -40,7 +41,6 @@ marlowe-memory.workspace = true
 
 [dev-dependencies]
 # tests/context_live.rs: the planner against the real store, runner log and GPU (ignored by default).
-marlowe-hw.workspace = true
 
 [features]
 # GPU rerank (CUDA, then DirectML, then CPU, only while the GPU is idle) and the six-graph cascade.

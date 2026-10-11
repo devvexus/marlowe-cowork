@@ -1693,8 +1693,12 @@ fn maths(chars: &[char], i: usize, ctx: &Ctx, style: Style, live: bool) -> Optio
             }
             return None;
         }
-    } else if single_dollar && !math::looks_like_inline_maths(&content) {
-        return None;
+    } else if single_dollar {
+        if !math::looks_like_inline_maths(&content) {
+            return None;
+        }
+        // `$ \alpha $`: a padded span with a command is set without its padding.
+        content = content.trim().to_string();
     }
     // Lighter than the prose around it -- see `Ctx::maths` -- and keeping any emphasis it sits in.
     let st = ctx.maths().add_modifier(style.add_modifier);

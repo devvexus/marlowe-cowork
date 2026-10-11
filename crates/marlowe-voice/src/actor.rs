@@ -55,7 +55,8 @@ impl Shared {
 }
 
 pub(crate) enum Cmd {
-    Speak { id: u64, text: String, voice_id: String, epoch: u64 },
+    /// `background`: nobody asked for it (a notice); the engine must not load anything for it.
+    Speak { id: u64, text: String, voice_id: String, epoch: u64, background: bool },
     Stop,
     /// Start loading the engine (non-blocking).
     Prewarm,
@@ -79,7 +80,7 @@ pub(crate) fn run(mut backend: Box<dyn Backend>, rx: Receiver<Cmd>, sh: Arc<Shar
                 Err(_) => break,
             },
         };
-        let (id, text, voice_id, epoch) = match cmd {
+        let (id, text, voice_id, epoch, background) = match cmd {
             Cmd::Shutdown => break,
             Cmd::Stop => continue,
             Cmd::Prewarm => {
@@ -87,14 +88,14 @@ pub(crate) fn run(mut backend: Box<dyn Backend>, rx: Receiver<Cmd>, sh: Arc<Shar
                 report(backend.as_mut(), &sh, &sink);
                 continue;
             }
-            Cmd::Speak { id, text, voice_id, epoch } => (id, text, voice_id, epoch),
+            Cmd::Speak { id, text, voice_id, epoch, background } => (id, text, voice_id, epoch, background),
         };
         if epoch != sh.epoch() {
             let _ = sink.send(VoiceEvent::Spoken { id, interrupted: true });
             continue;
         }
         sh.speaking.store(true, Ordering::SeqCst);
-        let outcome = utter(backend.as_mut(), &rx, &sh, &sink, &mut queue, id, &text, &voice_id, epoch);
+        let outcome = utter(backend.as_mut(), &rx, &sh, &sink, &mut queue, (id, &text, &voice_id, epoch, background));
         sh.speaking.store(false, Ordering::SeqCst);
         let shutdown = matches!(outcome, Outcome::Shutdown);
         let _ = sink.send(match outcome {
@@ -123,17 +124,13 @@ fn report(backend: &mut dyn Backend, sh: &Shared, sink: &Sender<VoiceEvent>) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn utter(
     backend: &mut dyn Backend,
     rx: &Receiver<Cmd>,
     sh: &Shared,
     sink: &Sender<VoiceEvent>,
     queue: &mut VecDeque<Cmd>,
-    id: u64,
-    text: &str,
-    voice_id: &str,
-    epoch: u64,
+    (id, text, voice_id, epoch, background): (u64, &str, &str, u64, bool),
 ) -> Outcome {
     if text.trim().is_empty() {
         return Outcome::Done;
@@ -142,7 +139,11 @@ fn utter(
     // slow engine (a cold voice clone) is still working on it.
     let _ = sink.send(VoiceEvent::Speaking { id, envelope: Vec::new() });
     let stopped = || sh.epoch() != epoch;
-    let first = backend.begin_parts(text, voice_id, &stopped);
+    let first = if background {
+        backend.begin_background_parts(text, voice_id, &stopped)
+    } else {
+        backend.begin_parts(text, voice_id, &stopped)
+    };
     report(backend, sh, sink);
     let first = match first {
         Ok(p) => p,

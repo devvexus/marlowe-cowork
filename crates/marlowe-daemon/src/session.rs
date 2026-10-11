@@ -278,6 +278,11 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
             let cancel = lock(&handle.state).cancel.clone();
             run_one(core, handle, &mut convo, &tools, &input, &cancel);
             turns_run += 1;
+            // The user's turn brought the conductor's model up: crew results that could not
+            // load it themselves go out now (this session's land in the queue read below).
+            if !input.relay {
+                crate::crew::retry_deferred(core);
+            }
             // Decide under the lock so an ask arriving now either lands in `left` or starts a
             // fresh turn through the command channel.
             let mut st = lock(&handle.state);
@@ -341,8 +346,16 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
         }
     };
     let model = info.model_ref();
-    if let Err(message) = admit_conductor(core, &session, &model, cancel) {
-        core.bus.publish(Event::Error { session: Some(session), message });
+    // A relay turn runs with nobody waiting on it (at start, at 3am): it never loads a model.
+    let who = if input.relay { Priority::Background } else { Priority::Foreground };
+    if let Err(message) = admit_conductor(core, &session, &model, cancel, who) {
+        if input.relay {
+            // The run stays due; the user's next turn delivers it on a loaded model.
+            eprintln!("marlowe: a crew result waits for the next turn: {message}");
+            crate::crew::defer(core, &input.text);
+        } else {
+            core.bus.publish(Event::Error { session: Some(session), message });
+        }
         return;
     }
     let workspace = workspace_of(convo);
@@ -464,16 +477,18 @@ fn guard<T>(f: impl FnOnce() -> T) -> Result<T, String> {
 /// The conductor's model may be used for this turn: hosted, already loaded, or a cold load the
 /// planner says fits. A load that does not fit beside what is resident asks, with its cost (once
 /// per model and resident set).
-fn admit_conductor(core: &Arc<Core>, session: &SessionId, model: &ModelRef, cancel: &CancelToken) -> Result<(), String> {
-    let admission = guard(|| core.brains.admit(model, Priority::Foreground))?;
+fn admit_conductor(core: &Arc<Core>, session: &SessionId, model: &ModelRef, cancel: &CancelToken, who: Priority) -> Result<(), String> {
+    let admission = guard(|| core.brains.admit(model, who))?;
     let cost = match admission {
         Admission::Hosted | Admission::Resident => return Ok(()),
         Admission::Load(cost) => {
             eprintln!("marlowe: loading {model} for the conductor: {}", cost.describe());
             return Ok(());
         }
-        Admission::Refused(why) => return Err(format!("not loading {model}: {why}")),
-        Admission::Ask(cost) => cost,
+        Admission::Refused(why) | Admission::Wait(why) => return Err(format!("not loading {model}: {why}")),
+        // Only the user's own turn asks, and only it counts loads approved earlier.
+        Admission::Ask(cost) if who == Priority::Foreground => cost,
+        Admission::Ask(cost) => return Err(format!("not loading {model}: {}", cost.describe())),
     };
     let key = format!("{model}|{}", cost.resident.join(","));
     if lock(&core.approved_loads).contains(&key) {

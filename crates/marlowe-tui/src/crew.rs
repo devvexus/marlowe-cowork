@@ -567,13 +567,19 @@ impl State {
     /// A research run drafted its plan and waits for the user (also re-sent when its Run view
     /// opens).
     pub(crate) fn on_plan_proposed(&mut self, run: &RunId, plan: &ResearchPlan, quote: &CostQuote) {
-        let fresh = self.crew.plan(run).is_none();
-        self.crew.drop_plan(run);
-        self.crew.plans.push((run.clone(), plan.clone(), quote.clone()));
-        if fresh {
-            if let Some(info) = self.crew.get(run).cloned() {
-                let detail = format!("{} · ^r to review", plan_summary(plan, quote));
-                self.crew_toast(&info, Severity::Attention, "research plan waiting", detail);
+        // A re-send (the Run view opening, a reattach) replaces the held plan in place: an editor
+        // or a reject y/n already open on it stays.
+        match self.crew.plans.iter_mut().find(|(r, _, _)| r == run) {
+            Some(held) => {
+                held.1 = plan.clone();
+                held.2 = quote.clone();
+            }
+            None => {
+                self.crew.plans.push((run.clone(), plan.clone(), quote.clone()));
+                if let Some(info) = self.crew.get(run).cloned() {
+                    let detail = format!("{} · ^r to review", plan_summary(plan, quote));
+                    self.crew_toast(&info, Severity::Attention, "research plan waiting", detail);
+                }
             }
         }
     }

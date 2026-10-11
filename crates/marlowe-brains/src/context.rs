@@ -480,6 +480,20 @@ impl Brains {
         self.factory().hardware().map(|hw| hw.models.loaded_models()).unwrap_or_default()
     }
 
+    /// [`Brains::loaded_local_models`], with `None` when the engine did not answer (what is
+    /// loaded is unknown) and `Some(empty)` when there is no hardware probe in this build.
+    pub fn resident_local_models(&self) -> Option<Vec<String>> {
+        match self.factory().hardware() {
+            Some(hw) => hw.models.resident(),
+            None => Some(Vec::new()),
+        }
+    }
+
+    /// Whether this build can measure the machine (a hardware probe is set).
+    pub(crate) fn has_hardware(&self) -> bool {
+        self.factory().hardware().is_some()
+    }
+
     /// Applies an approved server change. The daemon calls this only after an Allow.
     pub fn apply_server(&self, change: ServerChange) -> Result<String, BrainsError> {
         let hw = self.factory().hardware().ok_or_else(|| BrainsError::Invalid("no server control in this build".into()))?;

@@ -7,6 +7,10 @@
 //! * [`Priority::Foreground`] (the user's own turn) asks when it does not fit, with the cost;
 //!   [`Priority::Crew`] is refused when it does not fit; [`Priority::Background`] never
 //!   cold-loads at all: it runs on a resident (or hosted) model or not at all.
+//! * Unknown is not "fits": a cost or free memory nobody measured asks the user's turn and
+//!   refuses a crew step, and when the engine does not say what is loaded (a failed `/api/ps`)
+//!   a crew step waits and background work does not run. Only a build with no hardware probe at
+//!   all (tests) loads unmeasured.
 
 use marlowe_hw::plan::{gib, HEADROOM_MIB};
 use marlowe_model::{Effort, ModelRef};
@@ -41,6 +45,9 @@ pub struct LoadCost {
     pub free_mib: Option<f64>,
     /// Models the engine has loaded now.
     pub resident: Vec<String>,
+    /// False when the engine did not say what is loaded: `resident` is then empty for want of an
+    /// answer, and `free_mib` is unknown.
+    pub resident_known: bool,
 }
 
 impl LoadCost {
@@ -63,7 +70,13 @@ impl LoadCost {
             Some(n) => format!("{} needs {} GiB of GPU memory ({shape})", self.model.model_id, gib(n)),
             None => format!("{} has no measured cost ({shape})", self.model.model_id),
         };
-        let beside = if self.resident.is_empty() { "with nothing else loaded".to_string() } else { format!("beside {}", self.resident.join(", ")) };
+        let beside = if !self.resident_known {
+            "(the engine did not say what is loaded)".to_string()
+        } else if self.resident.is_empty() {
+            "with nothing else loaded".to_string()
+        } else {
+            format!("beside {}", self.resident.join(", "))
+        };
         match self.free_mib {
             Some(f) => format!("{need}; {} GiB is free {beside}", gib(f.max(0.0))),
             None => format!("{need}; free GPU memory is unknown {beside}"),
@@ -80,8 +93,11 @@ pub enum Admission {
     Resident,
     /// A cold load that fits (or that nothing measured says does not).
     Load(LoadCost),
-    /// Foreground only: the load does not fit beside what is resident; ask with this cost.
+    /// Foreground only: the load does not fit beside what is resident, or nobody can tell; ask
+    /// with this cost.
     Ask(LoadCost),
+    /// Crew only: the engine did not say what is loaded; try again shortly.
+    Wait(String),
     /// Not allowed: the reason, with the cost when there is one.
     Refused(String),
 }
@@ -117,7 +133,19 @@ impl Brains {
         if !self.is_local_ollama(model) {
             return Admission::Hosted;
         }
-        let loaded = self.loaded_local_models();
+        let Some(loaded) = self.resident_local_models() else {
+            let why = format!("the engine did not say which models are loaded, so whether {} must load is unknown", model.model_id);
+            return match who {
+                Priority::Foreground => {
+                    let mut cost = self.load_cost(model, Vec::new());
+                    cost.resident_known = false;
+                    cost.free_mib = None;
+                    Admission::Ask(cost)
+                }
+                Priority::Crew => Admission::Wait(why),
+                Priority::Background => Admission::Refused(why),
+            };
+        };
         if loaded.iter().any(|m| same_model(m, &model.model_id)) {
             return Admission::Resident;
         }
@@ -128,10 +156,15 @@ impl Brains {
             ));
         }
         let cost = self.load_cost(model, loaded);
+        // Nothing to measure with (tests, a build without the probe): nothing is gated.
+        if !self.has_hardware() {
+            return Admission::Load(cost);
+        }
         match (cost.fits(), who) {
-            (Some(false), Priority::Foreground) => Admission::Ask(cost),
-            (Some(false), _) => Admission::Refused(cost.describe()),
-            _ => Admission::Load(cost),
+            (Some(true), _) => Admission::Load(cost),
+            // Does not fit, or its cost or the free memory is unknown.
+            (_, Priority::Foreground) => Admission::Ask(cost),
+            _ => Admission::Refused(cost.describe()),
         }
     }
 
@@ -145,7 +178,7 @@ impl Brains {
         let plan = self.context_plan(model).ok().and_then(|p| p.plan);
         let need_mib = plan.as_ref().map(|p| p.need_mib(ctx, kv, agents));
         let free_mib = plan.as_ref().and_then(|p| p.gpu.as_ref()).map(|g| g.free_mib - g.headroom_mib.max(HEADROOM_MIB));
-        LoadCost { model: model.clone(), ctx, agents, kv, need_mib, free_mib, resident }
+        LoadCost { model: model.clone(), ctx, agents, kv, need_mib, free_mib, resident, resident_known: true }
     }
 
     /// The model background work on `slot` may use now: the slot's model, else the conductor's,
@@ -188,6 +221,7 @@ mod tests {
             need_mib: Some(15.2 * 1024.0),
             free_mib: Some(6.1 * 1024.0),
             resident: vec!["marlowe-dawn:9b".into()],
+            resident_known: true,
         };
         assert_eq!(c.fits(), Some(false));
         assert_eq!(

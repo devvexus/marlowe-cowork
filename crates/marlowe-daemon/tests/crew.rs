@@ -223,9 +223,49 @@ fn temp_home(name: &str) -> PathBuf {
     home
 }
 
+/// The engine's view of the scripted model: loaded while `up` is set. No files, no GPU reading.
+struct Engine(Arc<std::sync::atomic::AtomicBool>);
+
+impl marlowe_hw::ModelSource for Engine {
+    fn files(&self, model_id: &str) -> Result<marlowe_hw::ModelFiles, String> {
+        Err(format!("no files for {model_id} in this test"))
+    }
+    fn runtime(&self, _: &str, _: Option<&str>) -> marlowe_hw::RunnerObservation {
+        marlowe_hw::RunnerObservation { loaded: self.0.load(std::sync::atomic::Ordering::SeqCst), ..Default::default() }
+    }
+    fn loaded_models(&self) -> Vec<String> {
+        if self.0.load(std::sync::atomic::Ordering::SeqCst) {
+            vec!["scripted".into()]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+struct NoGpu;
+impl marlowe_hw::GpuSource for NoGpu {
+    fn snapshot(&self) -> Option<marlowe_hw::GpuSnapshot> {
+        None
+    }
+}
+
+struct NoServer;
+impl marlowe_hw::ServerControl for NoServer {
+    fn apply(&self, _: &marlowe_hw::ServerChange) -> Result<String, String> {
+        Err("not in this test".into())
+    }
+}
+
+/// The scripted model is loaded: every turn, relay and crew step runs on it.
 fn deps(provider: Arc<Routed>, crew: bool) -> DaemonDeps {
+    deps_with(provider, crew, Arc::new(std::sync::atomic::AtomicBool::new(true)))
+}
+
+/// `up`: whether the engine has the scripted model loaded.
+fn deps_with(provider: Arc<Routed>, crew: bool, up: Arc<std::sync::atomic::AtomicBool>) -> DaemonDeps {
     let mut providers = ProviderFactory::new(Arc::new(MemoryStore::new()));
     providers.register(ProviderKind::Ollama, move |_| Ok(provider.clone() as Arc<dyn Provider>));
+    providers.set_hardware(marlowe_brains::Hardware { models: Arc::new(Engine(up)), gpu: Arc::new(NoGpu), server: Arc::new(NoServer) });
     let setup = CrewSetup { tools: Arc::new(|_, _| Arc::new(FakeTools) as Arc<dyn ToolHost>), config: CrewConfig::default(), research: None };
     DaemonDeps {
         providers,
@@ -742,5 +782,70 @@ fn a_client_that_attaches_after_the_plan_gets_it_with_the_run_list() {
     let got = b.until(|e| e.seq == 0 && matches!(&e.event, Event::Roles { .. }));
     assert!(got.iter().any(|e| matches!(&e.event, Event::Runs { .. })));
     assert!(!got.iter().any(|e| matches!(&e.event, Event::PlanProposed { .. })), "{got:#?}");
+    stop(d);
+}
+
+/// A relay turn runs with nobody waiting on it, so it never loads a model: with the conductor's
+/// model not loaded, a result due at start is held (still due, no model call, no approval asked
+/// of nobody), and the user's next turn, on the model now up, delivers it.
+#[test]
+fn a_relay_never_loads_the_model_and_waits_for_the_users_next_turn() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let home = temp_home("relay-cold");
+    let p = Arc::new(Routed::default());
+    let d = start(&home, p.clone(), true);
+    let mut a = Client::connect(&d.info);
+    a.send(&Request::Ask { session: None, text: "hello".into(), workspace: None });
+    let got = a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
+    let session = got
+        .iter()
+        .find_map(|e| match &e.event {
+            Event::TurnStarted { session, .. } => Some(session.clone()),
+            _ => None,
+        })
+        .unwrap();
+    drop(a);
+    stop(d);
+
+    let card = marlowe_crew::Roles::builtin().get("analyst").unwrap().clone();
+    let mut run = marlowe_crew::Run::new(Some(session.clone()), &card, "Count the failing seeds", None, None, Default::default());
+    run.status = CrewRunStatus::Done;
+    run.result = Some(marlowe_crew::Dispatch {
+        summary: "Seven of the twenty seeds fail.".into(),
+        artifacts: vec![],
+        confidence: marlowe_crew::Confidence::High,
+        citations: vec![],
+        diff: None,
+    });
+    run.relay_due = true;
+    let store = marlowe_crew::RunStore::open(&paths::cowork_db(&home)).unwrap();
+    store.save(&run).unwrap();
+
+    // The daemon starts with the model not loaded.
+    let up = Arc::new(AtomicBool::new(false));
+    let before = p.requests().len();
+    let d = Daemon::start(deps_with(p.clone(), true, up.clone()), &home, DaemonConfig::default()).expect("daemon starts");
+    let d = Running { info: d.info(), join: std::thread::spawn(move || d.wait()) };
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(store.get(&run.id).unwrap().unwrap().relay_due, "held, still due");
+    assert_eq!(p.requests().len(), before, "no model was called to relay it");
+
+    // The user's turn, with the model up: the result goes out after it.
+    up.store(true, Ordering::SeqCst);
+    p.conductor(reply("Hi."));
+    p.conductor(reply("Seven seeds fail."));
+    let mut a = Client::connect(&d.info);
+    a.send(&Request::Ask { session: Some(session), text: "anything new?".into(), workspace: None });
+    let deadline = Instant::now() + WAIT;
+    while store.get(&run.id).unwrap().unwrap().relay_due {
+        assert!(Instant::now() < deadline, "the held result was never relayed");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let relayed = p.requests()[before..].iter().filter(|(c, _)| !c).any(|(_, r)| {
+        r.messages.iter().any(|m| m.joined_text().starts_with(&format!("[crew · run {}", run.id.short())))
+    });
+    assert!(relayed, "the conductor saw the result after the user's turn");
+    drop(a);
+    drop(store);
     stop(d);
 }

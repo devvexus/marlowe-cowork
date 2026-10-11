@@ -16,6 +16,8 @@ use marlowe_proto::Slot;
 
 const VALIANCE: &str = "marlowe-valiance:22b";
 const DAWN: &str = "marlowe-dawn:9b";
+/// A model whose files cannot be read: the planner has no cost for it.
+const MYSTERY: &str = "mystery:7b";
 
 fn header(name: &str) -> ModelHeader {
     let dir: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../marlowe-hw/tests/fixtures");
@@ -27,6 +29,8 @@ fn header(name: &str) -> ModelHeader {
 #[derive(Default)]
 struct Engine {
     loaded: Mutex<Vec<String>>,
+    /// `/api/ps` does not answer.
+    ps_down: std::sync::atomic::AtomicBool,
 }
 
 impl ModelSource for Engine {
@@ -47,6 +51,9 @@ impl ModelSource for Engine {
     }
     fn loaded_models(&self) -> Vec<String> {
         self.loaded.lock().unwrap().clone()
+    }
+    fn resident(&self) -> Option<Vec<String>> {
+        (!self.ps_down.load(std::sync::atomic::Ordering::SeqCst)).then(|| self.loaded_models())
     }
 }
 
@@ -99,7 +106,7 @@ impl Provider for NoChat {
         ProviderKind::Ollama
     }
     fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        Ok([VALIANCE, DAWN]
+        Ok([VALIANCE, DAWN, MYSTERY]
             .into_iter()
             .map(|id| {
                 let mut m = ModelInfo::bare(ProviderKind::Ollama, id);
@@ -138,7 +145,7 @@ fn background_slots() -> [Slot; 3] {
 
 #[test]
 fn no_background_path_can_load_valiance_in_the_preview_library() {
-    let engine = Arc::new(Engine { loaded: Mutex::new(vec![DAWN.into()]) });
+    let engine = Arc::new(Engine { loaded: Mutex::new(vec![DAWN.into()]), ..Default::default() });
     let b = preview(engine.clone());
     assert_eq!(b.with_library(|l| l.default_model()).unwrap(), Some(model(VALIANCE)), "the trap: valiance was added first");
 
@@ -192,4 +199,48 @@ fn a_cold_load_that_fits_is_admitted_with_its_cost() {
     }
     assert!(b.admit(&model(DAWN), Priority::Crew).may_run());
     assert!(!b.admit(&model(DAWN), Priority::Background).may_run());
+}
+
+/// Unknown is not "fits": a model the planner cannot cost asks on the user's turn and is refused
+/// to a crew step; it never cold-loads unasked.
+#[test]
+fn a_load_with_no_measured_cost_asks_or_is_refused() {
+    let engine = Arc::new(Engine { loaded: Mutex::new(vec![DAWN.into()]), ..Default::default() });
+    let b = preview(engine);
+    b.add_model(ProviderKind::Ollama, MYSTERY).unwrap();
+    match b.admit(&model(MYSTERY), Priority::Foreground) {
+        Admission::Ask(cost) => {
+            assert_eq!(cost.need_mib, None);
+            assert!(cost.describe().contains("has no measured cost"), "{}", cost.describe());
+        }
+        other => panic!("{other:?}"),
+    }
+    match b.admit(&model(MYSTERY), Priority::Crew) {
+        Admission::Refused(why) => assert!(why.contains("has no measured cost"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(b.admit(&model(MYSTERY), Priority::Background), Admission::Refused(_)));
+}
+
+/// A failed `/api/ps` means what is loaded is unknown, not that nothing is: a resident model is
+/// not costed as a cold load. The user's turn asks, saying so; a crew step waits; background work
+/// does not run.
+#[test]
+fn an_engine_that_does_not_say_what_is_loaded_is_not_taken_as_empty() {
+    let engine = Arc::new(Engine { loaded: Mutex::new(vec![DAWN.into()]), ..Default::default() });
+    let b = preview(engine.clone());
+    engine.ps_down.store(true, std::sync::atomic::Ordering::SeqCst);
+    match b.admit(&model(DAWN), Priority::Foreground) {
+        Admission::Ask(cost) => {
+            assert!(!cost.resident_known);
+            assert_eq!(cost.fits(), None);
+            assert!(cost.describe().contains("did not say what is loaded"), "{}", cost.describe());
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(b.admit(&model(DAWN), Priority::Crew), Admission::Wait(_)));
+    assert!(matches!(b.admit(&model(DAWN), Priority::Background), Admission::Refused(_)));
+    assert!(b.background_model(&Slot::Quick).is_err());
+    engine.ps_down.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(b.admit(&model(DAWN), Priority::Crew), Admission::Resident);
 }

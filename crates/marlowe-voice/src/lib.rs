@@ -37,7 +37,7 @@ pub use marlowe_proto::{VoiceStatus, ENVELOPE_HZ};
 pub use chatterbox::{ChatterboxBackend, CLONE_ID};
 pub use select::pick_voice;
 pub use settings::{ChatterboxSettings, Engine, Loaded, VoiceSettings};
-pub use sidecar::owns_process;
+pub use sidecar::{owns_process, VramCheck};
 pub use wav::{envelope, parse_wav, Wav};
 #[cfg(windows)]
 pub use winrt::WinRtBackend;
@@ -135,6 +135,11 @@ pub trait Backend: Send {
     }
     /// Drops the rest of a streamed utterance (barge-in, shutdown). Default: nothing.
     fn abandon(&mut self) {}
+    /// [`Backend::begin_parts`] for speech nobody asked for (a notice): it must not load an
+    /// engine, so an engine that is not loaded hands the line to one that is. Default: the same.
+    fn begin_background_parts(&mut self, text: &str, voice_id: &str, cancelled: &dyn Fn() -> bool) -> Result<Part, VoiceError> {
+        self.begin_parts(text, voice_id, cancelled)
+    }
     /// Gets ready to speak soon without blocking (a sidecar starts loading). Default: nothing.
     fn prewarm(&mut self) {}
     /// A degradation to report once (the engine fell back), taken by the actor.
@@ -174,12 +179,18 @@ pub fn default_backend() -> Option<Box<dyn Backend>> {
 /// Chatterbox clone over WinRT playback. `scrub` names environment variables a sidecar must not
 /// inherit. `None` without WinRT (the clone needs its player).
 pub fn engine_backend(home: &Path, settings: &VoiceSettings, scrub: &[&str]) -> Option<Box<dyn Backend>> {
+    engine_backend_gated(home, settings, scrub, None)
+}
+
+/// [`engine_backend`] whose voice sidecar starts on the GPU only when `vram` says it fits.
+pub fn engine_backend_gated(home: &Path, settings: &VoiceSettings, scrub: &[&str], vram: Option<VramCheck>) -> Option<Box<dyn Backend>> {
     let player = default_backend()?;
     match settings.engine {
         Engine::Winrt => Some(player),
         Engine::Chatterbox => {
             let cb = settings.chatterbox.clone().unwrap_or_default();
-            let cfg = sidecar::SidecarConfig::from_settings(home, &cb, scrub);
+            let mut cfg = sidecar::SidecarConfig::from_settings(home, &cb, scrub);
+            cfg.vram = vram;
             eprintln!(
                 "marlowe: voice: Chatterbox clone (placeholder) with {} cloning {}; WinRT plays and stands in",
                 cb.python.as_deref().map_or("no python set".into(), |p| p.display().to_string()),
@@ -279,8 +290,14 @@ impl Voice {
     /// [`Voice::start`]; `scrub` names environment variables (API keys) a voice sidecar must not
     /// inherit.
     pub fn start_with(home: &Path, sink: Sender<VoiceEvent>, scrub: &[&str]) -> Voice {
+        Self::start_gated(home, sink, scrub, None)
+    }
+
+    /// [`Voice::start_with`]; a voice sidecar loads onto the GPU only when `vram` says its
+    /// footprint fits beside what is there (otherwise the Windows voice speaks).
+    pub fn start_gated(home: &Path, sink: Sender<VoiceEvent>, scrub: &[&str], vram: Option<VramCheck>) -> Voice {
         let settings = VoiceSettings::load(home).with_env(&|k| std::env::var(k).ok());
-        Self::with_backend(home, sink, engine_backend(home, &settings, scrub))
+        Self::with_backend(home, sink, engine_backend_gated(home, &settings, scrub, vram))
     }
 
     /// [`Voice::start`] with an explicit backend (tests pass a fake, or `None`).
@@ -397,6 +414,16 @@ impl Voice {
 
     /// Queues `text`; returns its utterance id. A new utterance does not interrupt one playing.
     pub fn speak(&self, text: &str) -> Result<u64, VoiceError> {
+        self.queue(text, false)
+    }
+
+    /// [`Voice::speak`] for a line nobody asked for (a notice): it never loads a voice model. A
+    /// clone that is not loaded leaves the line to the Windows voice.
+    pub fn speak_background(&self, text: &str) -> Result<u64, VoiceError> {
+        self.queue(text, true)
+    }
+
+    fn queue(&self, text: &str, background: bool) -> Result<u64, VoiceError> {
         let inner = &self.inner;
         if inner.down.load(Ordering::SeqCst) {
             return Err(VoiceError::Stopped);
@@ -411,7 +438,7 @@ impl Voice {
         let voice_id = self.current().map(|v| v.id).ok_or(VoiceError::Unavailable)?;
         let id = inner.next_id.fetch_add(1, Ordering::SeqCst);
         let epoch = sh.epoch.load(Ordering::SeqCst);
-        tx.send(Cmd::Speak { id, text: text.to_string(), voice_id, epoch }).map_err(|_| VoiceError::Stopped)?;
+        tx.send(Cmd::Speak { id, text: text.to_string(), voice_id, epoch, background }).map_err(|_| VoiceError::Stopped)?;
         Ok(id)
     }
 

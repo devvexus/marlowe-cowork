@@ -9,6 +9,9 @@
 //! [`Backend::take_notice`], and shown by [`Backend::degraded`]). A sidecar that would not start,
 //! died, hung, ran out of GPU memory, or refused [`MAX_REFUSALS`] lines in a row is dropped, which
 //! frees its VRAM, and left alone for [`RETRY_AFTER`].
+//!
+//! The clone never loads for a line nobody asked for ([`Backend::begin_background_parts`]: a
+//! notice), and a GPU start waits for its footprint to fit (`SidecarConfig::vram`).
 
 use std::time::{Duration, Instant};
 
@@ -169,6 +172,16 @@ impl Backend for ChatterboxBackend {
                 self.fallback_part(text, cancelled)
             }
         }
+    }
+
+    /// A notice never loads the clone: the clone says it only when its model is already up;
+    /// otherwise the Windows voice does, and nothing is reported (nothing failed).
+    fn begin_background_parts(&mut self, text: &str, voice_id: &str, cancelled: &dyn Fn() -> bool) -> Result<Part, VoiceError> {
+        if !self.cooling() && self.sidecar.is_loaded() {
+            return self.begin_parts(text, voice_id, cancelled);
+        }
+        self.text.clear();
+        self.fallback_part(text, cancelled)
     }
 
     fn next_part(&mut self, wait: Duration, cancelled: &dyn Fn() -> bool) -> Result<Option<Part>, VoiceError> {

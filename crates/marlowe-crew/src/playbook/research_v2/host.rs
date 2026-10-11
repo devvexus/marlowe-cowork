@@ -142,8 +142,9 @@ pub trait ResearchHost: Send + Sync {
     /// A stage moved.
     fn progress(&self, progress: &ResearchProgress);
 
-    /// Shows the plan and its quote, and blocks until the user decides (the run is `needs_you`
-    /// meanwhile). `Err` on cancel, pause or shutdown.
+    /// Shows the plan and its quote and returns the user's decision. The supervisor's host does
+    /// not wait for it: it parks the run (`Err(Stopped)`) and the answer, given later, is returned
+    /// here when the run starts again. `Err` on cancel, pause or shutdown.
     fn propose_plan(&self, plan: &ResearchPlan, quote: &CostQuote) -> Result<PlanDecision, CrewError>;
 
     /// The plan was approved, by the user or under their auto-approve threshold: the run's

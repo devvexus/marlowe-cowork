@@ -41,6 +41,9 @@ pub(crate) struct CrewLink {
     awaiting: Mutex<HashMap<String, RunId>>,
     /// Approvals pending per run, denied when the run is cancelled.
     pending: Mutex<HashMap<RunId, Vec<ApprovalId>>>,
+    /// A relay turn found no model it could run without loading one: its run stays due, and
+    /// the user's next turn delivers it.
+    deferred: std::sync::atomic::AtomicBool,
 }
 
 impl CrewLink {
@@ -74,6 +77,7 @@ pub(crate) fn start(core: &Arc<Core>, setup: CrewSetup) -> Result<JoinHandle<()>
         relayed: Mutex::new(HashSet::new()),
         awaiting: Mutex::new(HashMap::new()),
         pending: Mutex::new(HashMap::new()),
+        deferred: std::sync::atomic::AtomicBool::new(false),
     };
     if core.crew.set(link).is_err() {
         return Err("the crew was already started".into());
@@ -179,6 +183,24 @@ pub(crate) fn relay_due(core: &Arc<Core>) {
             let id = info.id.clone();
             relay(core, &session, &id, None, Some(info));
         }
+    }
+}
+
+/// A relay turn could not run (relays never load a model): its run stays due and is relayed
+/// again after the user's next turn, when the conductor's model is up.
+pub(crate) fn defer(core: &Core, text: &str) {
+    let Some(link) = core.crew.get() else { return };
+    if let Some(run) = lock(&link.awaiting).remove(text) {
+        lock(&link.relayed).remove(&run);
+        link.deferred.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// After a user's turn: relays deferred for want of a loaded model go out now.
+pub(crate) fn retry_deferred(core: &Arc<Core>) {
+    let Some(link) = core.crew.get() else { return };
+    if link.deferred.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        relay_due(core);
     }
 }
 

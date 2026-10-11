@@ -245,7 +245,12 @@ impl ModelSource for OllamaHw {
     }
 
     fn loaded_models(&self) -> Vec<String> {
-        http::get_json(&self.endpoint, "/api/ps", QUICK).map(|v| parse_ps(&v)).unwrap_or_default().into_iter().map(|p| p.name).collect()
+        self.resident().unwrap_or_default()
+    }
+
+    fn resident(&self) -> Option<Vec<String>> {
+        let v = http::get_json(&self.endpoint, "/api/ps", QUICK).ok()?;
+        Some(parse_ps(&v).into_iter().map(|p| p.name).collect())
     }
 }
 

@@ -449,6 +449,7 @@ mod chatterbox {
 
     use super::*;
     use crate::sidecar::SidecarConfig;
+    use crate::VramCheck;
 
     fn have_python() -> bool {
         let ok = Command::new("python").arg("--version").output().is_ok_and(|o| o.status.success());
@@ -473,6 +474,8 @@ mod chatterbox {
             ready_grace: Duration::from_secs(20),
             request_timeout: Duration::from_secs(10),
             per_char: Duration::ZERO,
+            vram_mib: 4_608.0,
+            vram: None,
         }
     }
 
@@ -811,6 +814,62 @@ mod chatterbox {
         assert_eq!(spawns(&home), 1, "speaking used the prewarmed sidecar");
         voice.shutdown();
         assert!(!owns_process(sidecar) && !owns_process(child), "the tree is gone with the voice");
+    }
+
+    /// A notice never loads the clone: with no sidecar up, the Windows voice says it, nothing
+    /// starts and nothing is reported. Once the clone is up (a line the user asked for loaded
+    /// it), a notice uses it.
+    #[test]
+    fn a_background_line_never_starts_the_clone() {
+        if !have_python() {
+            return;
+        }
+        let (voice, rx, log, home) = clone_voice("cb-background", |h| fake_cfg(h, "ok"));
+        let a = voice.speak_background("A research plan is waiting.").unwrap();
+        let events = until_done(&rx, a);
+        assert_eq!(events.last(), Some(&VoiceEvent::Spoken { id: a, interrupted: false }));
+        assert!(degraded(&events).is_empty(), "{events:?}");
+        assert_eq!(lock(&log).synth.len(), 1, "the Windows voice said it");
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(spawns(&home), 0, "no sidecar started for a notice");
+
+        let b = voice.speak("Good morning.").unwrap();
+        until_done(&rx, b);
+        assert_eq!(spawns(&home), 1);
+        let c = voice.speak_background("Another plan is waiting.").unwrap();
+        until_done(&rx, c);
+        assert_eq!(lock(&log).synth.len(), 1, "the loaded clone said the second notice");
+        assert_eq!(spawns(&home), 1);
+        voice.shutdown();
+    }
+
+    /// The clone loads onto the GPU only when its footprint fits: otherwise neither a line nor a
+    /// prewarm starts it, the Windows voice speaks, and the reason is said once.
+    #[test]
+    fn the_clone_does_not_start_on_a_gpu_without_room_for_it() {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let seen = asked.clone();
+        let full = VramCheck(Arc::new(move |need| {
+            lock(&seen).push(need);
+            Some(false)
+        }));
+        let (voice, rx, log, home) =
+            clone_voice("cb-vram", |h| SidecarConfig { vram: Some(full), args: vec!["--device".into(), "auto".into()], ..fake_cfg(h, "ok") });
+        voice.prewarm();
+        let id = voice.speak("Hello.").unwrap();
+        let events = until_done(&rx, id);
+        assert_eq!(events.last(), Some(&VoiceEvent::Spoken { id, interrupted: false }));
+        let d = degraded(&events);
+        assert!(d.iter().any(|m| m.contains("not enough free GPU memory")), "{events:?}");
+        assert_eq!(lock(&log).synth.len(), 1);
+        assert_eq!(spawns(&home), 0);
+        assert_eq!(lock(&asked).first(), Some(&4_608.0));
+        voice.shutdown();
+
+        // On the CPU there is nothing to check.
+        let never = VramCheck(Arc::new(|_| Some(false)));
+        let cfg = |h: &Path| SidecarConfig { vram: Some(never), args: vec!["--device".into(), "cpu".into()], ..fake_cfg(h, "ok") };
+        assert!(cfg(&temp_home("cb-vram-cpu")).vram_gate().is_ok());
     }
 
     #[test]
