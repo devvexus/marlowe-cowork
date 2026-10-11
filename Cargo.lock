@@ -3143,11 +3143,16 @@ dependencies = [
 name = "marlowe-verify"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "marlowe-model",
+ "marlowe-net",
  "marlowe-os",
+ "regex",
+ "rusqlite",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
+ "toml",
 ]
 
 [[package]]

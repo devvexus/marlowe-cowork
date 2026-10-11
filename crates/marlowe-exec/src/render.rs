@@ -12,6 +12,9 @@
 //!   resolve to public addresses; a navigation to another document also passes robots.txt and
 //!   host spacing. The URL the render ends on is checked the same way. As on the static path, a
 //!   page cannot make Marlowe read loopback or LAN services.
+//!
+//! [`EdgeBrowser`] (in `browse`) is the same Edge driven for the `browser` verification tool: console
+//! messages, steps, snapshots and screenshots of the user's own pages.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -23,6 +26,10 @@ use std::time::{Duration, Instant};
 
 use marlowe_model::CancelToken;
 use marlowe_research::{HostGate, HttpGet, USER_AGENT};
+
+mod browse;
+
+pub use browse::EdgeBrowser;
 
 /// Whole-render budget: launch, navigate, settle.
 pub const RENDER_TIMEOUT: Duration = Duration::from_secs(30);
@@ -295,36 +302,10 @@ impl Renderer for EdgeRenderer {
         let deadline = Instant::now() + self.timeout;
         let _slot = acquire(cancel, deadline)?;
         let profile = Profile::new()?;
-        let mut cmd = std::process::Command::new(&self.edge);
-        cmd.env_clear().envs(edge_env(std::env::vars_os()));
-        cmd.args([
-            "--headless=new",
-            "--remote-debugging-port=0",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-extensions",
-            "--disable-sync",
-            "--disable-background-networking",
-            "--disable-component-update",
-            "--disable-default-apps",
-            "--disable-features=msEdgeSidebarV2,msUndersideButton,Translate",
-            "--mute-audio",
-            "--disable-gpu",
-            // Defence in depth beside the request interception: the names a page reaches local
-            // services by do not resolve.
-            "--host-resolver-rules=MAP localhost ~NOTFOUND, MAP *.localhost ~NOTFOUND, MAP *.local ~NOTFOUND",
-            &format!("--user-agent={USER_AGENT}"),
-        ])
-        .arg(format!("--user-data-dir={}", profile.0.display()))
-        .arg("about:blank")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-        // Scrubbed and in its own kill-on-close job (never uncontained), like every child.
-        let spec = marlowe_os::ChildSpec::new()
-            .with_creation_flags(0)
-            .with_containment(marlowe_os::Containment::Job);
-        let mut child = marlowe_os::child::spawn(&mut cmd, &spec).map_err(|e| RenderError::Launch(e.to_string()))?;
+        // Defence in depth beside the request interception: the names a page reaches local
+        // services by do not resolve.
+        let rules = "--host-resolver-rules=MAP localhost ~NOTFOUND, MAP *.localhost ~NOTFOUND, MAP *.local ~NOTFOUND".to_string();
+        let mut child = spawn_edge(&self.edge, &profile, &[rules])?;
         let egress = Arc::new(Egress {
             page: url.to_string(),
             gate: self.gate.clone(),
@@ -344,6 +325,37 @@ impl Renderer for EdgeRenderer {
         }
         Ok(r)
     }
+}
+
+/// Starts headless Edge in `profile` (extra command-line flags in `extra`): scrubbed, windowless,
+/// and in its own kill-on-close Job Object, never uncontained.
+fn spawn_edge(edge: &Path, profile: &Profile, extra: &[String]) -> Result<marlowe_os::ChildProc, RenderError> {
+    let mut cmd = std::process::Command::new(edge);
+    cmd.args([
+        "--headless=new",
+        "--remote-debugging-port=0",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions",
+        "--disable-sync",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-default-apps",
+        "--disable-features=msEdgeSidebarV2,msUndersideButton,Translate",
+        "--mute-audio",
+        "--disable-gpu",
+        &format!("--user-agent={USER_AGENT}"),
+    ])
+    .args(extra)
+    .arg(format!("--user-data-dir={}", profile.0.display()))
+    .arg("about:blank")
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null());
+    // A cleared environment: no API key reaches Edge or its children.
+    cmd.env_clear().envs(edge_env(std::env::vars_os()));
+    let spec = marlowe_os::ChildSpec::new().with_creation_flags(0).with_containment(marlowe_os::Containment::Job);
+    marlowe_os::child::spawn(&mut cmd, &spec).map_err(|e| RenderError::Launch(e.to_string()))
 }
 
 /// Waits for Edge's DevToolsActivePort file and returns the browser websocket URL.

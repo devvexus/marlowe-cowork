@@ -218,9 +218,13 @@ fn every_tool_answers_as_the_old_dispatch_did() {
 
 #[test]
 fn every_tool_is_registered_once_in_its_group_in_the_old_order() {
-    // The git group (track J) is checked in `tests/git_tools.rs`.
-    let names: Vec<&str> =
-        table().defs.iter().filter(|d| d.manifest.group != marlowe_agent::ToolGroup::Git).map(|d| d.name()).collect();
+    // The git (track J) and verify (track D) groups pin their own lists in their own tests.
+    let names: Vec<&str> = table()
+        .defs
+        .iter()
+        .filter(|d| !matches!(d.manifest.group, marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Verify))
+        .map(|d| d.name())
+        .collect();
     assert_eq!(
         names,
         [
@@ -230,6 +234,9 @@ fn every_tool_is_registered_once_in_its_group_in_the_old_order() {
     );
     let git: Vec<&str> = table().defs.iter().filter(|d| d.manifest.group == marlowe_agent::ToolGroup::Git).map(|d| d.name()).collect();
     assert_eq!(git, ["git", "gh", "ci_status"]);
+    let verify: Vec<&str> =
+        table().defs.iter().filter(|d| d.manifest.group == marlowe_agent::ToolGroup::Verify).map(|d| d.name()).collect();
+    assert_eq!(verify, ["project", "service", "http_check", "browser"]);
     for d in &table().defs {
         let schema = &d.spec.input_schema;
         assert_eq!(schema["additionalProperties"], json!(false), "{} schema is flat and closed", d.name());
@@ -350,7 +357,10 @@ fn exposure_fixes_the_tool_set_and_refuses_the_rest() {
     // every registered tool, so the default and the local set agree.
     let local = marlowe_model::ModelInfo::bare(marlowe_model::ProviderKind::Ollama, "m");
     let frontier = marlowe_model::ModelInfo::bare(marlowe_model::ProviderKind::OpenRouter, "m");
-    assert_eq!(names(&BuiltinTools::new(None).with_model_exposure(&local)), names(&everything));
+    let without_verify = |h: &BuiltinTools| {
+        names(h).into_iter().filter(|n| !["project", "service", "http_check", "browser"].contains(&n.as_str())).collect::<Vec<_>>()
+    };
+    assert_eq!(names(&BuiltinTools::new(None).with_model_exposure(&local)), without_verify(&everything));
     assert_eq!(BuiltinTools::new(None).with_model_exposure(&local).exposure().0, ExposureProfile::Local);
     assert_eq!(BuiltinTools::new(None).with_model_exposure(&frontier).exposure().1, ToolGroup::ALL.as_slice());
 
@@ -367,21 +377,25 @@ fn exposure_fixes_the_tool_set_and_refuses_the_rest() {
 fn every_group_file_registers_its_hooks() {
     let setup = super::HostSetup { home: Path::new("C:/home"), workspace: None };
     let host = super::configure(BuiltinTools::new(None), &setup);
-    let not_git = |h: &BuiltinTools| {
-        h.specs().iter().filter(|s| !matches!(s.name.as_str(), "git" | "gh" | "ci_status")).count()
+    // Configuring adds the git group (track J) and, where Edge is installed, the browser (D).
+    let rest = |h: &BuiltinTools| {
+        h.specs().iter().filter(|s| !matches!(s.name.as_str(), "git" | "gh" | "ci_status" | "browser")).count()
     };
-    assert_eq!(not_git(&host), not_git(&BuiltinTools::new(None)), "the stub configures change nothing");
+    assert_eq!(rest(&host), rest(&BuiltinTools::new(None)), "the other configures change nothing here");
     assert!(host.specs().iter().any(|s| s.name == "git"), "the git group (track J) is live once configured");
     for g in super::GROUPS {
         assert_eq!(super::group(g.group).map(|r| r.group), Some(g.group));
-        if g.group == marlowe_agent::ToolGroup::Git {
-            assert_eq!((g.middleware)(&host).len(), 1, "the git guard");
-            assert!((g.persona_block)().is_some());
-            continue;
-        }
-        // The shell group's job notices; every other group has none so far.
-        assert_eq!((g.middleware)(&host).len(), usize::from(g.group == marlowe_agent::ToolGroup::Shell), "{:?}", g.group);
-        assert!((g.persona_block)().is_none(), "{:?}: a block needs its capability live first", g.group);
+        let expected = match g.group {
+            marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Shell => 1,
+            _ => 0,
+        };
+        assert_eq!((g.middleware)(&host).len(), expected, "{:?}", g.group);
+        assert_eq!(
+            (g.persona_block)().is_some(),
+            matches!(g.group, marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Verify),
+            "{:?}: a block needs its capability live first",
+            g.group
+        );
         assert!(!(g.detect)(None));
     }
     assert!(super::group(marlowe_agent::ToolGroup::Memory).is_none(), "memory tools are the daemon's");
