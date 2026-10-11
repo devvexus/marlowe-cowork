@@ -637,6 +637,9 @@ pub enum ArgsOutcome {
     /// Valid already; nothing changed.
     Clean(Value),
     Repaired(Value, Vec<Fix>),
+    /// An object, but a required argument is still missing after repair: the call will fail in
+    /// its tool. The value is passed on so the tool reports exactly what is missing.
+    Invalid { value: Value, fixes: Vec<Fix>, missing: Vec<String> },
     /// Could not be made into an object. The raw text is kept (as a string) for the loop to
     /// report; `truncated` says the call was cut off rather than malformed.
     Unusable { raw: Value, truncated: bool },
@@ -646,7 +649,7 @@ impl ArgsOutcome {
     /// The value to put in the call.
     pub fn into_value(self) -> Value {
         match self {
-            ArgsOutcome::Clean(v) | ArgsOutcome::Repaired(v, _) => v,
+            ArgsOutcome::Clean(v) | ArgsOutcome::Repaired(v, _) | ArgsOutcome::Invalid { value: v, .. } => v,
             ArgsOutcome::Unusable { raw, .. } => raw,
         }
     }
@@ -661,7 +664,7 @@ pub fn repair_args(raw: &Value, tool: Option<&ToolSpec>) -> ArgsOutcome {
     let mut value = match raw {
         Value::String(s) => {
             if s.trim().is_empty() {
-                return ArgsOutcome::Clean(Value::Object(Map::new()));
+                return finish(Value::Object(Map::new()), fixes, tool);
             }
             match parse_lenient(s) {
                 Parsed::Ok { value, fixes: f } => {
@@ -673,7 +676,7 @@ pub fn repair_args(raw: &Value, tool: Option<&ToolSpec>) -> ArgsOutcome {
             }
         }
         Value::Object(_) | Value::Array(_) => raw.clone(),
-        Value::Null => return ArgsOutcome::Clean(Value::Object(Map::new())),
+        Value::Null => return finish(Value::Object(Map::new()), fixes, tool),
         _ => return ArgsOutcome::Unusable { raw: raw.clone(), truncated: false },
     };
     // JSON inside a JSON string: `"{\"a\": 1}"`.
@@ -708,8 +711,69 @@ pub fn repair_args(raw: &Value, tool: Option<&ToolSpec>) -> ArgsOutcome {
             }
         }
     }
+    finish(value, fixes, tool)
+}
+
+/// Puts one structured call right against the request's tools and counts it: the tool's own
+/// spelling of the name (`Read` is `read`), then its arguments against the schema. A name that
+/// matches no tool of the request is counted as `unknown_tool`, not as a valid call. Returns the
+/// name to use and the outcome.
+pub fn repair_call(
+    name: &str,
+    raw: &Value,
+    tools: Option<&[ToolSpec]>,
+    stats: Option<&RepairStats>,
+) -> (String, ArgsOutcome) {
+    let found = tools.and_then(|t| match_tool(name, t));
+    let (name, renamed, spec) = match found {
+        Some((s, renamed)) => (s.name.clone(), renamed, Some(s)),
+        None => (name.to_string(), false, None),
+    };
+    let mut outcome = repair_args(raw, spec);
+    if renamed {
+        outcome = match outcome {
+            ArgsOutcome::Clean(v) => ArgsOutcome::Repaired(v, vec![Fix::ToolName]),
+            ArgsOutcome::Repaired(v, mut f) => {
+                f.push(Fix::ToolName);
+                ArgsOutcome::Repaired(v, f)
+            }
+            ArgsOutcome::Invalid { value, mut fixes, missing } => {
+                fixes.push(Fix::ToolName);
+                ArgsOutcome::Invalid { value, fixes, missing }
+            }
+            u => u,
+        };
+    }
+    if let Some(stats) = stats {
+        if tools.is_some() && found.is_none() {
+            stats.record_unknown_tool();
+        } else {
+            stats.record(&outcome, false);
+        }
+    }
+    (name, outcome)
+}
+
+/// The names `tool` requires that `value` does not have.
+fn missing_required(value: &Value, tool: Option<&ToolSpec>) -> Vec<String> {
+    let (Some(tool), Some(obj)) = (tool, value.as_object()) else { return Vec::new() };
+    tool.input_schema
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|k| !obj.contains_key(*k))
+        .map(str::to_string)
+        .collect()
+}
+
+fn finish(value: Value, mut fixes: Vec<Fix>, tool: Option<&ToolSpec>) -> ArgsOutcome {
     dedup(&mut fixes);
-    if fixes.is_empty() {
+    let missing = missing_required(&value, tool);
+    if !missing.is_empty() {
+        ArgsOutcome::Invalid { value, fixes, missing }
+    } else if fixes.is_empty() {
         ArgsOutcome::Clean(value)
     } else {
         ArgsOutcome::Repaired(value, fixes)
@@ -924,7 +988,9 @@ pub fn match_tool<'a>(name: &str, tools: &'a [ToolSpec]) -> Option<(&'a ToolSpec
 /// How many calls needed repair. Shared (`Arc`) between a provider and whatever reports it.
 ///
 /// A4 asks for the share of calls "valid after repair" and the share "needing repair":
-/// `(clean + repaired + from_text) / calls` and `(repaired + from_text) / calls`.
+/// `(clean + repaired + from_text) / calls` and `(repaired + from_text) / calls`. A call that
+/// still lacks a required argument (`invalid`) or names a tool the request never offered
+/// (`unknown_tool`) counts as a call and is not valid.
 #[derive(Default)]
 pub struct RepairStats {
     calls: AtomicU64,
@@ -933,6 +999,8 @@ pub struct RepairStats {
     from_text: AtomicU64,
     unusable: AtomicU64,
     truncated: AtomicU64,
+    invalid: AtomicU64,
+    unknown_tool: AtomicU64,
     fixes: Mutex<BTreeMap<&'static str, u64>>,
 }
 
@@ -945,6 +1013,10 @@ pub struct RepairSnapshot {
     pub from_text: u64,
     pub unusable: u64,
     pub truncated: u64,
+    /// Objects still missing a required argument after repair.
+    pub invalid: u64,
+    /// Calls to a name that matches no tool of the request.
+    pub unknown_tool: u64,
     pub fixes: BTreeMap<String, u64>,
 }
 
@@ -977,6 +1049,10 @@ impl RepairStats {
         let fixes: &[Fix] = match outcome {
             ArgsOutcome::Clean(_) => &[],
             ArgsOutcome::Repaired(_, f) => f,
+            ArgsOutcome::Invalid { fixes, .. } => {
+                self.invalid.fetch_add(1, Ordering::Relaxed);
+                fixes
+            }
             ArgsOutcome::Unusable { truncated, .. } => {
                 self.unusable.fetch_add(1, Ordering::Relaxed);
                 if *truncated {
@@ -986,7 +1062,7 @@ impl RepairStats {
             }
         };
         match outcome {
-            ArgsOutcome::Unusable { .. } => {}
+            ArgsOutcome::Unusable { .. } | ArgsOutcome::Invalid { .. } => {}
             _ if from_text => {
                 self.from_text.fetch_add(1, Ordering::Relaxed);
             }
@@ -1008,6 +1084,12 @@ impl RepairStats {
         }
     }
 
+    /// Counts one call whose name matches no tool of the request. It is a call, and not valid.
+    pub fn record_unknown_tool(&self) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.unknown_tool.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn snapshot(&self) -> RepairSnapshot {
         RepairSnapshot {
             calls: self.calls.load(Ordering::Relaxed),
@@ -1016,6 +1098,8 @@ impl RepairStats {
             from_text: self.from_text.load(Ordering::Relaxed),
             unusable: self.unusable.load(Ordering::Relaxed),
             truncated: self.truncated.load(Ordering::Relaxed),
+            invalid: self.invalid.load(Ordering::Relaxed),
+            unknown_tool: self.unknown_tool.load(Ordering::Relaxed),
             fixes: self
                 .fixes
                 .lock()
@@ -1027,7 +1111,7 @@ impl RepairStats {
     }
 
     pub fn reset(&self) {
-        for a in [&self.calls, &self.clean, &self.repaired, &self.from_text, &self.unusable, &self.truncated] {
+        for a in [&self.calls, &self.clean, &self.repaired, &self.from_text, &self.unusable, &self.truncated, &self.invalid, &self.unknown_tool] {
             a.store(0, Ordering::Relaxed);
         }
         self.fixes.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -1288,6 +1372,31 @@ mod tests {
         assert!(match_tool("write", &tools).is_none());
         let twins = vec![spec("a_b", json!({})), spec("ab", json!({}))];
         assert!(match_tool("AB", &twins).is_none(), "two candidates are never guessed between");
+    }
+
+    #[test]
+    fn a_missing_required_argument_is_invalid_not_valid() {
+        let read = spec("read", json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}));
+        let out = repair_args(&json!({}), Some(&read));
+        assert!(matches!(&out, ArgsOutcome::Invalid { missing, .. } if missing == &["path".to_string()]), "{out:?}");
+        assert_eq!(out.clone().into_value(), json!({}), "the tool still reports what is missing");
+        assert!(matches!(repair_args(&Value::Null, Some(&read)), ArgsOutcome::Invalid { .. }));
+        assert!(matches!(repair_args(&json!(""), Some(&read)), ArgsOutcome::Invalid { .. }));
+        assert!(matches!(repair_args(&json!({"path": "a"}), Some(&read)), ArgsOutcome::Clean(_)));
+        // Unknown tool: nothing to check against.
+        assert!(matches!(repair_args(&json!({"x": 1}), None), ArgsOutcome::Clean(_)));
+        // A rename that supplies the missing name makes it valid again.
+        let exit = spec("exit", json!({"type":"object","properties":{"code":{"type":"integer"}},"required":["code"]}));
+        assert!(matches!(repair_args(&json!({"status": 7}), Some(&exit)), ArgsOutcome::Repaired(..)));
+
+        let s = RepairStats::new();
+        s.record(&repair_args(&json!({}), Some(&read)), false);
+        s.record(&repair_args(&json!({"x": 1}), None), false);
+        s.record_unknown_tool();
+        s.record(&repair_args(&json!({"path": "a"}), Some(&read)), false);
+        let snap = s.snapshot();
+        assert_eq!((snap.calls, snap.invalid, snap.unknown_tool, snap.clean), (4, 1, 1, 2));
+        assert!((snap.valid_rate() - 0.5).abs() < 1e-9, "{}", snap.valid_rate());
     }
 
     #[test]

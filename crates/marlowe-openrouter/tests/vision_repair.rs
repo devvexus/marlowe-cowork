@@ -133,29 +133,77 @@ fn an_unlisted_model_is_tried_with_the_image_and_no_store_is_a_note() {
     assert!(sent(&seen, 0)["messages"][0]["content"].as_str().unwrap().contains("no image store"));
 }
 
-/// C10: Anthropic models behind OpenRouter get breakpoints on the cached system blocks and on the
-/// last user message; other models get none.
+fn breakpoints(v: &Value) -> usize {
+    match v {
+        Value::Object(o) => o.iter().map(|(k, x)| usize::from(k == "cache_control") + breakpoints(x)).sum(),
+        Value::Array(a) => a.iter().map(breakpoints).sum(),
+        _ => 0,
+    }
+}
+
+/// The message as the model sees it: no `cache_control`, a lone text part as a plain string.
+fn plain(v: &Value) -> Value {
+    match v {
+        Value::Object(o) => Value::Object(o.iter().filter(|(k, _)| *k != "cache_control").map(|(k, x)| (k.clone(), plain(x))).collect()),
+        Value::Array(a) if a.len() == 1 && a[0].get("type") == Some(&json!("text")) => plain(&a[0]["text"]),
+        Value::Array(a) => Value::Array(a.iter().map(plain).collect()),
+        _ => v.clone(),
+    }
+}
+
+/// Which messages carry a breakpoint, by index.
+fn marked(body: &Value) -> Vec<usize> {
+    let msgs = body["messages"].as_array().unwrap();
+    (0..msgs.len()).filter(|&i| i > 0 && breakpoints(&msgs[i]) > 0).collect()
+}
+
+/// C10: Anthropic models behind OpenRouter get a breakpoint on the cached system block and on the
+/// LAST message of every request (as Claude Code does), so each step of a tool loop reads the
+/// previous step's whole prompt from the cache; other models get none.
 #[test]
 fn parity_c10_openrouter_cache_breakpoints() {
     let mut req = ChatRequest::new("anthropic/claude-sonnet-4.5", vec![Message::user("fix the build")]);
     req.system = vec![SystemBlock { text: "core".into(), cache: true }, SystemBlock { text: "env".into(), cache: false }];
-    let (p, seen) = provider(vec![plain_ok(), plain_ok()]);
+    let (p, seen) = provider(vec![plain_ok(), plain_ok(), plain_ok()]);
     p.stream(&req, &CancelToken::new(), &mut |_| {}).unwrap();
-    let body = sent(&seen, 0);
-    assert_eq!(body["messages"][0]["content"][0]["cache_control"]["type"], "ephemeral");
-    assert!(body["messages"][0]["content"][1].get("cache_control").is_none());
-    assert_eq!(body["messages"][1]["content"][0]["text"], "fix the build");
-    assert_eq!(body["messages"][1]["content"][0]["cache_control"]["type"], "ephemeral");
+    let step1 = sent(&seen, 0);
+    assert_eq!(step1["messages"][0]["content"][0]["cache_control"]["type"], "ephemeral");
+    assert!(step1["messages"][0]["content"][1].get("cache_control").is_none());
+    assert_eq!(step1["messages"][1]["content"][0]["text"], "fix the build");
+    assert_eq!(marked(&step1), vec![1], "the last message at step 1");
 
-    // Later steps of the loop keep the same breakpoint on the same message, so the prefix is read.
+    // Step 2: the marker has moved to the tool result (the last message) and also stays on the
+    // previous step's last message; the assistant turn between them carries none.
     req.messages.push(Message {
         role: Role::Assistant,
         content: vec![Part::ToolCall(ToolCall { id: "c1".into(), name: "read".into(), args: json!({"path": "a"}) })],
     });
     req.messages.push(Message::tool_results([ToolResult { call_id: "c1".into(), content: "x".into(), is_error: false, parts: vec![] }]));
     p.stream(&req, &CancelToken::new(), &mut |_| {}).unwrap();
-    let again = sent(&seen, 1);
-    assert_eq!(again["messages"].as_array().unwrap()[..2], body["messages"].as_array().unwrap()[..2], "the prefix is byte-identical from step to step");
+    let step2 = sent(&seen, 1);
+    assert_eq!(marked(&step2), vec![1, 3], "the last message and the previous step's last");
+    assert_eq!(step2["messages"][3]["role"], "tool");
+    assert_eq!(step2["messages"][3]["content"][0]["text"], "x");
+    assert_eq!(breakpoints(&step2["messages"][0]), 1);
+    assert!(breakpoints(&step2) <= 4);
+
+    // Step 3 and the prefix: every earlier request's messages are a byte-identical prefix of the
+    // next once the breakpoints are taken off, so the cache reads the whole of them.
+    req.messages.push(Message {
+        role: Role::Assistant,
+        content: vec![Part::ToolCall(ToolCall { id: "c2".into(), name: "read".into(), args: json!({"path": "b"}) })],
+    });
+    req.messages.push(Message::tool_results([ToolResult { call_id: "c2".into(), content: "y".into(), is_error: false, parts: vec![] }]));
+    p.stream(&req, &CancelToken::new(), &mut |_| {}).unwrap();
+    let step3 = sent(&seen, 2);
+    assert_eq!(marked(&step3), vec![3, 5]);
+    for (earlier, later) in [(&step1, &step2), (&step2, &step3)] {
+        let (a, b) = (earlier["messages"].as_array().unwrap(), later["messages"].as_array().unwrap());
+        assert!(b.len() > a.len());
+        let (a, b): (Vec<String>, Vec<String>) =
+            (a.iter().map(|m| plain(m).to_string()).collect(), b[..a.len()].iter().map(|m| plain(m).to_string()).collect());
+        assert_eq!(a, b, "the earlier request is a byte-identical prefix of the next");
+    }
 
     req.model = "openai/gpt-5".into();
     let (p, seen) = provider(vec![plain_ok()]);
@@ -212,6 +260,17 @@ fn structured_arguments_are_repaired_and_counted() {
     let s = p.repair_stats().snapshot();
     assert_eq!((s.calls, s.clean, s.repaired), (2, 1, 1), "{s:?}");
     assert!(s.fixes.contains_key("single_quotes") && s.fixes.contains_key("tool_name"), "{:?}", s.fixes);
+}
+
+/// A4 honesty: a call to a tool the request never offered, and a call missing a required
+/// argument, are calls that are not valid after repair.
+#[test]
+fn unknown_tools_and_missing_required_arguments_are_not_counted_valid() {
+    let (c, _, p) = run(TEXT_ONLY, include_str!("fixtures/sse_unknown_and_incomplete.sse"));
+    assert_eq!(c.tool_calls.len(), 3);
+    let s = p.repair_stats().snapshot();
+    assert_eq!((s.calls, s.unknown_tool, s.invalid, s.clean), (3, 1, 1, 1), "{s:?}");
+    assert!((s.valid_rate() - 1.0 / 3.0).abs() < 1e-9, "{}", s.valid_rate());
 }
 
 #[test]

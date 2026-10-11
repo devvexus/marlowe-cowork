@@ -186,6 +186,29 @@ fn tool_calls_are_repaired_recovered_and_counted() {
     assert!(s.fixes.get("tool_name").is_some() && s.fixes.get("single_quotes").is_some(), "{:?}", s.fixes);
 }
 
+/// A4 honesty: a call to a tool the request never offered, and a call missing a required
+/// argument, are calls that are not valid after repair.
+#[test]
+fn unknown_tools_and_missing_required_arguments_are_not_counted_valid() {
+    let (endpoint, _) = serve(Box::new(|path| match path {
+        "/api/show" => Reply::Json(200, show(&["completion", "tools"], "qwen35")),
+        _ => Reply::Chunked(vec![
+            json!({"message":{"tool_calls":[{"function":{"name":"teleport","arguments":{"to":"moon"}}}]}}).to_string(),
+            json!({"message":{"tool_calls":[{"function":{"name":"read","arguments":{}}}]}}).to_string(),
+            json!({"message":{"tool_calls":[{"function":{"name":"read","arguments":{"path":"a.rs"}}}]}}).to_string(),
+            r#"{"message":{"content":""},"done":true,"done_reason":"stop"}"#.into(),
+        ]),
+    }));
+    let p = OllamaProvider::new(endpoint);
+    let mut req = ChatRequest::new("qwen3.5:9b", vec![Message::user("go")]);
+    req.tools = vec![read_spec()];
+    let c = p.stream(&req, &CancelToken::new(), &mut |_| {}).unwrap();
+    assert_eq!(c.tool_calls.len(), 3, "all three still reach the loop, which reports the bad ones");
+    let s = p.repair_stats().snapshot();
+    assert_eq!((s.calls, s.unknown_tool, s.invalid, s.clean), (3, 1, 1, 1), "{s:?}");
+    assert!((s.valid_rate() - 1.0 / 3.0).abs() < 1e-9, "{}", s.valid_rate());
+}
+
 #[test]
 fn a_call_written_as_text_is_recovered_only_for_a_tool_the_request_offered() {
     let content = "Let me look.\n<function=read><parameter=path>notes.md</parameter><parameter=limit>40</parameter></function>";

@@ -19,7 +19,7 @@ use marlowe_model::{Completion, CompletionBuilder, ProviderError, StopReason, St
 use serde_json::Value;
 
 use super::leak::defang_tool_markup;
-use super::repair::{match_tool, repair_args, ArgsOutcome, Fix, RepairStats};
+use super::repair::{repair_call, RepairStats};
 use super::scan::{scan, LeakGuard, ToolSet};
 use crate::think::{Segment, ThinkSplitter};
 
@@ -205,25 +205,7 @@ impl<'a> Folder<'a> {
         let raw = function.and_then(|f| f.get("arguments")).cloned().unwrap_or(Value::Null);
         // The tool's own spelling, then its schema: the model's `Read` and `"20"` are repaired
         // and counted; an unreadable argument string is passed on raw for the loop to report.
-        let found = self.tools.as_deref().and_then(|t| match_tool(&name, t));
-        let (name, renamed, spec) = match found {
-            Some((s, renamed)) => (s.name.clone(), renamed, Some(s)),
-            None => (name, false, None),
-        };
-        let mut outcome = repair_args(&raw, spec);
-        if renamed {
-            outcome = match outcome {
-                ArgsOutcome::Clean(v) => ArgsOutcome::Repaired(v, vec![Fix::ToolName]),
-                ArgsOutcome::Repaired(v, mut f) => {
-                    f.push(Fix::ToolName);
-                    ArgsOutcome::Repaired(v, f)
-                }
-                u => u,
-            };
-        }
-        if let Some(stats) = &self.stats {
-            stats.record(&outcome, false);
-        }
+        let (name, outcome) = repair_call(&name, &raw, self.tools.as_deref(), self.stats.as_deref());
         let args = match outcome.into_value() {
             Value::String(s) => s,
             v => v.to_string(),
@@ -283,14 +265,8 @@ impl<'a> Folder<'a> {
             } else {
                 self.speech_now(&found.prose);
                 for c in found.calls {
-                    let fixes: Vec<Fix> = c.fixes.iter().copied().filter(|f| *f != Fix::FromText).collect();
                     if let Some(stats) = &self.stats {
-                        let outcome = if fixes.is_empty() {
-                            ArgsOutcome::Clean(c.args.clone())
-                        } else {
-                            ArgsOutcome::Repaired(c.args.clone(), fixes)
-                        };
-                        stats.record(&outcome, true);
+                        stats.record(&c.outcome(), true);
                     }
                     let index = self.next_call;
                     self.next_call += 1;

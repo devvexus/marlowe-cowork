@@ -64,6 +64,11 @@ fn every_args_case_repairs_to_what_it_expects() {
                 let names: Vec<&str> = got.iter().map(|f| f.as_str()).collect();
                 v == want && fixes.iter().all(|f| names.contains(f))
             }
+            ("invalid", ArgsOutcome::Invalid { value, missing, .. }) => {
+                let want_missing: Vec<&str> =
+                    case["missing"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                value == want && missing.iter().map(String::as_str).eq(want_missing)
+            }
             ("unusable", ArgsOutcome::Unusable { truncated: false, .. }) => true,
             ("truncated", ArgsOutcome::Unusable { truncated: true, .. }) => true,
             _ => false,
@@ -79,6 +84,10 @@ fn every_args_case_repairs_to_what_it_expects() {
     let cut_or_junk = c["args"].as_array().unwrap().iter().filter(|x| matches!(x["expect"].as_str(), Some("unusable" | "truncated"))).count();
     assert_eq!(s.unusable as usize, cut_or_junk, "only the cut-off and garbage cases are unusable");
     assert!(s.repaired > 0 && s.clean > 0);
+    let invalid = c["args"].as_array().unwrap().iter().filter(|x| x["expect"] == "invalid").count();
+    assert!(invalid >= 4, "the corpus needs invalid cases");
+    assert_eq!(s.invalid as usize, invalid);
+    assert_eq!(s.calls, s.clean + s.repaired + s.unusable + s.invalid, "an invalid call is never valid");
     eprintln!("repair corpus: {} args cases, valid-after-repair {:.1}%, needing repair {:.1}%", s.calls, s.valid_rate() * 100.0, s.repair_rate() * 100.0);
 }
 

@@ -23,7 +23,7 @@ use std::sync::Arc;
 use marlowe_model::{
     Completion, CompletionBuilder, ProviderError, ProviderErrorKind, StopReason, StreamEvent, ToolSpec, Usage,
 };
-use marlowe_provider::ollama::repair::{match_tool, repair_args, ArgsOutcome, Fix, RepairStats};
+use marlowe_provider::ollama::repair::{repair_call, RepairStats};
 use marlowe_provider::ollama::scan::{scan, LeakGuard, ToolSet};
 use marlowe_provider::think::{Segment, ThinkSplitter};
 use serde_json::{Map, Value};
@@ -307,14 +307,8 @@ impl<'a> Accumulator<'a> {
                 self.speech_now(&found.prose);
                 for (index, c) in found.calls.into_iter().enumerate() {
                     let index = index as u32;
-                    let fixes: Vec<Fix> = c.fixes.iter().copied().filter(|f| *f != Fix::FromText).collect();
                     if let Some(stats) = &self.stats {
-                        let outcome = if fixes.is_empty() {
-                            ArgsOutcome::Clean(c.args.clone())
-                        } else {
-                            ArgsOutcome::Repaired(c.args.clone(), fixes)
-                        };
-                        stats.record(&outcome, true);
+                        stats.record(&c.outcome(), true);
                     }
                     self.produced = true;
                     self.text_calls = true;
@@ -376,28 +370,8 @@ fn repair_calls(done: &mut Completion, tools: Option<&[ToolSpec]>, stats: Option
         return;
     }
     for call in &mut done.tool_calls {
-        let found = tools.and_then(|t| match_tool(&call.name, t));
-        let (renamed, spec) = match found {
-            Some((spec, renamed)) => (renamed, Some(spec)),
-            None => (false, None),
-        };
-        if let Some(spec) = spec {
-            call.name = spec.name.clone();
-        }
-        let mut outcome = repair_args(&call.args, spec);
-        if renamed {
-            outcome = match outcome {
-                ArgsOutcome::Clean(v) => ArgsOutcome::Repaired(v, vec![Fix::ToolName]),
-                ArgsOutcome::Repaired(v, mut f) => {
-                    f.push(Fix::ToolName);
-                    ArgsOutcome::Repaired(v, f)
-                }
-                u => u,
-            };
-        }
-        if let Some(stats) = stats {
-            stats.record(&outcome, false);
-        }
+        let (name, outcome) = repair_call(&call.name, &call.args, tools, stats);
+        call.name = name;
         call.args = outcome.into_value();
     }
 }

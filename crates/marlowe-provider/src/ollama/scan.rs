@@ -10,9 +10,9 @@
 //! What makes this safe to run:
 //! - **Known names only.** With a tool list, a block whose name matches no tool is prose. A model
 //!   quoting `{"name": "Alice"}` runs nothing.
-//! - **Fences are display.** Text inside a ```` ``` ```` fence is never a call, so an example of
-//!   a call in an explanation is not executed. A ```` ```tool_call ```` fence is the exception (the
-//!   tag says it is meant to run), and an untagged ```` ```json ```` fence runs only when it is the
+//! - **Fences and code spans are display.** Text inside a ```` ``` ```` fence or an inline
+//!   `` `code span` `` is never a call, so an example of a call in an explanation is not executed. A ```` ```tool_call ````
+//!   fence is the exception (the tag says it is meant to run), and an untagged ```` ```json ```` fence runs only when it is the
 //!   last thing in the reply and does not follow a colon (`Example:`).
 //! - **Cut-off blocks are prose.** A block that ends mid-value is left as text; repair never
 //!   finishes a half-written file.
@@ -63,7 +63,23 @@ pub struct ScannedCall {
     pub args: Value,
     pub format: Format,
     pub fixes: Vec<Fix>,
+    /// Required arguments the call still lacks after repair (the tool will report them).
+    pub missing: Vec<String>,
     pub span: Range<usize>,
+}
+
+impl ScannedCall {
+    /// The call as a repair outcome, for counting (the text-form fix itself is not one).
+    pub fn outcome(&self) -> ArgsOutcome {
+        let fixes: Vec<Fix> = self.fixes.iter().copied().filter(|f| *f != Fix::FromText).collect();
+        if !self.missing.is_empty() {
+            ArgsOutcome::Invalid { value: self.args.clone(), fixes, missing: self.missing.clone() }
+        } else if fixes.is_empty() {
+            ArgsOutcome::Clean(self.args.clone())
+        } else {
+            ArgsOutcome::Repaired(self.args.clone(), fixes)
+        }
+    }
 }
 
 /// What [`scan`] found.
@@ -136,6 +152,9 @@ struct Fence {
     /// The body between the lines.
     body: Range<usize>,
     info: String,
+    /// An inline code span (`` `x` ``), not a fenced block: display text like a fence, never a
+    /// candidate of its own.
+    inline: bool,
 }
 
 impl Fence {
@@ -161,14 +180,63 @@ fn fences(text: &str) -> Vec<Fence> {
                 open = Some((start, offset, info));
             }
             Some((s, body_start, info)) => {
-                out.push(Fence { span: s..offset, body: body_start..start, info });
+                out.push(Fence { span: s..offset, body: body_start..start, info, inline: false });
             }
         }
     }
     if let Some((s, body_start, info)) = open {
-        out.push(Fence { span: s..text.len(), body: body_start..text.len(), info });
+        out.push(Fence { span: s..text.len(), body: body_start..text.len(), info, inline: false });
+    }
+    let blocks = out.len();
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        if out[..blocks].iter().any(|f| f.span.contains(&start)) {
+            continue;
+        }
+        for r in line_spans(line, None).spans {
+            let span = start + r.start..start + r.end;
+            out.push(Fence { body: span.clone(), span, info: String::new(), inline: true });
+        }
     }
     out
+}
+
+/// The inline code spans of one line: a run of N backticks closes at the next run of exactly N
+/// (CommonMark), within the line. A run that never closes is literal. `carried` is the length of
+/// a run opened earlier on this line, in text already released.
+struct LineSpans {
+    spans: Vec<Range<usize>>,
+    /// The run still open at the end of the line: where it starts (0 when carried) and its length.
+    open: Option<(usize, usize)>,
+}
+
+fn line_spans(line: &str, carried: Option<usize>) -> LineSpans {
+    let mut spans = Vec::new();
+    let mut open = carried.map(|n| (0, n));
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'`' {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i] == b'`' {
+            i += 1;
+        }
+        let len = i - start;
+        match open {
+            Some((from, n)) if n == len => {
+                spans.push(from..i);
+                open = None;
+            }
+            Some(_) => {}
+            None => open = Some((start, len)),
+        }
+    }
+    LineSpans { spans, open }
 }
 
 fn inside_generic_fence(pos: usize, fences: &[Fence]) -> bool {
@@ -201,7 +269,7 @@ fn next_candidate(text: &str, from: usize, fences: &[Fence], tools: ToolSet<'_>)
         }
         if f.is_call_tag() {
             consider(f.span.start, Kind::CallFence(i));
-        } else if matches!(f.info.as_str(), "json" | "") && matches!(tools, ToolSet::Known(_)) {
+        } else if !f.inline && matches!(f.info.as_str(), "json" | "") && matches!(tools, ToolSet::Known(_)) {
             consider(f.span.start, Kind::JsonFence(i));
         }
     }
@@ -389,11 +457,17 @@ fn build_call(
         fixes.push(Fix::ToolName);
     }
     let outcome = repair_args(raw_args, spec);
+    let mut missing = Vec::new();
     let args = match outcome {
         ArgsOutcome::Clean(v) => v,
         ArgsOutcome::Repaired(v, f) => {
             fixes.extend(f);
             v
+        }
+        ArgsOutcome::Invalid { value, fixes: f, missing: m } => {
+            fixes.extend(f);
+            missing = m;
+            value
         }
         // Unreadable or cut-off arguments in text are not worth guessing at.
         ArgsOutcome::Unusable { .. } => return None,
@@ -402,7 +476,7 @@ fn build_call(
     fixes.sort();
     fixes.dedup();
     let name = spec.map_or_else(|| name.trim().to_string(), |s| s.name.clone());
-    Some(ScannedCall { name, args, format, fixes, span })
+    Some(ScannedCall { name, args, format, fixes, missing, span })
 }
 
 /// A JSON payload's calls as `(name, raw arguments)`, plus the fixes reading it needed.
@@ -571,6 +645,12 @@ pub struct LeakGuard {
     /// The hold is an untagged fence whose body looks like a call. It ends, as text, when the
     /// fence has closed and more follows it.
     fence_hold: bool,
+    /// Length of an inline-code backtick run left open in the released text of this line.
+    span_run: Option<usize>,
+    /// Backticks of the run being read at the end of the released text (it may continue).
+    run: usize,
+    /// The current line opened a fence (its backticks are not spans).
+    fence_line: bool,
 }
 
 impl LeakGuard {
@@ -586,6 +666,9 @@ impl LeakGuard {
             line_done: false,
             last_sig: None,
             fence_hold: false,
+            span_run: None,
+            run: 0,
+            fence_line: false,
         }
     }
 
@@ -655,6 +738,9 @@ impl LeakGuard {
     pub fn reset(&mut self) -> String {
         self.fence_open = false;
         self.mid_line = false;
+        self.span_run = None;
+        self.run = 0;
+        self.fence_line = false;
         self.take_held()
     }
 
@@ -663,30 +749,55 @@ impl LeakGuard {
         self.held || !self.pending.is_empty()
     }
 
-    /// Tracks fence and line state across released text.
+    /// Tracks fence, inline-span and line state across released text.
     fn advance(&mut self, released: &str) {
         for ch in released.chars() {
             if ch == '\n' {
                 self.line.clear();
                 self.line_done = false;
+                self.fence_line = false;
+                self.span_run = None;
+                self.run = 0;
                 continue;
             }
             if !ch.is_whitespace() {
                 self.last_sig = Some(ch);
             }
-            if self.line_done || (self.line.is_empty() && (ch == ' ' || ch == '\t')) {
-                continue;
+            if !(self.line_done || (self.line.is_empty() && (ch == ' ' || ch == '\t'))) {
+                self.line.push(ch);
+                if self.line == "```" {
+                    self.fence_open = !self.fence_open;
+                    self.line_done = true;
+                    self.fence_line = true;
+                } else if !"```".starts_with(self.line.as_str()) {
+                    self.line_done = true;
+                }
             }
-            self.line.push(ch);
-            if self.line == "```" {
-                self.fence_open = !self.fence_open;
-                self.line_done = true;
-            } else if !"```".starts_with(self.line.as_str()) {
-                self.line_done = true;
+            if self.fence_open || self.fence_line {
+                self.span_run = None;
+                self.run = 0;
+            } else if ch == '`' {
+                self.run += 1;
+            } else {
+                self.end_run();
             }
         }
+        // A cut falls only after a whole run (the hold keeps a trailing run back), so close it.
+        self.end_run();
         if let Some(last) = released.chars().last() {
             self.mid_line = last != '\n';
+        }
+    }
+
+    /// A run of backticks has ended: it opens a span, or closes the one of the same length.
+    fn end_run(&mut self) {
+        if self.run > 0 {
+            self.span_run = match self.span_run {
+                None => Some(self.run),
+                Some(n) if n == self.run => None,
+                open => open,
+            };
+            self.run = 0;
         }
     }
 
@@ -735,15 +846,30 @@ impl LeakGuard {
             if fence {
                 continue;
             }
-            // Markers anywhere in the line.
+            // Markers anywhere in the line, outside inline code spans.
+            let carried = if at_line_start { None } else { self.span_run };
+            let ls = line_spans(line, carried);
             let mut earliest: Option<usize> = None;
             for m in [HERMES_OPEN, "<function=", MISTRAL] {
-                if let Some(p) = line.find(m) {
-                    earliest = Some(earliest.map_or(p, |e| e.min(p)));
+                let mut from = 0;
+                while let Some(rel) = line[from..].find(m) {
+                    let p = from + rel;
+                    if !ls.spans.iter().any(|r| r.contains(&p)) {
+                        earliest = Some(earliest.map_or(p, |e| e.min(p)));
+                        break;
+                    }
+                    from = p + m.len();
                 }
             }
             if let Some(p) = earliest {
-                return Hold::Block(body_start + p);
+                match ls.open {
+                    // A run opened before the marker and not closed yet: the marker is example
+                    // text if it closes before the line ends, a call if the line ends without.
+                    Some((open, _)) if open <= p && !line.ends_with('\n') => {
+                        return Hold::Prefix(body_start + open);
+                    }
+                    _ => return Hold::Block(body_start + p),
+                }
             }
             // A bare JSON candidate at the start of a line.
             if at_line_start && matches!(self.tools, Some(_)) && (trimmed.starts_with('{') || trimmed.starts_with('[')) {
@@ -756,9 +882,12 @@ impl LeakGuard {
                     Bare::Open => return Hold::Block(body_start + indent),
                 }
             }
-            // A partial marker at the very end of the text.
+            // A partial marker, or a backtick run that may still grow, at the very end of the text.
             if offset == text.len() {
-                if let Some(p) = partial_marker_at_end(line) {
+                let run = line.len() - line.trim_end_matches('`').len();
+                let run = (run > 0).then(|| line.len() - run);
+                let marker = partial_marker_at_end(line);
+                if let Some(p) = run.into_iter().chain(marker).min() {
                     return Hold::Prefix(body_start + p);
                 }
             }

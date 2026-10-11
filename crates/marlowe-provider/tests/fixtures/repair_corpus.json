@@ -565,7 +565,8 @@
    "source": "flashagent@0b08afc one_misnamed_argument_takes_the_one_required_name_left_out",
    "tool": "lines",
    "raw": "{\"file\": \"a.rs\", \"lines\": 5}",
-   "expect": "clean",
+   "expect": "invalid",
+   "missing": ["path", "count"],
    "value": {
     "file": "a.rs",
     "lines": 5
@@ -576,7 +577,8 @@
    "source": "flashagent@0b08afc one_misnamed_argument_takes_the_one_required_name_left_out",
    "tool": "lines",
    "raw": "{\"path\": \"a.rs\", \"lines\": \"all\"}",
-   "expect": "clean",
+   "expect": "invalid",
+   "missing": ["count"],
    "value": {
     "path": "a.rs",
     "lines": "all"
@@ -906,6 +908,55 @@
    },
    "fixes": [
     "prose"
+   ]
+  },
+  {
+   "id": "empty_object_misses_a_required_argument",
+   "source": "marlowe",
+   "tool": "read",
+   "raw": {},
+   "expect": "invalid",
+   "value": {},
+   "missing": [
+    "path"
+   ]
+  },
+  {
+   "id": "empty_string_misses_a_required_argument",
+   "source": "marlowe",
+   "tool": "bash",
+   "raw": "",
+   "expect": "invalid",
+   "value": {},
+   "missing": [
+    "command"
+   ]
+  },
+  {
+   "id": "write_without_content_is_invalid",
+   "source": "marlowe",
+   "tool": "write",
+   "raw": "{\"path\": \"a.rs\"}",
+   "expect": "invalid",
+   "value": {
+    "path": "a.rs"
+   },
+   "missing": [
+    "content"
+   ]
+  },
+  {
+   "id": "repaired_but_still_missing_is_invalid",
+   "source": "marlowe",
+   "tool": "edit",
+   "raw": "{'file_path': 'a', 'old_string': 'x',}",
+   "expect": "invalid",
+   "value": {
+    "file_path": "a",
+    "old_string": "x"
+   },
+   "missing": [
+    "new_string"
    ]
   }
  ],
@@ -1631,6 +1682,92 @@
     "`let m = {a: 1};`"
    ],
    "prose_lacks": []
+  },
+  {
+   "id": "inline_qwen_example_is_not_run",
+   "source": "marlowe",
+   "text": "Qwen writes calls like `<function=bash><parameter=command>rm -rf build</parameter></function>` instead of JSON.",
+   "calls": [],
+   "prose_has": [
+    "`<function=bash><parameter=command>rm -rf build</parameter></function>`"
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "inline_hermes_example_is_not_run",
+   "source": "marlowe",
+   "text": "Hermes style is `<tool_call>{\"name\":\"bash\",\"arguments\":{\"command\":\"git push --force\"}}</tool_call>` on one line.",
+   "calls": [],
+   "prose_has": [
+    "`<tool_call>{\"name\":\"bash\""
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "double_backtick_example_is_not_run",
+   "source": "marlowe",
+   "text": "The form ``<tool_call>{\"name\":\"bash\",\"arguments\":{\"command\":\"ls\"}}</tool_call>`` is Hermes.",
+   "calls": [],
+   "prose_has": [
+    "``<tool_call>"
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "unclosed_backtick_does_not_hide_a_real_call",
+   "source": "marlowe",
+   "text": "It's a `quirk.\n<tool_call>{\"name\":\"bash\",\"arguments\":{\"command\":\"ls\"}}</tool_call>",
+   "calls": [
+    {
+     "name": "bash",
+     "args": {
+      "command": "ls"
+     }
+    }
+   ],
+   "prose_has": [
+    "quirk"
+   ],
+   "prose_lacks": [
+    "tool_call"
+   ]
+  },
+  {
+   "id": "inline_example_then_a_real_call",
+   "source": "marlowe",
+   "text": "Use `<tool_call>` tags.\n<tool_call>{\"name\":\"read\",\"arguments\":{\"path\":\"a\"}}</tool_call>",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "a"
+     }
+    }
+   ],
+   "prose_has": [
+    "`<tool_call>` tags."
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "unclosed_backtick_before_a_call_on_the_same_line",
+   "source": "marlowe",
+   "text": "A lone ` tick then <tool_call>{\"name\":\"bash\",\"arguments\":{\"command\":\"ls\"}}</tool_call> done",
+   "calls": [
+    {
+     "name": "bash",
+     "args": {
+      "command": "ls"
+     }
+    }
+   ],
+   "prose_has": [
+    "lone",
+    "done"
+   ],
+   "prose_lacks": [
+    "tool_call"
+   ]
   }
  ]
 }

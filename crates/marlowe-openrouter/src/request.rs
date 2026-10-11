@@ -94,12 +94,9 @@ pub fn request_body_with(req: &ChatRequest, opts: &BodyOptions<'_>) -> Value {
         }
     }
     let anthropic = req.model.starts_with("anthropic/");
-    if let Some(sys) = system_message(&blocks, anthropic) {
-        messages.push(sys);
-    }
 
-    // The last user message that starts a turn: where the conversation breakpoint goes.
-    let mut last_user: Option<usize> = None;
+    // The conversation after the system message; the system message is put in front last, once
+    // the conversation's breakpoints are known (Anthropic allows four in all).
     for m in &req.messages[lead..] {
         let text = m.joined_text();
         match m.role {
@@ -111,7 +108,6 @@ pub fn request_body_with(req: &ChatRequest, opts: &BodyOptions<'_>) -> Value {
             Role::User => {
                 if !text.is_empty() || m.images().next().is_some() || m.tool_results_iter().next().is_none() {
                     let (parts, notes) = wire_images(m.images(), opts);
-                    last_user = Some(messages.len());
                     messages.push(user_message(with_notes(text, &notes), parts));
                 }
             }
@@ -168,10 +164,9 @@ pub fn request_body_with(req: &ChatRequest, opts: &BodyOptions<'_>) -> Value {
     }
 
     wire::unorphan_tool_messages(&mut messages);
-    if anthropic {
-        if let Some(i) = last_user {
-            mark_cache_breakpoint(&mut messages[i]);
-        }
+    let marks = if anthropic { mark_conversation(&mut messages) } else { 0 };
+    if let Some(sys) = system_message(&blocks, anthropic, MAX_BREAKPOINTS - marks) {
+        messages.insert(0, sys);
     }
 
     let mut body = json!({
@@ -210,21 +205,38 @@ pub fn fixes_sampling(model: &str) -> bool {
         || (name.starts_with("qwen3") && name.contains("-thinking"))
 }
 
-/// A cache breakpoint on the last content block of a user message, so the next call of a tool
-/// loop reads the whole conversation up to it from the cache.
-fn mark_cache_breakpoint(msg: &mut Value) {
-    let Some(content) = msg.get_mut("content") else { return };
+/// Anthropic accepts at most four `cache_control` breakpoints in a request.
+const MAX_BREAKPOINTS: usize = 4;
+
+/// The conversation's cache breakpoints, as Claude Code places them: on the last message of the
+/// request, so each step of a tool loop reads the previous step's whole prompt from the cache, and
+/// on the message before the last assistant turn, which was the previous step's last message and
+/// keeps that read safe when a step adds many blocks. Returns how many were placed (at most two).
+fn mark_conversation(messages: &mut [Value]) -> usize {
+    let Some(last) = (0..messages.len()).rev().find(|&i| mark_cache_breakpoint(&mut messages[i])) else { return 0 };
+    let is_assistant = |m: &Value| m.get("role").and_then(Value::as_str) == Some("assistant");
+    let Some(asst) = (0..last).rev().find(|&i| is_assistant(&messages[i])) else { return 1 };
+    let placed = (0..asst).rev().take(2).any(|i| mark_cache_breakpoint(&mut messages[i]));
+    1 + usize::from(placed)
+}
+
+/// A cache breakpoint on the last text block of a message, turning a plain string into a text
+/// part to carry it. False when the message has no text to carry one (an assistant turn that is
+/// only tool calls).
+fn mark_cache_breakpoint(msg: &mut Value) -> bool {
+    let Some(content) = msg.get_mut("content") else { return false };
     if let Value::String(text) = content {
         if text.is_empty() {
-            return;
+            return false;
         }
         *content = json!([{ "type": "text", "text": std::mem::take(text) }]);
     }
-    if let Some(parts) = content.as_array_mut() {
-        if let Some(last) = parts.iter_mut().rev().find(|p| p.get("type").and_then(Value::as_str) == Some("text")) {
-            last["cache_control"] = json!({ "type": "ephemeral" });
-        }
-    }
+    let Some(parts) = content.as_array_mut() else { return false };
+    let Some(last) = parts.iter_mut().rev().find(|p| p.get("type").and_then(Value::as_str) == Some("text")) else {
+        return false;
+    };
+    last["cache_control"] = json!({ "type": "ephemeral" });
+    true
 }
 
 /// Server tools (`openrouter:` prefix, e.g. `openrouter:web_search`) are sent as
@@ -251,16 +263,24 @@ fn tools_field(tools: &[ToolSpec]) -> Option<Value> {
 /// Tool names with this prefix are OpenRouter server tools.
 pub const SERVER_TOOL_PREFIX: &str = "openrouter:";
 
-fn system_message(blocks: &[SystemBlock], cache_control: bool) -> Option<Value> {
+/// The system message. With `cache_control`, a breakpoint goes on the last block of each run of
+/// cached blocks (a breakpoint caches everything before it, so one per run is enough), keeping the
+/// last `budget` runs when there are more.
+fn system_message(blocks: &[SystemBlock], cache_control: bool, budget: usize) -> Option<Value> {
     if blocks.is_empty() {
         return None;
     }
-    if cache_control && blocks.iter().any(|b| b.cache) {
+    let ends: Vec<usize> = (0..blocks.len())
+        .filter(|&i| blocks[i].cache && !blocks.get(i + 1).is_some_and(|n| n.cache))
+        .collect();
+    let marked = &ends[ends.len().saturating_sub(budget)..];
+    if cache_control && !marked.is_empty() {
         let parts: Vec<Value> = blocks
             .iter()
-            .map(|b| {
+            .enumerate()
+            .map(|(i, b)| {
                 let mut p = json!({ "type": "text", "text": b.text });
-                if b.cache {
+                if marked.contains(&i) {
                     p["cache_control"] = json!({ "type": "ephemeral" });
                 }
                 p
@@ -351,6 +371,33 @@ mod tests {
         assert_eq!(sys[0]["cache_control"]["type"], "ephemeral");
         assert!(sys[1].get("cache_control").is_none());
         assert!(body.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn four_cached_system_blocks_and_a_conversation_stay_within_four_breakpoints() {
+        let mut req = convo("anthropic/claude-sonnet-4.5");
+        req.system = ["stable", "user", "profile", "summary"].iter().map(|t| SystemBlock { text: (*t).into(), cache: true }).collect();
+        req.system.push(SystemBlock { text: "env".into(), cache: false });
+        let body = request_body(&req, None);
+        let count = body.to_string().matches("cache_control").count();
+        assert!(count <= 4, "{count} breakpoints");
+        // One for the cached run (its last block), the last message, the previous step's last.
+        assert_eq!(count, 3);
+        let sys = body["messages"][0]["content"].as_array().unwrap();
+        let marked: Vec<usize> = (0..sys.len()).filter(|&i| sys[i].get("cache_control").is_some()).collect();
+        assert_eq!(marked, vec![3], "a breakpoint caches everything before it");
+
+        // Cached runs split by an uncached block each get one; the cap keeps the latest.
+        req.system = ["a", "b", "c", "d", "e", "f", "g"]
+            .iter()
+            .enumerate()
+            .map(|(i, t)| SystemBlock { text: (*t).into(), cache: i % 2 == 0 })
+            .collect();
+        let body = request_body(&req, None);
+        assert_eq!(body.to_string().matches("cache_control").count(), 4);
+        let sys = body["messages"][0]["content"].as_array().unwrap();
+        let marked: Vec<usize> = (0..sys.len()).filter(|&i| sys[i].get("cache_control").is_some()).collect();
+        assert_eq!(marked, vec![4, 6], "only the last runs keep a breakpoint");
     }
 
     #[test]
