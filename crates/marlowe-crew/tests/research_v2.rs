@@ -269,3 +269,40 @@ fn a_rejected_plan_ends_the_run_cancelled_with_the_reason() {
     drop(sup);
     remove(&home);
 }
+
+/// The PC crashed with a plan waiting (ui-preview5): the stored run is still `needs_you` and the
+/// plan lived only in memory. The next start queues it, the checkpointed proposal is asked for
+/// again with no second draft, and approving it runs the research.
+#[test]
+fn a_plan_waiting_through_a_crash_is_asked_for_again_on_the_next_start() {
+    let home = temp_home("crash");
+    let (sup, _events) = start(&home);
+    let id = dispatch(&sup, "What top-1 accuracy does model M reach on ImageNet?");
+    let waiting = wait_for(&sup, &id, CrewRunStatus::NeedsYou);
+    let (plan, _) = sup.pending_plan(&id).expect("a plan awaits approval");
+    sup.shutdown();
+    drop(sup);
+    // A crash leaves the record as it was while waiting; a clean stop would have marked it running.
+    let store = RunStore::open(&home.join("cowork.db")).unwrap();
+    let mut run = store.get(&id).unwrap().unwrap();
+    run.status = CrewRunStatus::NeedsYou;
+    run.note = waiting.note.clone();
+    store.save(&run).unwrap();
+    let drafts = |s: &RunStore| s.steps(&id).unwrap().iter().filter(|r| r.key == "v2:plan").count();
+    let before = drafts(&store);
+    drop(store);
+
+    let (sup, events) = start(&home);
+    wait_for(&sup, &id, CrewRunStatus::NeedsYou);
+    let (again, _) = sup.pending_plan(&id).expect("the plan is waiting again, not paused");
+    assert_eq!(again, plan, "the checkpointed proposal, not a new draft");
+    assert!(events.try_iter().any(|e| matches!(e, CrewEvent::PlanProposed { run, .. } if run == id)));
+    sup.approve_plan(&id, PlanDecision::Approve).unwrap();
+    wait_for(&sup, &id, CrewRunStatus::Done);
+    sup.shutdown();
+    drop(sup);
+    let store = RunStore::open(&home.join("cowork.db")).unwrap();
+    assert_eq!(drafts(&store), before, "no second model call drafted the plan");
+    drop(store);
+    remove(&home);
+}

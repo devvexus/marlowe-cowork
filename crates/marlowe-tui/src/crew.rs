@@ -9,8 +9,9 @@ use std::cell::Cell;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use marlowe_proto::{
-    CostQuote, CrewRunInfo, CrewRunStatus, CrewStep, Dispatch, PlanDecision, Playbook, Request, ResearchCounts,
-    ResearchPlan, ResearchProgress, ResearchStage, RoleInfo, RunId, SandboxKind, Severity, StageState,
+    ChannelId, CostQuote, CrewRunInfo, CrewRunStatus, CrewStep, Dispatch, PlanDecision, Playbook, Request,
+    ResearchCounts, ResearchPlan, ResearchProgress, ResearchStage, RoleInfo, RunId, SandboxKind, Severity, StageState,
+    SubQuestion, PLAN_MAX_BREADTH, PLAN_MAX_DEPTH, PLAN_MAX_SOURCES, PLAN_MAX_SUBQUESTIONS,
 };
 use marlowe_surface::chrome::Ink;
 
@@ -39,6 +40,164 @@ pub enum RunConfirm {
     RejectPlan,
 }
 
+/// What a control on a waiting research plan does. Keys and clicks both end in
+/// [`State::plan_action`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanAction {
+    /// Open the run's Run view, where the plan is shown in full.
+    Review,
+    Approve,
+    /// Open the plan editor.
+    Edit,
+    /// Ask to reject (y/n), in the Run view.
+    Reject,
+    /// Send the edited plan: approved as edited.
+    Send,
+    /// Leave the editor, dropping the edits.
+    Discard,
+}
+
+/// A row of the plan editor, below its sub-questions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanRow {
+    Question(usize),
+    Add,
+    Breadth,
+    Depth,
+    Sources,
+}
+
+/// The Run view's plan editor: a working copy of the plan, edited row by row and sent as
+/// `PlanDecision::Edit`.
+#[derive(Debug, Clone)]
+pub struct PlanEdit {
+    pub plan: ResearchPlan,
+    /// Selected row: a sub-question, then add, breadth, depth, sources.
+    pub sel: usize,
+    /// The selected question's text while it is being typed.
+    pub typing: Option<Composer>,
+}
+
+impl PlanEdit {
+    pub fn new(plan: &ResearchPlan) -> Self {
+        Self { plan: plan.clone(), sel: 0, typing: None }
+    }
+
+    pub fn rows(&self) -> usize {
+        self.plan.sub_questions.len() + 4
+    }
+
+    pub fn row(&self, i: usize) -> PlanRow {
+        let n = self.plan.sub_questions.len();
+        match i.checked_sub(n) {
+            None => PlanRow::Question(i),
+            Some(0) => PlanRow::Add,
+            Some(1) => PlanRow::Breadth,
+            Some(2) => PlanRow::Depth,
+            Some(_) => PlanRow::Sources,
+        }
+    }
+
+    /// Starts typing on the selected row: a question's text, or a new question from the add row.
+    fn start_typing(&mut self) {
+        match self.row(self.sel) {
+            PlanRow::Question(i) => {
+                let mut c = Composer::default();
+                c.set(&self.plan.sub_questions[i].question);
+                self.typing = Some(c);
+            }
+            PlanRow::Add if self.plan.sub_questions.len() < PLAN_MAX_SUBQUESTIONS => {
+                let channels = self.default_channels();
+                let id = self.plan.sub_questions.iter().map(|q| q.id).max().unwrap_or(0) + 1;
+                self.plan.sub_questions.push(SubQuestion { id, question: String::new(), channels, rationale: None, queries: Vec::new() });
+                self.sel = self.plan.sub_questions.len() - 1;
+                self.typing = Some(Composer::default());
+            }
+            _ => {}
+        }
+    }
+
+    /// A new question searches where the plan already does.
+    fn default_channels(&self) -> Vec<ChannelId> {
+        let c = self.plan.channels();
+        if c.is_empty() {
+            vec![ChannelId::Web]
+        } else {
+            c
+        }
+    }
+
+    /// Ends typing: a changed question drops the model's queries for it (they were for the old
+    /// wording); an empty one is removed.
+    fn commit(&mut self) {
+        let Some(c) = self.typing.take() else { return };
+        let PlanRow::Question(i) = self.row(self.sel) else { return };
+        let text = c.text().trim().to_string();
+        if text.is_empty() {
+            self.remove(i);
+            return;
+        }
+        let q = &mut self.plan.sub_questions[i];
+        if q.question != text {
+            q.question = text;
+            q.queries.clear();
+            q.rationale = None;
+        }
+    }
+
+    /// Typing abandoned: a question added and never written goes again.
+    fn cancel_typing(&mut self) {
+        self.typing = None;
+        if let PlanRow::Question(i) = self.row(self.sel) {
+            if self.plan.sub_questions[i].question.trim().is_empty() {
+                self.remove(i);
+            }
+        }
+    }
+
+    fn remove(&mut self, i: usize) {
+        if i < self.plan.sub_questions.len() {
+            self.plan.sub_questions.remove(i);
+            self.sel = self.sel.min(self.rows() - 1);
+        }
+    }
+
+    /// Steps breadth, depth or the source budget, within the plan's bounds.
+    fn adjust(&mut self, up: bool) {
+        let step = |v: u32, lo: u32, hi: u32, by: u32| if up { (v + by).min(hi) } else { v.saturating_sub(by).max(lo) };
+        let row = self.row(self.sel);
+        let p = &mut self.plan;
+        match row {
+            PlanRow::Breadth => p.breadth = step(p.breadth, 1, PLAN_MAX_BREADTH, 1),
+            PlanRow::Depth => p.depth = step(p.depth, 0, PLAN_MAX_DEPTH, 1),
+            PlanRow::Sources => p.source_budget = step(p.source_budget, 1, PLAN_MAX_SOURCES, 4),
+            _ => {}
+        }
+    }
+
+    /// The plan to send: questions numbered from 1, as the user sees them.
+    pub fn finished(&self) -> ResearchPlan {
+        let mut p = self.plan.clone();
+        for (i, q) in p.sub_questions.iter_mut().enumerate() {
+            q.id = i as u32 + 1;
+        }
+        p
+    }
+}
+
+/// `1 sub-question · ~204k tokens · 24 fetches · 38 min`: a plan and its quote in a line.
+pub fn plan_summary(plan: &ResearchPlan, quote: &CostQuote) -> String {
+    let n = plan.sub_questions.len();
+    let usd = quote.usd.filter(|u| *u > 0.0).map(|u| format!(" · {}", crate::text::cost(u))).unwrap_or_default();
+    format!(
+        "{n} sub-question{} · ~{} tokens · {} fetches · {} min{usd}",
+        if n == 1 { "" } else { "s" },
+        crate::text::compact(quote.model_tokens),
+        quote.fetches,
+        quote.minutes
+    )
+}
+
 /// The open Run view.
 #[derive(Debug, Clone)]
 pub struct RunView {
@@ -51,12 +210,16 @@ pub struct RunView {
     /// Keys go to the steer box.
     pub steering: bool,
     pub confirm: Option<RunConfirm>,
+    /// The plan editor, while the waiting plan is being edited.
+    pub plan_edit: Option<PlanEdit>,
     /// A research run's report, once it exists.
     pub report: Option<String>,
     /// Lines scrolled: from the top once the run has a result, from the bottom while it streams.
     pub scroll: usize,
     /// Largest useful scroll, written back by the renderer.
     pub scroll_max: Cell<usize>,
+    /// Where the plan editor's typing cursor was drawn, written back by the renderer.
+    pub plan_cursor: Cell<Option<(u16, u16)>>,
 }
 
 impl RunView {
@@ -68,9 +231,11 @@ impl RunView {
             steer: Composer::default(),
             steering: false,
             confirm: None,
+            plan_edit: None,
             report: None,
             scroll: 0,
             scroll_max: Cell::new(0),
+            plan_cursor: Cell::new(None),
         }
     }
 }
@@ -221,8 +386,20 @@ impl Crew {
         self.plans.iter().find(|(r, _, _)| r == id).map(|(_, p, q)| (p, q))
     }
 
+    /// The plan the main window's banner shows: the oldest still waiting.
+    pub fn waiting_plan(&self) -> Option<(&RunId, &ResearchPlan, &CostQuote)> {
+        self.plans.first().map(|(r, p, q)| (r, p, q))
+    }
+
+    /// The plan is answered (here or elsewhere) or gone: so is its editor and its y/n.
     fn drop_plan(&mut self, id: &RunId) {
         self.plans.retain(|(r, _, _)| r != id);
+        if let Some(v) = self.open.as_mut().filter(|v| &v.run == id) {
+            v.plan_edit = None;
+            if v.confirm == Some(RunConfirm::RejectPlan) {
+                v.confirm = None;
+            }
+        }
     }
 
     fn clamp_sel(&mut self) {
@@ -395,8 +572,8 @@ impl State {
         self.crew.plans.push((run.clone(), plan.clone(), quote.clone()));
         if fresh {
             if let Some(info) = self.crew.get(run).cloned() {
-                let detail = format!("{} sub-questions · about {} tokens · ^r to answer", plan.sub_questions.len(), quote.model_tokens);
-                self.crew_toast(&info, Severity::Attention, "plan ready", detail);
+                let detail = format!("{} · ^r to review", plan_summary(plan, quote));
+                self.crew_toast(&info, Severity::Attention, "research plan waiting", detail);
             }
         }
     }
@@ -510,7 +687,13 @@ impl State {
     pub(crate) fn open_crew(&mut self, out: &mut Vec<Request>) {
         self.view = View::Crew;
         out.push(Request::ListRuns { limit: RUN_LIMIT });
-        let top = self.crew.ordered().first().map(|r| r.id.clone());
+        // A plan waiting on the user first: ^r is how the banner says to review it.
+        let top = self
+            .crew
+            .waiting_plan()
+            .map(|(r, _, _)| r.clone())
+            .filter(|r| self.crew.get(r).is_some())
+            .or_else(|| self.crew.ordered().first().map(|r| r.id.clone()));
         match top {
             Some(id) => self.open_run(id, out),
             None => self.crew.open = None,
@@ -666,6 +849,11 @@ impl State {
             return;
         }
 
+        if v.plan_edit.is_some() {
+            self.plan_edit_key(k, out);
+            return;
+        }
+
         if v.steering {
             match k.code {
                 KeyCode::Esc => v.steering = false,
@@ -740,13 +928,136 @@ impl State {
                 Some(_) => self.flash("nothing to discard while the run is working", NoteTone::Dim),
                 None => {}
             },
-            KeyCode::Char('a') if plan_pending => {
+            KeyCode::Char('a') if plan_pending => self.plan_action(run, PlanAction::Approve, out),
+            KeyCode::Char('e') if plan_pending => self.plan_action(run, PlanAction::Edit, out),
+            KeyCode::Char('x') if plan_pending => self.plan_action(run, PlanAction::Reject, out),
+            KeyCode::Char('r') => out.push(Request::WatchRun { run }),
+            _ => {}
+        }
+    }
+    /// A control on a waiting plan, from a key or a click: in the main window's banner or the Run
+    /// view's plan panel. Approving or sending answers the run at once (`ApprovePlan`); edit and
+    /// reject happen in the Run view, which opens if it is not already on that run.
+    pub(crate) fn plan_action(&mut self, run: RunId, action: PlanAction, out: &mut Vec<Request>) {
+        let Some(plan) = self.crew.plan(&run).map(|(p, _)| p.clone()) else {
+            self.flash("that plan has already been answered", NoteTone::Dim);
+            return;
+        };
+        let needs_view = matches!(action, PlanAction::Review | PlanAction::Edit | PlanAction::Reject);
+        let open_here = self.view == View::Crew && self.crew.open.as_ref().is_some_and(|v| v.run == run);
+        if needs_view && !open_here {
+            self.open_run(run.clone(), out);
+        }
+        match action {
+            PlanAction::Review => {}
+            PlanAction::Approve => {
                 out.push(Request::ApprovePlan { run: run.clone(), decision: PlanDecision::Approve });
                 self.crew.drop_plan(&run);
                 self.flash("plan approved — the run is exploring", NoteTone::Dim);
             }
-            KeyCode::Char('x') if plan_pending => v.confirm = Some(RunConfirm::RejectPlan),
-            KeyCode::Char('r') => out.push(Request::WatchRun { run }),
+            PlanAction::Edit => {
+                if let Some(v) = self.crew.open.as_mut() {
+                    v.confirm = None;
+                    v.steering = false;
+                    v.plan_edit = Some(PlanEdit::new(&plan));
+                }
+            }
+            PlanAction::Reject => {
+                if let Some(v) = self.crew.open.as_mut() {
+                    v.plan_edit = None;
+                    v.confirm = Some(RunConfirm::RejectPlan);
+                }
+            }
+            PlanAction::Send => {
+                let Some(edit) = self.crew.open.as_mut().filter(|v| v.run == run).and_then(|v| v.plan_edit.as_mut()) else {
+                    return;
+                };
+                edit.commit();
+                let edited = edit.finished();
+                if let Err(e) = edited.validate() {
+                    self.flash(format!("the edited plan is not runnable: {e}"), NoteTone::Red);
+                    return;
+                }
+                let (decision, what) = if edited == plan {
+                    (PlanDecision::Approve, "plan approved")
+                } else {
+                    (PlanDecision::Edit { plan: edited }, "plan approved as edited")
+                };
+                out.push(Request::ApprovePlan { run: run.clone(), decision });
+                self.crew.drop_plan(&run);
+                self.flash(format!("{what} — the run is exploring"), NoteTone::Dim);
+            }
+            PlanAction::Discard => {
+                if let Some(v) = self.crew.open.as_mut() {
+                    v.plan_edit = None;
+                }
+            }
+        }
+    }
+
+    /// A click on a plan editor row: selects it, and a second click on a question types in it.
+    pub(crate) fn plan_row_click(&mut self, i: usize) {
+        let Some(e) = self.crew.open.as_mut().and_then(|v| v.plan_edit.as_mut()) else { return };
+        if i >= e.rows() {
+            return;
+        }
+        if e.typing.is_some() {
+            e.commit();
+        }
+        let again = e.sel == i;
+        e.sel = i.min(e.rows() - 1);
+        if again && matches!(e.row(e.sel), PlanRow::Question(_) | PlanRow::Add) {
+            e.start_typing();
+        }
+    }
+
+    /// Keys in the plan editor: ↑↓ pick a row; ↵ types a question (or adds one); ←→ step
+    /// breadth, depth and sources; d drops a question; s sends; esc leaves without sending.
+    fn plan_edit_key(&mut self, k: KeyEvent, out: &mut Vec<Request>) {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(v) = self.crew.open.as_mut() else { return };
+        let run = v.run.clone();
+        let Some(e) = v.plan_edit.as_mut() else { return };
+        if let Some(c) = e.typing.as_mut() {
+            match k.code {
+                KeyCode::Enter => e.commit(),
+                KeyCode::Esc => e.cancel_typing(),
+                KeyCode::Up => {
+                    e.commit();
+                    e.sel = e.sel.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Tab => {
+                    e.commit();
+                    e.sel = (e.sel + 1).min(e.rows() - 1);
+                }
+                KeyCode::Backspace if ctrl => c.backspace_word(),
+                KeyCode::Char('w') if ctrl => c.backspace_word(),
+                KeyCode::Char('u') if ctrl => c.clear(),
+                KeyCode::Backspace => c.backspace(),
+                KeyCode::Delete => c.delete(),
+                KeyCode::Left => c.left(),
+                KeyCode::Right => c.right(),
+                KeyCode::Home => c.home(),
+                KeyCode::End => c.end(),
+                KeyCode::Char(ch) if !ctrl => c.insert(ch),
+                _ => {}
+            }
+            return;
+        }
+        match k.code {
+            KeyCode::Esc => self.plan_action(run, PlanAction::Discard, out),
+            KeyCode::Char('s') => self.plan_action(run, PlanAction::Send, out),
+            KeyCode::Up | KeyCode::Char('k') => e.sel = e.sel.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => e.sel = (e.sel + 1).min(e.rows() - 1),
+            KeyCode::BackTab => e.sel = e.sel.saturating_sub(1),
+            KeyCode::Enter => e.start_typing(),
+            KeyCode::Left | KeyCode::Char('-') => e.adjust(false),
+            KeyCode::Right | KeyCode::Char('+') | KeyCode::Char('=') => e.adjust(true),
+            KeyCode::Char('d') | KeyCode::Delete => {
+                if let PlanRow::Question(i) = e.row(e.sel) {
+                    e.remove(i);
+                }
+            }
             _ => {}
         }
     }

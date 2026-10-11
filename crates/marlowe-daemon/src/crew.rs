@@ -138,11 +138,35 @@ fn on_event(core: &Arc<Core>, ev: CrewEvent) {
             core.bus.publish(Event::RunFinished { run, dispatch });
         }
         CrewEvent::PlanProposed { run, plan, quote, .. } => {
+            crate::brief::speak_notice(core, &plan_notice(&run, &plan, &quote));
             core.bus.publish(Event::PlanProposed { run, plan, quote });
         }
         CrewEvent::Research { run, progress } => {
             core.bus.publish(Event::ResearchProgress { run, progress });
         }
+    }
+}
+
+/// A waiting research plan as a notice, for the voice: said once per run (outside quiet hours,
+/// when voice is on), the same way an urgent Sentinel notice is. The client shows the plan itself.
+fn plan_notice(run: &RunId, plan: &marlowe_proto::ResearchPlan, quote: &marlowe_proto::CostQuote) -> marlowe_proto::Notice {
+    let n = plan.sub_questions.len();
+    marlowe_proto::Notice {
+        id: format!("crew-plan-{}", run.as_str()),
+        at_ms: crate::now_ms(),
+        source: marlowe_proto::NoticeSource::Run,
+        severity: marlowe_proto::Severity::Attention,
+        kind: "plan_waiting".into(),
+        title: "a research plan is waiting for your approval".into(),
+        detail: format!(
+            "{n} sub-question{} · about {} tokens · {} fetches · {} min",
+            if n == 1 { "" } else { "s" },
+            quote.model_tokens,
+            quote.fetches,
+            quote.minutes
+        ),
+        subject: run.as_str().to_string(),
+        seen: false,
     }
 }
 

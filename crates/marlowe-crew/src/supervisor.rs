@@ -200,6 +200,22 @@ impl Inner {
         lock(&self.state)
     }
 
+    /// A deep research run whose plan was proposed and never approved: it stopped at the plan
+    /// gate, and its next start proposes the checkpointed plan again.
+    fn waits_on_plan(&self, run: &Run) -> bool {
+        use crate::playbook::research_v2::checkpoint_key;
+        use marlowe_proto::ResearchStage;
+        if run.playbook != Some(crate::Playbook::DeepResearch) {
+            return false;
+        }
+        let Ok(steps) = self.store().steps(&run.id) else { return false };
+        let has = |part: &str| {
+            let key = checkpoint_key(ResearchStage::Plan, Some(part));
+            steps.iter().any(|s| s.key == key)
+        };
+        has("proposed") && !has("approved")
+    }
+
     pub(crate) fn store(&self) -> MutexGuard<'_, RunStore> {
         lock(&self.store)
     }
@@ -444,9 +460,11 @@ impl Supervisor {
             wake: wake_tx,
         });
 
-        // Runs a previous daemon left mid-flight. One that was waiting on an approval lost it:
-        // it pauses, and resuming asks again.
-        let resumable = inner.store().resumable()?;
+        // Runs a previous daemon left mid-flight (a crash: a clean stop leaves them running). One
+        // waiting on an approval lost it: it pauses, and resuming asks again. One waiting on its
+        // research plan is queued instead: the proposal is checkpointed, so asking again costs no
+        // model call, and the plan is back in front of the user without a resume.
+        let mut resumable = inner.store().resumable()?;
         let stranded: Vec<Run> = inner
             .store()
             .list(u32::MAX)?
@@ -454,6 +472,12 @@ impl Supervisor {
             .filter(|r| r.status == CrewRunStatus::NeedsYou && r.result.is_none())
             .collect();
         for mut run in stranded {
+            if inner.waits_on_plan(&run) {
+                run.note = Some("the daemon restarted; asking for the research plan again".into());
+                run.status = CrewRunStatus::Queued;
+                resumable.push(inner.save_detached(run)?);
+                continue;
+            }
             run.status = CrewRunStatus::Paused;
             run.note = Some("the daemon restarted while this run waited on you; resume it to ask again".into());
             inner.save_detached(run)?;

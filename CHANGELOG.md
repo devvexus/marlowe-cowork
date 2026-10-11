@@ -4,6 +4,17 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### A research plan you can see, answer and edit
+
+Matthew (ui-preview5): a deep research run waited on its plan and there was no way to accept it or be told about it, in the Run view or the main window. Replaying the preview's run (from its `cowork.db`) through the TUI: the plan reached the Run view only below the transcript, with `a approve plan` as dim text in the bottom border; the main window had a toast that expired and the rail's "approve, edit or reject it" with nothing to press; there was no edit at all. A client that attached after the broadcast (a relaunch, a reconnect past the replay ring) had no plan until it opened that exact run, and a crash (the PC went down several times that day) left the run `needs_you` with its plan gone and paused it on the next start.
+
+- **Added.** A banner over the composer while any plan waits: who asks, the goal, the sub-question count and quote, and `^r review` / `approve` / `edit` / `reject` buttons. `^r` opens the run whose plan waits first.
+- **Changed.** The Run view shows the plan, its quote (with its basis) and `a approve` / `e edit` / `x reject` buttons fixed under the header, above the transcript. `e` opens an editor: rewrite, add or drop sub-questions (a rewritten one drops the model's queries for the old wording), step breadth, depth and sources; `s` sends `PlanDecision::Edit` (validated first; unchanged is a plain approve), `esc` discards. Keys and clicks for all of it.
+- **Added.** `ListRuns` (sent on every Welcome) is followed by each listed run's waiting plan, so a client that attached late has it. A daemon restart clears the client's plans until the list says again.
+- **Changed.** A run left `needs_you` at its plan gate by a crash is queued on the next start instead of paused: the proposal is checkpointed, so it is proposed again with no second draft. Other stranded approvals still pause.
+- **Added.** A waiting plan is said once by the voice (outside quiet hours), through the urgent-notice path.
+- **Tests.** `marlowe-tui/tests/interaction.rs`: the banner and its buttons, `^r` to the plan with its buttons above the transcript, the editor by keys and by mouse, an edit with no questions refused, and a plan that arrives with the run list after Welcome and after a daemon restart. `marlowe-daemon/tests/crew.rs::a_client_that_attaches_after_the_plan_gets_it_with_the_run_list` over the wire with a scripted draft. `marlowe-crew/tests/research_v2.rs::a_plan_waiting_through_a_crash_is_asked_for_again_on_the_next_start`.
+
 ### A tool call no longer reads as reasoning
 
 Matthew (ui-preview5): a tool call directly under an expanded thinking block read as more thinking (same colour).

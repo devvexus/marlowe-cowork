@@ -538,3 +538,235 @@ fn a_proposed_research_plan_is_shown_with_its_quote_and_answered_with_a_or_x() {
     let out = s.on_key(key(KeyCode::Char('y')));
     assert!(out.contains(&Request::ApprovePlan { run, decision: PlanDecision::Reject { reason: None } }), "{out:?}");
 }
+
+// ---- a research plan waiting for the user (ui-preview5) ------------------------------------------
+
+fn waiting_plan() -> (marlowe_proto::ResearchPlan, marlowe_proto::CostQuote) {
+    use marlowe_proto::{ChannelId, CostQuote, ResearchPlan, SubQuestion};
+    (
+        ResearchPlan {
+            goal: "LoRA rank ablations".into(),
+            sub_questions: vec![SubQuestion {
+                id: 1,
+                question: "Which ranks hold accuracy on 7B models?".into(),
+                channels: vec![ChannelId::Arxiv, ChannelId::SemanticScholar],
+                rationale: Some("papers report it".into()),
+                queries: vec!["lora rank ablation 7b".into()],
+            }],
+            breadth: 3,
+            depth: 1,
+            source_budget: 12,
+            recalled: vec![],
+            notes: None,
+        },
+        CostQuote { model_tokens: 96_000, fetches: 12, minutes: 18, usd: None, basis: "1 node x b3".into() },
+    )
+}
+
+/// The busy session with research run `aa11bb22` waiting on its plan, proposed as a broadcast.
+fn plan_waiting() -> State {
+    let mut s = busy();
+    let mut waiting = crew_run("aa11bb22", "researcher", "LoRA rank ablations for 22B gates", CrewRunStatus::NeedsYou);
+    waiting.playbook = Some(Playbook::DeepResearch);
+    waiting.note = Some("research plan ready: 1 sub-questions, about 96000 model tokens, 12 fetches, 18 min; approve, edit or reject it".into());
+    feed(&mut s, 40, Event::RunUpdated(waiting));
+    let (plan, quote) = waiting_plan();
+    feed(&mut s, 41, Event::PlanProposed { run: RunId::from("aa11bb22"), plan, quote });
+    s
+}
+
+/// Where `needle` starts on the row below the one holding `anchor`.
+fn find_below(buf: &Buffer, anchor: &str, needle: &str) -> (u16, u16) {
+    let (_, y) = find(buf, anchor);
+    let row = dump(buf).lines().nth(y as usize + 1).unwrap_or("").to_string();
+    let i = row.find(needle).unwrap_or_else(|| panic!("{needle:?} is not under {anchor:?}\n{}", dump(buf)));
+    (row[..i].chars().count() as u16, y + 1)
+}
+
+/// The main window keeps a banner while a plan waits: who asks, the quote, and buttons. Its
+/// approve answers the run, and the banner goes.
+#[test]
+fn a_waiting_plan_is_a_banner_in_the_main_window_whose_buttons_answer_it() {
+    use marlowe_proto::PlanDecision;
+    let mut s = plan_waiting();
+    assert_eq!(s.view, View::Conversation);
+    let buf = frame(&s);
+    assert!(contains(&buf, "◐ research plan waiting for your approval · researcher · LoRA rank ablations for 22B gates"), "{}", dump(&buf));
+    assert!(contains(&buf, "1 sub-question · ~96k tokens · 12 fetches · 18 min"), "{}", dump(&buf));
+    for b in ["^r review", "approve", "edit", "reject"] {
+        find_below(&buf, "research plan waiting for your approval", b);
+    }
+    assert!(contains(&buf, "researcher research plan waiting"), "and a toast:\n{}", dump(&buf));
+    // The banner is inside the Conversation box, over the composer, and the transcript keeps
+    // every row above it.
+    let g = geometry(area(), &s);
+    let banner = g.plan_banner.expect("a banner");
+    assert!(banner.y > g.conversation.bottom() && banner.bottom() <= g.conversation_box.bottom() - 1, "{g:?}");
+
+    // Banner reject opens the Run view on that run, asking y/n.
+    let (x, y) = find_below(&buf, "research plan waiting for your approval", "reject");
+    s.on_mouse(click(x, y), area());
+    assert_eq!(s.view, View::Crew);
+    assert_eq!(s.crew.open.as_ref().map(|v| v.run.clone()), Some(RunId::from("aa11bb22")));
+    assert!(contains(&frame(&s), "reject this plan?"));
+    s.on_key(key(KeyCode::Char('n')));
+    s.on_key(key(KeyCode::Esc));
+    s.on_key(key(KeyCode::Esc));
+    assert_eq!(s.view, View::Conversation);
+
+    let buf = frame(&s);
+    let (x, y) = find_below(&buf, "research plan waiting for your approval", "approve");
+    let out = s.on_mouse(click(x, y), area());
+    assert!(out.contains(&Request::ApprovePlan { run: RunId::from("aa11bb22"), decision: PlanDecision::Approve }), "{out:?}");
+    let buf = frame(&s);
+    assert!(!contains(&buf, "research plan waiting for your approval"), "answered: the banner goes\n{}", dump(&buf));
+    assert!(geometry(area(), &s).plan_banner.is_none());
+}
+
+/// ^r opens the run whose plan waits (another run also needs the user), with the plan, its quote
+/// and its buttons under the header, above the transcript; the buttons click.
+#[test]
+fn ctrl_r_opens_the_waiting_plan_with_its_quote_and_buttons_above_the_transcript() {
+    use marlowe_proto::PlanDecision;
+    let mut s = plan_waiting();
+    let out = s.on_key(ctrl('r'));
+    assert!(out.contains(&Request::WatchRun { run: RunId::from("aa11bb22") }), "{out:?}");
+    let info = s.crew.get(&RunId::from("aa11bb22")).unwrap().clone();
+    let steps = vec![marlowe_proto::CrewStep { step: 1, role: "researcher".into(), action: "plan".into(), text: "drafted".into(), at_ms: NOW }];
+    feed(&mut s, 0, Event::RunTranscript { run: info, steps });
+    let buf = frame(&s);
+    let text = dump(&buf);
+    let row = |needle: &str| text.lines().position(|l| l.contains(needle)).unwrap_or_else(|| panic!("{needle:?}\n{text}"));
+    assert!(row("◐ Research plan — waiting for your approval") < row("TRANSCRIPT"), "{text}");
+    assert!(text.contains("1. Which ranks hold accuracy on 7B models?"));
+    assert!(text.contains("arxiv · semantic_scholar"));
+    assert!(text.contains("breadth 3 · depth 1 · up to 12 sources"));
+    assert!(text.contains("quote: 1 sub-question · ~96k tokens · 12 fetches · 18 min · 1 node x b3"), "{text}");
+    for b in ["a approve", "e edit", "x reject"] {
+        find_below(&buf, "quote:", b);
+    }
+    assert!(text.contains("a approve plan"), "and the footer says so:\n{text}");
+
+    let (x, y) = find_below(&buf, "quote:", "x reject");
+    assert!(s.on_mouse(click(x, y), area()).is_empty(), "reject asks first");
+    assert!(contains(&frame(&s), "reject this plan?"));
+    s.on_key(key(KeyCode::Char('n')));
+    let buf = frame(&s);
+    let (x, y) = find_below(&buf, "quote:", "a approve");
+    let out = s.on_mouse(click(x, y), area());
+    assert!(out.contains(&Request::ApprovePlan { run: RunId::from("aa11bb22"), decision: PlanDecision::Approve }), "{out:?}");
+    assert!(!contains(&frame(&s), "Research plan — waiting"));
+}
+
+/// `e` edits the plan in place: a question rewritten (its model queries go with the old wording),
+/// one added, breadth stepped; `s` sends it as `PlanDecision::Edit`.
+#[test]
+fn e_edits_the_plan_and_s_sends_it_as_edited() {
+    use marlowe_proto::{ChannelId, PlanDecision};
+    let mut s = plan_waiting();
+    s.on_key(ctrl('r'));
+    s.on_key(key(KeyCode::Char('e')));
+    let buf = frame(&s);
+    for want in ["Edit the research plan", "› 1. Which ranks hold accuracy on 7B models?", "+ add a question", "breadth", "‹   3 ›", "depth", "sources", "s send", "esc discard edits"] {
+        assert!(contains(&buf, want), "{want:?}\n{}", dump(&buf));
+    }
+    assert!(!contains(&buf, "s to steer"), "the editor has the keys");
+
+    s.on_key(key(KeyCode::Enter));
+    s.on_key(ctrl('u'));
+    type_str(&mut s, "Which LoRA ranks hold accuracy on 22B models?");
+    let buf = render(&s, W, H);
+    assert!(contains(&buf, "1. Which LoRA ranks hold accuracy on 22B models?"), "{}", dump(&buf));
+    s.on_key(key(KeyCode::Enter));
+    s.on_key(key(KeyCode::Down));
+    s.on_key(key(KeyCode::Enter));
+    type_str(&mut s, "Do adapters beat LoRA at 22B?");
+    s.on_key(key(KeyCode::Enter));
+    // Rows: two questions, add, breadth.
+    s.on_key(key(KeyCode::Down));
+    s.on_key(key(KeyCode::Down));
+    s.on_key(key(KeyCode::Right));
+    assert!(contains(&frame(&s), "‹   4 ›"));
+
+    let out = s.on_key(key(KeyCode::Char('s')));
+    let Some(Request::ApprovePlan { run, decision: PlanDecision::Edit { plan } }) = out.first() else { panic!("{out:?}") };
+    assert_eq!(run, &RunId::from("aa11bb22"));
+    assert_eq!(plan.breadth, 4);
+    let qs: Vec<(u32, &str)> = plan.sub_questions.iter().map(|q| (q.id, q.question.as_str())).collect();
+    assert_eq!(qs, vec![(1, "Which LoRA ranks hold accuracy on 22B models?"), (2, "Do adapters beat LoRA at 22B?")]);
+    assert!(plan.sub_questions[0].queries.is_empty() && plan.sub_questions[0].rationale.is_none());
+    assert_eq!(plan.sub_questions[1].channels, vec![ChannelId::Arxiv, ChannelId::SemanticScholar]);
+    plan.validate().unwrap();
+    let buf = frame(&s);
+    assert!(!contains(&buf, "Edit the research plan") && !contains(&buf, "Research plan — waiting"), "{}", dump(&buf));
+    assert!(contains(&buf, "plan approved as edited"));
+}
+
+/// The editor by mouse: a row clicked twice types in it, and the send button sends. An edit that
+/// leaves nothing to research is refused here, before the daemon sees it, and the plan stays.
+#[test]
+fn the_plan_editor_clicks_and_refuses_a_plan_with_no_questions() {
+    use marlowe_proto::PlanDecision;
+    let mut s = plan_waiting();
+    s.on_key(ctrl('r'));
+    let buf = frame(&s);
+    let (x, y) = find_below(&buf, "quote:", "e edit");
+    s.on_mouse(click(x, y), area());
+    let buf = frame(&s);
+    assert!(contains(&buf, "Edit the research plan"), "{}", dump(&buf));
+    s.on_key(key(KeyCode::Char('d')));
+    assert!(!contains(&frame(&s), "Which ranks hold accuracy"));
+    let buf = frame(&s);
+    let (x, y) = find(&buf, "s send");
+    let out = s.on_mouse(click(x, y), area());
+    assert!(out.is_empty(), "{out:?}");
+    assert!(contains(&frame(&s), "the edited plan is not runnable"), "{}", dump(&frame(&s)));
+    assert!(s.crew.plan(&RunId::from("aa11bb22")).is_some(), "still waiting");
+
+    // esc drops the edits; the plan is as proposed.
+    s.on_key(key(KeyCode::Esc));
+    let buf = frame(&s);
+    assert!(contains(&buf, "1. Which ranks hold accuracy on 7B models?"), "{}", dump(&buf));
+    s.on_key(key(KeyCode::Char('e')));
+    let buf = frame(&s);
+    let (x, y) = find(&buf, "+ add a question");
+    s.on_mouse(click(x, y), area());
+    s.on_mouse(click(x, y), area());
+    type_str(&mut s, "What do adapters cost?");
+    s.on_key(key(KeyCode::Enter));
+    let buf = frame(&s);
+    let (x, y) = find(&buf, "s send");
+    let out = s.on_mouse(click(x, y), area());
+    let Some(Request::ApprovePlan { decision: PlanDecision::Edit { plan }, .. }) = out.first() else { panic!("{out:?}") };
+    assert_eq!(plan.sub_questions.len(), 2);
+    assert_eq!(plan.sub_questions[1].question, "What do adapters cost?");
+}
+
+/// A plan proposed before this client attached (or past a reconnect's replay) comes with the run
+/// list the client asks for on Welcome; a daemon restart forgets plans until the list says again.
+#[test]
+fn a_plan_proposed_before_the_client_attached_comes_with_the_run_list() {
+    let mut s = state();
+    s.now_ms = NOW;
+    let out = welcome(&mut s, 50);
+    assert!(out.contains(&Request::ListRuns { limit: marlowe_tui::crew::RUN_LIMIT }));
+    feed(&mut s, 51, library_with_sonnet());
+    let mut waiting = crew_run("aa11bb22", "researcher", "LoRA rank ablations for 22B gates", CrewRunStatus::NeedsYou);
+    waiting.playbook = Some(Playbook::DeepResearch);
+    let (plan, quote) = waiting_plan();
+    // The daemon's answer: the list, then each listed run's waiting plan.
+    feed(&mut s, 0, Event::Runs { list: vec![waiting.clone()] });
+    feed(&mut s, 0, Event::PlanProposed { run: RunId::from("aa11bb22"), plan: plan.clone(), quote: quote.clone() });
+    let buf = frame(&s);
+    assert!(contains(&buf, "research plan waiting for your approval"), "{}", dump(&buf));
+    assert!(contains(&buf, "researcher research plan waiting"), "a toast too:\n{}", dump(&buf));
+
+    // The daemon restarted: its seqs start over.
+    s.on_client(marlowe_tui::ClientEvent::Disconnected { reason: "gone".into(), attempt: 1 });
+    let out = welcome(&mut s, 3);
+    assert!(out.contains(&Request::ListRuns { limit: marlowe_tui::crew::RUN_LIMIT }));
+    assert!(!contains(&frame(&s), "research plan waiting for your approval"), "not until the daemon says so");
+    feed(&mut s, 0, Event::Runs { list: vec![waiting] });
+    feed(&mut s, 0, Event::PlanProposed { run: RunId::from("aa11bb22"), plan, quote });
+    assert!(contains(&frame(&s), "research plan waiting for your approval"));
+}

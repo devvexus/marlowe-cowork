@@ -35,6 +35,7 @@ mod crew;
 mod library;
 mod memory;
 mod overlay;
+mod plan;
 mod watch;
 
 use marlowe_surface::chrome::Ink;
@@ -100,6 +101,8 @@ pub struct Geometry {
     pub tabs: [Rect; 4],
     /// The open picker dropdown (model or workspace).
     pub picker: Option<Rect>,
+    /// Under the transcript, inside the Conversation box, while a research plan waits.
+    pub plan_banner: Option<Rect>,
 }
 
 impl Geometry {
@@ -132,6 +135,7 @@ pub fn geometry(area: Rect, state: &State) -> Geometry {
         sections: [Rect::default(); 4],
         tabs: [Rect::default(); 4],
         picker: None,
+        plan_banner: None,
     };
     if too_small {
         return g;
@@ -150,6 +154,12 @@ pub fn geometry(area: Rect, state: &State) -> Geometry {
     g.conversation_box = Rect { width: left_w, height: g.main.height - composer_h, ..g.main };
     g.conversation = inner(g.conversation_box);
     g.composer = Some(Rect { y: g.conversation_box.bottom(), height: composer_h, ..g.conversation_box });
+    // A plan waiting on the user keeps a banner over the composer until it is answered.
+    if state.crew.waiting_plan().is_some() && g.conversation.height >= plan::BANNER_ROWS + 6 {
+        let rows = plan::BANNER_ROWS + 1;
+        g.conversation.height -= rows;
+        g.plan_banner = Some(Rect { y: g.conversation.bottom() + 1, height: plan::BANNER_ROWS, ..g.conversation });
+    }
 
     let col = Rect { x: area.x + left_w, width: bw, ..g.main };
     let model = Rect { height: PICKER_BOX_H, ..col };
@@ -241,6 +251,9 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
                 boot::draw(g.conversation, state, theme, buf);
             } else {
                 conversation::draw(g.conversation, state, theme, buf);
+                if let Some(r) = g.plan_banner {
+                    plan::banner(r, state, theme, buf);
+                }
             }
             board::draw(&g, state, theme, buf);
         }

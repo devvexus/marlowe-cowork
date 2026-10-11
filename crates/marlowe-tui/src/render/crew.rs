@@ -1,9 +1,7 @@
 //! The crew on screen: the CREW rail section, the run list and the Run view (^r), and the ^d
 //! dispatch prompt. Foreground only; the prompt's `Clear` resets cells to the terminal default.
 
-use marlowe_proto::{
-    CostQuote, CrewRunInfo, CrewRunStatus, CrewStep, Dispatch, Playbook, ResearchPlan, SandboxKind, StageState,
-};
+use marlowe_proto::{CrewRunInfo, CrewRunStatus, CrewStep, Dispatch, Playbook, SandboxKind, StageState};
 use marlowe_surface::chrome::Ink;
 use marlowe_surface::{markdown, Theme};
 use ratatui::buffer::Buffer;
@@ -101,7 +99,11 @@ fn content(main: Rect) -> Rect {
 
 pub fn cursor(main: Rect, state: &State) -> Option<(u16, u16)> {
     let c = content(main);
-    let v = state.crew.open.as_ref().filter(|v| v.steering)?;
+    let open = state.crew.open.as_ref()?;
+    if open.plan_edit.as_ref().is_some_and(|e| e.typing.is_some()) {
+        return open.plan_cursor.get();
+    }
+    let v = Some(open).filter(|v| v.steering)?;
     let before = &v.steer.text()[..v.steer.cursor()];
     let col = text::width(&text::clean(before)).min(c.width.saturating_sub(10) as usize) as u16;
     Some((c.x + 8 + col, c.bottom() - 1))
@@ -115,10 +117,13 @@ pub fn draw(main: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     let hints: &[(&str, &str)] = match (&state.crew.open, state.crew.open_run()) {
         (Some(v), Some(r)) => {
             draw_run(c, state, v, r, theme, buf);
-            if v.confirm.is_none() && state.crew.plan(&r.id).is_some() {
-                &[("a", "approve plan"), ("x", "reject"), ("p", "pause"), ("↑↓", "scroll"), ("esc/⌫", "runs")]
-            } else {
-                run_hints(v, r)
+            match &v.plan_edit {
+                Some(e) if e.typing.is_some() => &[("↵", "done"), ("esc", "cancel")],
+                Some(_) => &[("↑↓", "row"), ("↵", "type"), ("←→", "adjust"), ("d", "drop"), ("s", "send"), ("esc", "discard")],
+                None if v.confirm.is_none() && state.crew.plan(&r.id).is_some() => {
+                    &[("a", "approve plan"), ("e", "edit"), ("x", "reject"), ("p", "pause"), ("↑↓", "scroll"), ("esc/⌫", "runs")]
+                }
+                None => run_hints(v, r),
             }
         }
         (Some(_), None) => {
@@ -273,7 +278,9 @@ fn draw_run(c: Rect, state: &State, v: &RunView, r: &CrewRunInfo, theme: &Theme,
         let lead = if i == 0 { "goal  " } else { "      " };
         head.push(Line::from(vec![Span::styled(lead, dimmer), Span::styled(g, theme.normal())]));
     }
-    if let Some(n) = r.note.as_deref().filter(|n| !n.trim().is_empty()) {
+    // A waiting plan's note says what its panel shows.
+    let plan_shown = state.crew.plan(&r.id).is_some();
+    if let Some(n) = r.note.as_deref().filter(|n| !n.trim().is_empty() && !plan_shown) {
         let st = match r.status {
             CrewRunStatus::Failed => ink(Ink::Red, theme),
             CrewRunStatus::NeedsYou => ink(Ink::Amber, theme),
@@ -285,6 +292,35 @@ fn draw_run(c: Rect, state: &State, v: &RunView, r: &CrewRunInfo, theme: &Theme,
     }
     head.push(Line::from(""));
 
+    // The bottom line: a confirmation, the steer box, or nothing.
+    let bottom = bottom_line(v, r, w, theme);
+    let head_h = head.len().min(c.height as usize);
+    for (i, l) in head.iter().take(head_h).enumerate() {
+        put(buf, c.x, c.y + i as u16, l, c.width);
+    }
+    let under = |taken: usize| Rect {
+        y: c.y + taken as u16,
+        height: (c.height as usize).saturating_sub(taken + usize::from(bottom.is_some()) * 2) as u16,
+        ..c
+    };
+    // A waiting plan sits under the header, fixed, with its buttons; its editor takes the body.
+    if let Some(e) = &v.plan_edit {
+        super::plan::editor(under(head_h), state, v, e, theme, buf);
+        if let Some(b) = bottom {
+            put(buf, c.x, c.bottom() - 1, &b, c.width);
+        }
+        return;
+    }
+    let plan_h = if state.crew.plan(&r.id).is_some() {
+        let room = under(head_h);
+        // The transcript keeps a few rows; the plan gets the rest.
+        let cap = Rect { height: room.height.saturating_sub(4).max(room.height.min(8)), ..room };
+        super::plan::panel(cap, state, r, theme, buf) as usize
+    } else {
+        0
+    };
+    let head_h = head_h + plan_h;
+
     // Body: scrolls.
     let mut body: Vec<Line<'static>> = Vec::new();
     if let Some(d) = &r.result {
@@ -292,19 +328,7 @@ fn draw_run(c: Rect, state: &State, v: &RunView, r: &CrewRunInfo, theme: &Theme,
         body.push(Line::from(""));
     }
     transcript_lines(v, w, theme, &mut body);
-    // A working run shows its tail, so a pending plan goes last to be on screen.
-    if let Some((plan, quote)) = state.crew.plan(&r.id) {
-        body.push(Line::from(""));
-        plan_lines(plan, quote, w, theme, &mut body);
-    }
-
-    // The bottom line: a confirmation, the steer box, or nothing.
-    let bottom = bottom_line(v, r, w, theme);
-    let head_h = head.len().min(c.height as usize);
     let body_h = (c.height as usize).saturating_sub(head_h + usize::from(bottom.is_some()) * 2);
-    for (i, l) in head.iter().take(head_h).enumerate() {
-        put(buf, c.x, c.y + i as u16, l, c.width);
-    }
     let total = body.len();
     let max = total.saturating_sub(body_h);
     v.scroll_max.set(max);
@@ -335,44 +359,6 @@ fn draw_run(c: Rect, state: &State, v: &RunView, r: &CrewRunInfo, theme: &Theme,
             put(buf, c.x, y, &b, c.width);
         }
     }
-}
-
-/// A proposed research plan and its quote, for the user to approve (a) or reject (x). Narrowing
-/// or editing it is `marlowe crew plan <run>`.
-fn plan_lines(plan: &ResearchPlan, quote: &CostQuote, w: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
-    let dim = ink(Ink::Dim, theme);
-    let dimmer = ink(Ink::Dimmer, theme);
-    out.push(Line::from(Span::styled("Research plan — waiting for you", ink(Ink::Amber, theme).add_modifier(Modifier::BOLD))));
-    for q in &plan.sub_questions {
-        let ch: Vec<&str> = q.channels.iter().map(|c| c.as_str()).collect();
-        for (i, l) in text::wrap(&text::clean(&q.question), w.saturating_sub(5)).into_iter().enumerate() {
-            let lead = if i == 0 { format!("{:>2}. ", q.id) } else { "    ".into() };
-            out.push(Line::from(vec![Span::styled(lead, dim), Span::styled(l, theme.normal())]));
-        }
-        out.push(Line::from(Span::styled(text::truncate(&format!("    {}", ch.join(" · ")), w), dimmer)));
-    }
-    let recalled = if plan.recalled.is_empty() { String::new() } else { format!(" · {} memories", plan.recalled.len()) };
-    out.push(Line::from(Span::styled(
-        format!("breadth {} · depth {} · up to {} sources{recalled}", plan.breadth, plan.depth, plan.source_budget),
-        dim,
-    )));
-    if let Some(n) = plan.notes.as_deref().filter(|n| !n.trim().is_empty()) {
-        for l in text::wrap(&text::clean(n.trim()), w).into_iter().take(3) {
-            out.push(Line::from(Span::styled(l, dimmer)));
-        }
-    }
-    out.push(Line::from(Span::styled(
-        text::truncate(
-            &format!(
-                "quote: about {} tokens · {} fetches · {} min",
-                text::compact(quote.model_tokens),
-                quote.fetches,
-                quote.minutes
-            ),
-            w,
-        ),
-        ink(Ink::Amber, theme),
-    )));
 }
 
 /// A research run's stages and counts, from its `ResearchProgress` reports:
@@ -695,6 +681,9 @@ fn bottom_line(v: &RunView, r: &CrewRunInfo, w: usize, theme: &Theme) -> Option<
             Span::styled(" / ", dimmer),
             Span::styled("n", accent),
         ]));
+    }
+    if v.plan_edit.is_some() {
+        return None;
     }
     if v.steering {
         let t = text::clean(v.steer.text());

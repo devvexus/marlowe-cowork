@@ -2742,6 +2742,7 @@ dependencies = [
  "marlowe-mind",
  "marlowe-model",
  "marlowe-proto",
+ "marlowe-research",
  "marlowe-sentinel",
  "marlowe-voice",
  "rusqlite",

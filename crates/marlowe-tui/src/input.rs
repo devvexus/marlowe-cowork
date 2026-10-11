@@ -400,6 +400,11 @@ impl State {
             // A fold marker opens or closes its block where it is; the keys stay where they were,
             // so Enter in the Message box still sends.
             Target::Thought(entry) => self.toggle_thought(entry),
+            Target::Plan(run, action) => {
+                self.flash = None;
+                self.plan_action(run, action, out);
+            }
+            Target::PlanRow(i) => self.plan_row_click(i),
             Target::Button(_) | Target::PlanCell(..) | Target::PlanField(_) => {}
         }
     }

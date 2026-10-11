@@ -287,6 +287,11 @@ pub enum Target {
     PlanField(crate::context::PlanField),
     /// A reasoning block's fold marker, by entry index: opens or closes it.
     Thought(usize),
+    /// A control on a research plan that waits for the user: the main window's banner and the
+    /// Run view's plan panel.
+    Plan(RunId, crate::crew::PlanAction),
+    /// A row of the plan editor (questions, then add, breadth, depth, sources).
+    PlanRow(usize),
 }
 
 /// A palette command.
@@ -845,6 +850,9 @@ impl State {
                         self.note("the daemon restarted; the turn was lost", NoteTone::Amber);
                     }
                     self.approvals.clear();
+                    // A plan that still waits comes back with the run list (and is proposed
+                    // again by a daemon that crashed); one answered meanwhile must not linger.
+                    self.crew.plans.clear();
                     self.reload(out);
                 } else {
                     self.check_gap = true;
