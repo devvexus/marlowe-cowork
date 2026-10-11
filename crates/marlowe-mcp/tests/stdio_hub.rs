@@ -42,7 +42,7 @@ fn no_cancel() -> bool {
 }
 
 #[test]
-fn tools_are_listed_namespaced_and_called() {
+fn parity_x12_tools_are_listed_namespaced_and_called() {
     let home = tmp("basic");
     let hub = hub_with(&home, None, &[("fake", entry(&[]))]);
     let status = hub.statuses();
@@ -65,7 +65,7 @@ fn tools_are_listed_namespaced_and_called() {
 }
 
 #[test]
-fn output_over_25k_tokens_is_cut_and_saved() {
+fn parity_x12_output_over_25k_tokens_is_cut_and_saved() {
     let home = tmp("big");
     let hub = hub_with(&home, None, &[("fake", entry(&[]))]);
     let out = hub.call("mcp__fake__big", json!({"chars": 300_000}), &no_cancel).unwrap();
@@ -78,7 +78,7 @@ fn output_over_25k_tokens_is_cut_and_saved() {
 }
 
 #[test]
-fn list_changed_refreshes_the_tool_set() {
+fn parity_x14_list_changed_refreshes_the_tool_set() {
     let home = tmp("listchanged");
     let hub = hub_with(&home, None, &[("fake", entry(&["--list-changed"]))]);
     assert!(hub.find("mcp__fake__brand_new").is_none());
@@ -96,7 +96,7 @@ fn list_changed_refreshes_the_tool_set() {
 }
 
 #[test]
-fn resources_and_prompts_are_listed_read_and_rendered() {
+fn parity_x14_resources_and_prompts_are_listed_read_and_rendered() {
     let home = tmp("res");
     let hub = hub_with(&home, None, &[("fake", entry(&[]))]);
     assert!(hub.has_resources() && hub.has_prompts());
@@ -116,7 +116,7 @@ fn resources_and_prompts_are_listed_read_and_rendered() {
 }
 
 #[test]
-fn a_server_that_exits_reports_why_and_a_crashed_one_is_restarted_by_the_next_call() {
+fn parity_x12_a_server_that_exits_reports_why_and_a_crashed_one_is_restarted_by_the_next_call() {
     let home = tmp("crash");
     let hub = hub_with(&home, None, &[("dies", entry(&["--stderr-note", "--exit-after-init"]))]);
     let st = &hub.statuses()[0];
@@ -141,7 +141,7 @@ fn a_server_that_exits_reports_why_and_a_crashed_one_is_restarted_by_the_next_ca
 }
 
 #[test]
-fn a_call_can_be_cancelled_without_hanging() {
+fn parity_x12_a_call_can_be_cancelled_without_hanging() {
     let home = tmp("cancel");
     let hub = hub_with(&home, None, &[("fake", entry(&[]))]);
     let started = std::time::Instant::now();
@@ -158,7 +158,7 @@ fn a_call_can_be_cancelled_without_hanging() {
 }
 
 #[test]
-fn eighty_tools_are_searchable_and_selectable() {
+fn parity_t31_eighty_tools_are_searchable_and_selectable() {
     let home = tmp("eighty");
     let hub = hub_with(&home, None, &[("big", entry(&["--extra-tools", "72"]))]);
     assert_eq!(hub.tools().len(), 80);
@@ -171,7 +171,7 @@ fn eighty_tools_are_searchable_and_selectable() {
 }
 
 #[test]
-fn a_workspace_server_does_not_start_until_trusted() {
+fn parity_x12_a_workspace_server_does_not_start_until_trusted() {
     let home = tmp("trust-home");
     let ws = tmp("trust-ws");
     let marker = ws.join("started.txt");
@@ -198,7 +198,7 @@ fn a_workspace_server_does_not_start_until_trusted() {
 }
 
 #[test]
-fn a_changed_description_is_withheld_until_the_user_approves_it() {
+fn parity_x12_a_changed_description_is_withheld_until_the_user_approves_it() {
     let home = tmp("pin-home");
     let desc = home.join("desc.txt");
     std::fs::write(&desc, "Echo the text back.").unwrap();
@@ -228,7 +228,7 @@ fn a_changed_description_is_withheld_until_the_user_approves_it() {
 }
 
 #[test]
-fn a_credential_variable_in_a_config_is_never_expanded() {
+fn parity_x12_a_credential_variable_in_a_config_is_never_expanded() {
     let home = tmp("cred");
     let hub = hub_with(&home, None, &[("leaky", json!({"command": FAKE, "args": ["${OPENROUTER_API_KEY:-x}"]}))]);
     match &hub.statuses()[0].status {
@@ -238,7 +238,7 @@ fn a_credential_variable_in_a_config_is_never_expanded() {
 }
 
 #[test]
-fn a_child_does_not_inherit_the_harness_keys() {
+fn parity_x12_a_child_does_not_inherit_the_harness_keys() {
     // The server dumps its own environment; the parent's key must not be in it.
     let home = tmp("env");
     std::env::set_var("OPENROUTER_API_KEY", "sk-canary-1234");

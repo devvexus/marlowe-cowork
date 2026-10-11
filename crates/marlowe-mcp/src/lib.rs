@@ -40,6 +40,10 @@ pub mod util;
 #[cfg(feature = "fake-server")]
 pub mod fake;
 
+/// Set to `1` before a daemon starts to make its MCP hubs use only the run's own servers
+/// (`marlowe -p --strict-mcp-config`).
+pub const STRICT_ENV: &str = "MARLOWE_MCP_STRICT";
+
 /// The newest protocol revision this client speaks (it also accepts 2025-03-26 and 2024-11-05).
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 

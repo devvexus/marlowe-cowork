@@ -13,6 +13,7 @@ mod doctor;
 mod eval;
 mod eval_entry;
 mod export;
+mod headless;
 mod launcher;
 mod math_cmd;
 mod mcp_cmd;
@@ -54,8 +55,11 @@ marlowe me [--name N] [--address sir|name|none]
 marlowe math [--grid | --images] [--width N]
                                           a sheet of hard equations and matrices, drawn as the
                                           conversation pane draws them (grid, and Sixel images)
-marlowe status | shutdown | doctor
-marlowe bench | export | mcp | eval        M4.6 commands (not available yet)
+marlowe status | shutdown | doctor [--json]
+marlowe -p [PROMPT] [flags]               one non-interactive run, like `claude -p` (marlowe -p --help)
+marlowe mcp [list | add | add-json | remove | get | trust | auth | logout]
+                                          MCP servers (.mcp.json and the settings layers)
+marlowe bench | export | eval             M4.6 commands (not available yet)
 
 ask streams the reply to stdout. A tool that needs approval prompts on stdin; --yes allows
 every approval in this turn; an empty answer or a closed stdin denies.
@@ -76,6 +80,9 @@ fn main() -> ExitCode {
 }
 
 fn dispatch(home: &std::path::Path, args: &[String]) -> Result<i32, String> {
+    if headless::is_print(args) {
+        return headless::run(home, args);
+    }
     let rest = args.get(1..).unwrap_or_default();
     match args.first().map(String::as_str) {
         None | Some("tui") => run_tui(home),
@@ -92,7 +99,7 @@ fn dispatch(home: &std::path::Path, args: &[String]) -> Result<i32, String> {
         Some("crew") => crew_cmd::run(home, rest),
         Some("status") => commands::status(home),
         Some("shutdown") => commands::shutdown(home),
-        Some("doctor") => Ok(doctor::run(home)),
+        Some("doctor") => Ok(doctor::run(home, rest)),
         // M4.6 entry points; each module is owned by its track (design section 7).
         Some("bench") => bench::run(home, rest),
         Some("export") => export::run(home, rest),
@@ -169,7 +176,7 @@ fn ask(home: &std::path::Path, rest: &[String]) -> Result<i32, String> {
 }
 
 /// `\\?\C:\x` -> `C:\x`; the verbatim prefix confuses downstream path scoping.
-fn strip_verbatim(p: PathBuf) -> PathBuf {
+pub(crate) fn strip_verbatim(p: PathBuf) -> PathBuf {
     match p.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
         Some(rest) if !rest.starts_with("UNC") => PathBuf::from(rest),
         _ => p,

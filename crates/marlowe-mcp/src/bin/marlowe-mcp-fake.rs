@@ -1,6 +1,6 @@
 //! The scripted stdio MCP server the tests start (feature `fake-server`).
 //!
-//! Flags: `--extra-tools N`, `--list-changed`, `--stderr-note`, `--exit-after-init`, `--protocol V`, `--desc-file PATH`.
+//! Flags: `--extra-tools N`, `--list-changed`, `--stderr-note`, `--exit-after-init`, `--protocol V`, `--desc-file PATH`, `--gate`.
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -10,6 +10,7 @@ fn main() {
         protocol: value("--protocol"),
         list_changed: args.iter().any(|a| a == "--list-changed"),
         echo_description: value("--desc-file").and_then(|p| std::fs::read_to_string(p).ok()),
+        gate: args.iter().any(|a| a == "--gate"),
     };
     marlowe_mcp::fake::run_stdio(opts, &args);
 }

@@ -4,7 +4,7 @@
 //! the product.
 //!
 //! Tools: `echo{text}`, `add{a,b}`, `big{chars}` (long output), `fail` (isError), `image`,
-//! `slow{ms}`, `add_tool{name}` (adds a tool and sends `tools/list_changed`), `pid`. Resources:
+//! `slow{ms}`, `approve{tool_name,input}` (with `gate`), `add_tool{name}` (adds a tool and sends `tools/list_changed`), `pid`. Resources:
 //! `file:///notes.txt`, `file:///data.json`, template `file:///{name}.md`. Prompts: `greet{name}`,
 //! `review`. `extra_tools` adds that many filler tools `tool_000...`.
 
@@ -29,6 +29,9 @@ pub struct FakeOpts {
     pub list_changed: bool,
     /// Replaces the `echo` tool's description.
     pub echo_description: Option<String>,
+    /// Adds `approve{tool_name,input}`, a permission prompt tool: it denies a `Bash` input whose
+    /// command contains `rm ` and allows everything else.
+    pub gate: bool,
 }
 
 struct FakeState {
@@ -57,6 +60,9 @@ impl FakeMcp {
             tool("add_tool", "Add a tool with the given name and notify listeners.", json!({"name": {"type": "string"}}), &["name"]),
             tool("pid", "Return this server's process id.", json!({}), &[]),
         ];
+        if opts.gate {
+            tools.push(tool("approve", "Decide whether a tool call may run.", json!({"tool_name": {"type": "string"}, "input": {"type": "object"}}), &["tool_name", "input"]));
+        }
         for i in 0..opts.extra_tools {
             tools.push(tool(
                 &format!("tool_{i:03}"),
@@ -113,6 +119,11 @@ impl FakeMcp {
                         out.push(reply(text("done".into())));
                     }
                     "pid" => out.push(reply(text(std::process::id().to_string()))),
+                    "approve" => {
+                        let bad = args["tool_name"] == "Bash" && args["input"]["command"].as_str().is_some_and(|c| c.contains("rm "));
+                        let answer = if bad { json!({"behavior": "deny", "message": "the gate refuses rm"}) } else { json!({"behavior": "allow", "updatedInput": args["input"]}) };
+                        out.push(reply(text(answer.to_string())));
+                    }
                     "add_tool" => {
                         let n = args["name"].as_str().unwrap_or("extra").to_string();
                         self.lock().tools.push(tool(&n, "A tool added at run time.", json!({}), &[]));

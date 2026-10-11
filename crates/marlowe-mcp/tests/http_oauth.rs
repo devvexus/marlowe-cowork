@@ -38,7 +38,7 @@ fn hub_for(server: &FakeHttp, tokens: Arc<MemoryTokens>, extra: serde_json::Valu
 }
 
 #[test]
-fn a_plain_json_server_with_sessions_serves_tools_resources_and_prompts() {
+fn parity_x13_a_plain_json_server_with_sessions_serves_tools_resources_and_prompts() {
     let server = FakeHttp::start(HttpOpts { sessions: true, ..Default::default() });
     let (hub, _) = hub_for(&server, Arc::new(MemoryTokens::default()), json!({}));
     assert_eq!(hub.statuses()[0].status, SlotStatus::Connected, "{:?}", hub.statuses());
@@ -51,7 +51,7 @@ fn a_plain_json_server_with_sessions_serves_tools_resources_and_prompts() {
 }
 
 #[test]
-fn an_sse_reply_server_works_the_same() {
+fn parity_x13_an_sse_reply_server_works_the_same() {
     let server = FakeHttp::start(HttpOpts { sessions: true, sse: true, ..Default::default() });
     let (hub, _) = hub_for(&server, Arc::new(MemoryTokens::default()), json!({}));
     assert_eq!(hub.statuses()[0].status, SlotStatus::Connected, "{:?}", hub.statuses());
@@ -59,7 +59,7 @@ fn an_sse_reply_server_works_the_same() {
 }
 
 #[test]
-fn list_changed_arrives_on_the_push_stream() {
+fn parity_x14_list_changed_arrives_on_the_push_stream() {
     let server = FakeHttp::start(HttpOpts { push_stream: true, mcp: FakeOpts { list_changed: true, ..Default::default() }, ..Default::default() });
     let (hub, _) = hub_for(&server, Arc::new(MemoryTokens::default()), json!({}));
     assert_eq!(hub.statuses()[0].status, SlotStatus::Connected);
@@ -79,7 +79,7 @@ fn list_changed_arrives_on_the_push_stream() {
 }
 
 #[test]
-fn plain_http_to_a_remote_host_is_a_config_error() {
+fn parity_x13_plain_http_to_a_remote_host_is_a_config_error() {
     let text = json!({"mcpServers": {"r": {"type": "http", "url": "http://example.com/mcp"}}}).to_string();
     let mut opts = HubOpts::new(Paths::new(&tmp("remote"), None), ConnectOpts::new(Arc::new(MemoryTokens::default())));
     opts.session = config::parse_session(&[text]).unwrap();
@@ -104,7 +104,7 @@ fn browser(url: &str) -> Result<(), String> {
 }
 
 #[test]
-fn oauth_discovers_registers_authorizes_with_pkce_and_connects() {
+fn parity_x13_oauth_discovers_registers_authorizes_with_pkce_and_connects() {
     let server = FakeHttp::start(HttpOpts { oauth: true, token_ttl: 3600, ..Default::default() });
     let tokens = Arc::new(MemoryTokens::default());
 
@@ -135,7 +135,7 @@ fn oauth_discovers_registers_authorizes_with_pkce_and_connects() {
 }
 
 #[test]
-fn an_expired_access_token_is_refreshed_and_the_rotation_is_stored() {
+fn parity_x13_an_expired_access_token_is_refreshed_and_the_rotation_is_stored() {
     let server = FakeHttp::start(HttpOpts { oauth: true, ..Default::default() });
     let tokens = Arc::new(MemoryTokens::default());
     let (hub, opts) = hub_for(&server, tokens.clone(), json!({}));
@@ -156,7 +156,7 @@ fn an_expired_access_token_is_refreshed_and_the_rotation_is_stored() {
 }
 
 #[test]
-fn a_revoked_authorization_asks_for_auth_again_instead_of_failing_obscurely() {
+fn parity_x13_a_revoked_authorization_asks_for_auth_again_instead_of_failing_obscurely() {
     let server = FakeHttp::start(HttpOpts { oauth: true, ..Default::default() });
     let tokens = Arc::new(MemoryTokens::default());
     let (hub, opts) = hub_for(&server, tokens.clone(), json!({}));
@@ -170,7 +170,7 @@ fn a_revoked_authorization_asks_for_auth_again_instead_of_failing_obscurely() {
 }
 
 #[test]
-fn a_denied_or_forged_redirect_does_not_authorize() {
+fn parity_x13_a_denied_or_forged_redirect_does_not_authorize() {
     let server = FakeHttp::start(HttpOpts { oauth: true, ..Default::default() });
     let tokens = Arc::new(MemoryTokens::default());
     let (_hub, opts) = hub_for(&server, tokens.clone(), json!({}));
@@ -201,7 +201,7 @@ fn a_denied_or_forged_redirect_does_not_authorize() {
 }
 
 #[test]
-fn a_static_authorization_header_bypasses_oauth() {
+fn parity_x13_a_static_authorization_header_bypasses_oauth() {
     let server = FakeHttp::start(HttpOpts::default());
     let flag = Arc::new(AtomicBool::new(false));
     let _ = flag.load(Ordering::SeqCst);

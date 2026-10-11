@@ -78,6 +78,7 @@ fn hub_for(core: &Arc<Core>, ws: Option<&Path>) -> Arc<Hub> {
     connect.roots = ws.map(|w| vec![w.to_path_buf()]).unwrap_or_default();
     let mut opts = HubOpts::new(Paths::new(&core.home, ws), connect);
     opts.session = lock(&reg.session).get(&key).cloned().unwrap_or_default();
+    opts.strict = std::env::var(marlowe_mcp::STRICT_ENV).is_ok_and(|v| v.trim() == "1");
     opts.spill_dir = Some(spill_dir(core));
     if let Some(n) = std::env::var("MAX_MCP_OUTPUT_TOKENS").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0) {
         opts.max_output_tokens = n;

@@ -143,7 +143,7 @@ fn stop(info: &DaemonInfo, join: std::thread::JoinHandle<Result<(), marlowe_daem
 }
 
 #[test]
-fn servers_are_added_listed_and_removed_over_the_wire() {
+fn parity_x15_servers_are_added_listed_and_removed_over_the_wire() {
     let home = temp_home("crud");
     let (info, join) = start(&home, Arc::new(Scripted::default()));
     let mut c = Client::connect(&info);
@@ -224,7 +224,7 @@ fn approve_all(c: &mut Client) -> Vec<Envelope> {
 }
 
 #[test]
-fn a_session_calls_an_mcp_tool_after_the_user_allows_it() {
+fn parity_x12_a_session_calls_an_mcp_tool_after_the_user_allows_it() {
     let server = FakeHttp::start(HttpOpts::default());
     let home = temp_home("turn");
     std::fs::write(home.join("mcp.json"), json!({"mcpServers": {"web": {"type": "http", "url": server.url()}}}).to_string()).unwrap();
@@ -256,7 +256,7 @@ fn a_session_calls_an_mcp_tool_after_the_user_allows_it() {
 }
 
 #[test]
-fn eighty_tools_reach_the_model_as_one_search_tool() {
+fn parity_t31_eighty_tools_reach_the_model_as_one_search_tool() {
     let server = FakeHttp::start(HttpOpts { mcp: FakeOpts { extra_tools: 72, ..Default::default() }, ..Default::default() });
     let home = temp_home("search");
     std::fs::write(home.join("mcp.json"), json!({"mcpServers": {"web": {"type": "http", "url": server.url(), "consequence": "inert"}}}).to_string()).unwrap();
