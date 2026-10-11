@@ -13,11 +13,14 @@ const NAMES: [&str; 11] = [
     "read", "write", "edit", "glob", "grep", "bash", "powershell", "python", "web_fetch", "arxiv", "paper",
 ];
 
+const VERIFY: [&str; 4] = ["project", "service", "http_check", "browser"];
+
 #[test]
 fn the_declared_tools_are_exactly_the_implemented_ones() {
     let ws = Ws::new("et-specs");
     let t = ws.tools();
-    let specs = t.specs();
+    // The verify group (project, service, http_check, browser) has its own tests.
+    let specs: Vec<_> = t.specs().into_iter().filter(|s| !VERIFY.contains(&s.name.as_str())).collect();
     let names: Vec<_> = specs.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, NAMES, "web_search appears only with a backend");
     for s in &specs {

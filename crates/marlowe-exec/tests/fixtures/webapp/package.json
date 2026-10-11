@@ -1,0 +1,9 @@
+{
+  "name": "fixture-app",
+  "private": true,
+  "scripts": {
+    "dev": "python server.py",
+    "build": "node build.js",
+    "test": "node test.js"
+  }
+}

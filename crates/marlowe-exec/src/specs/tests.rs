@@ -218,11 +218,16 @@ fn every_tool_answers_as_the_old_dispatch_did() {
 
 #[test]
 fn every_tool_is_registered_once_in_its_group_in_the_old_order() {
-    let names: Vec<&str> = table().defs.iter().map(|d| d.name()).collect();
+    // The verify group (track D) registers after the web group; its own tests pin its schemas.
+    let names: Vec<&str> =
+        table().defs.iter().filter(|d| d.manifest.group != marlowe_agent::ToolGroup::Verify).map(|d| d.name()).collect();
     assert_eq!(
         names,
         ["read", "write", "edit", "glob", "grep", "bash", "powershell", "python", "web_fetch", "arxiv", "paper", "web_search"]
     );
+    let verify: Vec<&str> =
+        table().defs.iter().filter(|d| d.manifest.group == marlowe_agent::ToolGroup::Verify).map(|d| d.name()).collect();
+    assert_eq!(verify, ["project", "service", "http_check", "browser"]);
     for d in &table().defs {
         let schema = &d.spec.input_schema;
         assert_eq!(schema["additionalProperties"], json!(false), "{} schema is flat and closed", d.name());
@@ -343,7 +348,10 @@ fn exposure_fixes_the_tool_set_and_refuses_the_rest() {
     // every registered tool, so the default and the local set agree.
     let local = marlowe_model::ModelInfo::bare(marlowe_model::ProviderKind::Ollama, "m");
     let frontier = marlowe_model::ModelInfo::bare(marlowe_model::ProviderKind::OpenRouter, "m");
-    assert_eq!(names(&BuiltinTools::new(None).with_model_exposure(&local)), names(&everything));
+    let without_verify = |h: &BuiltinTools| {
+        names(h).into_iter().filter(|n| !["project", "service", "http_check", "browser"].contains(&n.as_str())).collect::<Vec<_>>()
+    };
+    assert_eq!(names(&BuiltinTools::new(None).with_model_exposure(&local)), without_verify(&everything));
     assert_eq!(BuiltinTools::new(None).with_model_exposure(&local).exposure().0, ExposureProfile::Local);
     assert_eq!(BuiltinTools::new(None).with_model_exposure(&frontier).exposure().1, ToolGroup::ALL.as_slice());
 
@@ -360,11 +368,18 @@ fn exposure_fixes_the_tool_set_and_refuses_the_rest() {
 fn every_group_file_registers_its_hooks() {
     let setup = super::HostSetup { home: Path::new("C:/home"), workspace: None };
     let host = super::configure(BuiltinTools::new(None), &setup);
-    assert_eq!(host.specs().len(), BuiltinTools::new(None).specs().len(), "the stub configures change nothing");
+    // Configuring adds the browser tool when Edge is installed (and nothing else so far).
+    let count = |h: &BuiltinTools| h.specs().iter().filter(|s| s.name != "browser").count();
+    assert_eq!(count(&host), count(&BuiltinTools::new(None)), "the stub configures change nothing");
     for g in super::GROUPS {
         assert_eq!(super::group(g.group).map(|r| r.group), Some(g.group));
         assert!((g.middleware)(&host).is_empty());
-        assert!((g.persona_block)().is_none(), "{:?}: a block needs its capability live first", g.group);
+        assert_eq!(
+            (g.persona_block)().is_some(),
+            g.group == marlowe_agent::ToolGroup::Verify,
+            "{:?}: a block needs its capability live first",
+            g.group
+        );
         assert!(!(g.detect)(None));
     }
     assert!(super::group(marlowe_agent::ToolGroup::Memory).is_none(), "memory tools are the daemon's");
