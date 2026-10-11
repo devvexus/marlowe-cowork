@@ -59,17 +59,36 @@ pub const BODY_LINES: usize = 60;
 pub const WARMUP: Duration = Duration::from_secs(5);
 
 /// Who is asking: whether the call may use a trusted server (the user's free-write workspace, in a
-/// session no untrusted content has entered; see [`super::servers`]), and its interrupt.
+/// session no untrusted content has entered; see [`super::servers`]), whether it may use a server
+/// at all, and its interrupt.
 #[derive(Clone, Copy)]
 pub struct Caller<'a> {
     pub cancelled: &'a dyn Fn() -> bool,
     pub trusted: bool,
+    /// `false` for a session that took in untrusted content: it starts and uses no server (a
+    /// server reads workspace config that can name programs to run, and such a session writes
+    /// the workspace freely), so the tools answer from the index and `rename_symbol` refuses.
+    pub servers: bool,
 }
 
 impl<'a> Caller<'a> {
     pub fn new(cancelled: &'a dyn Fn() -> bool, trusted: bool) -> Self {
-        Self { cancelled, trusted }
+        Self { cancelled, trusted, servers: true }
     }
+
+    /// A caller from a tainted session: no language servers.
+    pub fn tainted(cancelled: &'a dyn Fn() -> bool) -> Self {
+        Self { cancelled, trusted: false, servers: false }
+    }
+}
+
+/// `s` when it is shaped like a name (identifier characters and `::`, `.`, `<>`, `$`, `#`, at most
+/// 80 bytes): what may be shown of a name that comes from a file outside the user's folders.
+pub fn plain_name(s: &str) -> Option<&str> {
+    let ok = !s.is_empty()
+        && s.len() <= 80
+        && s.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | ':' | '.' | '<' | '>' | '$' | '#'));
+    ok.then_some(s)
 }
 
 /// The errors in `now` that are not in `known`, matched by (code, message) as a multiset, so
@@ -172,6 +191,21 @@ impl Target {
             Some(c) => format!("{c}::{}", self.name),
             None => self.name.clone(),
         }
+    }
+
+    /// [`Self::qualified`] with only name-shaped parts ([`plain_name`]): for a definition outside
+    /// the user's folders, whose container a server reports from text there.
+    pub fn plain_qualified(&self) -> String {
+        let name = plain_name(&self.name).unwrap_or("(unnamed)");
+        match self.container.as_deref().and_then(plain_name) {
+            Some(c) => format!("{c}::{name}"),
+            None => name.to_string(),
+        }
+    }
+
+    /// The kind when it is name-shaped, else `symbol`.
+    pub fn plain_kind(&self) -> &str {
+        plain_name(&self.kind).unwrap_or("symbol")
     }
 }
 
@@ -423,6 +457,12 @@ impl CodeIntel {
     /// since by the shell (`cargo fmt`, `git checkout`) or an editor would leave its answers
     /// pointing at old positions. Returns whether it was ready.
     fn connect(&self, ws: &dyn Workspace, path: &Path, caller: &Caller) -> Result<(LspClient, bool)> {
+        if !caller.servers {
+            // A trusted server running for the root is stopped too: the tainted session may have
+            // written what it would run.
+            self.lsp.distrust(&self.root);
+            return Err(IntelError::Lsp(LspError::Withheld));
+        }
         let client = self.lsp.client(path, &self.root, caller.trusted)?;
         let ready = client.wait_ready(READY_MAX, caller.cancelled);
         self.resync(ws, &client);
@@ -783,7 +823,15 @@ impl CodeIntel {
         let list: Vec<String> = found
             .iter()
             .take(12)
-            .map(|t| format!("  {}:{}  {}  ({})", self.rel(&t.path), t.line, t.qualified(), if t.kind.is_empty() { "symbol" } else { &t.kind }))
+            .map(|t| {
+                // Outside the root a server's container text is shown only when it is a name.
+                let (name, kind) = if super::uri::contained(&self.root, &t.path) {
+                    (t.qualified(), if t.kind.is_empty() { "symbol" } else { t.kind.as_str() })
+                } else {
+                    (t.plain_qualified(), t.plain_kind())
+                };
+                format!("  {}:{}  {name}  ({kind})", self.rel(&t.path), t.line)
+            })
             .collect();
         let more = if found.len() > 12 { format!("\n  ... and {} more", found.len() - 12) } else { String::new() };
         Err(IntelError::Ambiguous(format!(
@@ -827,7 +875,9 @@ impl CodeIntel {
                 Ok(vec![(p.to_path_buf(), diags, client.encoding())])
             }
             None => {
-                let live = self.lsp.live();
+                // Only this root's servers, and only files under it: the manager is shared by
+                // every session and workspace of the profile home.
+                let live = self.lsp.live_under(&self.root);
                 if live.is_empty() {
                     return Err(IntelError::NotFound(
                         "no language server is running; give `path` to check a file (that starts its server)".into(),
@@ -836,7 +886,9 @@ impl CodeIntel {
                 let mut out = Vec::new();
                 for c in live {
                     for (p, d) in c.all_diagnostics() {
-                        out.push((p, d, c.encoding()));
+                        if super::uri::contained(&self.root, &p) {
+                            out.push((p, d, c.encoding()));
+                        }
                     }
                 }
                 out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1015,12 +1067,21 @@ impl CodeIntel {
         Ok(())
     }
 
+    /// The server for an edited file ([`LspManager::for_edit`]); none for a tainted caller.
+    fn for_edit(&self, p: &Path, caller: &Caller) -> Option<LspClient> {
+        if !caller.servers {
+            self.lsp.distrust(&self.root);
+            return None;
+        }
+        self.lsp.for_edit(p, &self.root, caller.trusted)
+    }
+
     /// Before an edit to `paths`: open each on its server (starting it when the workspace has its
     /// project marker) and remember its current diagnostics.
     pub fn before_edit(&self, ws: &dyn Workspace, paths: &[PathBuf], caller: &Caller) -> EditSnapshot {
         let mut snap = EditSnapshot::default();
         for p in paths {
-            let Some(client) = self.lsp.for_edit(p, &self.root, caller.trusted) else { continue };
+            let Some(client) = self.for_edit(p, caller) else { continue };
             self.resync(ws, &client);
             let mut opened = None;
             if !client.is_open(p) {
@@ -1047,7 +1108,7 @@ impl CodeIntel {
         let deadline = Instant::now() + DIAG_MAX;
         let mut pending = Vec::new();
         for p in paths {
-            let Some(client) = self.lsp.for_edit(p, &self.root, caller.trusted) else { continue };
+            let Some(client) = self.for_edit(p, caller) else { continue };
             let Ok(text) = Self::read_text(ws, p) else { continue };
             let (mut before, opened) = snap.before.get(&norm_key(p)).cloned().unwrap_or((None, None));
             if before.is_none() {

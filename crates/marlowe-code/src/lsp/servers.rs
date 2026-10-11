@@ -14,11 +14,15 @@
 //! lock a user's build waits on.
 //!
 //! **Trust.** A server is started *trusted* only for the user's own free-write workspace in a
-//! session no untrusted content has entered. Untrusted, nothing the workspace supplies runs: the
-//! TypeScript servers use the global TypeScript, never `<root>/node_modules`, and rust-analyzer
-//! starts with build scripts, proc macros and `checkOnSave` (a `cargo check`, which runs both)
-//! off. Trusted, rust-analyzer runs all three, so post-edit diagnostics include rustc's own
-//! errors (borrowck, lifetimes, trait bounds).
+//! session no untrusted content has entered; a session that took in untrusted content starts no
+//! server at all (it writes the workspace freely, and servers read config there). Untrusted
+//! (another workspace, untainted): the TypeScript servers use the global TypeScript, never
+//! `<root>/node_modules`; rust-analyzer starts with build scripts, proc macros and `checkOnSave`
+//! (a `cargo check`, which runs both) off; and the start is refused when the root has config that
+//! names a program the server would run ([`ServerSpec::untrusted_hazard`]: `.cargo/config*` and
+//! `rust-toolchain*` for rust-analyzer's `cargo metadata`, `rust-analyzer.toml`, pyright's
+//! interpreter settings). Trusted, rust-analyzer runs all three, so post-edit diagnostics include
+//! rustc's own errors (borrowck, lifetimes, trait bounds).
 
 use std::path::{Path, PathBuf};
 
@@ -30,6 +34,8 @@ use crate::index::Lang;
 pub type OptionsFn = fn(&Path, bool, &Value) -> Value;
 /// The command for a root, trusted or not (`None`: cannot run there).
 pub type CommandFn = fn(&Path, bool) -> Option<Vec<String>>;
+/// What in a root would make the server run a program the workspace names (`None`: nothing).
+pub type HazardFn = fn(&Path) -> Option<String>;
 
 /// One language server.
 #[derive(Debug, Clone)]
@@ -53,6 +59,9 @@ pub struct ServerSpec {
     pub options_for_root: Option<OptionsFn>,
     /// The command for a given root and trust, when it depends on them (`None`: cannot run).
     pub command_for_root: Option<CommandFn>,
+    /// Workspace config that would make the server run a program the workspace names; an
+    /// untrusted start is refused when it is present.
+    pub hazard: Option<HazardFn>,
 }
 
 impl ServerSpec {
@@ -75,6 +84,11 @@ impl ServerSpec {
             Some(f) => f(root, trusted, &self.init_options),
             None => self.init_options.clone(),
         }
+    }
+
+    /// Why an untrusted start in `root` is refused: config there names a program to run.
+    pub fn untrusted_hazard(&self, root: &Path) -> Option<String> {
+        self.hazard.and_then(|f| f(root))
     }
 
     /// Whether `root` has one of this server's project markers.
@@ -104,6 +118,7 @@ pub fn default_specs() -> Vec<ServerSpec> {
             server_status: true,
             options_for_root: Some(rust_analyzer_options),
             command_for_root: None,
+            hazard: Some(rust_hazard),
         },
         ServerSpec {
             id: "pyright",
@@ -115,6 +130,7 @@ pub fn default_specs() -> Vec<ServerSpec> {
             server_status: false,
             options_for_root: None,
             command_for_root: None,
+            hazard: Some(pyright_hazard),
         },
         ServerSpec {
             id: "typescript-language-server",
@@ -126,6 +142,7 @@ pub fn default_specs() -> Vec<ServerSpec> {
             server_status: false,
             options_for_root: Some(tsserver_options),
             command_for_root: Some(tls_command),
+            hazard: None,
         },
         ServerSpec {
             id: "typescript",
@@ -137,8 +154,40 @@ pub fn default_specs() -> Vec<ServerSpec> {
             server_status: false,
             options_for_root: None,
             command_for_root: Some(native_ts_command),
+            hazard: None,
         },
     ]
+}
+
+/// The first of `names` present in `root` or one of its immediate subfolders (rust-analyzer
+/// discovers Cargo projects one level down, and cargo reads config from where it runs).
+fn first_present(root: &Path, names: &[&str]) -> Option<PathBuf> {
+    let subdirs = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path());
+    std::iter::once(root.to_path_buf()).chain(subdirs).flat_map(|d| names.iter().map(move |n| d.join(n))).find(|p| p.exists())
+}
+
+/// rust-analyzer runs `cargo metadata` (through the rustup proxy) even with build scripts off:
+/// `.cargo/config*` can name `build.rustc`/`rustc-wrapper`, `rust-toolchain*` a toolchain path,
+/// and `rust-analyzer.toml` overrides its settings.
+pub fn rust_hazard(root: &Path) -> Option<String> {
+    first_present(root, &[".cargo/config", ".cargo/config.toml", "rust-toolchain", "rust-toolchain.toml", "rust-analyzer.toml"])
+        .map(|p| p.display().to_string())
+}
+
+/// pyright runs the interpreter its config names (`venvPath`/`venv`, `pythonPath`) to find
+/// search paths: `pyrightconfig.json`, or a `pyproject.toml` with a `[tool.pyright]` table.
+pub fn pyright_hazard(root: &Path) -> Option<String> {
+    if let Some(p) = first_present(root, &["pyrightconfig.json"]) {
+        return Some(p.display().to_string());
+    }
+    let pyproject = root.join("pyproject.toml");
+    let text = std::fs::read_to_string(&pyproject).ok()?;
+    text.lines().any(|l| l.trim_start().starts_with("[tool.pyright")).then(|| pyproject.display().to_string())
 }
 
 /// Untrusted, rust-analyzer runs nothing the workspace supplies: no build scripts, no proc
@@ -304,5 +353,24 @@ mod tests {
         let flags = |o: &Value| (o["cargo"]["buildScripts"]["enable"].clone(), o["procMacro"]["enable"].clone(), o["checkOnSave"].clone());
         assert_eq!(flags(&t), (json!(true), json!(true), json!(true)));
         assert_eq!(flags(&u), (json!(false), json!(false), json!(false)));
+    }
+
+    #[test]
+    fn config_that_names_a_program_refuses_an_untrusted_start() {
+        let root = std::env::temp_dir().join(format!("marlowe-hazard-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("crate-a/.cargo")).unwrap();
+        let specs = default_specs();
+        let ra = specs.iter().find(|s| s.id == "rust-analyzer").unwrap();
+        let py = specs.iter().find(|s| s.id == "pyright").unwrap();
+        assert_eq!(ra.untrusted_hazard(&root), None);
+        assert_eq!(py.untrusted_hazard(&root), None);
+        // One level down counts (rust-analyzer discovers projects there).
+        std::fs::write(root.join("crate-a/.cargo/config.toml"), "[build]\nrustc-wrapper = \"evil.exe\"\n").unwrap();
+        assert!(ra.untrusted_hazard(&root).is_some_and(|p| p.ends_with("config.toml")));
+        std::fs::write(root.join("pyproject.toml"), "[project]\nname = \"x\"\n").unwrap();
+        assert_eq!(py.untrusted_hazard(&root), None);
+        std::fs::write(root.join("pyproject.toml"), "[tool.pyright]\nvenvPath = \".\"\nvenv = \"evil\"\n").unwrap();
+        assert!(py.untrusted_hazard(&root).is_some());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

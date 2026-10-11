@@ -6,9 +6,11 @@
 //! start one.
 //!
 //! Trust (see [`super::servers`]): an untrusted caller never gets a trusted server. One running
-//! for its root is stopped first ([`LspManager::distrust`]), so a session that took in
-//! untrusted content cannot have a trusted rust-analyzer run a `build.rs` it just wrote. A trusted
-//! caller takes whatever runs (an untrusted server is only less capable); it is not restarted.
+//! for its root is stopped first ([`LspManager::distrust`]). A trusted caller takes whatever runs
+//! (an untrusted server is only less capable); it is not restarted. A session that took in
+//! untrusted content gets no server at all (`intel::Caller::tainted`), and an untrusted start is
+//! refused where the root has config that names programs a server would run
+//! ([`ServerSpec::untrusted_hazard`]).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -187,6 +189,14 @@ impl LspManager {
                     return Ok(c);
                 }
                 let spec = self.spec_for(lang, root, trusted).ok_or_else(|| LspError::NoServer(lang.name().to_string()))?.clone();
+                if !trusted {
+                    if let Some(what) = spec.untrusted_hazard(root) {
+                        return Err(LspError::Start(format!(
+                            "{} is not started for this workspace: {what} can name a program it would run",
+                            spec.id
+                        )));
+                    }
+                }
                 let key = Self::key(&spec, root);
                 // A server that died is started again on demand.
                 if let Some(s) = slots.get(&key) {
@@ -270,6 +280,19 @@ impl LspManager {
         lock(&self.inner.slots)
             .values()
             .filter_map(|s| match s.cell.get() {
+                Some(Ok(c)) if c.alive() => Some(c.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The servers running now for `root` (the manager is shared across workspaces).
+    pub fn live_under(&self, root: &Path) -> Vec<LspClient> {
+        let r = norm_key(root);
+        lock(&self.inner.slots)
+            .iter()
+            .filter(|(k, _)| k.1 == r)
+            .filter_map(|(_, s)| match s.cell.get() {
                 Some(Ok(c)) if c.alive() => Some(c.clone()),
                 _ => None,
             })

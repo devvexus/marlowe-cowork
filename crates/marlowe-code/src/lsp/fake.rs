@@ -116,6 +116,7 @@ impl FakeLauncher {
             server_status: false,
             options_for_root: None,
             command_for_root: None,
+            hazard: None,
         }
     }
 }

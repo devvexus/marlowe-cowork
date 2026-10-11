@@ -46,6 +46,8 @@ pub enum LspError {
     Timeout(String),
     #[error("interrupted")]
     Cancelled,
+    #[error("language servers are off in a session that took in untrusted content")]
+    Withheld,
     #[error("{method} failed ({code}): {message}")]
     Server { method: String, code: i32, message: String },
 }

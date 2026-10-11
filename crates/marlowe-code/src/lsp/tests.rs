@@ -19,7 +19,7 @@ use crate::index::{Index, Lang};
 
 const NEVER: &dyn Fn() -> bool = &|| false;
 /// A caller in the user's own workspace with an untainted session.
-const ME: &Caller<'static> = &Caller { cancelled: NEVER, trusted: true };
+const ME: &Caller<'static> = &Caller { cancelled: NEVER, trusted: true, servers: true };
 
 fn fake_manager(cfg: FakeConfig) -> (FakeLauncher, LspManager) {
     let launcher = FakeLauncher::new(cfg);
@@ -405,7 +405,8 @@ fn an_untrusted_caller_never_gets_a_trusted_server() {
     let rs = t.0.join("src/engine.rs");
     let trusted = mgr.client(&rs, &t.0, true).unwrap();
     assert!(trusted.trusted());
-    // A tainted session asks: the trusted server is stopped and an untrusted one serves it.
+    // An untrusted caller (a workspace whose writes are not free) asks: the trusted server is
+    // stopped and an untrusted one serves it.
     let untrusted = mgr.client(&rs, &t.0, false).unwrap();
     assert!(!untrusted.trusted());
     assert_eq!(log.launches_with_trust(), [("fake-rust".to_string(), true), ("fake-rust".to_string(), false)]);
@@ -418,6 +419,43 @@ fn an_untrusted_caller_never_gets_a_trusted_server() {
     assert!(!mgr.client(&rs, &t.0, true).unwrap().trusted());
     assert!(!mgr.for_edit(&rs, &t.0, false).unwrap().trusted());
     assert_eq!(log.launches().len(), 2);
+}
+
+#[test]
+fn a_tainted_caller_starts_no_server_and_stops_a_trusted_one() {
+    let t = project();
+    let (log, mgr) = fake_manager(FakeConfig::default());
+    let eng = engine(&t, mgr.clone());
+    let tainted = Caller::tainted(NEVER);
+    let (_, _, source) = eng.references(&LocalFs, "Engine::start", None, 50, &tainted).unwrap();
+    assert_eq!(source, Source::Index);
+    let rs = t.0.join("src/engine.rs");
+    let snap = eng.before_edit(&LocalFs, std::slice::from_ref(&rs), &tainted);
+    assert!(eng.after_edit(&LocalFs, std::slice::from_ref(&rs), &snap, &tainted).is_empty());
+    assert!(matches!(eng.plan_rename(&LocalFs, "Engine::start", "go", None, &tainted), Err(IntelError::Refused(_))));
+    assert_eq!(log.launches(), Vec::<String>::new());
+    // A trusted server running for the root is stopped by a tainted call.
+    let trusted = mgr.client(&rs, &t.0, true).unwrap();
+    let _ = eng.hover(&LocalFs, "Engine::start", None, &tainted).unwrap();
+    assert!(mgr.live().is_empty(), "stopped: {:?}", trusted.id());
+    assert_eq!(log.launches().len(), 1);
+}
+
+#[test]
+fn an_untrusted_start_is_refused_where_config_names_a_program() {
+    let t = project();
+    t.put(".cargo/config.toml", "[build]\nrustc-wrapper = \"planted.exe\"\n");
+    let launcher = FakeLauncher::new(FakeConfig::default());
+    let mut spec = FakeLauncher::spec("fake-rust", &[Lang::Rust], &["Cargo.toml"]);
+    spec.hazard = Some(super::servers::rust_hazard);
+    let mgr = LspManager::with(Arc::new(launcher.clone()), vec![spec]);
+    let rs = t.0.join("src/engine.rs");
+    let e = mgr.client(&rs, &t.0, false).unwrap_err();
+    assert!(e.to_string().contains("config.toml"), "{e}");
+    assert!(mgr.for_edit(&rs, &t.0, false).is_none());
+    assert_eq!(launcher.launches(), Vec::<String>::new());
+    // The user's own workspace in an untainted session runs it, as cargo would.
+    assert!(mgr.client(&rs, &t.0, true).unwrap().trusted());
 }
 
 #[test]

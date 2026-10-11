@@ -160,6 +160,17 @@ struct Cx<'a> {
     trusted: bool,
 }
 
+/// The [`Caller`] for a call: a tainted session gets no language server (it writes the workspace
+/// freely, and a server reads config there that can name programs to run); else trusted per
+/// [`trusted_servers`].
+fn caller<'a>(cancelled: &'a dyn Fn() -> bool, tainted: bool, trusted: bool) -> Caller<'a> {
+    if tainted {
+        Caller::tainted(cancelled)
+    } else {
+        Caller::new(cancelled, trusted)
+    }
+}
+
 /// Whether language servers for `root` may run what the workspace supplies (its TypeScript, build
 /// scripts, proc macros): only for the user's free-write workspace in an untainted session.
 pub(super) fn trusted_servers(tools: &BuiltinTools, root: &Path, tainted: bool) -> bool {
@@ -179,14 +190,32 @@ impl<'a> Cx<'a> {
     /// Runs `f` as this call's [`Caller`].
     fn with<R>(&self, f: impl FnOnce(&Caller) -> R) -> R {
         let cancelled = || self.ctx.cancel.is_cancelled();
-        f(&Caller::new(&cancelled, self.trusted))
+        f(&caller(&cancelled, self.ctx.tainted, self.trusted))
     }
 
     /// Whether text from `p` may be shown: it is in the user's folders. Elsewhere (a dependency
-    /// the server pointed at) only its location and signature are, and the model is told to
-    /// `read` it, so the read goes through `read`'s taint.
+    /// the server pointed at) only its location and a name-shaped label are, never a line of it,
+    /// and the model is told to `read` it, so the read goes through `read`'s taint.
     fn shows(&self, p: &Path) -> bool {
         self.tools.trusted_read(&p.to_string_lossy())
+    }
+
+    /// `t`'s qualified name: in full in the user's folders, else only its name-shaped parts.
+    fn name(&self, t: &Target) -> String {
+        if self.shows(&t.path) {
+            t.qualified()
+        } else {
+            t.plain_qualified()
+        }
+    }
+
+    /// `t`'s kind and container ([`kind_of`]) in the user's folders, else its kind alone.
+    fn kind(&self, t: &Target) -> String {
+        if self.shows(&t.path) {
+            kind_of(t)
+        } else {
+            t.plain_kind().to_string()
+        }
     }
 
     fn ws(&self) -> &dyn marlowe_os::workspace::Workspace {
@@ -252,7 +281,11 @@ fn symbols(t: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
     }
     let mut out = format!("{} ({}):\n", plural(hits.len(), "symbol", "symbols"), source_note(source));
     for h in &hits {
-        let _ = writeln!(out, "{}:{}  {}  [{}]", c.rel(&h.path), h.line, h.sig.trim_end_matches('{').trim(), kind_of(h));
+        if c.shows(&h.path) {
+            let _ = writeln!(out, "{}:{}  {}  [{}]", c.rel(&h.path), h.line, h.sig.trim_end_matches('{').trim(), kind_of(h));
+        } else {
+            let _ = writeln!(out, "{}:{}  {}  [{}]  (outside your folders)", c.rel(&h.path), h.line, c.name(h), c.kind(h));
+        }
     }
     if hits.len() == n {
         let _ = writeln!(out, "(first {n}; narrow `query`, give `kind` or raise `limit`)");
@@ -280,10 +313,9 @@ fn definition(t: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
         let _ = writeln!(out, "{} of `{symbol}` ({}):", plural(found.len(), "definition", "definitions"), source_note(source));
     }
     for target in found.iter().take(n) {
-        let _ = writeln!(out, "\n{}  ({})  {}:{}", target.qualified(), kind_of(target), c.rel(&target.path), target.line);
+        let _ = writeln!(out, "\n{}  ({})  {}:{}", c.name(target), c.kind(target), c.rel(&target.path), target.line);
         if !c.shows(&target.path) {
-            let _ = writeln!(out, "{:>6}│ {}", target.line, target.sig.trim());
-            let _ = writeln!(out, "      │ ... (outside your folders; `read` the file to see the body)");
+            let _ = writeln!(out, "      │ (outside your folders; `read` the file to see it)");
             continue;
         }
         let body = c.intel.body(c.ws(), target);
@@ -321,7 +353,7 @@ fn references(t: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
     let mut out = format!(
         "{} to {} ({}:{}) in {} ({}):",
         plural(locs.len(), "reference", "references"),
-        target.qualified(),
+        c.name(&target),
         c.rel(&target.path),
         target.line,
         plural(files, "file", "files"),
@@ -361,13 +393,13 @@ fn hover(t: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
     match found {
         Ok((target, _, _)) if !c.shows(&target.path) => ToolOutcome::ok(
             format!(
-                "{}  {}:{}  (outside your folders)\n\n{}\n\n(`read` the file for its documentation)",
-                target.qualified(),
+                "{}  ({})  {}:{}  (outside your folders)\n\n(`read` the file for its signature and documentation)",
+                c.name(&target),
+                c.kind(&target),
                 c.rel(&target.path),
                 target.line,
-                target.sig.trim()
             ),
-            target.qualified(),
+            c.name(&target),
         ),
         Ok((target, text, source)) => ToolOutcome::ok(
             format!("{}  {}:{}  ({})\n\n{text}", target.qualified(), c.rel(&target.path), target.line, source_note(source)),
@@ -458,7 +490,7 @@ fn rename_symbol(t: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
     }
     let mut out = format!(
         "Renamed {} to `{}`: {} in {}.\n",
-        plan.target.qualified(),
+        c.name(&plan.target),
         plan.new_name,
         plural(plan.edits(), "edit", "edits"),
         plural(plan.files.len(), "file", "files"),

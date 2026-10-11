@@ -8,9 +8,11 @@
 //!
 //! Errors that arrive after that window (rust-analyzer's `cargo check`: borrowck, lifetimes,
 //! trait bounds) are not lost. Per session and edited file the middleware keeps what the model
-//! was last shown; `after_step` (and, after a final answer, the next `before_turn`) diffs any
-//! later publish against it and adds a `<new-diagnostics>` reminder, and the next edit of the
-//! file is diffed against it too, so a late error is never absorbed into a new baseline.
+//! was last shown; `after_step` diffs any later publish against it and appends a
+//! `<new-diagnostics>` reminder as its own message, `before_final` does the same before the model
+//! may finish (the turn takes another step), and the next edit of the file is diffed against it
+//! too, so a late error is never absorbed into a new baseline. The user's own text is never
+//! touched: it is stored in memory at user trust and is the retrieval query.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -18,9 +20,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use marlowe_agent::{CallCtx, Conversation, Mutation, StepInfo, ToolMiddleware, ToolOutcome, TurnFlow};
+use marlowe_agent::{CallCtx, Conversation, FinalFlow, Mutation, StepInfo, ToolMiddleware, ToolOutcome};
 use marlowe_code::index::{norm_key, Lang};
-use marlowe_code::lsp::intel::{Caller, CodeIntel, EditSnapshot, FileDiags};
+use marlowe_code::lsp::intel::{CodeIntel, EditSnapshot, FileDiags};
 use marlowe_code::lsp::Diag;
 use marlowe_model::{Message, ToolCall};
 use marlowe_os::workspace::LocalFs;
@@ -126,16 +128,6 @@ impl ToolMiddleware for DiagnosticsMiddleware {
         "code-diagnostics"
     }
 
-    fn before_turn(&self, convo: &mut Conversation, text: &mut String) -> TurnFlow {
-        // Errors that landed after the last turn's final answer.
-        let block = self.late_block(&convo.session.0);
-        if !block.is_empty() {
-            text.push_str("\n\n");
-            text.push_str(&block);
-        }
-        TurnFlow::Continue
-    }
-
     fn pre_mutation(&self, call: &ToolCall, cx: &CallCtx, mutation: &Mutation) -> Result<(), ToolOutcome> {
         let Mutation::Paths(paths) = mutation else { return Ok(()) };
         let files: Vec<PathBuf> = paths.iter().filter(|p| Lang::of(p).is_some() && self.inside(p)).cloned().collect();
@@ -144,7 +136,7 @@ impl ToolMiddleware for DiagnosticsMiddleware {
         }
         let cancel = cx.tool.cancel.clone();
         let cancelled = move || cancel.is_cancelled();
-        let caller = Caller::new(&cancelled, self.free && !cx.tool.tainted);
+        let caller = super::caller(&cancelled, cx.tool.tainted, self.free);
         let mut snap = self.intel.before_edit(&LocalFs, &files, &caller);
         let before = files
             .iter()
@@ -178,7 +170,7 @@ impl ToolMiddleware for DiagnosticsMiddleware {
         }
         let cancel = cx.tool.cancel.clone();
         let cancelled = move || cancel.is_cancelled();
-        let caller = Caller::new(&cancelled, self.free && !cx.tool.tainted);
+        let caller = super::caller(&cancelled, cx.tool.tainted, self.free);
         let found = self.intel.after_edit(&LocalFs, &files, &snap, &caller);
         {
             let mut shown = self.shown();
@@ -209,6 +201,17 @@ impl ToolMiddleware for DiagnosticsMiddleware {
             Vec::new()
         } else {
             vec![Message::user(block)]
+        }
+    }
+
+    /// Errors that landed since the last step reach the model before it finishes (also those
+    /// from a previous turn's edits that landed after its final answer).
+    fn before_final(&self, _info: StepInfo, convo: &mut Conversation, _text: &str) -> FinalFlow {
+        let block = self.late_block(&convo.session.0);
+        if block.is_empty() {
+            FinalFlow::Accept
+        } else {
+            FinalFlow::Continue(block)
         }
     }
 }
