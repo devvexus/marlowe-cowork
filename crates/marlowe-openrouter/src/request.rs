@@ -6,14 +6,83 @@
 //! - reasoning goes back as the opaque `reasoning_details` the model produced, verbatim;
 //! - one system message at position 0; for `anthropic/` models the cached system blocks carry
 //!   `cache_control` breakpoints;
-//! - `openrouter:`-prefixed tools are OpenRouter server tools, sent by type.
+//! - `openrouter:`-prefixed tools are OpenRouter server tools, sent by type;
+//! - images are `image_url` content parts (data URIs) on user messages; a tool message cannot
+//!   carry one, so the images of a batch of results follow it as one user message;
+//! - for `anthropic/` models the last user message carries a `cache_control` breakpoint too;
+//! - a temperature is not sent to the reasoning families that reject it ([`fixes_sampling`]).
 
-use marlowe_model::{ChatRequest, Role, SystemBlock, ToolSpec};
+use marlowe_model::image::{self, BlobStore};
+use marlowe_model::{ChatRequest, ImageRef, Role, SystemBlock, ToolSpec};
 use marlowe_provider::wire;
 use serde_json::{json, Map, Value};
 
+/// What the body needs beyond the request.
+pub struct BodyOptions<'a> {
+    /// The already-mapped `reasoning` object (`None` omits it).
+    pub reasoning: Option<Value>,
+    /// Whether the model takes images: `Some(false)` from the catalog turns images into a text
+    /// note; `None` (catalog not read) sends them and lets OpenRouter refuse.
+    pub vision: Option<bool>,
+    /// Where image bytes live; without a store images become a text note.
+    pub blobs: Option<&'a dyn BlobStore>,
+    /// Long edge images are fitted to.
+    pub long_edge: u32,
+}
+
+impl<'a> BodyOptions<'a> {
+    pub fn new(reasoning: Option<Value>) -> Self {
+        Self { reasoning, vision: None, blobs: None, long_edge: image::OPENROUTER_LONG_EDGE }
+    }
+}
+
 /// Builds the body. `reasoning` is the already-mapped `reasoning` object (`None` omits it).
+/// Images become a text note (no store); see [`request_body_with`].
 pub fn request_body(req: &ChatRequest, reasoning: Option<Value>) -> Value {
+    request_body_with(req, &BodyOptions::new(reasoning))
+}
+
+/// The `image_url` content parts for `images`, and the notes for those that cannot be sent.
+fn wire_images<'a>(imgs: impl Iterator<Item = &'a ImageRef>, opts: &BodyOptions<'_>) -> (Vec<Value>, Vec<String>) {
+    let (mut parts, mut notes) = (Vec::new(), Vec::new());
+    for r in imgs {
+        match (opts.vision, opts.blobs) {
+            (Some(false), _) => notes.push("[image omitted: this model cannot see images]".to_string()),
+            (_, None) => notes.push("[image omitted: no image store is configured]".to_string()),
+            (_, Some(store)) => match image::wire_image(store, r, opts.long_edge) {
+                Ok(w) => parts.push(json!({ "type": "image_url", "image_url": { "url": w.data_uri() } })),
+                Err(e) => notes.push(format!("[image unavailable: {e}]")),
+            },
+        }
+    }
+    (parts, notes)
+}
+
+fn with_notes(mut text: String, notes: &[String]) -> String {
+    for n in notes {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(n);
+    }
+    text
+}
+
+/// A user message: a plain string, or text then `image_url` parts when there are images.
+fn user_message(text: String, parts: Vec<Value>) -> Value {
+    if parts.is_empty() {
+        return json!({ "role": "user", "content": text });
+    }
+    let mut content = Vec::with_capacity(parts.len() + 1);
+    if !text.is_empty() {
+        content.push(json!({ "type": "text", "text": text }));
+    }
+    content.extend(parts);
+    json!({ "role": "user", "content": content })
+}
+
+/// The body for `opts`.
+pub fn request_body_with(req: &ChatRequest, opts: &BodyOptions<'_>) -> Value {
     let mut messages = Vec::new();
 
     let lead = req.messages.iter().take_while(|m| m.role == Role::System).count();
@@ -24,10 +93,13 @@ pub fn request_body(req: &ChatRequest, reasoning: Option<Value>) -> Value {
             blocks.push(SystemBlock { text: t, cache: false });
         }
     }
-    if let Some(sys) = system_message(&blocks, req.model.starts_with("anthropic/")) {
+    let anthropic = req.model.starts_with("anthropic/");
+    if let Some(sys) = system_message(&blocks, anthropic) {
         messages.push(sys);
     }
 
+    // The last user message that starts a turn: where the conversation breakpoint goes.
+    let mut last_user: Option<usize> = None;
     for m in &req.messages[lead..] {
         let text = m.joined_text();
         match m.role {
@@ -37,8 +109,10 @@ pub fn request_body(req: &ChatRequest, reasoning: Option<Value>) -> Value {
                 }
             }
             Role::User => {
-                if !text.is_empty() || m.tool_results_iter().next().is_none() {
-                    messages.push(json!({ "role": "user", "content": text }));
+                if !text.is_empty() || m.images().next().is_some() || m.tool_results_iter().next().is_none() {
+                    let (parts, notes) = wire_images(m.images(), opts);
+                    last_user = Some(messages.len());
+                    messages.push(user_message(with_notes(text, &notes), parts));
                 }
             }
             Role::Assistant => {
@@ -72,12 +146,33 @@ pub fn request_body(req: &ChatRequest, reasoning: Option<Value>) -> Value {
                 }
             }
         }
+        // A tool message carries text only. The images of a batch of results follow the batch as
+        // one user message, labelled with the call each came from.
+        let mut batch_parts: Vec<Value> = Vec::new();
+        let mut batch_labels: Vec<String> = Vec::new();
         for r in m.tool_results_iter() {
-            messages.push(json!({ "role": "tool", "tool_call_id": r.call_id, "content": r.content }));
+            let (parts, notes) = wire_images(r.images(), opts);
+            if !parts.is_empty() {
+                batch_labels.push(format!("{} image(s) from call {}", parts.len(), r.call_id));
+                batch_parts.extend(parts);
+            }
+            messages.push(json!({
+                "role": "tool",
+                "tool_call_id": r.call_id,
+                "content": with_notes(r.content.clone(), &notes),
+            }));
+        }
+        if !batch_parts.is_empty() {
+            messages.push(user_message(format!("[{}]", batch_labels.join("; ")), batch_parts));
         }
     }
 
     wire::unorphan_tool_messages(&mut messages);
+    if anthropic {
+        if let Some(i) = last_user {
+            mark_cache_breakpoint(&mut messages[i]);
+        }
+    }
 
     let mut body = json!({
         "model": req.model,
@@ -88,16 +183,48 @@ pub fn request_body(req: &ChatRequest, reasoning: Option<Value>) -> Value {
     if let Some(n) = req.max_output_tokens {
         body["max_tokens"] = json!(n);
     }
-    if let Some(t) = req.temperature {
+    if let Some(t) = req.temperature.filter(|_| !fixes_sampling(&req.model)) {
         body["temperature"] = json!(t);
     }
     if let Some(tools) = tools_field(&req.tools) {
         body["tools"] = tools;
     }
-    if let Some(r) = reasoning {
-        body["reasoning"] = r;
+    if let Some(r) = &opts.reasoning {
+        body["reasoning"] = r.clone();
     }
     body
+}
+
+/// Reasoning families that reject a temperature (an upstream 400): OpenAI o-series, grok-3-mini,
+/// QwQ and the Qwen3 thinking variants. Knowledge from claw-code's MODEL_COMPATIBILITY.md.
+pub fn fixes_sampling(model: &str) -> bool {
+    let lowered = model.to_ascii_lowercase();
+    let name = lowered.rsplit('/').next().unwrap_or(&lowered);
+    let o_series = |p: &str| name.strip_prefix(p).is_some_and(|rest| rest.is_empty() || !rest.starts_with(|c: char| c.is_ascii_alphabetic()));
+    o_series("o1")
+        || o_series("o3")
+        || o_series("o4")
+        || name == "grok-3-mini"
+        || name.starts_with("qwq")
+        || name.starts_with("qwen-qwq")
+        || (name.starts_with("qwen3") && name.contains("-thinking"))
+}
+
+/// A cache breakpoint on the last content block of a user message, so the next call of a tool
+/// loop reads the whole conversation up to it from the cache.
+fn mark_cache_breakpoint(msg: &mut Value) {
+    let Some(content) = msg.get_mut("content") else { return };
+    if let Value::String(text) = content {
+        if text.is_empty() {
+            return;
+        }
+        *content = json!([{ "type": "text", "text": std::mem::take(text) }]);
+    }
+    if let Some(parts) = content.as_array_mut() {
+        if let Some(last) = parts.iter_mut().rev().find(|p| p.get("type").and_then(Value::as_str) == Some("text")) {
+            last["cache_control"] = json!({ "type": "ephemeral" });
+        }
+    }
 }
 
 /// Server tools (`openrouter:` prefix, e.g. `openrouter:web_search`) are sent as

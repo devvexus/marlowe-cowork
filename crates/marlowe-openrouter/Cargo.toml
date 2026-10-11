@@ -13,3 +13,7 @@ marlowe-net.workspace = true
 crossbeam-channel.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+# Test images for the vision request bodies.
+image = { version = "0.25", default-features = false, features = ["png"] }

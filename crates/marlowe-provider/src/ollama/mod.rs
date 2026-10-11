@@ -1,14 +1,22 @@
 //! The Ollama provider: `/api/chat` NDJSON streaming, catalog via `/api/tags` + `/api/show`.
+//!
+//! Beyond the wire: images ride as base64 `images` when the model reports the `vision`
+//! capability (`request.rs`); every request is checked against its `num_ctx` before it is sent
+//! (A15); tool-call arguments are repaired against the request's schemas and calls written as
+//! text are recovered (`repair.rs`, `scan.rs`), counted in [`RepairStats`] for the bench (A4).
 
 mod leak;
 mod models;
+pub mod repair;
 mod request;
+pub mod scan;
 mod stream;
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use marlowe_model::image::BlobStore;
 use marlowe_model::{
     CancelToken, ChatRequest, Completion, ContextAllocations, ModelInfo, Provider, ProviderError, ProviderKind,
     StreamEvent,
@@ -21,7 +29,10 @@ pub use leak::{defang_tool_markup, recover_leaked_call};
 pub use models::{
     is_cloud_tag, model_info, parse_show, parse_tags, think_value, ModelMeta, TagEntry, ThinkMode,
 };
-pub use request::request_body;
+pub use repair::{RepairSnapshot, RepairStats};
+pub use request::{
+    is_context_overflow, plan_request, request_body, request_body_with, BodyOptions, Planned, CONTEXT_OVERFLOW,
+};
 pub use stream::Folder;
 
 /// Context window sent as `num_ctx` when the model allows it. Ollama's own default is 2048.
@@ -42,6 +53,9 @@ pub struct OllamaProvider {
     alloc: ContextAllocations,
     idle: Duration,
     meta: Mutex<HashMap<String, ModelMeta>>,
+    /// Where image bytes live (`<home>\blobs`). Without one, images are sent as a text note.
+    blobs: Option<Arc<dyn BlobStore>>,
+    stats: Arc<RepairStats>,
 }
 
 impl Default for OllamaProvider {
@@ -58,7 +72,26 @@ impl OllamaProvider {
             alloc: ContextAllocations::new(),
             idle: DEFAULT_IDLE_TIMEOUT,
             meta: Mutex::new(HashMap::new()),
+            blobs: None,
+            stats: Arc::new(RepairStats::new()),
         }
+    }
+
+    /// The blob store `Part::Image` bytes are read from (the one `read` and paste write to).
+    pub fn with_blobs(mut self, blobs: Arc<dyn BlobStore>) -> Self {
+        self.blobs = Some(blobs);
+        self
+    }
+
+    /// Counts repaired tool calls in `stats` instead of the provider's own counters.
+    pub fn with_repair_stats(mut self, stats: Arc<RepairStats>) -> Self {
+        self.stats = stats;
+        self
+    }
+
+    /// How many tool calls were clean, repaired, recovered from text or unusable (A4).
+    pub fn repair_stats(&self) -> Arc<RepairStats> {
+        self.stats.clone()
     }
 
     /// From an optional base URL (`http://127.0.0.1:11434`). Only loopback hosts are accepted.
@@ -141,10 +174,22 @@ impl OllamaProvider {
         Ok(merged)
     }
 
-    /// The body `stream` would send, for inspection.
+    fn body_options<'a>(&'a self, req: &ChatRequest, meta: &ModelMeta) -> BodyOptions<'a> {
+        BodyOptions {
+            vision: meta.has("vision"),
+            blobs: self.blobs.as_deref(),
+            ..BodyOptions::new(self.context_for(&req.model, meta), think_value(meta.think_mode(), req.effort))
+        }
+    }
+
+    /// The body `stream` would send, for inspection (no window check).
     pub fn build_body(&self, req: &ChatRequest, meta: &ModelMeta) -> Value {
-        let num_ctx = self.context_for(&req.model, meta);
-        request_body(req, num_ctx, think_value(meta.think_mode(), req.effort))
+        request_body_with(req, &self.body_options(req, meta))
+    }
+
+    /// The body `stream` sends, or the `context_overflow` error it would stop on.
+    pub fn plan(&self, req: &ChatRequest, meta: &ModelMeta) -> Result<Planned, ProviderError> {
+        plan_request(req, &self.body_options(req, meta))
     }
 
     fn error(&self, e: HttpError, model: Option<&str>) -> ProviderError {
@@ -213,7 +258,7 @@ impl Provider for OllamaProvider {
             return Err(ProviderError::cancelled());
         }
         let meta = self.meta(&req.model)?;
-        let body = self.build_body(req, &meta);
+        let body = self.plan(req, &meta)?.body;
         let thinking = body.get("think").is_some_and(|t| t != &Value::Bool(false));
 
         let reader = http::post_stream(
@@ -227,7 +272,7 @@ impl Provider for OllamaProvider {
         .map_err(|e| self.error(e, Some(&req.model)))?;
 
         let mut frames = NdjsonStream::new(reader);
-        let mut folder = Folder::new(thinking, on);
+        let mut folder = Folder::new(thinking, on).with_tools(&req.tools).with_stats(self.stats.clone());
         while let Some(frame) = frames.next_value() {
             if cancel.is_cancelled() {
                 return Err(ProviderError::cancelled());

@@ -150,6 +150,7 @@ pub fn model_info(name: &str, meta: &ModelMeta, num_ctx: u32) -> ModelInfo {
     let mut info = ModelInfo::bare(ProviderKind::Ollama, name);
     info.context_window = Some(meta.context.map_or(num_ctx, |c| c.min(num_ctx)));
     info.supports_tools = meta.has("tools");
+    info.supports_vision = meta.has("vision");
     let mode = meta.think_mode();
     info.supports_reasoning = mode != ThinkMode::None;
     info.effort_levels = match mode {

@@ -1,0 +1,12 @@
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-2","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"write","arguments":""},"id":"call_9"}]}}]}
+
+data: {"id":"gen-2","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"arguments":"{\"path\": \"src/main.rs\", \"content\": \"fn main() {\\n let x = compute("}}]}}]}
+
+data: {"id":"gen-3","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}
+
+data: {"id":"gen-3","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":4096}}
+
+data: [DONE]
+

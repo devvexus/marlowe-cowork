@@ -1,0 +1,26 @@
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}
+
+data: {"id":"gen-1","choices":[{"index":0,"delta":{"content":"Let me look at "}}]}
+
+data: {"id":"gen-1","choices":[{"index":0,"delta":{"content":"the file.\n"}}]}
+
+data: {"id":"gen-1","choices":[{"index":0,"delta":{"content":"<function=read>"}}]}
+
+data: {"id":"gen-1","choices":[{"index":0,"delta":{"content":"<parameter=path>"}}]}
+
+data: {"id":"gen-1","choices":[{"index":0,"delta":{"content":"notes.md"}}]}
+
+data: {"id":"gen-1","choices":[{"index":0,"delta":{"content":"</parameter>"}}]}
+
+data: {"id":"gen-1","choices":[{"index":0,"delta":{"content":"<parameter=limit>40</parameter>"}}]}
+
+data: {"id":"gen-1","choices":[{"index":0,"delta":{"content":"</function>"}}]}
+
+data: {"id":"gen-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"gen-1","choices":[],"usage":{"prompt_tokens":410,"completion_tokens":37,"cost":0.0,"prompt_tokens_details":{"cached_tokens":0}}}
+
+data: [DONE]
+

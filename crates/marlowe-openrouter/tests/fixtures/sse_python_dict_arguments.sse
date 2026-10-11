@@ -1,0 +1,16 @@
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-2","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"Read","arguments":""},"id":"call_1"}]}}]}
+
+data: {"id":"gen-2","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"arguments":"{'path': 'src/lib.rs', "}}]}}]}
+
+data: {"id":"gen-2","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"arguments":"'limit': '20', 'all': False,}"}}]}}]}
+
+data: {"id":"gen-2","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"type":"function","function":{"name":"read","arguments":"{\"path\": \"b.rs\"}"},"id":"call_2"}]}}]}
+
+data: {"id":"gen-2","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: {"id":"gen-2","choices":[],"usage":{"prompt_tokens":500,"completion_tokens":60}}
+
+data: [DONE]
+

@@ -23,6 +23,8 @@ pub struct ReasoningMeta {
 pub struct CatalogEntry {
     pub info: ModelInfo,
     pub reasoning: ReasoningMeta,
+    /// Whether the model takes image input, when the catalog says (`architecture.input_modalities`).
+    pub vision: Option<bool>,
 }
 
 /// Parses the catalog. Errors when the body is not the expected shape.
@@ -52,6 +54,12 @@ fn parse_entry(m: &Value) -> Option<CatalogEntry> {
             return None;
         }
     }
+
+    let vision = m
+        .get("architecture")
+        .and_then(|a| a.get("input_modalities"))
+        .and_then(Value::as_array)
+        .map(|ins| ins.iter().any(|i| i.as_str() == Some("image")));
 
     let params: Vec<&str> = m
         .get("supported_parameters")
@@ -89,10 +97,11 @@ fn parse_entry(m: &Value) -> Option<CatalogEntry> {
         .map(clamp_u32);
     info.supports_tools = params.contains(&"tools");
     info.supports_reasoning = supported;
+    info.supports_vision = vision == Some(true);
     info.effort_levels = effort_levels(&reasoning);
     info.pricing = pricing(m.get("pricing"));
     info.local = false;
-    Some(CatalogEntry { info, reasoning })
+    Some(CatalogEntry { info, reasoning, vision })
 }
 
 /// The [`Effort`] levels a model offers.
@@ -204,7 +213,7 @@ mod tests {
                 "id": "anthropic/claude-haiku-5.5",
                 "name": "Anthropic: Claude Haiku 5.5",
                 "context_length": 1000000,
-                "architecture": {"output_modalities": ["text"]},
+                "architecture": {"input_modalities": ["text", "image"], "output_modalities": ["text"]},
                 "pricing": {"prompt": "0.0000001", "completion": "0.0000005"},
                 "top_provider": {"context_length": 1000000, "max_completion_tokens": 128000},
                 "supported_parameters": ["max_tokens", "reasoning", "tools"],
@@ -246,6 +255,10 @@ mod tests {
         assert_eq!(haiku.context_window, Some(1_000_000));
         assert_eq!(haiku.max_output, Some(128_000));
         assert!(haiku.supports_tools && haiku.supports_reasoning && !haiku.local);
+        assert!(haiku.supports_vision);
+        assert_eq!(cat[0].vision, Some(true));
+        assert_eq!(cat[1].vision, None, "a catalog without modalities does not say");
+        assert!(!cat[1].info.supports_vision);
         let p = haiku.pricing.unwrap();
         assert!((p.input_per_mtok - 0.1).abs() < 1e-9 && (p.output_per_mtok - 0.5).abs() < 1e-9);
         assert_eq!(
