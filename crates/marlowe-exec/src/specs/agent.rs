@@ -65,8 +65,9 @@ fn todo_spec() -> marlowe_model::ToolSpec {
 fn ask_user_spec() -> marlowe_model::ToolSpec {
     spec(
         "ask_user",
-        "Ask the user 1-4 multiple-choice questions and wait for the answers. Only when you are blocked on a decision \
-         that only the user can make; otherwise choose sensibly and say so. The user can always answer in their own words.",
+        "Ask the user 1-4 questions and wait. Only when blocked on a decision only the user can make; otherwise choose \
+         and say so. An option has a `label` and may have a `description` and a `preview` (monospace text shown beside \
+         it); `multi_select` allows several. The user can always type their own answer.",
         json!({
             "questions": {
                 "type": "array",
@@ -79,7 +80,11 @@ fn ask_user_spec() -> marlowe_model::ToolSpec {
                             "type": "array",
                             "items": {
                                 "type": "object",
-                                "properties": {"label": {"type": "string"}, "description": {"type": "string"}},
+                                "properties": {
+                                    "label": {"type": "string"},
+                                    "description": {"type": "string"},
+                                    "preview": {"type": "string", "description": "Monospace text shown when the option is focused."}
+                                },
                                 "required": ["label"],
                                 "additionalProperties": false
                             }
@@ -99,10 +104,12 @@ fn skill_spec() -> marlowe_model::ToolSpec {
     spec(
         "skill",
         "Load a skill from the skills index: its instructions come back for you to follow (some run in a subagent and \
-         return a result). Load the skill before starting work it covers.",
+         return a result; one marked `background` returns an agent id at once and reports later). Load the skill before \
+         starting work it covers.",
         json!({
             "name": {"type": "string", "description": "The skill's name as listed."},
-            "args": {"type": "string", "description": "Arguments for the skill, if it takes any."}
+            "args": {"type": "string", "description": "Arguments for the skill, if it takes any."},
+            "background": {"type": "boolean", "description": "For a skill that runs in a subagent: do not wait for it."}
         }),
         &["name"],
     )
@@ -111,18 +118,21 @@ fn skill_spec() -> marlowe_model::ToolSpec {
 fn agent_spec() -> marlowe_model::ToolSpec {
     spec(
         "agent",
-        "Run a subagent on one task in a clean context and get its report back. Types: `explore` (fast read-only code \
-         search), `plan` (read-only implementation plan), `general` (the full toolset), and any listed in the agents \
-         directory. The agent cannot see this conversation: put everything it needs in `prompt`. Independent agents \
-         called in the same step run in parallel. `background: true` returns at once and you are told when it \
-         finishes. `isolation: \"worktree\"` runs it in its own git worktree.",
+        "Run a subagent on one task. Types: `explore` (read-only search), `plan` (read-only plan), `general` (full tools), \
+         `fork` (a copy of you that starts from this conversation; give it only the task), `guide` (answers questions \
+         about Marlowe), and any in the agents directory. Other types cannot see this conversation: put everything in \
+         `prompt`. It runs in the background by default: you get an id now and are told when it finishes; \
+         `background: false` waits for the report. `name` lets `send_message` reach it. Independent agents in one \
+         step run in parallel.",
         json!({
-            "type": {"type": "string", "description": "Agent type, e.g. explore, plan, general."},
+            "type": {"type": "string", "description": "explore, plan, general, fork, guide or a listed type."},
             "description": {"type": "string", "description": "Three to five words naming the task."},
             "prompt": {"type": "string", "description": "The complete task and what to report back."},
             "isolation": {"type": "string", "enum": ["worktree"]},
-            "background": {"type": "boolean"},
-            "model": {"type": "string", "description": "Override the type's model: sonnet, opus, haiku, inherit or a model id."}
+            "background": {"type": "boolean", "description": "Default true."},
+            "name": {"type": "string"},
+            "model": {"type": "string", "description": "sonnet, opus, haiku, inherit or a model id. Not for fork."},
+            "effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max"]}
         }),
         &["type", "description", "prompt"],
     )
@@ -131,21 +141,76 @@ fn agent_spec() -> marlowe_model::ToolSpec {
 fn send_message_spec() -> marlowe_model::ToolSpec {
     spec(
         "send_message",
-        "Continue a finished subagent (by the agent_id its report gave) with a follow-up; it keeps its earlier context.",
+        "Send a message to a subagent by its `name` or agent_id. A running agent reads it at its next step; a finished one \
+         continues with its earlier context and answers.",
         json!({
-            "agent_id": {"type": "string"},
+            "agent_id": {"type": "string", "description": "The agent's name or id."},
             "text": {"type": "string"}
         }),
         &["agent_id", "text"],
     )
 }
 
+fn enter_plan_spec() -> marlowe_model::ToolSpec {
+    spec(
+        "enter_plan",
+        "Switch to plan mode before a large or risky change: nothing can be changed or run until you present a plan with \
+         exit_plan and the user approves it. The user is asked first.",
+        json!({"reason": {"type": "string", "description": "Why this needs a plan."}}),
+        &[],
+    )
+}
+
 fn exit_plan_spec() -> marlowe_model::ToolSpec {
     spec(
         "exit_plan",
-        "In plan mode, present the finished plan and ask the user to approve leaving plan mode to carry it out.",
+        "In plan mode, present the finished plan. It is saved as a file the user can edit; they approve it (and choose \
+         the next mode) or send feedback.",
         json!({"plan": {"type": "string", "description": "The steps and the files they change, in markdown."}}),
         &["plan"],
+    )
+}
+
+fn todo_add_spec() -> marlowe_model::ToolSpec {
+    spec(
+        "todo_add",
+        "Add an item to the shared task list (one list for you, your subagents and workflow agents). Returns its id. \
+         `blocked_by` lists ids that must complete before this one can start.",
+        json!({
+            "subject": {"type": "string", "description": "What to do, imperative (\"Add the retry test\")."},
+            "description": {"type": "string"},
+            "blocked_by": {"type": "array", "items": {"type": "string"}},
+            "active_form": {"type": "string", "description": "Present tense, shown while in progress."}
+        }),
+        &["subject"],
+    )
+}
+
+fn todo_update_spec() -> marlowe_model::ToolSpec {
+    spec(
+        "todo_update",
+        "Update an item of the shared task list by id: status (an item cannot start while an item it is blocked by is \
+         open), owner, subject, description or blockers. Mark an item completed as soon as it is done.",
+        json!({
+            "id": {"type": "string"},
+            "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]},
+            "owner": {"type": "string"},
+            "subject": {"type": "string"},
+            "description": {"type": "string"},
+            "blocked_by": {"type": "array", "items": {"type": "string"}, "description": "Replaces the blockers."},
+            "add_blocked_by": {"type": "array", "items": {"type": "string"}}
+        }),
+        &["id"],
+    )
+}
+
+fn todo_get_spec() -> marlowe_model::ToolSpec {
+    spec(
+        "todo_get",
+        "One item of the shared task list in full (status, owner, description, what blocks it and what it blocks), or the \
+         whole list without an id.",
+        json!({"id": {"type": "string"}}),
+        &[],
     )
 }
 
@@ -171,7 +236,7 @@ fn exit_worktree_spec() -> marlowe_model::ToolSpec {
 fn describe_agent(call: &ToolCallReq) -> String {
     let ty = call.args.get("type").and_then(|v| v.as_str()).unwrap_or("general");
     let d = call.args.get("description").and_then(|v| v.as_str()).unwrap_or("");
-    let bg = if call.args.get("background").and_then(|v| v.as_bool()).unwrap_or(false) { " (background)" } else { "" };
+    let bg = if call.args.get("background").and_then(|v| v.as_bool()).unwrap_or(true) { " (background)" } else { "" };
     format!("agent {ty}: {}{bg}", crate::first_line(d, 60))
 }
 
@@ -199,6 +264,15 @@ pub fn tools() -> Vec<ToolDef> {
         ToolDef::new(todo_spec(), ToolGroup::Agent, Effects::NONE, |_, a, cx| marlowe_agent::todo::todo_call(a, cx))
             .describe(describe_todo)
             .enabled(live),
+        ToolDef::new(todo_add_spec(), ToolGroup::Agent, Effects::NONE, |_, a, cx| marlowe_agent::tasklist::todo_add_call(a, cx))
+            .describe(|c| super::describe_by(c, "subject"))
+            .enabled(live),
+        ToolDef::new(todo_update_spec(), ToolGroup::Agent, Effects::NONE, |_, a, cx| marlowe_agent::tasklist::todo_update_call(a, cx))
+            .describe(|c| super::describe_by(c, "id"))
+            .enabled(live),
+        ToolDef::new(todo_get_spec(), ToolGroup::Agent, Effects::NONE, |_, a, cx| marlowe_agent::tasklist::todo_get_call(a, cx))
+            .describe(|c| super::describe_by(c, "id"))
+            .enabled(live),
         ToolDef::new(ask_user_spec(), ToolGroup::Agent, Effects::NONE, |_, a, cx| marlowe_agent::todo::ask_user_call(a, cx))
             .describe(|c| super::describe_by(c, ""))
             .enabled(live),
@@ -217,11 +291,15 @@ pub fn tools() -> Vec<ToolDef> {
             .describe(|c| super::describe_by(c, "agent_id"))
             .taints(|t, _| marlowe_agent::subagent::may_taint("general", t.state::<AgentGroup>().home.as_deref(), t.workspace()))
             .enabled(live),
-        ToolDef::new(exit_plan_spec(), ToolGroup::Agent, Effects::NONE, |_, a, cx| marlowe_agent::todo::exit_plan_call(a, cx))
+        ToolDef::new(enter_plan_spec(), ToolGroup::Agent, Effects::NONE, |_, a, cx| marlowe_agent::planfile::enter_plan_call(a, cx))
             .consequence(|_, c, _| {
-                let first = c.args.get("plan").and_then(|v| v.as_str()).map(|p| crate::first_line(p, 80)).unwrap_or_default();
-                Consequence::Ask { summary: format!("leave plan mode and carry out the plan: {first}") }
+                let why = c.args.get("reason").and_then(|v| v.as_str()).map(|r| crate::first_line(r, 80)).unwrap_or_default();
+                Consequence::Ask { summary: format!("enter plan mode (read-only until a plan is approved): {why}") }
             })
+            .enabled(live),
+        // The plan is approved in the plan modal (a file the user may edit), not by a generic approval.
+        ToolDef::new(exit_plan_spec(), ToolGroup::Agent, Effects::NONE, |_, a, cx| marlowe_agent::planfile::exit_plan_call(a, cx))
+            .describe(|c| super::describe_by(c, "plan"))
             .enabled(live),
         ToolDef::new(enter_worktree_spec(), ToolGroup::Agent, Effects::NONE, |_, a, cx| marlowe_agent::worktree::enter_call(a, cx))
             .describe(|c| super::describe_by(c, "name"))
@@ -283,13 +361,15 @@ mod tests {
         }
     }
 
-    /// The fitter keeps dusk's prefix at 32k inside the 9k budget by cutting the project sections,
-    /// and says so. It is not A15 (that is `parity_a15_instructions_at_their_cap_reach_dusk_uncut`).
-    /// Since wave 1 merged, the local core groups' schemas alone are about 5.6k tokens against their
-    /// 3k slice, and the fitter cannot cut tools: built-ins must be deferred behind `tool_search`
-    /// (T31) before this holds again. Track F3 re-measures A15 with them deferred.
+    /// A15 re-measured by track F3 with the rarely used built-ins deferred behind `tool_search`
+    /// (T31, `deferral.rs`): the dusk profile at 32k is persona and blocks 5,230 tokens, 21 core
+    /// tools 5,444, and whatever sections fit: 11,289 against the 9,000 budget. The new F3 tools
+    /// (`todo_add/update/get`, `enter_plan`, `send_message`) cost 0 of it
+    /// (`the_f3_tools_cost_the_32k_prefix_nothing`). What is left is the core tool schemas against
+    /// their 3k slice and the persona against its 2k slice: shorter schemas or a re-sliced budget
+    /// (Matthew's call). Not A15 itself (that is `parity_a15_instructions_at_their_cap_reach_dusk_uncut`).
     #[test]
-    #[ignore = "core tool schemas (~5.6k tokens) overrun their 3k slice at 32k until built-ins defer behind tool_search (T31, F3)"]
+    #[ignore = "A15 fails: the 21 core tools (5.4k tokens) and the persona (5.2k) overrun their 3k and 2k slices at 32k; deferral cannot cut them"]
     fn the_fitter_keeps_the_dusk_prefix_inside_nine_thousand_tokens() {
         use marlowe_agent::context::{estimate_tokens, fit_prefix, tool_spec_tokens, PrefixBudget};
         use marlowe_agent::system::PromptSections;
@@ -314,6 +394,28 @@ mod tests {
         eprintln!("A15: prefix {} tokens = persona+blocks {persona} + tools {tools} + sections; budget {}", fit.tokens, budget.total);
         assert!(fit.tokens <= 9_000, "prefix {} tokens (persona {persona}, tools {tools}): {:?}", fit.tokens, fit.warnings);
         assert!(!fit.warnings.is_empty(), "the oversized sections were cut, visibly");
+    }
+
+    /// The tools F3 added cost the 32k prefix nothing: on a small window they are behind
+    /// `tool_search`, whose one description names them, and the list is the core tools' size plus
+    /// that one tool (a regression guard on the schemas' total, in the estimate A15 uses).
+    #[test]
+    fn the_f3_tools_cost_the_32k_prefix_nothing() {
+        use marlowe_agent::context::tool_spec_tokens;
+        use marlowe_model::{ModelInfo, ProviderKind};
+
+        let dusk = ModelInfo { context_window: Some(32_768), ..ModelInfo::bare(ProviderKind::Ollama, "marlowe-dusk:27b-super") };
+        let small = configured().with_model_exposure(&dusk);
+        let names: Vec<String> = small.specs().into_iter().map(|s| s.name).collect();
+        for t in ["todo_add", "todo_update", "todo_get", "enter_plan", "send_message", "enter_worktree", "exit_worktree"] {
+            assert!(!names.contains(&t.to_string()), "{t} is listed at 32k: {names:?}");
+        }
+        assert!(names.contains(&"tool_search".to_string()));
+        let frontier = ModelInfo { context_window: Some(200_000), ..ModelInfo::bare(ProviderKind::OpenRouter, "frontier") };
+        let big = configured().with_model_exposure(&frontier);
+        let (small_tokens, big_tokens) = (tool_spec_tokens(&small.specs()), tool_spec_tokens(&big.specs()));
+        assert!(big_tokens > small_tokens + 600, "deferral saves the new and rarely used tools: {small_tokens} vs {big_tokens}");
+        assert!(small_tokens <= 5_500, "the 32k tool list grew to {small_tokens} tokens (A15 tool slice is 3,000; it was 5,444 when F3 measured)");
     }
 
     /// A15: project instructions at their 1.5k cap reach dusk whole at 32k (counting this
@@ -526,7 +628,10 @@ mod tests {
         let items = cx.scope.with_ext(|e| e.get::<marlowe_agent::todo::TodoState>().map(|t| t.items.len()));
         assert_eq!(items, Some(2));
         let plan = marlowe_agent::ToolCallReq { id: "p".into(), name: "exit_plan".into(), args: json!({"plan": "1. do it"}) };
-        assert!(matches!(host.consequence(&plan), Consequence::Ask { .. }));
+        // The plan is approved in the plan modal, not by a generic approval; entering plan mode asks.
+        assert_eq!(host.consequence(&plan), Consequence::Free);
+        let enter = marlowe_agent::ToolCallReq { id: "e".into(), name: "enter_plan".into(), args: json!({"reason": "risky"}) };
+        assert!(matches!(host.consequence(&enter), Consequence::Ask { .. }));
         let ask = marlowe_agent::ToolCallReq { id: "q".into(), name: "ask_user".into(), args: json!({"questions": [{"question": "Which?", "options": [{"label": "a"}]}]}) };
         let out = host.call_scoped(&ask, &cx);
         assert!(out.is_error && out.content.contains("No one can answer"), "headless: refused with guidance");

@@ -172,7 +172,15 @@ impl ToolHost for Fake {
             "todo" => todo::todo_call(a, cx),
             "ask_user" => todo::ask_user_call(a, cx),
             "skill" => commands::skill_call(a, cx),
-            "agent" => subagent::agent_call(a, cx),
+            // These tests were written when `agent` waited for the report; the default is now to
+            // run in the background (A15), so they ask for the foreground explicitly.
+            "agent" => {
+                let mut a = a.clone();
+                if a.get("background").is_none() && a.get("run_in_background").is_none() {
+                    a["background"] = json!(false);
+                }
+                subagent::agent_call(&a, cx)
+            }
             "send_message" => subagent::send_message_call(a, cx),
             "enter_worktree" => worktree::enter_call(a, cx),
             "exit_worktree" => worktree::exit_call(a, cx),
@@ -1299,7 +1307,10 @@ fn parity_t23_b5_ask_user_round_trips_and_is_refused_where_nobody_can_answer() {
     let mut a = agent(p.clone(), frontier(), Fake::new());
     a.services = Services::new().with(Questions(asker.clone()));
     run(&a, &mut convo(None), "set up storage");
-    assert_eq!(asker.1.lock().unwrap()[0][0].options, ["sqlite — local file", "postgres"]);
+    let asked = asker.1.lock().unwrap();
+    assert_eq!(asked[0][0].options, ["sqlite", "postgres"], "labels only; the description rides in option_details (T33)");
+    assert_eq!(asked[0][0].option_details[0].description, "local file");
+    drop(asked);
     assert!(tool_results(&p.requests()[1])[0].contains("\"Which database?\" = \"sqlite\""));
 
     // Headless: no asker. The model is told to decide and say so, and the turn continues.

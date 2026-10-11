@@ -6,7 +6,7 @@
 //! | Hook | Track constructors |
 //! |---|---|
 //! | [`tools`] | `mcp_ops::compose` (K: the MCP host beside the built-ins) |
-//! | [`Stack`] middleware | `mode_ops::middleware` (E: hooks, modes, rules), `conductor_ops::middleware` (F: todo and verify reminders), `checkpoint::middleware` (F2: snapshots in `pre_mutation`), `task_ops::middleware` (N: background news at a step boundary) |
+//! | [`Stack`] middleware | `mode_ops::middleware` (E: hooks, modes, rules), `conductor_ops::middleware` (F: todo and verify reminders), `checkpoint::middleware` (F2: snapshots in `pre_mutation`), `task_ops::middleware` (N: background news at a step boundary), `f3_ops::middleware` (F3: `ultrathink` and `+500k`, the task-list mirror) |
 //! | [`Stack`] observers | `mode_ops::observers` (E: SessionStart and Notification hooks), `checkpoint::observers` (F2: per-call and per-batch turn rows) |
 //! | [`Stack`] services | `mode_ops::services` (E: the hook runner), `conductor_ops::services` (F: `ask_user`, subagents, worktrees), `task_ops::services` (N: the task registry), `notify_ops::services` (N), `workflow_ops::services` (W), `f3_ops::services` (F3) |
 //!
@@ -41,6 +41,7 @@ impl Stack {
             crate::conductor_ops::middleware(core, convo),
             crate::checkpoint::middleware(core, convo),
             crate::task_ops::middleware(core, convo),
+            crate::f3_ops::middleware(core, convo),
         ]
         .concat();
         let observers = [crate::mode_ops::observers(core, convo), crate::checkpoint::observers(core, convo)].concat();

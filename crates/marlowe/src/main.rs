@@ -128,6 +128,10 @@ fn run_tui(home: &std::path::Path) -> Result<i32, String> {
 
 fn run_daemon(home: &std::path::Path) -> Result<i32, String> {
     std::fs::create_dir_all(home).map_err(|e| format!("cannot create {}: {e}", home.display()))?;
+    // The `guide` agent answers questions about flags and commands from this copy of `--help`
+    // (it reads only documentation folders; best effort).
+    let docs = home.join("docs");
+    let _ = std::fs::create_dir_all(&docs).and_then(|_| std::fs::write(docs.join("cli-help.txt"), USAGE));
     marlowe_daemon::run(wire::daemon_deps(home), home).map_err(|e| e.to_string())?;
     Ok(0)
 }

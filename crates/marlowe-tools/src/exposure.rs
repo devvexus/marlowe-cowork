@@ -121,7 +121,7 @@ impl<'de> Deserialize<'de> for ExposedSet {
 /// | `web` | web_fetch, web_search, arxiv, paper | seam |
 /// | `code` | symbols, definition, references, hover, diagnostics, rename_symbol | C |
 /// | `verify` | project, service, http_check, browser | D |
-/// | `agent` | todo, ask_user, skill, agent, send_message, exit_plan, enter/exit_worktree | F |
+/// | `agent` | todo, todo_add, todo_update, todo_get, ask_user, skill, agent, send_message, enter_plan, exit_plan, enter/exit_worktree | F, F3 |
 /// | `git` | git, gh, ci_status | J |
 /// | `ml` | train_launch, experiments | J2 |
 /// | `mcp` | mcp__server__tool, tool_search | K |

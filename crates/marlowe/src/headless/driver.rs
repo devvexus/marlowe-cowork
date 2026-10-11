@@ -13,8 +13,8 @@ use crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError};
 use marlowe_brains::{env_var, CredentialStore, KeyringStore};
 use marlowe_model::{Effort, ModelRef, Pricing, ProviderKind, Usage};
 use marlowe_proto::{
-    ApprovalDecision, ApprovalId, DaemonInfo, Envelope, Event, HeadlessOptions, PermissionMode, Question, Request, SessionId,
-    SessionSummary, SettingsScope, Slot, TurnStop,
+    ApprovalDecision, ApprovalId, DaemonInfo, Envelope, Event, HeadlessOptions, PermissionMode, PlanFileDecision, Question, Request,
+    SessionId, SessionSummary, SettingsScope, Slot, TurnStop,
 };
 use serde_json::{json, Value};
 
@@ -76,6 +76,8 @@ enum StdinMsg {
 enum Pending {
     Approval { approval: ApprovalId, tool: String, input: Value },
     Question { id: String, count: usize },
+    /// `exit_plan` waits for `AnswerPlan` (the plan file is written; the client may have edited it).
+    Plan { id: String },
 }
 
 #[derive(Default)]
@@ -159,6 +161,24 @@ fn lib_from(events: &Event) -> Option<(Vec<marlowe_proto::LibraryModel>, Vec<mar
 
 fn normalise(p: &str) -> String {
     p.replace('/', "\\").trim_end_matches('\\').to_ascii_lowercase()
+}
+
+/// The mode a plan approval asked for: `accept_edits` (either spelling), else `default`.
+fn plan_mode(asked: Option<&str>) -> PermissionMode {
+    match asked.map(|m| m.trim().to_ascii_lowercase().replace('_', "")).as_deref() {
+        Some("acceptedits") => PermissionMode::AcceptEdits,
+        _ => PermissionMode::Default,
+    }
+}
+
+/// One `ask_user` question as the control request carries it: Claude Code's fields, plus the
+/// options' descriptions and previews (`option_details`) when there are any (T33).
+fn question_json(q: &Question) -> Value {
+    let mut v = json!({"question": q.question, "header": q.header, "options": q.options, "multiSelect": q.multi_select});
+    if !q.option_details.is_empty() {
+        v["option_details"] = json!(q.option_details);
+    }
+    v
 }
 
 fn spawn_stdin(reader: Box<dyn BufRead + Send>) -> Receiver<StdinMsg> {
@@ -818,6 +838,17 @@ impl Driver {
                     Err(why) => self.deny(approval, &tool, &input, &why),
                 }
             }
+            Pending::Plan { id: pid } => {
+                let decision = match &result {
+                    Ok(v) if v.get("behavior").and_then(Value::as_str) == Some("allow") => {
+                        let asked = v.get("updatedInput").and_then(|i| i.get("mode").or_else(|| i.get("permission_mode"))).and_then(Value::as_str);
+                        PlanFileDecision::Approve { mode: plan_mode(asked) }
+                    }
+                    Ok(v) => PlanFileDecision::Reject { feedback: v.get("message").and_then(Value::as_str).map(str::to_string) },
+                    Err(e) => PlanFileDecision::Reject { feedback: Some(e.clone()) },
+                };
+                let _ = self.send(&Request::AnswerPlan { session: self.session.clone(), id: pid, decision });
+            }
             Pending::Question { id: qid, count } => {
                 let answers = match &result {
                     Ok(v) if v.get("behavior").and_then(Value::as_str) == Some("allow") => {
@@ -843,6 +874,9 @@ impl Driver {
                 Pending::Approval { approval, tool, input } => self.deny(approval, &tool, &input, why),
                 Pending::Question { id, count } => {
                     let _ = self.send(&Request::AnswerQuestion { session: self.session.clone(), id, answers: vec![NO_ANSWER.to_string(); count] });
+                }
+                Pending::Plan { id } => {
+                    let _ = self.send(&Request::AnswerPlan { session: self.session.clone(), id, decision: PlanFileDecision::Reject { feedback: Some(why.to_string()) } });
                 }
             }
         }
@@ -947,6 +981,7 @@ impl Driver {
             }
             Event::ApprovalRequested { approval, tool, summary, detail, run: None, .. } => self.on_approval(approval, &tool, &summary, &detail),
             Event::QuestionAsked { id, questions, .. } => self.on_question(&id, &questions),
+            Event::PlanReady { id, path, text, .. } => self.on_plan(&id, &path, &text),
             Event::TurnFinished { usage, stop, .. } => self.on_turn_finished(usage, stop),
             _ => {}
         }
@@ -1022,6 +1057,52 @@ impl Driver {
         self.deny(approval, tool, &input, "nothing allowed it and nobody can be asked in print mode (see --allowed-tools, --permission-mode, --permission-prompt-tool)");
     }
 
+    /// `exit_plan` is waiting: the plan file is written. A stream-json client gets a `can_use_tool`
+    /// for `ExitPlanMode` (the plan and its file; `allow` approves, `updatedInput.mode` picks
+    /// `accept_edits` or `default`, `deny` rejects with its `message` as feedback). Otherwise the
+    /// permission prompt tool decides, and with none nobody can approve: rejected, plan mode stays.
+    fn on_plan(&mut self, id: &str, path: &str, text: &str) {
+        let reject = |this: &mut Self, why: &str| {
+            let _ = this.send(&Request::AnswerPlan {
+                session: this.session.clone(),
+                id: id.to_string(),
+                decision: PlanFileDecision::Reject { feedback: Some(why.to_string()) },
+            });
+        };
+        let input = json!({"plan": text, "planFilePath": path, "id": id});
+        if self.args.prompt_tool.as_deref() == Some("stdio") {
+            self.next_req += 1;
+            let rid = format!("plan-{}", self.next_req);
+            self.em.control_request(&rid, json!({"subtype": "can_use_tool", "tool_name": "ExitPlanMode", "marlowe_tool": "exit_plan", "input": input}));
+            self.pending.insert(rid, Pending::Plan { id: id.to_string() });
+            return;
+        }
+        if let Some(pt) = &self.prompt_tool {
+            let flag = self.interrupt.clone();
+            let answer = pt.ask("exit_plan", &input, &move || flag.load(Ordering::Relaxed));
+            return match answer {
+                Ok(Decision::Allow) => {
+                    let _ = self.send(&Request::AnswerPlan {
+                        session: self.session.clone(),
+                        id: id.to_string(),
+                        decision: PlanFileDecision::Approve { mode: PermissionMode::Default },
+                    });
+                }
+                Ok(Decision::Deny(why)) => reject(self, &why),
+                Err(e) => reject(self, &format!("permission prompt tool: {e}")),
+            };
+        }
+        if self.args.fail_on_ask {
+            if let Some(t) = self.turn.as_mut() {
+                t.approval_needed.get_or_insert_with(|| "exit_plan: a plan needs approval".to_string());
+            }
+            reject(self, "approval needed (--fail-on-ask)");
+            self.interrupt_turn();
+            return;
+        }
+        reject(self, "nobody can approve a plan in print mode (see --permission-prompt-tool); plan mode stays on");
+    }
+
     fn on_question(&mut self, id: &str, questions: &[Question]) {
         let count = questions.len().max(1);
         if self.args.input == InputFormat::StreamJson {
@@ -1029,7 +1110,7 @@ impl Driver {
             let rid = format!("ask-{}", self.next_req);
             let qs: Vec<Value> = questions
                 .iter()
-                .map(|q| json!({"question": q.question, "header": q.header, "options": q.options, "multiSelect": q.multi_select}))
+                .map(|q| question_json(q))
                 .collect();
             self.em.control_request(
                 &rid,
@@ -1100,5 +1181,42 @@ impl Driver {
             self.settle_until = Some(Instant::now() + SETTLE);
         }
         self.interrupt_sent = false;
+    }
+}
+
+#[cfg(test)]
+mod f3_tests {
+    use marlowe_proto::{PermissionMode, Question, QuestionOption};
+    use serde_json::json;
+
+    use super::{plan_mode, question_json};
+
+    #[test]
+    fn parity_t33_the_headless_question_carries_descriptions_previews_and_multi_select() {
+        let q = Question {
+            question: "Which?".into(),
+            header: "Pick".into(),
+            options: vec!["a".into(), "b".into()],
+            multi_select: true,
+            option_details: vec![
+                QuestionOption { label: "a".into(), description: "first".into(), preview: Some("fn a() {}".into()) },
+                QuestionOption { label: "b".into(), ..Default::default() },
+            ],
+        };
+        let v = question_json(&q);
+        assert_eq!(v["multiSelect"], json!(true));
+        assert_eq!(v["options"], json!(["a", "b"]));
+        assert_eq!(v["option_details"][0], json!({"label": "a", "description": "first", "preview": "fn a() {}"}));
+        // A question with plain labels keeps Claude Code's exact shape.
+        let plain = Question { option_details: Vec::new(), ..q };
+        assert!(question_json(&plain).get("option_details").is_none());
+    }
+
+    #[test]
+    fn a_plan_approval_names_accept_edits_or_falls_back_to_default() {
+        assert_eq!(plan_mode(Some("acceptEdits")), PermissionMode::AcceptEdits);
+        assert_eq!(plan_mode(Some("accept_edits")), PermissionMode::AcceptEdits);
+        assert_eq!(plan_mode(Some("bypassPermissions")), PermissionMode::Default);
+        assert_eq!(plan_mode(None), PermissionMode::Default);
     }
 }

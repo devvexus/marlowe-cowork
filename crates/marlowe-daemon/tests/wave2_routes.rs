@@ -216,13 +216,6 @@ fn every_wave2_request_reaches_its_tracks_stub() {
         ),
         (Request::SkipWorkflowAgent { run: run(), agent: 2 }, "skip_workflow_agent", "W"),
         (Request::ListFindings { run: Some(run()), session: None }, "list_findings", "W"),
-        (Request::SetFast { session: sid(), on: true }, "set_fast", "F3"),
-        (
-            Request::AnswerPlan { session: sid(), id: "p1".into(), decision: PlanFileDecision::Approve { mode: PermissionMode::Default } },
-            "answer_plan",
-            "F3",
-        ),
-        (Request::SuggestRules { workspace: None }, "suggest_rules", "F3"),
     ];
     for (req, op, track) in cases {
         c.send(&req);
@@ -232,6 +225,17 @@ fn every_wave2_request_reaches_its_tracks_stub() {
         let named = serde_json::to_value(&req).unwrap().get("session").is_some();
         assert_eq!(session.is_some(), named, "{op}: the error names the session exactly when the request does");
     }
+
+    // F3 filled its three in (`f3_ops.rs`): they answer for real now (`tests/f3.rs` covers the
+    // behaviour); here only that they no longer say "not available yet".
+    c.send(&Request::SetFast { session: sid(), on: true });
+    let e = c.until(|e| matches!(e, Event::Error { .. })).pop().unwrap().event;
+    assert!(matches!(&e, Event::Error { message, .. } if message.contains("unknown session")), "{e:?}");
+    c.send(&Request::AnswerPlan { session: sid(), id: "p1".into(), decision: PlanFileDecision::Approve { mode: PermissionMode::Default } });
+    let e = c.until(|e| matches!(e, Event::Error { .. })).pop().unwrap().event;
+    assert!(matches!(&e, Event::Error { message, .. } if message.contains("not waiting")), "{e:?}");
+    c.send(&Request::SuggestRules { workspace: None });
+    c.until(|e| matches!(e, Event::RuleSuggestions { .. }));
 
     // The connection is still good.
     c.send(&Request::Status);

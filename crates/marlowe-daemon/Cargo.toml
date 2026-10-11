@@ -28,6 +28,7 @@ chrono.workspace = true
 # E (settings layers, mode_ops) and K (MCP registry, mcp_ops). Still no executor or provider
 # crate: those are injected through DaemonDeps.
 marlowe-settings.workspace = true
+marlowe-permission.workspace = true
 marlowe-mcp.workspace = true
 # Wave 2 (seam2): W's engine behind `workflow_ops.rs`; N and W's `regex` and `blake3`.
 marlowe-workflow.workspace = true

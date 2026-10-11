@@ -248,7 +248,12 @@ impl Agent {
             .get::<CommandGrant>()
             .and_then(|g| g.model.clone())
             .and_then(|m| self.services.get::<Resolver>().and_then(|r| r.0.resolve(Some(&m)).ok()));
+        // `ultrathink` in the user's message raises this turn's effort to the top (C14).
+        let ultra = convo.ext.get::<crate::directive::TurnDirectives>().is_some_and(|d| d.ultrathink);
         let mut live = self.live(&turn_model);
+        if ultra {
+            live.effort = Effort::Max;
+        }
         // Fresh clock each turn; the caller's repo context is kept.
         let mut env = Environment::current(workspace, live.model.model_ref().to_string());
         env.repo = self.system.env().and_then(|e| e.repo.clone());
@@ -303,7 +308,10 @@ impl Agent {
                 break TurnStop::Budget;
             }
             // A `/model` switch takes effect at the step boundary; the history is kept.
-            let next = self.live(&turn_model);
+            let mut next = self.live(&turn_model);
+            if ultra {
+                next.effort = Effort::Max;
+            }
             if next.model.id != live.model.id || next.model.provider != live.model.provider {
                 live = next;
                 self.apply_sections(&mut system, convo, spec_tokens, live.context.window_tokens);
@@ -391,6 +399,10 @@ impl Agent {
                 }
             };
             spent.record(&c.usage);
+            // A `+500k` target counts every generated token of the request (WF8).
+            if let Some(pool) = self.services.get::<crate::directive::TokenPool>() {
+                pool.charge(c.usage.output);
+            }
             sink(AgentEvent::Usage(c.usage));
             truncated = c.stop == StopReason::MaxTokens;
 
@@ -440,6 +452,13 @@ impl Agent {
 
             // A session in a worktree or with added roots runs its calls on tools rooted there.
             let host = crate::worktree::step_host(&self.tools, &self.services, convo);
+            // A fork in this step starts from this very request (A14): leave it for the call.
+            if c.tool_calls.iter().any(crate::fork::is_fork_call) {
+                if let Some(assistant) = convo.messages.last().cloned() {
+                    let model = ResolvedModel { provider: live.provider.clone(), info: live.model.clone(), effort: live.effort };
+                    convo.ext.insert(crate::fork::ForkBase::capture(&req, assistant, model, host.clone()));
+                }
+            }
             let results = run_tools::run_calls(
                 host.as_ref(),
                 &self.middleware,
@@ -451,6 +470,7 @@ impl Agent {
                 cancel,
                 sink,
             );
+            convo.ext.remove::<crate::fork::ForkBase>();
             // A subagent that read untrusted content taints its caller through its report.
             if convo.ext.remove::<crate::subagent::ReportTainted>() {
                 convo.exposure.tainted = true;
@@ -468,6 +488,7 @@ impl Agent {
 
         // A command's grant lasts for its turn.
         convo.ext.remove::<CommandGrant>();
+        convo.ext.remove::<crate::directive::TurnDirectives>();
         let text = texts.join("\n\n");
         if stop != TurnStop::Error {
             self.memory.after_turn(&convo.session, said, &text);

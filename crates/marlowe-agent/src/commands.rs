@@ -68,6 +68,8 @@ pub struct Command {
     pub user_invocable: bool,
     /// `context: fork`: runs in a subagent.
     pub fork: bool,
+    /// `background: true` on a forked skill: the `skill` call returns the agent id at once (X23).
+    pub background: bool,
     /// The agent type a forked skill runs as.
     pub agent: Option<String>,
     pub body: String,
@@ -382,6 +384,7 @@ fn parse_entry(
             || bool_of(&["hide-from-slash-command-tool"]).unwrap_or(false),
         user_invocable: bool_of(&["user-invocable", "userInvocable"]).unwrap_or(true),
         fork: front_str(&front, &["context"]).is_some_and(|c| c == "fork"),
+        background: bool_of(&["background"]).unwrap_or(false),
         agent: front_str(&front, &["agent"]),
         body: body.trim_start_matches(['\r', '\n']).to_string(),
         path: path.to_path_buf(),
@@ -1226,8 +1229,10 @@ pub fn skill_call_with(args: &Value, cx: &CallCtx, run: ShellRunner<'_>) -> Tool
             description: format!("skill {}", skill.name),
             prompt: ex.prompt,
             isolation: None,
-            background: false,
+            background: args.get("background").and_then(Value::as_bool).unwrap_or(skill.background),
             model: ex.model.clone(),
+            effort: None,
+            name: None,
         };
         return sub.run(req, cx);
     }

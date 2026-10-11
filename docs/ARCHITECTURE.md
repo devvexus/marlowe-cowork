@@ -117,6 +117,15 @@ Parallel tracks (design `docs/research/m46-design.md` sections 7-8) plug in with
 - **Headless and MCP.** `marlowe -p` drives the daemon (or `--standalone`, a private library copy with no memory); `marlowe-mcp` is client (stdio, streamable HTTP, OAuth 2.1) and server (`marlowe mcp`); MCP tools beyond the window's share defer behind `tool_search`.
 - **Export.** `marlowe export` (opt-in per project) writes SFT and step-DPO JSONL through a layered scrubber; nothing is uploaded.
 
+## M4.6 conductor completions (F3)
+
+- **Subagents.** `agent` runs in the background by default and takes `model`, `effort` (`xhigh` is `Max`) and `name`; `send_message` addresses a name or id, steering a running agent at its next step or resuming a finished one. Every subagent has `handback{message}` (its result verbatim; it ends the run; a final text without it also works and is counted). `type:"fork"` starts from the parent's last request byte for byte: the loop leaves a `ForkBase` in the conversation's extensions for a step that forks, the child's `ForkPrefix` goes first in `assemble_with`, and the tool list stays the parent's (nested agents are refused by `ForkGuard`, not by omission) so the prefix cache holds. `guide`, `statusline` and `agent-creator` are built-in types from `roles/*.md`; their extra tools (`set_statusline`, `create_agent`) belong to the subagent's tool view (`subagent_tools.rs`), not the tool table.
+- **Plan file.** `enter_plan` (asks) switches to plan mode; `exit_plan` writes `<home>\plans\<session>-<slug>.md`, publishes `PlanReady` and waits for `AnswerPlan`; the file is read again after the answer, so the user's edit is what is pinned. Approval names `accept_edits` or `default`, never wider.
+- **Task list.** `TaskLists` (a service over the `daemon_kv` key `tasklist.<session>`) is the one list of a conversation, shared by the conductor, subagents and workflow agents; ids are never reused and an item cannot start while a blocker is open. The conductor's `TodoState` mirrors it (`TaskListSync`); a subagent's own `todo{items}` stays private.
+- **Directives.** `ultrathink` and `+500k` are parsed by `DirectiveMiddleware`. The `TokenPool` service counts the output tokens of the loop, its subagents and workflows, and the conductor is kept going until the target is within 10%.
+- **`/fast`** wraps the `/model` switch: the `Quick` slot's model while on, the session's own after.
+- **Tool deferral (T31).** On a window of 40k or less the host lists the core tools and `tool_search`; the rarely used built-ins (`marlowe-exec/src/deferral.rs`) load by `select:name` or keywords and are appended at the tail of the tool list, so the bytes before them stay fixed. The MCP host merges its own `tool_search` with this one.
+
 ## Crew and sandbox model
 
 An agent is a role card (`roles/*.md`, overridden by `<home>\roles\*.md`: slot, effort, tool allowlist, budget, sandbox kind, instructions), and that is all. Depth 1: crew runs never get `dispatch`.
