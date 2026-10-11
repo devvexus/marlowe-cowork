@@ -299,14 +299,15 @@ fn clicks_focus_boxes_and_pick_sections() {
 #[test]
 fn every_view_keeps_the_footer_and_its_own_box() {
     let mut s = working();
-    // ^r opens the run that needs the user straight away; its box is titled with the run.
+    // alt-r opens the run that needs the user straight away; its box is titled with the run.
     for (chord, title) in [('l', "Library"), ('g', "Memory"), ('w', "Watch"), ('r', "Run · fix the gate")] {
-        s.on_key(ctrl(chord));
+        let press = |s: &mut marlowe_tui::State| s.on_key(if chord == 'r' { alt('r') } else { ctrl(chord) });
+        press(&mut s);
         let buf = render(&s, 160, 45);
         assert!(contains(&buf, &format!("╭ {title}")), "{title}\n{}", dump(&buf));
         assert!(contains(&buf, "^k palette"), "{title} lost the footer");
         assert_palette_only(&buf);
-        s.on_key(ctrl(chord));
+        press(&mut s);
         assert_eq!(s.view, View::Conversation);
     }
 }

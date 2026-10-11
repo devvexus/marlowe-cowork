@@ -1,4 +1,4 @@
-//! The crew on screen: the CREW rail section, the run list and the Run view (^r), and the ^d
+//! The crew on screen: the CREW rail section, the run list and the Run view (alt-r), and the ^d
 //! dispatch prompt. Foreground only; the prompt's `Clear` resets cells to the terminal default.
 
 use marlowe_proto::{CrewRunInfo, CrewRunStatus, CrewStep, Dispatch, Playbook, SandboxKind, StageState};
@@ -81,7 +81,7 @@ pub fn rail_lines(state: &State, w: usize, max_runs: usize, theme: &Theme) -> (V
     }
     let hidden = runs.len().saturating_sub(max_runs);
     if hidden > 0 {
-        out.push((dimmer(&format!("+{hidden} more · ^r"), theme), Some(Target::Chord(crate::state::Command::Crew))));
+        out.push((dimmer(&format!("+{hidden} more · alt-r"), theme), Some(Target::Chord(crate::state::Command::Crew))));
     }
     (out, count)
 }
@@ -274,6 +274,9 @@ fn draw_run(c: Rect, state: &State, v: &RunView, r: &CrewRunInfo, theme: &Theme,
             head.extend(stage_strip(t, w, theme));
         }
     }
+    if let Some(d) = state.crew.dag(&r.id) {
+        head.extend(dag_strip(d, w, theme));
+    }
     for (i, g) in text::wrap(&text::clean(r.goal.trim()), w.saturating_sub(6)).into_iter().enumerate().take(3) {
         let lead = if i == 0 { "goal  " } else { "      " };
         head.push(Line::from(vec![Span::styled(lead, dimmer), Span::styled(g, theme.normal())]));
@@ -368,6 +371,64 @@ fn draw_run(c: Rect, state: &State, v: &RunView, r: &CrewRunInfo, theme: &Theme,
 /// sources 42 found · 30 fetched · claims 118 · independent roots 9 · citations 24 supported · 2 unsupported
 /// reading arXiv:2401.01234
 /// ```
+/// The build run's stage line and its task graph, one line per level of dependencies. Waiting,
+/// running, done, failed, blocked on a hub change, re-running one at a time.
+pub(super) fn dag_strip(d: &crate::dag::BuildDag, w: usize, theme: &Theme) -> Vec<Line<'static>> {
+    use crate::dag::{TaskState, STAGES};
+    let dim = ink(Ink::Dim, theme);
+    let dimmer = ink(Ink::Dimmer, theme);
+    let at = d.stage_index();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (i, stage) in STAGES.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" → ", dimmer));
+        }
+        let (glyph, gstyle, nstyle) = match at {
+            Some(c) if i < c => ("✓", ink(Ink::Green, theme), dim),
+            Some(c) if i == c => ("●", ink(Ink::Accent, theme), theme.bright()),
+            _ => ("○", dimmer, dimmer),
+        };
+        spans.push(Span::styled(format!("{glyph} "), gstyle));
+        spans.push(Span::styled(*stage, nstyle));
+    }
+    let mut out = vec![Line::from(spans)];
+    if d.tasks.is_empty() {
+        return out;
+    }
+    out.push(Line::from(Span::styled(d.summary(), dim)));
+    for (n, level) in d.levels().into_iter().enumerate() {
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(format!("{:>2}  ", n + 1), dimmer)];
+        for t in level {
+            let (glyph, gstyle) = match t.state {
+                TaskState::Waiting => ("○", dimmer),
+                TaskState::Running => ("●", ink(Ink::Accent, theme)),
+                TaskState::Done => ("✓", ink(Ink::Green, theme)),
+                TaskState::Failed => ("✗", ink(Ink::Red, theme)),
+                TaskState::Blocked => ("◐", ink(Ink::Amber, theme)),
+                TaskState::Serial => ("↺", ink(Ink::Amber, theme)),
+            };
+            spans.push(Span::styled(format!("{glyph} "), gstyle));
+            spans.push(Span::styled(text::truncate(&text::clean(&t.id), 24), if t.state == TaskState::Running { theme.bright() } else { theme.normal() }));
+            if !t.deps.is_empty() {
+                let deps = t.deps.iter().map(|x| text::clean(x)).collect::<Vec<_>>().join(",");
+                spans.push(Span::styled(format!(" ← {}", text::truncate(&deps, 24)), dimmer));
+            }
+            spans.push(Span::raw("   "));
+        }
+        // A level too wide for the line keeps what fits.
+        let mut line = Line::from(spans);
+        while line.width() > w && line.spans.len() > 3 {
+            line.spans.truncate(line.spans.len() - 1);
+        }
+        out.push(line);
+    }
+    if !d.hubs.is_empty() && at.is_some_and(|c| c >= 2) {
+        let hubs = d.hubs.iter().map(|h| text::clean(h)).collect::<Vec<_>>().join(", ");
+        out.push(Line::from(Span::styled(format!("frozen after the contract: {}", text::truncate(&hubs, w.saturating_sub(28))), dimmer)));
+    }
+    out
+}
+
 fn stage_strip(t: &ResearchTrack, w: usize, theme: &Theme) -> Vec<Line<'static>> {
     let dim = ink(Ink::Dim, theme);
     let dimmer = ink(Ink::Dimmer, theme);

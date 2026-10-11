@@ -37,4 +37,4 @@
 │  › Matthew prefers terse commit messages and no or emoji.                                                                                │
 │                                                                                                                                          │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ↵ save  ·  esc cancel ─╯
- ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  alt-v Voice  ^k palette                     21:40
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ⇧tab Mode  ^k palette               21:40

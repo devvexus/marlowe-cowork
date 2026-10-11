@@ -218,7 +218,7 @@ fn every_view_and_picker_goes_back_on_esc_and_on_backspace() {
             assert!(s.composer.text().is_empty());
         }
         // The crew: the run view, then the list, then the conversation.
-        s.on_key(ctrl('r'));
+        s.on_key(alt('r'));
         assert!(s.crew.open.is_some());
         s.on_key(key(k));
         assert!(s.crew.open.is_none(), "{k:?} leaves the run for the list");
@@ -226,7 +226,7 @@ fn every_view_and_picker_goes_back_on_esc_and_on_backspace() {
         s.on_key(key(k));
         assert_eq!(s.view, View::Conversation);
         // Pickers and panels close.
-        for open in [ctrl('o'), ctrl('k'), ctrl('d')] {
+        for open in [alt('s'), ctrl('k'), ctrl('d')] {
             s.on_key(open);
             assert!(s.overlay.is_some(), "{open:?}");
             s.on_key(key(k));
@@ -263,14 +263,14 @@ fn backspace_edits_what_is_typed_before_it_goes_back() {
 #[test]
 fn j_and_k_move_in_lists() {
     let mut s = busy();
-    s.on_key(ctrl('r'));
+    s.on_key(alt('r'));
     s.on_key(key(KeyCode::Esc));
     assert_eq!(s.crew.sel, 0);
     s.on_key(key(KeyCode::Char('j')));
     assert_eq!(s.crew.sel, 1);
     s.on_key(key(KeyCode::Char('k')));
     assert_eq!(s.crew.sel, 0);
-    s.on_key(ctrl('o'));
+    s.on_key(alt('s'));
     feed(&mut s, 0, Event::SessionList { sessions: vec![] });
     s.on_key(key(KeyCode::Char('j')));
     assert!(matches!(s.overlay, Some(Overlay::Sessions { sel: 0 })), "an empty list stays put");
@@ -387,7 +387,7 @@ fn clicks_open_runs_watch_items_views_and_chords() {
 #[test]
 fn the_crew_list_rows_open_their_runs() {
     let mut s = busy();
-    s.on_key(ctrl('r'));
+    s.on_key(alt('r'));
     s.on_key(key(KeyCode::Esc));
     let buf = frame(&s);
     let (x, y) = find(&buf, "LoRA rank ablations");

@@ -1,0 +1,40 @@
+ * marlowe — gate work                                                                                                  0 runs · 0 need you
+╭ Conversation · gate work ──────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ Claude Sonnet 4.5 ▾             medium │
+│                                                                                                ││ ctx ────────────┊──── 0 / 200k · cloud │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
+│                                                                                                │╭ Workspace ─────────────────────────────╮
+│                   ╭ hooks ───────────────────────────────────────────────────────────────────────────────────────────╮                   │
+│                   │ › PreToolUse        Bash                project  not trusted — does not run                      │───────────── (w) ─╯
+│                   │   ./scripts/check.sh                                                                             │───────────────────╮
+│                   │   PostToolUse       *                   user  runs                                               │                   │
+│                   │   cargo fmt                                                                                      │───────────── (1) ─╯
+│                   │                                                                                                  │───────────────────╮
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │ trust all 1 project hook? they run commands as you                                               │                   │
+│                   │   PreToolUse Bash · ./scripts/check.sh                                                           │                   │
+│                   │                                                                                                  │                   │
+│                ask│                                                                                                  │                   │
+│                   │ digest d1g3st-0f-list                                                                            │                   │
+│                   ╰────────────────────────────────────────────────────────────────────────── ↵ trust them · esc no ─╯                   │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                                                                                                │╭ Threads ───────────────────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰─ the daemon sent no digest for these hooks, so none can be trusted from here ──────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette       Friday 9 October · 21:40

@@ -35,6 +35,6 @@
 │                                                                                                │╭ Memory ────────────────────────────────╮
 ╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯│ waiting for its stats…                 │
 ╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ 3 recalled over 1 turn                 │
-│ › steer the running turn…                                           esc interrupt · ⇧↵ newline ││ ⋯ gate sweep, cue choice               │
+│ › queue a message — it goes in at the next step…                       esc interrupt · ↵ queue ││ ⋯ gate sweep, cue choice               │
 ╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
- esc Interrupt  ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  alt-v Voice  ^k palette      21:40
+ esc Interrupt  ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette           21:40

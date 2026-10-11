@@ -25,6 +25,6 @@
 │                                                                                ││                                    │
 ╰────────────────────────────────────────────────────────────────────────── (c) ─╯│                                    │
 ╭ Message ───────────────────────────────────────────────────────────────────────╮│                                    │
-│ › steer the running turn…                           esc interrupt · ⇧↵ newline ││                                    │
-╰────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────── (1-4) ─╯
- esc Interrupt  ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^k palette            21:40
+│ › queue a message — it goes in at the next step…       esc interrupt · ↵ queue ││                                    │
+╰─ $0.0496 ──────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────── (1-4) ─╯
+ esc Interrupt  ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^k palette      21:40

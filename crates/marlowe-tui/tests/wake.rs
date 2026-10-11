@@ -318,8 +318,8 @@ fn rail_shows_runs_notices_and_today() {
         "✓ marlowe-valiance-22b-wnr4",
         "▲ valiance: eval_loss plateau",
         "✓ new model marlowe-valiance",
-        // Today lives on the footer.
-        "Friday 9 October · quiet 23:00–07:00 · 21:40",
+        // Today lives on the footer (the date gives way first when the chords need the room).
+        "quiet 23:00–07:00 · 21:40",
     ] {
         assert!(contains(&buf, want), "rail is missing {want}");
     }

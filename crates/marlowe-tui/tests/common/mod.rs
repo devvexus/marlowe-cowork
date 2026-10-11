@@ -203,3 +203,129 @@ pub fn assert_palette_only(buf: &Buffer) {
 pub fn contains(buf: &Buffer, needle: &str) -> bool {
     dump(buf).contains(needle)
 }
+
+// ---- M4.6 key-event replay ----------------------------------------------------------------------
+
+pub fn alt(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)
+}
+
+/// One key by name: `enter`, `esc`, `tab`, `shift-tab`, `up`, `pgdn`, `ctrl-r`, `alt-t`, `a`, `space`.
+pub fn parse_key(tok: &str) -> KeyEvent {
+    let mut mods = KeyModifiers::NONE;
+    let mut name = tok;
+    loop {
+        if let Some(rest) = name.strip_prefix("ctrl-").filter(|r| !r.is_empty()) {
+            mods |= KeyModifiers::CONTROL;
+            name = rest;
+        } else if let Some(rest) = name.strip_prefix("alt-").filter(|r| !r.is_empty()) {
+            mods |= KeyModifiers::ALT;
+            name = rest;
+        } else if let Some(rest) = name.strip_prefix("shift-").filter(|r| !r.is_empty()) {
+            mods |= KeyModifiers::SHIFT;
+            name = rest;
+        } else {
+            break;
+        }
+    }
+    let code = match name {
+        "enter" => KeyCode::Enter,
+        "esc" => KeyCode::Esc,
+        "tab" if mods.contains(KeyModifiers::SHIFT) => KeyCode::BackTab,
+        "tab" => KeyCode::Tab,
+        "backspace" => KeyCode::Backspace,
+        "delete" => KeyCode::Delete,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "pgup" => KeyCode::PageUp,
+        "pgdn" => KeyCode::PageDown,
+        "space" => KeyCode::Char(' '),
+        c if c.chars().count() == 1 => KeyCode::Char(c.chars().next().unwrap()),
+        other => panic!("unknown key {other:?}"),
+    };
+    KeyEvent::new(code, mods)
+}
+
+/// Replays a script: words are keys (`ctrl-r enter`), quoted text is typed (`'/config' enter`).
+/// Returns every request the keys produced, in order.
+pub fn keys(s: &mut State, script: &str) -> Vec<Request> {
+    let mut out = Vec::new();
+    let chars: Vec<char> = script.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            c if c.is_whitespace() => i += 1,
+            q @ ('\'' | '"') => {
+                let end = chars[i + 1..].iter().position(|c| *c == q).expect("unterminated quote") + i + 1;
+                let text: String = chars[i + 1..end].iter().collect();
+                out.extend(type_str(s, &text));
+                i = end + 1;
+            }
+            _ => {
+                let end = chars[i..].iter().position(|c| c.is_whitespace()).map_or(chars.len(), |p| p + i);
+                let tok: String = chars[i..end].iter().collect();
+                out.extend(s.on_key(parse_key(&tok)));
+                i = end;
+            }
+        }
+    }
+    out
+}
+
+/// A session is open with a model in the library, online, nothing running.
+pub fn coding_session() -> State {
+    let mut s = state();
+    s.date = "Friday 9 October".into();
+    welcome(&mut s, 0);
+    feed(&mut s, 1, library_with_sonnet());
+    feed(&mut s, 0, Event::SessionOpened { session: sid(), title: "gate work".into(), workspace: Some("C:/work/valiance".into()) });
+    s.session = Some(sid());
+    s.title = Some("gate work".into());
+    s.workspace = Some("C:/work/valiance".into());
+    s
+}
+
+/// A turn is running in the open session.
+pub fn busy_session() -> State {
+    let mut s = coding_session();
+    feed(&mut s, 2, Event::TurnStarted { session: sid(), turn: 1, model: sonnet_ref(), user: "fix the gate".into() });
+    s
+}
+
+pub fn tool_started(call: &str, tool: &str, summary: &str) -> Event {
+    Event::ToolStarted { session: sid(), turn: 1, call_id: call.into(), tool: tool.into(), summary: summary.into() }
+}
+
+pub fn tool_finished(call: &str, ok: bool, summary: &str) -> Event {
+    Event::ToolFinished { session: sid(), turn: 1, call_id: call.into(), ok, summary: summary.into() }
+}
+
+/// The settings layers as TOML text.
+pub fn settings_event(layers: &[(marlowe_proto::SettingsScope, &str)]) -> Event {
+    Event::Settings {
+        layers: layers
+            .iter()
+            .map(|(scope, text)| marlowe_proto::SettingsLayer { scope: *scope, path: None, text: text.to_string() })
+            .collect(),
+    }
+}
+
+/// Renders and checks the palette in one go.
+pub fn palette_frame(s: &State) -> Buffer {
+    let buf = render(s, W, H);
+    assert_palette_only(&buf);
+    buf
+}
+
+/// The tiniest valid PNG header with a size, for attachments.
+pub fn png_bytes(w: u32, h: u32) -> Vec<u8> {
+    let mut v = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    v.extend_from_slice(&w.to_be_bytes());
+    v.extend_from_slice(&h.to_be_bytes());
+    v.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+    v
+}

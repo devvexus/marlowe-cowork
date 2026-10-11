@@ -36,5 +36,5 @@
 ╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
 ╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
 │ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
-╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
- ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  alt-v Voice  ^k palette                     21:40
+╰─ $0.0496 ──────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ⇧tab Mode  ^k palette               21:40

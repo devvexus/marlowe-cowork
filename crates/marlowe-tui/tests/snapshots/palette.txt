@@ -1,40 +1,40 @@
- * marlowe — new session                                                                                                0 runs · 0 need you
-╭ Conversation ──────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
-│                                                                                                ││ add a model ▾                          │
-│                                                                                                ││                                        │
-│                                       ╭ palette ─────────────────────────────────────────────────╮───────────────────────────────── (m) ─╯
-│                                       │ › type a command                                         │Workspace ─────────────────────────────╮
-│                                       │                                                          │C:/work/valiance ▾                     │
-│                                       │ › New session                                         ^n │───────────────────────────────── (w) ─╯
-│                                       │   Sessions                                            ^o │Crew ──────────────────────────────────╮
-│                                       │   Model — the conductor                                  │no runs                                │
-│                                       │   Workspace — where new sessions start                   │───────────────────────────────── (1) ─╯
-│                                       │   Library — models and slots                          ^l │Watch ─────────────────────────────────╮
-│                                       │   Context & hardware — what fits on this GPU             │nothing watched                        │
-│                                       │   Memory — search, correct, forget                    ^g │                                       │
-│                                  You h│   Watch — runs, notices, roots                        ^w │                                       │
-│                                       │   Crew — runs and results                             ^r │                                       │
-│                       Marlowe thinks w│   Dispatch a crew run                                 ^d │                                       │
-│                   local ones through O│   Brief me now                                           │                                       │
-│                                       │   Turn the voice on or off                         alt-v │                                       │
+ * marlowe — new session                ╭ palette ─────────────────────────────────────────────────╮                    0 runs · 0 need you
+╭ Conversation ─────────────────────────│ › type a command                                         │Model ─────────────────────────────────╮
+│                                       │                                                          │add a model ▾                          │
+│                                       │ › New session                                         ^n │                                       │
+│                                       │   Sessions                                         alt-s │───────────────────────────────── (m) ─╯
+│                                       │   Model — the conductor                                  │Workspace ─────────────────────────────╮
+│                                       │   Workspace — where new sessions start                   │C:/work/valiance ▾                     │
+│                                       │   Library — models and slots                          ^l │───────────────────────────────── (w) ─╯
+│                                       │   Context & hardware — what fits on this GPU             │Crew ──────────────────────────────────╮
+│                                       │   Memory — search, correct, forget                    ^g │no runs                                │
+│                                       │   Watch — runs, notices, roots                        ^w │───────────────────────────────── (1) ─╯
+│                                       │   Crew — runs and results                          alt-r │Watch ─────────────────────────────────╮
+│                                       │   Dispatch a crew run                                 ^d │nothing watched                        │
+│                                       │   Brief me now                                           │                                       │
+│                                  You h│   Turn the voice on or off                         alt-v │                                       │
 │                                       │   Import memories from the old harness                   │                                       │
-│                               ↵ open t│   Your name and how I greet you                          │                                       │
-│                                       │   Show or hide thinking                               ^t │                                       │
+│                       Marlowe thinks w│   Your name and how I greet you                          │                                       │
+│                   local ones through O│   Show or hide thinking                               ^t │                                       │
 │                                       │   Interrupt the running turn                         esc │                                       │
 │                                       │   Quit                                                ^q │                                       │
-│                                       ╰────────────────────────── ↑↓ select · ↵ run · esc close ─╯                                       │
-│                                                                                                ││                                        │
-│                                                                                                ││                                        │
-│                                                                                                ││                                        │
-│                                                                                                ││                                        │
-│                                                                                                ││                                        │
-│                                                                                                ││                                        │
-│                                                                                                │╰────────────────────────────────── (2) ─╯
-│                                                                                                │╭ Threads ───────────────────────────────╮
-│                                                                                                ││ no open threads                        │
-│                                                                                                │╰────────────────────────────────── (3) ─╯
-╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
-╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
-│ › press ↵ to add a model                                                ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+│                               ↵ open t│   Transcript — every tool call in full                ^o │                                       │
+│                                       │   Search your earlier prompts                         ^r │                                       │
+│                                       │   Permission mode — next                       shift-tab │                                       │
+│                                       │   Thinking effort — next                           alt-t │                                       │
+│                                       │   Move the running command to the background          ^b │                                       │
+│                                       │   Config — settings                              /config │                                       │
+│                                       │   Permissions — allow, ask, deny rules      /permissions │                                       │
+│                                       │   Hooks                                           /hooks │                                       │
+│                                       │   Agents — types the agent tool can start        /agents │                                       │
+│                                       │   MCP servers                                       /mcp │                                       │
+│                                       │   Instructions — MARLOWE.md and friends, in your editor/ │                                       │
+│                                       │   Context usage — how full, and with what       /context │───────────────────────────────── (2) ─╯
+│                                       │   Cost — tokens and spend this session             /cost │Threads ───────────────────────────────╮
+│                                       │   Diff — what this session changed                 /diff │no open threads                        │
+│                                       │   Rewind — back to an earlier turn               /rewind │───────────────────────────────── (3) ─╯
+╰───────────────────────────────────────│   Background jobs                                  /jobs │Memory ────────────────────────────────╮
+╭ Message ──────────────────────────────│   Show or hide the todo list                      /todos │waiting for its stats…                 │
+│ › press ↵ to add a model              ╰────────────────────────── ↑↓ select · ↵ run · esc close ─╯nothing recalled this session          │
 ╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
- ^n New  ^o Sessions  ^d Dispatch  ^r Crew  ^w Watch  ^g Memory  ^l Library  ^t Thinking  alt-v Voice  ^k palette                     21:40
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ⇧tab Mode  ^k palette               21:40
