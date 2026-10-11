@@ -140,14 +140,29 @@ fn plausible_path(p: &str) -> bool {
     }
 }
 
+/// Schemes an `editor_url` may use.
+const EDITOR_SCHEMES: &[&str] = &["vscode", "vscode-insiders", "cursor", "windsurf", "idea", "pycharm", "zed", "file", "http", "https"];
+
+/// An `editor_url` template is used only when it has an allowed scheme and no control byte: it is
+/// written into an OSC 8 sequence, and an escape or BEL in it would end the link and start another
+/// sequence (an OSC 52 clipboard write, say).
+fn editor_template_ok(t: &str) -> bool {
+    let Some((scheme, _)) = t.split_once(':') else { return false };
+    EDITOR_SCHEMES.contains(&scheme.to_ascii_lowercase().as_str()) && !t.bytes().any(|b| b < 0x20 || b == 0x7F)
+}
+
 /// The URL a reference opens.
 pub fn url_for(what: &Reference, cfg: &LinkConfig) -> Option<String> {
+    url_for_inner(what, cfg).filter(|u| !u.bytes().any(|b| b < 0x20 || b == 0x7F))
+}
+
+fn url_for_inner(what: &Reference, cfg: &LinkConfig) -> Option<String> {
     match what {
         Reference::Url(u) => Some(encode(u, true)),
         Reference::File { path, line, col } => {
             let abs = absolute(path, cfg.workspace.as_deref())?;
             let enc = encode(&abs, false);
-            match cfg.editor_url.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            match cfg.editor_url.as_deref().map(str::trim).filter(|t| !t.is_empty()).filter(|t| editor_template_ok(t)) {
                 Some(t) => Some(
                     t.replace("{path}", &enc)
                         .replace("{line}", &line.unwrap_or(1).to_string())
@@ -264,7 +279,9 @@ impl LinkEmitter {
 fn paint(buf: &Buffer, r: &LinkRegion) -> Vec<u8> {
     let mut s = String::new();
     s.push_str(&format!("\x1b7\x1b[{};{}H", r.y + 1, r.x + 1));
-    s.push_str(&format!("\x1b]8;;{}\x1b\\", r.url));
+    // The URL is written into an OSC sequence: no control byte may ride in it.
+    let url: String = r.url.chars().filter(|c| !c.is_control()).collect();
+    s.push_str(&format!("\x1b]8;;{url}\x1b\\"));
     let mut x = r.x;
     let mut last: Option<(Color, Modifier)> = None;
     while x < r.x + r.cols {
@@ -274,7 +291,12 @@ fn paint(buf: &Buffer, r: &LinkRegion) -> Vec<u8> {
             s.push_str(&sgr(c.fg, c.modifier));
             last = Some((c.fg, c.modifier));
         }
-        s.push_str(c.symbol());
+        // A cell never carries a control character into the stream.
+        if c.symbol().chars().any(char::is_control) {
+            s.push(' ');
+        } else {
+            s.push_str(c.symbol());
+        }
         x += unicode_width::UnicodeWidthStr::width(c.symbol()).max(1) as u16;
     }
     s.push_str("\x1b]8;;\x1b\\\x1b[0m\x1b8");
@@ -360,6 +382,29 @@ mod tests {
         let cfg = LinkConfig { editor_url: None, workspace: Some("C:/w".into()) };
         let u = url_for(&file("a\u{1b}]8;;evil.rs", None, None), &cfg).unwrap();
         assert!(!u.contains('\u{1b}') && !u.contains('\u{7}'), "{u:?}");
+    }
+
+    #[test]
+    fn an_editor_url_cannot_smuggle_an_escape_or_an_odd_scheme() {
+        let r = file("src/a.rs", Some(3), None);
+        for bad in ["vscode://file/{path}\u{1b}]52;c;AAAA\u{7}", "vscode://x\u{7}{path}", "javascript:alert({path})", "no-scheme/{path}", "ms-msdt:{path}"] {
+            let cfg = LinkConfig { editor_url: Some(bad.into()), workspace: Some("C:/w".into()) };
+            let u = url_for(&r, &cfg).unwrap();
+            assert_eq!(u, "file:///C:/w/src/a.rs", "{bad:?} falls back to a file URL");
+        }
+        let cfg = LinkConfig { editor_url: Some("Cursor://file/{path}:{line}".into()), workspace: Some("C:/w".into()) };
+        assert_eq!(url_for(&r, &cfg).unwrap(), "Cursor://file/C:/w/src/a.rs:3");
+    }
+
+    #[test]
+    fn a_link_region_with_an_escape_in_its_url_paints_without_it() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        buf.set_string(0, 0, "a.rs", ratatui::style::Style::default());
+        let region = LinkRegion { x: 0, y: 0, cols: 4, url: "vscode://x\u{1b}]52;c;AAAA\u{7}".into() };
+        let bytes = String::from_utf8(paint(&buf, &region)).unwrap();
+        let url_part = bytes.split("\u{1b}]8;;").nth(1).unwrap().split("\u{1b}\\").next().unwrap();
+        assert!(!url_part.chars().any(char::is_control), "{url_part:?}");
+        assert!(!bytes.contains('\u{7}'), "{bytes:?}");
     }
 
     #[test]

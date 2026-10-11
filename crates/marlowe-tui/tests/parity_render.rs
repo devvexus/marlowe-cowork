@@ -65,7 +65,7 @@ fn parity_U1_a_write_approval_is_all_additions_and_a_long_one_scrolls_before_all
         },
     );
     let buf = palette_frame(&s);
-    assert!(contains(&buf, "notes.md") && contains(&buf, "new file") && contains(&buf, "+ line 1"), "{}", dump(&buf));
+    assert!(contains(&buf, "notes.md") && contains(&buf, "write") && contains(&buf, "replaces the whole file") && contains(&buf, "+ line 1"), "{}", dump(&buf));
     assert!(contains(&buf, "more lines") && contains(&buf, "to enable allow"), "the whole diff must be read first\n{}", dump(&buf));
     s.now_ms += 1_000;
     assert!(keys(&mut s, "y").is_empty(), "allow is not enabled until the end has been on screen");

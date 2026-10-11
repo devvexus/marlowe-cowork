@@ -50,6 +50,9 @@ pub struct FileDiff {
     pub new_file: bool,
     pub deleted: bool,
     pub binary: bool,
+    /// A `write`: every line shown is added, and an existing file's content goes with it. The
+    /// client cannot know whether the file exists, so it says what the call does either way.
+    pub write: bool,
     pub hunks: Vec<Hunk>,
 }
 
@@ -84,7 +87,7 @@ impl Diff {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.files.iter().all(|f| f.hunks.is_empty() && !f.binary && !f.new_file && !f.deleted)
+        self.files.iter().all(|f| f.hunks.is_empty() && !f.binary && !f.new_file && !f.deleted && !f.write)
     }
 }
 
@@ -238,12 +241,13 @@ pub fn from_replace(path: &str, old: &str, new: &str) -> Diff {
             new_file: old.is_empty() && !new.is_empty(),
             deleted: false,
             binary: false,
+            write: false,
             hunks: hunks_of(&ops, false),
         }],
     }
 }
 
-/// A whole new file's content as additions.
+/// A `write`'s content as additions. Not a "new file": the file may exist, and then it is replaced.
 pub fn from_write(path: &str, content: &str) -> Diff {
     let lines: Vec<DiffLine> = content
         .lines()
@@ -253,7 +257,7 @@ pub fn from_write(path: &str, content: &str) -> Diff {
     Diff {
         files: vec![FileDiff {
             path: path.to_string(),
-            new_file: true,
+            write: true,
             hunks: vec![Hunk { header: None, lines }],
             ..Default::default()
         }],
@@ -269,8 +273,7 @@ pub fn from_tool_call(tool: &str, args: &Value) -> Option<Diff> {
     match tool {
         "edit" | "str_replace" => {
             let path = s(args, &path_keys)?;
-            let old = s(args, &["old_string", "old"])?;
-            let new = s(args, &["new_string", "new"])?;
+            let (old, new) = old_new(args)?;
             Some(from_replace(&path, &old, &new))
         }
         "multi_edit" => {
@@ -279,8 +282,7 @@ pub fn from_tool_call(tool: &str, args: &Value) -> Option<Diff> {
             let mut files: Vec<FileDiff> = Vec::new();
             for e in edits {
                 let path = s(e, &path_keys).or_else(|| default_path.clone())?;
-                let old = s(e, &["old_string", "old"])?;
-                let new = s(e, &["new_string", "new"])?;
+                let (old, new) = old_new(e)?;
                 let d = from_replace(&path, &old, &new);
                 match files.iter_mut().find(|f| f.path == path) {
                     Some(f) => f.hunks.extend(d.files.into_iter().flat_map(|f| f.hunks)),
@@ -296,6 +298,43 @@ pub fn from_tool_call(tool: &str, args: &Value) -> Option<Diff> {
         }
         _ => None,
     }
+}
+
+/// An edit's old and new text. `replacing`/`content` are the older names dusk was trained on and
+/// the `edit` tool still accepts them, when neither `old_string` nor `new_string` is given.
+fn old_new(v: &Value) -> Option<(String, String)> {
+    let get = |keys: &[&str]| keys.iter().find_map(|k| v.get(*k).and_then(Value::as_str)).map(str::to_string);
+    if get(&["old_string", "old", "new_string", "new"]).is_none() {
+        return Some((get(&["replacing"])?, get(&["content"])?));
+    }
+    Some((get(&["old_string", "old"])?, get(&["new_string", "new"])?))
+}
+
+/// The arguments of an edit-family call that its diff does not show (`replace_all`, ...), as
+/// `key  value` lines. An approval that hid `replace_all: true` would misstate the edit.
+pub fn unshown_args(args: &Value) -> Vec<String> {
+    const SHOWN: &[&str] = &[
+        "path", "file_path", "file", "old_string", "old", "new_string", "new", "replacing", "content", "text", "contents", "edits",
+    ];
+    let one = |v: &Value, prefix: &str, out: &mut Vec<String>| {
+        if let Value::Object(m) = v {
+            for (k, val) in m.iter().filter(|(k, _)| !SHOWN.contains(&k.as_str())) {
+                let val = match val {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                out.push(format!("{prefix}{k}  {}", text::truncate(&text::clean(&val), 60)));
+            }
+        }
+    };
+    let mut out = Vec::new();
+    one(args, "", &mut out);
+    if let Some(edits) = args.get("edits").and_then(Value::as_array) {
+        for (i, e) in edits.iter().enumerate() {
+            one(e, &format!("edit {} · ", i + 1), &mut out);
+        }
+    }
+    out
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -433,6 +472,8 @@ pub fn render(diff: &Diff, lay: Layout, theme: &Theme) -> Rendered {
             let mut spans = vec![Span::styled(text::clean(&f.path), Ink::Body.style(theme).add_modifier(Modifier::BOLD))];
             if f.new_file {
                 spans.push(Span::styled("  new file", dimmer));
+            } else if f.write {
+                spans.push(Span::styled("  write · replaces the whole file if it exists", dimmer));
             } else if f.deleted {
                 spans.push(Span::styled("  deleted", dimmer));
             } else if f.binary {
@@ -595,7 +636,7 @@ mod tests {
         assert_eq!(from_tool_call("edit", &e).unwrap().stats(), (1, 1));
         let w = serde_json::json!({"path": "n.txt", "content": "x\ny\nz"});
         let d = from_tool_call("write", &w).unwrap();
-        assert!(d.files[0].new_file);
+        assert!(d.files[0].write && !d.files[0].new_file, "a write may overwrite: it is not a new file");
         assert_eq!(d.stats(), (3, 0));
         let m = serde_json::json!({"edits": [
             {"path": "a", "old_string": "1", "new_string": "2"},
@@ -605,6 +646,24 @@ mod tests {
         assert_eq!(d.files.len(), 2);
         assert_eq!(d.files[0].hunks.len(), 2);
         assert!(from_tool_call("read", &e).is_none());
+    }
+
+    #[test]
+    fn the_legacy_edit_keys_make_the_same_diff() {
+        let legacy = serde_json::json!({"path": "src/x.rs", "replacing": "a\nb", "content": "a\nc"});
+        let d = from_tool_call("edit", &legacy).unwrap();
+        assert_eq!(d.stats(), (1, 1));
+        let m = serde_json::json!({"edits": [{"path": "a", "replacing": "1", "content": "2"}]});
+        assert_eq!(from_tool_call("multi_edit", &m).unwrap().stats(), (1, 1));
+    }
+
+    #[test]
+    fn arguments_the_diff_does_not_show_are_listed() {
+        let e = serde_json::json!({"path": "x", "old_string": "a", "new_string": "b", "replace_all": true});
+        assert_eq!(unshown_args(&e), vec!["replace_all  true".to_string()]);
+        let m = serde_json::json!({"edits": [{"path": "a", "old_string": "1", "new_string": "2"}, {"path": "a", "old_string": "3", "new_string": "4", "replace_all": true}]});
+        assert_eq!(unshown_args(&m), vec!["edit 2 · replace_all  true".to_string()]);
+        assert!(unshown_args(&serde_json::json!({"path": "x", "content": "y"})).is_empty());
     }
 
     #[test]

@@ -80,7 +80,11 @@ pub fn approval(area: Rect, state: &State, a: &Approval, theme: &Theme, buf: &mu
 
     // An edit shows as the diff it makes; anything else as its arguments.
     let body: Vec<Line<'static>> = match &a.diff {
-        Some(d) => crate::diff::render(d, crate::diff::Layout::full(crate::state::APPROVAL_DETAIL_WIDTH), theme).lines,
+        Some(d) => {
+            let mut v: Vec<Line<'static>> = a.extra_lines().into_iter().map(|l| Line::from(Span::styled(l, amber))).collect();
+            v.extend(crate::diff::render(d, crate::diff::Layout::full(crate::state::APPROVAL_DETAIL_WIDTH), theme).lines);
+            v
+        }
         None => a.detail_lines().into_iter().map(|l| Line::from(Span::styled(l, theme.normal()))).collect(),
     };
     let top = state.approval_scroll.min(a.detail_scroll_max());

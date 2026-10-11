@@ -219,7 +219,7 @@ impl State {
             }
             Event::Settings { layers } => {
                 let s = Settings::from_layers(layers);
-                self.code.links.editor_url = s.str("editor_url").map(str::to_string);
+                self.code.links.editor_url = s.user_str("editor_url").map(str::to_string);
                 if self.code.mode == marlowe_proto::PermissionMode::Default && self.session.is_none() {
                     if let Some(m) = s.str("permissions.default_mode").and_then(crate::slash::parse_mode) {
                         self.code.mode = m;

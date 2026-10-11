@@ -443,10 +443,20 @@ impl Approval {
         crate::text::wrap(&crate::text::clean(&readable_detail(&self.detail)), APPROVAL_DETAIL_WIDTH)
     }
 
+    /// For an approval shown as a diff: the arguments the diff does not show (`replace_all`), so
+    /// the modal never says less than the call does.
+    pub fn extra_lines(&self) -> Vec<String> {
+        if self.diff.is_none() {
+            return Vec::new();
+        }
+        let Ok(args) = serde_json::from_str::<serde_json::Value>(self.detail.trim()) else { return Vec::new() };
+        crate::diff::unshown_args(&args).iter().flat_map(|l| crate::text::wrap(l, APPROVAL_DETAIL_WIDTH)).collect()
+    }
+
     /// Rows the detail takes: the diff of an edit, else the wrapped arguments.
     pub fn detail_len(&self) -> usize {
         match &self.diff {
-            Some(d) => crate::diff::render(d, crate::diff::Layout::full(APPROVAL_DETAIL_WIDTH), &marlowe_surface::Theme::default_truecolor()).lines.len(),
+            Some(d) => self.extra_lines().len() + crate::diff::render(d, crate::diff::Layout::full(APPROVAL_DETAIL_WIDTH), &marlowe_surface::Theme::default_truecolor()).lines.len(),
             None => self.detail_lines().len(),
         }
     }
