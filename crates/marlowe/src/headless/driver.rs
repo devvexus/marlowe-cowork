@@ -417,6 +417,7 @@ fn options_of(args: &Args, allow: &[String], deny: &[String], mode: PermissionMo
         max_budget_usd: args.max_budget_usd,
         append_system_prompt: args.append_system_prompt.clone(),
         permission_mode: (mode != PermissionMode::Default || args.mode.is_some()).then_some(mode),
+        print: true,
     };
     (o != HeadlessOptions::default()).then_some(o)
 }

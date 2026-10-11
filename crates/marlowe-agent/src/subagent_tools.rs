@@ -37,6 +37,10 @@ pub trait SubagentTool: Send + Sync {
     fn consequence(&self, _args: &Value) -> Consequence {
         Consequence::Free
     }
+    /// What the approval modal shows instead of the arguments (the file a tool will write).
+    fn approval_detail(&self, _args: &Value) -> Option<String> {
+        None
+    }
     fn call(&self, args: &Value, cx: &CallCtx) -> ToolOutcome;
 }
 
@@ -74,8 +78,7 @@ impl SubagentTool for HandbackTool {
         cx.scope.with_ext(|e| {
             e.insert(Handback(message.to_string()));
         });
-        // The run ends after this batch: its own token (never the caller's) stops the loop.
-        cx.cancel.cancel();
+        // The loop stops at the end of this batch, so tool calls beside this one still finish.
         ToolOutcome::ok("Report handed back. You are done.", "handed back")
     }
 }
@@ -167,6 +170,17 @@ fn yaml_scalar(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace(['\r', '\n'], " "))
 }
 
+/// A word that is safe as a bare YAML value on one line: no whitespace, quotes, brackets, commas,
+/// `#` or a leading `-`/`?`, so it can never add a key, close a list or start a comment.
+fn plain_word(w: &str) -> bool {
+    !w.is_empty()
+        && w.len() <= 120
+        && !w.starts_with(['-', '?', '!', '&', '*', '|', '>', '%', '@'])
+        && w.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':' | '/' | '*' | '(' | ')'))
+}
+
+const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
 /// The agent file text for `create_agent{...}`.
 pub fn draft_agent(args: &Value) -> Result<(String, String), String> {
     let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::trim).filter(|x| !x.is_empty());
@@ -179,14 +193,23 @@ pub fn draft_agent(args: &Value) -> Result<(String, String), String> {
     let mut text = format!("---\nname: {name}\ndescription: {}\n", yaml_scalar(description));
     if let Some(tools) = args.get("tools").and_then(Value::as_array) {
         let list: Vec<&str> = tools.iter().filter_map(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).collect();
+        if let Some(bad) = list.iter().find(|t| !plain_word(t)) {
+            return Err(format!("tool name `{}` must be one plain word (letters, digits, `_`, `-`, `.`)", bad.escape_debug()));
+        }
         if !list.is_empty() {
             text.push_str(&format!("tools: [{}]\n", list.join(", ")));
         }
     }
     if let Some(m) = s("model") {
+        if !plain_word(m) {
+            return Err(format!("model `{}` must be one plain word: sonnet, opus, haiku, inherit or a model id", m.escape_debug()));
+        }
         text.push_str(&format!("model: {m}\n"));
     }
     if let Some(e) = s("effort") {
+        if !EFFORTS.contains(&e) {
+            return Err(format!("effort `{}` is not one of {}", e.escape_debug(), EFFORTS.join(", ")));
+        }
         text.push_str(&format!("effort: {e}\n"));
     }
     text.push_str(&format!("---\n{prompt}\n"));
@@ -220,7 +243,16 @@ impl SubagentTool for CreateAgent {
     fn consequence(&self, args: &Value) -> Consequence {
         let name = args.get("name").and_then(Value::as_str).unwrap_or("?");
         let scope = args.get("scope").and_then(Value::as_str).unwrap_or("project");
-        Consequence::Ask { summary: format!("save the agent `{name}` ({scope} agents); the draft is in the details") }
+        // The file becomes agent configuration that later runs with tools: asked every time.
+        Consequence::AskEvery { summary: format!("save the agent `{name}` ({scope} agents); the whole file is in the details") }
+    }
+
+    fn approval_detail(&self, args: &Value) -> Option<String> {
+        // The file as it will be written, or why it will not be.
+        Some(match draft_agent(args) {
+            Ok((_, text)) => text,
+            Err(e) => format!("(this draft will be refused: {e})"),
+        })
     }
 
     fn call(&self, args: &Value, _cx: &CallCtx) -> ToolOutcome {
@@ -373,6 +405,41 @@ mod tests {
         assert!(ty.prompt.starts_with("You review schemas"));
         assert!(draft_agent(&json!({"name": "Bad Name", "description": "d", "prompt": "p"})).is_err());
         assert!(draft_agent(&json!({"name": "x", "description": "d"})).is_err());
+    }
+
+    #[test]
+    fn a_draft_cannot_smuggle_frontmatter_keys_through_model_effort_or_tools() {
+        let base = || json!({"name": "x-agent", "description": "d", "prompt": "p"});
+        let with = |k: &str, v: Value| {
+            let mut a = base();
+            a[k] = v;
+            draft_agent(&a)
+        };
+        // Each of these would add a key (or close the list) if written raw.
+        for bad in ["haiku\npermissionMode: bypass", "haiku\r\npermissionMode: bypass", "haiku # x", "a b", "\"x\"", "[x]", "x,y"] {
+            assert!(with("model", json!(bad)).is_err(), "model {bad:?}");
+        }
+        for bad in ["low\ndisallowedTools: [x]", "ultra"] {
+            assert!(with("effort", json!(bad)).is_err(), "effort {bad:?}");
+        }
+        for bad in ["read]\ndisallowedTools: [", "read, write", "re ad", "a#b x"] {
+            assert!(with("tools", json!(["grep", bad])).is_err(), "tool {bad:?}");
+        }
+        // The ordinary values still work, including a model id with a colon or a slash.
+        assert!(with("model", json!("qwen3:8b")).is_ok() && with("model", json!("openrouter/some-model")).is_ok());
+        assert!(with("effort", json!("xhigh")).is_ok());
+        assert!(with("tools", json!(["read", "mcp__srv__get_x"])).is_ok());
+    }
+
+    #[test]
+    fn the_approval_shows_the_file_that_will_be_written_and_asks_every_time() {
+        let tool = CreateAgent { home: None, workspace: None };
+        let args = json!({"name": "x-agent", "description": "d: e", "prompt": "Do the thing.", "model": "haiku"});
+        let shown = tool.approval_detail(&args).unwrap();
+        assert!(shown.starts_with("---\nname: x-agent\n") && shown.contains("model: haiku\n") && shown.contains("Do the thing."), "{shown}");
+        assert!(matches!(tool.consequence(&args), Consequence::AskEvery { .. }));
+        let refused = tool.approval_detail(&json!({"name": "x-agent", "description": "d", "prompt": "p", "model": "a\nb: c"})).unwrap();
+        assert!(refused.contains("refused"), "{refused}");
     }
 
     #[test]

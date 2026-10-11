@@ -479,6 +479,11 @@ impl Agent {
                 o.on_tools_done(convo, info, &c.tool_calls, &results);
             }
             convo.push(Message::tool_results(results));
+            // A subagent that handed its report back ends here, after the whole batch has run: a
+            // `write` beside the `handback` completed, and what follows is dropped.
+            if convo.ext.get::<crate::subagent_tools::Handback>().is_some() {
+                break TurnStop::Done;
+            }
             for m in &self.middleware {
                 for extra in m.after_step(info, convo) {
                     convo.push(extra);

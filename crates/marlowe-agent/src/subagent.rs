@@ -533,6 +533,12 @@ impl ToolHost for FilteredTools {
             None => self.inner.consequence_exposed(call, exposure),
         }
     }
+    fn approval_detail(&self, call: &ToolCallReq) -> Option<String> {
+        match self.extra(&call.name) {
+            Some(e) => e.approval_detail(&call.args),
+            None => self.inner.approval_detail(call),
+        }
+    }
     fn taints(&self, call: &ToolCallReq) -> bool {
         self.extra(&call.name).is_none() && self.inner.taints(call)
     }
@@ -716,8 +722,19 @@ pub struct AgentRequest {
     pub name: Option<String>,
 }
 
+/// Left in a conversation's extensions for the turns of a print-mode run (`marlowe -p`): an `agent`
+/// call that does not say `background` runs in the foreground, since the process ends with the
+/// first answer and a background report would be lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForegroundAgents;
+
 impl AgentRequest {
     pub fn from_args(args: &Value) -> Result<Self, String> {
+        Self::from_args_default(args, true)
+    }
+
+    /// [`Self::from_args`] with the default for a call that names no `background`.
+    pub fn from_args_default(args: &Value, background: bool) -> Result<Self, String> {
         let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
         let effort = match s("effort") {
             None => None,
@@ -733,7 +750,7 @@ impl AgentRequest {
             description: s("description").unwrap_or_default(),
             prompt: s("prompt").ok_or("`prompt` is required: the full task, since the agent cannot see this conversation")?,
             isolation: s("isolation"),
-            background: args.get("background").or_else(|| args.get("run_in_background")).and_then(Value::as_bool).unwrap_or(true),
+            background: args.get("background").or_else(|| args.get("run_in_background")).and_then(Value::as_bool).unwrap_or(background),
             model: s("model"),
             effort,
             name,
@@ -1247,7 +1264,8 @@ impl Subagents {
 
 /// The `agent` tool.
 pub fn agent_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
-    let req = match AgentRequest::from_args(args) {
+    let print = cx.scope.with_ext(|e| e.get::<ForegroundAgents>().is_some());
+    let req = match AgentRequest::from_args_default(args, !print) {
         Ok(r) => r,
         Err(e) => return ToolOutcome::error(e),
     };

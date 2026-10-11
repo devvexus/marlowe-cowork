@@ -213,6 +213,9 @@ impl ToolHost for ForkTools {
     fn consequence_exposed(&self, call: &ToolCallReq, exposure: &Exposure) -> Consequence {
         self.inner.consequence_exposed(call, exposure)
     }
+    fn approval_detail(&self, call: &ToolCallReq) -> Option<String> {
+        self.inner.approval_detail(call)
+    }
     fn taints(&self, call: &ToolCallReq) -> bool {
         self.inner.taints(call)
     }

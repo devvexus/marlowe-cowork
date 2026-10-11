@@ -473,8 +473,9 @@ fn parity_m14_fewer_permission_prompts_proposes_the_read_only_rules_from_the_pro
         _ => unreachable!(),
     };
     let patterns: Vec<&str> = list.iter().map(|s| s.pattern.as_str()).collect();
-    assert_eq!(patterns, ["bash(git status:*)", "bash(rg:*)"], "{list:?}");
-    assert_eq!((list[0].count, list[1].count), (5, 4));
+    // `rg` takes `--pre <cmd>`: four different rg lines are not generalised into `rg:*`.
+    assert_eq!(patterns, ["bash(git status:*)"], "{list:?}");
+    assert_eq!(list[0].count, 5);
     // Another project's transcripts are not read.
     c.send(&Request::SuggestRules { workspace: Some(home.join("elsewhere").display().to_string()) });
     match c.until(|e| matches!(e, Event::RuleSuggestions { .. })).pop().unwrap().event {

@@ -234,6 +234,7 @@ fn the_seam_review_additions_round_trip_and_old_json_still_loads() {
         max_budget_usd: Some(0.5),
         append_system_prompt: Some("Be terse.".into()),
         permission_mode: Some(PermissionMode::DontAsk),
+        print: true,
     };
     let requests = vec![
         (

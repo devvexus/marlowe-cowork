@@ -39,10 +39,10 @@ fn parity_h4_max_steps_and_budget_and_system_prompt_reach_the_ask() {
     assert_eq!(opts.max_steps, Some(12));
     assert_eq!(opts.max_budget_usd, Some(0.5));
     assert_eq!(opts.append_system_prompt.as_deref(), Some("be terse"));
-    // A bare run sends no options at all.
+    // A bare run sends nothing but the print marker (subagents then run in the foreground).
     let fake = Fake::start();
     run_fake(&fake, &["hi"]);
-    assert_eq!(fake.ask().unwrap().2, None);
+    assert_eq!(fake.ask().unwrap().2, Some(marlowe_proto::HeadlessOptions { print: true, ..Default::default() }));
 }
 
 #[test]

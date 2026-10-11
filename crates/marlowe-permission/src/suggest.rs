@@ -7,8 +7,10 @@
 //! ([`crate::shell::Analysis::read_only`]) and nothing in it trips a hard deny, a tripwire or a new
 //! host: a push, a delete outside the workspace, an unparseable line never becomes a suggestion,
 //! and a command that builds or runs code (`cargo test`) is not a read. A suggestion is as narrow
-//! as is safe: `git status:*` for the read-only git subcommands, `rg:*` for programs whose every
-//! use reads, the exact line for anything else. An MCP tool counts when its name says it only
+//! as is safe: `git status:*` for the git subcommands with no flag that runs or writes anything,
+//! `ls:*` for programs whose every use reads, the exact line for anything else (`rg --pre`, `git
+//! log --output=f` and `git diff --ext-diff` run or write through a flag, and a prefix rule covers
+//! any arguments, so those programs are suggested only as the exact line observed). An MCP tool counts when its name says it only
 //! looks (`get_`, `list_`, `search_` ...). Calls an existing allow rule already covers are skipped.
 //!
 //! Wire shape: `marlowe_proto::RuleSuggestion` (the daemon converts).
@@ -44,19 +46,20 @@ pub struct Suggestion {
     pub example: String,
 }
 
-/// Programs every use of which only reads (their flags can narrow or widen what they print, not
-/// what they change).
+/// Programs with no flag that runs another program or writes a file: a prefix rule for one of them
+/// cannot be turned into an exec or a write by its arguments. Left out on purpose: `rg` (`--pre`,
+/// `--hostname-bin`), `date` (`-s`), `hostname` (sets it), `sort -o`, `uniq in out`, `tree -o`,
+/// `file -C`.
 const READ_PROGRAMS: &[&str] = &[
-    "ls", "dir", "cat", "head", "tail", "wc", "rg", "grep", "egrep", "fgrep", "pwd", "which", "where", "type", "stat",
-    "file", "tree", "diff", "sort", "uniq", "cut", "basename", "dirname", "realpath", "date", "whoami", "hostname",
-    "get-childitem", "get-content", "select-string", "get-location", "test-path", "measure-object",
+    "ls", "dir", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "pwd", "which", "where", "type", "stat", "diff",
+    "cut", "basename", "dirname", "realpath", "whoami", "get-childitem", "get-content", "select-string", "get-location",
+    "test-path", "measure-object",
 ];
 
-/// Git subcommands that only read.
-const GIT_READ: &[&str] = &[
-    "status", "log", "diff", "show", "blame", "ls-files", "ls-tree", "rev-parse", "rev-list", "describe", "shortlog",
-    "cat-file", "grep",
-];
+/// Git subcommands that take no flag which runs or writes anything. `log`, `diff`, `show` and `grep`
+/// are not here (`--output=`, `--ext-diff`, `--textconv`, `-O<cmd>`), nor are `blame`, `cat-file`,
+/// `rev-list` and `shortlog`, which share those option sets.
+const GIT_READ: &[&str] = &["status", "ls-files", "ls-tree", "rev-parse", "describe"];
 
 /// Words in an MCP tool's name that mean it only looks.
 const MCP_READ_PREFIXES: &[&str] = &["get_", "list_", "read_", "search_", "find_", "describe_", "fetch_", "query_", "view_", "show_"];
@@ -72,6 +75,7 @@ fn pattern_for(c: &Simple) -> Option<String> {
         return Some(format!("{program}:*"));
     }
     if program == "git" {
+        // Only the bare subcommand: `git -c core.pager=x status` is another command.
         let sub = c.args.first().map(String::as_str).unwrap_or("");
         if GIT_READ.contains(&sub) {
             return Some(format!("git {sub}:*"));
@@ -170,8 +174,10 @@ mod tests {
 
     #[test]
     fn parity_m14_proposes_the_read_only_patterns_and_never_a_push_or_a_build() {
-        // The fixture from the matrix: 5x git status, 4x rg (each with its own query), 3x
-        // cargo test, 1x git push.
+        // The matrix fixture: 5x git status, 4x rg (each with its own query), 3x cargo test, 1x
+        // git push. `rg` takes `--pre <cmd>`, so a prefix rule for it would let the program run
+        // anything unasked: it is suggested only as an exact line, and four different lines are
+        // four singletons.
         let mut calls = sh("git status", 5);
         for q in ["fn main", "TODO", "unsafe", "struct Agent"] {
             calls.extend(sh(&format!("rg \"{q}\" src"), 1));
@@ -180,8 +186,8 @@ mod tests {
         calls.extend(sh("git push origin feature", 1));
         let got = run(&calls, &RuleSet::new());
         let patterns: Vec<&str> = got.iter().map(|s| s.pattern.as_str()).collect();
-        assert_eq!(patterns, ["bash(git status:*)", "bash(rg:*)"], "{got:?}");
-        assert_eq!((got[0].count, got[1].count), (5, 4));
+        assert_eq!(patterns, ["bash(git status:*)"], "{got:?}");
+        assert_eq!(got[0].count, 5);
         assert_eq!(got[0].example, "git status");
         // The suggestions are rules the engine parses and that cover the calls they came from.
         let mut set = RuleSet::new();
@@ -193,8 +199,8 @@ mod tests {
 
     #[test]
     fn a_count_below_the_minimum_is_not_suggested() {
-        assert!(run(&sh("git log --oneline", MIN_COUNT as usize - 1), &RuleSet::new()).is_empty());
-        assert_eq!(run(&sh("git log --oneline", MIN_COUNT as usize), &RuleSet::new())[0].pattern, "bash(git log:*)");
+        assert!(run(&sh("git status -s", MIN_COUNT as usize - 1), &RuleSet::new()).is_empty());
+        assert_eq!(run(&sh("git status -s", MIN_COUNT as usize), &RuleSet::new())[0].pattern, "bash(git status:*)");
     }
 
     #[test]
@@ -215,9 +221,47 @@ mod tests {
 
     #[test]
     fn a_line_of_several_reads_counts_each_pattern_once() {
-        let got = run(&sh("git status && git diff --stat", 3), &RuleSet::new());
+        let got = run(&sh("git status && git ls-files", 3), &RuleSet::new());
         let patterns: Vec<&str> = got.iter().map(|s| s.pattern.as_str()).collect();
-        assert_eq!(patterns, ["bash(git diff:*)", "bash(git status:*)"]);
+        assert_eq!(patterns, ["bash(git ls-files:*)", "bash(git status:*)"]);
+    }
+
+    /// Whether `line` would run with no prompt under `set`.
+    fn allowed(set: &RuleSet, line: &str) -> bool {
+        let roots = [root()];
+        let ctx = ShellCtx::workspace(root(), &roots);
+        let a = analyze(Dialect::Bash, line, &ctx);
+        let mut subject = Subject::new("bash", Kind::Shell);
+        subject.shell = Some(&a);
+        subject.root = Some(roots[0].as_path());
+        set.evaluate(&subject).is_some_and(|m| m.action == Action::Allow)
+    }
+
+    #[test]
+    fn accepting_every_suggestion_never_frees_a_call_that_runs_or_writes_through_a_flag() {
+        // Benign uses of programs whose flags can exec or write, each seen often enough to suggest.
+        let mut calls = Vec::new();
+        for line in [
+            "rg TODO src", "git log --oneline", "git diff --stat", "git show HEAD", "git grep fn", "date", "hostname",
+            "git status", "ls -la", "grep -rn fn src", "sort a.txt", "git blame src/main.rs",
+        ] {
+            calls.extend(sh(line, 4));
+        }
+        let mut set = RuleSet::new();
+        for s in run(&calls, &RuleSet::new()) {
+            set.add_text(Action::Allow, &s.pattern).unwrap();
+        }
+        assert!(allowed(&set, "git status") && allowed(&set, "ls -la"), "the safe prefixes were accepted");
+        // Hostile fixtures built from pieces so no scanner mistakes this file for the payload.
+        let pre = ["rg --", "pre ", "./x.sh TODO src"].concat();
+        let out = ["git log --", "output=f"].concat();
+        let ext = ["git diff --ext", "-diff"].concat();
+        let grep_o = ["git grep -O", "sh fn"].concat();
+        let set_date = ["date -", "s 2020-01-01"].concat();
+        let sort_o = ["sort -", "o out.txt a.txt"].concat();
+        for bad in [pre, out, ext, grep_o, set_date, sort_o] {
+            assert!(!allowed(&set, &bad), "{bad} must still ask");
+        }
     }
 
     #[test]
