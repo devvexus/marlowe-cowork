@@ -44,6 +44,10 @@ fn rule(kind: &'static str, layer: Layer, re: &str, check: Option<Validator>) ->
 /// spaces folded to `_`). `max_tokens` and `tokenizer` are not secrets; `auth_token` is.
 pub(super) const SECRET_KEY: &str = r"^(?:[a-z0-9_.]*_)?(?:password|passwd|pwd|passphrase|secret|token|api_?key|apikey|access_?key|private_?key|secret_?key|client_?secret|auth|authorization|credentials?|cookie|session_?token|refresh_?token|access_?token|bearer|signature)$";
 
+/// A secret-named key and its assignment operator, up to the value. `\\?` before a quote: the
+/// same assignment inside JSON text (`\"password\": \"x\"`).
+const CREDENTIAL_KEY: &str = r#"(?i)\b[A-Za-z0-9_.-]*(?:password|passwd|pwd|passphrase|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|(?:secret|signing|encryption|master)[_-]?key|credential|cookie)s?(?:\\?['"])?[ \t]*(?:=|:|=>|:=)[ \t]*"#;
+
 /// Rules in the order they run. Shapes before assignments (so `OPENAI_API_KEY=sk-...` is named
 /// by its shape), credentials before personal data, entropy last.
 pub(super) fn rules() -> Vec<Rule> {
@@ -87,12 +91,15 @@ pub(super) fn rules() -> Vec<Rule> {
             r#"(?i)(?:^|\s)--?(?:password|passwd|token|api-?key|secret|auth-?token|access-?token|client-?secret)(?:[ \t]+|=)(?:\\?['"])?(?P<s>[^\s'"`\\]{4,})"#,
             Some(not_code_ref),
         ),
+        // A quoted value with spaces (a passphrase) goes whole, before the unquoted form below
+        // takes only its first word: `DB_PASSWORD="correct horse battery staple"`.
+        rule("credential", Credential, &format!(r#"{CREDENTIAL_KEY}\\?"(?P<s>[^"\\\r\n]*[ \t][^"\\\r\n]*)\\?""#), Some(quoted_value)),
+        rule("credential", Credential, &format!(r#"{CREDENTIAL_KEY}'(?P<s>[^'\\\r\n]*[ \t][^'\\\r\n]*)'"#), Some(quoted_value)),
         // `password = "x"`, `API_KEY: x`, `"client_secret": "x"` in prose, code, logs and configs.
         rule(
             "credential",
             Credential,
-            // `\\?` before a quote: the same assignment inside JSON text (`\"password\": \"x\"`).
-            r#"(?i)\b[A-Za-z0-9_.-]*(?:password|passwd|pwd|passphrase|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|(?:secret|signing|encryption|master)[_-]?key|credential|cookie)s?(?:\\?['"])?[ \t]*(?:=|:|=>|:=)[ \t]*(?:\\?['"])?(?P<s>[^\s'"`,;)}\]>\\]{6,})"#,
+            &format!(r#"{CREDENTIAL_KEY}(?:\\?['"])?(?P<s>[^\s'"`,;)}}\]>\\]{{6,}})"#),
             Some(not_code_ref),
         ),
         // Personal data.
@@ -119,6 +126,11 @@ pub(super) fn rules() -> Vec<Rule> {
 /// True when `s` is already a redaction marker (keeps the scrubber idempotent).
 pub(super) fn is_marker(s: &str) -> bool {
     s.starts_with("[REDACTED")
+}
+
+/// A quoted passphrase: long enough, and not an earlier redaction.
+fn quoted_value(c: &Captures<'_>, _: &str) -> bool {
+    c.name("s").is_some_and(|m| m.as_str().trim().len() >= 6 && !is_marker(m.as_str().trim_start()))
 }
 
 /// Vetoes values that are code, not secrets: `os.environ["X"]`, `config.api_key`, `$TOKEN`,

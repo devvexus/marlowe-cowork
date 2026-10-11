@@ -49,6 +49,9 @@ pub struct Report {
     /// Records the gate refused (a detector still fired after scrubbing).
     pub dropped: u64,
     pub dropped_kinds: BTreeMap<String, u64>,
+    /// Tool names an exported SFT record calls that the built-in registry has no schema for (MCP,
+    /// memory and crew tools, retired tools), counted once per record.
+    pub tools_unknown: u64,
     pub tally: Tally,
     pub bytes: u64,
     pub out: Option<PathBuf>,
@@ -265,12 +268,50 @@ fn emit_checked(sc: &Scrubber, v: Value, id: String, into: &mut Vec<(String, Str
     true
 }
 
+/// Where the `tools` schemas come from, for the manifest.
+fn tools_source() -> String {
+    format!("registry@{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// The `tools` list for a record: every tool its messages call, in first-call order, with the
+/// built-in registry's description and JSON schema (scrubbed like everything else). A name the
+/// registry does not hold is listed by name only; the second value counts those.
+fn tools_for(sc: &Scrubber, msgs: &[Message], tally: &mut Tally) -> (Vec<Value>, u64) {
+    let table = marlowe_exec::specs::table();
+    let mut names: Vec<&str> = Vec::new();
+    for c in msgs.iter().flat_map(|m| m.tool_calls()) {
+        if !names.contains(&c.name.as_str()) {
+            names.push(&c.name);
+        }
+    }
+    let mut unknown = 0;
+    let tools = names
+        .into_iter()
+        .map(|name| match table.get(name) {
+            Some(def) => json!({
+                "type": "function",
+                "function": {
+                    "name": sc.scrub(name, tally),
+                    "description": sc.scrub(&def.spec.description, tally),
+                    "parameters": sc.scrub_value(&def.spec.input_schema, tally),
+                }
+            }),
+            None => {
+                unknown += 1;
+                json!({ "type": "function", "function": { "name": sc.scrub(name, tally) } })
+            }
+        })
+        .collect();
+    (tools, unknown)
+}
+
 fn build(sc: &Scrubber, sources: &[Source], opts: &Options, rep: &mut Report) -> Lines {
     let mut lines = Lines::default();
     let hf_opts = HfOptions { thinking: !opts.no_thinking };
     for s in sources {
         let mut tally = Tally::default();
         let conv = hf::convert(&s.messages, sc, hf_opts, &mut tally);
+        let (tools, unknown_tools) = tools_for(sc, &s.messages, &mut tally);
         let key = s.step_key.as_deref().unwrap_or("");
         let id = short_hash(&[s.kind, &s.id, key, &s.messages.len().to_string()]);
         let project = sc.scrub(Path::new(&s.project).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default().as_str(), &mut tally);
@@ -287,9 +328,11 @@ fn build(sc: &Scrubber, sources: &[Source], opts: &Options, rep: &mut Report) ->
         }
         rec.insert("date".into(), json!(date(s.created_ms)));
         rec.insert("messages".into(), Value::Array(conv.messages.clone()));
+        rec.insert("tools".into(), Value::Array(tools.clone()));
         let pairs = hf::step_pairs(&s.messages);
         if emit(sc, Value::Object(rec), id.clone(), &mut lines.sft, rep) {
             rep.sft += 1;
+            rep.tools_unknown += unknown_tools;
         } else {
             // Its pairs are cut from the same messages: they go with it.
             rep.dropped += pairs.len() as u64;
@@ -307,6 +350,7 @@ fn build(sc: &Scrubber, sources: &[Source], opts: &Options, rep: &mut Report) ->
                 "prompt": prompt,
                 "chosen": chosen,
                 "rejected": rejected,
+                "tools": tools,
             });
             // Every string here passed the gate in the SFT row; the line check is what is new.
             if emit_checked(sc, row, pid.clone(), &mut lines.dpo, rep) {
@@ -388,6 +432,8 @@ fn manifest(cfg: &ExportConfig, sc: &Scrubber, opts: &Options, rep: &Report, fil
         "created": chrono::Local::now().to_rfc3339(),
         "marlowe_version": env!("CARGO_PKG_VERSION"),
         "local_only": true,
+        "tools_source": tools_source(),
+        "tools_unknown": rep.tools_unknown,
         "keep_rule": "conductor sessions marked /good (up to the mark); crew runs merged or whose report was saved",
         "options": {
             "include_tainted": opts.include_tainted,
@@ -431,9 +477,12 @@ fn card(rep: &Report) -> String {
         "---\nconfigs:\n- config_name: sft\n  data_files: {SFT_FILE}\n- config_name: dpo\n  data_files: {DPO_FILE}\n---\n\n\
          # Marlowe trajectories\n\nExported locally by `marlowe export trajectories` ({FORMAT}). Nothing was uploaded.\n\n\
          - `sft`: {} kept trajectories, `messages` in the transformers tool-calling format (`tool_calls[].function.arguments` is a JSON string).\n\
-         - `dpo`: {} step-level preference pairs (`prompt`/`chosen`/`rejected`, conversational).\n\n\
+         - `dpo`: {} step-level preference pairs (`prompt`/`chosen`/`rejected`, conversational).\n\
+         - `tools` (both configs): the schema of every tool the row calls, from Marlowe's built-in tool registry, \
+         for `apply_chat_template(messages, tools=row[\"tools\"])`. Tools outside the registry (MCP, memory and crew \
+         tools) appear by name only ({} in this export). Rows carry no system prompt.\n\n\
          Every string passed the layered scrubber (scrub v{SCRUB_VERSION}); see `manifest.json` for redaction counts and file hashes.\n",
-        rep.sft, rep.dpo
+        rep.sft, rep.dpo, rep.tools_unknown
     )
 }
 
@@ -458,6 +507,9 @@ pub fn render(rep: &Report) -> String {
         if kinds.is_empty() { String::new() } else { format!(" ({})", kinds.join(", ")) },
         rep.bytes.div_ceil(1024)
     ));
+    if rep.tools_unknown > 0 {
+        s.push_str(&format!("  tools     {} call name(s) outside the registry, listed without a schema\n", rep.tools_unknown));
+    }
     if rep.dropped > 0 {
         let parts: Vec<String> = rep.dropped_kinds.iter().map(|(k, v)| format!("{k} {v}")).collect();
         s.push_str(&format!("  gate      {} record(s) dropped: {}\n", rep.dropped, parts.join(", ")));

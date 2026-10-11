@@ -18,6 +18,19 @@ fn secret_named(name: &str) -> bool {
             .any(|w| n.split('_').any(|part| part == *w) || n.ends_with(&format!("_{w}")))
 }
 
+/// A path or socket, not a secret: the name says so (`KEY_FILE`, `SSH_AUTH_SOCK`), or the value
+/// is an absolute path that exists on this machine.
+fn is_path_value(name: &str, v: &str) -> bool {
+    let n = name.to_ascii_uppercase();
+    if ["_PATH", "_DIR", "_FILE", "_SOCK", "_SOCKET"].iter().any(|s| n.ends_with(s)) {
+        return true;
+    }
+    let b = v.as_bytes();
+    let rooted = v.starts_with(['/', '\\'])
+        || (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/'));
+    rooted && Path::new(v).exists()
+}
+
 /// Known secrets: every stored provider key plus secret-named environment values.
 pub fn known_secrets(store: &dyn CredentialStore, env: impl Iterator<Item = (String, String)>) -> Vec<String> {
     let mut out: Vec<String> = ProviderKind::ALL
@@ -27,8 +40,9 @@ pub fn known_secrets(store: &dyn CredentialStore, env: impl Iterator<Item = (Str
         .collect();
     for (name, value) in env {
         let v = value.trim();
-        // Paths and switches are not secrets even under a secret-looking name.
-        if secret_named(&name) && v.len() >= 8 && !v.contains(['\\', '/', ' ']) {
+        // Inclusive: base64 secrets carry `/` and `+`, passphrases carry spaces. Only a value that
+        // is clearly a path is left out.
+        if secret_named(&name) && v.len() >= 8 && !is_path_value(&name, v) {
             out.push(v.to_string());
         }
     }
@@ -123,7 +137,19 @@ mod tests {
             ("SSH_AUTH_SOCK".to_string(), "/tmp/agent.sock".to_string()),
             ("MONKEY".to_string(), "not-a-secret-name".to_string()),
         ];
-        let k = known_secrets(&store, env.into_iter());
+        let tmp = std::env::temp_dir().to_string_lossy().to_string();
+        let env = env.into_iter().chain([
+            // About 70% of AWS secret keys hold a `/`.
+            ("AWS_SECRET_ACCESS_KEY".to_string(), "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string()),
+            ("DB_PASSWORD".to_string(), "correct horse battery staple".to_string()),
+            ("SIGNING_KEY_FILE".to_string(), "keys/signing.pem".to_string()),
+            ("API_TOKEN_DIR".to_string(), "/var/lib/tokens".to_string()),
+            ("MY_SECRET".to_string(), tmp.clone()),
+        ]);
+        let k = known_secrets(&store, env);
+        assert!(k.contains(&"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string()));
+        assert!(k.contains(&"correct horse battery staple".to_string()));
+        assert!(!k.iter().any(|v| v.contains("signing.pem") || v.contains("/var/lib/tokens") || *v == tmp), "{k:?}");
         assert!(k.contains(&"stored-openrouter-value-123".to_string()));
         assert!(k.contains(&"0123456789abcdef0123456789abcdef01234567".to_string()));
         assert!(k.contains(&"Zq81mPq0vLx2".to_string()));

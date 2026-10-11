@@ -161,7 +161,8 @@ pub fn convert(msgs: &[Message], sc: &Scrubber, opts: HfOptions, tally: &mut Tal
                         *tally.0.entry("secret_file".into()).or_default() += 1;
                         marker("secret_file")
                     } else {
-                        sc.scrub(&r.content, tally)
+                        // grep/rg lines from a secret file inside an ordinary search.
+                        sc.scrub(&sc.redact_secret_file_lines(&r.content, tally), tally)
                     };
                     if r.images().next().is_some() {
                         content.push('\n');

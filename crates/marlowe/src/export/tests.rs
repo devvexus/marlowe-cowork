@@ -507,7 +507,27 @@ fn exchange(cn: &Canary, place: u64, ids: &mut u32, rng: &mut Rng) -> Vec<Messag
     let sha = "6c0c6759d0617d7670826b61aca0a931bbb6db1f";
     if cn.kind == "secret_file" {
         let (a, b) = (id(), id());
-        return match place % 3 {
+        // grep/rg output from the secret file inside an ordinary search.
+        let rg_lines: String = cn.text.lines().enumerate().map(|(n, l)| format!("web/.env.development.local:{}:{l}\n", n + 1)).collect();
+        return match place % 6 {
+            3 => vec![
+                user("check the next.js env"),
+                call("", "", vec![(a.clone(), "read", json!({"path": "web/.env.production.local"}))]),
+                results(vec![(a, cn.text.clone(), false)]),
+                say("The seed is set."),
+            ],
+            4 => vec![
+                user("what does the prod env say"),
+                call("", "", vec![(a.clone(), "bash", json!({"command": "cat prod.env"}))]),
+                results(vec![(a, cn.text.clone(), false)]),
+                say("Shown above."),
+            ],
+            5 => vec![
+                user("where is the seed set"),
+                call("", "", vec![(a.clone(), "grep", json!({"pattern": "SEED|fn main", "path": "."}))]),
+                results(vec![(a, format!("{rg_lines}src/main.rs:3:fn main() {{}}"), false)]),
+                say("In the development env."),
+            ],
             0 => vec![
                 user("check the feature seed"),
                 call("", "", vec![(a.clone(), "read", json!({"path": ".env"}))]),
@@ -944,4 +964,113 @@ fn secret_file_calls_lose_results_and_contents() {
     assert!(text.contains("[REDACTED:secret_file]"));
     assert!(text.contains(".env") && text.contains("id_ed25519"), "paths stay: {text}");
     assert!(text.contains("SEED=changeme"), "templates are not secret: {text}");
+}
+
+#[test]
+fn sft_rows_carry_the_schema_of_every_tool_they_call() {
+    let home = TempHome::new("tools");
+    let proj = home.dir("proj");
+    enable(home.path(), &proj);
+    let c = db(home.path());
+    let msgs = vec![
+        user("look around"),
+        call("", "", vec![("a".into(), "read", json!({"path": "src/a.rs"})), ("b".into(), "mcp__fs__list", json!({"dir": "."}))]),
+        results(vec![("a".into(), "fn a() {}".into(), false), ("b".into(), "a.rs".into(), false)]),
+        call("", "", vec![("c".into(), "bash", json!({"command": "cargo test"})), ("d".into(), "read", json!({"path": "src/b.rs"}))]),
+        results(vec![("c".into(), "ok".into(), false), ("d".into(), "fn b() {}".into(), false)]),
+        say("All good."),
+    ];
+    add_session(&c, "s", "t", Some(&proj), false, &msgs);
+    good(&c, "s");
+    drop(c);
+    let out_dir = home.path().join("o");
+    let (r, out) = run(home.path(), &["trajectories", "--out", &out_dir.to_string_lossy()], &ScrubInputs::default());
+    assert_eq!(r, Ok(0), "{out}");
+    assert!(out.contains("tools     1 call name(s) outside the registry"), "{out}");
+    let rec: Value = serde_json::from_str(read(&out_dir.join(SFT_FILE)).lines().next().unwrap()).unwrap();
+    let tools = rec["tools"].as_array().unwrap();
+    let listed: Vec<&str> = tools.iter().map(|t| t["function"]["name"].as_str().unwrap()).collect();
+    // Every called name is listed once, in first-call order.
+    let mut called: Vec<&str> = Vec::new();
+    for m in rec["messages"].as_array().unwrap() {
+        for c in m["tool_calls"].as_array().into_iter().flatten() {
+            let n = c["function"]["name"].as_str().unwrap();
+            if !called.contains(&n) {
+                called.push(n);
+            }
+        }
+    }
+    assert_eq!(listed, called);
+    assert_eq!(listed, ["read", "mcp__fs__list", "bash"]);
+    for t in tools {
+        assert_eq!(t["type"], "function");
+        let f = &t["function"];
+        if f["name"] == "mcp__fs__list" {
+            assert!(f.get("parameters").is_none(), "an unknown tool has no schema: {f}");
+        } else {
+            assert_eq!(f["parameters"]["type"], "object", "{f}");
+            assert!(!f["description"].as_str().unwrap().is_empty());
+        }
+    }
+    let read_spec = &marlowe_exec::specs::table().get("read").unwrap().spec;
+    assert_eq!(tools[0]["function"]["parameters"], read_spec.input_schema);
+    let m: Value = serde_json::from_str(&read(&out_dir.join(MANIFEST_FILE))).unwrap();
+    assert_eq!(m["tools_source"], format!("registry@{}", env!("CARGO_PKG_VERSION")));
+    assert_eq!(m["tools_unknown"], 1);
+    assert!(read(&out_dir.join("README.md")).contains("tools=row[\"tools\"]"));
+}
+
+#[test]
+fn dpo_rows_carry_tools_too() {
+    let home = TempHome::new("dpotools");
+    let proj = home.dir("proj");
+    enable(home.path(), &proj);
+    let c = db(home.path());
+    add_session(&c, "s", "t", Some(&proj), false, &small_session());
+    good(&c, "s");
+    drop(c);
+    let out_dir = home.path().join("o");
+    let (r, out) = run(home.path(), &["trajectories", "--out", &out_dir.to_string_lossy()], &ScrubInputs::default());
+    assert_eq!(r, Ok(0), "{out}");
+    for line in read(&out_dir.join(DPO_FILE)).lines() {
+        let row: Value = serde_json::from_str(line).unwrap();
+        let names: Vec<&str> = row["tools"].as_array().unwrap().iter().map(|t| t["function"]["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["edit", "bash"]);
+    }
+}
+
+#[test]
+fn secret_file_variants_and_grep_lines_are_redacted() {
+    let home = TempHome::new("sf2");
+    let proj = home.dir("proj");
+    enable(home.path(), &proj);
+    let c = db(home.path());
+    let msgs = vec![
+        user("check the envs"),
+        call("", "", vec![
+            ("a".into(), "read", json!({"path": "web/.env.production.local"})),
+            ("b".into(), "bash", json!({"command": "cat prod.env"})),
+            ("c".into(), "read", json!({"path": ".env.local.bak"})),
+            ("d".into(), "grep", json!({"pattern": "SEED", "path": "."})),
+        ]),
+        results(vec![
+            ("a".into(), "SEED=alphavalueqq".into(), false),
+            ("b".into(), "SEED=betavalueqq".into(), false),
+            ("c".into(), "SEED=gammavalueqq".into(), false),
+            ("d".into(), "web/.env.development.local:3:SEED=deltavalueqq\r\nC:\\w\\.env-4-OTHER=epsilonvalue\nsrc/seed.rs:1:const SEED: u32 = 7;".into(), false),
+        ]),
+        say("Done."),
+    ];
+    add_session(&c, "s", "t", Some(&proj), false, &msgs);
+    good(&c, "s");
+    drop(c);
+    let out_dir = home.path().join("o");
+    let (r, _) = run(home.path(), &["trajectories", "--out", &out_dir.to_string_lossy()], &ScrubInputs::default());
+    assert_eq!(r, Ok(0));
+    let text = decoded_strings(&read(&out_dir.join(SFT_FILE)));
+    for v in ["alphavalueqq", "betavalueqq", "gammavalueqq", "deltavalueqq", "epsilonvalue"] {
+        assert!(!text.contains(v), "{v} leaked: {text}");
+    }
+    assert!(text.contains("web/.env.development.local:3:[REDACTED:secret_file]"), "{text}");
+    assert!(text.contains("src/seed.rs:1:const SEED: u32 = 7;"), "other lines stay: {text}");
 }

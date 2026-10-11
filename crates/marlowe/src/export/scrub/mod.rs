@@ -4,7 +4,8 @@
 //!    named environment variables), wherever they appear.
 //! 2. **Secret files**: a tool call that touches `.env`, `id_rsa`, `*.pem`, `.npmrc`, `~/.ssh/` ...
 //!    loses its result and its non-path arguments whole (applied in `hf.rs`, which links calls to
-//!    results).
+//!    results); a grep/rg line from a secret file (`.env:3:X=y`) in any other result loses its
+//!    text after the `path:line:` prefix.
 //! 3. **Credential shapes**: provider key prefixes, PEM blocks, JWTs, bearer/basic headers, URL
 //!    credentials, `--token x` flags, secret-named assignments and secret-named JSON keys.
 //! 4. **Personal data**: email, phone, card numbers (Luhn), US SSNs, public IPv4 addresses.
@@ -30,7 +31,7 @@ use serde_json::Value;
 use rules::{is_marker, Layer, Rule};
 
 /// Version of the rule set, recorded in the manifest. Bump on any rule change.
-pub const SCRUB_VERSION: u32 = 1;
+pub const SCRUB_VERSION: u32 = 2;
 
 /// Who the user is, for the identity layer. Everything here is redacted on word boundaries.
 #[derive(Debug, Clone, Default)]
@@ -92,6 +93,10 @@ pub struct Scrubber {
     allow: Vec<String>,
     secret_key: Regex,
     secret_path: Regex,
+    /// [`SECRET_PATH`] anchored at the end: a path that ends in a secret file.
+    secret_path_end: Regex,
+    /// grep/rg separators after a path: `:`, `:N:`, `:N:C:`, `-N-`.
+    grep_sep: Regex,
 }
 
 pub fn marker(kind: &str) -> String {
@@ -195,6 +200,8 @@ impl Scrubber {
             allow: inputs.allow_terms.iter().map(|s| s.to_lowercase()).filter(|s| !s.is_empty()).collect(),
             secret_key: Regex::new(rules::SECRET_KEY).expect("secret key"),
             secret_path: Regex::new(SECRET_PATH).expect("secret path"),
+            secret_path_end: Regex::new(&format!("{SECRET_PATH}$")).expect("secret path end"),
+            grep_sep: Regex::new(r":(?:\d+:(?:\d+:)?)?|-\d+-").expect("grep separator"),
         }
     }
 
@@ -263,13 +270,49 @@ impl Scrubber {
         self.secret_key.is_match(&norm)
     }
 
-    /// True when `s` names a secret-shaped file (`.env`, `id_ed25519`, `server.pem`, `~/.ssh/x`).
+    /// True when `s` names a secret-shaped file (`.env.production.local`, `prod.env`,
+    /// `id_ed25519`, `server.pem`, `~/.ssh/x`, `~/.kube/config`). Templates (`.env.example`,
+    /// `example.env`) are not: the last segment decides.
     pub fn mentions_secret_file(&self, s: &str) -> bool {
-        self.secret_path.captures_iter(s).any(|c| {
-            let name = c.name("f").map(|m| m.as_str().to_ascii_lowercase()).unwrap_or_default();
-            // Templates carry no values.
-            !(name.starts_with(".env.") && [".example", ".sample", ".template", ".dist"].iter().any(|t| name.ends_with(t)))
-        })
+        self.secret_path.captures_iter(s).any(|c| !is_template(c.name("f").map(|m| m.as_str()).unwrap_or_default()))
+    }
+
+    /// `grep`/`rg` output lines from a secret file (`.env:3:SEED=x`, `cfg/.env-4-X=y`) keep their
+    /// `path:line:` prefix and lose the rest. Other lines pass through unchanged.
+    pub fn redact_secret_file_lines(&self, s: &str, tally: &mut Tally) -> String {
+        let mut out = String::with_capacity(s.len());
+        for line in s.split_inclusive('\n') {
+            match self.secret_line_prefix(line) {
+                Some(keep) => {
+                    out.push_str(&line[..keep]);
+                    out.push_str(&marker("secret_file"));
+                    tally.add("secret_file");
+                    let body = line.trim_end_matches(['\r', '\n']);
+                    out.push_str(&line[body.len()..]);
+                }
+                None => out.push_str(line),
+            }
+        }
+        out
+    }
+
+    /// The length of a grep-style `path:` / `path:N:` / `path-N-` prefix whose path ends in a
+    /// secret file, if the line has one.
+    fn secret_line_prefix(&self, line: &str) -> Option<usize> {
+        let body = line.trim_end_matches(['\r', '\n']);
+        // A drive letter's colon is part of the path.
+        let skip = if body.as_bytes().get(1) == Some(&b':') && body.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) { 2 } else { 0 };
+        let mut at = skip;
+        while let Some(m) = self.grep_sep.find_at(body, at) {
+            at = m.end().max(m.start() + 1);
+            // The path is the last whitespace-free run before the separator.
+            let path = &body[..m.start()];
+            let tail = path.rsplit(char::is_whitespace).next().unwrap_or(path);
+            if !tail.is_empty() && self.secret_path_end.is_match(tail) && self.mentions_secret_file(tail) {
+                return (m.end() < body.len()).then_some(m.end());
+            }
+        }
+        None
     }
 
     /// Detector kinds still present in `s` (the gate). Empty for any output of [`Scrubber::scrub`].
@@ -360,7 +403,12 @@ impl Scrubber {
     pub fn describe(&self) -> Vec<String> {
         let mut v = vec![format!("known_secret: {} value(s)", self.known.len()), "secret_file".to_string()];
         for layer in [Layer::Credential, Layer::Personal] {
-            let kinds: Vec<&str> = self.rules.iter().filter(|r| r.layer == layer).map(|r| r.kind).collect();
+            let mut kinds: Vec<&str> = Vec::new();
+            for r in self.rules.iter().filter(|r| r.layer == layer) {
+                if !kinds.contains(&r.kind) {
+                    kinds.push(r.kind);
+                }
+            }
             v.push(format!("{}: {}", layer.as_str(), kinds.join(", ")));
         }
         let ids: Vec<&str> = self.identity.iter().map(|l| l.kind).collect();
@@ -407,5 +455,21 @@ fn replace_literal(l: &Literal, s: &str, tally: &mut Tally) -> String {
     out
 }
 
-/// Secret-shaped file names, with the name in group `f`.
-const SECRET_PATH: &str = r#"(?i)(?:^|[\s\\/'"=:`(<>|&;])(?P<f>\.env(?:\.[A-Za-z0-9_-]+)?|\.npmrc|\.netrc|_netrc|\.pypirc|\.git-credentials|\.pgpass|\.dockercfg|id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?|credentials(?:\.json|\.ya?ml|\.toml|\.csv)?|secrets?\.(?:json|ya?ml|toml|env)|\.ssh[\\/][^\s'"`]*|[^\s\\/'"`]+\.(?:pem|key|p12|pfx|jks|keystore|kdbx|ovpn|ppk|asc|gpg))(?:$|[\s\\/'"`;,)|&>])"#;
+/// True for a dotenv template: `.env.example`, `.env.local.sample`, `example.env`.
+fn is_template(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    const TEMPLATES: &[&str] = &["example", "sample", "template", "dist", "defaults"];
+    if name.starts_with(".env.") {
+        return name.rsplit('.').next().is_some_and(|last| TEMPLATES.contains(&last));
+    }
+    if let Some(stem) = name.strip_suffix(".env").filter(|s| !s.is_empty()) {
+        return stem.rsplit(['.', '_', '-']).next().is_some_and(|last| TEMPLATES.contains(&last));
+    }
+    false
+}
+
+/// Secret-shaped file names, with the name in group `f`: dotenv files with any number of
+/// suffixes (`.env.production.local`) or a stem (`prod.env`), `.envrc`, package-manager and
+/// cloud credentials (`.npmrc`, `~/.aws/credentials`, `~/.kube/config`,
+/// `~/.docker/config.json`), SSH keys and key stores.
+const SECRET_PATH: &str = r#"(?i)(?:^|[\s\\/'"=:`(<>|&;])(?P<f>\.env(?:\.[A-Za-z0-9_-]+)*|[^\s\\/'"`=:(<>|&;]+\.env|\.envrc|\.npmrc|\.netrc|_netrc|\.pypirc|\.git-credentials|\.pgpass|\.dockercfg|\.kube[\\/]config|\.docker[\\/]config\.json|\.aws[\\/](?:credentials|config)|id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?|credentials(?:\.json|\.ya?ml|\.toml|\.csv)?|secrets?\.(?:json|ya?ml|toml|env)|\.ssh[\\/][^\s'"`]*|[^\s\\/'"`]+\.(?:pem|key|p12|pfx|jks|keystore|kdbx|ovpn|ppk|asc|gpg))(?:$|[\s\\/'"`;,)|&>])"#;

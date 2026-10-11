@@ -268,3 +268,47 @@ fn generic_account_names_are_not_redacted_everywhere() {
     let v = sc.scrub_value(&json!({"user": "hi"}), &mut Tally::default());
     assert_eq!(v["user"], "hi");
 }
+
+#[test]
+fn secret_file_variants_are_recognised() {
+    let sc = plain();
+    for yes in [
+        ".env.production.local", "web/.env.development.local", "cat .env.production.local", ".env.local.bak", "prod.env",
+        "cat prod.env", ".envrc", "~/.kube/config", r"C:\Users\x\.docker\config.json", r"C:\Users\x\.aws\credentials", "~/.aws/config",
+    ] {
+        assert!(sc.mentions_secret_file(yes), "{yes}");
+    }
+    for no in [".env.local.example", "example.env", ".env.sample", "src/config.env.ts", "process.env.API_KEY", "kube/config.go", "docker/config.json"] {
+        assert!(!sc.mentions_secret_file(no), "{no}");
+    }
+}
+
+#[test]
+fn grep_lines_from_secret_files_lose_their_text() {
+    let sc = plain();
+    let mut t = Tally::default();
+    let out = sc.redact_secret_file_lines(".env:3:SEED=x1\nsrc/a.rs:2:let seed = 1;\nC:\\p\\.env.local-4-K=v\r\nLoaded .env: TOKEN=abc\n.env.example:1:SEED=changeme", &mut t);
+    assert_eq!(
+        out,
+        ".env:3:[REDACTED:secret_file]\nsrc/a.rs:2:let seed = 1;\nC:\\p\\.env.local-4-[REDACTED:secret_file]\r\nLoaded .env:[REDACTED:secret_file]\n.env.example:1:SEED=changeme"
+    );
+    assert_eq!(t.0.get("secret_file"), Some(&3));
+}
+
+#[test]
+fn quoted_passphrases_go_whole() {
+    let sc = plain();
+    for (text, gone) in [
+        (r#"DB_PASSWORD="correct horse battery staple""#, "horse battery staple"),
+        (r#"passphrase: 'open sesame now please'"#, "sesame now please"),
+        (r#"{\"password\": \"tr0ub4dor and three\"}"#, "and three"),
+    ] {
+        let out = s(&sc, text);
+        assert!(!out.contains(gone), "{out}");
+        assert!(out.contains("[REDACTED:credential]"), "{out}");
+        assert_eq!(s(&sc, &out), out, "idempotent");
+        assert!(sc.findings(&out).is_empty(), "{out}");
+    }
+    // An unquoted value is still the first run only; a quoted one without spaces as before.
+    assert_eq!(s(&sc, r#"password = "hunter2hunter""#), r#"password = "[REDACTED:credential]""#);
+}
