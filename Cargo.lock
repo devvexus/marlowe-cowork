@@ -2703,8 +2703,11 @@ dependencies = [
  "marlowe-typeset",
  "marlowe-voice",
  "ratatui",
+ "regex",
+ "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.19",
  "windows-sys 0.61.2",
 ]

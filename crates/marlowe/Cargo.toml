@@ -40,6 +40,10 @@ ratatui.workspace = true
 marlowe-contract.workspace = true
 marlowe-journal.workspace = true
 marlowe-memory.workspace = true
+# `marlowe export trajectories` (src/export/): reads cowork.db, scrubs with regexes, sha256 manifest.
+rusqlite.workspace = true
+regex.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 # tests/context_live.rs: the planner against the real store, runner log and GPU (ignored by default).
