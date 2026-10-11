@@ -5,9 +5,9 @@
 │                                                                                                │╰────────────────────────────────── (m) ─╯
 │  ⋯ read src/gate.rs · 80 l╭ context ─────────────────────────────────────────────────────────────────────────╮───────────────────────────╮
 │                           │ ctx ━━━━━━━━━━━━━━━━━━────── 150k / 200k · cloud                                 │ance ▾                     │
-│                           │ 75% used · past the compaction point — older tool results are masked at the next │───────────────────── (w) ─╯
+│                           │ 75% of the window used                                                           │───────────────────── (w) ─╯
 │                           │                                                                                  │───────────────────────────╮
-│                           │ what the conversation holds (estimated)                                          │                           │
+│                           │ what this screen holds (an estimate; the daemon has not sent its own count)      │                           │
 │                           │ your messages           3       1%   ━                                           │───────────────────── (1) ─╯
 │                           │ replies                 6       2%   ━                                           │───────────────────────────╮
 │                           │ tool calls and results  268     96%  ━━━━━━━━━━━━━━━━━━━━━━━━                    │hed                        │
@@ -15,7 +15,7 @@
 │                           │ recalled memories       0       0%                                               │                           │
 │                           │                                                                                  │                           │
 │                           │ 0 open todos · 0 attachments · 0 queued                                          │                           │
-│                           │ the system prompt, tool schemas and instruction files are in the used total abo… │                           │
+│                           │ the system prompt, tool schemas and instruction files count in the total above … │                           │
 │                           │                                                                                  │                           │
 │                           │                                                                                  │                           │
 │                           │                                                                                  │                           │

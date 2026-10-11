@@ -529,7 +529,7 @@ pub struct State {
     /// Text sent with no session yet, shown until its TurnStarted arrives.
     pub pending_user: Option<String>,
     awaiting_new: bool,
-    pending_open: Option<SessionId>,
+    pub(crate) pending_open: Option<SessionId>,
 
     pub approvals: Vec<Approval>,
     pub approval_sel: usize,
@@ -878,6 +878,14 @@ impl State {
                     *sel = (*sel).min(sessions.len().saturating_sub(1));
                 }
             }
+            // The details of this session's tool calls, asked for after a turn: only the details
+            // are taken; the conversation on screen is not rebuilt.
+            Event::Transcript { session, turns }
+                if self.pending_open.as_ref() != Some(session) && self.mine(session) && self.code.detail_refresh.as_ref() == Some(session) =>
+            {
+                self.code.detail_refresh = None;
+                self.merge_tool_details(turns);
+            }
             Event::Transcript { session, turns } => {
                 if self.pending_open.as_ref() == Some(session) || self.mine(session) {
                     self.pending_open = None;
@@ -897,6 +905,7 @@ impl State {
                     }
                     self.close_thinking();
                     self.pending_user = None;
+                    self.code.interrupting = false;
                     // A steer typed here is already on screen; do not show it twice.
                     let shown = matches!(self.entries.last(),
                         Some(Entry::User { text, .. }) if text == user);
@@ -1002,8 +1011,15 @@ impl State {
                 }
                 self.live = None;
                 self.add_totals(usage);
-                // Nothing is left to steer: queued messages start the next turn.
-                self.flush_queue(out);
+                self.code.interrupting = false;
+                if *stop == TurnStop::Interrupted {
+                    // The user stopped the model: what was queued is theirs to resend, not ours.
+                    self.queue_back_to_composer();
+                } else {
+                    // Nothing is left to steer: queued messages start the next turn.
+                    self.flush_queue(out);
+                }
+                self.refresh_tool_details(out);
                 // The runner may have loaded, reloaded or partly offloaded: refresh the meter.
                 if self.conn.is_online() {
                     out.push(Request::ContextPolicies);
@@ -1141,6 +1157,16 @@ impl State {
             Event::PlanProposed { run, plan, quote } => self.on_plan_proposed(run, plan, quote),
             Event::Error { message, .. } if reply && message.contains("is not available yet (M4.6") => self.unavailable(message),
             Event::Error { session: None, message } if self.absorb_absent(message) => {}
+            // The daemon refused a trust whose digest no longer matches the project's files: the
+            // message is shown, and the listing (with its new digest) is asked for again.
+            Event::Error { session: None, message } if message.contains("changed since you looked") => {
+                self.code.hooks_confirm = None;
+                self.code.hooks_digest = None;
+                self.flash(crate::text::clean(message), NoteTone::Amber);
+                if let Some(ws) = self.shown_workspace().map(str::to_string) {
+                    out.push(Request::ListHooks { workspace: Some(ws) });
+                }
+            }
             Event::Error { session: None, message } if self.context.loading.is_some() && message.starts_with("context plan") => {
                 self.context.loading = None;
                 self.context.error = Some(crate::text::clean(message));
@@ -1375,11 +1401,13 @@ pub fn transcript_details(turns: &[StoredTurn]) -> std::collections::HashMap<Str
                             output: String::new(),
                             diff: crate::diff::from_tool_call(&c.name, &c.args),
                             ok: None,
+                            full: true,
                         },
                     );
                 }
                 Part::ToolResult(r) => {
                     let d = map.entry(r.call_id.clone()).or_default();
+                    d.full = true;
                     d.output = r.content.clone();
                     d.ok = Some(!r.is_error);
                     if d.diff.is_none() && crate::diff::looks_like_diff(&r.content) {

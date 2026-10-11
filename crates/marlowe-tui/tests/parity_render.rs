@@ -7,7 +7,7 @@ mod common;
 use common::*;
 use marlowe_model::{Part, Role, ToolCall, ToolResult};
 use marlowe_proto::{
-    ApprovalId, CrewBudget, CrewRunInfo, CrewRunStatus, CrewSpent, Event, Playbook, RunId, SettingsScope, StoredTurn,
+    ApprovalId, CrewBudget, CrewRunInfo, CrewRunStatus, CrewSpent, Event, Playbook, Request, RunId, SettingsScope, StoredTurn,
 };
 use marlowe_surface::chrome::Ink;
 use marlowe_tui::coding::{Effect, LocalEvent};
@@ -74,31 +74,65 @@ fn parity_U1_a_write_approval_is_all_additions_and_a_long_one_scrolls_before_all
     assert_eq!(reqs.len(), 1);
 }
 
-const DIFF_RESULT: &str = "edit src/gate.rs · exact\n--- a/src/gate.rs\n+++ b/src/gate.rs\n@@ -10,3 +10,3 @@\n fn gate(x: f32) -> bool {\n-    x > 0.5\n+    x > 0.62\n }";
+/// What the daemon sends for a tool call live: `ToolStarted.summary` is `host.describe(call)` and
+/// `ToolFinished.summary` is the tool's one dim line, so a single line each. The arguments and the
+/// result reach the client in the stored transcript, which it asks for when the turn ends.
+fn stored(calls: &[(ToolCall, &str)]) -> Event {
+    let mut turns = vec![StoredTurn { idx: 0, role: Role::User, content: vec![Part::Text { text: "fix the gate".into() }], at_ms: 1 }];
+    for (i, (call, result)) in calls.iter().enumerate() {
+        turns.push(StoredTurn { idx: 1 + 2 * i as u32, role: Role::Assistant, content: vec![Part::ToolCall(call.clone())], at_ms: 2 });
+        turns.push(StoredTurn {
+            idx: 2 + 2 * i as u32,
+            role: Role::Tool,
+            content: vec![Part::ToolResult(ToolResult { call_id: call.id.clone(), content: (*result).into(), is_error: false, parts: vec![] })],
+            at_ms: 3,
+        });
+    }
+    Event::Transcript { session: sid(), turns }
+}
+
+/// The turn ends; the client asks for the transcript; the daemon answers it.
+fn end_turn_and_fetch(s: &mut marlowe_tui::State, seq: u64, calls: &[(ToolCall, &str)]) {
+    let reqs = feed(s, seq, Event::TurnFinished { session: sid(), turn: 1, usage: usage(), stop: marlowe_proto::TurnStop::Done });
+    assert!(reqs.contains(&Request::OpenSession { session: sid() }), "the turn is over: the details are asked for: {reqs:?}");
+    feed(s, 0, Event::SessionOpened { session: sid(), title: "gate work".into(), workspace: Some("C:/work/valiance".into()) });
+    feed(s, 0, stored(calls));
+}
+
+fn gate_edit() -> ToolCall {
+    ToolCall { id: "c1".into(), name: "edit".into(), args: json!({"path": "src/gate.rs", "old_string": GATE_OLD, "new_string": GATE_NEW}) }
+}
 
 #[test]
 fn parity_U1_an_edit_result_carries_its_diff_under_the_tool_line() {
     let mut s = busy_session();
+    // Exactly what the daemon sends: one line each way, no arguments, no diff.
     feed(&mut s, 3, tool_started("c1", "edit", "edit src/gate.rs"));
-    feed(&mut s, 4, tool_finished("c1", true, DIFF_RESULT));
+    feed(&mut s, 4, tool_finished("c1", true, "edited src/gate.rs · exact"));
+    let before = dump(&palette_frame(&s));
+    assert!(before.contains("edit src/gate.rs") && !before.contains("x > 0.62"), "the live line alone has no diff\n{before}");
+    let entries = s.entries.len();
+    end_turn_and_fetch(&mut s, 5, &[(gate_edit(), "edited src/gate.rs · exact")]);
     let buf = palette_frame(&s);
     let text = dump(&buf);
     // The gutter carries the file's line numbers, so match the sign and the text after it.
     for want in ["edit src/gate.rs", "src/gate.rs  +1 −1", "−     x > 0.5", "+     x > 0.62", "fn gate(x: f32) -> bool {"] {
         assert!(text.contains(want), "{want:?}\n{text}");
     }
-    assert!(text.contains("10"), "the diff's line numbers are shown\n{text}");
     snapshot("inline_diff", &buf);
-    // The tool line itself stays one line.
+    // The conversation was not rebuilt, and the tool line is still one line.
+    assert_eq!(s.entries.len(), entries + 1, "only the usage line was added");
     assert_eq!(s.entries.iter().filter(|e| matches!(e, Entry::Tool { .. })).count(), 1);
 }
 
 #[test]
 fn parity_U1_a_long_diff_is_capped_with_the_way_to_the_rest() {
     let mut s = busy_session();
-    let body: String = (1..=60).map(|i| format!("+added {i}\n")).collect();
+    let body: String = (1..=60).map(|i| format!("added {i}\n")).collect();
+    let call = ToolCall { id: "c1".into(), name: "write".into(), args: json!({"path": "big.txt", "content": body}) };
     feed(&mut s, 3, tool_started("c1", "write", "write big.txt"));
-    feed(&mut s, 4, tool_finished("c1", true, &format!("write big.txt\n--- /dev/null\n+++ b/big.txt\n@@ -0,0 +1,60 @@\n{body}")));
+    feed(&mut s, 4, tool_finished("c1", true, "60 lines"));
+    end_turn_and_fetch(&mut s, 5, &[(call, "60 lines")]);
     let buf = palette_frame(&s);
     assert!(contains(&buf, "more rows") && contains(&buf, "^o shows all"), "{}", dump(&buf));
     // The transcript view has them all.
@@ -108,6 +142,28 @@ fn parity_U1_a_long_diff_is_capped_with_the_way_to_the_rest() {
     assert!(contains(&top, "added 1") && contains(&top, "more"), "scrolled to the start says how much follows\n{}", dump(&top));
     keys(&mut s, "end");
     assert!(contains(&palette_frame(&s), "added 60"));
+}
+
+#[test]
+fn parity_U1_a_diff_the_daemon_never_sent_is_fetched_when_ctrl_o_opens_between_turns() {
+    let mut s = coding_session();
+    // A call the client only has a line for (a reconnect, a call from before the client joined).
+    s.entries.push(Entry::Tool { call_id: "c1".into(), summary: "edit src/gate.rs".into(), status: marlowe_tui::state::ToolStatus::Done("edited".into()) });
+    let reqs = keys(&mut s, "ctrl-o");
+    assert!(reqs.contains(&Request::OpenSession { session: sid() }), "{reqs:?}");
+    feed(&mut s, 0, stored(&[(gate_edit(), "edited")]));
+    assert!(contains(&palette_frame(&s), "x > 0.62"), "{}", dump(&palette_frame(&s)));
+    // Once the details are here, opening it again asks for nothing.
+    keys(&mut s, "ctrl-o");
+    assert!(!keys(&mut s, "ctrl-o").contains(&Request::OpenSession { session: sid() }));
+}
+
+#[test]
+fn parity_U1_a_turn_with_no_tool_calls_fetches_nothing() {
+    let mut s = busy_session();
+    feed(&mut s, 3, Event::TextDelta { session: sid(), turn: 1, text: "Done.".into() });
+    let reqs = feed(&mut s, 4, Event::TurnFinished { session: sid(), turn: 1, usage: usage(), stop: marlowe_proto::TurnStop::Done });
+    assert!(!reqs.iter().any(|r| matches!(r, Request::OpenSession { .. })), "{reqs:?}");
 }
 
 #[test]
@@ -172,7 +228,8 @@ fn parity_U2_file_line_and_urls_in_the_conversation_become_osc_8_links() {
 fn parity_U2_a_path_on_a_tool_line_and_in_a_diff_header_is_a_link_too() {
     let mut s = busy_session();
     feed(&mut s, 3, tool_started("c1", "edit", "edit src/gate.rs"));
-    feed(&mut s, 4, tool_finished("c1", true, DIFF_RESULT));
+    feed(&mut s, 4, tool_finished("c1", true, "edited src/gate.rs · exact"));
+    end_turn_and_fetch(&mut s, 5, &[(gate_edit(), "edited src/gate.rs · exact")]);
     let plan = plan_of(&s);
     assert!(plan.len() >= 2, "{plan:?}");
     assert!(plan.iter().all(|r| r.url == "file:///C:/work/valiance/src/gate.rs"));
@@ -254,14 +311,23 @@ fn parity_U11_ctrl_o_shows_every_tool_call_in_full_and_ctrl_o_leaves() {
     feed(&mut s, 3, Event::ReasoningDelta { session: sid(), turn: 1, text: "The threshold is compared to a float.".into(), tokens: 8 });
     feed(&mut s, 4, tool_started("c1", "bash", "bash cargo test -p gate"));
     let out: String = (1..=20).map(|i| format!("test case_{i} ... ok\n")).collect();
-    feed(&mut s, 5, tool_finished("c1", true, &format!("20 passed\n{out}")));
+    // The daemon's line for a finished call: short, no output.
+    feed(&mut s, 5, tool_finished("c1", true, "exit 0"));
     feed(&mut s, 6, Event::TextDelta { session: sid(), turn: 1, text: "All thirty pass.".into() });
     let inline = palette_frame(&s);
     assert!(!contains(&inline, "case_17"), "the conversation shows the one line");
     assert!(!contains(&inline, "The threshold is compared"), "thinking is collapsed");
+    // Mid-turn the stored transcript has not got this turn yet: the view shows what the client has.
+    keys(&mut s, "ctrl-o");
+    let live = palette_frame(&s);
+    assert!(contains(&live, "bash cargo test -p gate") && contains(&live, "exit 0") && !contains(&live, "case_20"), "{}", dump(&live));
+    keys(&mut s, "ctrl-o");
+    // The turn ends; the arguments and the output come from the stored transcript.
+    let call = ToolCall { id: "c1".into(), name: "bash".into(), args: json!({"command": "cargo test -p gate"}) };
+    end_turn_and_fetch(&mut s, 7, &[(call, &format!("20 passed\n{out}"))]);
     keys(&mut s, "ctrl-o");
     let buf = palette_frame(&s);
-    for want in ["transcript", "The threshold is compared to a float.", "bash cargo test -p gate", "case_20 ... ok", "All thirty pass."] {
+    for want in ["transcript", "The threshold is compared to a float.", "bash cargo test -p gate", "\"command\": \"cargo test -p gate\"", "case_20 ... ok", "All thirty pass."] {
         assert!(contains(&buf, want), "{want:?}\n{}", dump(&buf));
     }
     snapshot("transcript_view", &buf);
@@ -429,8 +495,9 @@ fn nothing_in_the_client_reaches_past_the_theme() {
 fn every_coding_screen_stays_inside_the_palette() {
     let mut s = busy_session();
     feed(&mut s, 3, tool_started("c1", "edit", "edit src/gate.rs"));
-    feed(&mut s, 4, tool_finished("c1", true, DIFF_RESULT));
-    feed(&mut s, 5, Event::Todos { session: sid(), items: vec![marlowe_proto::TodoItem { content: "x".into(), status: marlowe_proto::TodoStatus::InProgress, active_form: None }] });
+    feed(&mut s, 4, tool_finished("c1", true, "edited src/gate.rs · exact"));
+    end_turn_and_fetch(&mut s, 6, &[(gate_edit(), "edited src/gate.rs · exact")]);
+    feed(&mut s, 7, Event::Todos { session: sid(), items: vec![marlowe_proto::TodoItem { content: "x".into(), status: marlowe_proto::TodoStatus::InProgress, active_form: None }] });
     keys(&mut s, "'one' enter");
     palette_frame(&s);
     for cmd in ["/help", "/config", "/permissions", "/hooks", "/agents", "/mcp", "/memory", "/context", "/cost", "/diff", "/rewind", "/jobs"] {

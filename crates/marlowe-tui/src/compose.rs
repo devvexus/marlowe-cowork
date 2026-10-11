@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use marlowe_proto::Request;
 
 use crate::attach::{self, Attachment, Upload};
-use crate::coding::{Effect, ImageSource, Search};
+use crate::coding::{Effect, ImageSource, Queued, Search};
 use crate::slash::{self, Outcome};
 use crate::state::{Entry, Focus, NoteTone, Overlay, State, View};
 
@@ -298,8 +298,12 @@ impl State {
         }
         self.code.history.push(line);
         if self.is_busy() && self.session.is_some() {
-            // Held until the model finishes its step; Up takes it back.
-            self.code.queue.push(line.to_string());
+            // Held until the model finishes its step; Up takes it back. The images the text names
+            // wait with it.
+            let (mine, rest): (Vec<Attachment>, Vec<Attachment>) =
+                std::mem::take(&mut self.code.attachments).into_iter().partition(|a| line.contains(&a.marker()));
+            self.code.attachments = rest;
+            self.code.queue.push(Queued { text: line.to_string(), attachments: mine });
             self.scroll = 0;
             return;
         }
@@ -310,6 +314,11 @@ impl State {
     pub(crate) fn ask(&mut self, text: String, out: &mut Vec<Request>) {
         let atts: Vec<Attachment> = self.code.attachments.iter().filter(|a| text.contains(&a.marker())).cloned().collect();
         self.code.attachments.clear();
+        self.ask_with(text, atts, out);
+    }
+
+    /// Sends `text` with exactly these images: uploaded first, then asked with their references.
+    fn ask_with(&mut self, text: String, atts: Vec<Attachment>, out: &mut Vec<Request>) {
         if !atts.is_empty() {
             let (up, reqs) = Upload::start(self.session.clone(), text.clone(), self.default_workspace.clone().filter(|_| self.session.is_none()), &atts);
             if self.session.is_none() {
@@ -339,28 +348,51 @@ impl State {
     }
 
     /// The queued messages go in at a step boundary (a tool finished) as steers, or, once the turn
-    /// is over, one at a time as new turns.
+    /// is over, one at a time as new turns. Each goes the way a typed message does, so its images
+    /// upload first. One upload runs at a time; the rest wait for it.
     pub(crate) fn flush_queue(&mut self, out: &mut Vec<Request>) {
-        let Some(session) = self.session.clone() else { return };
-        if self.code.queue.is_empty() {
+        let Some(_) = self.session.clone() else { return };
+        if self.code.queue.is_empty() || self.code.upload.is_some() || self.code.interrupting {
             return;
         }
         if self.is_busy() {
-            for text in std::mem::take(&mut self.code.queue) {
+            while !self.code.queue.is_empty() && self.code.upload.is_none() {
+                let Queued { text, attachments } = self.code.queue.remove(0);
                 self.entries.push(Entry::User { text: text.clone(), steer: true });
-                out.push(Request::Ask { session: Some(session.clone()), text, workspace: None, images: Vec::new(), options: None });
+                self.ask_with(text, attachments, out);
             }
         } else {
-            let text = self.code.queue.remove(0);
-            self.ask(text, out);
+            let Queued { text, attachments } = self.code.queue.remove(0);
+            self.ask_with(text, attachments, out);
         }
+    }
+
+    /// An interrupted turn does not start the next message: what was queued comes back into the
+    /// box, ahead of any draft, with its images.
+    pub(crate) fn queue_back_to_composer(&mut self) {
+        if self.code.queue.is_empty() {
+            return;
+        }
+        let queued = std::mem::take(&mut self.code.queue);
+        let mut text = queued.iter().map(|q| q.text.as_str()).collect::<Vec<_>>().join("\n");
+        if !self.composer.is_blank() {
+            text.push('\n');
+            text.push_str(self.composer.text());
+        }
+        for q in queued {
+            self.code.attachments.extend(q.attachments);
+        }
+        self.composer.set(&text);
+        self.composer_edited();
+        self.flash("queued messages are back in the box", NoteTone::Dim);
     }
 
     /// Up with queued messages and an empty box: the newest comes back for editing.
     pub(crate) fn unqueue(&mut self) -> bool {
         if self.composer.is_blank() {
-            if let Some(t) = self.code.queue.pop() {
-                self.composer.set(&t);
+            if let Some(q) = self.code.queue.pop() {
+                self.composer.set(&q.text);
+                self.code.attachments.extend(q.attachments);
                 return true;
             }
         }

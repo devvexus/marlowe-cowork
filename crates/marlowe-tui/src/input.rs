@@ -578,6 +578,7 @@ impl State {
             Command::Interrupt => {
                 if let (Some(s), true) = (self.session.clone(), self.is_busy()) {
                     out.push(Request::Interrupt { session: s });
+                    self.code.interrupting = true;
                 }
             }
             Command::Quit => self.quit = true,

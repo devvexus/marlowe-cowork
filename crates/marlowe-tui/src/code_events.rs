@@ -55,6 +55,49 @@ impl State {
         }
     }
 
+    /// The live events say one line per tool call; the arguments and results (for an edit's diff
+    /// and for Ctrl+O) are in the stored transcript, which the daemon saves before it says the
+    /// turn is over. Asked for once the turn ends, for the calls that have no full detail.
+    pub(crate) fn refresh_tool_details(&mut self, out: &mut Vec<Request>) {
+        if !self.conn.is_online() || self.pending_open.is_some() || self.code.detail_refresh.is_some() {
+            return;
+        }
+        let Some(session) = self.session.clone() else { return };
+        let thin = self.entries.iter().any(|e| match e {
+            Entry::Tool { call_id, .. } => !self.code.tool_detail.get(call_id).is_some_and(|d| d.full),
+            _ => false,
+        });
+        if thin {
+            self.code.detail_refresh = Some(session.clone());
+            out.push(Request::OpenSession { session });
+        }
+    }
+
+    /// Takes a stored transcript's tool arguments and results into the details, leaving the
+    /// conversation alone. A call the transcript does not hold has nothing more to learn.
+    pub(crate) fn merge_tool_details(&mut self, turns: &[marlowe_proto::StoredTurn]) {
+        for (id, mut d) in crate::state::transcript_details(turns) {
+            // A diff the live summary already carried is the more exact one.
+            if let Some(old) = self.code.tool_detail.get(&id) {
+                if d.diff.is_none() {
+                    d.diff = old.diff.clone();
+                }
+            }
+            self.code.tool_detail.insert(id, d);
+        }
+        let ids: Vec<String> = self
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Tool { call_id, .. } => Some(call_id.clone()),
+                _ => None,
+            })
+            .collect();
+        for id in ids {
+            self.code.tool_detail.entry(id).or_default().full = true;
+        }
+    }
+
     pub(crate) fn add_totals(&mut self, usage: &Usage) {
         let t = &mut self.code.totals;
         t.input += usage.input;
@@ -318,6 +361,10 @@ impl State {
                     if let Some(ask) = up.stored(blob, mime, *w, *h) {
                         self.code.upload = None;
                         out.push(ask);
+                        // More queued while the model works go in behind it.
+                        if self.is_busy() {
+                            self.flush_queue(out);
+                        }
                     }
                 }
             }

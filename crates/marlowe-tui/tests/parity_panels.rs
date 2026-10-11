@@ -116,6 +116,10 @@ fn parity_M10_permissions_lists_rules_in_the_order_they_bind_and_adds_and_remove
     assert!(deny < ask && ask < allow, "deny, then ask, then allow\n{text}");
     assert!(text.contains(".claude/settings.json import"), "which file a rule came from");
     snapshot("permissions_panel", &buf);
+    // The rule the daemon says decided a call is marked.
+    assert!(!text.contains("fired"), "no rule is marked until the daemon says one decided");
+    s.set_rule_fired("bash(git push*)", "denied git push");
+    assert!(contains(&palette_frame(&s), "fired denied git push"));
     // Remove the selected rule (the first shown is the deny).
     let reqs = keys(&mut s, "d");
     assert_eq!(reqs, vec![Request::RemoveRule { pattern: "bash(git push*)".into(), scope: SettingsScope::Project, workspace: ws() }]);
@@ -217,7 +221,34 @@ fn parity_X16_hooks_shows_which_hooks_run_and_trusts_a_project_hook() {
         assert!(contains(&buf, want), "{want:?}\n{}", dump(&buf));
     }
     snapshot("hooks_panel", &buf);
-    assert_eq!(keys(&mut s, "t"), vec![Request::TrustHooks { workspace: WS.into(), digest: String::new() }]);
+    // Nothing is trusted from a listing that carried no digest: the daemon would refuse it, and
+    // there is nothing the user reviewed to bind the trust to.
+    assert!(keys(&mut s, "t").is_empty());
+    assert!(contains(&palette_frame(&s), "sent no digest"));
+    // With the digest of the listing, `t` asks first, naming everything it would trust.
+    s.set_hooks_digest("d1g3st-0f-list");
+    assert!(keys(&mut s, "t").is_empty(), "nothing is sent until it is confirmed");
+    let buf = palette_frame(&s);
+    for want in ["trust all 1 project hook?", "PreToolUse Bash · ./scripts/check.sh", "d1g3st-0f-list"] {
+        assert!(contains(&buf, want), "{want:?}\n{}", dump(&buf));
+    }
+    snapshot("hooks_trust_confirm", &buf);
+    // Anything but a yes backs out, and the panel stays open.
+    assert!(keys(&mut s, "esc").is_empty());
+    assert!(contains(&palette_frame(&s), "hooks") && !contains(&palette_frame(&s), "trust all"));
+    // Yes sends the digest that was on screen.
+    keys(&mut s, "t");
+    assert_eq!(keys(&mut s, "enter"), vec![Request::TrustHooks { workspace: WS.into(), digest: "d1g3st-0f-list".into() }]);
+    // A listing with another digest while the question is up drops it: that is not what was read.
+    keys(&mut s, "t");
+    s.set_hooks_digest("another-digest");
+    assert!(keys(&mut s, "enter").is_empty());
+    assert!(contains(&palette_frame(&s), "hooks changed"));
+    // The daemon's own refusal is shown, and the listing is asked for again.
+    feed(&mut s, 0, Event::Error { session: None, message: "the project's hooks or settings changed since you looked; review them again".into() });
+    let reqs = feed(&mut s, 0, Event::Error { session: None, message: "the project's hooks or settings changed since you looked; review them again".into() });
+    assert!(reqs.contains(&Request::ListHooks { workspace: ws() }), "{reqs:?}");
+    assert!(contains(&palette_frame(&s), "changed since you looked"));
     keys(&mut s, "down");
     assert!(keys(&mut s, "t").is_empty());
     assert!(contains(&palette_frame(&s), "already runs"));
@@ -318,13 +349,30 @@ fn parity_C9_context_shows_the_meter_and_what_fills_it_and_compacts_on_request()
     keys(&mut s, "'/context'");
     keys(&mut s, "enter");
     let buf = palette_frame(&s);
-    for want in ["context", "75% used", "past the compaction point", "your messages", "replies", "tool calls and results", "0 open todos"] {
+    for want in ["context", "75% of the window used", "an estimate", "your messages", "replies", "tool calls and results", "0 open todos"] {
         assert!(contains(&buf, want), "{want:?}\n{}", dump(&buf));
     }
     snapshot("context_usage_panel", &buf);
     let reqs = keys(&mut s, "c");
     assert_eq!(reqs, vec![Request::Compact { session: sid(), focus: None }]);
     assert_eq!(s.overlay, None);
+}
+
+#[test]
+fn parity_C9_the_daemons_breakdown_and_truncation_notices_replace_the_estimate_when_it_sends_them() {
+    let mut s = busy_session();
+    feed(&mut s, 6, Event::ContextUsage { session: sid(), turn: 1, tokens: 150_000, window: 200_000 });
+    s.set_context_breakdown(
+        vec![("system prompt".into(), 6_200), ("tool schemas".into(), 11_800), ("MCP tools".into(), 3_400), ("instruction files".into(), 2_100), ("messages".into(), 126_500)],
+        vec!["3 older tool results were masked".into(), "bash output over 30,000 characters was cut".into()],
+    );
+    keys(&mut s, "'/context'");
+    keys(&mut s, "enter");
+    let buf = palette_frame(&s);
+    for want in ["what fills the window", "system prompt", "tool schemas", "MCP tools", "instruction files", "126,500", "3 older tool results were masked", "bash output over 30,000 characters was cut"] {
+        assert!(contains(&buf, want), "{want:?}\n{}", dump(&buf));
+    }
+    assert!(!contains(&buf, "an estimate"), "the daemon's count is not labelled an estimate\n{}", dump(&buf));
 }
 
 // ---- C14, C15 --------------------------------------------------------------------------------------
@@ -653,6 +701,7 @@ fn parity_T23_ask_user_is_a_modal_whose_answers_go_back_in_order() {
         assert!(contains(&buf, want), "{want:?}\n{}", dump(&buf));
     }
     snapshot("ask_user", &buf);
+    s.now_ms += 1_000;
     // 2 picks the second option and moves on.
     assert!(keys(&mut s, "2").is_empty());
     let buf = palette_frame(&s);
@@ -668,6 +717,7 @@ fn parity_T23_ask_user_is_a_modal_whose_answers_go_back_in_order() {
 fn parity_T23_free_text_and_skipping() {
     let mut s = busy_session();
     feed(&mut s, 3, Event::QuestionAsked { session: sid(), id: "q2".into(), questions: questions()[..1].to_vec() });
+    s.now_ms += 1_000;
     // Down to "something else", type, enter.
     keys(&mut s, "down down 'cargo test --release'");
     let reqs = keys(&mut s, "enter");
@@ -680,4 +730,49 @@ fn parity_T23_free_text_and_skipping() {
     // A question for another session does not take this one's screen.
     feed(&mut s, 5, Event::QuestionAsked { session: SessionId::from("other"), id: "q4".into(), questions: questions() });
     assert_eq!(s.overlay, None);
+}
+
+#[test]
+fn parity_T23_keys_typed_ahead_of_the_question_are_not_answers() {
+    let mut s = busy_session();
+    // The user was typing into the Message box when the question arrived.
+    feed(&mut s, 3, Event::QuestionAsked { session: sid(), id: "q1".into(), questions: questions()[..1].to_vec() });
+    assert!(keys(&mut s, "2").is_empty(), "a digit inside the guard picks nothing");
+    assert!(keys(&mut s, "enter").is_empty(), "so does enter");
+    assert_eq!(s.overlay, Some(Overlay::Panel), "the question is still waiting");
+    s.now_ms += 500;
+    assert_eq!(keys(&mut s, "2"), vec![Request::AnswerQuestion { session: sid(), id: "q1".into(), answers: vec!["cargo nextest".into()] }]);
+}
+
+#[test]
+fn parity_T23_a_second_question_waits_behind_the_first_and_both_are_answered_in_order() {
+    let mut s = busy_session();
+    feed(&mut s, 3, Event::QuestionAsked { session: sid(), id: "q1".into(), questions: questions()[..1].to_vec() });
+    // A subagent on the same session asks too, while the first is still open.
+    feed(&mut s, 4, Event::QuestionAsked { session: sid(), id: "q2".into(), questions: questions()[..1].to_vec() });
+    assert!(contains(&palette_frame(&s), "Which test runner should I use?"));
+    s.now_ms += 1_000;
+    assert_eq!(keys(&mut s, "1"), vec![Request::AnswerQuestion { session: sid(), id: "q1".into(), answers: vec!["cargo test".into()] }]);
+    // The second takes the screen, with its own guard against the key that answered the first.
+    assert_eq!(s.overlay, Some(Overlay::Panel));
+    assert!(keys(&mut s, "1").is_empty());
+    s.now_ms += 1_000;
+    assert_eq!(keys(&mut s, "2"), vec![Request::AnswerQuestion { session: sid(), id: "q2".into(), answers: vec!["cargo nextest".into()] }]);
+    assert_eq!(s.overlay, None);
+}
+
+#[test]
+fn parity_T23_a_question_does_not_discard_the_panel_it_covers() {
+    let mut s = busy_session();
+    keys(&mut s, "'/config' enter");
+    feed(&mut s, 0, settings_event(&[(SettingsScope::User, "editor_url = \"vscode://file/{path}\"\n")]));
+    keys(&mut s, "enter");
+    keys(&mut s, "'vscode://x'");
+    feed(&mut s, 3, Event::QuestionAsked { session: sid(), id: "q1".into(), questions: questions()[..1].to_vec() });
+    assert!(contains(&palette_frame(&s), "Which test runner should I use?"));
+    s.now_ms += 1_000;
+    keys(&mut s, "esc");
+    // The config panel is back, and its edit with it.
+    let buf = palette_frame(&s);
+    assert!(contains(&buf, "config") && contains(&buf, "vscode://x"), "{}", dump(&buf));
 }

@@ -1,13 +1,13 @@
  * marlowe — gate work                                                                                                  0 runs · 0 need you
-╭ Conversation · gate work ──────────────────────────────────────────────────── ⣄⣠⣾⣷⣤⣤ thinking ─╮╭ Model ─────────────────────────────────╮
+╭ Conversation · gate work ──────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
 │  you  fix the gate                                                                             ││ Claude Sonnet 4.5 ▾             medium │
-│  ⋯ edit src/gate.rs · edit src/gate.rs · exact                                                 ││ ctx ────────────┊──── 0 / 200k · cloud │
+│  ⋯ edit src/gate.rs · edited src/gate.rs · exact                                               ││ ctx ────────────┊──── 0 / 200k · cloud │
 │      src/gate.rs  +1 −1                                                                        │╰────────────────────────────────── (m) ─╯
-│      @@ -10,3 +10,3 @@                                                                         │╭ Workspace ─────────────────────────────╮
-│      10 10   fn gate(x: f32) -> bool {                                                         ││ C:/work/valiance ▾                     │
-│      11    −     x > 0.5                                                                       │╰────────────────────────────────── (w) ─╯
-│         11 +     x > 0.62                                                                      │╭ Crew ──────────────────────────────────╮
-│      12 12   }                                                                                 ││ no runs                                │
+│        fn gate(x: f32) -> bool {                                                               │╭ Workspace ─────────────────────────────╮
+│      −     x > 0.5                                                                             ││ C:/work/valiance ▾                     │
+│      +     x > 0.62                                                                            │╰────────────────────────────────── (w) ─╯
+│        }                                                                                       │╭ Crew ──────────────────────────────────╮
+│                                                 12.4k in · 830 out · 1.2k reasoning · $0.0496  ││ no runs                                │
 │                                                                                                │╰────────────────────────────────── (1) ─╯
 │                                                                                                │╭ Watch ─────────────────────────────────╮
 │                                                                                                ││ nothing watched                        │
@@ -35,6 +35,6 @@
 │                                                                                                │╰────────────────────────────────── (3) ─╯
 ╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
 ╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
-│ › queue a message — it goes in at the next step…                       esc interrupt · ↵ queue ││ nothing recalled this session          │
-╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
- esc Interrupt  ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^k palette       Friday 9 October · 21:40
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰─ $0.0496 ──────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette       Friday 9 October · 21:40

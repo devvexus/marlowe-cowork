@@ -309,13 +309,15 @@ pub struct QuestionUi {
     pub other: Vec<Composer>,
     /// Typing into "Other" for the current question.
     pub typing: bool,
+    /// When it came up: choice keys typed ahead of it are not answers.
+    pub since_ms: i64,
 }
 
 impl QuestionUi {
     pub fn new(session: SessionId, id: String, questions: Vec<Question>) -> Self {
         let n = questions.len();
         let picked = questions.iter().map(|q| vec![false; q.options.len()]).collect();
-        Self { session, id, questions, q: 0, cursor: vec![0; n], picked, other: vec![Composer::default(); n], typing: false }
+        Self { session, id, questions, q: 0, cursor: vec![0; n], picked, other: vec![Composer::default(); n], typing: false, since_ms: 0 }
     }
 
     /// Rows of the current question: its options and the free-text row.
@@ -432,6 +434,10 @@ impl State {
         self.open_panel(Panel::Help(Scroll::default()), out);
     }
     pub fn open_transcript(&mut self, out: &mut Vec<Request>) {
+        // Between turns, fetch the arguments and results of calls the live events only summarised.
+        if self.live.is_none() {
+            self.refresh_tool_details(out);
+        }
         self.open_panel(Panel::Transcript(Scroll::default()), out);
     }
 
@@ -459,13 +465,43 @@ impl State {
         self.open_panel(Panel::Diff(DiffUi::new(title, false, diff, raw)), out);
     }
 
-    /// The daemon's `ask_user` arrived: it takes the screen like an approval does.
+    /// The daemon's `ask_user` arrived: it takes the screen like an approval does. One already
+    /// on screen is never replaced; later ones wait behind it, and so does the panel they
+    /// interrupted, which comes back afterwards.
     pub(crate) fn ask_questions(&mut self, session: &SessionId, id: &str, questions: &[Question]) {
         if questions.is_empty() {
             return;
         }
-        self.code.panel = Some(Panel::Question(QuestionUi::new(session.clone(), id.to_string(), questions.to_vec())));
+        let pending = crate::coding::PendingQuestion { session: session.clone(), id: id.to_string(), questions: questions.to_vec() };
+        if matches!(self.code.panel, Some(Panel::Question(_))) {
+            self.code.questions.push_back(pending);
+        } else {
+            self.show_question(pending);
+        }
+    }
+
+    fn show_question(&mut self, q: crate::coding::PendingQuestion) {
+        // Another panel (a /config edit, say) is put away, not discarded.
+        if let Some(p) = self.code.panel.take() {
+            if !matches!(p, Panel::Question(_)) {
+                self.code.stashed_panel = Some(p);
+            }
+        }
+        let mut ui = QuestionUi::new(q.session, q.id, q.questions);
+        ui.since_ms = self.now_ms;
+        self.code.panel = Some(Panel::Question(ui));
         self.overlay = Some(Overlay::Panel);
+    }
+
+    /// A question was answered or skipped: the next waits its turn on screen, or the panel it
+    /// covered returns.
+    fn next_question(&mut self) {
+        if let Some(next) = self.code.questions.pop_front() {
+            self.show_question(next);
+        } else if let Some(p) = self.code.stashed_panel.take() {
+            self.code.panel = Some(p);
+            self.overlay = Some(Overlay::Panel);
+        }
     }
 
     /// A reply updated data a panel is showing: keep its cursor on a row that exists.
@@ -523,10 +559,14 @@ impl State {
                 }
             }
         };
+        let was_question = matches!(panel, Panel::Question(_));
         if keep {
             self.code.panel = Some(panel);
         } else {
             self.close_panel();
+            if was_question {
+                self.next_question();
+            }
         }
     }
 
@@ -690,16 +730,34 @@ impl State {
     // -- /hooks, /agents
 
     fn hooks_key(&mut self, sel: &mut usize, k: KeyEvent, out: &mut Vec<Request>) -> bool {
+        // A trust waits for a yes. It names the digest that was on screen; that is the digest sent.
+        if let Some(digest) = self.code.hooks_confirm.clone() {
+            match k.code {
+                KeyCode::Enter | KeyCode::Char('y') => {
+                    self.code.hooks_confirm = None;
+                    if let Some(ws) = self.ws() {
+                        out.push(Request::TrustHooks { workspace: ws, digest });
+                    }
+                }
+                _ => {
+                    self.code.hooks_confirm = None;
+                    self.flash("not trusted", NoteTone::Dim);
+                }
+            }
+            return true;
+        }
         let hooks = self.code.hooks.clone().unwrap_or_default();
         match k.code {
             KeyCode::Esc | KeyCode::Char('q') => return false,
             KeyCode::Up | KeyCode::Char('k') => *sel = sel.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => *sel = (*sel + 1).min(hooks.len().saturating_sub(1)),
             KeyCode::Char('t') => match (hooks.get(*sel), self.ws()) {
-                (Some(h), Some(ws)) if h.scope != SettingsScope::User && !h.trusted => {
-                    // An empty digest asks the daemon to trust the project's hooks as they are now.
-                    out.push(Request::TrustHooks { workspace: ws, digest: String::new() });
-                }
+                (Some(h), Some(_)) if h.scope != SettingsScope::User && !h.trusted => match self.code.hooks_digest.clone() {
+                    // Trusting is trusting what was listed: the daemon refuses a digest that no
+                    // longer matches the project's files.
+                    Some(d) => self.code.hooks_confirm = Some(d),
+                    None => self.flash("the daemon sent no digest for these hooks, so none can be trusted from here", NoteTone::Amber),
+                },
                 (Some(h), _) if h.trusted || h.scope == SettingsScope::User => {
                     self.flash("this hook already runs", NoteTone::Dim)
                 }
@@ -708,6 +766,33 @@ impl State {
             _ => {}
         }
         true
+    }
+
+    /// The digest of the project hooks the daemon just listed. A trust waiting on an older digest
+    /// is dropped: what it would trust is not what is on screen now.
+    pub fn set_hooks_digest(&mut self, digest: &str) {
+        if self.code.hooks_confirm.as_deref().is_some_and(|c| c != digest) {
+            self.code.hooks_confirm = None;
+            self.flash("the project's hooks changed · review them and press t again", NoteTone::Amber);
+        }
+        self.code.hooks_digest = Some(digest.to_string());
+    }
+
+    /// The daemon's account of the context window: its parts and anything it cut to fit. Shown in
+    /// `/context` in place of the screen's own estimate once present.
+    pub fn set_context_breakdown(&mut self, parts: Vec<(String, u64)>, notices: Vec<String>) {
+        self.code.context_breakdown = Some(parts);
+        self.code.context_notices = notices;
+    }
+
+    /// The daemon says `pattern` decided a call; `/permissions` marks the rule.
+    pub fn set_rule_fired(&mut self, pattern: &str, what: &str) {
+        self.code.rules_fired.insert(pattern.to_string(), what.to_string());
+    }
+
+    /// The project hooks `t` would trust, as the panel shows them.
+    pub fn untrusted_project_hooks(&self) -> Vec<&marlowe_proto::HookInfo> {
+        self.code.hooks.iter().flatten().filter(|h| h.scope != SettingsScope::User && !h.trusted).collect()
     }
 
     fn agents_key(&mut self, sel: &mut usize, open: &mut bool, k: KeyEvent) -> bool {
@@ -874,6 +959,11 @@ impl State {
     // -- ask_user
 
     fn question_key(&mut self, q: &mut QuestionUi, k: KeyEvent, out: &mut Vec<Request>) -> bool {
+        // What was being typed in the Message box as the question arrived is not an answer.
+        let ahead = self.now_ms.saturating_sub(q.since_ms) < crate::state::APPROVAL_GUARD_MS;
+        if ahead && !q.typing && matches!(k.code, KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('0'..='9')) {
+            return true;
+        }
         let n_opts = q.questions[q.q].options.len();
         let multi = q.questions[q.q].multi_select;
         if q.typing {

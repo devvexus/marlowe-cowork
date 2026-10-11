@@ -168,10 +168,25 @@ fn url_for_inner(what: &Reference, cfg: &LinkConfig) -> Option<String> {
                         .replace("{line}", &line.unwrap_or(1).to_string())
                         .replace("{col}", &col.unwrap_or(1).to_string()),
                 ),
-                None => Some(format!("file:///{}", enc.trim_start_matches('/'))),
+                // Without an editor to hand it to, the terminal opens a file:// link with the
+                // system's default handler, which runs a script. Only text to read is linked.
+                None => viewable(&abs).then(|| format!("file:///{}", enc.trim_start_matches('/'))),
             }
         }
     }
+}
+
+/// Extensions a `file:///` link may open: source and text a default handler shows, never one that
+/// executes (scripts, binaries, installers, shortcuts, registry files) or runs script in a browser.
+const VIEWABLE_EXT: &[&str] = &[
+    "rs", "toml", "md", "txt", "json", "yaml", "yml", "lock", "ini", "cfg", "log", "csv", "tsv", "c", "h", "cc", "cpp", "hpp", "java",
+    "kt", "cs", "go", "swift", "css", "sql", "ipynb", "proto", "tf", "gradle", "zig", "ts", "tsx", "jsx", "vue",
+];
+
+/// True when `path` ends in a viewable-text extension.
+pub fn viewable(path: &str) -> bool {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && VIEWABLE_EXT.iter().any(|k| k.eq_ignore_ascii_case(ext)))
 }
 
 /// An absolute path with forward slashes, or `None` for a relative one with no workspace.
@@ -375,6 +390,23 @@ mod tests {
         assert_eq!(url_for(&r, &cfg).unwrap(), "vscode://file/C:/work/val%20iance/src/main.rs:42:1");
         assert_eq!(url_for(&file("../x.rs", None, None), &cfg).unwrap(), "vscode://file/C:/work/x.rs:1:1");
         assert!(url_for(&r, &LinkConfig::default()).is_none(), "a relative path with no workspace has no URL");
+    }
+
+    #[test]
+    fn without_an_editor_only_text_to_read_gets_a_file_url() {
+        let cfg = LinkConfig { editor_url: None, workspace: Some("C:/w".into()) };
+        for bad in [
+            "C:/x/run.bat", "C:/Users/m/Downloads/x.exe", "fix.cmd", "tools/a.ps1", "x.js", "x.sh", "a.py", "a.vbs", "a.msi", "a.lnk", "a.reg", "a.hta",
+            "a.html", "a.svg", "C:/x/readme.txt.exe", "a.RB", "Makefile",
+        ] {
+            assert!(url_for(&file(bad, None, None), &cfg).is_none(), "{bad} must not become a file link");
+        }
+        for good in ["src/a.rs", "NOTES.MD", "Cargo.toml", "C:/x/log.txt", "a/b.json"] {
+            assert!(url_for(&file(good, None, None), &cfg).is_some(), "{good}");
+        }
+        // An editor template takes anything: the editor opens it, nothing runs it.
+        let cfg = LinkConfig { editor_url: Some("vscode://file/{path}:{line}".into()), workspace: Some("C:/w".into()) };
+        assert_eq!(url_for(&file("C:/x/run.bat", Some(2), None), &cfg).unwrap(), "vscode://file/C:/x/run.bat:2");
     }
 
     #[test]

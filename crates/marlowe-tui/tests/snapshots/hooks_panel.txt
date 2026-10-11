@@ -14,7 +14,7 @@
 │                   │                                                                                                  │                   │
 │                   │                                                                                                  │                   │
 │                   │                                                                                                  │                   │
-│                   ╰───────────────────────────────────────────────── t trust a project hook · ↑↓ select · esc close ─╯                   │
+│                   ╰──────────────────────────────────────────── t trust the project's hooks · ↑↓ select · esc close ─╯                   │
 │                ask anything  ·  ^o past sessions  ·  ^l library  ·  ^k palette                 ││                                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │

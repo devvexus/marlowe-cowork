@@ -165,7 +165,7 @@ fn parity_U6_queued_messages_become_the_next_turns_one_at_a_time() {
     let reqs = feed(&mut s, 3, Event::TurnFinished { session: sid(), turn: 1, usage: Default::default(), stop: marlowe_proto::TurnStop::Done });
     assert!(reqs.contains(&ask("first")), "the turn is over: the first starts the next one: {reqs:?}");
     assert!(!reqs.contains(&ask("second")), "the second waits its turn");
-    assert_eq!(s.code.queue, vec!["second".to_string()]);
+    assert_eq!(s.code.queued_texts(), ["second"]);
 }
 
 #[test]
@@ -174,9 +174,68 @@ fn parity_U6_up_takes_the_last_queued_message_back_to_edit_and_esc_still_interru
     keys(&mut s, "'one' enter 'two' enter");
     keys(&mut s, "up");
     assert_eq!(s.composer.text(), "two");
-    assert_eq!(s.code.queue, vec!["one".to_string()]);
+    assert_eq!(s.code.queued_texts(), ["one"]);
     assert_eq!(keys(&mut s, "esc"), vec![Request::Interrupt { session: sid() }]);
     assert_eq!(s.code.queue_len(), 1, "an interrupt keeps what was queued");
+}
+
+#[test]
+fn parity_U6_esc_stops_the_model_and_the_queued_messages_come_back_into_the_box_unsent() {
+    let mut s = busy_session();
+    keys(&mut s, "'one' enter 'two' enter");
+    assert_eq!(keys(&mut s, "esc"), vec![Request::Interrupt { session: sid() }]);
+    // The tool the interrupt cancelled finishes first: that is not a step boundary to steer at.
+    feed(&mut s, 3, tool_started("c1", "bash", "bash sleep 60"));
+    let reqs = feed(&mut s, 4, tool_finished("c1", false, "interrupted"));
+    assert!(!reqs.iter().any(|r| matches!(r, Request::Ask { .. })), "after Esc nothing is steered in: {reqs:?}");
+    let reqs = feed(&mut s, 5, Event::TurnFinished { session: sid(), turn: 1, usage: Default::default(), stop: marlowe_proto::TurnStop::Interrupted });
+    assert!(!reqs.iter().any(|r| matches!(r, Request::Ask { .. })), "the stopped model is not started again: {reqs:?}");
+    assert_eq!(s.code.queue_len(), 0);
+    assert_eq!(s.composer.text(), "one\ntwo", "the queued messages are back in the box");
+    assert!(contains(&palette_frame(&s), "queued messages are back in the box"));
+    // Ahead of a draft typed since.
+    let mut s = busy_session();
+    keys(&mut s, "'one' enter 'draft'");
+    keys(&mut s, "esc");
+    feed(&mut s, 5, Event::TurnFinished { session: sid(), turn: 1, usage: Default::default(), stop: marlowe_proto::TurnStop::Interrupted });
+    assert_eq!(s.composer.text(), "one\ndraft");
+}
+
+#[test]
+fn parity_U6_a_queued_message_keeps_its_image_and_goes_up_with_it() {
+    let mut s = busy_session();
+    keys(&mut s, "ctrl-v");
+    s.take_effects();
+    let png = png_bytes(640, 480);
+    local(&mut s, LocalEvent::Image { source: ImageSource::Clipboard, result: Ok(("image/png".into(), png.clone())) });
+    let reqs = keys(&mut s, "'why is this red' enter");
+    assert!(reqs.is_empty(), "held while the model works: {reqs:?}");
+    assert_eq!(s.code.queue_len(), 1);
+    assert!(s.code.attachments.is_empty(), "the image went into the queue with its text");
+    // The step boundary: the image uploads, then the Ask carries it.
+    let reqs = feed(&mut s, 4, tool_finished("c1", true, "80 lines"));
+    assert_eq!(reqs, vec![Request::PutBlob { mime: "image/png".into(), base64: attach::base64(&png) }]);
+    let reqs = feed(&mut s, 0, Event::BlobStored { blob: "b1".into(), mime: "image/png".into(), w: 640, h: 480 });
+    assert_eq!(
+        reqs,
+        vec![Request::Ask {
+            session: Some(sid()),
+            text: "[Image #1] why is this red".into(),
+            workspace: None,
+            images: vec![ImageRef { mime: "image/png".into(), blob: "b1".into(), w: 640, h: 480 }],
+            options: None,
+        }]
+    );
+    // Taken back with Up, the image comes back with it.
+    let mut s = busy_session();
+    keys(&mut s, "ctrl-v");
+    s.take_effects();
+    local(&mut s, LocalEvent::Image { source: ImageSource::Clipboard, result: Ok(("image/png".into(), png_bytes(8, 8))) });
+    keys(&mut s, "'x' enter");
+    assert!(s.code.attachments.is_empty());
+    keys(&mut s, "up");
+    assert_eq!(s.code.attachments.len(), 1);
+    assert!(s.composer.text().starts_with("[Image #1]"));
 }
 
 // ---- U8 --------------------------------------------------------------------------------------------

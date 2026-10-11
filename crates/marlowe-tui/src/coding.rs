@@ -67,6 +67,14 @@ pub enum LocalEvent {
     Instructions(Vec<InstructionFile>),
 }
 
+/// An `ask_user` that arrived while another question or panel was up.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingQuestion {
+    pub session: marlowe_proto::SessionId,
+    pub id: String,
+    pub questions: Vec<marlowe_proto::Question>,
+}
+
 /// What the client keeps about a tool call beyond its one line: the full summary, the diff it made,
 /// for Ctrl+O and the inline diff.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -78,6 +86,16 @@ pub struct ToolDetail {
     pub output: String,
     pub diff: Option<Diff>,
     pub ok: Option<bool>,
+    /// The stored transcript's arguments and result are here, not only the one line the live
+    /// events carried.
+    pub full: bool,
+}
+
+/// A message typed while the model worked, with the images its text names.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Queued {
+    pub text: String,
+    pub attachments: Vec<Attachment>,
 }
 
 /// The status line.
@@ -207,7 +225,9 @@ pub struct Coding {
     pub todos_hidden: bool,
     pub jobs: Vec<JobInfo>,
     /// Messages typed while a turn ran, sent at the next step boundary.
-    pub queue: Vec<String>,
+    pub queue: Vec<Queued>,
+    /// Esc was pressed and the turn has not finished: nothing queued goes in as a steer.
+    pub interrupting: bool,
     pub attachments: Vec<Attachment>,
     pub next_image: u32,
     pub upload: Option<Upload>,
@@ -232,6 +252,23 @@ pub struct Coding {
     pub cost: Option<CostReport>,
     pub instructions: Option<Vec<crate::coding::InstructionFile>>,
     pub tool_detail: HashMap<String, ToolDetail>,
+    /// The live events carry one line per call, so the arguments and results come from the stored
+    /// transcript, asked for once a turn ends: the session whose details are on the way.
+    pub detail_refresh: Option<marlowe_proto::SessionId>,
+    /// The project hooks' digest as the daemon listed them (what `t` may trust).
+    pub hooks_digest: Option<String>,
+    /// A trust is waiting for its confirmation, at this digest.
+    pub hooks_confirm: Option<String>,
+    /// The daemon's own account of the context window, by part, when it sends one.
+    pub context_breakdown: Option<Vec<(String, u64)>>,
+    /// What the daemon truncated or masked to fit the window.
+    pub context_notices: Vec<String>,
+    /// Which rule decided a call last, by rule pattern, when the daemon says.
+    pub rules_fired: HashMap<String, String>,
+    /// Questions from `ask_user` waiting behind the one on screen.
+    pub questions: std::collections::VecDeque<PendingQuestion>,
+    /// A panel put away while a question took the screen.
+    pub stashed_panel: Option<Panel>,
     pub links: LinkConfig,
     /// The links on the frame just drawn, for the run loop (written by the renderer).
     pub link_plan: std::cell::RefCell<Vec<crate::links::LinkRegion>>,
@@ -267,6 +304,11 @@ pub struct Search {
 impl Coding {
     pub fn queue_len(&self) -> usize {
         self.queue.len()
+    }
+
+    /// The queued messages' text, oldest first.
+    pub fn queued_texts(&self) -> Vec<&str> {
+        self.queue.iter().map(|q| q.text.as_str()).collect()
     }
 
     /// Open todo items (not completed).

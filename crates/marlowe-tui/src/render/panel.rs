@@ -238,7 +238,13 @@ fn permissions(area: Rect, state: &State, p: &PermUi, theme: &Theme, buf: &mut B
             Span::styled(text::pad(&text::clean(&r.pattern), 44), if sel { theme.bright() } else { theme.normal() }),
             Span::styled(text::pad(scope_label(r.scope), 9), ink(scope_ink(r.scope), theme)),
         ];
-        let room = (inner.width as usize).saturating_sub(2 + 6 + 44 + 9);
+        let mut room = (inner.width as usize).saturating_sub(2 + 6 + 44 + 9);
+        // The rule the daemon last said decided a call.
+        if let Some(fired) = state.code.rules_fired.get(&r.pattern) {
+            let tag = format!("fired {} ", text::truncate(&text::clean(fired), 24));
+            room = room.saturating_sub(text::width(&tag));
+            spans.push(Span::styled(tag, ink(Ink::Accent, theme)));
+        }
         spans.push(Span::styled(text::truncate_left(&src, room), ink(Ink::Dimmer, theme)));
         put_row(state, buf, (inner.x, y, inner.width), Line::from(spans), Target::Row(i), theme);
     }
@@ -269,7 +275,10 @@ fn permissions(area: Rect, state: &State, p: &PermUi, theme: &Theme, buf: &mut B
 fn hooks(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut Buffer) {
     let n = state.code.hooks.as_ref().map_or(0, Vec::len);
     let h = (n as u16 * 2 + 6).min(area.height.saturating_sub(2)).max(9);
-    let inner = frame(area, 100, h, "hooks", &[("t", "trust a project hook"), ("↑↓", "select"), ("esc", "close")], theme, buf);
+    let confirming = state.code.hooks_confirm.is_some();
+    let hints: &[(&str, &str)] =
+        if confirming { &[("↵", "trust them"), ("esc", "no")] } else { &[("t", "trust the project's hooks"), ("↑↓", "select"), ("esc", "close")] };
+    let inner = frame(area, 100, h.max(if confirming { 14 } else { 0 }), "hooks", hints, theme, buf);
     let Some(hooks) = &state.code.hooks else {
         let msg = if unavailable(state, "list_hooks") { "this daemon does not serve hooks yet" } else { "loading…" };
         note(inner, inner.y, msg, theme, buf);
@@ -278,7 +287,28 @@ fn hooks(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut Buffer)
     if hooks.is_empty() {
         note(inner, inner.y, "no hooks configured · add them under [hooks] in settings, or in .claude/settings.json", theme, buf);
     }
-    let visible = inner.height as usize / 2;
+    // Trusting names everything it would trust, and says so before it does.
+    let reserve = if confirming { 5usize } else { 0 };
+    if confirming {
+        let todo = state.untrusted_project_hooks();
+        let y0 = inner.bottom().saturating_sub(reserve as u16);
+        let amber = ink(Ink::Amber, theme);
+        put(
+            buf,
+            inner.x,
+            y0,
+            &Line::from(Span::styled(format!("trust all {} project hook{}? they run commands as you", todo.len(), if todo.len() == 1 { "" } else { "s" }), amber)),
+            inner.width,
+        );
+        for (i, hk) in todo.iter().take(reserve - 2).enumerate() {
+            let line = format!("{} {} · {}", text::clean(&hk.event), text::clean(hk.matcher.as_deref().unwrap_or("*")), text::clean(&hk.command));
+            put(buf, inner.x + 2, y0 + 1 + i as u16, &Line::from(Span::styled(text::truncate(&line, inner.width as usize - 2), theme.normal())), inner.width.saturating_sub(2));
+        }
+        let digest = state.code.hooks_confirm.as_deref().unwrap_or("");
+        let more = if todo.len() > reserve - 2 { format!("and {} more · ", todo.len() - (reserve - 2)) } else { String::new() };
+        note(inner, y0 + reserve as u16 - 1, &format!("{more}digest {}", text::truncate(digest, 16)), theme, buf);
+    }
+    let visible = (inner.height as usize).saturating_sub(reserve) / 2;
     let first = first_row(sel, visible);
     for (i, hk) in hooks.iter().enumerate().skip(first).take(visible) {
         let s = i == sel;
@@ -469,7 +499,15 @@ pub fn breakdown(state: &State) -> Vec<(&'static str, u64)> {
 }
 
 fn context(area: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
-    let inner = frame(area, 84, 17, "context", &[("c", "compact now"), ("p", "hardware plan"), ("esc", "close")], theme, buf);
+    // The daemon's own parts when it sends them; otherwise an estimate, said to be one.
+    let daemon = state.code.context_breakdown.as_deref();
+    let parts: Vec<(String, u64)> = match daemon {
+        Some(p) => p.to_vec(),
+        None => breakdown(state).into_iter().map(|(l, n)| (l.to_string(), n)).collect(),
+    };
+    let notices = &state.code.context_notices;
+    let h = (parts.len() + notices.len() + 12) as u16;
+    let inner = frame(area, 84, h.min(area.height.saturating_sub(2)), "context", &[("c", "compact now"), ("p", "hardware plan"), ("esc", "close")], theme, buf);
     let dim = ink(Ink::Dim, theme);
     let mut y = inner.y;
     match state.meter() {
@@ -477,14 +515,7 @@ fn context(area: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
             put(buf, inner.x, y, &super::context::meter_line(&m, inner.width as usize, theme), inner.width);
             y += 1;
             let frac = if m.window == 0 { 0.0 } else { m.used as f64 / f64::from(m.window) };
-            let (word, ik) = if frac >= 0.9 {
-                ("full — the next step summarises older turns", Ink::Red)
-            } else if frac >= 0.7 {
-                ("past the compaction point — older tool results are masked at the next step", Ink::Amber)
-            } else {
-                ("room to work", Ink::Dim)
-            };
-            put(buf, inner.x, y, &Line::from(Span::styled(format!("{:.0}% used · {word}", frac * 100.0), ink(ik, theme))), inner.width);
+            put(buf, inner.x, y, &Line::from(Span::styled(format!("{:.0}% of the window used", frac * 100.0), dim)), inner.width);
             y += 2;
         }
         None => {
@@ -492,20 +523,24 @@ fn context(area: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
             y += 2;
         }
     }
-    put(buf, inner.x, y, &Line::from(Span::styled("what the conversation holds (estimated)", ink(Ink::Accent, theme))), inner.width);
+    let heading = if daemon.is_some() { "what fills the window" } else { "what this screen holds (an estimate; the daemon has not sent its own count)" };
+    put(buf, inner.x, y, &Line::from(Span::styled(heading, ink(Ink::Accent, theme))), inner.width);
     y += 1;
-    let parts = breakdown(state);
     let total: u64 = parts.iter().map(|(_, n)| n).sum::<u64>().max(1);
     for (label, n) in parts {
         let pct = n * 100 / total;
         let bar = "━".repeat(((n * 24).div_ceil(total)).min(24) as usize);
         let line = Line::from(vec![
-            Span::styled(text::pad(label, 24), theme.normal()),
+            Span::styled(text::pad(&text::truncate(&text::clean(&label), 23), 24), theme.normal()),
             Span::styled(text::pad(&text::thousands(n), 8), dim),
             Span::styled(text::pad(&format!("{pct}%"), 5), ink(Ink::Dimmer, theme)),
             Span::styled(bar, ink(Ink::Accent, theme)),
         ]);
         put(buf, inner.x, y, &line, inner.width);
+        y += 1;
+    }
+    for n in notices {
+        put(buf, inner.x, y, &Line::from(Span::styled(text::truncate(&text::clean(n), inner.width as usize), ink(Ink::Amber, theme))), inner.width);
         y += 1;
     }
     y += 1;
@@ -517,7 +552,9 @@ fn context(area: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     ];
     put(buf, inner.x, y, &Line::from(Span::styled(extras.join(" · "), ink(Ink::Dimmer, theme))), inner.width);
     y += 1;
-    note(inner, y, "the system prompt, tool schemas and instruction files are in the used total above", theme, buf);
+    if daemon.is_none() {
+        note(inner, y, "the system prompt, tool schemas and instruction files count in the total above but are not itemised here", theme, buf);
+    }
 }
 
 // ---- /cost -----------------------------------------------------------------------------------------

@@ -176,7 +176,7 @@ pub(super) fn transcript(state: &State, width: usize, theme: &Theme) -> (Vec<Lin
         user_lines(p, "you", ink(Ink::Dim, theme), width, theme, &mut out);
     }
     // Typed while the model works: held until it reaches a step boundary.
-    for q in &state.code.queue {
+    for q in state.code.queue.iter().map(|q| q.text.as_str()) {
         if !out.is_empty() {
             out.push(Line::default());
         }
