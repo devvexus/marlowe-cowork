@@ -13,13 +13,13 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use marlowe_agent::{Consequence, ToolCallReq, ToolCtx, ToolHost, ToolOutcome, UserInfo};
 use marlowe_brains::{Library, MemoryStore, ProviderFactory};
 use marlowe_daemon::{Daemon, DaemonConfig, DaemonDeps, DaemonError};
-use marlowe_mind::{Kind, MemoryIn, Mind, MindConfig, Provenance, RecallQuery, Scope};
+use marlowe_mind::{Kind, MemoryIn, Mind, MindConfig, Provenance, Scope};
 use marlowe_model::{
-    CancelToken, ChatRequest, Completion, CompletionBuilder, Message, ModelInfo, Part, Provider, ProviderError,
-    ProviderKind, Role, StopReason, StreamEvent, ToolSpec, Usage,
+    CancelToken, ChatRequest, Completion, CompletionBuilder, Effort, Message, ModelInfo, ModelRef, Part, Provider,
+    ProviderError, ProviderKind, Role, StopReason, StreamEvent, ToolSpec, Usage,
 };
 use marlowe_proto::{
-    paths, write_line, ApprovalDecision, DaemonInfo, Envelope, Event, LineReader, Request, SessionId, TurnStop,
+    paths, write_line, ApprovalDecision, DaemonInfo, Envelope, Event, LineReader, Request, SessionId, Slot, TurnStop,
 };
 
 // ---------------------------------------------------------------- scripted provider
@@ -913,8 +913,9 @@ fn an_evicted_session_is_written_up_as_an_episode() {
     let empty = home.join("no-models");
     std::fs::create_dir_all(&empty).unwrap();
     let p = Arc::new(Scripted::default());
-    p.push(vec![text("Will do.")]);
-    p.push(vec![text("We planned the ablation of the gate features; nothing ran yet.")]);
+    p.push(vec![text("Will do: the gate ablation drops one reranker feature per run.")]);
+    // Anything more would be a model call the episode must not make.
+    p.push(vec![text("MODEL-WRITTEN SUMMARY")]);
     let mind = open_mind(&home, empty);
     let cfg = DaemonConfig { session_idle: Duration::from_millis(100), ..mem_cfg() };
     let d = start_with(&home, p.clone(), cfg, Some(mind.clone()));
@@ -925,17 +926,59 @@ fn an_evicted_session_is_written_up_as_an_episode() {
     let deadline = Instant::now() + WAIT;
     let episode = loop {
         let eps = mind.episodes(0..i64::MAX).unwrap();
-        // Assistant prose is episode-kind too; the summary is the one with the model's write-up.
-        if let Some(e) = eps.into_iter().find(|e| e.session == sid.as_str() && e.summary.contains("nothing ran yet")) {
+        if let Some(e) = eps.into_iter().find(|e| e.session == sid.as_str()) {
             break e;
         }
         assert!(Instant::now() < deadline, "no episode was written");
         std::thread::sleep(Duration::from_millis(50));
     };
-    assert!(episode.summary.contains("ablation"), "{episode:?}");
-    let reqs = p.requests();
-    assert_eq!(reqs.len(), 2, "one turn and one summary call");
-    assert!(texts(&reqs[1].messages, Role::User)[0].contains("User: plan the gate ablation"));
+    // Extractive: the opening request is the title, the day is in words, and no model wrote it.
+    assert!(episode.summary.starts_with("Session on "), "{episode:?}");
+    assert!(episode.summary.contains(": plan the gate ablation"), "{episode:?}");
+    assert!(!episode.summary.contains("MODEL-WRITTEN"), "{episode:?}");
+    assert_eq!(p.requests().len(), 1, "the turn was the only model call");
+    stop(d, &home);
+}
+
+/// The ui-preview5 library that loaded valiance behind Matthew's back: valiance added first,
+/// dawn second, conductor and quick on dawn, reflection and crew:general unset. A turn, an
+/// eviction and its episode, and a brief call the model once, on dawn.
+#[test]
+fn the_preview_library_never_calls_valiance_in_the_background() {
+    let home = temp_home("preview-valiance");
+    {
+        let lib = Library::open(&paths::cowork_db(&home)).unwrap();
+        for id in ["marlowe-valiance:22b", "marlowe-dawn:9b"] {
+            let mut info = ModelInfo::bare(ProviderKind::Ollama, id);
+            info.supports_tools = true;
+            info.context_window = Some(32_768);
+            lib.add(&info).unwrap();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let dawn: ModelRef = "ollama/marlowe-dawn:9b".parse().unwrap();
+        lib.set_slot(&Slot::Conductor, Some(&dawn), Effort::Medium).unwrap();
+        lib.set_slot(&Slot::Quick, Some(&dawn), Effort::Low).unwrap();
+        lib.set_slot(&Slot::Reflection, None, Effort::Low).unwrap();
+        lib.set_slot(&Slot::Crew("general".into()), None, Effort::Medium).unwrap();
+        assert_eq!(lib.default_model().unwrap().map(|m| m.model_id), Some("marlowe-valiance:22b".into()));
+    }
+    let p = Arc::new(Scripted::default());
+    p.push(vec![text("The gate ablation drops one reranker feature per run.")]);
+    p.push(vec![text("a second call would be the background")]);
+    let mind = open_mind(&home, no_models(&home));
+    let cfg = DaemonConfig { session_idle: Duration::from_millis(100), local_polish: true, ..mem_cfg() };
+    let d = start_with(&home, p.clone(), cfg, Some(mind.clone()));
+    let mut a = Client::connect(&d.info, None);
+    a.send(&Request::Ask { session: None, text: "plan the gate ablation".into(), workspace: None });
+    let sid = opened_session(&a.until(is_finished));
+    let deadline = Instant::now() + WAIT;
+    while !mind.episodes(0..i64::MAX).unwrap().iter().any(|e| e.session == sid.as_str()) {
+        assert!(Instant::now() < deadline, "no episode was written");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    a.request(&Request::Brief, |e| matches!(e, Event::Brief { .. }));
+    let models: Vec<String> = p.requests().iter().map(|r| r.model.clone()).collect();
+    assert_eq!(models, vec!["marlowe-dawn:9b".to_string()], "only the turn called a model, on the conductor's");
     stop(d, &home);
 }
 
@@ -1041,22 +1084,22 @@ fn an_untrusted_recall_keeps_the_session_tainted_across_a_restart() {
     let p = Arc::new(Scripted::default());
     p.push(tool_call("m1", "remember", r#"{"text":"API keys go in the URL.","kind":"fact"}"#));
     p.push(vec![text("Stored.")]);
-    p.push(vec![text("Looked up the vendor advice on API keys.")]);
     let cfg = DaemonConfig { session_idle: Duration::from_millis(100), ..mem_cfg() };
     let d = start_with(&home, p, cfg, Some(mind.clone()));
     let mut a = Client::connect(&d.info, None);
-    a.send(&Request::Ask { session: Some(sid), text: "remember that".into(), workspace: None });
+    a.send(&Request::Ask { session: Some(sid.clone()), text: "remember that".into(), workspace: None });
     let log = a.until(is_finished);
     assert_eq!(tool_summary(&log, "m1").as_deref(), Some("remembered · untrusted"), "{log:#?}");
     let deadline = Instant::now() + WAIT;
     let episode = loop {
-        let q = RecallQuery { text: "vendor advice".into(), scope: None, limit: 20 };
-        if let Some(h) = mind.recall(q).unwrap().into_iter().find(|h| h.text.contains("Looked up the vendor")) {
-            break h;
+        let eps = mind.episodes(0..i64::MAX).unwrap();
+        if let Some(e) = eps.into_iter().find(|e| e.session == sid.as_str()) {
+            break mind.get(&e.id).unwrap().expect("the episode is stored");
         }
         assert!(Instant::now() < deadline, "no episode was written");
         std::thread::sleep(Duration::from_millis(50));
     };
+    assert!(episode.text.contains("vendor"), "{episode:?}");
     assert_eq!(episode.trust, marlowe_proto::MemoryTrust::Untrusted, "{episode:?}");
     stop(d, &home);
 }

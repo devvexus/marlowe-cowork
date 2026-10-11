@@ -403,6 +403,60 @@ fn episodes_carry_the_sessions_worst_trust_and_are_listed_by_time() {
     let _ = fs::remove_dir_all(&home);
 }
 
+/// Local noon on the most recent `day` (today included), unix ms.
+fn last_weekday_noon(day: chrono::Weekday) -> i64 {
+    use chrono::{Datelike, TimeZone};
+    let mut d = chrono::Local::now().date_naive();
+    while d.weekday() != day {
+        d -= chrono::Duration::days(1);
+    }
+    chrono::Local.from_local_datetime(&d.and_hms_opt(12, 0, 0).unwrap()).single().unwrap().timestamp_millis()
+}
+
+#[test]
+fn an_extractive_episode_answers_what_we_were_doing_on_tuesday() {
+    let home = temp_home("extractive");
+    let mind = Mind::open_with(&home, without_models(&home)).unwrap();
+    let tue = last_weekday_noon(chrono::Weekday::Tue);
+    let wed = last_weekday_noon(chrono::Weekday::Wed);
+    let turn = |session: &str, role, text: &str, at_ms| {
+        mind.ingest_turn(TurnIn { session: session.into(), workspace: Some(r"C:\work\marlowe".into()), role, text: text.into(), at_ms })
+            .unwrap()
+    };
+    turn("tue", TurnRole::User, "Plan the gate ablation for the reranker.", tue);
+    turn("tue", TurnRole::Assistant, "The gate ablation drops one reranker feature per run and compares recall at five.", tue + 60_000);
+    turn("tue", TurnRole::User, "Drop the lexical feature first, then the dense cosine feature.", tue + 120_000);
+    turn("wed", TurnRole::User, "Profile the journal replay on boot.", wed);
+    turn("wed", TurnRole::Assistant, "Replay spends most of its time verifying signatures.", wed + 60_000);
+
+    assert_eq!(mind.write_session_episode("nobody", false).unwrap(), None, "no turns, no episode");
+    let id = mind.write_session_episode("tue", false).unwrap().expect("an episode");
+    mind.write_session_episode("wed", false).unwrap().expect("an episode");
+    let eps = mind.episodes(0..i64::MAX).unwrap();
+    let ep = eps.iter().find(|e| e.id == id).unwrap();
+    assert!(ep.summary.starts_with("Session on Tuesday "), "{}", ep.summary);
+    assert!(ep.summary.contains(r"in C:\work\marlowe: Plan the gate ablation for the reranker."), "{}", ep.summary);
+    assert!(ep.summary.contains("Keywords: ") && ep.summary.contains("ablation"), "{}", ep.summary);
+    assert_eq!(ep.at_ms, tue + 120_000, "dated by the session's last turn");
+
+    // Retrieval, nothing else: the lexical cue alone (no models here) finds it by its day.
+    let hits = mind.recall(RecallQuery { text: "what were we doing on Tuesday?".into(), scope: None, limit: 3 }).unwrap();
+    assert_eq!(hits.first().map(|h| h.id.as_str()), Some(id.as_str()), "{hits:#?}");
+    assert_eq!((hits[0].kind, hits[0].trust), (MemoryKind::Episode, Trust::Inferred));
+
+    // Evicted again after more turns: the new episode supersedes the old one, and writing the
+    // same text twice is a no-op.
+    turn("tue", TurnRole::User, "Also log the margin between rank one and rank two.", tue + 180_000);
+    let again = mind.write_session_episode("tue", false).unwrap().unwrap();
+    assert_ne!(again, id);
+    assert_eq!(mind.write_session_episode("tue", false).unwrap(), Some(again.clone()));
+    let tue_eps: Vec<_> = mind.episodes(0..i64::MAX).unwrap().into_iter().filter(|e| e.session == "tue").collect();
+    assert_eq!(tue_eps.len(), 1, "{tue_eps:#?}");
+    assert_eq!(tue_eps[0].id, again);
+    drop(mind);
+    let _ = fs::remove_dir_all(&home);
+}
+
 #[test]
 fn snapshot_boot_equals_a_full_derive() {
     let home = temp_home("snapshot");
