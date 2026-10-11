@@ -221,7 +221,10 @@ fn every_tool_is_registered_once_in_its_group_in_the_old_order() {
     let names: Vec<&str> = table().defs.iter().map(|d| d.name()).collect();
     assert_eq!(
         names,
-        ["read", "write", "edit", "glob", "grep", "bash", "powershell", "python", "web_fetch", "arxiv", "paper", "web_search"]
+        [
+            "read", "write", "edit", "glob", "grep", "bash", "powershell", "python", "job_output", "job_watch", "job_kill",
+            "web_fetch", "arxiv", "paper", "web_search"
+        ]
     );
     for d in &table().defs {
         let schema = &d.spec.input_schema;
@@ -363,7 +366,8 @@ fn every_group_file_registers_its_hooks() {
     assert_eq!(host.specs().len(), BuiltinTools::new(None).specs().len(), "the stub configures change nothing");
     for g in super::GROUPS {
         assert_eq!(super::group(g.group).map(|r| r.group), Some(g.group));
-        assert!((g.middleware)(&host).is_empty());
+        // The shell group's job notices are the only middleware so far.
+        assert_eq!((g.middleware)(&host).len(), usize::from(g.group == marlowe_agent::ToolGroup::Shell), "{:?}", g.group);
         assert!((g.persona_block)().is_none(), "{:?}: a block needs its capability live first", g.group);
         assert!(!(g.detect)(None));
     }

@@ -74,8 +74,6 @@ fn every_m46_request_reaches_its_tracks_stub() {
         (Request::ListExperiments { limit: 5 }, "list_experiments", "J2"),
         (Request::McpRemove { name: "x".into(), scope: SettingsScope::User, workspace: None }, "mcp_remove", "K"),
         (Request::PutBlob { mime: "image/png".into(), base64: "iVBORw0KGgo=".into() }, "put_blob", "G"),
-        (Request::ListJobs { session: None }, "list_jobs", "B"),
-        (Request::UserShell { session: s(), command: "git status".into() }, "user_shell", "B"),
     ];
     for (req, op, track) in cases {
         write_line(&mut w, &req).unwrap();

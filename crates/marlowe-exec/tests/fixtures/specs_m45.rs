@@ -16,6 +16,22 @@ fn spec(name: &str, description: &str, properties: Value, required: &[&str]) -> 
     }
 }
 
+/// The properties every shell tool shares, after its own.
+fn shell_props(own: Value) -> Value {
+    let mut props = own;
+    let shared = json!({
+        "cwd": {"type": "string", "description": "Working directory; default is the workspace."},
+        "timeout_ms": {"type": "integer", "description": "Kill the command after this long (default 120000, at most 600000)."},
+        "run_in_background": {"type": "boolean", "description": "Start it as a background job and return its id at once."},
+        "description": {"type": "string", "description": "What the command does, in a few words."},
+        "raw": {"type": "boolean", "description": "Cut a long output in the middle instead of choosing the lines about failures."}
+    });
+    if let (Some(p), Some(s)) = (props.as_object_mut(), shared.as_object()) {
+        p.extend(s.clone());
+    }
+    props
+}
+
 pub fn all(with_search: bool) -> Vec<ToolSpec> {
     let mut v = vec![
         spec(
@@ -52,64 +68,102 @@ pub fn all(with_search: bool) -> Vec<ToolSpec> {
         ),
         spec(
             "glob",
-            "List files under a directory, optionally filtered. `pattern` supports `*` and `?` \
-             (within one path segment), `**` (any depth, so `**/Cargo.toml` finds every one, the \
-             top-level file included) and `{a,b}`; a pattern without `/` matches file names \
-             anywhere beneath, one with `/` matches the path relative to `path`. Build output and \
-             VCS directories are skipped.",
+            "List files by name pattern, newest first. `pattern` is a gitignore-style glob: `*.rs` matches that \
+            name at any depth, `src/*.rs` is relative to `path`, `**/Cargo.toml` matches at every depth (the top \
+            level too), `*.{ts,tsx}` alternates, `!x` excludes. Hidden files are listed; files ignored by \
+            .gitignore and VCS directories are not. Omit `pattern` to list every file.",
             json!({
-                "path": {"type": "string", "description": "Directory to list; default is the workspace."},
-                "pattern": {"type": "string", "description": "e.g. \"*.rs\", \"src/*.rs\" or \"**/Cargo.toml\"."}
+                "pattern": {"type": "string", "description": "e.g. \"*.rs\", \"src/**/*.ts\" or \"**/Cargo.toml\"."},
+                "path": {"type": "string", "description": "Directory to search; default is the workspace."},
+                "head_limit": {"type": "integer", "description": "Most paths to list; default 250, 0 for all."},
+                "offset": {"type": "integer", "description": "Skip this many paths first (to page)."}
             }),
             &[],
         ),
         spec(
             "grep",
-            "Search file contents with a regular expression (Rust regex syntax; start with `(?i)` \
-             for case-insensitive). Returns `path:line:text` for matches and `path-line-text` for \
-             context lines.",
+            "Search file contents with ripgrep (Rust regex syntax). `output_mode` picks the result: \
+            files_with_matches (default) lists the paths, newest first; content prints `path:line:text` for \
+            matches and `path-line-text` for context lines, `--` between groups; count prints `path:N`. Hidden \
+            files are searched; files ignored by .gitignore and VCS directories are not (name an ignored \
+            directory as `path` to search it). `path` may be a directory or one file.",
             json!({
-                "pattern": {"type": "string"},
-                "path": {"type": "string", "description": "Directory to search; default is the workspace."},
-                "glob": {"type": "string", "description": "Only search files matching this, e.g. \"*.rs\"."},
-                "context": {"type": "integer", "description": "Lines of context around each match (0-20)."}
+                "pattern": {"type": "string", "description": "Regular expression; backslash-escape metacharacters to match them literally."},
+                "path": {"type": "string", "description": "Directory or file to search; default is the workspace."},
+                "glob": {"type": "string", "description": "Only search files matching this, e.g. \"*.rs\" or \"*.{ts,tsx}\"."},
+                "type": {"type": "string", "description": "Only search this ripgrep file type: rust, py, js, ts, go, c, cpp, java, md, json..."},
+                "output_mode": {"type": "string", "enum": ["files_with_matches", "content", "count"]},
+                "-A": {"type": "integer", "description": "Lines of context after each match (content mode)."},
+                "-B": {"type": "integer", "description": "Lines of context before each match (content mode)."},
+                "-C": {"type": "integer", "description": "Lines of context around each match (content mode)."},
+                "-i": {"type": "boolean", "description": "Ignore case."},
+                "-n": {"type": "boolean", "description": "Show line numbers in content mode; default true."},
+                "multiline": {"type": "boolean", "description": "Let the pattern span lines (`.` matches newlines)."},
+                "head_limit": {"type": "integer", "description": "Most result lines (paths, rows or counts); default 250, 0 for all."},
+                "offset": {"type": "integer", "description": "Skip this many result lines first (to page)."}
             }),
             &["pattern"],
         ),
         spec(
             "bash",
-            "Run a command in bash (Git Bash on Windows). stdin is closed; output is bounded; the \
-             command is killed at the timeout (default 120000 ms).",
-            json!({
-                "command": {"type": "string"},
-                "cwd": {"type": "string", "description": "Working directory; default is the workspace."},
-                "timeout_ms": {"type": "integer"}
-            }),
+            "Run a command in bash (Git Bash on Windows). stdin is closed; the command is killed at the timeout \
+             (default 120000 ms, at most 600000). At most 30 KB of output comes back: when there is more, the lines that \
+             explain a failure and the end are kept, and `[full output: path, N lines]` names the whole log (read it with \
+             `read` or `grep`); `raw` cuts the middle instead. For a server, a watcher or a long build set \
+             `run_in_background`: you get a job id at once and are told when it exits.",
+            shell_props(json!({"command": {"type": "string"}})),
             &["command"],
         ),
         spec(
             "powershell",
-            "Run a command in Windows PowerShell (-NoProfile -NonInteractive). stdin is closed; \
-             output is bounded; the command is killed at the timeout (default 120000 ms).",
-            json!({
-                "command": {"type": "string"},
-                "cwd": {"type": "string"},
-                "timeout_ms": {"type": "integer"}
-            }),
+            "Run a command in Windows PowerShell (-NoProfile -NonInteractive). stdin is closed; the command is killed at \
+             the timeout (default 120000 ms, at most 600000). At most 30 KB of output comes back, failure lines first, \
+             with `[full output: path, N lines]` for the whole log; `raw` cuts the middle instead. `run_in_background` \
+             returns a job id at once.",
+            shell_props(json!({"command": {"type": "string"}})),
             &["command"],
         ),
         spec(
             "python",
-            "Run Python with the user's interpreter: either an inline snippet (`code`) or a script \
-             file (`path`). Give exactly one. Output is bounded; killed at the timeout.",
-            json!({
+            "Run Python with the user's interpreter: either an inline snippet (`code`) or a script file (`path`). Give \
+             exactly one. Killed at the timeout; at most 30 KB of output comes back (see `bash`); `run_in_background` \
+             returns a job id at once.",
+            shell_props(json!({
                 "code": {"type": "string", "description": "Inline source to run."},
                 "path": {"type": "string", "description": "Script file to run."},
-                "args": {"type": "array", "items": {"type": "string"}, "description": "Command-line arguments."},
-                "cwd": {"type": "string"},
-                "timeout_ms": {"type": "integer"}
-            }),
+                "args": {"type": "array", "items": {"type": "string"}, "description": "Command-line arguments."}
+            })),
             &[],
+        ),
+        spec(
+            "job_output",
+            "Read a background job's output. Without `since` you get what is new since your last read; `since` is a byte \
+             offset (the `next since` of an earlier read) for an exact window. `filter` keeps only lines matching a regular \
+             expression. The result ends with the job's status and the next offset.",
+            json!({
+                "id": {"type": "string", "description": "The job id, e.g. \"j3\"."},
+                "since": {"type": "integer", "description": "Byte offset to read from."},
+                "filter": {"type": "string", "description": "Regular expression; only matching lines are returned."}
+            }),
+            &["id"],
+        ),
+        spec(
+            "job_watch",
+            "Follow a running background job: its new output lines reach you as notices between your steps while you work \
+             on something else, until a line matches `until_regex` (then you are told which, and the watch ends) or the job \
+             exits. `filter` limits it to matching lines. The job's exit is reported even without a watch.",
+            json!({
+                "id": {"type": "string", "description": "The job id, e.g. \"j3\"."},
+                "until_regex": {"type": "string", "description": "Stop watching at the first line matching this."},
+                "filter": {"type": "string", "description": "Only report lines matching this."}
+            }),
+            &["id"],
+        ),
+        spec(
+            "job_kill",
+            "Stop a background job and everything it started.",
+            json!({"id": {"type": "string", "description": "The job id, e.g. \"j3\"."}}),
+            &["id"],
         ),
         spec(
             "web_fetch",

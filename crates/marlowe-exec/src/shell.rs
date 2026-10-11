@@ -19,10 +19,12 @@ pub const SHELL_TIMEOUT_MS: u64 = 120_000;
 /// Longest limit a call may request with `timeout_ms`.
 pub const SHELL_TIMEOUT_MAX_MS: u64 = 600_000;
 
-/// Output held per stream; a breach kills the child.
-pub const MAX_SHELL_OUTPUT_BYTES: usize = 1_048_576;
+/// Output a tool call may write before the child is killed. The tools keep it all in a log file
+/// (the model sees at most [`MAX_SHELL_RESULT_BYTES`] of it), so this is a runaway guard, not a
+/// context limit.
+pub const MAX_SHELL_OUTPUT_BYTES: usize = 64 << 20;
 
-/// Output returned to the model; longer output keeps its head and tail.
+/// Output returned to the model (`summarize::BUDGET`); the rest stays in the log.
 pub const MAX_SHELL_RESULT_BYTES: usize = 30_000;
 
 #[derive(Debug, Clone, Copy)]
