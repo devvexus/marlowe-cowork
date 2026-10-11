@@ -24,12 +24,17 @@
 
 #![deny(unsafe_code)]
 
+pub mod convert;
 pub mod engine;
+pub mod findings;
 pub mod host;
 pub mod journal;
+pub mod pools;
 pub mod progress;
+pub mod saved;
 pub mod schema;
 pub mod scripted;
+pub mod service;
 pub mod validate;
 
 pub use engine::{
@@ -40,6 +45,7 @@ pub use host::{AgentCall, AgentHost, AgentOpts, AgentResult, AgentStatus, Comple
 pub use journal::{AgentRecord, Line, Resume};
 pub use progress::Progress;
 pub use scripted::{Scripted, ScriptedHost};
+pub use service::{LaunchRequest, Launched, Prepared, Waited, WorkflowLauncher, Workflows};
 pub use validate::{Diagnostic, Meta, Validated};
 
 /// blake3 of a script's text: the trust key (first run of a digest asks).
