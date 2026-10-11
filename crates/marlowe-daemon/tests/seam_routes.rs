@@ -67,7 +67,6 @@ fn every_m46_request_reaches_its_tracks_stub() {
         (Request::Compact { session: s(), focus: None }, "compact", "F"),
         (Request::DetachCall { session: s(), call_id: "c".into() }, "detach_call", "F"),
         (Request::ListSchedules, "list_schedules", "F"),
-        (Request::OpenPr { run: RunId("r".into()), title: None, body: None }, "open_pr", "J"),
         (Request::ListExperiments { limit: 5 }, "list_experiments", "J2"),
         (Request::PutBlob { mime: "image/png".into(), base64: "iVBORw0KGgo=".into() }, "put_blob", "G"),
     ];

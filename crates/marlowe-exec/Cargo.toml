@@ -34,3 +34,4 @@ grep-matcher = "0.1.9"
 
 [dev-dependencies]
 marlowe-proto.workspace = true
+crossbeam-channel.workspace = true
