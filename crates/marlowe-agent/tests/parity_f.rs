@@ -515,7 +515,7 @@ fn parity_c7_the_pinned_working_set_survives_compaction() {
     c.push(Message::assistant("understood"));
     long_history(&mut c, 12);
     c.ext.insert(TodoState {
-        items: vec![TodoItem { content: "TODO-ALPHA wire the parser".into(), status: marlowe_proto::TodoStatus::InProgress, active_form: None }],
+        items: vec![TodoItem { content: "TODO-ALPHA wire the parser".into(), status: marlowe_proto::TodoStatus::InProgress, active_form: None, ..Default::default() }],
         ..Default::default()
     });
     run(&a, &mut c, "go on");

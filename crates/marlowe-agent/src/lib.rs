@@ -13,16 +13,21 @@ pub mod checkpoint;
 pub mod commands;
 pub mod context;
 pub mod convo;
-pub mod git_prompts;
+pub mod directive;
 mod events;
+pub mod fork;
+pub mod git_prompts;
 pub mod hooks;
 pub mod instructions;
 pub mod memory;
 pub mod middleware;
+pub mod planfile;
 mod run_tools;
 pub mod steer;
 pub mod subagent;
 pub mod system;
+pub mod tasklist;
+pub mod tasks;
 pub mod todo;
 pub mod tools;
 pub mod worktree;
@@ -35,6 +40,10 @@ pub use convo::Conversation;
 pub use events::{AgentEvent, TurnOutcome};
 pub use memory::{MemoryHook, NoMemory, Recollection};
 pub use run_tools::REFUSED_SUMMARY;
+pub use tasks::{
+    Injection, InjectionSource, MemoryTaskRegistry, NewTask, TaskChunk, TaskControl, TaskInfo, TaskKind, TaskRegistry,
+    TaskSource, TaskStatus, Tasks,
+};
 pub use steer::{Steer, SteerRefused, MAX_STEER_CHARS};
 pub use system::{Environment, PersonaBlock, SystemPrompt, UserInfo, PERSONA_CORE};
 pub use middleware::{

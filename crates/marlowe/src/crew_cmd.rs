@@ -347,6 +347,7 @@ mod tests {
             created_ms: 0,
             updated_ms: 0,
             result: None,
+            workflow: None,
         }
     }
 

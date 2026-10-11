@@ -8,6 +8,9 @@
 //! | `exp_ops::on_boot` | J2: re-arm experiment deadlines |
 //! | `mcp_ops::on_boot` | K: connect configured MCP servers |
 //! | `job_ops::start` | B: broadcast job events and wake idle sessions from the start |
+//! | `task_ops::on_boot` | N: broadcast task changes; re-arm durable crons and monitors |
+//! | `workflow_ops::on_boot` | W: resume workflow runs a killed daemon left running |
+//! | `notify_ops::on_boot` | N: load the notification switches |
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
@@ -15,8 +18,15 @@ use std::sync::Arc;
 use crate::daemon::Core;
 
 /// The boot hooks, in order.
-const HOOKS: &[fn(&Arc<Core>)] =
-    &[crate::schedule_ops::on_boot, crate::exp_ops::on_boot, crate::mcp_ops::on_boot, crate::job_ops::start];
+const HOOKS: &[fn(&Arc<Core>)] = &[
+    crate::schedule_ops::on_boot,
+    crate::exp_ops::on_boot,
+    crate::mcp_ops::on_boot,
+    crate::job_ops::start,
+    crate::task_ops::on_boot,
+    crate::workflow_ops::on_boot,
+    crate::notify_ops::on_boot,
+];
 
 /// Runs every boot hook. A panicking hook is reported in the daemon log and the daemon starts
 /// anyway.

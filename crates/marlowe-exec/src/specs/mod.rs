@@ -15,6 +15,9 @@
 //! | `git.rs` | git | J | (git, gh, ci_status) |
 //! | `ml.rs` | ml | J2 | (train_launch, experiments) |
 //! | `mcp.rs` | mcp | K | (tool_search; `mcp__srv__tool` come from the MCP host) |
+//! | `workflow.rs` | workflow | W | (workflow, structured_output, report_findings) |
+//! | `tasks.rs` | tasks | N | (task_list, task_output, task_stop, monitor, cron_*, schedule_wakeup, list_agents) |
+//! | `notify.rs` | notify | N | (notify, send_file, notices) |
 //!
 //! Order is the model-visible order (stable, so the prompt cache holds): groups in [`GROUPS`]
 //! order, tools in their file's order. Schemas are flat, `additionalProperties: false`.
@@ -42,10 +45,13 @@ pub mod files;
 pub mod git;
 pub mod mcp;
 pub mod ml;
+pub mod notify;
 pub mod search;
 pub mod shell;
+pub mod tasks;
 pub mod verify;
 pub mod web;
+pub mod workflow;
 
 #[cfg(test)]
 mod tests;
@@ -217,6 +223,9 @@ pub const GROUPS: &[Group] = &[
     group!(Git, git),
     group!(Ml, ml),
     group!(Mcp, mcp),
+    group!(Workflow, workflow),
+    group!(Tasks, tasks),
+    group!(Notify, notify),
 ];
 
 /// The registration of `group`, when this crate has one (`memory` and `crew` are the daemon's).

@@ -1176,7 +1176,7 @@ mod tests {
 
     #[test]
     fn answers_join_picks_and_free_text() {
-        let q = Question { question: "Which?".into(), header: "pick".into(), options: vec!["a".into(), "b".into(), "c".into()], multi_select: true };
+        let q = Question { question: "Which?".into(), header: "pick".into(), options: vec!["a".into(), "b".into(), "c".into()], multi_select: true, option_details: vec![] };
         let mut ui = QuestionUi::new(SessionId::from("s"), "q1".into(), vec![q]);
         ui.picked[0][0] = true;
         ui.picked[0][2] = true;

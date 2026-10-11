@@ -46,6 +46,10 @@ pub struct Run {
     /// [`Supervisor::mark_relayed`]: crate::Supervisor::mark_relayed
     #[serde(default)]
     pub relay_due: bool,
+    /// Set when the run executes a workflow script (design 3.11); `None` for every other run, and
+    /// for every run stored before workflows existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<marlowe_proto::WorkflowRef>,
 }
 
 impl Run {
@@ -79,6 +83,7 @@ impl Run {
             updated_ms: now,
             result: None,
             relay_due: false,
+            workflow: None,
         }
     }
 
@@ -103,6 +108,7 @@ impl Run {
             created_ms: self.created_ms,
             updated_ms: self.updated_ms,
             result: self.result.clone(),
+            workflow: self.workflow.clone(),
         }
     }
 }

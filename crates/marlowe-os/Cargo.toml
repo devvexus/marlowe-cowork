@@ -10,3 +10,5 @@ thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+# M4.6 N: toast notifications (`toast.rs`); the features are the workspace's.
+windows.workspace = true

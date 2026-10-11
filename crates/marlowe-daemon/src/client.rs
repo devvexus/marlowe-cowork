@@ -210,6 +210,22 @@ fn dispatch(core: &Arc<Core>, client: u64, client_name: &str, req: Request) {
         job @ (Request::ListJobs { .. } | Request::KillJob { .. } | Request::UserShell { .. }) => {
             crate::job_ops::dispatch(core, client, job)
         }
+        // M4.6 wave 2 (seam2): same rule, one arm per owning track.
+        task @ (Request::ListTasks { .. }
+        | Request::StopTask { .. }
+        | Request::TaskOutput { .. }
+        | Request::CronCreate { .. }) => crate::task_ops::dispatch(core, client, task),
+        notify @ (Request::NotifySettings { .. } | Request::OpenFile { .. }) => {
+            crate::notify_ops::dispatch(core, client, notify)
+        }
+        flow @ (Request::ListWorkflows
+        | Request::WatchWorkflow { .. }
+        | Request::RunWorkflow { .. }
+        | Request::SkipWorkflowAgent { .. }
+        | Request::ListFindings { .. }) => crate::workflow_ops::dispatch(core, client, flow),
+        f3 @ (Request::SetFast { .. } | Request::AnswerPlan { .. } | Request::SuggestRules { .. }) => {
+            crate::f3_ops::dispatch(core, client, f3)
+        }
     }
 }
 

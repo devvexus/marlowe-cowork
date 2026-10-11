@@ -57,6 +57,7 @@ fn info(status: CrewRunStatus) -> CrewRunInfo {
         created_ms: 1,
         updated_ms: 2,
         result: Some(dispatch()),
+        workflow: None,
     }
 }
 

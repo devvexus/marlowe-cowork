@@ -8,6 +8,9 @@
 #![forbid(unsafe_code)]
 
 pub mod auth;
+/// M4.6 wave 2 payload types (tasks, workflows, findings, notifications, plan file); reachable
+/// as `marlowe_proto::background::X`.
+pub mod background;
 /// M4.6 payload types. Public as a module so a track's new type is reachable as
 /// `marlowe_proto::coding::X` without editing the re-export list below.
 pub mod coding;
@@ -23,8 +26,12 @@ mod research;
 mod user;
 mod watch;
 
+pub use background::{
+    Finding, FindingSeverity, FastState, NotifyState, PlanFileDecision, RuleSuggestion, SavedWorkflow, SentFile, TaskInfo,
+    TaskKind, TaskStatus, Urgency, WorkflowAgentInfo, WorkflowAgentStatus, WorkflowInfo, WorkflowRef,
+};
 pub use coding::{
-    AgentTypeInfo, CheckpointInfo, CommandInfo, CostReport, ExperimentInfo, ExperimentStatus, ExportFormat,
+    AgentTypeInfo, CheckpointInfo, QuestionOption, CommandInfo, CostReport, ExperimentInfo, ExperimentStatus, ExportFormat,
     HeadlessOptions, HookInfo, JobInfo, McpServerInfo, ModelCost, PermissionMode, Question, RewindScope, RuleAction,
     RuleInfo, ScheduleInfo, SettingsLayer, SettingsScope, TodoItem, TodoStatus,
 };
@@ -68,3 +75,5 @@ mod tests_coding;
 mod tests_crew;
 #[cfg(test)]
 mod tests_research;
+#[cfg(test)]
+mod tests_wave2;

@@ -125,14 +125,19 @@ fn every_m46_event_round_trips_inside_an_envelope() {
         Event::QuestionAsked {
             session: sid(),
             id: "q1".into(),
-            questions: vec![Question { question: "Which?".into(), header: "Pick".into(), options: vec!["a".into()], multi_select: false }],
+            questions: vec![Question { question: "Which?".into(), header: "Pick".into(), options: vec!["a".into()], multi_select: false, option_details: vec![] }],
         },
         Event::Todos {
             session: sid(),
-            items: vec![TodoItem { content: "write tests".into(), status: TodoStatus::InProgress, active_form: Some("Writing tests".into()) }],
+            items: vec![TodoItem {
+                content: "write tests".into(),
+                status: TodoStatus::InProgress,
+                active_form: Some("Writing tests".into()),
+                ..Default::default()
+            }],
         },
         Event::Schedules {
-            list: vec![ScheduleInfo { id: "sch-1".into(), session: None, every_secs: 60, text: "/ci".into(), next_at_ms: Some(5) }],
+            list: vec![ScheduleInfo { id: "sch-1".into(), session: None, every_secs: 60, text: "/ci".into(), next_at_ms: Some(5), ..Default::default() }],
         },
         Event::Rewound { session: sid(), turn: 2, scope: RewindScope::Code },
         Event::Checkpoints { session: sid(), list: vec![CheckpointInfo { turn: 1, at_ms: 9, files: 3, summary: "edit".into() }] },

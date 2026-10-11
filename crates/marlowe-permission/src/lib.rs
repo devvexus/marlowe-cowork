@@ -33,6 +33,7 @@ pub mod egress;
 pub mod rules;
 pub mod scope;
 pub mod shell;
+pub mod suggest;
 pub mod taint;
 
 pub use adjudicate::{

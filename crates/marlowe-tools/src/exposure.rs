@@ -127,6 +127,9 @@ impl<'de> Deserialize<'de> for ExposedSet {
 /// | `mcp` | mcp__server__tool, tool_search | K |
 /// | `memory` | remember, recall, forget, correct (daemon) | - |
 /// | `crew` | dispatch (daemon) | - |
+/// | `workflow` | workflow, structured_output, report_findings | W |
+/// | `tasks` | task_list, task_output, task_stop, monitor, cron_*, schedule_wakeup, list_agents | N |
+/// | `notify` | notify, send_file, notices | N |
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolGroup {
@@ -142,10 +145,14 @@ pub enum ToolGroup {
     Mcp,
     Memory,
     Crew,
+    // Appended after `Crew`: the derived order of the earlier groups does not move.
+    Workflow,
+    Tasks,
+    Notify,
 }
 
 impl ToolGroup {
-    pub const ALL: [ToolGroup; 12] = [
+    pub const ALL: [ToolGroup; 15] = [
         ToolGroup::Files,
         ToolGroup::Search,
         ToolGroup::Shell,
@@ -158,6 +165,9 @@ impl ToolGroup {
         ToolGroup::Mcp,
         ToolGroup::Memory,
         ToolGroup::Crew,
+        ToolGroup::Workflow,
+        ToolGroup::Tasks,
+        ToolGroup::Notify,
     ];
 
     /// Groups a local model always gets. The rest are exposed when detected for the workspace
@@ -187,6 +197,9 @@ impl ToolGroup {
             ToolGroup::Mcp => "mcp",
             ToolGroup::Memory => "memory",
             ToolGroup::Crew => "crew",
+            ToolGroup::Workflow => "workflow",
+            ToolGroup::Tasks => "tasks",
+            ToolGroup::Notify => "notify",
         }
     }
 }
