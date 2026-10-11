@@ -23,7 +23,8 @@ use marlowe_mcp::hub::{ExposedTool, Hub};
 use marlowe_mcp::names::{self, GET_PROMPT, LIST_PROMPTS, LIST_RESOURCES, READ_RESOURCE, TOOL_SEARCH};
 use marlowe_mcp::output;
 use marlowe_mcp::McpError;
-use marlowe_model::ToolSpec;
+use marlowe_model::image::{base64_decode, ingest, BlobStore, STORE_LONG_EDGE};
+use marlowe_model::{ResultPart, ToolSpec};
 use serde_json::{json, Map, Value};
 
 /// MCP tools beyond this many are deferred behind `tool_search`.
@@ -44,11 +45,35 @@ pub struct McpTools {
     /// Tools `tool_search` has loaded this session.
     activated: Mutex<BTreeSet<String>>,
     budget: usize,
+    /// Where an image a server returns is kept (`<home>lobs`); without one images are named
+    /// in the text and not shown.
+    blobs: Option<Arc<dyn BlobStore>>,
 }
 
 impl McpTools {
     pub fn new(inner: Arc<dyn ToolHost>, hub: Arc<Hub>, window: Option<u32>) -> Self {
-        Self { inner, hub, activated: Mutex::new(BTreeSet::new()), budget: schema_budget(window) }
+        Self { inner, hub, activated: Mutex::new(BTreeSet::new()), budget: schema_budget(window), blobs: None }
+    }
+
+    /// Keeps the images MCP tools return (a notebook's plot, a screenshot) as `Part::Image`.
+    pub fn with_blobs(mut self, blobs: Arc<dyn BlobStore>) -> Self {
+        self.blobs = Some(blobs);
+        self
+    }
+
+    /// Stores the server's images and attaches them to the outcome; one that cannot be decoded
+    /// or stored is named in the text instead.
+    pub(super) fn attach_images(&self, mut out: ToolOutcome, images: &[(String, String)]) -> ToolOutcome {
+        let Some(store) = &self.blobs else { return out };
+        for (i, (mime, data)) in images.iter().enumerate() {
+            let stored = base64_decode(data).ok_or_else(|| "it is not valid base64".to_string()).and_then(|bytes| ingest(store.as_ref(), &bytes, STORE_LONG_EDGE).map_err(|e| e.to_string()));
+            match stored {
+                Ok(r) => out = out.with_part(ResultPart::Image(r)),
+                Err(why) => out.content.push_str(&format!("
+[image {} ({mime}) was not attached: {why}]", i + 1)),
+            }
+        }
+        out
     }
 
     fn activated(&self) -> BTreeSet<String> {
@@ -232,7 +257,8 @@ impl McpTools {
                 // A tool the model called without loading it is loaded from now on.
                 self.activated.lock().unwrap_or_else(|e| e.into_inner()).insert(call.name.clone());
                 let note = if out.capped.truncated { format!("{} chars (truncated)", out.text.chars().count()) } else { String::new() };
-                Self::outcome(out.text, out.is_error, &note)
+                let images = out.images.clone();
+                self.attach_images(Self::outcome(out.text, out.is_error, &note), &images)
             }
             Err(e) => Self::fail(e),
         }
@@ -288,7 +314,9 @@ impl ToolHost for McpTools {
     }
 
     fn middleware(&self) -> Vec<Arc<dyn ToolMiddleware>> {
-        self.inner.middleware()
+        let mut m = self.inner.middleware();
+        m.push(Arc::new(super::ide_context::IdeContext::new(self.hub.clone())));
+        m
     }
 
     fn persona_blocks(&self) -> Vec<PersonaBlock> {

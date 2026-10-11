@@ -19,6 +19,7 @@
 mod host;
 #[cfg(test)]
 mod host_tests;
+mod ide_context;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -160,7 +161,8 @@ fn conductor_window(core: &Core) -> Option<u32> {
 pub(crate) fn compose(core: &Arc<Core>, convo: &Conversation, host: Arc<dyn ToolHost>) -> Arc<dyn ToolHost> {
     let hub = hub_for(core, convo.workspace.as_deref());
     hub.wait_settled(CONNECT_GRACE);
-    Arc::new(McpTools::new(host, hub, conductor_window(core)))
+    let blobs = Arc::new(marlowe_model::image::FsBlobStore::new(core.home.join("blobs")));
+    Arc::new(McpTools::new(host, hub, conductor_window(core)).with_blobs(blobs))
 }
 
 // ---------------------------------------------------------------- requests

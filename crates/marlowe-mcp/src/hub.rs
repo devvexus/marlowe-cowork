@@ -151,7 +151,15 @@ pub struct ToolOutput {
     pub text: String,
     pub is_error: bool,
     pub capped: Capped,
+    /// Images the server returned, as `(mime, base64)`: at most [`MAX_IMAGES`], each under
+    /// [`MAX_IMAGE_BASE64`] characters. The caller decides whether to store and show them.
+    pub images: Vec<(String, String)>,
 }
+
+/// Images kept from one tool result.
+pub const MAX_IMAGES: usize = 8;
+/// Longest base64 string kept for one image (about 6 MB of picture).
+pub const MAX_IMAGE_BASE64: usize = 8_000_000;
 
 pub struct Hub {
     opts: HubOpts,
@@ -431,7 +439,8 @@ impl Hub {
         let client = self.live_client(&slot)?;
         let result = client.call_tool(&tool.tool.name, args, cancelled)?;
         let capped = output::cap(&result.text(), self.opts.max_output_tokens, exposed, self.opts.spill_dir.as_deref());
-        Ok(ToolOutput { text: capped.text.clone(), is_error: result.is_error, capped })
+        let images = result.images().into_iter().filter(|(_, d)| d.len() <= MAX_IMAGE_BASE64).take(MAX_IMAGES).map(|(m, d)| (m.to_string(), d.to_string())).collect();
+        Ok(ToolOutput { text: capped.text.clone(), is_error: result.is_error, capped, images })
     }
 
     fn live_client(&self, slot: &Arc<Slot>) -> Result<Arc<Client>, McpError> {
@@ -490,7 +499,7 @@ impl Hub {
             .collect::<Vec<_>>()
             .join("\n");
         let capped = output::cap(&text, self.opts.max_output_tokens, &format!("{server}-resource"), self.opts.spill_dir.as_deref());
-        Ok(ToolOutput { text: capped.text.clone(), is_error: false, capped })
+        Ok(ToolOutput { text: capped.text.clone(), is_error: false, capped, images: Vec::new() })
     }
 
     pub fn prompts(&self) -> Vec<(String, Prompt)> {

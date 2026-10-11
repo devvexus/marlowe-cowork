@@ -116,7 +116,8 @@ pub struct PromptMessage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Content {
     Text(String),
-    Image { mime: String, base64_len: usize },
+    /// `data` is the base64 the server sent; [`CallResult::images`] hands it on.
+    Image { mime: String, data: String },
     Audio { mime: String },
     Resource(ResourceContent),
     Link { uri: String, name: String },
@@ -130,13 +131,24 @@ pub struct CallResult {
 }
 
 impl CallResult {
+    /// The images the result carries, as `(mime, base64)`, in order.
+    pub fn images(&self) -> Vec<(&str, &str)> {
+        self.content
+            .iter()
+            .filter_map(|c| match c {
+                Content::Image { mime, data } if !data.is_empty() => Some((mime.as_str(), data.as_str())),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The result as text. Non-text parts are named, not dropped.
     pub fn text(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         for c in &self.content {
             parts.push(match c {
                 Content::Text(t) => t.clone(),
-                Content::Image { mime, base64_len } => format!("[{mime} image, {base64_len} base64 chars: this build cannot show MCP images]"),
+                Content::Image { mime, .. } => format!("[{mime} image]"),
                 Content::Audio { mime } => format!("[{mime} audio: this build cannot play MCP audio]"),
                 Content::Resource(r) => match &r.text {
                     Some(t) => format!("[resource {}]\n{t}", r.uri),
@@ -565,7 +577,7 @@ fn parse_content(c: &Value) -> Content {
     let s = |k: &str| c.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     match c.get("type").and_then(Value::as_str) {
         Some("text") => Content::Text(s("text")),
-        Some("image") => Content::Image { mime: s("mimeType"), base64_len: s("data").len() },
+        Some("image") => Content::Image { mime: s("mimeType"), data: s("data") },
         Some("audio") => Content::Audio { mime: s("mimeType") },
         Some("resource") => c.get("resource").and_then(parse_resource_content).map_or_else(|| Content::Text(String::new()), Content::Resource),
         Some("resource_link") => Content::Link { uri: s("uri"), name: s("name") },

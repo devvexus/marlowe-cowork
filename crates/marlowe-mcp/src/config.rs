@@ -325,10 +325,14 @@ pub fn load_scope(paths: &Paths, scope: Scope) -> Loaded {
     out
 }
 
-/// Every scope merged: the highest scope wins a name.
+/// Every scope merged: the highest scope wins a name. The editor that has the workspace open
+/// ([`crate::ide`]) is offered first, so any configured server named `ide` replaces it.
 pub fn load_all(paths: &Paths, session: &[ServerConfig]) -> Loaded {
     let mut merged: BTreeMap<String, ServerConfig> = BTreeMap::new();
     let mut problems = Vec::new();
+    for s in crate::ide::discover(&paths.home, paths.workspace.as_deref()) {
+        merged.insert(s.name.clone(), s);
+    }
     for scope in [Scope::User, Scope::Project, Scope::Local] {
         let l = load_scope(paths, scope);
         problems.extend(l.problems);

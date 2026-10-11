@@ -159,3 +159,34 @@ fn a_call_to_a_tool_that_is_gone_says_so() {
     let out = h.call_scoped(&call("mcp__web__vanished", json!({})), &cx());
     assert!(out.is_error && out.content.contains("not an available MCP tool"), "{}", out.content);
 }
+
+#[test]
+fn parity_u18_an_image_a_tool_returns_becomes_an_image_part_with_a_blob() {
+    use marlowe_model::image::{BlobStore, MemoryBlobStore};
+    use marlowe_model::ResultPart;
+
+    let (h, _s) = host(0, json!({}), None);
+    let store = Arc::new(MemoryBlobStore::new());
+    let h = h.with_blobs(store.clone());
+    let out = h.call_scoped(&call("mcp__web__image", json!({})), &cx());
+    assert!(!out.is_error, "{}", out.content);
+    let [ResultPart::Image(img)] = out.parts.as_slice() else { panic!("one image part: {:?} / {}", out.parts, out.content) };
+    assert_eq!((img.mime.as_str(), img.w, img.h), ("image/png", 1, 1));
+    assert!(store.get(&img.blob).is_ok(), "the bytes are in the blob store, the message carries the reference");
+    assert!(out.content.contains("image/png image"), "the text still says there was a picture: {}", out.content);
+}
+
+#[test]
+fn an_image_that_cannot_be_decoded_is_named_not_dropped_and_without_a_store_it_is_text_only() {
+    use marlowe_model::image::MemoryBlobStore;
+
+    let (h, _s) = host(0, json!({}), None);
+    // No store: text only, no part.
+    let out = h.call_scoped(&call("mcp__web__image", json!({})), &cx());
+    assert!(out.parts.is_empty() && out.content.contains("image/png image"), "{out:?}");
+    // A store, but the "picture" is not one.
+    let h = h.with_blobs(Arc::new(MemoryBlobStore::new()));
+    let bad = h.attach_images(ToolOutcome::ok("x", "y"), &[("image/png".into(), "bm90IGEgcGljdHVyZQ==".into()), ("image/png".into(), "!!!".into())]);
+    assert!(bad.parts.is_empty());
+    assert!(bad.content.contains("image 1 (image/png) was not attached") && bad.content.contains("image 2") && bad.content.contains("base64"), "{}", bad.content);
+}

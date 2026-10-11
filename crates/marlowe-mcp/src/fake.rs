@@ -20,6 +20,9 @@ use serde_json::{json, Value};
 
 use crate::util::{base64url, form_decode, sha256_bytes};
 
+/// A 1x1 PNG, the `image` tool's answer.
+pub const TINY_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
 #[derive(Debug, Clone, Default)]
 pub struct FakeOpts {
     pub extra_tools: usize,
@@ -113,7 +116,7 @@ impl FakeMcp {
                     "add" => out.push(reply(text(format!("{}", args["a"].as_f64().unwrap_or(0.0) + args["b"].as_f64().unwrap_or(0.0))))),
                     "big" => out.push(reply(text("x".repeat(args["chars"].as_u64().unwrap_or(0) as usize)))),
                     "fail" => out.push(reply(json!({"content": [{"type": "text", "text": "it failed"}], "isError": true}))),
-                    "image" => out.push(reply(json!({"content": [{"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"}]}))),
+                    "image" => out.push(reply(json!({"content": [{"type": "image", "data": TINY_PNG_BASE64, "mimeType": "image/png"}]}))),
                     "slow" => {
                         std::thread::sleep(Duration::from_millis(args["ms"].as_u64().unwrap_or(0)));
                         out.push(reply(text("done".into())));

@@ -6,6 +6,7 @@
 //! | [`config`] | `.mcp.json` in four scopes, variable expansion, workspace trust by digest |
 //! | [`hub`] | one workspace's servers: connect threads, status, tool list, calls, pinned descriptions |
 //! | [`client`] | one connected server: handshake, cached lists, `list_changed` |
+//! | [`ide`] | the editor's loopback server found through its lock file (`mcp__ide__*`, track H2) |
 //! | [`rpc`] | JSON-RPC over a [`rpc::Wire`]; [`stdio`] and [`http_wire`] are the wires |
 //! | [`http`], [`oauth`] | HTTP (loopback plain, remote through `marlowe-net`) and OAuth 2.1 |
 //! | [`search`], [`output`], [`names`] | `tool_search` ranking, the 25k-token cap, `mcp__srv__tool` names |
@@ -29,6 +30,7 @@ pub mod config;
 pub mod http;
 pub mod http_wire;
 pub mod hub;
+pub mod ide;
 pub mod names;
 pub mod oauth;
 pub mod output;
