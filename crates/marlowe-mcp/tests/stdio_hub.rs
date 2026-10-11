@@ -251,3 +251,47 @@ fn parity_x12_a_child_does_not_inherit_the_harness_keys() {
     assert!(!dump.contains("sk-canary-1234") && !dump.contains("OPENROUTER_API_KEY"), "the scrub held");
     std::env::remove_var("OPENROUTER_API_KEY");
 }
+
+#[test]
+fn parity_x12_a_session_entry_cannot_widen_the_environment_with_env_allow() {
+    // A `--mcp-config` entry asks for the key by name; the scope does not honour it.
+    let home = tmp("env-allow");
+    std::env::set_var("HF_TOKEN", "hf-canary-5678");
+    let marker = home.join("env.txt");
+    let hub = hub_with(
+        &home,
+        None,
+        &[("sneaky", json!({"command": FAKE, "args": ["--dump-env", marker.to_str().unwrap()], "env_allow": ["HF_TOKEN"]}))],
+    );
+    let _ = hub.statuses();
+    let dump = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert!(dump.contains("PATH="), "the child ran with an environment");
+    assert!(!dump.contains("hf-canary-5678") && !dump.contains("HF_TOKEN"), "env_allow did not open the scrub for a session entry");
+    std::env::remove_var("HF_TOKEN");
+}
+
+#[test]
+fn parity_x12_strict_means_the_run_servers_alone() {
+    // `--strict-mcp-config`: a server in the user's file is not started, only the run's own.
+    let home = tmp("strict");
+    let paths = Paths::new(&home, None);
+    config::add(&paths, Scope::User, "userside", &entry(&[])).unwrap();
+    let session = config::parse_session(&[json!({"mcpServers": {"runside": entry(&[])}}).to_string()]).unwrap();
+    let start = |strict: bool| {
+        let mut opts = HubOpts::new(paths.clone(), ConnectOpts::new(Arc::new(MemoryTokens::default())));
+        opts.session = session.clone();
+        opts.strict = strict;
+        let hub = Hub::start(opts);
+        assert!(hub.wait_settled(Duration::from_secs(30)));
+        let mut names: Vec<String> = hub.statuses().into_iter().map(|s| s.name).collect();
+        names.sort();
+        let tools: Vec<String> = hub.tools().into_iter().map(|t| t.exposed).collect();
+        (names, tools)
+    };
+    let (names, tools) = start(false);
+    assert_eq!(names, ["runside", "userside"]);
+    assert!(tools.iter().any(|t| t.starts_with("mcp__userside__")));
+    let (names, tools) = start(true);
+    assert_eq!(names, ["runside"], "the user's file is left alone");
+    assert!(tools.iter().all(|t| t.starts_with("mcp__runside__")), "{tools:?}");
+}

@@ -92,6 +92,12 @@ fn mcp_output_taints_and_its_manifest_is_not_a_read() {
     let (h, _s) = host(0, json!({}), None);
     assert!(h.taints(&call("mcp__web__echo", json!({}))), "ADR-052: what a server returns is untrusted");
     assert!(h.taints(&call(READ_RESOURCE, json!({}))));
+    assert!(h.taints(&call(GET_PROMPT, json!({}))));
+    // Descriptions and schemas are server-written text too: a prompt injection in one must not
+    // arrive clean.
+    for listing in [TOOL_SEARCH, LIST_RESOURCES, LIST_PROMPTS] {
+        assert!(h.taints(&call(listing, json!({}))), "{listing} returns text a server wrote");
+    }
     assert!(!h.taints(&call("read", json!({}))));
     let m = h.manifest("mcp__web__echo").unwrap();
     assert_eq!(m.group, ToolGroup::Mcp);

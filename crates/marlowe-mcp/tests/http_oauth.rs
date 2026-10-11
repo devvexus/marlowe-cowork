@@ -208,3 +208,48 @@ fn parity_x13_a_static_authorization_header_bypasses_oauth() {
     let (hub, _) = hub_for(&server, Arc::new(MemoryTokens::default()), json!({"headers": {"Authorization": "Bearer static-token"}}));
     assert_eq!(hub.statuses()[0].status, SlotStatus::Connected);
 }
+
+#[test]
+fn parity_x13_a_hostile_authorization_endpoint_is_never_opened() {
+    for hostile in [
+        "file:///C:/Windows/System32/calc.exe",
+        r"\\evil\share\x.exe",
+        r"search-ms:query=x&crumb=location:\\evil\share",
+        "ms-msdt:/id PCWDiagnostic",
+        "http://evil.example/authorize",
+        "https://good.example/a b\" -x",
+        "javascript:alert(1)",
+    ] {
+        let server = FakeHttp::start(HttpOpts { oauth: true, authorization_endpoint: Some(hostile.into()), ..Default::default() });
+        let tokens = Arc::new(MemoryTokens::default());
+        let (_hub, opts) = hub_for(&server, tokens.clone(), json!({}));
+        let cfg = config::parse_entry("web", config::Scope::Session, &json!({"type": "http", "url": server.url()})).unwrap();
+        let oauth = oauth_for(&cfg, &opts.connect, &|_| None).unwrap();
+        let opened = AtomicBool::new(false);
+        let open = |_: &str| -> Result<(), String> {
+            opened.store(true, Ordering::SeqCst);
+            Ok(())
+        };
+        let err = oauth.authorize(None, &open, Duration::from_millis(300)).unwrap_err();
+        assert!(!opened.load(Ordering::SeqCst), "{hostile} reached the opener");
+        assert!(err.to_string().contains("refusing to open") || err.to_string().contains("authorization"), "{hostile}: {err}");
+        assert!(tokens.load(oauth.key()).is_none());
+    }
+}
+
+#[test]
+fn parity_x13_an_https_authorization_page_is_allowed() {
+    // The ordinary flow (loopback http) is covered above; here a remote https endpoint.
+    let server = FakeHttp::start(HttpOpts { oauth: true, authorization_endpoint: Some("https://login.example.com/oauth2/authorize?tenant=1".into()), ..Default::default() });
+    let (_hub, opts) = hub_for(&server, Arc::new(MemoryTokens::default()), json!({}));
+    let cfg = config::parse_entry("web", config::Scope::Session, &json!({"type": "http", "url": server.url()})).unwrap();
+    let oauth = oauth_for(&cfg, &opts.connect, &|_| None).unwrap();
+    let shown = std::sync::Mutex::new(String::new());
+    let open = |u: &str| -> Result<(), String> {
+        *shown.lock().unwrap() = u.to_string();
+        Ok(())
+    };
+    let _ = oauth.authorize(None, &open, Duration::from_millis(300));
+    let url = shown.lock().unwrap().clone();
+    assert!(url.starts_with("https://login.example.com/oauth2/authorize?tenant=1&response_type=code"), "{url}");
+}

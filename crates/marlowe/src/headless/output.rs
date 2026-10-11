@@ -196,6 +196,14 @@ impl Emitter {
         self.line(&json!({"type": "control_request", "request_id": id, "request": request}));
     }
 
+    /// Tells the SDK client that a request of ours needs no answer any more (the SDK's
+    /// `control_cancel_request`).
+    pub fn control_cancel(&mut self, id: &str) {
+        if self.stream() {
+            self.line(&json!({"type": "control_cancel_request", "request_id": id}));
+        }
+    }
+
     /// The answer to a control request the client sent.
     pub fn control_response(&mut self, id: &str, result: Result<Value, String>) {
         let response = match result {

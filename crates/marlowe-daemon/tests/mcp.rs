@@ -290,3 +290,44 @@ fn parity_t31_eighty_tools_reach_the_model_as_one_search_tool() {
     drop(reqs);
     stop(&info, join);
 }
+
+#[test]
+fn a_run_server_belongs_to_the_connection_that_added_it_and_goes_with_it() {
+    let home = temp_home("run-servers");
+    let (info, join) = start(&home, Arc::new(Scripted::default()));
+    let ws = temp_home("run-servers-ws").display().to_string();
+    let names = |c: &mut Client| {
+        c.send(&Request::McpList { workspace: Some(ws.clone()) });
+        match c.until(|e| matches!(e, Event::McpServers { .. })).pop().unwrap().event {
+            Event::McpServers { list } => list.into_iter().map(|s| (s.name, s.scope)).collect::<Vec<_>>(),
+            e => panic!("{e:?}"),
+        }
+    };
+    let mut owner = Client::connect(&info);
+    let mut other = Client::connect(&info);
+    owner.send(&Request::McpAdd { name: "runonly".into(), scope: SettingsScope::Session, config: json!({"command": "marlowe-no-such-program"}), workspace: Some(ws.clone()) });
+    owner.until(|e| matches!(e, Event::McpServers { .. }));
+    assert_eq!(names(&mut owner), [("runonly".to_string(), SettingsScope::Session)], "the owner sees it");
+    assert!(names(&mut other).is_empty(), "another client of the workspace does not");
+
+    // The owner leaves without a McpRemove (a crash, a kill): the server is dropped by the daemon.
+    drop(owner);
+    let end = Instant::now() + Duration::from_secs(10);
+    // While the owner is still registered the entry is hidden from `other`; once reaped it is gone
+    // for good. A daemon without the reaper would show it from the moment the owner detached.
+    loop {
+        if names(&mut other).is_empty() {
+            std::thread::sleep(Duration::from_millis(1200));
+            assert!(names(&mut other).is_empty(), "stays gone");
+            break;
+        }
+        assert!(Instant::now() < end, "never reaped");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // A new client adds it again under the same name without a clash.
+    let mut again = Client::connect(&info);
+    again.send(&Request::McpAdd { name: "runonly".into(), scope: SettingsScope::Session, config: json!({"command": "marlowe-no-such-program"}), workspace: Some(ws.clone()) });
+    again.until(|e| matches!(e, Event::McpServers { .. }));
+    assert_eq!(names(&mut again).len(), 1);
+    stop(&info, join);
+}

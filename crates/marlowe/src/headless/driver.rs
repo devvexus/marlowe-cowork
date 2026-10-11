@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{unbounded, Receiver};
+use crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError};
 use marlowe_brains::{env_var, CredentialStore, KeyringStore};
 use marlowe_model::{Effort, ModelRef, Pricing, ProviderKind, Usage};
 use marlowe_proto::{
@@ -22,7 +22,7 @@ use super::args::{Args, InputFormat, Resume};
 use super::input::{self, Input};
 use super::output::{Emitter, Init, TurnResult};
 use super::policy::{cc_name, Policy, Verdict};
-use super::prompt_tool::{Decision, PromptTool};
+use super::prompt_tool::{self, Decision, PromptTool};
 use super::{settings, worktree};
 use crate::client::{Client, ClientError};
 
@@ -34,6 +34,15 @@ const OP_TIMEOUT: Duration = Duration::from_secs(30);
 const SETTLE: Duration = Duration::from_millis(400);
 /// The text a question gets when nobody can answer it.
 const NO_ANSWER: &str = "(no answer: running non-interactively)";
+/// How long a prompt argument waits for piped data that never comes (a parent that left stdin
+/// open) before the run goes on without it.
+pub const STDIN_GRACE: Duration = Duration::from_secs(3);
+/// Whether the shipped daemon applies [`HeadlessOptions`] to a turn: removes `disallowed_tools`
+/// from the tool list, denies a matching call even when it needs no approval, and appends
+/// `append_system_prompt`. It does not yet (the conductor is M4.6 track F's `conductor_ops`), so
+/// those two flags refuse to run instead of being ignored. The integrator sets this to `true`
+/// when F applies them; the two `#[ignore]`d tests in `tests_flags.rs` then pass.
+pub const DAEMON_APPLIES_OPTIONS: bool = false;
 
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_ERROR: i32 = 1;
@@ -54,6 +63,10 @@ pub struct Env {
     pub err: Box<dyn std::io::Write + Send>,
     /// Set by Ctrl-C.
     pub interrupt: Arc<AtomicBool>,
+    /// [`DAEMON_APPLIES_OPTIONS`], injected so a test can stand in for a daemon that does.
+    pub daemon_applies_options: bool,
+    /// [`STDIN_GRACE`].
+    pub stdin_grace: Duration,
 }
 
 enum StdinMsg {
@@ -129,6 +142,11 @@ pub struct Driver {
     exit: i32,
     spent_usd: f64,
     last_activity: Instant,
+    /// Events that arrived while a request was waiting for its answer, handled by the loop first.
+    backlog: Vec<Envelope>,
+    /// Run-only MCP servers this driver added, removed again when it ends.
+    mcp_added: Vec<String>,
+    workspace: Option<String>,
 }
 
 fn lib_from(events: &Event) -> Option<(Vec<marlowe_proto::LibraryModel>, Vec<marlowe_proto::SlotAssignment>)> {
@@ -160,14 +178,71 @@ fn spawn_stdin(reader: Box<dyn BufRead + Send>) -> Receiver<StdinMsg> {
     rx
 }
 
+enum Chunk {
+    Data(Vec<u8>),
+    Eof,
+    Failed(String),
+}
+
+/// Piped stdin read on a thread, so that a pipe nobody closes cannot hold the run. With a prompt
+/// argument, stdin that sends nothing for `grace` is given up on (a warning, then the argument
+/// alone: a parent that spawned us with an open, silent pipe is the usual cause); once data has
+/// started, it is waited for as long as `idle` between pieces. Without a prompt the data is the
+/// prompt, so the first byte is waited for as long as `idle` as well.
+fn read_piped(reader: Box<dyn BufRead + Send>, have_prompt: bool, grace: Duration, idle: Duration, em: &mut Emitter) -> Result<String, String> {
+    let (tx, rx) = bounded::<Chunk>(4);
+    let spawned = std::thread::Builder::new().name("marlowe-stdin-prompt".into()).spawn(move || {
+        let mut r = reader;
+        loop {
+            let chunk = match r.fill_buf() {
+                Ok([]) => Chunk::Eof,
+                Ok(b) => {
+                    let v = b.to_vec();
+                    let n = v.len();
+                    r.consume(n);
+                    Chunk::Data(v)
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => Chunk::Failed(e.to_string()),
+            };
+            let last = !matches!(chunk, Chunk::Data(_));
+            if tx.send(chunk).is_err() || last {
+                return;
+            }
+        }
+    });
+    if spawned.is_err() {
+        return Err("cannot start a thread to read stdin".into());
+    }
+    let mut bytes = Vec::new();
+    let mut wait = if have_prompt { grace } else { idle };
+    loop {
+        match rx.recv_timeout(wait) {
+            Ok(Chunk::Data(d)) => {
+                bytes.extend_from_slice(&d);
+                wait = idle;
+            }
+            Ok(Chunk::Eof) => break,
+            Ok(Chunk::Failed(e)) => return Err(format!("cannot read stdin: {e}")),
+            Err(RecvTimeoutError::Timeout) if bytes.is_empty() && have_prompt => {
+                em.warn(&format!("no data on stdin after {} s; going on with the prompt argument alone", grace.as_secs_f32().max(0.1)));
+                break;
+            }
+            Err(RecvTimeoutError::Timeout) => return Err(format!("stdin went quiet for {} s without ending (--idle-timeout)", idle.as_secs())),
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// The prompt: the argument, then piped text. A terminal has no text to add.
-fn read_prompt(args: &Args, stdin: &mut Option<Box<dyn BufRead + Send>>) -> Result<Option<String>, String> {
+fn read_prompt(args: &Args, stdin: &mut Option<Box<dyn BufRead + Send>>, grace: Duration, em: &mut Emitter) -> Result<Option<String>, String> {
     if args.input == InputFormat::StreamJson {
         return Ok(args.prompt.clone());
     }
     let mut piped = String::new();
-    if let Some(r) = stdin.as_mut() {
-        std::io::Read::read_to_string(r, &mut piped).map_err(|e| format!("cannot read stdin: {e}"))?;
+    if let Some(r) = stdin.take() {
+        piped = read_piped(r, args.prompt.is_some(), grace, args.idle_timeout, em)?;
     }
     let piped = piped.trim_end().to_string();
     match (&args.prompt, piped.is_empty()) {
@@ -182,7 +257,7 @@ fn read_prompt(args: &Args, stdin: &mut Option<Box<dyn BufRead + Send>>) -> Resu
 pub fn run(args: Args, mut env: Env, connect: Connector) -> i32 {
     let mut em = Emitter::new(args.output, args.partial, args.verbose, env.out, env.err);
 
-    let prompt = match read_prompt(&args, &mut env.stdin) {
+    let prompt = match read_prompt(&args, &mut env.stdin, env.stdin_grace, &mut em) {
         Ok(p) => p,
         Err(e) => {
             em.failure(&e, "", EXIT_ERROR);
@@ -204,8 +279,36 @@ pub fn run(args: Args, mut env: Env, connect: Connector) -> i32 {
         }
     };
     for (name, entry) in &mcp {
-        if let Err(e) = marlowe_mcp::config::parse_entry(name, marlowe_mcp::config::Scope::Session, entry) {
-            em.failure(&format!("--mcp-config: {e}"), "", EXIT_ERROR);
+        match marlowe_mcp::config::parse_entry(name, marlowe_mcp::config::Scope::Session, entry) {
+            Ok(cfg) => cfg.ignored.iter().for_each(|w| em.warn(&format!("--mcp-config: {w}"))),
+            Err(e) => {
+                em.failure(&format!("--mcp-config: {e}"), "", EXIT_ERROR);
+                return EXIT_ERROR;
+            }
+        }
+    }
+    // Options only the daemon can keep. A denied tool that needs no approval (a write inside the
+    // workspace, a read, a safe command) never reaches this process's approval check, and an
+    // appended system prompt is the daemon's to append, so without a daemon that does both the
+    // flags would be accepted and do nothing. Better a clear exit 1 than a quiet hole.
+    if !env.daemon_applies_options {
+        let wanted: Vec<&str> = [
+            (!args.disallowed.is_empty() || !rs.deny.is_empty()).then_some("--disallowed-tools (or deny rules in --settings)"),
+            args.append_system_prompt.is_some().then_some("--append-system-prompt"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !wanted.is_empty() {
+            em.failure(
+                &format!(
+                    "{} cannot be honoured yet: this daemon applies neither per-run tool filters nor an appended system prompt, so a denied tool that needs no approval would still run. \
+                     Not running; remove the flag(s) or use --permission-mode plan / --allowed-tools to narrow the run",
+                    wanted.join(" and ")
+                ),
+                "",
+                EXIT_ERROR,
+            );
             return EXIT_ERROR;
         }
     }
@@ -268,8 +371,13 @@ pub fn run(args: Args, mut env: Env, connect: Connector) -> i32 {
                 exit: EXIT_OK,
                 spent_usd: 0.0,
                 last_activity: Instant::now(),
+                backlog: Vec::new(),
+                mcp_added: Vec::new(),
+                workspace: workspace_s.clone(),
             };
-            d.go(&env.home, workspace_s.as_deref(), prompt, rs, mcp)
+            let code = d.go(&env.home, workspace_s.as_deref(), prompt, rs, mcp);
+            d.remove_run_servers();
+            code
         }
         Err(e) => {
             em.failure(&format!("cannot connect to the daemon: {e}"), "", EXIT_ERROR);
@@ -327,15 +435,19 @@ impl Driver {
             match self.client.next_event(Duration::from_millis(100)) {
                 Ok(Some(Envelope { event: Event::Status(_), .. })) => break,
                 Ok(Some(Envelope { event: Event::Error { message, .. }, .. })) => err = Some(message),
-                Ok(_) => {}
+                // A turn may be running (a mode switch mid-run): its events are the loop's.
+                Ok(Some(other)) => self.backlog.push(other),
+                Ok(None) => {}
                 Err(e) => return Err(e.to_string()),
             }
         }
         // Replies from worker threads can land just after the barrier.
         let grace = Instant::now() + Duration::from_millis(60);
         while Instant::now() < grace {
-            if let Ok(Some(Envelope { event: Event::Error { message, .. }, .. })) = self.client.next_event(Duration::from_millis(20)) {
-                err = Some(message);
+            match self.client.next_event(Duration::from_millis(20)) {
+                Ok(Some(Envelope { event: Event::Error { message, .. }, .. })) => err = Some(message),
+                Ok(Some(other)) => self.backlog.push(other),
+                _ => {}
             }
         }
         err.map_or(Ok(()), Err)
@@ -351,6 +463,35 @@ impl Driver {
                 Ok(())
             }
             Err(m) => Err(format!("{flag}: {m}")),
+        }
+    }
+
+    /// Switches the session's mode. A daemon without modes yet is tolerable for every mode but
+    /// `plan`: without it this process still denies whatever asks (as strict as `default`, or
+    /// stricter), but a plan run promises no edits, writes inside the workspace never ask, and only
+    /// the daemon can hold that promise. For `plan` a daemon that cannot is an error.
+    fn set_mode(&mut self, flag: &str, mode: PermissionMode) -> Result<(), String> {
+        match self.configure(Request::SetMode { session: self.session.clone(), mode }) {
+            Ok(()) => Ok(()),
+            Err(m) if m.contains("is not available yet") && mode == PermissionMode::Plan => {
+                Err(format!("{flag} plan: this daemon cannot hold plan mode yet ({m}); not running a session that could edit files"))
+            }
+            Err(m) if m.contains("is not available yet") => {
+                self.em.warn(&format!("{flag} is not supported by this daemon yet ({m}); continuing without it"));
+                Ok(())
+            }
+            Err(m) => Err(format!("{flag}: {m}")),
+        }
+    }
+
+    /// Takes this run's `--mcp-config` servers back out of the daemon, so that they do not outlive
+    /// the run in a daemon that serves other sessions. Best effort: a daemon that is gone has
+    /// nothing to clean (and drops them itself when the connection ends).
+    fn remove_run_servers(&mut self) {
+        for name in std::mem::take(&mut self.mcp_added) {
+            let req = Request::McpRemove { name, scope: SettingsScope::Session, workspace: self.workspace.clone() };
+            // An error reply (already gone) is fine; so is a dead connection.
+            let _ = self.configure(req);
         }
     }
 
@@ -458,6 +599,7 @@ impl Driver {
         // MCP servers for this run, then settings, directories, mode and model.
         for (name, entry) in mcp {
             self.send(&Request::McpAdd { name: name.clone(), scope: SettingsScope::Session, config: entry.clone(), workspace: workspace.map(str::to_string) })?;
+            self.mcp_added.push(name.clone());
             self.client.wait_for(OP_TIMEOUT, |e| matches!(e, Event::McpServers { .. }).then_some(())).map_err(|e| e.to_string())?.map_err(|m| format!("--mcp-config {name}: {m}"))?;
         }
         for (key, value) in &rs.forward {
@@ -468,7 +610,7 @@ impl Driver {
             self.configure_soft("--add-dir", Request::AddDir { session: self.session.clone(), path: abs.display().to_string() })?;
         }
         if self.args.mode.is_some() || rs.mode.is_some() {
-            self.configure_soft("--permission-mode", Request::SetMode { session: self.session.clone(), mode: self.mode })?;
+            self.set_mode("--permission-mode", self.mode)?;
         }
         if let Some(m) = self.args.model.clone() {
             self.pick_model(&m)?;
@@ -541,6 +683,11 @@ impl Driver {
             while let Some(msg) = self.stdin.as_ref().and_then(|rx| rx.try_recv().ok()) {
                 self.on_stdin(msg);
             }
+            if !self.backlog.is_empty() {
+                for env in std::mem::take(&mut self.backlog) {
+                    self.on_event(env);
+                }
+            }
             match self.client.next_event(TICK) {
                 Ok(Some(env)) => self.on_event(env),
                 Ok(None) => {}
@@ -600,6 +747,9 @@ impl Driver {
         let line = match msg {
             StdinMsg::Eof => {
                 self.stdin_done = true;
+                // Nobody is left to answer what is outstanding: refuse it now, or the run would
+                // wait for an answer that cannot come until `--idle-timeout`.
+                self.settle_pending("the client closed its input");
                 return;
             }
             StdinMsg::Line(l) => l,
@@ -625,14 +775,14 @@ impl Driver {
                 self.em.control_response(&id, Ok(json!({})));
                 self.interrupt_turn();
             }
-            Input::SetMode { id, mode } => {
-                self.mode = mode;
-                let r = self.configure_soft("set_permission_mode", Request::SetMode { session: self.session.clone(), mode });
-                match r {
-                    Ok(()) => self.em.control_response(&id, Ok(json!({"mode": mode.as_str()}))),
-                    Err(e) => self.em.control_response(&id, Err(e)),
+            Input::SetMode { id, mode } => match self.set_mode("set_permission_mode", mode) {
+                Ok(()) => {
+                    self.mode = mode;
+                    self.em.control_response(&id, Ok(json!({"mode": mode.as_str()})));
                 }
-            }
+                // The mode stays what it was; the client is told it did not take.
+                Err(e) => self.em.control_response(&id, Err(e)),
+            },
             Input::Initialize { id } => {
                 let model = self.lib.display.clone();
                 self.em.control_response(&id, Ok(json!({"commands": [], "models": [model], "permission_mode": self.mode.as_str()})));
@@ -655,7 +805,8 @@ impl Driver {
             Pending::Approval { approval, tool, input } => {
                 let verdict = match result {
                     Ok(v) => match v.get("behavior").and_then(Value::as_str) {
-                        Some("allow") => Ok(()),
+                        // Running something other than what was asked about is not an allow.
+                        Some("allow") => prompt_tool::rewritten(&v, &input).map_or(Ok(()), Err),
                         Some("deny") => Err(v.get("message").and_then(Value::as_str).unwrap_or("denied by the client").to_string()),
                         _ => Err("the client's answer has no behavior of allow or deny".to_string()),
                     },
@@ -680,11 +831,42 @@ impl Driver {
         }
     }
 
+    /// Answers everything the client was asked and has not answered: approvals are denied, questions
+    /// get [`NO_ANSWER`].
+    fn settle_pending(&mut self, why: &str) {
+        let mut open: Vec<(String, Pending)> = self.pending.drain().collect();
+        open.sort_by(|a, b| a.0.cmp(&b.0));
+        for (rid, p) in open {
+            self.em.control_cancel(&rid);
+            match p {
+                Pending::Approval { approval, tool, input } => self.deny(approval, &tool, &input, why),
+                Pending::Question { id, count } => {
+                    let _ = self.send(&Request::AnswerQuestion { session: self.session.clone(), id, answers: vec![NO_ANSWER.to_string(); count] });
+                }
+            }
+        }
+    }
+
+    /// Forgets an approval the daemon settled on its own (timeout, interrupt, another client) and
+    /// tells the client that its request is moot.
+    fn approval_resolved(&mut self, approval: ApprovalId) {
+        let gone: Vec<String> = self.pending.iter().filter(|(_, p)| matches!(p, Pending::Approval { approval: a, .. } if *a == approval)).map(|(k, _)| k.clone()).collect();
+        for rid in gone {
+            self.pending.remove(&rid);
+            self.em.control_cancel(&rid);
+        }
+    }
+
     // ------------------------------------------------------------ daemon events
 
     fn on_event(&mut self, env: Envelope) {
         self.last_activity = Instant::now();
         let ev = env.event;
+        if let Event::ApprovalResolved { approval, .. } = &ev {
+            // Approval ids are the daemon's own, so this needs no session check.
+            self.approval_resolved(*approval);
+            return;
+        }
         if let Event::Error { session, message } = &ev {
             if session.is_none() || session.as_ref() == Some(&self.session) {
                 self.on_error(message);
@@ -858,6 +1040,12 @@ impl Driver {
 
     fn on_turn_finished(&mut self, usage: Usage, stop: TurnStop) {
         let Some(turn) = self.turn.take() else { return };
+        // Whatever was still outstanding died with the turn (an interrupt, a step limit); the
+        // daemon has already settled it, so the client is only told to stop waiting.
+        let stale: Vec<String> = self.pending.drain().map(|(k, _)| k).collect();
+        for rid in stale {
+            self.em.control_cancel(&rid);
+        }
         let sid = self.session.0.clone();
         let model = self.lib.display.clone();
         self.em.assistant(&sid, &model, &turn.text, None);

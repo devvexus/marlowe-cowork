@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::io::BufRead;
 use std::time::{Duration, Instant};
 
+use marlowe_proto::{Event, Request};
 use serde_json::{json, Value};
 
 use super::args::Args;
@@ -346,6 +347,8 @@ fn parity_h5_a_permission_prompt_tool_that_does_not_exist_fails_the_run_at_the_s
 #[test]
 fn parity_h5_set_permission_mode_changes_the_mode_mid_run() {
     let rig = Rig::new("h5-mode");
+    // After the switch to dontAsk, a command that would ask is refused, and does not run.
+    rig.script.push(vec![Ev::Call("b1", "bash", json!({"command": "echo should-not-run"})), Ev::Usage(5, 5)]);
     rig.script.push(vec![Ev::Text("mode set"), Ev::Usage(5, 5)]);
     let (w, r) = pipe();
     w.line(json!({"type": "control_request", "request_id": "m1", "request": {"subtype": "set_permission_mode", "mode": "dontAsk"}}));
@@ -356,6 +359,28 @@ fn parity_h5_set_permission_mode_changes_the_mode_mid_run() {
     assert_eq!(o.code, 0, "{}\n{}", o.err.text(), o.out.text());
     let ack = o.lines().into_iter().find(|l| l["type"] == "control_response").expect("an acknowledgement");
     assert_eq!(ack["response"]["request_id"], "m1");
+    assert_eq!(ack["response"]["subtype"], "success", "{ack}");
+    // The switch has an effect: the ask was refused and the command never ran.
+    let res = o.result();
+    assert_eq!(res["permission_denials"].as_array().unwrap().len(), 1, "{res}");
+    assert!(res["permission_denials"][0]["reason"].as_str().unwrap().contains("dont_ask"), "{res}");
+    assert!(!rig.script.tool_results().iter().any(|c| c.contains("bash ran")), "{:?}", rig.script.tool_results());
+}
+
+#[test]
+fn parity_h5_set_permission_mode_plan_is_an_error_when_the_daemon_cannot_hold_it() {
+    let rig = Rig::new("h5-mode-plan");
+    rig.script.push(vec![Ev::Text("still default"), Ev::Usage(5, 5)]);
+    let (w, r) = pipe();
+    w.line(json!({"type": "control_request", "request_id": "p1", "request": {"subtype": "set_permission_mode", "mode": "plan"}}));
+    w.line(user("go"));
+    w.close();
+    let args = Args::parse(&rig.argv(&["--output-format", "stream-json", "--input-format", "stream-json"])).unwrap();
+    let o = run_args(args, &rig.home, &rig.ws, Some(r), rig.connector());
+    assert_eq!(o.code, 0, "{}\n{}", o.err.text(), o.out.text());
+    let ack = o.lines().into_iter().find(|l| l["type"] == "control_response").expect("an answer");
+    assert_eq!(ack["response"]["subtype"], "error", "plan was not set, so it is not acknowledged as set: {ack}");
+    assert!(ack["response"]["error"].as_str().unwrap().contains("plan"), "{ack}");
 }
 
 #[test]
@@ -427,4 +452,233 @@ fn parity_h4_continue_and_resume_reuse_the_session() {
     let o = run_args(Args::parse(&v).unwrap(), &rig.home, &other, None, rig.connector());
     assert_eq!(o.code, 1);
     assert!(o.err.text().contains("no earlier session"), "{}", o.err.text());
+}
+
+// ---------------------------------------------------------------- answers that never come
+
+/// A client thread: waits for the first `can_use_tool` request in `probe`, then runs `then`.
+fn on_first_ask(probe: Buf, then: impl FnOnce(Value) + Send + 'static) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let end = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < end {
+            if let Some(l) = probe.lines().into_iter().find(|l| l["type"] == "control_request" && l["request"]["subtype"] == "can_use_tool") {
+                return then(l);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("no can_use_tool request appeared");
+    })
+}
+
+#[test]
+fn parity_h5_an_allow_with_a_rewritten_input_is_refused_and_the_original_does_not_run() {
+    let rig = Rig::new("h5-updated");
+    rig.script.push(vec![Ev::Call("b1", "bash", json!({"command": "rm -rf build"})), Ev::Usage(5, 5)]);
+    rig.script.push(vec![Ev::Text("finished"), Ev::Usage(5, 5)]);
+    let (w, r) = pipe();
+    w.line(user("clean up"));
+    let out = Buf::default();
+    let client = on_first_ask(out.clone(), move |l| {
+        let id = l["request_id"].as_str().unwrap().to_string();
+        // "Allow, but sanitised": a narrower path.
+        w.line(json!({"type": "control_response", "response": {"subtype": "success", "request_id": id, "response": {"behavior": "allow", "updatedInput": {"command": "rm -rf build/tmp"}}}}));
+        w.close();
+    });
+    let args = Args::parse(&rig.argv(&["--output-format", "stream-json", "--input-format", "stream-json", "--permission-prompt-tool", "stdio"])).unwrap();
+    let o = run_args_to(args, &rig.home, &rig.ws, Some(r), rig.connector(), out, Buf::default());
+    client.join().unwrap();
+    assert_eq!(o.code, 0, "{}\n{}", o.err.text(), o.out.text());
+    let res = o.result();
+    assert_eq!(res["permission_denials"].as_array().unwrap().len(), 1, "{res}");
+    assert!(res["permission_denials"][0]["reason"].as_str().unwrap().contains("updatedInput is not supported yet"), "{res}");
+    assert!(!rig.script.tool_results().iter().any(|c| c.contains("bash ran")), "neither the original nor the rewrite ran: {:?}", rig.script.tool_results());
+}
+
+#[test]
+fn parity_h5_closing_stdin_with_a_question_outstanding_denies_it_and_ends_promptly() {
+    let rig = Rig::new("h5-eof");
+    rig.script.push(vec![Ev::Call("b1", "bash", json!({"command": "echo never-answered"})), Ev::Usage(5, 5)]);
+    rig.script.push(vec![Ev::Text("gave up asking"), Ev::Usage(5, 5)]);
+    let (w, r) = pipe();
+    w.line(user("go"));
+    let out = Buf::default();
+    // The client sees the request and hangs up without answering.
+    let client = on_first_ask(out.clone(), move |_| w.close());
+    // Without the fix this waited for the (default 30 minute) idle timeout.
+    let args = Args::parse(&rig.argv(&["--output-format", "stream-json", "--input-format", "stream-json", "--permission-prompt-tool", "stdio", "--idle-timeout", "60"])).unwrap();
+    let started = Instant::now();
+    let o = run_args_to(args, &rig.home, &rig.ws, Some(r), rig.connector(), out, Buf::default());
+    client.join().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(15), "ended in {:?}: {}", started.elapsed(), o.err.text());
+    assert_eq!(o.code, 0, "{}\n{}", o.err.text(), o.out.text());
+    let res = o.result();
+    assert_eq!(res["permission_denials"].as_array().unwrap().len(), 1, "{res}");
+    assert!(res["permission_denials"][0]["reason"].as_str().unwrap().contains("closed its input"), "{res}");
+    assert!(!rig.script.tool_results().iter().any(|c| c.contains("bash ran")));
+    assert!(o.lines().iter().any(|l| l["type"] == "control_cancel_request"), "the client is told the request is moot");
+}
+
+fn approval_fake(after: Vec<Event>) -> Fake {
+    use marlowe_proto::ApprovalId;
+    let tail = std::sync::Mutex::new(after);
+    Fake::with(move |r| match r {
+        Request::Ask { session, .. } => {
+            let s = session.clone().unwrap_or_else(fake_session);
+            let mut evs = vec![
+                Event::TurnStarted { session: s.clone(), turn: 0, model: model_info().model_ref(), user: String::new() },
+                Event::ApprovalRequested {
+                    approval: ApprovalId(7),
+                    session: s.clone(),
+                    tool: "bash".into(),
+                    summary: "bash x".into(),
+                    detail: json!({"command": "x"}).to_string(),
+                    run: None,
+                    proposed_rule: None,
+                },
+            ];
+            evs.extend(std::mem::take(&mut *tail.lock().unwrap()));
+            evs
+        }
+        other => default_reply(other),
+    })
+}
+
+fn stream_fake_run(fake: &Fake) -> Outcome {
+    let home = temp_dir("pending-home");
+    let ws = home.join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    let (w, r) = pipe();
+    w.line(user("go"));
+    // Hangs up once the run has had time to take the events in; the run ends with its turn.
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1500));
+        w.close();
+    });
+    let mut v = vec!["-p".to_string(), "--workspace".into(), ws.display().to_string()];
+    v.extend(["--output-format", "stream-json", "--input-format", "stream-json", "--permission-prompt-tool", "stdio", "--idle-timeout", "20"].map(String::from));
+    run_args(Args::parse(&v).unwrap(), &home, &ws, Some(r), fake.connector())
+}
+
+#[test]
+fn parity_h5_an_approval_the_daemon_settles_itself_is_forgotten_and_the_client_told() {
+    use marlowe_proto::{ApprovalDecision, ApprovalId, TurnStop};
+    let s = fake_session();
+    let fake = approval_fake(vec![
+        Event::ApprovalResolved { approval: ApprovalId(7), decision: ApprovalDecision::Deny },
+        // The turn goes on after the daemon's own denial.
+        Event::ToolStarted { session: s.clone(), turn: 0, call_id: "c1".into(), tool: "echo".into(), summary: "echo".into() },
+        Event::ToolFinished { session: s.clone(), turn: 0, call_id: "c1".into(), ok: true, summary: "echo".into() },
+        Event::TurnFinished { session: s, turn: 0, usage: Default::default(), stop: TurnStop::Done },
+    ]);
+    let o = stream_fake_run(&fake);
+    assert_eq!(o.code, 0, "{}\n{}", o.err.text(), o.out.text());
+    let lines = o.lines();
+    let at = |pred: &dyn Fn(&Value) -> bool| lines.iter().position(|l| pred(l));
+    let ask = at(&|l| l["type"] == "control_request").expect("the request");
+    let cancel = at(&|l| l["type"] == "control_cancel_request").expect("the cancel");
+    let later_tool = at(&|l| l["type"] == "assistant").expect("the turn's later tool call");
+    assert!(ask < cancel && cancel < later_tool, "cancelled when the daemon settled it, not when the turn ended: {lines:?}");
+    assert_eq!(lines.iter().filter(|l| l["type"] == "control_cancel_request").count(), 1);
+    assert_eq!(lines[ask]["request_id"], lines[cancel]["request_id"]);
+}
+
+#[test]
+fn parity_h5_an_interrupted_turn_does_not_leave_the_run_waiting_for_the_answer() {
+    use marlowe_proto::TurnStop;
+    let s = fake_session();
+    let fake = approval_fake(vec![Event::TurnFinished { session: s, turn: 0, usage: Default::default(), stop: TurnStop::Interrupted }]);
+    let started = Instant::now();
+    let o = stream_fake_run(&fake);
+    assert!(started.elapsed() < Duration::from_secs(15));
+    let lines = o.lines();
+    assert_eq!(lines.iter().filter(|l| l["type"] == "control_cancel_request").count(), 1, "{lines:?}");
+    let cancel = lines.iter().position(|l| l["type"] == "control_cancel_request").unwrap();
+    let result = lines.iter().position(|l| l["type"] == "result").unwrap();
+    assert!(cancel < result);
+}
+
+// ---------------------------------------------------------------- stdin that never ends
+
+#[test]
+fn parity_h1_an_open_silent_stdin_does_not_hold_a_run_that_has_a_prompt() {
+    let rig = Rig::new("h1-open-stdin");
+    rig.script.push(vec![Ev::Text("answered"), Ev::Usage(5, 5)]);
+    // A parent that spawned us with a pipe it never writes to or closes. `w` stays alive.
+    let (w, r) = pipe();
+    let started = Instant::now();
+    let o = rig.print_with(&["--output-format", "json", "what is 2+2"], Some(r));
+    assert!(started.elapsed() < Duration::from_secs(15), "returned in {:?}", started.elapsed());
+    assert_eq!(o.code, 0, "{}", o.err.text());
+    assert_eq!(o.result()["result"], "answered");
+    assert!(o.err.text().contains("no data on stdin"), "said so: {}", o.err.text());
+    drop(w);
+}
+
+#[test]
+fn parity_h1_stdin_that_starts_late_but_ends_is_still_appended() {
+    let rig = Rig::new("h1-late-stdin");
+    rig.script.push(vec![Ev::Text("saw the data"), Ev::Usage(5, 5)]);
+    let (w, r) = pipe();
+    w.line(json!("LATE-DATA-ARRIVED"));
+    w.close();
+    let o = rig.print_with(&["--output-format", "json", "review:"], Some(r));
+    assert_eq!(o.code, 0, "{}", o.err.text());
+    let seen = rig.script.requests().last().unwrap().messages.iter().map(|m| m.joined_text()).collect::<Vec<_>>().join("|");
+    assert!(seen.contains("LATE-DATA-ARRIVED") && seen.contains("review:"), "{seen}");
+}
+
+// ---------------------------------------------------------------- run servers do not outlive the run
+
+#[test]
+fn parity_h4_mcp_config_servers_are_gone_for_the_next_session_of_the_workspace() {
+    use marlowe_proto::SettingsScope;
+    let rig = Rig::new("h4-mcp-gone");
+    rig.script.push(vec![Ev::Text("ok"), Ev::Usage(5, 5)]);
+    let cfg = json!({"mcpServers": {"ghost": {"command": "marlowe-no-such-program"}}}).to_string();
+    let o = rig.print(&["--output-format", "json", "--mcp-config", &cfg, "hi"]);
+    assert_eq!(o.code, 0, "{}", o.err.text());
+    // A second session on the same workspace (the interactive one) must not see it.
+    let ws = crate::strip_verbatim(rig.ws.canonicalize().unwrap()).display().to_string();
+    let mut c = RawClient::connect(&rig.info);
+    c.send(&Request::McpList { workspace: Some(ws.clone()) });
+    match c.until(|e| matches!(e, Event::McpServers { .. })) {
+        Event::McpServers { list } => assert!(list.iter().all(|s| s.name != "ghost"), "{list:?}"),
+        _ => unreachable!(),
+    }
+    // And a name added by a client that then vanishes without removing it goes too.
+    let mut gone = RawClient::connect(&rig.info);
+    gone.send(&Request::McpAdd { name: "orphan".into(), scope: SettingsScope::Session, config: json!({"command": "marlowe-no-such-program"}), workspace: Some(ws.clone()) });
+    gone.until(|e| matches!(e, Event::McpServers { .. }));
+    drop(gone);
+    let end = Instant::now() + Duration::from_secs(10);
+    loop {
+        c.send(&Request::McpList { workspace: Some(ws.clone()) });
+        let Event::McpServers { list } = c.until(|e| matches!(e, Event::McpServers { .. })) else { unreachable!() };
+        if list.iter().all(|s| s.name != "orphan") {
+            break;
+        }
+        assert!(Instant::now() < end, "still listed: {list:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+// ---------------------------------------------------------------- --standalone beside a live daemon
+
+#[test]
+fn parity_h4_standalone_runs_beside_a_daemon_that_already_serves_the_home() {
+    let rig = Rig::new("h4-beside");
+    // The rig's daemon holds the home. A standalone run used to be refused outright.
+    let (info, stop) = super::standalone(&rig.home, false, false).expect("a private daemon starts beside the live one");
+    assert_ne!(info.port, rig.info.port, "its own daemon, not the shared one");
+    let mut c = RawClient::connect(&info);
+    c.send(&Request::LibraryState);
+    match c.until(|e| matches!(e, Event::LibraryState { .. })) {
+        Event::LibraryState { models, .. } => assert!(models.iter().any(|m| m.model.model_id == "scripted"), "the model library came along: {models:?}"),
+        _ => unreachable!(),
+    }
+    // The live daemon is untouched.
+    let mut live = RawClient::connect(&rig.info);
+    live.send(&Request::Status);
+    live.until(|e| matches!(e, Event::Status(_)));
+    stop();
 }

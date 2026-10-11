@@ -264,6 +264,22 @@ impl OAuth {
         McpError::Http { server: self.name.clone(), status: 0, detail }
     }
 
+    /// The authorization URL is shown by the desktop's URL opener (`rundll32 url.dll,
+    /// FileProtocolHandler` on Windows), which will launch whatever scheme it is given, so it comes
+    /// from untrusted server metadata only as `https`, or `http` to this machine; nothing that
+    /// could carry a second argument or a control character.
+    fn browsable(&self, endpoint: &str) -> Result<(), McpError> {
+        let bad = |why: &str| self.http_err(format!("refusing to open the authorization page {endpoint:?}: {why}"));
+        if endpoint.chars().any(|c| c.is_control() || c.is_whitespace() || c == '"' || c == '<' || c == '>') {
+            return Err(bad("it has a space, quote or control character"));
+        }
+        let url = Url::parse(endpoint).map_err(|e| bad(&e))?;
+        if !url.https && !url.is_loopback() {
+            return Err(bad("plain http is only allowed to this machine; the server must use https"));
+        }
+        Ok(())
+    }
+
     fn get_json(&self, url: &Url) -> Option<Value> {
         let req = HttpRequest::get(url).header("Accept", "application/json");
         let mut resp = self.http.send(&req, HTTP_TIMEOUT).ok()?;
@@ -336,6 +352,7 @@ impl OAuth {
         let field = |m: &Value, k: &str| m.get(k).and_then(Value::as_str).map(str::to_string);
         if let Some(m) = meta_urls.iter().find_map(|u| self.get_json(u)) {
             if let (Some(a), Some(t)) = (field(&m, "authorization_endpoint"), field(&m, "token_endpoint")) {
+                self.browsable(&a)?;
                 return Ok(AuthServer {
                     issuer,
                     authorization_endpoint: a,
@@ -420,6 +437,8 @@ impl OAuth {
         }
         let sep = if server.authorization_endpoint.contains('?') { '&' } else { '?' };
         let auth_url = format!("{}{sep}{}", server.authorization_endpoint, form_encode(&query));
+        // The conventional-path fallback is built from the issuer, so it is checked here as well.
+        self.browsable(&auth_url)?;
         open(&auth_url).map_err(|e| self.http_err(format!("could not show the authorization page: {e}")))?;
 
         let code = self.await_redirect(&listener, &state, wait)?;

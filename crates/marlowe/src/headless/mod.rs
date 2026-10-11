@@ -10,7 +10,9 @@
 //! | [`settings`], [`worktree`] | `--settings` / `--mcp-config` values, `-w` |
 //!
 //! The run talks to the shared daemon like any client, or with `--standalone` to a daemon inside
-//! this process (no sentinel, voice or crew; memory unless `--no-memory`). stdout carries only the
+//! this process (no sentinel, voice or crew; memory unless `--no-memory`). When the home already has
+//! a daemon, a standalone run cannot claim it, so it runs beside it on a private copy of the
+//! model library, the user file and the MCP files, with no memory and no earlier sessions. stdout carries only the
 //! answer; diagnostics go to stderr. Exit codes: 0 done, 1 error, 2 approval needed under
 //! `--fail-on-ask`, 3 budget, 130 cancelled.
 
@@ -68,6 +70,8 @@ pub fn run(home: &Path, raw: &[String]) -> Result<i32, String> {
         out: Box::new(std::io::stdout()),
         err: Box::new(std::io::stderr()),
         interrupt,
+        daemon_applies_options: driver::DAEMON_APPLIES_OPTIONS,
+        stdin_grace: driver::STDIN_GRACE,
     };
     let connect = connector(home, &args);
     Ok(driver::run(args, env, connect))
@@ -84,28 +88,98 @@ pub fn connector(home: &Path, args: &Args) -> Connector {
     }
 }
 
-fn standalone(home: &Path, memory: bool, strict_mcp: bool) -> Result<(marlowe_proto::DaemonInfo, Box<dyn FnOnce()>), String> {
+type Started = (marlowe_proto::DaemonInfo, Box<dyn FnOnce()>);
+
+fn standalone(home: &Path, memory: bool, strict_mcp: bool) -> Result<Started, String> {
     std::fs::create_dir_all(home).map_err(|e| format!("cannot create {}: {e}", home.display()))?;
     if strict_mcp {
         // Read by the daemon's MCP host when it builds a workspace's hub.
         std::env::set_var(marlowe_mcp::STRICT_ENV, "1");
     }
-    let deps = crate::wire::standalone_deps(home, memory);
     let cfg = DaemonConfig { legacy_offer: false, ..DaemonConfig::default() };
-    let daemon = Daemon::start(deps, home, cfg).map_err(|e| match e {
-        DaemonError::AlreadyRunning(h) => format!(
-            "--standalone: a daemon is already serving {h}; point MARLOWE_HOME at a directory of its own (or stop that daemon with `marlowe shutdown`)"
-        ),
-        other => other.to_string(),
-    })?;
+    if serving(home) {
+        return beside(home, cfg);
+    }
+    let deps = crate::wire::standalone_deps(home, memory);
+    match Daemon::start(deps, home, cfg.clone()) {
+        Ok(d) => Ok(running(d, None)),
+        // Lost a race with a daemon starting.
+        Err(DaemonError::AlreadyRunning(_)) => beside(home, cfg),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn running(daemon: Daemon, scratch: Option<PathBuf>) -> Started {
     let info = daemon.info();
-    Ok((
+    (
         info,
         Box::new(move || {
             daemon.shutdown();
             let _ = daemon.wait();
+            if let Some(dir) = scratch {
+                let _ = std::fs::remove_dir_all(dir);
+            }
         }),
-    ))
+    )
+}
+
+/// Whether a daemon answers for `home` right now.
+fn serving(home: &Path) -> bool {
+    let Ok(Some(info)) = marlowe_proto::DaemonInfo::read(home) else { return false };
+    std::net::TcpStream::connect_timeout(&info.addr(), std::time::Duration::from_millis(500)).is_ok()
+}
+
+/// Files of a profile home a private copy carries over.
+const COPIED: &[&str] = &["user.json", "settings.toml", "settings.json", "research.json", "mcp.json", "mcp-trust.json", "mcp-pins.json"];
+
+/// A daemon of this process's own, on a scratch home that copies what a run needs from `home`:
+/// the model library (models, slot assignments, context policies), the user file, the settings and
+/// the MCP files. Not the memory (the shared daemon owns the journal; two writers would fork its
+/// chain) and not the sessions, so `-c` and `-r` find nothing here. Deleted when the run ends.
+fn beside(home: &Path, cfg: DaemonConfig) -> Result<Started, String> {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let scratch = std::env::temp_dir().join(format!("marlowe-print-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&scratch).map_err(|e| format!("cannot create {}: {e}", scratch.display()))?;
+    let prepared = copy_profile(home, &scratch);
+    if let Err(e) = prepared {
+        let _ = std::fs::remove_dir_all(&scratch);
+        return Err(e);
+    }
+    eprintln!(
+        "marlowe: a daemon already serves {}; --standalone runs beside it on a private copy of its model library, with no memory and no earlier sessions",
+        home.display()
+    );
+    let deps = crate::wire::standalone_deps(&scratch, false);
+    match Daemon::start(deps, &scratch, cfg) {
+        Ok(d) => Ok(running(d, Some(scratch))),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&scratch);
+            Err(e.to_string())
+        }
+    }
+}
+
+fn copy_profile(from: &Path, to: &Path) -> Result<(), String> {
+    use marlowe_brains::Library;
+    let src = Library::open(&marlowe_proto::paths::cowork_db(from)).map_err(|e| format!("cannot read the model library of {}: {e}", from.display()))?;
+    let dst = Library::open(&marlowe_proto::paths::cowork_db(to)).map_err(|e| format!("cannot create a model library: {e}"))?;
+    let fail = |e: marlowe_brains::BrainsError| format!("cannot copy the model library: {e}");
+    for m in src.models().map_err(fail)? {
+        dst.add(&m.info).map_err(fail)?;
+    }
+    for s in src.slots().map_err(fail)?.into_iter().filter(|s| !s.inherited) {
+        dst.set_slot(&s.slot, s.model.as_ref(), s.effort).map_err(fail)?;
+    }
+    for (model, policy) in src.policies().map_err(fail)? {
+        dst.set_policy(&model, &policy).map_err(fail)?;
+    }
+    for name in COPIED {
+        let from_file = from.join(name);
+        if from_file.is_file() {
+            std::fs::copy(&from_file, to.join(name)).map_err(|e| format!("cannot copy {}: {e}", from_file.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Ctrl-C asks the run to cancel its turn and exit 130 instead of killing it mid-write.

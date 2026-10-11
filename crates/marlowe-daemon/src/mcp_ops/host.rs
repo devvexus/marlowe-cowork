@@ -319,9 +319,10 @@ impl ToolHost for McpTools {
 
     fn taints(&self, call: &ToolCallReq) -> bool {
         match call.name.as_str() {
-            n if names::is_mcp(n) => true,
-            READ_RESOURCE | GET_PROMPT => true,
-            n if Self::is_internal(n) => false,
+            // Everything a server wrote reaches the model untrusted: its tool output, but also the
+            // descriptions and schemas `tool_search` loads and the names and descriptions the
+            // listings return (ADR-052).
+            n if names::is_mcp(n) || Self::is_internal(n) => true,
             _ => self.inner.taints(call),
         }
     }

@@ -83,6 +83,9 @@ pub struct ServerConfig {
     pub timeout: Option<Duration>,
     /// The entry as written (variables unexpanded).
     pub raw: Value,
+    /// Settings the entry asked for that its scope may not use (`env_allow` outside user scope),
+    /// dropped when it was parsed; shown to whoever supplied the entry.
+    pub ignored: Vec<String>,
 }
 
 impl ServerConfig {
@@ -182,7 +185,9 @@ pub fn parse_entry(name: &str, scope: Scope, raw: &Value) -> Result<ServerConfig
             command: s("command").filter(|c| !c.trim().is_empty()).ok_or("a stdio server needs a command")?,
             args: strings("args")?,
             env: pairs("env")?,
-            env_allow: if scope == Scope::User || scope == Scope::Session { strings("env_allow")? } else { Vec::new() },
+            // Only the user's own file may let a scrubbed variable through to a child: a project
+            // file, a `--mcp-config` file or a client's `McpAdd` is somebody else's text.
+            env_allow: if scope == Scope::User { strings("env_allow")? } else { Vec::new() },
         }),
         "http" | "streamable-http" | "streamable_http" => Transport::Http {
             url: s("url").ok_or("an http server needs a url")?,
@@ -204,6 +209,10 @@ pub fn parse_entry(name: &str, scope: Scope, raw: &Value) -> Result<ServerConfig
             .collect::<Result<_, _>>()?,
         Some(_) => return Err("consequences must be an object".into()),
     };
+    let mut ignored = Vec::new();
+    if scope != Scope::User && obj.get("env_allow").is_some_and(|v| v.as_array().is_some_and(|a| !a.is_empty())) {
+        ignored.push(format!("env_allow is honoured in the user scope only; ignored for {name} ({} scope)", scope.as_str()));
+    }
     Ok(ServerConfig {
         name: name.to_string(),
         scope,
@@ -213,6 +222,7 @@ pub fn parse_entry(name: &str, scope: Scope, raw: &Value) -> Result<ServerConfig
         disabled: obj.get("disabled").and_then(Value::as_bool).unwrap_or(false),
         timeout: obj.get("timeout").and_then(Value::as_u64).map(Duration::from_millis),
         raw: raw.clone(),
+        ignored,
     })
 }
 
@@ -497,6 +507,19 @@ mod tests {
         let user = parse_entry("s", Scope::User, &raw).unwrap();
         assert!(matches!(&project.transport, Transport::Stdio(s) if s.env_allow.is_empty()));
         assert!(matches!(&user.transport, Transport::Stdio(s) if s.env_allow == ["OPENAI_API_KEY"]));
+        assert!(user.ignored.is_empty() && project.ignored.len() == 1);
+    }
+
+    #[test]
+    fn a_session_entry_cannot_let_a_credential_through_to_its_child() {
+        // `--mcp-config` can be a file out of a repository, and `McpAdd` can come from any client.
+        let raw = json!({"command": "x", "env_allow": ["OPENROUTER_API_KEY", "HF_TOKEN"]});
+        let session = parse_entry("s", Scope::Session, &raw).unwrap();
+        assert!(matches!(&session.transport, Transport::Stdio(s) if s.env_allow.is_empty()), "{:?}", session.transport);
+        assert_eq!(session.ignored.len(), 1);
+        assert!(session.ignored[0].contains("env_allow") && session.ignored[0].contains("session"), "{:?}", session.ignored);
+        let local = parse_entry("s", Scope::Local, &raw).unwrap();
+        assert!(matches!(&local.transport, Transport::Stdio(s) if s.env_allow.is_empty()));
     }
 
     #[test]

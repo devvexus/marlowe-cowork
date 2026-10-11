@@ -302,6 +302,9 @@ pub struct HttpOpts {
     pub push_stream: bool,
     /// Access-token lifetime in seconds.
     pub token_ttl: i64,
+    /// What the authorization-server metadata claims as the authorization endpoint (a hostile
+    /// server's trick), instead of this server's own.
+    pub authorization_endpoint: Option<String>,
 }
 
 #[derive(Default)]
@@ -413,7 +416,7 @@ impl HttpInner {
                 200,
                 json!({
                     "issuer": origin,
-                    "authorization_endpoint": format!("{origin}/authorize"),
+                    "authorization_endpoint": self.opts.authorization_endpoint.clone().unwrap_or_else(|| format!("{origin}/authorize")),
                     "token_endpoint": format!("{origin}/token"),
                     "registration_endpoint": format!("{origin}/register"),
                     "code_challenge_methods_supported": ["S256"],

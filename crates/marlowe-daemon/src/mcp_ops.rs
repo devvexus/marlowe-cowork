@@ -9,12 +9,18 @@
 //! `McpAdd` of an existing name is also how a server is reconnected after `marlowe mcp auth`.
 //! Adding to the project or local scope is the user's act, so it also trusts that exact entry;
 //! entries that arrive in a repository's files wait for `marlowe mcp trust`.
+//!
+//! A `Session`-scope server (`marlowe -p --mcp-config`) lasts as long as the connection that added
+//! it: it is dropped by `McpRemove`, and by a reaper when that client goes away without one. The
+//! hub is still the workspace's, so until `McpAdd` names a session (a proto field the integrator
+//! adds) the server is reachable by that workspace's other sessions while it lives; other clients'
+//! `McpList` does not show it.
 
 mod host;
 #[cfg(test)]
 mod host_tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -32,21 +38,73 @@ use crate::daemon::Core;
 
 /// How long a session's first turn waits for its servers to connect.
 const CONNECT_GRACE: Duration = Duration::from_secs(3);
+/// How often a reaper looks for its client.
+const REAP_EVERY: Duration = Duration::from_millis(250);
 /// How long `McpAdd` and `McpList` wait for a reloaded hub before answering.
 const REPLY_GRACE: Duration = Duration::from_secs(3);
 /// Saved over-long outputs older than this are removed at start-up.
 const SPILL_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 
+/// A server added for one run, and the client connection that owns it.
+#[derive(Clone)]
+struct Owned {
+    client: u64,
+    cfg: ServerConfig,
+}
+
 struct Registry {
     hubs: Mutex<HashMap<String, Weak<Hub>>>,
-    /// Servers added for the run (`--mcp-config`), by workspace key.
-    session: Mutex<HashMap<String, Vec<ServerConfig>>>,
+    /// Servers added for a run (`--mcp-config`), by workspace key.
+    session: Mutex<HashMap<String, Vec<Owned>>>,
+    /// `(client, workspace key)` pairs a reaper is already watching.
+    reapers: Mutex<HashSet<(u64, String)>>,
     tokens: Arc<dyn TokenStore>,
 }
 
 impl Default for Registry {
     fn default() -> Self {
-        Self { hubs: Mutex::new(HashMap::new()), session: Mutex::new(HashMap::new()), tokens: Arc::new(KeyringTokens::new()) }
+        Self {
+            hubs: Mutex::new(HashMap::new()),
+            session: Mutex::new(HashMap::new()),
+            reapers: Mutex::new(HashSet::new()),
+            tokens: Arc::new(KeyringTokens::new()),
+        }
+    }
+}
+
+impl Registry {
+    fn session_servers(&self, key: &str) -> Vec<ServerConfig> {
+        lock(&self.session).get(key).map(|l| l.iter().map(|o| o.cfg.clone()).collect()).unwrap_or_default()
+    }
+}
+
+/// Drops the servers `client` added for `key`, once its connection is gone. One reaper thread per
+/// client and workspace; it ends with the connection or the daemon.
+fn reap_when_gone(core: &Arc<Core>, client: u64, ws: Option<PathBuf>) {
+    let key = ws_key(ws.as_deref());
+    if !lock(&registry(core).reapers).insert((client, key.clone())) {
+        return;
+    }
+    let core = core.clone();
+    let spawned = std::thread::Builder::new().name("marlowe-mcp-reap".into()).spawn(move || {
+        while core.bus.is_attached(client) && !core.is_shutting_down() {
+            std::thread::sleep(REAP_EVERY);
+        }
+        let reg = registry(&core);
+        {
+            let mut all = lock(&reg.session);
+            if let Some(list) = all.get_mut(&key) {
+                list.retain(|o| o.client != client);
+            }
+        }
+        lock(&reg.reapers).remove(&(client, key.clone()));
+        if let Some(h) = live_hub(&core, ws.as_deref()) {
+            h.set_session(reg.session_servers(&key));
+            h.reload();
+        }
+    });
+    if spawned.is_err() {
+        eprintln!("marlowe: could not start a thread to clean up an MCP client's servers");
     }
 }
 
@@ -77,7 +135,7 @@ fn hub_for(core: &Arc<Core>, ws: Option<&Path>) -> Arc<Hub> {
     let mut connect = ConnectOpts::new(reg.tokens.clone());
     connect.roots = ws.map(|w| vec![w.to_path_buf()]).unwrap_or_default();
     let mut opts = HubOpts::new(Paths::new(&core.home, ws), connect);
-    opts.session = lock(&reg.session).get(&key).cloned().unwrap_or_default();
+    opts.session = reg.session_servers(&key);
     opts.strict = std::env::var(marlowe_mcp::STRICT_ENV).is_ok_and(|v| v.trim() == "1");
     opts.spill_dir = Some(spill_dir(core));
     if let Some(n) = std::env::var("MAX_MCP_OUTPUT_TOKENS").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0) {
@@ -127,21 +185,33 @@ fn from_scope(s: Scope) -> SettingsScope {
 
 /// The servers the workspace's configuration names, with a status taken from a live hub when
 /// there is one and otherwise from what is on disk (nothing is started to answer a list).
-fn server_list(core: &Arc<Core>, ws: Option<&Path>) -> Vec<McpServerInfo> {
+///
+/// `viewer` is the client asking: a run's own servers (`Session` scope) belong to the connection
+/// that added them and are not listed to another one while it is connected.
+fn server_list(core: &Arc<Core>, ws: Option<&Path>, viewer: u64) -> Vec<McpServerInfo> {
+    let reg = registry(core);
+    let hidden: HashSet<String> = lock(&reg.session)
+        .get(&ws_key(ws))
+        .map(|l| l.iter().filter(|o| o.client != viewer && core.bus.is_attached(o.client)).map(|o| o.cfg.name.clone()).collect())
+        .unwrap_or_default();
+    let is_hidden = |name: &str, scope: Scope| scope == Scope::Session && hidden.contains(name);
     if let Some(hub) = live_hub(core, ws) {
         return hub
             .statuses()
             .into_iter()
+            .filter(|s| !is_hidden(&s.name, s.scope))
             .map(|s| McpServerInfo { name: s.name, scope: from_scope(s.scope), transport: s.transport.to_string(), tools: s.tools, status: s.status.label() })
             .collect();
     }
-    let reg = registry(core);
-    let session = lock(&reg.session).get(&ws_key(ws)).cloned().unwrap_or_default();
+    let session = reg.session_servers(&ws_key(ws));
     let paths = Paths::new(&core.home, ws);
     let trust = Trust::new(&paths);
-    config::load_all(&paths, &session)
-        .servers
+    // `--strict-mcp-config` means the run's own servers and nothing from any configuration file.
+    let strict = std::env::var(marlowe_mcp::STRICT_ENV).is_ok_and(|v| v.trim() == "1");
+    let servers = if strict { session } else { config::load_all(&paths, &session).servers };
+    servers
         .into_iter()
+        .filter(|s| !is_hidden(&s.name, s.scope))
         .map(|s| {
             let status = if s.disabled {
                 "disabled"
@@ -170,7 +240,7 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
                 if let Some(h) = live_hub(&core, ws.as_deref()) {
                     h.wait_settled(REPLY_GRACE);
                 }
-                reply(Event::McpServers { list: server_list(&core, ws.as_deref()) });
+                reply(Event::McpServers { list: server_list(&core, ws.as_deref(), client) });
             }
             Request::McpAdd { name, scope, config: entry, workspace } => {
                 let ws = workspace_path(&workspace);
@@ -181,11 +251,13 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
                         let reg = registry(&core);
                         let mut all = lock(&reg.session);
                         let list = all.entry(ws_key(ws.as_deref())).or_default();
-                        list.retain(|s| s.name != name);
-                        list.push(cfg);
+                        list.retain(|o| o.cfg.name != name);
+                        list.push(Owned { client, cfg });
                         if let Some(h) = live_hub(&core, ws.as_deref()) {
-                            h.set_session(list.clone());
+                            h.set_session(list.iter().map(|o| o.cfg.clone()).collect());
                         }
+                        drop(all);
+                        reap_when_gone(&core, client, ws.clone());
                     })
                 } else {
                     // Adding it is the user's act, so that exact entry is trusted from now on.
@@ -197,7 +269,7 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
                             h.reload();
                             h.wait_settled(REPLY_GRACE);
                         }
-                        reply(Event::McpServers { list: server_list(&core, ws.as_deref()) });
+                        reply(Event::McpServers { list: server_list(&core, ws.as_deref(), client) });
                     }
                     Err(e) => fail(format!("mcp_add: {e}")),
                 }
@@ -211,9 +283,9 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
                     let mut all = lock(&reg.session);
                     let list = all.entry(ws_key(ws.as_deref())).or_default();
                     let before = list.len();
-                    list.retain(|s| s.name != name);
+                    list.retain(|o| o.cfg.name != name);
                     if let Some(h) = live_hub(&core, ws.as_deref()) {
-                        h.set_session(list.clone());
+                        h.set_session(list.iter().map(|o| o.cfg.clone()).collect());
                     }
                     Ok(list.len() != before)
                 } else {
@@ -224,7 +296,7 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
                         if let Some(h) = live_hub(&core, ws.as_deref()) {
                             h.reload();
                         }
-                        reply(Event::McpServers { list: server_list(&core, ws.as_deref()) });
+                        reply(Event::McpServers { list: server_list(&core, ws.as_deref(), client) });
                     }
                     Ok(false) => fail(format!("mcp_remove: no server named {name} in the {} scope", scope.as_str())),
                     Err(e) => fail(format!("mcp_remove: {e}")),

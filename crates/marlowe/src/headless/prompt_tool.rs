@@ -76,15 +76,26 @@ impl PromptTool {
         if out.is_error {
             return Err(format!("{} reported an error: {}", self.exposed, out.text));
         }
-        parse_decision(&out.text)
+        parse_decision(&out.text, input)
     }
 }
 
-/// The tool's answer: JSON text with `behavior` allow or deny.
-pub fn parse_decision(text: &str) -> Result<Decision, String> {
+/// The reason to refuse an `allow` whose `updatedInput` asks for a different call than the one
+/// that was judged. Claude Code runs the rewritten input; here the call cannot be changed after
+/// the daemon has built it (until the protocol can carry rewritten arguments), so running the
+/// original while the client believes it approved something else is worse than a refusal.
+pub fn rewritten(answer: &Value, original: &Value) -> Option<String> {
+    match answer.get("updatedInput") {
+        Some(u) if !u.is_null() && u != original => Some("updatedInput is not supported yet: the call cannot be changed after it was proposed, so it is refused rather than run unchanged".to_string()),
+        _ => None,
+    }
+}
+
+/// The tool's answer: JSON text with `behavior` allow or deny. `original` is the call's input.
+pub fn parse_decision(text: &str, original: &Value) -> Result<Decision, String> {
     let v: Value = serde_json::from_str(text.trim()).map_err(|_| format!("the permission prompt tool did not answer JSON: {}", text.chars().take(120).collect::<String>()))?;
     match v.get("behavior").and_then(Value::as_str) {
-        Some("allow") => Ok(Decision::Allow),
+        Some("allow") => Ok(rewritten(&v, original).map_or(Decision::Allow, Decision::Deny)),
         Some("deny") => Ok(Decision::Deny(v.get("message").and_then(Value::as_str).unwrap_or("denied by the permission prompt tool").to_string())),
         _ => Err("the permission prompt tool's answer has no behavior of allow or deny".into()),
     }
@@ -96,12 +107,25 @@ mod tests {
 
     #[test]
     fn decisions_parse_allow_deny_and_refuse_anything_else() {
-        assert_eq!(parse_decision(r#"{"behavior":"allow","updatedInput":{}}"#).unwrap(), Decision::Allow);
-        assert_eq!(parse_decision(r#" {"behavior":"deny","message":"no rm"} "#).unwrap(), Decision::Deny("no rm".into()));
-        assert_eq!(parse_decision(r#"{"behavior":"deny"}"#).unwrap(), Decision::Deny("denied by the permission prompt tool".into()));
-        assert!(parse_decision("yes").is_err());
-        assert!(parse_decision(r#"{"behavior":"maybe"}"#).is_err());
-        assert!(parse_decision("{}").is_err());
+        let input = serde_json::json!({"command": "ls"});
+        assert_eq!(parse_decision(r#"{"behavior":"allow","updatedInput":{"command":"ls"}}"#, &input).unwrap(), Decision::Allow);
+        assert_eq!(parse_decision(r#"{"behavior":"allow"}"#, &input).unwrap(), Decision::Allow);
+        assert_eq!(parse_decision(r#" {"behavior":"deny","message":"no rm"} "#, &input).unwrap(), Decision::Deny("no rm".into()));
+        assert_eq!(parse_decision(r#"{"behavior":"deny"}"#, &input).unwrap(), Decision::Deny("denied by the permission prompt tool".into()));
+        assert!(parse_decision("yes", &input).is_err());
+        assert!(parse_decision(r#"{"behavior":"maybe"}"#, &input).is_err());
+        assert!(parse_decision("{}", &input).is_err());
+    }
+
+    #[test]
+    fn an_allow_that_rewrites_the_call_is_refused_not_run_unchanged() {
+        let input = serde_json::json!({"command": "rm -rf build"});
+        let d = parse_decision(r#"{"behavior":"allow","updatedInput":{"command":"rm -rf build/tmp"}}"#, &input).unwrap();
+        assert!(matches!(&d, Decision::Deny(m) if m.contains("updatedInput is not supported yet")), "{d:?}");
+        // Dropping a field is a rewrite as well.
+        assert!(matches!(parse_decision(r#"{"behavior":"allow","updatedInput":{}}"#, &input).unwrap(), Decision::Deny(_)));
+        // A null is no rewrite.
+        assert_eq!(parse_decision(r#"{"behavior":"allow","updatedInput":null}"#, &input).unwrap(), Decision::Allow);
     }
 
     #[test]

@@ -137,6 +137,35 @@ impl ToolHost for Tools {
     }
 }
 
+/// Tools like [`Tools`], except that `write` needs no approval and really writes (`path`,
+/// `content`): a workspace write, which in the shipped tool set is `Consequence::Free`.
+pub struct FreeWrite;
+
+impl ToolHost for FreeWrite {
+    fn specs(&self) -> Vec<ToolSpec> {
+        Tools.specs()
+    }
+
+    fn call(&self, call: &ToolCallReq, ctx: &ToolCtx) -> ToolOutcome {
+        if call.name == "write" {
+            let path = call.args.get("path").and_then(Value::as_str).unwrap_or("out.txt");
+            let content = call.args.get("content").and_then(Value::as_str).unwrap_or("");
+            return match std::fs::write(path, content) {
+                Ok(()) => ToolOutcome::ok(format!("write ran: wrote {path}"), "write ran"),
+                Err(e) => ToolOutcome::error(format!("write failed: {e}")),
+            };
+        }
+        Tools.call(call, ctx)
+    }
+
+    fn consequence(&self, call: &ToolCallReq) -> Consequence {
+        match call.name.as_str() {
+            "write" => Consequence::Free,
+            _ => Tools.consequence(call),
+        }
+    }
+}
+
 // ---------------------------------------------------------------- the rig
 
 pub fn temp_dir(name: &str) -> PathBuf {
@@ -253,7 +282,21 @@ pub fn run_args(args: Args, home: &Path, cwd: &Path, stdin: Option<Box<dyn BufRe
     run_args_to(args, home, cwd, stdin, connect, out, err)
 }
 
+/// How long a test lets a prompt argument wait for piped data that never comes.
+pub const TEST_STDIN_GRACE: Duration = Duration::from_millis(300);
+
 pub fn run_args_to(args: Args, home: &Path, cwd: &Path, stdin: Option<Box<dyn BufRead + Send>>, connect: Connector, out: Buf, err: Buf) -> Outcome {
+    run_env(args, home, cwd, stdin, connect, out, err, true)
+}
+
+/// As [`run_args`], against a daemon that does NOT apply [`marlowe_proto::HeadlessOptions`]: what
+/// the shipped daemon is today. `run_args` stands for one that does.
+pub fn run_args_unapplied(args: Args, home: &Path, cwd: &Path, stdin: Option<Box<dyn BufRead + Send>>, connect: Connector) -> Outcome {
+    run_env(args, home, cwd, stdin, connect, Buf::default(), Buf::default(), false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_env(args: Args, home: &Path, cwd: &Path, stdin: Option<Box<dyn BufRead + Send>>, connect: Connector, out: Buf, err: Buf, applies: bool) -> Outcome {
     let env = Env {
         home: home.to_path_buf(),
         cwd: cwd.to_path_buf(),
@@ -261,6 +304,8 @@ pub fn run_args_to(args: Args, home: &Path, cwd: &Path, stdin: Option<Box<dyn Bu
         out: Box::new(out.clone()),
         err: Box::new(err.clone()),
         interrupt: Arc::new(AtomicBool::new(false)),
+        daemon_applies_options: applies,
+        stdin_grace: TEST_STDIN_GRACE,
     };
     let code = driver::run(args, env, connect);
     Outcome { code, out, err }
@@ -488,7 +533,7 @@ fn serve(stream: TcpStream, log: Arc<Mutex<Vec<Request>>>, handler: Arc<Handler>
         }
         log.lock().unwrap().push(req.clone());
         for ev in handler(&req) {
-            let broadcast = matches!(ev, Event::TurnStarted { .. } | Event::TextDelta { .. } | Event::ContextUsage { .. } | Event::TurnFinished { .. } | Event::ToolStarted { .. } | Event::ToolFinished { .. } | Event::ApprovalRequested { .. });
+            let broadcast = matches!(ev, Event::TurnStarted { .. } | Event::TextDelta { .. } | Event::ContextUsage { .. } | Event::TurnFinished { .. } | Event::ToolStarted { .. } | Event::ToolFinished { .. } | Event::ApprovalRequested { .. } | Event::ApprovalResolved { .. });
             if broadcast {
                 seq += 1;
             }

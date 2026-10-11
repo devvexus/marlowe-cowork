@@ -146,3 +146,38 @@ fn parity_u13_doctor_json_lists_the_report_fields_without_a_key_value() {
         assert!(names.contains(&want), "{want} in {names:?}");
     }
 }
+
+fn init_servers(o: &Output) -> Vec<String> {
+    let first: Value = serde_json::from_str(text(o).lines().next().unwrap_or("{}")).unwrap_or_else(|err| panic!("{err}: {} / {}", text(o), String::from_utf8_lossy(&o.stderr)));
+    assert_eq!(first["subtype"], "init", "{first}");
+    let mut names: Vec<String> = first["mcp_servers"].as_array().unwrap().iter().filter_map(|s| s["name"].as_str().map(str::to_string)).collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn parity_h4_strict_mcp_config_leaves_the_servers_of_the_home_out_of_the_session() {
+    let e = env("strict", json!([{"name": "any", "reply": "ok"}]));
+    std::fs::create_dir_all(&e.home).unwrap();
+    std::fs::write(e.home.join("mcp.json"), json!({"mcpServers": {"userside": {"command": "marlowe-no-such-program"}}}).to_string()).unwrap();
+    let cfg = json!({"mcpServers": {"runside": {"command": "marlowe-no-such-program"}}}).to_string();
+
+    let o = print(&e, &["--output-format", "stream-json", "--mcp-config", &cfg], "hi");
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(init_servers(&o), ["runside", "userside"], "without --strict-mcp-config both are there");
+
+    let o = print(&e, &["--output-format", "stream-json", "--strict-mcp-config", "--mcp-config", &cfg], "hi");
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(init_servers(&o), ["runside"], "strict: the run's servers alone");
+}
+
+#[test]
+fn parity_h4_a_flag_the_daemon_cannot_apply_is_refused_not_ignored() {
+    let e = env("refused", json!([{"name": "any", "reply": "ok"}]));
+    for flag in [["--disallowed-tools", "Write"], ["--append-system-prompt", "be terse"]] {
+        let o = print(&e, &flag, "hi");
+        assert_eq!(code(&o), 1, "{flag:?}: {}", String::from_utf8_lossy(&o.stderr));
+        assert!(String::from_utf8_lossy(&o.stderr).contains("cannot be honoured"), "{}", String::from_utf8_lossy(&o.stderr));
+        assert!(text(&o).is_empty(), "no answer was produced");
+    }
+}

@@ -28,8 +28,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Optional, Sequence
 
-#: ``can_use_tool`` answers: ``{"behavior": "allow"}`` (optionally ``updatedInput``) or
-#: ``{"behavior": "deny", "message": "..."}``.
+#: ``can_use_tool`` answers: ``{"behavior": "allow"}`` or ``{"behavior": "deny", "message": "..."}``.
+#: An ``updatedInput`` that differs from the request's input is refused by ``marlowe -p`` (it cannot
+#: run a rewritten call yet), so echo the input back unchanged or deny.
 Decision = dict
 CanUseTool = Callable[[str, dict], Decision]
 

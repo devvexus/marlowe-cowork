@@ -286,3 +286,110 @@ fn parity_h7_the_provider_keys_are_scrubbed_from_every_child() {
         assert!(marlowe_os::child::is_scrubbed(name), "{name}");
     }
 }
+
+// ---------------------------------------------------------------- options only a daemon can keep
+
+fn run_fake_unapplied(fake: &Fake, argv: &[&str]) -> Outcome {
+    let home = temp_dir("flags-unapplied");
+    let ws = home.join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    let mut v: Vec<String> = vec!["-p".into(), "--workspace".into(), ws.display().to_string()];
+    v.extend(argv.iter().map(|s| s.to_string()));
+    run_args_unapplied(Args::parse(&v).unwrap_or_else(|e| panic!("{v:?}: {e}")), &home, &ws, None, fake.connector())
+}
+
+#[test]
+fn parity_h4_disallowed_tools_and_an_appended_prompt_refuse_to_run_when_the_daemon_cannot_apply_them() {
+    // Today's daemon does not read HeadlessOptions: a denied write inside the workspace would
+    // still happen, and the appended text would never reach the model. Exit 1, nothing sent.
+    for (argv, named) in [
+        (vec!["--disallowed-tools", "Write", "hi"], "--disallowed-tools"),
+        (vec!["--append-system-prompt", "be terse", "hi"], "--append-system-prompt"),
+        (vec!["--settings", r#"{"permissions":{"deny":["Write"]}}"#, "hi"], "--disallowed-tools"),
+    ] {
+        let fake = Fake::start();
+        let o = run_fake_unapplied(&fake, &argv);
+        assert_eq!(o.code, 1, "{argv:?}: {}", o.err.text());
+        assert!(o.err.text().contains(named) && o.err.text().contains("cannot be honoured"), "{argv:?}: {}", o.err.text());
+        assert!(fake.requests().is_empty(), "{argv:?}: nothing was sent: {:?}", fake.requests());
+    }
+    // The flags this process keeps by itself are unaffected.
+    let fake = Fake::start();
+    let o = run_fake_unapplied(&fake, &["--allowed-tools", "Read", "--max-steps", "3", "--max-budget-usd", "1", "hi"]);
+    assert_eq!(o.code, 0, "{}", o.err.text());
+}
+
+fn free_write_rig(name: &str) -> Rig {
+    Rig::with_tools(name, std::sync::Arc::new(|| std::sync::Arc::new(FreeWrite) as std::sync::Arc<dyn marlowe_agent::ToolHost>))
+}
+
+/// What the flags must do once the conductor applies them. They fail today, which is the point:
+/// `cargo test -- --ignored` shows the day track F's `conductor_ops` honours `HeadlessOptions`,
+/// and flipping `DAEMON_APPLIES_OPTIONS` goes with making these pass.
+#[test]
+#[ignore = "needs M4.6 track F: the conductor applies HeadlessOptions"]
+fn parity_h4_a_disallowed_write_inside_the_workspace_does_not_happen() {
+    let rig = free_write_rig("h4-disallowed-write");
+    let target = rig.ws.join("out.txt");
+    rig.script.push(vec![Ev::Call("w1", "write", json!({"path": target.display().to_string(), "content": "x"})), Ev::Usage(5, 5)]);
+    rig.script.push(vec![Ev::Text("done"), Ev::Usage(5, 5)]);
+    let o = rig.print(&["--output-format", "json", "--disallowed-tools", "write", "write the file"]);
+    assert!(!target.exists(), "the denied write ran: {}", o.out.text());
+    assert!(o.denials() >= 1 || !rig.script.requests()[0].tools.iter().any(|t| t.name == "write"), "denied or never offered");
+}
+
+#[test]
+#[ignore = "needs M4.6 track F: the conductor applies HeadlessOptions"]
+fn parity_h4_an_appended_system_prompt_reaches_the_model() {
+    let rig = Rig::new("h4-append");
+    rig.script.push(vec![Ev::Text("ok"), Ev::Usage(5, 5)]);
+    let o = rig.print(&["--output-format", "json", "--append-system-prompt", "ANSWER-IN-HAIKU", "hi"]);
+    assert_eq!(o.code, 0, "{}", o.err.text());
+    let system: String = rig.script.requests()[0].system.iter().map(|b| b.text.clone()).collect::<Vec<_>>().join("\n");
+    assert!(system.contains("ANSWER-IN-HAIKU"), "{system}");
+}
+
+// ---------------------------------------------------------------- plan mode, run servers, ignored settings
+
+#[test]
+fn parity_h4_plan_mode_is_an_error_when_the_daemon_cannot_hold_it() {
+    // The default fake answers SetMode with "not available yet". For plan that is fatal: writes
+    // inside the workspace never ask, so a plan run on such a daemon would edit files.
+    let fake = Fake::start();
+    let o = run_fake(&fake, &["--permission-mode", "plan", "hi"]);
+    assert_eq!(o.code, 1, "{}", o.err.text());
+    assert!(o.err.text().contains("plan") && o.err.text().contains("cannot hold"), "{}", o.err.text());
+    assert!(fake.ask().is_none(), "no turn was started");
+    // The same from a settings file.
+    let fake = Fake::start();
+    let o = run_fake(&fake, &["--settings", r#"{"permissions":{"defaultMode":"plan"}}"#, "hi"]);
+    assert_eq!(o.code, 1);
+    assert!(fake.ask().is_none());
+}
+
+#[test]
+fn parity_h4_mcp_config_servers_are_taken_out_again_on_every_road() {
+    let cfg = json!({"mcpServers": {"fs": {"command": "node", "args": ["server.js"]}}}).to_string();
+    let removed = |fake: &Fake| {
+        fake.requests().iter().any(|r| matches!(r, Request::McpRemove { name, scope: SettingsScope::Session, .. } if name == "fs"))
+    };
+    // A finished run.
+    let fake = Fake::start();
+    let o = run_fake(&fake, &["--mcp-config", &cfg, "hi"]);
+    assert_eq!(o.code, 0, "{}", o.err.text());
+    assert!(removed(&fake), "{:?}", fake.requests());
+    // A run that fails after the servers were added.
+    let fake = Fake::start();
+    let o = run_fake(&fake, &["--mcp-config", &cfg, "--add-dir", "C:/no/such/dir/at/all", "hi"]);
+    assert_eq!(o.code, 1);
+    assert!(removed(&fake), "{:?}", fake.requests());
+}
+
+#[test]
+fn parity_h4_a_session_mcp_entry_cannot_widen_the_environment_and_the_run_says_so() {
+    let fake = Fake::start();
+    let cfg = json!({"mcpServers": {"fs": {"command": "node", "env_allow": ["OPENROUTER_API_KEY"]}}}).to_string();
+    let o = run_fake(&fake, &["--mcp-config", &cfg, "hi"]);
+    assert_eq!(o.code, 0, "{}", o.err.text());
+    assert!(o.err.text().contains("env_allow is honoured in the user scope only"), "{}", o.err.text());
+}
