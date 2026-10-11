@@ -231,9 +231,7 @@ fn wake_idle(core: &Arc<Core>, waker: &mut Waker) {
 
 /// Whether `session` still has jobs running (the user's `!` commands too) or notices waiting, so
 /// that the daemon keeps it (and its tool host, which owns the jobs) past the idle timeout.
-/// `Core::evict_if_idle` must ask this before closing a session; until it does, an idle session
-/// is evicted after `session_idle` and its jobs die with the host.
-#[allow(dead_code)]
+/// `Core::evict_if_idle` asks this before closing a session.
 pub(crate) fn keeps_session(session: &SessionId) -> bool {
     bg_hub().running(&session.0) > 0 || bg_hub().waking_sessions().iter().any(|s| s == &session.0)
 }

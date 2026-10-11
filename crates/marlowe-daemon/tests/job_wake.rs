@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 use std::io::BufReader;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -106,6 +107,44 @@ impl BgOwner for Finished {
     }
 }
 
+/// The engine's view: `scripted` is loaded while the flag is set. Relay turns (which never load a
+/// model) run only then.
+struct Engine(Arc<AtomicBool>);
+
+impl marlowe_hw::ModelSource for Engine {
+    fn files(&self, model_id: &str) -> Result<marlowe_hw::ModelFiles, String> {
+        Err(format!("no files for {model_id} in this test"))
+    }
+    fn runtime(&self, _: &str, _: Option<&str>) -> marlowe_hw::RunnerObservation {
+        marlowe_hw::RunnerObservation { loaded: self.0.load(Ordering::SeqCst), ..Default::default() }
+    }
+    fn loaded_models(&self) -> Vec<String> {
+        if self.0.load(Ordering::SeqCst) {
+            vec!["scripted".into()]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+struct NoGpu;
+impl marlowe_hw::GpuSource for NoGpu {
+    fn snapshot(&self) -> Option<marlowe_hw::GpuSnapshot> {
+        None
+    }
+}
+
+struct NoServer;
+impl marlowe_hw::ServerControl for NoServer {
+    fn apply(&self, _: &marlowe_hw::ServerChange) -> Result<String, String> {
+        Err("not in this test".into())
+    }
+}
+
+fn hardware(up: Arc<AtomicBool>) -> marlowe_brains::Hardware {
+    marlowe_brains::Hardware { models: Arc::new(Engine(up)), gpu: Arc::new(NoGpu), server: Arc::new(NoServer) }
+}
+
 fn temp_home() -> PathBuf {
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let home = std::env::temp_dir().join(format!("marlowe-daemon-wake-{}-{nanos}", std::process::id()));
@@ -129,6 +168,8 @@ fn parity_t16_an_idle_session_is_woken_by_a_job_exit_and_the_turn_carries_the_no
     let mut providers = ProviderFactory::new(Arc::new(MemoryStore::new()));
     let p = provider.clone();
     providers.register(ProviderKind::Ollama, move |_| Ok(p.clone() as Arc<dyn Provider>));
+    // The wake-up is a relay turn: it runs only on a model that is already up.
+    providers.set_hardware(hardware(Arc::new(AtomicBool::new(true))));
     let deps = DaemonDeps {
         providers,
         tools: Arc::new(|_| Arc::new(NoTools) as Arc<dyn ToolHost>),
@@ -207,6 +248,100 @@ fn parity_t16_an_idle_session_is_woken_by_a_job_exit_and_the_turn_carries_the_no
     assert!(last.contains("job j7 exited with code 0"), "{last}");
     drop(reqs);
     assert!(bg_hub().waking_sessions().iter().all(|s| s != &session.0), "the notice was taken");
+
+    write_line(&mut w, &Request::Shutdown).unwrap();
+    join.join().unwrap().unwrap();
+    drop(owner);
+}
+
+/// A notice whose wake-up cannot run (the conductor's model is not loaded, and relays never load
+/// one) is held by the session, not dropped: it goes out right after the user's next turn.
+#[test]
+fn a_notice_that_cannot_wake_the_session_waits_for_the_users_next_turn() {
+    let home = temp_home();
+    seed_model(&home);
+    let provider = Arc::new(Scripted::default());
+    let mut providers = ProviderFactory::new(Arc::new(MemoryStore::new()));
+    let p = provider.clone();
+    providers.register(ProviderKind::Ollama, move |_| Ok(p.clone() as Arc<dyn Provider>));
+    let up = Arc::new(AtomicBool::new(false));
+    providers.set_hardware(hardware(up.clone()));
+    let deps = DaemonDeps {
+        providers,
+        tools: Arc::new(|_| Arc::new(NoTools) as Arc<dyn ToolHost>),
+        user: UserInfo { name: Some("Tester".into()), address: None },
+        mind: None,
+        sentinel: None,
+        voice: None,
+        crew: None,
+    };
+    let cfg = DaemonConfig { legacy_offer: false, ..DaemonConfig::default() };
+    let d = Daemon::start(deps, &home, cfg).expect("daemon starts");
+    let info = d.info();
+    let join = std::thread::spawn(move || d.wait());
+
+    let w = TcpStream::connect(info.addr()).unwrap();
+    w.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+    let mut r = LineReader::new(BufReader::new(w.try_clone().unwrap()));
+    let mut w = w;
+    write_line(&mut w, &Request::Hello { token: info.token.clone(), client: "test".into(), since_seq: None }).unwrap();
+    let mut next = || -> Event {
+        let env: Envelope = r.next().unwrap().expect("an event");
+        env.event
+    };
+    let ask = |w: &mut TcpStream, session: Option<SessionId>, text: &str| {
+        write_line(w, &Request::Ask { session, text: text.into(), workspace: None, images: Vec::new(), options: None }).unwrap();
+    };
+
+    // The user's first turn: the model is up while it runs (a foreground turn may load it).
+    up.store(true, Ordering::SeqCst);
+    ask(&mut w, None, "start the build in the background");
+    let mut session: Option<SessionId> = None;
+    loop {
+        match next() {
+            Event::TurnStarted { session: s, .. } => session = Some(s),
+            Event::TurnFinished { .. } => break,
+            _ => {}
+        }
+    }
+    let session = session.expect("a TurnStarted");
+    // The model is unloaded while the session is idle; then the job exits.
+    up.store(false, Ordering::SeqCst);
+    let owner: Arc<dyn BgOwner> = Arc::new(Finished {
+        session: session.0.clone(),
+        notice: Mutex::new(VecDeque::from([BgNotice {
+            session: session.0.clone(),
+            id: "j9".into(),
+            kind: NoticeKind::Exit,
+            text: "[job j9 exited with code 0 after 1.0s: `echo held`]\nheld".into(),
+        }])),
+    });
+    bg_hub().register(Arc::downgrade(&owner));
+    // Give the watcher time to try (it polls every half second).
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(provider.requests.lock().unwrap().len(), 1, "no model call without a loaded model");
+    assert!(bg_hub().waking_sessions().iter().all(|s| s != &session.0), "the notice was taken, and is held by the session");
+
+    // The user's next turn brings the model up; the held notice follows it as its own turn.
+    up.store(true, Ordering::SeqCst);
+    ask(&mut w, Some(session.clone()), "how is it going?");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut users = Vec::new();
+    while Instant::now() < deadline && users.len() < 2 {
+        if let Event::TurnStarted { session: s, user, .. } = next() {
+            if s == session {
+                users.push(user);
+            }
+        }
+    }
+    assert_eq!(users.len(), 2, "{users:?}");
+    assert_eq!(users[0], "how is it going?");
+    assert!(users[1].contains("job j9 exited with code 0") && users[1].contains("held"), "{}", users[1]);
+    loop {
+        if matches!(next(), Event::TurnFinished { .. }) {
+            break;
+        }
+    }
 
     write_line(&mut w, &Request::Shutdown).unwrap();
     join.join().unwrap().unwrap();

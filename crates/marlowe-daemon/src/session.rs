@@ -80,6 +80,9 @@ struct RunState {
     queued: Vec<String>,
     /// Crew results waiting for the current turn to end; each runs as a relay turn.
     relays: Vec<TurnInput>,
+    /// Job notices and background-agent reports whose relay turn could not run (relays never load
+    /// a model): they go out after the user's next turn, when the conductor's model is up.
+    held: Vec<TurnInput>,
     /// Set when the runner has exited or is about to; asks must reload the session.
     closed: bool,
 }
@@ -116,7 +119,14 @@ impl SessionHandle {
         let (cmd_tx, cmd_rx) = unbounded();
         let (inbox_tx, inbox_rx) = unbounded();
         let state =
-            RunState { busy: false, cancel: CancelToken::new(), queued: Vec::new(), relays: Vec::new(), closed: false };
+            RunState {
+                busy: false,
+                cancel: CancelToken::new(),
+                queued: Vec::new(),
+                relays: Vec::new(),
+                held: Vec::new(),
+                closed: false,
+            };
         let h = Self { id, workspace, title: Mutex::new(title), state: Mutex::new(state), cmd_tx, inbox_tx, inbox_rx };
         (h, cmd_rx)
     }
@@ -206,7 +216,8 @@ impl SessionHandle {
     /// Closes the handle if no turn is running or queued; true when it closed.
     pub fn close_if_idle(&self) -> bool {
         let mut st = lock(&self.state);
-        if st.busy {
+        // Held notices would be lost with the runner: the session stays until it delivers them.
+        if st.busy || !st.held.is_empty() {
             return false;
         }
         st.closed = true;
@@ -354,6 +365,9 @@ fn serve(
             // load it themselves go out now (this session's land in the queue read below).
             if !input.relay {
                 crate::crew::retry_deferred(core);
+                let mut st = lock(&handle.state);
+                let held = std::mem::take(&mut st.held);
+                st.relays.extend(held);
             }
             settle(core, handle, &mut next);
         }
@@ -449,8 +463,11 @@ fn run_one(
     if let Err(message) = admit_conductor(core, &session, &model, cancel, who) {
         if input.relay {
             // The run stays due; the user's next turn delivers it on a loaded model.
-            eprintln!("marlowe: a crew result waits for the next turn: {message}");
-            crate::crew::defer(core, &input.text);
+            eprintln!("marlowe: a relay waits for the next turn: {message}");
+            if !crate::crew::defer(core, &input.text) {
+                // A job notice or an agent's report: held by the session, not dropped.
+                lock(&handle.state).held.push(input.clone());
+            }
         } else {
             core.bus.publish(Event::Error { session: Some(session), message });
         }

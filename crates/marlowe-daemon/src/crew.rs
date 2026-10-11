@@ -187,13 +187,14 @@ pub(crate) fn relay_due(core: &Arc<Core>) {
 }
 
 /// A relay turn could not run (relays never load a model): its run stays due and is relayed
-/// again after the user's next turn, when the conductor's model is up.
-pub(crate) fn defer(core: &Core, text: &str) {
-    let Some(link) = core.crew.get() else { return };
-    if let Some(run) = lock(&link.awaiting).remove(text) {
-        lock(&link.relayed).remove(&run);
-        link.deferred.store(true, std::sync::atomic::Ordering::SeqCst);
-    }
+/// again after the user's next turn, when the conductor's model is up. False when `text` is not
+/// a crew run's relay (a job notice, an agent's report): the session holds those itself.
+pub(crate) fn defer(core: &Core, text: &str) -> bool {
+    let Some(link) = core.crew.get() else { return false };
+    let Some(run) = lock(&link.awaiting).remove(text) else { return false };
+    lock(&link.relayed).remove(&run);
+    link.deferred.store(true, std::sync::atomic::Ordering::SeqCst);
+    true
 }
 
 /// After a user's turn: relays deferred for want of a loaded model go out now.

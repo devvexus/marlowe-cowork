@@ -14,7 +14,7 @@
 //! ("you changed files and ran no check since") and keeps a turn with open todos going.
 
 use std::collections::{BTreeSet, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use marlowe_model::{CancelToken, Message, Part, Role};
@@ -248,6 +248,37 @@ pub fn is_gate_command(cmd: &str) -> bool {
     GATE_COMMANDS.iter().any(|g| c.contains(g)) || c.trim() == "tsc"
 }
 
+/// Files that name a project's checks: the stop check reminds only where there is something to run.
+const PROJECT_MARKERS: [&str; 16] = [
+    "Cargo.toml",
+    "package.json",
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "requirements.txt",
+    "go.mod",
+    "Makefile",
+    "CMakeLists.txt",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "deno.json",
+    "tsconfig.json",
+    "justfile",
+    ".marlowe/project.toml",
+];
+
+/// The workspace has a build, test or check to run (a project file at its root).
+fn has_checks(root: &Path) -> bool {
+    PROJECT_MARKERS.iter().any(|m| root.join(m).is_file())
+}
+
+/// A change a build or test could check: documentation, notes and logs are not.
+fn checkable(p: &Path) -> bool {
+    let ext = p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    !matches!(ext.as_deref(), Some("md" | "markdown" | "txt" | "rst" | "log" | "csv" | "tsv"))
+}
+
 fn is_gate_call(call: &ToolCallReq) -> bool {
     match call.name.as_str() {
         // The verify group's project runner (track D) is a check by definition.
@@ -436,10 +467,12 @@ impl ToolMiddleware for WorkingSet {
     }
 
     fn before_final(&self, info: StepInfo, convo: &mut Conversation, _text: &str) -> FinalFlow {
+        let project = convo.workspace.as_deref().is_some_and(has_checks);
         let vs = convo.ext.get_or_default::<VerifyState>();
-        if !vs.dirty.is_empty() && vs.reminded_turn != Some(info.turn) {
+        let unchecked: Vec<&PathBuf> = vs.dirty.iter().filter(|p| checkable(p)).collect();
+        if project && !unchecked.is_empty() && vs.reminded_turn != Some(info.turn) {
             vs.reminded_turn = Some(info.turn);
-            let files: Vec<String> = vs.dirty.iter().take(8).map(|p| p.display().to_string()).collect();
+            let files: Vec<String> = unchecked.iter().take(8).map(|p| p.display().to_string()).collect();
             return FinalFlow::Continue(format!(
                 "<system-reminder>\nYou changed files ({}) and have not run a build, test or check since. Run the project's \
                  checks and fix what fails before you finish, or say plainly why they cannot be run.\n</system-reminder>",

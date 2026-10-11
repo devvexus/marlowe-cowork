@@ -151,9 +151,50 @@ struct Running {
     join: JoinHandle<Result<(), DaemonError>>,
 }
 
+/// The engine's view: `scripted` is loaded, so relay turns (which never load a model) run.
+struct Engine;
+
+impl marlowe_hw::ModelSource for Engine {
+    fn files(&self, model_id: &str) -> Result<marlowe_hw::ModelFiles, String> {
+        Err(format!("no files for {model_id} in this test"))
+    }
+    fn runtime(&self, _: &str, _: Option<&str>) -> marlowe_hw::RunnerObservation {
+        marlowe_hw::RunnerObservation { loaded: true, ..Default::default() }
+    }
+    fn loaded_models(&self) -> Vec<String> {
+        vec!["scripted".into()]
+    }
+}
+
+struct NoGpu;
+impl marlowe_hw::GpuSource for NoGpu {
+    fn snapshot(&self) -> Option<marlowe_hw::GpuSnapshot> {
+        None
+    }
+}
+
+struct NoServer;
+impl marlowe_hw::ServerControl for NoServer {
+    fn apply(&self, _: &marlowe_hw::ServerChange) -> Result<String, String> {
+        Err("not in this test".into())
+    }
+}
+
+fn loaded() -> marlowe_brains::Hardware {
+    marlowe_brains::Hardware { models: Arc::new(Engine), gpu: Arc::new(NoGpu), server: Arc::new(NoServer) }
+}
+
 fn start(home: &Path, provider: Arc<Scripted>) -> Running {
+    start_with(home, provider, None)
+}
+
+/// With `hardware`, the engine reports what is loaded (relay turns run only on a loaded model).
+fn start_with(home: &Path, provider: Arc<Scripted>, hardware: Option<marlowe_brains::Hardware>) -> Running {
     let mut providers = ProviderFactory::new(Arc::new(MemoryStore::new()));
     providers.register(ProviderKind::Ollama, move |_| Ok(provider.clone() as Arc<dyn Provider>));
+    if let Some(hw) = hardware {
+        providers.set_hardware(hw);
+    }
     let deps = DaemonDeps {
         providers,
         tools: Arc::new(|_| Arc::new(Tools) as Arc<dyn ToolHost>),
@@ -330,7 +371,8 @@ fn parity_a4_t16_a_background_agent_report_starts_a_turn_in_the_idle_session() {
     p.push(call("agent", serde_json::json!({"type": "general", "description": "long job", "prompt": "do the long job", "background": true})));
     p.push(answer("Started it; I will tell you when it is done."));
     p.push(answer("The background job finished: three files changed."));
-    let r = start(&home, p.clone());
+    // The report's turn is a relay: it runs on the model the user's turn left loaded.
+    let r = start_with(&home, p.clone(), Some(loaded()));
     let mut c = Client::connect(&r.info);
     let sid = c.ask(None, "kick it off");
     // The conductor's turn ended at once; the report then starts a turn of its own.

@@ -1193,9 +1193,11 @@ fn parity_b2_the_stop_check_reminds_after_an_unverified_edit() {
         call("bash", json!({"command": "cargo test -q"})),
         answer("Done, tests pass."),
     ]);
+    let ws = tmp("b2");
+    write(&ws.join("Cargo.toml"), "[package]\nname = \"x\"\n");
     let mut a = agent(p.clone(), frontier(), Fake::new());
     a.middleware.push(WorkingSet::new());
-    let out = run(&a, &mut convo(Some(Path::new("C:/ws"))), "fix it");
+    let out = run(&a, &mut convo(Some(&ws)), "fix it");
     let r = p.requests();
     assert!(last_user(&r[2]).contains("have not run a build, test or check"), "{}", last_user(&r[2]));
     assert_eq!((out.stop, out.steps), (TurnStop::Done, 4));
@@ -1204,8 +1206,17 @@ fn parity_b2_the_stop_check_reminds_after_an_unverified_edit() {
     let p = Script::new(vec![call("write", json!({"path": "a.rs"})), call("bash", json!({"command": "cargo check"})), answer("Done.")]);
     let mut a = agent(p.clone(), frontier(), Fake::new());
     a.middleware.push(WorkingSet::new());
-    let out = run(&a, &mut convo(Some(Path::new("C:/ws"))), "fix it");
+    let out = run(&a, &mut convo(Some(&ws)), "fix it");
     assert_eq!(out.steps, 3);
+
+    // Nothing to check: notes in a project, or code in a folder with no project file.
+    for (dir, path) in [(ws.clone(), "notes.md"), (tmp("b2-bare"), "src/lib.rs")] {
+        let p = Script::new(vec![call("write", json!({"path": path, "content": "x"})), answer("Done.")]);
+        let mut a = agent(p.clone(), frontier(), Fake::new());
+        a.middleware.push(WorkingSet::new());
+        let out = run(&a, &mut convo(Some(&dir)), "note it");
+        assert_eq!(out.steps, 2, "{path} in {}", dir.display());
+    }
 }
 
 #[test]

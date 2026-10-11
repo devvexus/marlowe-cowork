@@ -259,6 +259,11 @@ impl Core {
     pub fn evict_if_idle(&self, handle: &Arc<SessionHandle>) -> bool {
         let mut map = lock(&self.sessions);
         let current = map.get(&handle.id).is_some_and(|h| Arc::ptr_eq(h, handle));
+        // A session with background jobs running or notices waiting keeps its tool host, which
+        // owns the jobs (track B).
+        if crate::job_ops::keeps_session(&handle.id) {
+            return false;
+        }
         if !current {
             return handle.close_if_idle();
         }
