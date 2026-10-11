@@ -1,7 +1,12 @@
-//! Text helpers shared by the file tools: numbering, ranges, glob matching, bounded cuts.
+//! Text helpers shared by the file tools: numbering, ranges, glob matching, bounded cuts, and
+//! the secret-shape checks behind the write guard (design 2.1 B6). The `read` prefix itself lives
+//! in `marlowe_code::edit::numbering`, re-exported here.
 
-/// Width of the right-aligned line-number column `read` prints (`cat -n` style, then a tab).
-pub const LINE_NUMBER_WIDTH: usize = 6;
+pub use marlowe_code::edit::engine::MAX_EDIT_SITES_NAMED;
+pub use marlowe_code::edit::numbering::{count_lines, line_at, number_lines, strip_line_numbers, LINE_NUMBER_WIDTH};
+
+/// Characters of one line `read` returns before cutting it (minified files, data dumps).
+pub const MAX_LINE_CHARS: usize = 2_000;
 
 /// How many lines one `read` returns when no range is given.
 pub const READ_WINDOW_LINES: usize = 2_000;
@@ -9,14 +14,14 @@ pub const READ_WINDOW_LINES: usize = 2_000;
 /// Byte ceiling on one `read` window, measured on the numbered text actually returned.
 pub const READ_WINDOW_BYTES: usize = 32 * 1024;
 
-/// How much of a file `read`/`grep` hold in memory.
+/// The most one text window takes on a large context window.
+pub const READ_WINDOW_BYTES_MAX: usize = 100 * 1024;
+
+/// How much of a file `grep` holds in memory. `read` windows any offset of a larger file.
 pub const MAX_READ_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Consecutive numbered lines in `content` that make it a pasted `read` window.
 pub const NUMBERED_CONTENT_LINES: usize = 2;
-
-/// Sites a non-unique `replacing` names before saying "and N more".
-pub const MAX_EDIT_SITES_NAMED: usize = 8;
 
 /// Files one walk enumerates.
 pub const WALK_FILE_CAP: usize = 2_000;
@@ -69,10 +74,6 @@ pub fn clip_line(line: &str) -> String {
     format!("{}…[line continues, {} more bytes]", &line[..cut], line.len() - cut)
 }
 
-pub fn count_lines(s: &str) -> usize {
-    s.lines().count()
-}
-
 /// Head and tail of `text` with the omission stated, when it exceeds `max` bytes.
 pub fn head_and_tail(text: &str, max: usize) -> String {
     if text.len() <= max {
@@ -86,56 +87,6 @@ pub fn head_and_tail(text: &str, max: usize) -> String {
         tail_start - head_end,
         &text[tail_start..]
     )
-}
-
-/// `{:>6}\t` in front of every line, counting from the absolute `first_line`. Terminators are
-/// preserved so a CRLF file round-trips.
-pub fn number_lines(text: &str, first_line: usize) -> String {
-    let mut out = String::with_capacity(text.len() + text.len() / 8);
-    for (i, line) in text.split_inclusive('\n').enumerate() {
-        out.push_str(&format!("{:>width$}\t", first_line + i, width = LINE_NUMBER_WIDTH));
-        out.push_str(line);
-    }
-    out
-}
-
-/// Inverse of [`number_lines`]: `Some` only if every line carries a well-formed prefix and the
-/// numbers run consecutively.
-pub fn strip_line_numbers(text: &str) -> Option<String> {
-    if text.is_empty() {
-        return None;
-    }
-    let mut out = String::with_capacity(text.len());
-    let mut expected: Option<usize> = None;
-    for line in text.split_inclusive('\n') {
-        let spaces = line.len() - line.trim_start_matches(' ').len();
-        let rest = &line[spaces..];
-        let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-        if digits == 0 {
-            return None;
-        }
-        let after = &rest[digits..];
-        if !after.starts_with('\t') {
-            return None;
-        }
-        let padded = spaces + digits == LINE_NUMBER_WIDTH;
-        let widened = spaces == 0 && digits > LINE_NUMBER_WIDTH;
-        if !padded && !widened {
-            return None;
-        }
-        let n: usize = rest[..digits].parse().ok()?;
-        if expected.is_some_and(|e| e != n) {
-            return None;
-        }
-        expected = Some(n.checked_add(1)?);
-        out.push_str(&after[1..]);
-    }
-    Some(out)
-}
-
-/// The 1-based line `offset` falls on.
-pub fn line_at(text: &str, offset: usize) -> usize {
-    text[..offset].matches('\n').count() + 1
 }
 
 pub fn take_lines(text: &str, n: usize) -> String {
@@ -156,6 +107,18 @@ pub fn cut_to_whole_lines(text: &str, cap: usize) -> (String, usize) {
 /// `first-last`, 1-based inclusive. Every malformed range is an error, never "the whole file".
 /// Returns the text and the first line's absolute number.
 pub fn slice_lines(text: &str, range: &str) -> Result<(String, usize), String> {
+    let (a, b) = parse_range(range)?;
+    Ok((
+        text.split_inclusive('\n')
+            .skip(a - 1)
+            .take((b - a).saturating_add(1))
+            .collect::<String>(),
+        a,
+    ))
+}
+
+/// `first-last` as two 1-based inclusive line numbers, or why it is malformed.
+pub fn parse_range(range: &str) -> Result<(usize, usize), String> {
     let malformed = |detail: &str| {
         Err(format!(
             "`range` must be `first-last`, 1-based and inclusive, e.g. \"20-60\" — {detail}. Omit \
@@ -174,13 +137,7 @@ pub fn slice_lines(text: &str, range: &str) -> Result<(String, usize), String> {
     if b < a {
         return malformed(&format!("\"{range}\" runs backwards; did you mean \"{b}-{a}\"?"));
     }
-    Ok((
-        text.split_inclusive('\n')
-            .skip(a - 1)
-            .take((b - a).saturating_add(1))
-            .collect::<String>(),
-        a,
-    ))
+    Ok((a, b))
 }
 
 /// Case-insensitive glob over `/`-separated paths. `*` and `?` stay inside one segment; `**`
@@ -316,6 +273,229 @@ pub fn replacing_miss(existing: &str, replacing: &str) -> String {
         existing.len(),
         count_lines(existing)
     )
+}
+
+/// `path` as Win32 opens it, lower-cased with `/` separators: each component loses an NTFS
+/// stream suffix (`.env::$DATA`, `a.pem:x`) and trailing dots and spaces (`.env `, `id_rsa.`),
+/// and `.` and empty components go, so the secret check judges the file actually written.
+fn win32_spelling(path: &str) -> String {
+    let norm = path.trim().replace('\\', "/").to_ascii_lowercase();
+    let mut out: Vec<String> = Vec::new();
+    for (i, seg) in norm.split('/').enumerate() {
+        let b = seg.as_bytes();
+        // `c:` and the drive-relative `c:.env` keep their drive; any other `:` starts a stream.
+        let (drive, rest) =
+            if i == 0 && b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' { seg.split_at(2) } else { ("", seg) };
+        let rest = rest.split(':').next().unwrap_or(rest).trim_end_matches(['.', ' ']);
+        for part in [drive, rest] {
+            if !part.is_empty() {
+                out.push(part.to_string());
+            }
+        }
+    }
+    out.join("/")
+}
+
+/// Why a path looks like it holds secrets (`.env`, private keys, credential stores), if it does.
+/// Writing one needs approval in every mode (design 2.1 B6). Templates (`.env.example`) do not
+/// count.
+pub fn secret_path(path: &str) -> Option<&'static str> {
+    let norm = win32_spelling(path);
+    let name = norm.rsplit('/').next().unwrap_or(&norm);
+    let template =
+        name.split('.').skip(1).any(|seg| ["example", "sample", "template", "dist", "defaults"].contains(&seg));
+    if (name == ".env" || name.starts_with(".env.") || name.ends_with(".env")) && !template {
+        return Some("an environment file");
+    }
+    if ["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"].contains(&name) {
+        return Some("an SSH private key");
+    }
+    let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    if ["pem", "key", "p12", "pfx", "jks", "keystore", "ppk", "asc", "gpg"].contains(&ext) && !template {
+        return Some("a key or certificate store");
+    }
+    if [".npmrc", ".pypirc", ".netrc", "_netrc", ".git-credentials", ".dockercfg", "kubeconfig"].contains(&name)
+        || norm.ends_with(".aws/credentials")
+        || norm.ends_with(".docker/config.json")
+    {
+        return Some("a credential store");
+    }
+    let stem = name.split('.').next().unwrap_or(name);
+    if ["credentials", "secrets", "secret", "service-account", "service_account"].contains(&stem) && !template {
+        return Some("a credentials file");
+    }
+    None
+}
+
+/// The kind of credential `content` appears to contain (a private key block, a cloud or API
+/// token), if any. Writing one needs approval in every mode (design 2.1 B6).
+pub fn secret_content(content: &str) -> Option<&'static str> {
+    use std::sync::OnceLock;
+    static PATTERNS: OnceLock<Vec<(regex::Regex, &'static str)>> = OnceLock::new();
+    let pats = PATTERNS.get_or_init(|| {
+        [
+            (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "a private key"),
+            (r"\bAKIA[0-9A-Z]{16}\b", "an AWS access key"),
+            (r"\bsk-ant-[A-Za-z0-9_\-]{20,}", "an Anthropic API key"),
+            (r"\bsk-(?:proj-)?[A-Za-z0-9_\-]{32,}", "an OpenAI-style API key"),
+            (r"\bsk-or-v1-[0-9a-f]{32,}", "an OpenRouter API key"),
+            (r"\bgh[pousr]_[A-Za-z0-9]{36,}\b", "a GitHub token"),
+            (r"\bgithub_pat_[A-Za-z0-9_]{60,}", "a GitHub token"),
+            (r"\bxox[abprs]-[A-Za-z0-9\-]{10,}", "a Slack token"),
+            (r"\bhf_[A-Za-z0-9]{30,}\b", "a Hugging Face token"),
+            (r"\bAIza[0-9A-Za-z_\-]{35}\b", "a Google API key"),
+        ]
+        .into_iter()
+        .filter_map(|(p, why)| regex::Regex::new(p).ok().map(|r| (r, why)))
+        .collect()
+    });
+    pats.iter().find(|(r, _)| r.is_match(content)).map(|(_, why)| *why)
+}
+
+/// A path that leaves this machine's own disks, judged on the string alone: no filesystem call,
+/// because for a UNC path that call is already an SMB connection (and an NTLM handshake).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OffMachine {
+    /// `\\host\share`, `//host/share`, `\\?\UNC\host\share`: the network host, lower-cased.
+    Host(String),
+    /// `\\.\pipe\x`, `\\?\GLOBALROOT\..`, `\??\..`, a bare `\\.\C:` volume, or a DOS device name
+    /// (`CON`, `NUL`, `COM1`) on Windows: the namespace or device.
+    Device(String),
+}
+
+impl OffMachine {
+    /// The network host, for egress approval.
+    pub fn host(&self) -> Option<&str> {
+        match self {
+            OffMachine::Host(h) => Some(h),
+            OffMachine::Device(_) => None,
+        }
+    }
+
+    /// How an approval prompt or a refusal names it.
+    pub fn describe(&self) -> String {
+        match self {
+            OffMachine::Host(h) => format!("reaches network host {h}"),
+            OffMachine::Device(d) => format!("opens the device or namespace `{d}`"),
+        }
+    }
+}
+
+const DOS_DEVICES: [&str; 22] = [
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2",
+    "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// Whether `raw` names something other than a file on a local disk (see [`OffMachine`]). Both
+/// separators count on every platform. A mapped network drive letter cannot be told from the
+/// string and is not caught here.
+pub fn off_machine(raw: &str) -> Option<OffMachine> {
+    let b = raw.trim().replace('/', "\\");
+    let first = |rest: &str| rest.split('\\').next().unwrap_or("").to_ascii_lowercase();
+    for prefix in [r"\\?\", r"\\.\", r"\??\"] {
+        let Some(rest) = b.strip_prefix(prefix) else { continue };
+        if rest.get(..4).is_some_and(|p| p.eq_ignore_ascii_case(r"UNC\")) {
+            let host = first(&rest[4..]);
+            return Some(if host.is_empty() { OffMachine::Device("UNC".into()) } else { OffMachine::Host(host) });
+        }
+        // `\\?\C:\x` and `\\.\C:\x` are files on a local disk; `\\.\C:` alone is the raw volume.
+        let d = rest.as_bytes();
+        if d.len() > 3 && d[0].is_ascii_alphabetic() && d[1] == b':' && d[2] == b'\\' {
+            return None;
+        }
+        return Some(OffMachine::Device(first(rest)));
+    }
+    if let Some(rest) = b.strip_prefix(r"\\") {
+        let host = first(rest);
+        return Some(if host.is_empty() { OffMachine::Device(r"\\".into()) } else { OffMachine::Host(host) });
+    }
+    if cfg!(windows) {
+        let name = b.rsplit('\\').next().unwrap_or("");
+        let stem = name.split(['.', ':']).next().unwrap_or("").trim_end_matches(' ').to_ascii_lowercase();
+        if DOS_DEVICES.contains(&stem.as_str()) {
+            return Some(OffMachine::Device(stem.to_ascii_uppercase()));
+        }
+    }
+    None
+}
+
+/// Keeps at most [`MAX_LINE_CHARS`] characters of each line, marking the cut.
+pub fn clip_long_lines(text: &str) -> (String, usize) {
+    let mut clipped = 0usize;
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\n', '\r']);
+        if body.chars().count() <= MAX_LINE_CHARS {
+            out.push_str(line);
+            continue;
+        }
+        clipped += 1;
+        let cut: usize = body.char_indices().nth(MAX_LINE_CHARS).map_or(body.len(), |(i, _)| i);
+        out.push_str(&body[..cut]);
+        out.push_str(&format!("…[line truncated, {} more characters]", body[cut..].chars().count()));
+        out.push_str(&line[body.len()..]);
+    }
+    (out, clipped)
+}
+
+#[cfg(test)]
+mod secret_tests {
+    use super::*;
+
+    #[test]
+    fn secret_shaped_paths_and_contents_are_named() {
+        for p in [".env", "app/.env.local", "C:\\x\\prod.env", "id_ed25519", "certs/server.pem", "deploy.key", ".npmrc", "home/.aws/credentials", "credentials.json", "secrets.yaml"] {
+            assert!(secret_path(p).is_some(), "{p}");
+        }
+        for p in [".env.example", "src/env.rs", "README.md", "id_ed25519.pub", "keys.rs", "secret_santa.py", "credentials.example.json"] {
+            assert!(secret_path(p).is_none(), "{p}");
+        }
+        assert_eq!(secret_content("x = 'AKIAABCDEFGHIJKLMNOP'"), Some("an AWS access key"));
+        assert_eq!(secret_content("-----BEGIN OPENSSH PRIVATE KEY-----\nabc"), Some("a private key"));
+        assert!(secret_content(&format!("token: ghp_{}", "a".repeat(36))).is_some());
+        assert!(secret_content("let sk = compute_key();").is_none());
+    }
+
+    /// Win32 drops trailing dots and spaces and reads `name:stream` as `name`, so these spellings
+    /// write the secret file itself and must be judged as it.
+    #[test]
+    fn secret_paths_are_judged_as_win32_opens_them() {
+        for p in [".env ", "cfg/.env/.", "id_rsa.", "deploy/server.pem.", ".env::$DATA", "a/.env. . ", "C:.env", "x/.NPMRC:alt"] {
+            assert!(secret_path(p).is_some(), "{p:?}");
+        }
+        for p in [".env.example.", "notes.txt::$DATA", "src/env.rs "] {
+            assert!(secret_path(p).is_none(), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn off_machine_paths_are_told_from_the_string() {
+        let host = |h: &str| Some(OffMachine::Host(h.into()));
+        assert_eq!(off_machine(r"\\Files01\share\x.txt"), host("files01"));
+        assert_eq!(off_machine("//files01/share/x.txt"), host("files01"));
+        assert_eq!(off_machine(r"\\?\UNC\files01\share\x"), host("files01"));
+        assert_eq!(off_machine(r"\\.\unc\files01\share"), host("files01"));
+        assert_eq!(off_machine(r"\\.\pipe\x"), Some(OffMachine::Device("pipe".into())));
+        assert_eq!(off_machine(r"\\?\GLOBALROOT\Device\X"), Some(OffMachine::Device("globalroot".into())));
+        assert_eq!(off_machine(r"\\.\C:"), Some(OffMachine::Device("c:".into())));
+        assert_eq!(off_machine(r"\??\C:\x"), None);
+        assert_eq!(off_machine(r"\\?\C:\work\x.rs"), None);
+        assert_eq!(off_machine(r"C:\work\x.rs"), None);
+        assert_eq!(off_machine("src/main.rs"), None);
+        assert_eq!(off_machine("\\\\?\\\u{dc}x"), Some(OffMachine::Device("\u{dc}x".into())), "no panic on a multibyte prefix");
+        if cfg!(windows) {
+            assert_eq!(off_machine("logs/CON"), Some(OffMachine::Device("CON".into())));
+            assert_eq!(off_machine("nul.txt"), Some(OffMachine::Device("NUL".into())));
+            assert_eq!(off_machine("console.rs"), None);
+        }
+    }
+
+    #[test]
+    fn long_lines_are_clipped_on_char_boundaries() {
+        let (t, n) = clip_long_lines(&format!("short\n{}\r\nend", "é".repeat(MAX_LINE_CHARS + 5)));
+        assert_eq!(n, 1);
+        assert!(t.contains("…[line truncated, 5 more characters]\r\nend"), "{t}");
+    }
 }
 
 #[cfg(test)]
