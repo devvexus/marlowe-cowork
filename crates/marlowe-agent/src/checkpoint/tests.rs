@@ -629,3 +629,87 @@ fn a_turn_without_an_end_is_all_the_sessions_own() {
     assert!(!ws.join("new.txt").exists());
     let _ = fs::remove_dir_all(&base);
 }
+
+#[test]
+fn a_rewind_leaves_alone_ignored_and_outside_files_edited_after_the_turn() {
+    let base = tmp("preimg-foreign");
+    let ws = base.join("ws");
+    put(&ws, ".gitignore", b"*.log\n.env\n");
+    put(&ws, "a.txt", b"a0\n");
+    put(&ws, "build.log", b"log v0\n");
+    put(&base, "elsewhere/own.cfg", b"cfg v0\n");
+    let store = CheckpointStore::new(base.join("cp"));
+    let repo = store.repo(&ws).unwrap();
+    let s = sid("preimg-foreign");
+
+    let env = ws.join(".env");
+    let failed = base.join("elsewhere/x.txt");
+    let own = base.join("elsewhere/own.cfg");
+    repo.begin_turn(&s, 1, &Mutation::Paths(vec![ws.join("a.txt"), env.clone(), ws.join("build.log"), ws.join("made.log"), failed.clone(), own.clone()])).unwrap();
+    fs::write(ws.join("a.txt"), b"a1\n").unwrap();
+    put(&ws, "made.log", b"made by the turn\n");
+    put(&ws, ".env", b"SECRET=1\n"); // the turn creates an ignored file
+    fs::write(ws.join("build.log"), b"log v1\n").unwrap();
+    // The write to x.txt failed, so it was never created; own.cfg was rewritten.
+    fs::write(&own, b"cfg v1\n").unwrap();
+    assert!(repo.end_turn(&s, 1).unwrap());
+    // Afterwards the user edits .env, creates the file the tool failed to, and leaves build.log alone.
+    fs::write(&env, b"SECRET=mine\n").unwrap();
+    fs::write(&failed, b"theirs\n").unwrap();
+
+    let r = repo.restore_to_turn(&s, 1).unwrap();
+    assert!(r.verified, "{r:?}");
+    assert_eq!(fs::read(&env).unwrap(), b"SECRET=mine\n", "the user's edit of an ignored file stays");
+    assert_eq!(fs::read(&failed).unwrap(), b"theirs\n", "a file the user made after a failed write stays");
+    assert_eq!(fs::read(ws.join("build.log")).unwrap(), b"log v0\n", "untouched since the turn: put back");
+    assert_eq!(fs::read(&own).unwrap(), b"cfg v0\n");
+    assert_eq!(fs::read(ws.join("a.txt")).unwrap(), b"a0\n");
+    assert_eq!((r.preimages.restored, r.preimages.deleted), (2, 1));
+    assert!(!ws.join("made.log").exists(), "a file the turn made and nobody touched is deleted");
+    let mut kept = r.preimages.kept.clone();
+    kept.sort();
+    let mut want = vec![env.to_string_lossy().into_owned(), failed.to_string_lossy().into_owned()];
+    want.sort();
+    assert_eq!(kept, want);
+    assert!(want.iter().all(|w| r.kept.contains(w)), "the report lists them with the other kept paths: {r:?}");
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn a_rewind_keeps_an_ignored_file_edited_between_two_turns_and_goes_on_from_a_partial_rewind() {
+    let base = tmp("preimg-chain");
+    let ws = base.join("ws");
+    put(&ws, ".gitignore", b"*.log\n");
+    put(&ws, "a.txt", b"a0\n");
+    put(&ws, "x.log", b"v0\n");
+    put(&ws, "y.log", b"y0\n");
+    let store = CheckpointStore::new(base.join("cp"));
+    let repo = store.repo(&ws).unwrap();
+    let s = sid("preimg-chain");
+    let (x, y) = (ws.join("x.log"), ws.join("y.log"));
+
+    for (turn, xs, ys) in [(1u32, "v1", "y1"), (2, "v2", "y2"), (3, "v3", "y3")] {
+        repo.begin_turn(&s, turn, &Mutation::Paths(vec![x.clone(), y.clone(), ws.join("a.txt")])).unwrap();
+        fs::write(&x, format!("{xs}\n")).unwrap();
+        fs::write(&y, format!("{ys}\n")).unwrap();
+        fs::write(ws.join("a.txt"), format!("a{turn}\n")).unwrap();
+        repo.end_turn(&s, turn).unwrap();
+        if turn == 1 {
+            // The user edits x.log between turn 1 and turn 2.
+            fs::write(&x, b"v1-by-hand\n").unwrap();
+        }
+    }
+    // A code rewind to turn 3 only: x.log, y.log back to what turn 3 began with.
+    let r = repo.restore_to_turn(&s, 3).unwrap();
+    assert_eq!(fs::read(&x).unwrap(), b"v2\n");
+    assert_eq!(fs::read(&y).unwrap(), b"y2\n");
+    assert!(r.preimages.kept.is_empty(), "{r:?}");
+    // And on to turn 1: y.log is the session's all the way back; x.log was edited by hand
+    // between turns 1 and 2, so it stays as it is.
+    let r = repo.restore_to_turn(&s, 1).unwrap();
+    assert_eq!(fs::read(&y).unwrap(), b"y0\n", "a second rewind goes on from the first");
+    assert_eq!(fs::read(&x).unwrap(), b"v2\n", "an edit between turns is not overwritten");
+    assert_eq!(r.preimages.kept, vec![x.to_string_lossy().into_owned()]);
+    assert_eq!(fs::read(ws.join("a.txt")).unwrap(), b"a0\n");
+    let _ = fs::remove_dir_all(&base);
+}

@@ -38,6 +38,17 @@ struct Entry {
     /// rewind, so "earliest" is by time, not by turn.
     #[serde(default)]
     at_ms: i64,
+    /// How the file stood when the turn ended (see [`fingerprint`]); absent for a turn that never
+    /// reached its end. A rewind puts a path back only while it still stands like this: anything
+    /// else is an edit by somebody else after the turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    left: Option<String>,
+    /// A rewind already put this save back; later rewinds go on from there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    undone: bool,
+    /// Position in its turn's index (set when read for a restore, never stored).
+    #[serde(skip)]
+    pos: usize,
 }
 
 /// What a rewind did with the pre-images of the turns it undid.
@@ -47,6 +58,9 @@ pub struct PreimageReport {
     pub deleted: usize,
     /// Paths a pre-image could not be saved for (too large); they were not restored.
     pub skipped: Vec<String>,
+    /// Paths left alone because they changed after the turns that saved them (an edit by the
+    /// user or another session).
+    pub kept: Vec<String>,
 }
 
 pub(crate) struct Preimages {
@@ -98,15 +112,15 @@ impl Preimages {
             return Ok(false);
         }
         let entry = match fs::metadata(path) {
-            Ok(m) if m.is_file() && m.len() > MAX_PREIMAGE_BYTES => Entry { path: key, existed: true, saved: None, skipped: true, at_ms: super::shadow::now_ms() },
+            Ok(m) if m.is_file() && m.len() > MAX_PREIMAGE_BYTES => Entry { path: key, existed: true, saved: None, skipped: true, at_ms: super::shadow::now_ms(), left: None, undone: false, pos: 0 },
             Ok(m) if m.is_file() => {
                 fs::create_dir_all(&dir)?;
                 let name = format!("{}.bin", index.entries.len());
                 fs::copy(path, dir.join(&name))?;
-                Entry { path: key, existed: true, saved: Some(name), skipped: false, at_ms: super::shadow::now_ms() }
+                Entry { path: key, existed: true, saved: Some(name), skipped: false, at_ms: super::shadow::now_ms(), left: None, undone: false, pos: 0 }
             }
             // A directory in the way, or nothing: the tool creates the file.
-            Ok(_) | Err(_) => Entry { path: key, existed: false, saved: None, skipped: false, at_ms: super::shadow::now_ms() },
+            Ok(_) | Err(_) => Entry { path: key, existed: false, saved: None, skipped: false, at_ms: super::shadow::now_ms(), left: None, undone: false, pos: 0 },
         };
         index.entries.push(entry);
         Self::write(&dir, &index)?;
@@ -125,31 +139,59 @@ impl Preimages {
         out
     }
 
+    /// Records how every saved path stands now, as turn `turn` ends. Without it a rewind cannot
+    /// tell the turn's own result from a later edit.
+    pub fn close_turn(&self, session: &str, turn: u32) {
+        let dir = self.turn_dir(session, turn);
+        let mut index = Self::read(&dir);
+        let mut changed = false;
+        for e in index.entries.iter_mut().filter(|e| e.left.is_none() && !e.skipped) {
+            e.left = Some(fingerprint(Path::new(&e.path)));
+            changed = true;
+        }
+        if changed {
+            let _ = Self::write(&dir, &index);
+        }
+    }
+
     /// Puts back every file the turns `from..` saved, the earliest save of a path winning (the
     /// state before the first of those turns touched it), and deletes the files they created.
     /// Retired turns count too, but only what was saved at or after `since_ms` (when the turn
     /// being rewound to began): older saves belong to a branch the files had already passed.
+    ///
+    /// A path someone else changed after the turn that last saved it (or between two turns) is
+    /// left as it is and listed in `kept`, like the tree restore does. A turn that never ended
+    /// (the daemon was killed) has no record to compare with, so its paths are put back.
     pub fn restore_from(&self, session: &str, from: u32, since_ms: Option<i64>) -> PreimageReport {
         let mut report = PreimageReport::default();
         // (saved at, turn, position in its turn, entry): a reused turn number sorts by time.
         let mut all: Vec<(i64, u32, usize, PathBuf, Entry)> = Vec::new();
         for (turn, dir) in self.all_dirs(session).into_iter().filter(|(t, _)| *t >= from) {
             for (i, e) in Self::read(&dir).entries.into_iter().enumerate() {
-                if since_ms.is_none_or(|s| e.at_ms >= s) {
-                    all.push((e.at_ms, turn, i, dir.clone(), e));
+                if !e.undone && since_ms.is_none_or(|s| e.at_ms >= s) {
+                    all.push((e.at_ms, turn, i, dir.clone(), Entry { pos: i, ..e }));
                 }
             }
         }
         all.sort_by_key(|a| (a.0, a.1, a.2));
-        let mut done: Vec<String> = Vec::new();
+        // One chain per path, its saves in the order they happened.
+        let mut chains: Vec<Vec<(PathBuf, Entry)>> = Vec::new();
         for (_, _, _, dir, e) in all {
-            if done.iter().any(|d| same_path(d, &e.path)) {
-                continue;
+            match chains.iter_mut().find(|c| same_path(&c[0].1.path, &e.path)) {
+                Some(c) => c.push((dir, e)),
+                None => chains.push(vec![(dir, e)]),
             }
-            done.push(e.path.clone());
+        }
+        let mut undone: std::collections::HashMap<PathBuf, Vec<usize>> = Default::default();
+        for chain in chains {
+            let (dir, e) = &chain[0];
             let target = Path::new(&e.path);
             if e.skipped {
                 report.skipped.push(e.path.clone());
+                continue;
+            } else if edited_since(&chain) {
+                report.kept.push(e.path.clone());
+                continue;
             } else if e.existed {
                 if let Some(saved) = &e.saved {
                     if let Some(parent) = target.parent() {
@@ -163,6 +205,19 @@ impl Preimages {
             } else if remove_file(target) {
                 report.deleted += 1;
             }
+            for (dir, e) in &chain {
+                undone.entry(dir.clone()).or_default().push(e.pos);
+            }
+        }
+        // What was put back is not put back twice, nor compared against again.
+        for (dir, positions) in undone {
+            let mut index = Self::read(&dir);
+            for p in positions {
+                if let Some(e) = index.entries.get_mut(p) {
+                    e.undone = true;
+                }
+            }
+            let _ = Self::write(&dir, &index);
         }
         report
     }
@@ -226,6 +281,62 @@ impl Preimages {
             newest = newest.max(Some(ms));
         }
         newest
+    }
+}
+
+/// How a file stands: `absent` (missing, or not a regular file) or its size and a 64-bit FNV-1a
+/// of its bytes. Stable across runs and toolchains, because it is stored.
+fn fingerprint(path: &Path) -> String {
+    use std::io::Read;
+    let Ok(meta) = fs::metadata(path) else { return "absent".into() };
+    if !meta.is_file() {
+        return "absent".into();
+    }
+    let Ok(file) = fs::File::open(path) else { return "unreadable".into() };
+    let mut reader = std::io::BufReader::with_capacity(1 << 16, file);
+    let (mut hash, mut len) = (0xcbf2_9ce4_8422_2325_u64, 0u64);
+    let mut buf = [0u8; 1 << 16];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                for b in &buf[..n] {
+                    hash = (hash ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3);
+                }
+                len += n as u64;
+            }
+            Err(_) => return "unreadable".into(),
+        }
+    }
+    format!("{len}:{hash:016x}")
+}
+
+/// True when somebody else changed the file: after the last turn of its `chain` ended, or between
+/// two turns of it. A chain without end records is never "edited".
+fn edited_since(chain: &[(PathBuf, Entry)]) -> bool {
+    // The state a save began from.
+    let start = |(dir, e): &(PathBuf, Entry)| -> Option<String> {
+        match (&e.saved, e.existed, e.skipped) {
+            (_, _, true) => None,
+            (Some(saved), true, _) => Some(fingerprint(&dir.join(saved))),
+            _ => Some("absent".into()),
+        }
+    };
+    for pair in chain.windows(2) {
+        if let (Some(left), Some(next)) = (&pair[0].1.left, start(&pair[1])) {
+            if *left != next {
+                return true;
+            }
+        }
+    }
+    let (first, last) = (&chain[0], &chain[chain.len() - 1]);
+    match &last.1.left {
+        Some(left) => {
+            let now = fingerprint(Path::new(&last.1.path));
+            // Already back at the state the first save began from: nothing of the turns remains.
+            now != *left && Some(&now) != start(first).as_ref()
+        }
+        None => false,
     }
 }
 

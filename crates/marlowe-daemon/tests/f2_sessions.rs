@@ -640,6 +640,17 @@ fn parity_s3_the_diff_is_the_shadow_trees_diff() {
     assert_eq!(whole, repo.diff(&cps[0].tree, &repo.current_tree().unwrap()).unwrap());
     assert!(whole.contains("gen/made.txt") && whole.contains("src/main.rs"));
     assert!(!whole.contains("build.log"), "ignored files are not in the tree diff");
+    // Edits made after the last turn ended, by hand, are not the turn's: not in its diff, not in
+    // the whole session's, not in its file count.
+    let listed_before = c.checkpoints(&t.id).iter().map(|c| c.files).collect::<Vec<_>>();
+    std::fs::write(t.ws.join("notes.txt"), b"first\nsecond\nedited by hand afterwards\n").unwrap();
+    std::fs::write(t.ws.join("by-hand.txt"), b"mine\n").unwrap();
+    for diff in [diff_of(&mut c, Some(2)), diff_of(&mut c, None)] {
+        assert!(!diff.contains("by-hand.txt") && !diff.contains("edited by hand afterwards"), "{diff}");
+    }
+    assert_eq!(diff_of(&mut c, Some(2)), d2);
+    assert_eq!(diff_of(&mut c, None), whole);
+    assert_eq!(c.checkpoints(&t.id).iter().map(|c| c.files).collect::<Vec<_>>(), listed_before);
     // A turn that changed nothing, and a session that changed nothing, have empty diffs.
     assert!(diff_of(&mut c, Some(9)).is_empty());
     let quiet = match c.ask_for(&Request::NewSession { workspace: None }, |e| matches!(e, Event::SessionOpened { .. })) {

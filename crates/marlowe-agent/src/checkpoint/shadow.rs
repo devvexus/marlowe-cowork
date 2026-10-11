@@ -374,6 +374,8 @@ impl ShadowRepo {
     /// never reaches its end (the daemon was killed) has none.
     pub fn end_turn(&self, session: &SessionId, turn: u32) -> Result<bool, CheckpointError> {
         let _g = self.lock();
+        // Saved pre-images record how their files were left, snapshot or not.
+        self.preimages.close_turn(&ref_part(session.as_str()), turn);
         if !self.ref_exists(&Self::pre_ref(session, turn)) {
             return Ok(false);
         }
@@ -381,6 +383,18 @@ impl ShadowRepo {
         let commit = self.commit(&tree, json!({"kind": "post", "session": session.as_str(), "turn": turn, "at_ms": now_ms()}))?;
         self.git().must(&["update-ref", &Self::post_ref(session, turn), &commit], &[])?;
         Ok(true)
+    }
+
+    /// Where `turn` left the workspace, if it ended (a running turn, or one whose daemon was
+    /// killed, has no end). Edits made after the turn are not in this tree.
+    pub fn post_tree(&self, session: &SessionId, turn: u32) -> Option<String> {
+        self.post_trees(session).remove(&turn)
+    }
+
+    /// [`post_tree`](Self::post_tree) for every turn of the session that ended.
+    pub fn post_trees(&self, session: &SessionId) -> HashMap<u32, String> {
+        let _g = self.lock();
+        self.posts_locked(session).unwrap_or_default()
     }
 
     /// The `post` trees of a session by turn.
@@ -655,6 +669,7 @@ impl ShadowRepo {
         report.kept = kept.into_iter().collect();
         let since = started_ms.or_else(|| self.turn_start(&checkpoints, session, turn));
         report.preimages = self.preimages.restore_from(&ref_part(session.as_str()), turn, since);
+        report.kept.extend(report.preimages.kept.iter().cloned());
         // The turns are being replayed: their snapshots must be retaken.
         guard.retain(|(s, t)| s != session.as_str() || *t < turn);
         Ok(report)

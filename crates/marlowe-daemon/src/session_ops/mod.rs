@@ -257,8 +257,10 @@ fn list_checkpoints(core: &Arc<Core>, session: &SessionId) -> Result<Vec<Checkpo
     let cps = repo.checkpoints(session).map_err(|e| e.to_string())?;
     let current = if cps.is_empty() { String::new() } else { repo.current_tree().map_err(|e| e.to_string())? };
     let mut list: Vec<CheckpointInfo> = Vec::new();
+    let posts = repo.post_trees(session);
     for (i, c) in cps.iter().enumerate() {
-        let end = cps.get(i + 1).map(|n| n.tree.as_str()).unwrap_or(&current);
+        // Where the turn ended; edits after it are not the turn's.
+        let end = posts.get(&c.turn).or(cps.get(i + 1).map(|n| &n.tree)).map(String::as_str).unwrap_or(&current);
         let files = repo.changed(&c.tree, end).map(|f| f.len() as u32).unwrap_or(0);
         list.push(CheckpointInfo { turn: c.turn, at_ms: c.at_ms, files, summary: request_of(&rows, c.turn) });
     }
@@ -293,8 +295,9 @@ fn request_of(rows: &[RowOut], turn: u32) -> String {
         .unwrap_or_default()
 }
 
-/// What changed in `turn` (to the start of the next turn that changed files, or to now), or in
-/// the whole session. Empty when nothing was checkpointed.
+/// What changed in `turn` (to where the turn ended, else to the start of the next turn that
+/// changed files, else to now), or in the whole session (to where its last turn ended). Edits
+/// made after a turn ended are not shown. Empty when nothing was checkpointed.
 fn diff(core: &Arc<Core>, session: &SessionId, turn: Option<u32>) -> Result<String, String> {
     let Some(repo) = session_repo(core, session)? else { return Ok(String::new()) };
     let cps = repo.checkpoints(session).map_err(|e| e.to_string())?;
@@ -303,9 +306,14 @@ fn diff(core: &Arc<Core>, session: &SessionId, turn: Option<u32>) -> Result<Stri
         None => (!cps.is_empty()).then_some(0),
     };
     let Some(i) = start else { return Ok(String::new()) };
-    let end = match (turn, cps.get(i + 1)) {
-        (Some(_), Some(next)) => next.tree.clone(),
-        _ => repo.current_tree().map_err(|e| e.to_string())?,
+    let (last, next) = match turn {
+        Some(_) => (cps[i].turn, cps.get(i + 1)),
+        None => (cps[cps.len() - 1].turn, None),
+    };
+    let end = match (repo.post_tree(session, last), next) {
+        (Some(post), _) => post,
+        (None, Some(next)) => next.tree.clone(),
+        (None, None) => repo.current_tree().map_err(|e| e.to_string())?,
     };
     repo.diff(&cps[i].tree, &end).map_err(|e| e.to_string())
 }
