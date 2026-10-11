@@ -218,11 +218,15 @@ fn every_tool_answers_as_the_old_dispatch_did() {
 
 #[test]
 fn every_tool_is_registered_once_in_its_group_in_the_old_order() {
-    let names: Vec<&str> = table().defs.iter().map(|d| d.name()).collect();
+    // The git group (track J) is checked in `tests/git_tools.rs`.
+    let names: Vec<&str> =
+        table().defs.iter().filter(|d| d.manifest.group != marlowe_agent::ToolGroup::Git).map(|d| d.name()).collect();
     assert_eq!(
         names,
         ["read", "write", "edit", "glob", "grep", "bash", "powershell", "python", "web_fetch", "arxiv", "paper", "web_search"]
     );
+    let git: Vec<&str> = table().defs.iter().filter(|d| d.manifest.group == marlowe_agent::ToolGroup::Git).map(|d| d.name()).collect();
+    assert_eq!(git, ["git", "gh", "ci_status"]);
     for d in &table().defs {
         let schema = &d.spec.input_schema;
         assert_eq!(schema["additionalProperties"], json!(false), "{} schema is flat and closed", d.name());
@@ -360,9 +364,18 @@ fn exposure_fixes_the_tool_set_and_refuses_the_rest() {
 fn every_group_file_registers_its_hooks() {
     let setup = super::HostSetup { home: Path::new("C:/home"), workspace: None };
     let host = super::configure(BuiltinTools::new(None), &setup);
-    assert_eq!(host.specs().len(), BuiltinTools::new(None).specs().len(), "the stub configures change nothing");
+    let not_git = |h: &BuiltinTools| {
+        h.specs().iter().filter(|s| !matches!(s.name.as_str(), "git" | "gh" | "ci_status")).count()
+    };
+    assert_eq!(not_git(&host), not_git(&BuiltinTools::new(None)), "the stub configures change nothing");
+    assert!(host.specs().iter().any(|s| s.name == "git"), "the git group (track J) is live once configured");
     for g in super::GROUPS {
         assert_eq!(super::group(g.group).map(|r| r.group), Some(g.group));
+        if g.group == marlowe_agent::ToolGroup::Git {
+            assert_eq!((g.middleware)(&host).len(), 1, "the git guard");
+            assert!((g.persona_block)().is_some());
+            continue;
+        }
         assert!((g.middleware)(&host).is_empty());
         assert!((g.persona_block)().is_none(), "{:?}: a block needs its capability live first", g.group);
         assert!(!(g.detect)(None));

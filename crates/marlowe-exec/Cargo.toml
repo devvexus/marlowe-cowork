@@ -30,3 +30,4 @@ serde_json.workspace = true
 
 [dev-dependencies]
 marlowe-proto.workspace = true
+crossbeam-channel.workspace = true
