@@ -129,8 +129,8 @@ fn empty(c: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     let mut lines = vec![
         Line::from(Span::styled("You have no models. Add one?", theme.bright())),
         Line::from(""),
-        Line::from(Span::styled("Every slot — the conductor, the crew, reflection — runs on a model you choose.", dim)),
-        Line::from(Span::styled("The first one you add becomes the default for all of them.", dim)),
+        Line::from(Span::styled("Every slot — the conductor, the crew, quick tasks — runs on a model you choose.", dim)),
+        Line::from(Span::styled("The first one you add runs the conductor; slots you leave unset run the conductor's model.", dim)),
         Line::from(""),
     ];
     if !detected.is_empty() {
@@ -205,7 +205,8 @@ fn overview(c: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
             Span::styled(text::pad(&effort, 9), ink(Ink::Speech, theme)),
         ];
         if row.inherited {
-            spans.push(Span::styled("default", dimmer));
+            let note = if row.slot == marlowe_proto::Slot::Conductor { "default" } else { "conductor's" };
+            spans.push(Span::styled(note, dimmer));
         }
         put_row(state, buf, (c.x, y, c.width), Line::from(spans), Target::Slot(i), theme);
         y += 1;

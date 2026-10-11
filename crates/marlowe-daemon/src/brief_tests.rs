@@ -839,12 +839,16 @@ fn a_local_model_is_not_loaded_onto_a_busy_gpu() {
     let idle = GpuReport { devices: vec![device(2, 900)], unavailable: None };
     let busy = GpuReport { devices: vec![device(92, 6_700)], unavailable: None };
     let live = vec![run(r"C:\r\a", "a", RunStatus::Alive, 0)];
-    assert!(polish_allowed(ProviderKind::OpenRouter, false, &live, &busy), "a remote model never touches the GPU");
-    assert!(!polish_allowed(ProviderKind::Ollama, false, &[], &idle), "local polish is off by default");
-    assert!(!polish_allowed(ProviderKind::Ollama, true, &[], &busy));
-    assert!(!polish_allowed(ProviderKind::LocalGguf, true, &live, &idle), "a live run keeps the GPU");
-    assert!(!polish_allowed(ProviderKind::Ollama, true, &[], &GpuReport::default()), "an unknown GPU is not idle");
-    assert!(polish_allowed(ProviderKind::Ollama, true, &[], &idle));
+    // A resident model holds memory: idle is about utilisation, not memory.
+    let resident = GpuReport { devices: vec![device(3, 7_000)], unavailable: None };
+    assert!(polish_allowed(ProviderKind::OpenRouter, false, true, &live, &busy), "a remote model never touches the GPU");
+    assert!(!polish_allowed(ProviderKind::Ollama, false, false, &[], &idle), "local polish is off by default");
+    assert!(!polish_allowed(ProviderKind::Ollama, true, false, &[], &busy));
+    assert!(!polish_allowed(ProviderKind::LocalGguf, true, false, &live, &idle), "a live run keeps the GPU");
+    assert!(!polish_allowed(ProviderKind::Ollama, true, false, &[], &GpuReport::default()), "an unknown GPU is not idle");
+    assert!(!polish_allowed(ProviderKind::Ollama, true, true, &[], &idle), "a turn or crew run keeps the model");
+    assert!(polish_allowed(ProviderKind::Ollama, true, false, &[], &idle));
+    assert!(polish_allowed(ProviderKind::Ollama, true, false, &[], &resident));
 }
 
 #[test]

@@ -19,7 +19,8 @@ use marlowe_agent::{
     Agent, AgentEvent, ApprovalGate, ApprovalReq, Conversation, Environment, NoMemory, PersonaBlock, Steer,
     SteerRefused, SystemPrompt, ToolHost, TurnOutcome, TurnStop,
 };
-use marlowe_model::{CancelToken, Message, Usage};
+use marlowe_brains::{Admission, Priority};
+use marlowe_model::{CancelToken, Message, ModelRef, Usage};
 use marlowe_proto::{ApprovalDecision, Event, SessionId, Slot};
 
 use crate::daemon::Core;
@@ -340,6 +341,10 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
         }
     };
     let model = info.model_ref();
+    if let Err(message) = admit_conductor(core, &session, &model, cancel) {
+        core.bus.publish(Event::Error { session: Some(session), message });
+        return;
+    }
     let workspace = workspace_of(convo);
     let mut system = SystemPrompt::new();
     // The memory block describes the profile and memory tools, so only when a Mind is attached.
@@ -456,6 +461,43 @@ fn guard<T>(f: impl FnOnce() -> T) -> Result<T, String> {
 }
 
 /// Approvals as an ApprovalRequested / Approve round trip. Denies on timeout, cancel, shutdown.
+/// The conductor's model may be used for this turn: hosted, already loaded, or a cold load the
+/// planner says fits. A load that does not fit beside what is resident asks, with its cost (once
+/// per model and resident set).
+fn admit_conductor(core: &Arc<Core>, session: &SessionId, model: &ModelRef, cancel: &CancelToken) -> Result<(), String> {
+    let admission = guard(|| core.brains.admit(model, Priority::Foreground))?;
+    let cost = match admission {
+        Admission::Hosted | Admission::Resident => return Ok(()),
+        Admission::Load(cost) => {
+            eprintln!("marlowe: loading {model} for the conductor: {}", cost.describe());
+            return Ok(());
+        }
+        Admission::Refused(why) => return Err(format!("not loading {model}: {why}")),
+        Admission::Ask(cost) => cost,
+    };
+    let key = format!("{model}|{}", cost.resident.join(","));
+    if lock(&core.approved_loads).contains(&key) {
+        return Ok(());
+    }
+    let gate = Gate { core: core.clone(), cancel: cancel.clone() };
+    let decision = gate.ask(ApprovalReq {
+        session: session.clone(),
+        call_id: format!("load-{}", model.model_id),
+        tool: "load model".into(),
+        summary: format!("Load {} for this turn? It does not fit beside what is loaded.", model.model_id),
+        detail: format!(
+            "{}.\nLoading it anyway can spill into system memory and slow the whole machine.\nAssign a smaller conductor in the Library to avoid this.",
+            cost.describe()
+        ),
+    });
+    if decision.is_allowed() {
+        lock(&core.approved_loads).insert(key);
+        Ok(())
+    } else {
+        Err(format!("not loading {model}: {}", cost.describe()))
+    }
+}
+
 struct Gate {
     core: Arc<Core>,
     cancel: CancelToken,

@@ -119,9 +119,13 @@ fn home(name: &str) -> PathBuf {
 }
 
 fn start(home: &Path, server: Arc<Recorder>) -> (DaemonInfo, std::thread::JoinHandle<()>) {
+    start_on(home, server, Arc::new(Gpu))
+}
+
+fn start_on(home: &Path, server: Arc<Recorder>, gpu: Arc<dyn GpuSource>) -> (DaemonInfo, std::thread::JoinHandle<()>) {
     let mut providers = ProviderFactory::new(Arc::new(MemoryStore::new()));
     providers.register(ProviderKind::Ollama, |_| Ok(Arc::new(Echo) as Arc<dyn Provider>));
-    providers.set_hardware(Hardware { models: Arc::new(Models), gpu: Arc::new(Gpu), server });
+    providers.set_hardware(Hardware { models: Arc::new(Models), gpu, server });
     let deps = DaemonDeps {
         providers,
         tools: Arc::new(|_| Arc::new(NoTools) as Arc<dyn ToolHost>),
@@ -232,6 +236,52 @@ fn usage_policies_and_the_approval_gated_restart() {
     let done = c.until(|e| matches!(e, Event::ServerApplied { .. }));
     assert!(matches!(done.last(), Some(Event::ServerApplied { ok: true, .. })));
     assert_eq!(server.0.lock().unwrap().as_slice(), &[ServerChange { kv_type: Some(KvType::Q4_0), parallel: None, flash_attn: None }]);
+
+    c.send(&Request::Shutdown);
+    c.until(|e| matches!(e, Event::ShuttingDown));
+    join.join().unwrap();
+    let _ = std::fs::remove_dir_all(&h);
+}
+
+/// The same card with something else holding all but 3 GiB.
+struct TightGpu;
+impl GpuSource for TightGpu {
+    fn snapshot(&self) -> Option<GpuSnapshot> {
+        let mut s = Gpu.snapshot()?;
+        s.gpu.used_mib = 13_376.0;
+        s.gpu.free_mib = 3_000.0;
+        Some(s)
+    }
+}
+
+/// A conductor model that is not loaded and does not fit beside what is: the turn asks first,
+/// with the planner's cost, and a denial calls no model. Allowed once, the same load is not
+/// asked again.
+#[test]
+fn a_cold_load_that_does_not_fit_asks_with_its_cost() {
+    let h = home("tight");
+    let (info, join) = start_on(&h, Arc::default(), Arc::new(TightGpu));
+    let mut c = Client::connect(&info);
+
+    c.send(&Request::Ask { session: None, text: "hi".into(), workspace: None });
+    let asked = c.until(|e| matches!(e, Event::ApprovalRequested { .. }));
+    let Some(Event::ApprovalRequested { approval, tool, summary, detail, .. }) = asked.last() else { unreachable!() };
+    assert_eq!(tool, "load model");
+    assert!(summary.contains("llama3:8b"), "{summary}");
+    assert!(detail.contains("GiB of GPU memory") && detail.contains("1.9 GiB is free"), "{detail}");
+    c.send(&Request::Approve { approval: *approval, decision: ApprovalDecision::Deny });
+    let refused = c.until(|e| matches!(e, Event::Error { .. }));
+    assert!(matches!(refused.last(), Some(Event::Error { message, .. }) if message.contains("not loading")), "{refused:#?}");
+    assert!(!refused.iter().any(|e| matches!(e, Event::TurnStarted { .. })), "denied: no model call");
+
+    c.send(&Request::Ask { session: None, text: "hi again".into(), workspace: None });
+    let asked = c.until(|e| matches!(e, Event::ApprovalRequested { .. }));
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    c.send(&Request::Approve { approval: *approval, decision: ApprovalDecision::Allow });
+    c.until(|e| matches!(e, Event::TurnFinished { .. }));
+    c.send(&Request::Ask { session: None, text: "and again".into(), workspace: None });
+    let evs = c.until(|e| matches!(e, Event::TurnFinished { .. }));
+    assert!(!evs.iter().any(|e| matches!(e, Event::ApprovalRequested { .. })), "asked once: {evs:#?}");
 
     c.send(&Request::Shutdown);
     c.until(|e| matches!(e, Event::ShuttingDown));

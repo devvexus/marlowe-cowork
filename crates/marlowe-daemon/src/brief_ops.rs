@@ -282,14 +282,23 @@ fn memory_news(core: &Core) -> (MemoryNews, Option<Vec<String>>) {
     (news, Some(profile.ids))
 }
 
-/// One call on the Quick slot (else the Conductor) in the briefing block's register. Skipped on a
-/// local model unless allowed and the GPU is free (see [`brief::polish_allowed`]).
+/// One call in the briefing block's register, on the Quick slot's model or the Conductor's,
+/// whichever is hosted or already loaded: background work never loads a model. Skipped on a local
+/// model unless allowed and nothing else is using it (see [`brief::polish_allowed`]). The model
+/// used, or why none was, goes to the daemon log.
 fn polish(core: &Core, inputs: &BriefInputs, b: &Brief, gpu: &GpuReport) -> Option<String> {
-    let parts = guard(|| core.brains.agent_parts(&Slot::Quick).or_else(|_| core.brains.agent_parts(&Slot::Conductor)))?;
-    let (provider, info, _effort) = parts.ok()?;
-    if !brief::polish_allowed(provider.kind(), core.cfg.local_polish, &inputs.runs, gpu) {
+    let chosen = guard(|| core.brains.background_model(&Slot::Quick).and_then(|(m, e)| core.brains.model_parts(&m, e)))?;
+    let (provider, info, _effort) = match chosen {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("marlowe: brief not polished: {e}");
+            return None;
+        }
+    };
+    if !brief::polish_allowed(provider.kind(), core.cfg.local_polish, core.foreground_busy(), &inputs.runs, gpu) {
         return None;
     }
+    eprintln!("marlowe: brief polished on {}", info.model_ref());
     let system = SystemPrompt::new().block(PersonaBlock::Briefing).user(core.user()).render();
     let req = brief::polish_request(&info.id, system, inputs, b);
     let attention: Vec<String> = b.items.iter().filter(|i| i.kind == BriefItemKind::Attention).map(|i| i.text.clone()).collect();

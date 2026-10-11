@@ -93,6 +93,9 @@ pub(crate) struct Core {
     /// Which interactive clients are here, for the brief's away rule.
     pub presence: crate::brief::Presence,
     pub approvals: Approvals,
+    /// Cold loads the user approved this run, as `model|resident,…`: the same load beside the
+    /// same models is not asked twice.
+    pub approved_loads: Mutex<std::collections::HashSet<String>>,
     sessions: Mutex<HashMap<SessionId, Arc<SessionHandle>>>,
     started: Instant,
     shutting_down: AtomicBool,
@@ -123,6 +126,14 @@ impl Core {
 
     pub fn uptime(&self) -> Duration {
         self.started.elapsed()
+    }
+
+    /// A foreground turn or a crew run is using the models now: background work stays off.
+    pub fn foreground_busy(&self) -> bool {
+        if lock(&self.sessions).values().any(|h| h.is_busy()) {
+            return true;
+        }
+        self.crew.get().is_some_and(|c| c.supervisor.running() > 0)
     }
 
     /// True while `id` has a running session runner (its conversation lives in memory).
@@ -337,6 +348,7 @@ impl Daemon {
             crew: OnceLock::new(),
             presence: Default::default(),
             approvals: Approvals::default(),
+            approved_loads: Mutex::new(Default::default()),
             sessions: Mutex::new(HashMap::new()),
             started: Instant::now(),
             shutting_down: AtomicBool::new(false),

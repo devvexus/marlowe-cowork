@@ -139,18 +139,29 @@ impl Library {
         self.models.iter().find(|m| &m.model == r).map(|m| &m.info)
     }
 
-    /// The first added model: every unset slot's model.
+    /// The first added model: the Conductor's until one is assigned.
     pub fn default_model(&self) -> Option<&ModelRef> {
         self.models.first().map(|m| &m.model)
     }
 
-    /// Slot rows in display order: Conductor, crew roles, Reflection, Quick. Missing rows are
-    /// synthesised as inheriting the default.
+    /// What an unset slot runs: the first model added for the Conductor (onboarding), the
+    /// Conductor's model for every other slot.
+    fn inherited_model(&self, slot: &Slot) -> Option<ModelRef> {
+        let conductor = self.slots.iter().find(|s| s.slot == Slot::Conductor).and_then(|s| s.model.clone());
+        match slot {
+            Slot::Conductor => self.default_model().cloned(),
+            _ => conductor.or_else(|| self.default_model().cloned()),
+        }
+    }
+
+    /// Slot rows in display order: Conductor, crew roles, Quick. Missing rows are synthesised as
+    /// inheriting. Reflection is not shown: memory runs no model (episodes are extractive), so
+    /// the slot is unused; its stored row is kept for older daemons.
     pub fn slot_rows(&self) -> Vec<SlotAssignment> {
         let find = |slot: &Slot| self.slots.iter().find(|s| &s.slot == slot).cloned();
         let inherit = |slot: Slot| SlotAssignment {
+            model: self.inherited_model(&slot),
             slot,
-            model: self.default_model().cloned(),
             effort: Effort::Medium,
             inherited: true,
         };
@@ -162,9 +173,7 @@ impl Library {
         } else {
             rows.extend(crew);
         }
-        for s in [Slot::Reflection, Slot::Quick] {
-            rows.push(find(&s).unwrap_or_else(|| inherit(s)));
-        }
+        rows.push(find(&Slot::Quick).unwrap_or_else(|| inherit(Slot::Quick)));
         rows
     }
 
@@ -492,7 +501,7 @@ impl Library {
     /// Updates a slot locally so the table reacts before the daemon confirms.
     fn apply_slot(&mut self, slot: &Slot, model: Option<ModelRef>, effort: Effort) {
         let inherited = model.is_none();
-        let resolved = model.or_else(|| self.default_model().cloned());
+        let resolved = model.or_else(|| self.inherited_model(slot));
         let row = SlotAssignment { slot: slot.clone(), model: resolved, effort, inherited };
         match self.slots.iter_mut().find(|s| &s.slot == slot) {
             Some(s) => *s = row,

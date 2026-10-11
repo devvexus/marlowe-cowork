@@ -147,11 +147,12 @@ fn one_model_library_from_the_model_box_takes_the_keys_and_says_what_they_do() {
         assert!(contains(&buf, want), "missing {want:?}\n{}", dump(&buf));
     }
 
-    // ↓ (or j) walks the slots, then the one model, then "add another model". Nothing is typed.
-    for _ in 0..3 {
+    // ↓ (or j) walks the slots (Conductor, Crew · general, Quick: Reflection is hidden, memory
+    // runs no model), then the one model, then "add another model". Nothing is typed.
+    for _ in 0..2 {
         s.on_key(key(KeyCode::Down));
     }
-    assert_eq!((s.library.focus, s.library.slot_sel), (LibFocus::Slots, 3));
+    assert_eq!((s.library.focus, s.library.slot_sel), (LibFocus::Slots, 2));
     s.on_key(key(KeyCode::Char('j')));
     assert_eq!((s.library.focus, s.library.model_sel), (LibFocus::Models, 0));
     let buf = frame(&s);

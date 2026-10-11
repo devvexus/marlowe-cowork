@@ -225,7 +225,7 @@ impl Brains {
         Ok(self.model_info(model)?.context_window.unwrap_or(DEFAULT_WINDOW))
     }
 
-    fn is_local_ollama(&self, model: &ModelRef) -> bool {
+    pub(crate) fn is_local_ollama(&self, model: &ModelRef) -> bool {
         model.provider == ProviderKind::Ollama && self.model_info(model).map(|i| i.local).unwrap_or(true)
     }
 

@@ -104,9 +104,10 @@ fn library_onboarding_flow() {
     assert_eq!(s.library.step, LibStep::Overview);
     feed(&mut s, 3, library_with_sonnet());
     let buf = render(&s, W, H);
-    for row in ["Conductor", "Crew · general", "Reflection", "Quick", "$3 / $15", "200k"] {
+    for row in ["Conductor", "Crew · general", "Quick", "$3 / $15", "200k"] {
         assert!(contains(&buf, row), "overview is missing {row}");
     }
+    assert!(!contains(&buf, "Reflection"), "memory runs no model: the reflection slot is hidden");
     assert_palette_only(&buf);
     snapshot("library_overview", &buf);
 

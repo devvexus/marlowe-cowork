@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 use marlowe_agent::{ApprovalReq, Steer};
-use marlowe_brains::Brains;
+use marlowe_brains::{Admission, Brains, Priority};
 use marlowe_mind::{Kind, MemoryIn, Mind, Provenance};
 use marlowe_model::{CancelToken, ModelRef};
 use marlowe_proto::{
@@ -251,9 +251,11 @@ impl Inner {
         Ok(run)
     }
 
-    /// The model for `card`: the first explicitly assigned slot of its chain, else the library
-    /// default. A local model while the GPU is busy moves to the first slot assigned a cloud
-    /// model, or reports that it must wait.
+    /// The model for `card`: the first explicitly assigned slot of its chain, else the
+    /// conductor's model. A local model while the GPU is busy moves to the first slot assigned a
+    /// cloud model, or reports that it must wait. A local model that is not loaded loads only when
+    /// the planner says it fits beside what is ([`Priority::Crew`]); otherwise the step is refused
+    /// with the cost. The agent's window is the context gate's (`allowed_ctx`), never above it.
     pub(crate) fn choose(&self, card: &RoleCard) -> Result<Choice, CrewError> {
         let brains = &self.deps.brains;
         let slots = brains.slots().unwrap_or_default();
@@ -265,22 +267,24 @@ impl Inner {
             Some(m) => m,
             None => brains.resolve(&card.slot)?.0,
         };
-        let mut info = brains.model_info(&model)?;
+        let local = brains.model_info(&model)?.local;
         let mut waits_for_gpu = false;
-        if (info.local || model.provider.is_local()) && (self.deps.gpu_busy)() {
+        if (local || model.provider.is_local()) && (self.deps.gpu_busy)() {
             let cloud = slots
                 .iter()
                 .filter_map(|a| a.model.clone())
                 .find(|m| !m.provider.is_local() && m.provider.is_available_now());
             match cloud {
-                Some(m) => {
-                    info = brains.model_info(&m)?;
-                    model = m;
-                }
+                Some(m) => model = m,
                 None => waits_for_gpu = true,
             }
         }
-        let provider = brains.provider_for(&model)?;
+        if !waits_for_gpu {
+            if let Admission::Refused(why) = brains.admit(&model, Priority::Crew) {
+                return Err(marlowe_brains::BrainsError::Invalid(format!("not loading {model}: {why}")).into());
+            }
+        }
+        let (provider, info, _) = brains.model_parts(&model, marlowe_model::Effort::Medium)?;
         Ok(Choice { model: StepModel { provider, model: info }, waits_for_gpu })
     }
 
@@ -330,7 +334,14 @@ impl Inner {
                 }
                 let kind = choice.model.model.provider;
                 let local = choice.model.model.local || kind.is_local();
-                let limit = if local { self.cfg.per_local_provider } else { self.cfg.per_provider }.max(1);
+                // A local model runs no more agents at once than its policy's slots.
+                let limit = if local {
+                    let slots = self.deps.brains.context().slots(&choice.model.model.model_ref()).unwrap_or(1);
+                    self.cfg.per_local_provider.min(usize::from(slots))
+                } else {
+                    self.cfg.per_provider
+                }
+                .max(1);
                 let busy = st.active.get(kind.as_str()).copied().unwrap_or(0);
                 if busy >= limit {
                     continue;
@@ -501,6 +512,11 @@ impl Supervisor {
     }
 
     /// The role cards in force.
+    /// Runs with a live thread now (running, or waiting on the user mid-run).
+    pub fn running(&self) -> usize {
+        self.inner.state().live.values().filter(|l| l.running).count()
+    }
+
     pub fn roles(&self) -> Vec<RoleInfo> {
         lock(&self.inner.roles).infos()
     }

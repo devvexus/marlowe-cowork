@@ -4,6 +4,15 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### No surprise model loads; memory runs no model
+
+Matthew (ui-preview5): "Marlowe decided to load valiance randomly during use and destroyed the PC's resources." The library held valiance (added first) and dawn; conductor and quick were on dawn, reflection unset. When a session went idle and was evicted, its episode summary resolved the unset Reflection slot to the library's first model, so valiance loaded beside dawn with no fit check. Matthew's decision: the memory system needs no LLM.
+
+- **Changed.** Episodes are extractive (`marlowe-mind::episode`, `Mind::write_session_episode`): title from the opening request, the day and time span in words, the workspace, the most salient user and assistant lines by BM25 weight against the whole store, and keywords. No model call; a second eviction supersedes the session's earlier episode. `LexicalIndex::document_frequencies` is a read-only addition, off the scored path.
+- **Changed.** An unset slot runs the conductor's model; the first model added is only the conductor's default. The Library hides Reflection and marks inherited slots "conductor's".
+- **Added.** Load admission (`marlowe-brains::load`, `Brains::admit`, `Brains::background_model`): a cold load must fit beside what is resident per the planner (weights, compute and every agent's KV at `allowed_ctx`). A conductor turn that does not fit asks with the cost (`load model` approval, remembered per model and resident set); a crew step that does not fit is refused with it; background work never loads, runs only on a resident or hosted model, never while a turn or crew run is busy, and logs which model it used. Crew runs use `allowed_ctx` as their window and the policy's `slots` as their local concurrency cap.
+- **Tests.** `marlowe-brains/tests/load.rs` replays the preview library exactly: every background slot resolves to dawn, valiance is refused to background and crew and asks in the foreground, and with nothing loaded nothing background runs. `marlowe-daemon/tests/daemon.rs` runs a turn, an eviction and a brief on that library and sees one model call, on dawn. `tests/context.rs` shows the ask, a denial with no model call, and an allowed load not asked twice. `marlowe-mind` tests retrieve a Tuesday session's episode for "what were we doing on Tuesday?" with the lexical cue alone.
+
 ### Reasoning folds
 
 Matthew: the old TUI opened the thinking block on Enter; the new one had no way to open a finished block except ^t for all of them.
