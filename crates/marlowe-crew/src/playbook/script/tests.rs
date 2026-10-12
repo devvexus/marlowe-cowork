@@ -115,7 +115,7 @@ fn temp(name: &str) -> PathBuf {
 fn runner(model: Arc<Model>, root: &Path) -> AgentRunner {
     let local = model.local;
     let resolver: ModelResolver = Arc::new(move |_card: &RoleCard| Ok(StepModel { provider: model.clone(), model: info(local) }));
-    let sandbox = Sandbox { kind: SandboxKind::Scratch, root: root.to_path_buf(), origin: None, branch: None, base: None, repo_digest: None };
+    let sandbox = Sandbox { kind: SandboxKind::Scratch, root: root.to_path_buf(), origin: None, branch: None, base: None, repo_digest: None, frozen: Vec::new(), target_dir: None };
     AgentRunner::new(RunId::new_random(), Roles::builtin(), resolver, Arc::new(NoTools), sandbox, None)
 }
 
