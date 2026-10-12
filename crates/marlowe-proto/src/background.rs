@@ -315,3 +315,38 @@ pub struct FastState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelRef>,
 }
+
+// ---- Closing the window (N, 2026-10-10).
+
+/// A crew run or workflow a closed window interrupted. It is paused, its checkpoints kept; the
+/// next launch offers to resume it (`Event::Interrupted`, `Request::ResumeInterrupted`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterruptedRun {
+    pub run: RunId,
+    pub title: String,
+    /// A workflow script's run (counted apart from a crew run in the prompt).
+    #[serde(default)]
+    pub workflow: bool,
+    /// Where it stopped: `step 4: running cargo test`.
+    #[serde(default)]
+    pub stopped_at: String,
+    pub at_ms: i64,
+}
+
+impl InterruptedRun {
+    /// The prompt's tally: `2 crew runs, 1 workflow`.
+    pub fn tally(list: &[InterruptedRun]) -> String {
+        let workflows = list.iter().filter(|r| r.workflow).count();
+        let runs = list.len() - workflows;
+        let part = |n: usize, one: &str, many: &str| match n {
+            0 => None,
+            1 => Some(format!("1 {one}")),
+            n => Some(format!("{n} {many}")),
+        };
+        [part(runs, "crew run", "crew runs"), part(workflows, "workflow", "workflows")]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}

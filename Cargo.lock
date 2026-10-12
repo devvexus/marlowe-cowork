@@ -3296,6 +3296,7 @@ dependencies = [
  "marlowe-brains",
  "marlowe-contract",
  "marlowe-crew",
+ "marlowe-exec",
  "marlowe-hw",
  "marlowe-journal",
  "marlowe-mcp",

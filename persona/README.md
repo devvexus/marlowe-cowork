@@ -34,6 +34,7 @@ model fabricate it. So v3 is a **stable core** that describes no feature-specifi
 | `blocks/coding.md` | the agent group (todos, `ask_user`, skills, subagents, plan exit, worktrees) is live and exposed (M4.6 F) |
 | `blocks/verify.md` | the verify group (`project`, `service`, `http_check`, `browser`) is live and exposed (M4.6 D) |
 | `blocks/git.md` | the git group (`git`, `gh`, `ci_status`) is live and exposed (M4.6 J) |
+| `blocks/tasks.md` | the tasks group (`task_list`, `monitor`, `cron_*`, `schedule_wakeup`, `watch`, ...) is live and exposed (M4.6 N) |
 
 The core plus any blocks form the stable tier; a block toggling changes the prefix and must
 invalidate the prompt cache, the same rule as a version bump.

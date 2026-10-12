@@ -4,7 +4,7 @@ use marlowe_model::{Effort, ModelInfo, ModelRef, Part, ProviderKind, Role, Usage
 use serde::{Deserialize, Serialize};
 
 use crate::background::{
-    FastState, Finding, NotifyState, RuleSuggestion, SavedWorkflow, SentFile, TaskInfo, Urgency, WorkflowInfo,
+    FastState, Finding, InterruptedRun, NotifyState, RuleSuggestion, SavedWorkflow, SentFile, TaskInfo, Urgency, WorkflowInfo,
 };
 use crate::context::{ContextPlan, ContextPolicy, ModelContext, PlannedChange};
 use crate::crew::{CrewRunInfo, CrewStep, Dispatch, RoleInfo, RunId};
@@ -373,6 +373,15 @@ pub enum Event {
     FastChanged { session: SessionId, state: FastState },
     /// Reply to `SuggestRules`.
     RuleSuggestions { list: Vec<RuleSuggestion> },
+    /// Work the last window close interrupted, offered at the next launch to a screen client
+    /// (`summary` is the tally, `2 crew runs, 1 workflow`). Answered with `ResumeInterrupted`.
+    Interrupted { runs: Vec<InterruptedRun>, summary: String },
+    /// Whether the daemon runs on after the window closes (broadcast on change; the reply to
+    /// `KeepRunning`).
+    KeepRunning { on: bool },
+    /// The daemon is closing everything (a closed window or a stop choice): work is paused, models
+    /// unloaded and state saved before it exits (broadcast, then `ShuttingDown`).
+    Closing { reason: String },
 }
 
 impl Event {

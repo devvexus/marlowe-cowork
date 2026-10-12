@@ -276,7 +276,7 @@ fn shell_outcome(run: ShellRun, limits: ShellLimits, opts: OutputOpts) -> ToolOu
 }
 
 /// Shells always ask here (E's rules and modes decide in front of this).
-fn command_consequence(_tools: &BuiltinTools, call: &ToolCallReq, _exposure: &Exposure) -> Consequence {
+pub(super) fn command_consequence(_tools: &BuiltinTools, call: &ToolCallReq, _exposure: &Exposure) -> Consequence {
     let command = str_arg(&call.args, "command").unwrap_or("");
     let bg = if flag(&call.args, "run_in_background") { " (background)" } else { "" };
     Consequence::Ask { summary: format!("{}{bg}: {}{}", call.name, first_line(command, 100), more_lines(command)) }
@@ -294,7 +294,7 @@ fn python_consequence(_tools: &BuiltinTools, call: &ToolCallReq, _exposure: &Exp
 }
 
 /// In a crew sandbox a shell command is classified by the sandbox's policy with the run's taint.
-fn crew_shell_consequence(
+pub(super) fn crew_shell_consequence(
     _tools: &BuiltinTools,
     call: &ToolCallReq,
     exposure: &Exposure,

@@ -197,16 +197,6 @@ fn every_wave2_request_reaches_its_tracks_stub() {
     let mut c = Client::connect(&r.info);
 
     let cases: Vec<(Request, &str, &str)> = vec![
-        (Request::ListTasks { session: None }, "list_tasks", "N"),
-        (Request::StopTask { id: "job_j1".into() }, "stop_task", "N"),
-        (Request::TaskOutput { id: "job_j1".into(), since: None, filter: None }, "task_output", "N"),
-        (
-            Request::CronCreate { session: Some(sid()), cron: Some("0 3 * * *".into()), once_at_ms: None, text: "eval".into(), durable: true },
-            "cron_create",
-            "N",
-        ),
-        (Request::NotifySettings { toast: Some(false), voice: None }, "notify_settings", "N"),
-        (Request::OpenFile { path: "C:/x".into(), reveal: false }, "open_file", "N"),
         (Request::SetFast { session: sid(), on: true }, "set_fast", "F3"),
         (
             Request::AnswerPlan { session: sid(), id: "p1".into(), decision: PlanFileDecision::Approve { mode: PermissionMode::Default } },

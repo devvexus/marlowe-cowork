@@ -409,14 +409,21 @@ fn every_group_file_registers_its_hooks() {
     let setup = super::HostSetup { home: Path::new("C:/home"), workspace: None };
     let host = super::configure(BuiltinTools::new(None), &setup);
     // Configuring adds the git group (track J), the agent group (track F), the workflow group
-    // (track W) and, where Edge is installed, the browser (D).
+    // (track W), the tasks and notify groups (track N) and, where Edge is installed, the browser (D).
     let rest = |h: &BuiltinTools| {
         h.specs()
             .iter()
             .filter(|s| !matches!(s.name.as_str(), "git" | "gh" | "ci_status" | "browser"))
             .filter(|s| {
-                h.manifest(&s.name)
-                    .is_some_and(|m| m.group != marlowe_agent::ToolGroup::Agent && m.group != marlowe_agent::ToolGroup::Workflow)
+                h.manifest(&s.name).is_some_and(|m| {
+                    !matches!(
+                        m.group,
+                        marlowe_agent::ToolGroup::Agent
+                            | marlowe_agent::ToolGroup::Workflow
+                            | marlowe_agent::ToolGroup::Tasks
+                            | marlowe_agent::ToolGroup::Notify
+                    )
+                })
             })
             .count()
     };
@@ -439,6 +446,7 @@ fn every_group_file_registers_its_hooks() {
                     | marlowe_agent::ToolGroup::Verify
                     | marlowe_agent::ToolGroup::Agent
                     | marlowe_agent::ToolGroup::Workflow
+                    | marlowe_agent::ToolGroup::Tasks
             ),
             "{:?}: a block needs its capability live first",
             g.group

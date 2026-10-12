@@ -28,6 +28,7 @@ pub mod console;
 /// `pub(crate)` once the crew's last caller has moved.
 pub mod job;
 pub mod toast;
+pub mod tray;
 pub mod workspace;
 
 pub use child::{ChildProc, ChildSpec, Containment, RunLimits, RunOutput, SCRUBBED_ENV};

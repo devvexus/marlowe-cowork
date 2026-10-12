@@ -1,32 +1,200 @@
 //! The notify group (track N): `notify`, `send_file`, `notices`.
 //!
-//! Empty until N lands: add a [`ToolDef`] per tool to `tools()`, in model-visible order, with
-//! `ToolGroup::Notify`. Nothing outside this file changes. The background registry the tools
-//! reach is the [`marlowe_agent::Tasks`] service (design 3.12); the daemon installs it.
+//! `notify` reaches the user outside the conversation (a toast, a spoken line outside quiet hours,
+//! a notice); `send_file` hands them a file (a card in the terminal with open and reveal);
+//! `notices` is the agent's inbox of what the daemon noticed on its own (the Sentinel, CI, jobs,
+//! monitors, schedules, crew runs, workflows, messages). The effects are the daemon's
+//! (`marlowe_agent::Background`); these tools check and shape the arguments.
 
-use super::ToolDef;
+use std::path::Path;
+use std::sync::Arc;
 
-pub fn tools() -> Vec<ToolDef> {
-    Vec::new()
+use marlowe_agent::background::{parse_urgency, NoticeQuery};
+use marlowe_agent::{CallCtx, Effects, ToolGroup, ToolOutcome};
+use serde_json::{json, Value};
+
+use super::{describe_by, spec, ToolDef};
+use crate::{first_line, int_arg, paths, str_arg, BuiltinTools};
+
+/// Whether the group is live on a host: the daemon's conductor sessions configure it.
+#[derive(Debug, Default)]
+pub struct NotifyGroup {
+    pub enabled: bool,
 }
 
-/// Loop middleware for this group, built once per host next to its state (see `specs/mod.rs`).
-pub fn middleware(tools: &crate::BuiltinTools) -> Vec<std::sync::Arc<dyn marlowe_agent::ToolMiddleware>> {
+fn live(t: &BuiltinTools) -> bool {
+    t.state::<NotifyGroup>().enabled
+}
+
+const NO_DAEMON: &str = "this needs the daemon, which this session does not have";
+
+/// The largest file `send_file` copies.
+pub const MAX_SEND_BYTES: u64 = 100 << 20;
+
+fn notify_spec() -> marlowe_model::ToolSpec {
+    spec(
+        "notify",
+        "Tell the user something outside the conversation (a Windows notification, a spoken line outside quiet hours): \
+         a long job finished or failed, or you need a decision; not progress. One a minute unless urgent.",
+        json!({
+            "title": {"type": "string"},
+            "body": {"type": "string"},
+            "urgency": {"type": "string", "enum": ["low", "normal", "urgent"], "description": "Low is silent."}
+        }),
+        &["title"],
+    )
+}
+
+fn notify_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
+    let Some(bg) = cx.scope.services.get::<marlowe_agent::Background>() else { return ToolOutcome::error(NO_DAEMON) };
+    let title = str_arg(args, "title").map(str::trim).unwrap_or("");
+    if title.is_empty() {
+        return ToolOutcome::error("`title` is required");
+    }
+    let body = str_arg(args, "body").map(str::trim).unwrap_or("");
+    let Some(urgency) = parse_urgency(str_arg(args, "urgency").unwrap_or("")) else {
+        return ToolOutcome::error("`urgency` is low, normal or urgent");
+    };
+    match bg.0.notify(&cx.session, title, body, urgency) {
+        Ok(done) => ToolOutcome::ok(done, "notified"),
+        Err(e) => ToolOutcome::error(e),
+    }
+}
+
+fn send_file_spec() -> marlowe_model::ToolSpec {
+    spec(
+        "send_file",
+        "Give the user a file (report, plot, log, HTML) as a card they can open. Files in the workspace or sandbox \
+         only, 100 MB at most.",
+        json!({
+            "path": {"type": "string"},
+            "note": {"type": "string"}
+        }),
+        &["path"],
+    )
+}
+
+fn send_file_call(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
+    let Some(bg) = cx.scope.services.get::<marlowe_agent::Background>() else { return ToolOutcome::error(NO_DAEMON) };
+    let Some(raw) = str_arg(args, "path").map(str::trim).filter(|p| !p.is_empty()) else {
+        return ToolOutcome::error("`path` is required");
+    };
+    let root = tools.shell_root(cx);
+    let abs = paths::resolve(root.as_deref(), raw);
+    if !tools.trusted_read(&abs.to_string_lossy()) && tools.shell_dir.as_deref().is_none_or(|d| !paths::inside(d, &abs)) {
+        return ToolOutcome::error(format!(
+            "{} is outside the workspace and the sandbox; send_file only sends files from inside them",
+            abs.display()
+        ));
+    }
+    let meta = match std::fs::metadata(&abs) {
+        Ok(m) => m,
+        Err(e) => return ToolOutcome::error(format!("cannot read {}: {e}", abs.display())),
+    };
+    if !meta.is_file() {
+        return ToolOutcome::error(format!("{} is not a file", abs.display()));
+    }
+    if meta.len() > MAX_SEND_BYTES {
+        return ToolOutcome::error(format!("{} is {} MB; send_file takes at most 100 MB", abs.display(), meta.len() >> 20));
+    }
+    let note = str_arg(args, "note").map(str::trim).unwrap_or("");
+    match bg.0.send_file(&cx.session, &abs, note) {
+        Ok(f) => ToolOutcome::ok(
+            format!("Sent {} ({} bytes) to the user. The copy is {}; they see a card with open and reveal.", f.name, f.bytes, f.path),
+            format!("sent {}", f.name),
+        ),
+        Err(e) => ToolOutcome::error(e),
+    }
+}
+
+fn notices_spec() -> marlowe_model::ToolSpec {
+    spec(
+        "notices",
+        "Read what the daemon noticed on its own (runs finished or stalled, CI, jobs, monitors, schedules, messages). \
+         Reading marks them seen; `unread` keeps only new ones; `since` is a local time or Unix ms; `source` e.g. run, \
+         ci, task, message, notify.",
+        json!({
+            "unread": {"type": "boolean"},
+            "since": {"type": "string"},
+            "source": {"type": "string"},
+            "limit": {"type": "integer"}
+        }),
+        &[],
+    )
+}
+
+fn notices_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
+    let Some(bg) = cx.scope.services.get::<marlowe_agent::Background>() else { return ToolOutcome::error(NO_DAEMON) };
+    let since_ms = match args.get("since") {
+        None | Some(Value::Null) => None,
+        Some(Value::Number(n)) => n.as_i64(),
+        Some(Value::String(s)) if s.trim().is_empty() => None,
+        Some(Value::String(s)) => match s.trim().parse::<i64>() {
+            Ok(ms) => Some(ms),
+            Err(_) => match marlowe_agent::cron::parse_local_time(s) {
+                Some(ms) => Some(ms),
+                None => return ToolOutcome::error(format!("`since` must be a local time like 2026-10-12T09:00 or Unix ms, not `{s}`")),
+            },
+        },
+        Some(_) => return ToolOutcome::error("`since` must be a local time or Unix ms"),
+    };
+    let query = NoticeQuery {
+        unread: args.get("unread").and_then(Value::as_bool).unwrap_or(false),
+        since_ms,
+        source: str_arg(args, "source").map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty()),
+        limit: int_arg(args, "limit").filter(|l| *l > 0).map(|l| (l as usize).min(100)).unwrap_or(20),
+    };
+    match bg.0.notices(&cx.session, &query) {
+        Err(e) => ToolOutcome::error(e),
+        Ok(list) if list.is_empty() => ToolOutcome::ok(if query.unread { "No unread notices." } else { "No notices." }, "none"),
+        Ok(list) => {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+            let lines: Vec<String> = list
+                .iter()
+                .map(|n| {
+                    let age = super::tasks::fmt_elapsed(now - n.at_ms);
+                    let detail = if n.detail.trim().is_empty() { String::new() } else { format!(" — {}", first_line(&n.detail, 160)) };
+                    let head = format!("[{:?}] {:?}/{}", n.severity, n.source, n.kind).to_lowercase();
+                    format!("{head} {}{detail} ({age} ago)", first_line(&n.title, 100))
+                })
+                .collect();
+            ToolOutcome::ok(lines.join("\n"), format!("{} notices", list.len()))
+        }
+    }
+}
+
+pub fn tools() -> Vec<ToolDef> {
+    vec![
+        ToolDef::new(notify_spec(), ToolGroup::Notify, Effects::NONE, |_, a, cx| notify_call(a, cx))
+            .describe(|c| describe_by(c, "title"))
+            .enabled(live),
+        ToolDef::new(send_file_spec(), ToolGroup::Notify, Effects::READ, |t, a, cx| send_file_call(t, a, cx))
+            .path_args(&["path"])
+            .describe(|c| describe_by(c, "path"))
+            .enabled(live),
+        ToolDef::new(notices_spec(), ToolGroup::Notify, Effects::READ, |_, a, cx| notices_call(a, cx)).enabled(live),
+    ]
+}
+
+/// Loop middleware for this group: none.
+pub fn middleware(tools: &BuiltinTools) -> Vec<Arc<dyn marlowe_agent::ToolMiddleware>> {
     super::no_middleware(tools)
 }
 
-/// This group's `persona/blocks/<group>.md` (`include_str!`) once it exists; appended only while
-/// the group is exposed and has a live tool.
+/// `persona/blocks/tasks.md` describes both groups and is appended with the tasks group.
 pub fn persona_block() -> Option<&'static str> {
     None
 }
 
-/// Per-host setup from the profile home (state via `BuiltinTools::with_state`).
-pub fn configure(tools: crate::BuiltinTools, setup: &super::HostSetup<'_>) -> crate::BuiltinTools {
-    super::no_configure(tools, setup)
+/// Turns the group on for a host the binary builds (the conductor's).
+pub fn configure(tools: BuiltinTools, _setup: &super::HostSetup<'_>) -> BuiltinTools {
+    tools.with_state(NotifyGroup { enabled: true })
 }
 
-/// Whether a local model gets this group in `root`. N: every workspace.
-pub fn detect(_root: Option<&std::path::Path>) -> bool {
-    false
+/// Every workspace, like the tasks group.
+pub fn detect(root: Option<&Path>) -> bool {
+    root.is_some()
 }
+
+#[cfg(test)]
+mod tests;

@@ -252,6 +252,18 @@ impl ModelSource for OllamaHw {
         let v = http::get_json(&self.endpoint, "/api/ps", QUICK).ok()?;
         Some(parse_ps(&v).into_iter().map(|p| p.name).collect())
     }
+
+    fn unload(&self, model_id: &str) -> Result<(), String> {
+        // `keep_alive: 0` on a request with no prompt unloads the model at once.
+        http::post_json(&self.endpoint, "/api/generate", &unload_body(model_id), Duration::from_secs(8))
+            .map(|_| ())
+            .map_err(|e| format!("could not unload {model_id}: {e}"))
+    }
+}
+
+/// The request that unloads `model` from Ollama.
+pub fn unload_body(model: &str) -> Value {
+    json!({ "model": model, "keep_alive": 0 })
 }
 
 /// Sets Ollama's user environment variables and restarts the tray app. See the module docs.

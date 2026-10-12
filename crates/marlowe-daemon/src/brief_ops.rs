@@ -400,7 +400,7 @@ fn speak(core: &Core, text: &str) {
 
 /// [`speak`] for a notice nobody asked to hear: it never loads a voice model onto the GPU (a
 /// clone that is not up leaves it to the Windows voice).
-fn speak_background(core: &Core, text: &str) {
+pub(crate) fn speak_background(core: &Core, text: &str) {
     let Some(v) = &core.voice else { return };
     if text.trim().is_empty() || quiet_hours(core).contains(local_minute()) {
         return;

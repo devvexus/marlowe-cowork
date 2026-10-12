@@ -50,6 +50,7 @@ pub(crate) fn serve(core: Arc<Core>, stream: TcpStream) {
     core.bus.reply(id, core.user.event());
     crate::mind_ops::offer_legacy(&core, id);
     crate::brief::on_hello(&core, id, &name);
+    crate::close_ops::client_attached(&core, id, &name);
 
     loop {
         let next = reader.next::<Request>();
@@ -65,6 +66,7 @@ pub(crate) fn serve(core: Arc<Core>, stream: TcpStream) {
     }
     core.bus.detach(id);
     crate::brief::on_goodbye(&core, &name);
+    crate::close_ops::client_gone(&core, id, &name);
 }
 
 /// Answers an unauthenticated connection and closes it.
@@ -223,6 +225,11 @@ fn dispatch(core: &Arc<Core>, client: u64, client_name: &str, req: Request) {
         | Request::RunWorkflow { .. }
         | Request::SkipWorkflowAgent { .. }
         | Request::ListFindings { .. }) => crate::workflow_ops::dispatch(core, client, flow),
+        // Closing the window (N): the daemon's own lifetime.
+        close @ (Request::WindowClosed
+        | Request::Detach { .. }
+        | Request::ResumeInterrupted { .. }
+        | Request::KeepRunning { .. }) => crate::close_ops::dispatch(core, client, close),
         f3 @ (Request::SetFast { .. } | Request::AnswerPlan { .. } | Request::SuggestRules { .. }) => {
             crate::f3_ops::dispatch(core, client, f3)
         }

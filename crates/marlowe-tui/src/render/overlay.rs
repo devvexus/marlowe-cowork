@@ -354,6 +354,40 @@ pub fn import_offer(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &
     put(buf, inner.x, y, &Line::from(spans), inner.width);
 }
 
+/// A question with buttons: quitting with work running, or resuming what a close interrupted.
+pub fn choice(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut Buffer) {
+    let Some(dialog) = state.closing.dialog.as_ref() else { return };
+    let w: u16 = 70;
+    let body = text::wrap(&dialog.prompt(), (w - 4) as usize);
+    let r = centred(area, w, body.len() as u16 + 5, false);
+    let inner = panel(r, dialog.title(), ink(Ink::Accent, theme), false, buf);
+    for (i, l) in body.iter().enumerate() {
+        put(buf, inner.x, inner.y + i as u16, &Line::from(Span::styled(l.clone(), theme.normal())), inner.width);
+    }
+    let mut spans = Vec::new();
+    let y = inner.y + body.len() as u16 + 1;
+    let mut x = inner.x;
+    for (i, (key, label)) in dialog.choices().iter().enumerate() {
+        let on = i == sel;
+        let over = hovered(state, &Target::Button(i));
+        let style = match (on, over) {
+            (true, _) => ink(Ink::Accent, theme).add_modifier(Modifier::BOLD),
+            (false, true) => theme.bright(),
+            (false, false) => theme.normal(),
+        };
+        spans.push(row_marker(on, over, theme));
+        spans.push(Span::styled(format!("{key} "), ink(Ink::Dimmer, theme)));
+        spans.push(Span::styled(*label, style));
+        spans.push(Span::raw("      "));
+        let w = (2 + key.len() + 1 + label.len()) as u16;
+        if y < inner.bottom() {
+            hit(state, Rect { x, y, width: w, height: 1 }.intersection(inner), Target::Button(i));
+        }
+        x += w + 6;
+    }
+    put(buf, inner.x, y, &Line::from(spans), inner.width);
+}
+
 /// First-run onboarding. Returns where the cursor goes on the name step.
 pub fn onboard(area: Rect, state: &State, theme: &Theme, buf: &mut Buffer) -> Option<(u16, u16)> {
     use crate::onboard::{address_choices, ItemKind, ItemState, Onboard, Step};

@@ -42,8 +42,12 @@ use crate::tools::{
 
 /// Tools a subagent never gets: no nesting (depth 1), no questions to the user, no session-level
 /// moves, no crew dispatch, no workflows (WF2: only the conductor starts them).
-pub const NEVER_FOR_SUBAGENTS: &[&str] =
-    &["agent", "send_message", "ask_user", "enter_worktree", "exit_worktree", "exit_plan", "dispatch", "workflow"];
+pub const NEVER_FOR_SUBAGENTS: &[&str] = &[
+    "agent", "send_message", "ask_user", "enter_worktree", "exit_worktree", "exit_plan", "dispatch", "workflow",
+    // Background work and the user's attention belong to the session that conducts (track N).
+    "task_list", "task_output", "task_stop", "monitor", "cron_create", "cron_list", "cron_delete", "schedule_wakeup",
+    "list_agents", "watch", "notify", "send_file", "notices",
+];
 
 /// Read-only tools by name, for hosts that do not publish manifests.
 const READ_ONLY_NAMES: &[&str] = &[
@@ -675,7 +679,18 @@ struct State {
     running: Mutex<HashSet<String>>,
     /// Background agents' cancel tokens, by id.
     background: Mutex<HashMap<String, marlowe_model::CancelToken>>,
+    /// Every agent this service started: id -> (label, started in the background).
+    labels: Mutex<HashMap<String, (String, bool)>>,
     next: AtomicU64,
+}
+
+/// One subagent as `list_agents` and the task list show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSummary {
+    pub id: String,
+    pub label: String,
+    pub background: bool,
+    pub running: bool,
 }
 
 /// The subagent service in `Services` (one per session).
@@ -810,6 +825,7 @@ impl Subagents {
         let mut convo = Conversation::new(session, workspace.clone());
         convo.exposure.tainted = cx.tainted;
         let label = if req.description.is_empty() { ty.name.clone() } else { format!("{}: {}", ty.name, req.description) };
+        self.state.labels.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), (label.clone(), req.background));
 
         if req.background {
             let me = self.clone();
@@ -913,6 +929,40 @@ impl Subagents {
 }
 
 impl Subagents {
+    /// Every agent this session started, in the order it started them.
+    pub fn agents(&self) -> Vec<AgentSummary> {
+        let running = self.state.running.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let labels = self.state.labels.lock().unwrap_or_else(|p| p.into_inner());
+        let mut out: Vec<AgentSummary> = labels
+            .iter()
+            .map(|(id, (label, background))| AgentSummary {
+                id: id.clone(),
+                label: label.clone(),
+                background: *background,
+                running: running.contains(id),
+            })
+            .collect();
+        out.sort_by_key(|a| a.id.trim_start_matches("agent-").parse::<u64>().unwrap_or(u64::MAX));
+        out
+    }
+
+    /// Whether `id` names an agent this service started (running or finished).
+    pub fn knows(&self, id: &str) -> bool {
+        self.state.labels.lock().unwrap_or_else(|p| p.into_inner()).contains_key(id)
+    }
+
+    /// Cancels one running background agent; it still reports, as interrupted. False when `id`
+    /// is not a running background agent.
+    pub fn cancel_one(&self, id: &str) -> bool {
+        match self.state.background.lock().unwrap_or_else(|p| p.into_inner()).get(id) {
+            Some(c) => {
+                c.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The background agents still running.
     pub fn background_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = self.state.background.lock().unwrap_or_else(|p| p.into_inner()).keys().cloned().collect();
@@ -947,9 +997,21 @@ pub fn send_message_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
     if id.is_empty() || text.trim().is_empty() {
         return ToolOutcome::error("`agent_id` and `text` are required");
     }
-    match cx.scope.services.get::<Subagents>() {
-        Some(s) => s.send(id, text, cx),
-        None => ToolOutcome::error("subagents are not available in this session"),
+    // A subagent this session started continues here; anything else (a crew run, a workflow
+    // agent, `session:<id>`) goes to the daemon's messenger (track N).
+    let subagents = cx.scope.services.get::<Subagents>();
+    if subagents.is_some_and(|s| s.knows(id)) || id.starts_with("agent-") {
+        return match subagents {
+            Some(s) => s.send(id, text, cx),
+            None => ToolOutcome::error("subagents are not available in this session"),
+        };
+    }
+    match cx.scope.services.get::<crate::background::Background>() {
+        Some(b) => match b.0.send_message(&cx.session, id, text, cx.tainted, &cx.cancel) {
+            Ok(said) => ToolOutcome::ok(said, format!("sent to {id}")),
+            Err(e) => ToolOutcome::error(e),
+        },
+        None => ToolOutcome::error("messages to other agents and sessions are not available here"),
     }
 }
 

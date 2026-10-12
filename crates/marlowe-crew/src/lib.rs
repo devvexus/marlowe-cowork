@@ -31,7 +31,7 @@ pub use run::{title_from_goal, Run, StepRecord};
 pub use sandbox::{repo_digest, MergeOutcome, Sandbox, ShellVerdict};
 pub use store::RunStore;
 pub use supervisor::{
-    result_memory, CrewConfig, CrewDeps, CrewEvent, CrewSetup, GpuBusy, RunApprovals, RunNotice, Supervisor,
+    result_memory, CrewConfig, CrewDeps, CrewEvent, CrewSetup, GpuBusy, RunApprovals, RunNotice, Supervisor, INTERRUPTED,
 };
 pub use tools::{CrewToolFactory, CrewTools};
 

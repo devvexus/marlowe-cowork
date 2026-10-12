@@ -136,6 +136,7 @@ impl State {
             out.push(Request::ListCommands { workspace: ws });
         }
         self.statusline_tick();
+        self.closing_tick(&mut out);
         out
     }
 

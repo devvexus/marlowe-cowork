@@ -288,6 +288,7 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
     match &state.overlay {
         Some(Overlay::Palette { query, sel }) => overlay::palette(area, state, query, *sel, theme, buf),
         Some(Overlay::ImportOffer { sel }) => overlay::import_offer(area, state, *sel, theme, buf),
+        Some(Overlay::Choice { sel }) => overlay::choice(area, state, *sel, theme, buf),
         Some(Overlay::Onboard) => overlay_cursor = overlay::onboard(area, state, theme, buf),
         Some(Overlay::Dispatch) => overlay_cursor = crew::dispatch(area, state, theme, buf),
         Some(Overlay::Panel) => overlay_cursor = panel::draw(area, state, theme, buf),

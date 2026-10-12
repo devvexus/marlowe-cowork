@@ -143,6 +143,10 @@ pub enum CrewEvent {
     Findings { run: RunId, session: Option<SessionId>, findings: Vec<marlowe_proto::Finding> },
 }
 
+/// The note a run carries when the window closed on it (`interrupted: stopped after step 4 while
+/// running cargo test`). The prompt at the next launch finds the runs by it.
+pub const INTERRUPTED: &str = "interrupted";
+
 /// Handle to the supervisor. Clones share one.
 #[derive(Clone)]
 pub struct Supervisor {
@@ -981,6 +985,85 @@ impl Supervisor {
         while self.inner.state().threads > 0 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// The window closed (N, 2026-10-10), first half: fires every run's cancel token and stop
+    /// flag, so in-flight model calls end at once, and returns the runs that were queued or
+    /// running. Does not wait; [`Supervisor::settle_interrupted`] does, after the models are
+    /// unloaded.
+    pub fn cancel_for_close(&self) -> Vec<RunId> {
+        let before: Vec<RunId> = self.inner.store().resumable().unwrap_or_default().into_iter().map(|r| r.id).collect();
+        let mut st = self.inner.state();
+        st.stopping = true;
+        for live in st.live.values().filter(|l| l.running) {
+            live.ctl.stop.store(true, Ordering::SeqCst);
+            live.ctl.cancel.cancel();
+        }
+        drop(st);
+        self.inner.wake();
+        before
+    }
+
+    /// Second half: waits up to ten seconds for the run threads, then leaves each run in `runs`
+    /// that did not finish `paused` with a note that says where it stopped ([`INTERRUPTED`]), its
+    /// step checkpoints kept. The next start does not resume them by itself: the user is asked
+    /// first ([`Supervisor::interrupted`], then [`Supervisor::resume`]). Returns the runs it
+    /// interrupted.
+    pub fn settle_interrupted(&self, runs: &[RunId]) -> Vec<Run> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.inner.state().threads > 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let mut out = Vec::new();
+        for id in runs {
+            let Ok(mut run) = self.inner.run(id) else { continue };
+            if run.status.is_terminal() || matches!(run.status, CrewRunStatus::NeedsYou | CrewRunStatus::Paused) {
+                continue;
+            }
+            let steps = run.step;
+            let doing = run.current_action.clone().filter(|a| !a.trim().is_empty());
+            run.status = CrewRunStatus::Paused;
+            run.note = Some(match doing {
+                Some(a) => format!("{INTERRUPTED}: stopped after step {steps} while {a}"),
+                None => format!("{INTERRUPTED}: stopped after step {steps}"),
+            });
+            run.current_action = None;
+            run.updated_ms = crate::now_ms();
+            if self.inner.store().save(&run).is_ok() {
+                out.push(run);
+            }
+        }
+        out
+    }
+
+    /// [`Supervisor::cancel_for_close`] then [`Supervisor::settle_interrupted`].
+    pub fn interrupt_for_close(&self) -> Vec<Run> {
+        let runs = self.cancel_for_close();
+        self.settle_interrupted(&runs)
+    }
+
+    /// Runs a closed window interrupted and the user has not answered for, oldest first.
+    pub fn interrupted(&self) -> Vec<Run> {
+        let mut runs: Vec<Run> = self
+            .inner
+            .store()
+            .list(500)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| r.status == CrewRunStatus::Paused && r.note.as_deref().is_some_and(|n| n.starts_with(INTERRUPTED)))
+            .collect();
+        runs.sort_by_key(|r| r.updated_ms);
+        runs
+    }
+
+    /// The user chose not to resume an interrupted run: it stays paused, with the usual note.
+    pub fn keep_paused(&self, run: &RunId) -> Result<(), CrewError> {
+        let mut r = self.inner.run(run)?;
+        if r.status == CrewRunStatus::Paused && r.note.as_deref().is_some_and(|n| n.starts_with(INTERRUPTED)) {
+            r.note = Some("paused".into());
+            self.inner.save_detached(r)?;
+        }
+        Ok(())
     }
 
     /// A run no thread is working on, for merge and discard.
