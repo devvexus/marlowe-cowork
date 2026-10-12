@@ -250,6 +250,27 @@ fn enter_without_reasoning_on_screen_goes_back_to_the_message_box() {
     assert_eq!(s.focus, Focus::Message);
 }
 
+/// A turn that only thought and never answered does not go silent: a dim line says so. A turn
+/// that answered, or an Interrupted one (which has its own note), gets no such line.
+#[test]
+fn a_turn_that_ended_with_thinking_only_says_so() {
+    let mut s = state();
+    welcome(&mut s, 0);
+    feed(&mut s, 1, library_with_sonnet());
+    s.session = Some(sid());
+    feed(&mut s, 2, Event::TurnStarted { session: sid(), turn: 1, model: sonnet_ref(), user: "where is the config?".into() });
+    feed(&mut s, 3, Event::ReasoningDelta { session: sid(), turn: 1, text: "it is in conf.toml".into(), tokens: 5 });
+    feed(&mut s, 4, Event::TurnFinished { session: sid(), turn: 1, usage: usage(), stop: TurnStop::Done });
+    assert!(contains(&render(&s, 140, 40), "ended without a reply"));
+    assert_palette_only(&render(&s, 140, 40));
+
+    feed(&mut s, 5, Event::TurnStarted { session: sid(), turn: 2, model: sonnet_ref(), user: "and the log?".into() });
+    feed(&mut s, 6, Event::TextDelta { session: sid(), turn: 2, text: "In run.log.".into() });
+    feed(&mut s, 7, Event::TurnFinished { session: sid(), turn: 2, usage: usage(), stop: TurnStop::Done });
+    let notes = s.entries.iter().filter(|e| matches!(e, Entry::Note { text, .. } if text == "ended without a reply")).count();
+    assert_eq!(notes, 1, "only the silent turn has the line");
+}
+
 /// The pointer lights a marker one weight up; a click folds that block where it is, again and
 /// again, and leaves the keys in the Message box so Enter still sends.
 #[test]

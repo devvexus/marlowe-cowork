@@ -1274,6 +1274,35 @@ fn parity_b3_loop_guards_cut_repetition_note_repeated_failures_and_nudge_promise
     assert_eq!(out.stop, TurnStop::Done);
 }
 
+/// A step that only thinks: reasoning, no text, no call.
+fn thinking_only(t: &str) -> Vec<StreamEvent> {
+    vec![StreamEvent::ReasoningDelta { text: t.into(), tokens: 4 }, StreamEvent::Stop(StopReason::EndTurn)]
+}
+
+#[test]
+fn a_step_that_only_thinks_is_nudged_once_and_the_answer_stands() {
+    let p = Script::new(vec![thinking_only("the config is in conf.toml"), answer("It is in conf.toml.")]);
+    let mut a = agent(p.clone(), frontier(), Fake::new());
+    a.middleware.push(guard::LoopGuard::new());
+    let out = run(&a, &mut convo(None), "where is the config?");
+    let r = p.requests();
+    assert_eq!(r.len(), 2);
+    assert_eq!(last_user(&r[1]), guard::EMPTY_NUDGE);
+    assert_eq!((out.stop, out.text.as_str()), (TurnStop::Done, "It is in conf.toml."));
+}
+
+#[test]
+fn a_model_that_stays_silent_after_the_nudge_ends_the_turn_empty_without_looping() {
+    let p = Script::new(vec![thinking_only("first"), thinking_only("again")]);
+    let mut a = agent(p.clone(), frontier(), Fake::new());
+    a.middleware.push(guard::LoopGuard::new());
+    let out = run(&a, &mut convo(None), "where is the config?");
+    let r = p.requests();
+    assert_eq!(r.len(), 2, "one call, one nudge, one more call");
+    assert_eq!(r.iter().filter(|q| messages_text(q).contains(guard::EMPTY_NUDGE)).count(), 1);
+    assert_eq!((out.stop, out.text.trim()), (TurnStop::Done, ""));
+}
+
 #[test]
 fn parity_b4_t22_todos_are_tracked_reminded_when_stale_and_keep_the_turn_going() {
     let items = json!({"items": [{"content": "write the parser", "status": "in_progress"}, {"content": "test the parser", "status": "pending"}]});

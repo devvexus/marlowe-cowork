@@ -291,6 +291,10 @@ pub const ERROR_NUDGE: &str = "<system-reminder>\nYour last tool call failed and
 again. If the error shows what to change (a path, a name, an argument, the code), make the corrected call now. \
 Otherwise say in one sentence what blocks you.\n</system-reminder>";
 
+/// Sent once per turn when the model's last step wrote no reply (it thought, or said nothing,
+/// and stopped).
+pub const EMPTY_NUDGE: &str = "<system-reminder>\nYou ended your turn without writing a reply. Write your answer to the user now.\n</system-reminder>";
+
 fn repeated_failure_note(times: u32) -> String {
     format!(
         "\n\n[harness: this is the same failure {times} calls in a row. Repeating the call will not change it. Read \
@@ -318,8 +322,8 @@ pub struct GuardState {
     batch_failed: bool,
     /// Whether the last step's batch had a failed call.
     last_batch_failed: bool,
-    /// `(turn, promise nudged, error nudged)`.
-    nudged: (u32, bool, bool),
+    /// `(turn, promise nudged, error nudged, empty-reply nudged)`.
+    nudged: (u32, bool, bool, bool),
 }
 
 /// The guard middleware (see the module docs).
@@ -420,7 +424,7 @@ impl ToolMiddleware for LoopGuard {
     fn before_final(&self, info: StepInfo, convo: &mut Conversation, text: &str) -> FinalFlow {
         let st = convo.ext.get_or_default::<GuardState>();
         if st.nudged.0 != info.turn {
-            st.nudged = (info.turn, false, false);
+            st.nudged = (info.turn, false, false, false);
             // A failure from an earlier turn is not this turn's.
             if info.step <= 1 {
                 st.last_batch_failed = false;
@@ -435,6 +439,10 @@ impl ToolMiddleware for LoopGuard {
             st.nudged.2 = true;
             st.last_batch_failed = false;
             return FinalFlow::Continue(ERROR_NUDGE.into());
+        }
+        if !st.nudged.3 && text.trim().is_empty() {
+            st.nudged.3 = true;
+            return FinalFlow::Continue(EMPTY_NUDGE.into());
         }
         FinalFlow::Accept
     }

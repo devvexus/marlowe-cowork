@@ -121,7 +121,7 @@ fn parity_U1_an_edit_result_carries_its_diff_under_the_tool_line() {
     }
     snapshot("inline_diff", &buf);
     // The conversation was not rebuilt, and the tool line is still one line.
-    assert_eq!(s.entries.len(), entries + 1, "only the usage line was added");
+    assert_eq!(s.entries.len(), entries + 2, "only the usage line and the no-reply note were added");
     assert_eq!(s.entries.iter().filter(|e| matches!(e, Entry::Tool { .. })).count(), 1);
 }
 

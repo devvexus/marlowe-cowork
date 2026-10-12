@@ -1204,6 +1204,9 @@ impl State {
                     }
                 }
                 match stop {
+                    TurnStop::Done if self.live.is_some() && !self.turn_said_anything() => {
+                        self.note("ended without a reply", NoteTone::Dim)
+                    }
                     TurnStop::Done | TurnStop::Error => {}
                     TurnStop::Interrupted => self.note("interrupted", NoteTone::Amber),
                     TurnStop::StepLimit => self.note("stopped at the step limit", NoteTone::Amber),
@@ -1413,6 +1416,20 @@ impl State {
 
     pub(crate) fn note(&mut self, text: &str, tone: NoteTone) {
         self.entries.push(Entry::Note { text: text.to_string(), tone });
+    }
+
+    /// Whether the turn in flight showed the user anything to read: prose, a note, a file or a
+    /// job's output after the last thing they or a background source said.
+    fn turn_said_anything(&self) -> bool {
+        self.entries
+            .iter()
+            .rev()
+            .take_while(|e| !matches!(e, Entry::User { steer: false, .. } | Entry::News { .. }))
+            .any(|e| match e {
+                Entry::Prose { text } => !text.trim().is_empty(),
+                Entry::Note { .. } | Entry::File { .. } | Entry::Job { .. } | Entry::Brief { .. } => true,
+                _ => false,
+            })
     }
 
     /// The last reasoning block stops streaming at `at_ms`, which settles how long it took.

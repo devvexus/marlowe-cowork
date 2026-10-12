@@ -1113,7 +1113,9 @@ fn parity_s4_a_rewind_does_not_give_the_money_back_and_an_empty_answer_is_billed
     p.push(tool_script(&[write("c1", "a.txt", "x")]));
     p.push(say("done"));
     p.push(say("second"));
-    // The third answer has no text and no tool calls: no row to store, but it was billed.
+    // The third answer has no text and no tool calls: no row to store, but it was billed. The
+    // guard asks once more for a reply, which comes back empty too.
+    p.push(vec![usage(500, 0), Step::Ev(StreamEvent::Stop(StopReason::EndTurn))]);
     p.push(vec![usage(500, 0), Step::Ev(StreamEvent::Stop(StopReason::EndTurn))]);
     let d = start(&home, p, None);
     let mut c = Client::connect(&d.info);
@@ -1122,12 +1124,12 @@ fn parity_s4_a_rewind_does_not_give_the_money_back_and_an_empty_answer_is_billed
     c.turn(Some(&id), "third", None);
 
     let before = c.cost(&id);
-    assert_eq!(before.calls, 4);
-    assert_eq!((before.usage.input, before.usage.output), (3_500, 600));
+    assert_eq!(before.calls, 5);
+    assert_eq!((before.usage.input, before.usage.output), (4_000, 600));
     c.rewind(&id, 1, RewindScope::Both);
     assert_eq!(user_texts(&c.transcript(&id)), vec!["first".to_string()], "the later turns are gone");
     let after = c.cost(&id);
-    assert_eq!((after.calls, after.usage.input, after.usage.output), (4, 3_500, 600), "{after:?}");
+    assert_eq!((after.calls, after.usage.input, after.usage.output), (5, 4_000, 600), "{after:?}");
     assert_eq!(after.usage.cost_usd, before.usage.cost_usd);
     assert!(before.usage.cost_usd.unwrap() > 0.0);
     stop(d);
