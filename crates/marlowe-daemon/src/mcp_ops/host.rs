@@ -1,8 +1,12 @@
 //! The tool host that puts MCP servers beside a session's built-in tools.
 //!
-//! Model-visible: `mcp__<server>__<tool>` for every available tool (or, past the threshold,
-//! only `tool_search` and the tools it activated), and `list_mcp_resources` /
-//! `read_mcp_resource` while a connected server has resources.
+//! Model-visible: `mcp__<server>__<tool>` for every available tool that fits the host's MCP share
+//! (compacted: first-sentence descriptions, no schema noise) or, past it, only `tool_search`, whose
+//! description is a signature index of every MCP tool, and the tools it activated. And
+//! `list_mcp_resources` / `read_mcp_resource` while a connected server has resources.
+//! `tool_search` is for MCP tools only: the built-ins are all listed. A direct call to any
+//! `mcp__server__tool` runs without loading it first; the forgiving layer validates it against the
+//! server's real schema and answers a mistake with the exact signature.
 //!
 //! Callable but not listed, for the conductor's own commands (`@server:uri` mentions, the
 //! `/mcp__server__prompt` slash commands): `mcp_list_prompts` and `mcp_get_prompt`. They go
@@ -15,6 +19,8 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
+use marlowe_agent::args::{arg_list, ArgRules};
+use marlowe_agent::context::{tool_spec_tokens, PrefixBudget};
 use marlowe_agent::{
     CallCtx, Consequence, Effects, Exposure, Mutation, PersonaBlock, Profiles, ToolCallReq, ToolCtx, ToolGroup, ToolHost,
     ToolManifest, ToolMiddleware, ToolOutcome,
@@ -27,24 +33,21 @@ use marlowe_model::image::{base64_decode, ingest, BlobStore, STORE_LONG_EDGE};
 use marlowe_model::{ResultPart, ToolSpec};
 use serde_json::{json, Map, Value};
 
-/// MCP tools beyond this many are deferred behind `tool_search`.
+/// MCP tools beyond this many are behind `tool_search` whatever their size.
 pub(super) const DEFER_OVER_TOOLS: usize = 20;
 
-/// Estimated tokens the MCP tool schemas may take before they are deferred, by context window.
-pub(super) fn schema_budget(window: Option<u32>) -> usize {
-    match window.unwrap_or(32_768) {
-        0..=40_000 => 1_000,
-        40_001..=130_000 => 3_000,
-        _ => 8_000,
-    }
-}
+/// Tokens the layers above this host add to the tool list (the memory tools and `dispatch`).
+const COMPOSED_RESERVE: usize = 600;
+/// Tokens of `list_mcp_resources` and `read_mcp_resource`, listed while a server has resources.
+const RESOURCE_SPECS: usize = 90;
 
 pub struct McpTools {
     inner: Arc<dyn ToolHost>,
     hub: Arc<Hub>,
     /// Tools `tool_search` has loaded this session.
     activated: Mutex<BTreeSet<String>>,
-    budget: usize,
+    /// The conductor's context window, which sizes the tools slice this host shares.
+    window: Option<u32>,
     /// Where an image a server returns is kept (`<home>lobs`); without one images are named
     /// in the text and not shown.
     blobs: Option<Arc<dyn BlobStore>>,
@@ -52,7 +55,7 @@ pub struct McpTools {
 
 impl McpTools {
     pub fn new(inner: Arc<dyn ToolHost>, hub: Arc<Hub>, window: Option<u32>) -> Self {
-        Self { inner, hub, activated: Mutex::new(BTreeSet::new()), budget: schema_budget(window), blobs: None }
+        Self { inner, hub, activated: Mutex::new(BTreeSet::new()), window, blobs: None }
     }
 
     /// Keeps the images MCP tools return (a notebook's plot, a screenshot) as `Part::Image`.
@@ -80,13 +83,22 @@ impl McpTools {
         self.activated.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// Whether the MCP tools are too many or too large to list.
+    /// Tokens of the tools slice this host may fill: what the window's slice leaves after the
+    /// built-ins it sits beside, the layers above it, and the resource tools.
+    pub fn share(&self) -> usize {
+        let slice = PrefixBudget::for_window(self.window.unwrap_or(32_768)).tools as usize;
+        let built = tool_spec_tokens(&self.inner.specs()) as usize;
+        let resources = if self.hub.has_resources() { RESOURCE_SPECS } else { 0 };
+        slice.saturating_sub(built + COMPOSED_RESERVE + resources)
+    }
+
+    /// Whether the MCP tools are too many, or too large in their compact form, to list.
     pub fn deferred(&self, tools: &[ExposedTool]) -> bool {
         if tools.len() > DEFER_OVER_TOOLS {
             return true;
         }
-        let tokens: usize = tools.iter().map(|t| output::estimate_tokens(&format!("{}{}{}", t.exposed, t.tool.description, t.tool.input_schema))).sum();
-        tokens > self.budget
+        let compact: Vec<ToolSpec> = tools.iter().map(Self::compact_spec).collect();
+        tool_spec_tokens(&compact) as usize > self.share()
     }
 
     fn is_internal(name: &str) -> bool {
@@ -97,7 +109,9 @@ impl McpTools {
         names::is_mcp(name) || Self::is_internal(name)
     }
 
-    fn spec_of(t: &ExposedTool) -> ToolSpec {
+    /// The tool as its server declared it (without `$schema`): what calls are validated against
+    /// and what `tool_search` loads.
+    fn full_spec(t: &ExposedTool) -> ToolSpec {
         let mut schema = t.tool.input_schema.clone();
         if let Some(o) = schema.as_object_mut() {
             o.remove("$schema");
@@ -106,12 +120,28 @@ impl McpTools {
         let description = if t.tool.description.is_empty() {
             format!("Tool {} of the MCP server {}.", t.tool.name, t.server)
         } else {
-            format!("{} (MCP server {})", t.tool.description, t.server)
+            t.tool.description.clone()
         };
         ToolSpec { name: t.exposed.clone(), description, input_schema: schema }
     }
 
-    fn search_spec(&self, tools: &[ExposedTool], builtin: Option<&ToolSpec>) -> ToolSpec {
+    /// The listed form: schema noise dropped, property descriptions cut to their first clause
+    /// (60 characters), the description to its first sentence (200). The name already carries the
+    /// server, so no suffix says it again.
+    fn compact_spec(t: &ExposedTool) -> ToolSpec {
+        let full = Self::full_spec(t);
+        ToolSpec {
+            name: full.name,
+            description: first_sentence(&full.description, 200),
+            input_schema: compact_schema(&full.input_schema, false),
+        }
+    }
+
+    /// `tool_search`: for tools of connected MCP servers only. Its description names the servers
+    /// and carries a signature index of every MCP tool, so the model knows each by name and
+    /// arguments without a schema. Past the share the index drops its description fragments, then
+    /// groups by server, but never an argument name.
+    fn search_spec(&self, tools: &[ExposedTool]) -> ToolSpec {
         let mut by_server: Vec<(String, usize)> = Vec::new();
         for t in tools {
             match by_server.iter_mut().find(|(s, _)| *s == t.server) {
@@ -120,15 +150,55 @@ impl McpTools {
             }
         }
         let servers = by_server.iter().map(|(s, n)| format!("{s} ({n})")).collect::<Vec<_>>().join(", ");
-        // The built-ins deferred on a small window (T31) load through the same call.
-        let builtin_note = builtin.map(|b| format!(" Also: {}", b.description)).unwrap_or_default();
+        let head = format!(
+            "Loads tools from the connected MCP servers: {servers}. They are not in the tool list; \
+             call one directly by name (mcp__server__tool), or give keywords or `select:name1,name2` \
+             to load its full schema. Tools:\n"
+        );
+        let share = self.share();
+        let named = |t: &ExposedTool| format!("{}({})", t.exposed, arg_list(&Self::full_spec(t).input_schema));
+        let level1: Vec<String> = tools
+            .iter()
+            .map(|t| {
+                let gist = first_words(&t.tool.description, 8);
+                if gist.is_empty() {
+                    named(t)
+                } else {
+                    format!("{} — {gist}", named(t))
+                }
+            })
+            .collect();
+        let grouped = |names_only: bool| -> Vec<String> {
+            by_server
+                .iter()
+                .map(|(server, _)| {
+                    let mine: Vec<String> = tools
+                        .iter()
+                        .filter(|t| &t.server == server)
+                        .map(|t| {
+                            let args = arg_list(&Self::full_spec(t).input_schema);
+                            let args = if names_only { arg_names(&args) } else { args };
+                            format!("{}({args})", t.tool.name)
+                        })
+                        .collect();
+                    format!("{server}: {}", mine.join(", "))
+                })
+                .collect()
+        };
+        let fits = |lines: &[String]| output::estimate_tokens(&format!("{head}{}", lines.join("\n"))) <= share;
+        let index = if fits(&level1) {
+            level1
+        } else {
+            let level2 = grouped(false);
+            if fits(&level2) {
+                level2
+            } else {
+                grouped(true)
+            }
+        };
         ToolSpec {
             name: TOOL_SEARCH.into(),
-            description: format!(
-                "Find and load tools from connected MCP servers: {servers}. Their schemas are not listed up front. \
-                 Give keywords (\"create invoice\") or `select:name1,name2` for exact names. The tools found become \
-                 callable at once; the result lists each with its parameters.{builtin_note}"
-            ),
+            description: format!("{head}{}", index.join("\n")),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -171,34 +241,8 @@ impl McpTools {
         ToolOutcome::error(e.to_string())
     }
 
-    /// `tool_search` over the MCP tools and, when the built-in host defers its rarely used tools
-    /// (a small window, T31), over those too.
-    fn tool_search(&self, args: &Value, cx: &CallCtx) -> ToolOutcome {
-        let inner_defers = self.inner.specs().iter().any(|s| s.name == TOOL_SEARCH);
-        let tools = self.hub.tools();
-        let mcp_defers = !tools.is_empty() && self.deferred(&tools);
-        if !inner_defers {
-            return self.tool_search_mcp(args);
-        }
-        let builtin = self.inner.call_scoped(&ToolCallReq { id: "tool_search".into(), name: TOOL_SEARCH.into(), args: args.clone() }, cx);
-        if !mcp_defers {
-            return builtin;
-        }
-        let mcp = self.tool_search_mcp(args);
-        match (builtin.summary == "no match", mcp.summary == "no match") {
-            (true, _) => mcp,
-            (false, true) => builtin,
-            (false, false) => ToolOutcome {
-                content: format!("{}
-
-{}", builtin.content, mcp.content),
-                is_error: builtin.is_error && mcp.is_error,
-                summary: format!("{}; {}", builtin.summary, mcp.summary),
-                parts: Vec::new(),
-            },
-        }
-    }
-
+    /// Answers `tool_search`: keywords or `select:` over the MCP tools; what it finds is callable at
+    /// once and listed from now on.
     fn tool_search_mcp(&self, args: &Value) -> ToolOutcome {
         let Some(query) = args.get("query").and_then(Value::as_str).filter(|q| !q.trim().is_empty()) else {
             return ToolOutcome::error("tool_search needs a `query`");
@@ -225,7 +269,7 @@ impl McpTools {
         }
         text.push_str(&format!("Loaded {} tool(s); call them by these names:\n", found.len()));
         for t in &found {
-            let spec = Self::spec_of(t);
+            let spec = Self::full_spec(t);
             text.push_str(&format!("\n- {}: {}\n  parameters: {}\n", spec.name, spec.description, spec.input_schema));
         }
         Self::outcome(text, false, &format!("{} tools loaded", found.len()))
@@ -295,6 +339,63 @@ impl McpTools {
     }
 }
 
+/// The first sentence of `s`, at most `max` characters.
+fn first_sentence(s: &str, max: usize) -> String {
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let end = flat.find(". ").map_or(flat.len(), |i| i + 1);
+    cut(&flat[..end], max)
+}
+
+/// The first clause of `s`, at most `max` characters.
+fn first_clause(s: &str, max: usize) -> String {
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let end = flat.find(['.', ';', ':']).unwrap_or(flat.len());
+    cut(flat[..end].trim_end(), max)
+}
+
+fn cut(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let kept: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{}…", kept.trim_end())
+}
+
+/// The first `n` words of `s`.
+fn first_words(s: &str, n: usize) -> String {
+    s.split_whitespace().take(n).collect::<Vec<_>>().join(" ")
+}
+
+/// `a, b?: int` -> `a, b`.
+fn arg_names(args: &str) -> String {
+    args.split(", ").map(|a| a.split(['?', ':']).next().unwrap_or(a)).collect::<Vec<_>>().join(", ")
+}
+
+/// A tool schema without `$schema`, `title`, `examples`, `default`, `readOnly`, and with property
+/// descriptions cut to their first clause. `in_props`: `v` is a `properties` map, whose keys are
+/// property names, not schema keywords.
+fn compact_schema(v: &Value, in_props: bool) -> Value {
+    match v {
+        Value::Object(m) => {
+            let mut out = Map::new();
+            for (k, val) in m {
+                if !in_props && matches!(k.as_str(), "$schema" | "title" | "examples" | "example" | "default" | "readOnly") {
+                    continue;
+                }
+                let new = match (k.as_str(), val) {
+                    ("description", Value::String(d)) if !in_props => Value::String(first_clause(d, 60)),
+                    ("properties", Value::Object(_)) if !in_props => compact_schema(val, true),
+                    _ => compact_schema(val, false),
+                };
+                out.insert(k.clone(), new);
+            }
+            Value::Object(out)
+        }
+        Value::Array(a) => Value::Array(a.iter().map(|x| compact_schema(x, false)).collect()),
+        other => other.clone(),
+    }
+}
+
 fn one_line(v: &Value, max: usize) -> String {
     let s = v.to_string();
     if s.chars().count() <= max {
@@ -310,27 +411,48 @@ impl ToolHost for McpTools {
     fn specs(&self) -> Vec<ToolSpec> {
         let mut specs = self.inner.specs();
         let tools = self.hub.tools();
-        // A built-in host that defers its rarely used tools (T31) lists its own `tool_search`;
-        // it stays where it is (what is loaded later is appended after it) and, when MCP tools
-        // are deferred too, becomes the merged one.
-        let builtin_search = specs.iter().position(|s| s.name == TOOL_SEARCH);
         if !tools.is_empty() {
             if self.deferred(&tools) {
-                let merged = self.search_spec(&tools, builtin_search.map(|i| &specs[i]));
-                match builtin_search {
-                    Some(i) => specs[i] = merged,
-                    None => specs.push(merged),
-                }
+                specs.push(self.search_spec(&tools));
                 let active = self.activated();
-                specs.extend(tools.iter().filter(|t| active.contains(&t.exposed)).map(Self::spec_of));
+                specs.extend(tools.iter().filter(|t| active.contains(&t.exposed)).map(Self::full_spec));
             } else {
-                specs.extend(tools.iter().map(Self::spec_of));
+                specs.extend(tools.iter().map(Self::compact_spec));
             }
         }
         if self.hub.has_resources() {
             specs.extend(Self::resource_specs());
         }
         specs
+    }
+
+    /// An MCP tool is validated against what its server declared, listed or not.
+    fn tool_spec(&self, name: &str) -> Option<ToolSpec> {
+        if names::is_mcp(name) {
+            return self.hub.find(name).map(|t| Self::full_spec(&t));
+        }
+        self.specs().into_iter().find(|s| s.name == name)
+    }
+
+    fn arg_rules(&self, name: &str) -> Option<ArgRules> {
+        if self.handles(name) {
+            marlowe_agent::args::wired_rules(name)
+        } else {
+            self.inner.arg_rules(name)
+        }
+    }
+
+    fn prompt_hints(&self) -> Vec<String> {
+        let mut hints = self.inner.prompt_hints();
+        let tools = self.hub.tools();
+        if !tools.is_empty() {
+            hints.push(if self.deferred(&tools) {
+                "Tools from MCP servers (mcp__server__tool) — call one directly by name, or tool_search to load its schema.".into()
+            } else {
+                "Tools from MCP servers (mcp__server__tool) are listed with the others: call them by name.".into()
+            });
+        }
+        hints
     }
 
     fn call(&self, call: &ToolCallReq, ctx: &ToolCtx) -> ToolOutcome {
@@ -342,7 +464,7 @@ impl ToolHost for McpTools {
             return self.inner.call_scoped(call, cx);
         }
         match call.name.as_str() {
-            TOOL_SEARCH => self.tool_search(&call.args, cx),
+            TOOL_SEARCH => self.tool_search_mcp(&call.args),
             LIST_RESOURCES => self.list_resources(&call.args),
             READ_RESOURCE => self.read_resource(&call.args, cx),
             LIST_PROMPTS => self.list_prompts(),

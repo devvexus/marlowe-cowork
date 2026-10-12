@@ -143,7 +143,10 @@ impl Agent {
     /// tool host's own middleware.
     pub fn new(provider: Arc<dyn Provider>, model: ModelInfo, tools: Arc<dyn ToolHost>, system: SystemPrompt) -> Self {
         let context = ContextConfig::for_model(&model);
-        let middleware = tools.middleware();
+        // The forgiving layer judges every call first, so hooks, the gate, taint and egress see
+        // the call as the tool will run it.
+        let mut middleware: Vec<Arc<dyn ToolMiddleware>> = vec![Arc::new(crate::args::ArgsLayer::new(tools.clone()))];
+        middleware.extend(tools.middleware());
         Self {
             provider,
             model,
@@ -412,6 +415,11 @@ impl Agent {
                 c.tool_calls.clear();
             }
             assign_ids(&mut c.tool_calls, turn, spent.steps);
+            // Names and the arguments container become canonical before the transcript, hooks
+            // and approvals see them (the forgiving layer, `args.rs`).
+            for call in &mut c.tool_calls {
+                crate::args::prepare_call(self.tools.as_ref(), call);
+            }
             let info = StepInfo { turn, step: spent.steps };
             if !self.observers.is_empty() {
                 let call = ModelCall {

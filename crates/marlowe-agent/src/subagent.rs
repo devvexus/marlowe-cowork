@@ -548,6 +548,13 @@ impl ToolHost for FilteredTools {
     fn egress_host(&self, call: &ToolCallReq) -> Option<String> {
         self.inner.egress_host(call)
     }
+    fn arg_rules(&self, name: &str) -> Option<crate::args::ArgRules> {
+        if self.extra(name).is_some() {
+            crate::args::wired_rules(name)
+        } else {
+            self.inner.arg_rules(name)
+        }
+    }
     fn manifest(&self, name: &str) -> Option<ToolManifest> {
         if let Some(e) = self.extra(name) {
             return Some(ToolManifest {

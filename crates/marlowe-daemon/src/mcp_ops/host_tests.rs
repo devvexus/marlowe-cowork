@@ -15,7 +15,7 @@ use marlowe_model::{CancelToken, ToolSpec};
 use marlowe_proto::SessionId;
 use serde_json::{json, Value};
 
-use super::host::{schema_budget, McpTools};
+use super::host::McpTools;
 
 struct Inner;
 
@@ -74,7 +74,7 @@ fn a_few_tools_are_listed_beside_the_builtins_and_called() {
     let out = h.call_scoped(&call("mcp__web__echo", json!({"text": "hi"})), &cx());
     assert_eq!((out.content.as_str(), out.is_error), ("hi", false));
     let spec = specs.iter().find(|s| s.name == "mcp__web__echo").unwrap();
-    assert!(spec.description.contains("(MCP server web)"));
+    assert!(!spec.description.contains("MCP server"), "the name already carries the server: {}", spec.description);
     assert_eq!(spec.input_schema["required"], json!(["text"]));
     // Anything else is the built-ins'.
     assert_eq!(h.call_scoped(&call("read", json!({})), &cx()).content, "inner read");
@@ -115,8 +115,12 @@ fn eighty_tools_fit_a_small_prefix_behind_tool_search() {
     let specs = h.specs();
     let mcp: Vec<ToolSpec> = specs.iter().filter(|s| s.name != "read" && s.name != LIST_RESOURCES && s.name != READ_RESOURCE).cloned().collect();
     assert_eq!(mcp.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), [TOOL_SEARCH], "only the search tool is listed");
-    assert!(tokens_of(&mcp) <= schema_budget(Some(32_768)), "{} tokens", tokens_of(&mcp));
-    assert!(mcp[0].description.contains("web (80)"), "{}", mcp[0].description);
+    assert!(tokens_of(&mcp) <= h.share(), "{} tokens over a share of {}", tokens_of(&mcp), h.share());
+    let d = &mcp[0].description;
+    assert!(d.contains("connected MCP servers") && d.contains("web (80)"), "it says what it is for and names the servers: {d}");
+    assert!(d.contains("mcp__web__echo(text) — "), "the signature index carries every tool and its arguments: {d}");
+    assert!(d.contains("mcp__web__add(a: num, b: num)") || d.contains("mcp__web__add(a"), "{d}");
+    assert_eq!(d.matches("mcp__web__tool_").count(), 72, "every tool is in the index");
 
     // Finding tools loads them.
     let found = h.call_scoped(&call(TOOL_SEARCH, json!({"query": "invoices record", "limit": 3})), &cx());
@@ -178,61 +182,67 @@ fn a_call_to_a_tool_that_is_gone_says_so() {
     assert!(out.is_error && out.content.contains("not an available MCP tool"), "{}", out.content);
 }
 
-/// A built-in host that defers its rarely used tools (T31) and lists its own `tool_search`.
-struct DeferringInner;
-
-impl ToolHost for DeferringInner {
-    fn specs(&self) -> Vec<ToolSpec> {
-        vec![
-            ToolSpec { name: "read".into(), description: "read".into(), input_schema: json!({"type": "object"}) },
-            ToolSpec {
-                name: TOOL_SEARCH.into(),
-                description: "Load tools that are not listed up front. Deferred: monitor, todo_add.".into(),
-                input_schema: json!({"type": "object"}),
-            },
-        ]
-    }
-    fn call(&self, call: &ToolCallReq, _: &ToolCtx) -> ToolOutcome {
-        if call.name == TOOL_SEARCH {
-            let q = call.args["query"].as_str().unwrap_or("");
-            return if q.contains("monitor") {
-                ToolOutcome::ok("Loaded 1 tool(s); call them by these names:\n\n- monitor: watch a command's output", "1 tools loaded")
-            } else {
-                ToolOutcome::ok("No deferred tool matches.", "no match")
-            };
-        }
-        ToolOutcome::ok(format!("inner {}", call.name), "ok")
-    }
-    fn consequence(&self, _: &ToolCallReq) -> Consequence {
-        Consequence::Free
-    }
+#[test]
+fn tool_search_is_for_mcp_only_and_never_listed_while_the_tools_fit() {
+    // The built-ins are all listed by their own host; this one adds nothing about them.
+    let (h, _s) = host(0, json!({}), Some(32_768));
+    let names: Vec<String> = h.specs().iter().map(|s| s.name.clone()).collect();
+    assert!(!names.contains(&TOOL_SEARCH.to_string()), "no tool_search without MCP overflow: {names:?}");
+    // Over the count, one tool_search, after the built-ins, and it answers for MCP tools alone.
+    let (h, _s) = host(72, json!({"consequence": "inert"}), Some(32_768));
+    let specs = h.specs();
+    let searches: Vec<usize> = specs.iter().enumerate().filter(|(_, s)| s.name == TOOL_SEARCH).map(|(i, _)| i).collect();
+    assert_eq!(searches, [1], "one tool_search, right after the built-in read");
+    let builtin = h.call_scoped(&call(TOOL_SEARCH, json!({"query": "select:monitor"})), &cx());
+    assert!(builtin.content.contains("No MCP tool matches"), "a built-in name is not its business: {}", builtin.content);
+    let mcp = h.call_scoped(&call(TOOL_SEARCH, json!({"query": "select:echo"})), &cx());
+    assert!(mcp.content.contains("mcp__web__echo"), "{}", mcp.content);
 }
 
 #[test]
-fn parity_t31_built_in_and_mcp_deferral_share_one_tool_search_that_stays_in_place() {
-    // Few MCP tools: the built-in host's tool_search is the only one, untouched, and a search
-    // goes to it alone.
-    let (h, _s) = host_over(Arc::new(DeferringInner), 0, json!({}), Some(200_000));
-    let names: Vec<String> = h.specs().iter().map(|s| s.name.clone()).collect();
-    assert_eq!(names.iter().filter(|n| n.as_str() == TOOL_SEARCH).count(), 1, "{names:?}");
-    let out = h.call_scoped(&call(TOOL_SEARCH, json!({"query": "select:monitor"})), &cx());
-    assert!(out.content.contains("- monitor: watch"), "{}", out.content);
-
-    // Many MCP tools: one merged tool_search, at the built-in one's position, naming both.
-    let (h, _s) = host_over(Arc::new(DeferringInner), 72, json!({"consequence": "inert"}), Some(32_768));
+fn the_index_degrades_to_grouped_names_and_never_drops_an_argument_name() {
+    // A tiny window leaves a tiny share: the index groups by server, then keeps names only.
+    let (h, _s) = host(300, json!({"consequence": "inert"}), Some(8_192));
     let specs = h.specs();
-    let searches: Vec<usize> = specs.iter().enumerate().filter(|(_, s)| s.name == TOOL_SEARCH).map(|(i, _)| i).collect();
-    assert_eq!(searches, [1], "one tool_search, where the built-in host put it");
-    assert!(specs[1].description.contains("web (80)") && specs[1].description.contains("Deferred: monitor, todo_add"), "{}", specs[1].description);
+    let search = specs.iter().find(|s| s.name == TOOL_SEARCH).expect("tool_search");
+    let d = &search.description;
+    assert!(!d.contains("mcp__web__tool_000("), "per-tool lines are gone: {}", &d[..d.len().min(300)]);
+    assert!(d.contains("web: ") && d.contains("echo(text)") && d.contains("add(a"), "grouped by server, argument names kept: {}", &d[..d.len().min(400)]);
+}
 
-    // A query that only the built-in side matches gets its answer; one that only MCP matches
-    // gets the MCP answer; one that both match gets both.
-    let builtin = h.call_scoped(&call(TOOL_SEARCH, json!({"query": "select:monitor"})), &cx());
-    assert!(builtin.content.contains("- monitor: watch") && !builtin.is_error, "{}", builtin.content);
-    let mcp = h.call_scoped(&call(TOOL_SEARCH, json!({"query": "select:echo"})), &cx());
-    assert!(mcp.content.contains("mcp__web__echo"), "{}", mcp.content);
-    let both = h.call_scoped(&call(TOOL_SEARCH, json!({"query": "select:monitor,echo"})), &cx());
-    assert!(both.content.contains("- monitor: watch") && both.content.contains("mcp__web__echo"), "{}", both.content);
+#[test]
+fn a_tool_is_called_by_name_without_loading_it_and_a_mistake_gets_its_signature() {
+    use marlowe_agent::args::{invalid_text, normalize, ArgRules};
+    let (h, _s) = host(72, json!({"consequence": "inert"}), Some(32_768));
+    assert!(!h.specs().iter().any(|s| s.name == "mcp__web__echo"), "not listed");
+    let out = h.call_scoped(&call("mcp__web__echo", json!({"text": "direct"})), &cx());
+    assert_eq!((out.content.as_str(), out.is_error), ("direct", false), "a direct call runs");
+    // The layer validates against the server's real schema, listed or not.
+    let (h, _s) = host(72, json!({"consequence": "inert"}), Some(32_768));
+    let spec = h.tool_spec("mcp__web__echo").expect("known by name");
+    let err = normalize(&spec, &ArgRules::NONE, &json!({})).unwrap_err();
+    let text = invalid_text(&spec, &ArgRules::NONE, &err, false);
+    assert!(text.contains("missing `text`") && text.contains("mcp__web__echo(text)"), "{text}");
+    // Only lossless coercions for third-party schemas: no synonym guessing.
+    let wrong = normalize(&spec, &ArgRules::NONE, &json!({"message": "x"})).unwrap_err();
+    assert!(wrong.problems.iter().any(|p| p.contains("unknown") || p.contains("missing")), "{wrong:?}");
+    let add = h.tool_spec("mcp__web__add").unwrap();
+    let coerced = normalize(&add, &ArgRules::NONE, &json!({"a": "1", "b": 2.0})).unwrap();
+    assert_eq!(coerced.args["a"].as_f64(), Some(1.0), "{:?}", coerced.args);
+}
+
+#[test]
+fn the_prompt_hint_names_the_mcp_tools_and_how_to_call_them() {
+    let (h, _s) = host(0, json!({}), Some(32_768));
+    let hints = h.prompt_hints();
+    assert_eq!(hints.len(), 1, "{hints:?}");
+    assert!(hints[0].contains("mcp__server__tool") && !hints[0].contains("tool_search"), "listed tools need no search: {}", hints[0]);
+    let (h, _s) = host(72, json!({"consequence": "inert"}), Some(32_768));
+    let hints = h.prompt_hints();
+    assert_eq!(
+        hints,
+        ["Tools from MCP servers (mcp__server__tool) — call one directly by name, or tool_search to load its schema."]
+    );
 }
 
 #[test]

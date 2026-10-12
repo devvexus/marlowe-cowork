@@ -1,6 +1,6 @@
-//! The mcp group (track K): tool_search (activates when MCP tools exceed the threshold or the prefix is
-//! over budget). The `mcp__srv__tool` tools themselves are served by the MCP host the daemon
-//! composes, not registered here.
+//! The mcp group (track K): no built-in tools. `mcp__srv__tool` and `tool_search` (for MCP tools
+//! only, when they overflow the host's share of the tools slice) are served by the MCP host the
+//! daemon composes, not registered here.
 //!
 //! Empty until K lands: add a [`ToolDef`] per tool to `tools()`, in model-visible order, with
 //! `ToolGroup::Mcp`. Nothing outside this file changes.
@@ -27,7 +27,7 @@ pub fn configure(tools: crate::BuiltinTools, setup: &super::HostSetup<'_>) -> cr
     super::no_configure(tools, setup)
 }
 
-/// Whether a local model gets this group in `root`. K: configured MCP servers (behind `tool_search` over its threshold).
+/// Whether a local model gets this group in `root`. K: configured MCP servers.
 pub fn detect(_root: Option<&std::path::Path>) -> bool {
     false
 }

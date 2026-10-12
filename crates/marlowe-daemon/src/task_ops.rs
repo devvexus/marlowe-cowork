@@ -52,7 +52,7 @@ const NOTICE_MAX: usize = 5;
 
 /// Tells the conductor, at the start of a turn, what runs in the background anywhere (a crew run
 /// or workflow another conversation started, a shell job, a monitor): it cannot stop what it does
-/// not know exists, and `task_list` is held back behind `tool_search` on a small window. One
+/// not know exists. One
 /// `<system-reminder>` in the turn's tail (never the system prompt, so the cached prefix stays),
 /// sent when the active set or a status differs from the newest reminder in this conversation's own
 /// history, the way the editor note is, so a rewind or a compaction sends it again.

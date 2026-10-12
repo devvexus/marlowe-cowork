@@ -58,8 +58,8 @@ fn roots(t: &BuiltinTools, workspace: Option<&std::path::Path>) -> Option<marlow
     Some(service::roots(home, workspace, marlowe_agent::commands::plugin::bundle_roots(Some(home), workspace)))
 }
 
-/// The tool's description carries the script API, so a deferred schema loaded through
-/// `tool_search` teaches the model enough to write a script (WF9).
+/// The tool's description carries the script API, so the schema alone teaches the model enough to
+/// write a script (WF9).
 const WORKFLOW_DESCRIPTION: &str = "Run a workflow: a Starlark script (Python-like) that orchestrates many agents, in the background as a crew run. \
 Returns {run_id, script_path} at once; the result arrives as a notice (or set background:false to wait). \
 Give exactly one of: script (inline), script_path (a .star file), name (saved: .marlowe/workflows, <home>/workflows, built-ins code-review and simplify). \
@@ -280,8 +280,7 @@ pub fn crew_configure(tools: crate::BuiltinTools, setup: &super::HostSetup<'_>) 
     tools.with_state(WorkflowGroup::new(setup.home, false))
 }
 
-/// Whether a local model gets this group in `root`: every workspace (on a 32k context the tool is
-/// deferred behind `tool_search`, T31).
+/// Whether a local model gets this group in `root`: every workspace.
 pub fn detect(_root: Option<&std::path::Path>) -> bool {
     true
 }

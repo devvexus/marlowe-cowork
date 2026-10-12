@@ -320,6 +320,25 @@ pub trait ToolHost: Send + Sync {
         Vec::new()
     }
 
+    /// The spec the model was shown for tool `name`, or that it could call by name without being
+    /// shown (an MCP tool behind `tool_search`). The forgiving layer ([`crate::args`]) validates
+    /// calls against it. Wrappers whose specs differ from their inner host's forward it.
+    fn tool_spec(&self, name: &str) -> Option<ToolSpec> {
+        self.specs().into_iter().find(|s| s.name == name)
+    }
+
+    /// What tool `name` needs beyond its schema (aliases, op-dependent requirements); `None`:
+    /// the generic rules only. Wrappers forward it.
+    fn arg_rules(&self, _name: &str) -> Option<crate::args::ArgRules> {
+        None
+    }
+
+    /// One-line facts about this host's tools the prompt's tail should carry (the MCP hint).
+    /// Wrappers forward and concatenate.
+    fn prompt_hints(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Whether `call` needs approval.
     fn consequence(&self, call: &ToolCallReq) -> Consequence;
 

@@ -322,7 +322,7 @@ fn calls_reach_the_session_state_and_services_and_hosts_bring_their_middleware()
     first.push(StreamEvent::Stop(StopReason::ToolUse));
     let p = ScriptedProvider::new(vec![Step::Events(first), answer("ok")]);
     let mut a = Agent::new(p, model(), Arc::new(Scoped), SystemPrompt::with_core("core"));
-    assert_eq!(a.middleware.len(), 1, "Agent::new seeds the host's own middleware");
+    assert_eq!(a.middleware.len(), 2, "Agent::new seeds the forgiving layer, then the host's own middleware");
     a.services = Services::new().with(Greeting("hello"));
     let mut c = convo();
     c.ext.insert(Todos(vec!["read the spec".into()]));

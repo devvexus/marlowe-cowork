@@ -304,6 +304,15 @@ impl ToolHost for Rerooted {
     fn egress_host(&self, call: &ToolCallReq) -> Option<String> {
         self.pick(call).egress_host(call)
     }
+    fn tool_spec(&self, name: &str) -> Option<ToolSpec> {
+        self.base.tool_spec(name)
+    }
+    fn arg_rules(&self, name: &str) -> Option<crate::args::ArgRules> {
+        self.base.arg_rules(name)
+    }
+    fn prompt_hints(&self) -> Vec<String> {
+        self.base.prompt_hints()
+    }
     fn manifest(&self, name: &str) -> Option<ToolManifest> {
         self.base.manifest(name)
     }

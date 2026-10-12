@@ -210,7 +210,7 @@ fn parity_wf9_the_block_rides_only_with_the_live_group() {
     let all_but: Vec<ToolGroup> = ToolGroup::ALL.iter().copied().filter(|g| *g != ToolGroup::Workflow).collect();
     let without = host(&home, &ws).with_exposure(ExposureProfile::Frontier, all_but);
     assert!(!without.persona_blocks().iter().any(|b| b.text().contains("## Workflows")));
-    // The deferred schema carries the API on its own.
+    // The schema carries the API on its own.
     let spec = with.specs().into_iter().find(|s| s.name == "workflow").unwrap();
     assert!(spec.description.contains("pipeline(") && spec.description.contains("def main(args)"));
 }

@@ -14,7 +14,7 @@
 //! | `agent.rs` | agent | F, F3 | (todo, todo_add/update/get, ask_user, skill, agent, send_message, enter_plan, exit_plan, worktrees) |
 //! | `git.rs` | git | J | (git, gh, ci_status) |
 //! | `ml.rs` | ml | J2 | (train_launch, experiments) |
-//! | `mcp.rs` | mcp | K | (tool_search; `mcp__srv__tool` come from the MCP host) |
+//! | `mcp.rs` | mcp | K | (nothing; `mcp__srv__tool` and `tool_search` come from the MCP host) |
 //! | `workflow.rs` | workflow | W | (workflow, structured_output, report_findings) |
 //! | `tasks.rs` | tasks | N | (task_list, task_output, task_stop, monitor, cron_*, schedule_wakeup, list_agents) |
 //! | `notify.rs` | notify | N | (notify, send_file, notices) |
@@ -46,6 +46,7 @@ pub mod git;
 pub mod mcp;
 pub mod ml;
 pub mod notify;
+pub mod rules;
 pub mod search;
 pub mod shell;
 pub mod tasks;
@@ -100,14 +101,18 @@ pub struct ToolDef {
     pub egress: EgressFn,
     pub mutation: MutationFn,
     pub enabled: EnabledFn,
+    /// Argument names, requirements and examples for the forgiving layer (default: `rules.rs`).
+    pub rules: marlowe_agent::args::ArgRules,
 }
 
 impl ToolDef {
     /// A free, non-tainting, non-mutating tool in `group` with `effects`; adjust with the
     /// builder methods.
     pub fn new(spec: ToolSpec, group: ToolGroup, effects: Effects, call: CallFn) -> Self {
+        let rules = rules::for_tool(&spec.name);
         Self {
             spec,
+            rules,
             manifest: ToolManifest { group, profiles: Profiles::ALL, effects, path_args: &[] },
             call,
             consequence: |_, _, _| Consequence::Free,
@@ -166,6 +171,11 @@ impl ToolDef {
 
     pub fn enabled(mut self, f: EnabledFn) -> Self {
         self.enabled = f;
+        self
+    }
+
+    pub fn rules(mut self, rules: marlowe_agent::args::ArgRules) -> Self {
+        self.rules = rules;
         self
     }
 }

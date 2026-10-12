@@ -533,6 +533,7 @@ fn run_one(
     system = system.blocks_from(tools.persona_blocks());
     let mut env = Environment::current(workspace.clone(), info.display.clone());
     env.repo = workspace.as_deref().and_then(|w| repo_context(core, w));
+    env.hints = tools.prompt_hints();
     let mut system = system.user(core.user()).environment(env);
     let options = input.extras.options.clone().unwrap_or_default();
     // `marlowe -p` waits for its subagents; any other ask in the session does not.

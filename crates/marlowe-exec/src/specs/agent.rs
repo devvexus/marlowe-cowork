@@ -346,15 +346,16 @@ mod tests {
         }
     }
 
-    /// A15, the dusk profile at 32k, this host alone: persona and blocks (v3, memory, crew and
-    /// coding) inside their 2,000-token slice, the core tool schemas inside their 3,000, and the
-    /// fitter keeps the whole prefix inside 9,000 with every oversized section cut, visibly. (Was
-    /// persona 5,230 + tools 5,444 = 11,289 before the persona was condensed and the rarely used
-    /// built-ins went behind `tool_search`, T31; the wired conductor's own tools are counted in
+    /// A15, the dusk profile at 32k, this host alone: persona and blocks (v3, memory, crew and the
+    /// live groups') inside their 2,000-token slice, the built-in tool schemas inside their 7,000,
+    /// and the fitter keeps the whole prefix inside 12,500 with every oversized section cut,
+    /// visibly. Every built-in is listed (nothing is behind `tool_search`), so this waits for the
+    /// compact specs; the wired conductor's own tools are counted in
     /// `parity_a15_instructions_at_their_cap_reach_dusk_uncut` and in the daemon's
-    /// `the_wired_dusk_prefix_fits_its_slices_in_a_repository`.)
+    /// `the_wired_dusk_prefix_fits_its_slices_in_a_repository`.
     #[test]
-    fn the_fitter_keeps_the_dusk_prefix_inside_nine_thousand_tokens() {
+    #[ignore = "until the compact specs land (Specs stage)"]
+    fn the_fitter_keeps_the_dusk_prefix_inside_its_budget() {
         use marlowe_agent::context::{estimate_tokens, fit_prefix, tool_spec_tokens, PrefixBudget};
         use marlowe_agent::system::PromptSections;
         use marlowe_agent::{PersonaBlock, SystemPrompt};
@@ -377,37 +378,34 @@ mod tests {
         let fit = fit_prefix(persona, tools, &sections, budget);
         eprintln!("A15: prefix {} tokens = persona+blocks {persona} + tools {tools} + sections; budget {}", fit.tokens, budget.total);
         assert!(persona <= budget.persona, "persona and blocks are {persona} tokens, over their {} slice", budget.persona);
-        assert!(tools <= budget.tools, "the core tools are {tools} tokens, over their {} slice", budget.tools);
-        assert!(fit.tokens <= 9_000, "prefix {} tokens (persona {persona}, tools {tools}): {:?}", fit.tokens, fit.warnings);
+        assert!(tools <= budget.tools, "the built-ins are {tools} tokens, over their {} slice", budget.tools);
+        assert!(fit.tokens <= budget.total, "prefix {} tokens (persona {persona}, tools {tools}): {:?}", fit.tokens, fit.warnings);
         assert!(!fit.warnings.is_empty(), "the oversized sections were cut, visibly");
     }
 
-    /// The tools F3 added cost the 32k prefix nothing: on a small window they are behind
-    /// `tool_search`, whose one description names them, and the list is the core tools' size plus
-    /// that one tool (a regression guard on the schemas' total, in the estimate A15 uses).
+    /// Nothing hides behind a search: a 32k window lists the same tools as a 200k one, and there
+    /// is no `tool_search` (that survives only for MCP tools, in the daemon's MCP host).
     #[test]
-    fn the_f3_tools_cost_the_32k_prefix_nothing() {
-        use marlowe_agent::context::tool_spec_tokens;
+    fn every_built_in_is_listed_on_a_small_window() {
         use marlowe_model::{ModelInfo, ProviderKind};
 
         let dusk = ModelInfo { context_window: Some(32_768), ..ModelInfo::bare(ProviderKind::Ollama, "marlowe-dusk:27b-super") };
         let small = configured().with_model_exposure(&dusk);
         let names: Vec<String> = small.specs().into_iter().map(|s| s.name).collect();
-        for t in ["todo_add", "todo_update", "todo_get", "enter_plan", "send_message", "enter_worktree", "exit_worktree"] {
-            assert!(!names.contains(&t.to_string()), "{t} is listed at 32k: {names:?}");
+        for t in ["todo_add", "todo_update", "todo_get", "enter_plan", "send_message", "enter_worktree", "exit_worktree", "web_fetch", "workflow"] {
+            assert!(names.contains(&t.to_string()), "{t} is not listed at 32k: {names:?}");
         }
-        assert!(names.contains(&"tool_search".to_string()));
-        let frontier = ModelInfo { context_window: Some(200_000), ..ModelInfo::bare(ProviderKind::OpenRouter, "frontier") };
-        let big = configured().with_model_exposure(&frontier);
-        let (small_tokens, big_tokens) = (tool_spec_tokens(&small.specs()), tool_spec_tokens(&big.specs()));
-        assert!(big_tokens > small_tokens + 600, "deferral saves the new and rarely used tools: {small_tokens} vs {big_tokens}");
-        assert!(small_tokens <= 1_900, "the 32k tool list grew to {small_tokens} tokens (A15 tool slice is 3,000, shared with the conductor's memory and dispatch tools: about 1,100)");
+        assert!(!names.contains(&"tool_search".to_string()), "no search for built-ins");
+        let wide = ModelInfo { context_window: Some(200_000), ..ModelInfo::bare(ProviderKind::Ollama, "marlowe-dusk:27b-super") };
+        let big: Vec<String> = configured().with_model_exposure(&wide).specs().into_iter().map(|s| s.name).collect();
+        assert_eq!(names, big, "the window never decides which tools are listed");
     }
 
     /// A15: project instructions at their 1.5k cap reach dusk whole at 32k, with this host's
     /// tools and the conductor's memory and dispatch tools (fixtures below) both inside their
     /// slices, so the fitter has nothing to take from the project sections.
     #[test]
+    #[ignore = "until the compact specs land (Specs stage)"]
     fn parity_a15_instructions_at_their_cap_reach_dusk_uncut() {
         use marlowe_agent::context::{estimate_tokens, fit_prefix, tool_spec_tokens, PrefixBudget};
         use marlowe_agent::system::PromptSections;

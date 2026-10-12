@@ -396,7 +396,7 @@ fn an_impossible_pr_is_answered_without_asking() {
     assert!(d.results()[0].0.contains("no commits beyond"), "{:?}", d.results());
     fx.commit_file("e.txt", "e\n", "e");
     let d = drive_in(&fx, gate.clone(), vec![Turn::Calls(vec![("gh", json!({"op": "pr_create"}))]), Turn::Say("ok")]);
-    assert!(d.results()[0].0.contains("needs `title`"), "{:?}", d.results());
+    assert!(d.results()[0].1 && d.results()[0].0.contains("missing `title`"), "the layer answers with the signature: {:?}", d.results());
     assert_eq!(gate.count(), 0);
 }
 

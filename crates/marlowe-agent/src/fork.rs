@@ -222,6 +222,9 @@ impl ToolHost for ForkTools {
     fn egress_host(&self, call: &ToolCallReq) -> Option<String> {
         self.inner.egress_host(call)
     }
+    fn arg_rules(&self, name: &str) -> Option<crate::args::ArgRules> {
+        self.inner.arg_rules(name)
+    }
     fn manifest(&self, name: &str) -> Option<ToolManifest> {
         self.inner.manifest(name)
     }

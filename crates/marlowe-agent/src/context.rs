@@ -474,16 +474,19 @@ pub struct PrefixBudget {
 }
 
 impl PrefixBudget {
-    /// 32k class: 9k (persona+blocks 2.0k, tools 3.0k, instructions 1.5k, profile 0.3k, repo map
-    /// 1.2k, skills 0.4k, style 0.2k, slack 0.4k); 64-128k: 16k; 200k and more: 30k with
-    /// instructions uncapped.
+    /// 32k class: 12.5k (persona+blocks 2.0k, tools 7.0k, instructions 1.5k, profile 0.3k, repo
+    /// map 0.8k, skills 0.4k, style 0.2k, slack 0.3k); 48k to 200k: 20k (typed built-ins about
+    /// 7.5k plus 2.5k for MCP in the tools slice); 200k and more: 34k with instructions uncapped
+    /// (taken from the 7k slack first). Every built-in of the host's groups is listed on every
+    /// window, so the tools slice is sized for all of them; what MCP may take is that slice minus
+    /// the built-ins listed.
     pub fn for_window(window: u32) -> Self {
         if window >= 200_000 {
-            Self { window, total: 30_000, persona: 3_000, tools: 12_000, instructions: None, profile: 1_000, repo_map: 4_000, skills: 2_000, style: 1_000, tail: 2_000 }
+            Self { window, total: 34_000, persona: 3_000, tools: 16_000, instructions: None, profile: 1_000, repo_map: 4_000, skills: 2_000, style: 1_000, tail: 2_000 }
         } else if window > 48_000 {
-            Self { window, total: 16_000, persona: 2_500, tools: 6_000, instructions: Some(4_000), profile: 500, repo_map: 2_000, skills: 600, style: 300, tail: 1_500 }
+            Self { window, total: 20_000, persona: 2_500, tools: 10_000, instructions: Some(4_000), profile: 500, repo_map: 2_000, skills: 600, style: 300, tail: 1_500 }
         } else {
-            Self { window, total: 9_000, persona: 2_000, tools: 3_000, instructions: Some(1_500), profile: 300, repo_map: 1_200, skills: 400, style: 200, tail: 1_000 }
+            Self { window, total: 12_500, persona: 2_000, tools: 7_000, instructions: Some(1_500), profile: 300, repo_map: 800, skills: 400, style: 200, tail: 1_000 }
         }
     }
 }
@@ -578,7 +581,7 @@ pub fn fit_prefix(persona_tokens: u32, tool_tokens: u32, sections: &PromptSectio
     }
     let wants_tool_search = total(&s) > budget.total && tool_tokens > budget.tools;
     if wants_tool_search {
-        warn(true, format!("tool schemas are {tool_tokens} tokens, over their {}-token budget: MCP tools belong behind tool_search", budget.tools));
+        warn(true, format!("tool schemas are {tool_tokens} tokens, over their {}-token budget; MCP tools beyond what is left of it belong behind tool_search", budget.tools));
     }
     if total(&s) > budget.total && !s.instructions.is_empty() {
         let over = total(&s) - budget.total;
@@ -668,6 +671,7 @@ mod tests {
             workspace: None,
             model: "m".into(),
             repo: None,
+            hints: Vec::new(),
         });
         let mut convo = Conversation::new(SessionId::from("s"), None);
         convo.summary = Some("earlier stuff".into());
@@ -771,22 +775,29 @@ mod tests {
 
     #[test]
     fn the_budget_scales_with_the_window() {
-        assert_eq!(PrefixBudget::for_window(32_768).total, 9_000);
-        assert_eq!(PrefixBudget::for_window(131_072).total, 16_000);
+        let small = PrefixBudget::for_window(32_768);
+        assert_eq!((small.total, small.tools, small.persona, small.repo_map, small.tail), (12_500, 7_000, 2_000, 800, 1_000));
+        assert_eq!(PrefixBudget::for_window(48_000).total, small.total, "48k is still the small class");
+        let mid = PrefixBudget::for_window(131_072);
+        assert_eq!((mid.total, mid.tools, mid.persona, mid.tail), (20_000, 10_000, 2_500, 1_500));
         let big = PrefixBudget::for_window(200_000);
-        assert_eq!((big.total, big.instructions), (30_000, None));
+        assert_eq!((big.total, big.tools, big.instructions, big.repo_map), (34_000, 16_000, None, 4_000));
+        for b in [small, mid] {
+            let slack = b.total - (b.persona + b.tools + b.instructions.unwrap() + b.profile + b.repo_map + b.skills + b.style);
+            assert!(slack <= 400, "the slices add up to the total: {b:?}");
+        }
     }
 
     #[test]
     fn over_budget_drops_skills_then_repo_map_then_cuts_instructions_never_silently() {
         let sections = PromptSections {
-            instructions: format!("<instructions>\n{}\n</instructions>", "rule. ".repeat(600)),
+            instructions: format!("<instructions>\n{}\n</instructions>", "rule. ".repeat(900)),
             repo_map: "map line\n".repeat(200),
             skills_index: "- skill: does things\n".repeat(10),
             ..Default::default()
         };
         let b = PrefixBudget::for_window(32_768);
-        let fit = fit_prefix(5_000, 3_000, &sections, b);
+        let fit = fit_prefix(6_000, 5_000, &sections, b);
         assert!(fit.sections.skills_index.is_empty(), "skills dropped first");
         assert!(fit.tokens <= b.total, "{} > {}", fit.tokens, b.total);
         assert!(fit.sections.instructions.ends_with("</instructions>"), "the block stays well-formed");

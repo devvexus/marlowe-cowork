@@ -61,13 +61,16 @@ pub struct Environment {
     pub model: String,
     /// The workspace's git state (branch, dirty count, last commit), when it is a repository.
     pub repo: Option<GitInfo>,
+    /// One-line facts about the tools the prompt's tail should carry ([`crate::ToolHost::prompt_hints`]:
+    /// the MCP hint).
+    pub hints: Vec<String>,
 }
 
 impl Environment {
     /// The environment as of now, on this machine. `repo` is left empty; the caller sets it.
     pub fn current(workspace: Option<String>, model: impl Into<String>) -> Self {
         let now = chrono::Local::now().format("%A %-d %B %Y, %H:%M (UTC%:z)").to_string();
-        Self { now, os: os_name(), workspace, model: model.into(), repo: None }
+        Self { now, os: os_name(), workspace, model: model.into(), repo: None, hints: Vec::new() }
     }
 }
 
@@ -286,6 +289,10 @@ impl SystemPrompt {
         if !e.model.is_empty() {
             t.push_str(&format!("Model: {}\n", e.model));
         }
+        for hint in &e.hints {
+            t.push_str(hint.trim());
+            t.push('\n');
+        }
         t.push_str("</environment>");
         Some(SystemBlock { text: t, cache: false })
     }
@@ -353,6 +360,7 @@ mod tests {
                     subject: Some("gate refactor".into()),
                     ..Default::default()
                 }),
+                hints: vec!["Tools from MCP servers (mcp__server__tool): call one by name.".into()],
             });
         let r = p.render();
         assert_eq!(r.len(), 3);
@@ -361,6 +369,7 @@ mod tests {
         assert!(r[1].cache);
         assert!(r[2].text.contains("Workspace: C:/work"));
         assert!(r[2].text.contains("Repo: main · 3 uncommitted changes · last commit 1a2b3c4 \"gate refactor\""), "{}", r[2].text);
+        assert!(r[2].text.contains("Tools from MCP servers (mcp__server__tool)"), "{}", r[2].text);
         assert!(!r[2].cache, "the environment changes every turn and is never cached");
     }
 

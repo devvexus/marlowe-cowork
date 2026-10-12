@@ -8,6 +8,7 @@
 
 pub mod agent;
 pub mod approval;
+pub mod args;
 pub mod background;
 pub mod budget;
 pub mod checkpoint;

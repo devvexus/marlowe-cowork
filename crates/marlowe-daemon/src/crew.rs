@@ -578,6 +578,26 @@ impl ToolHost for WithDispatch {
         }
     }
 
+    fn tool_spec(&self, name: &str) -> Option<ToolSpec> {
+        if name == DISPATCH_TOOL {
+            self.dispatch.specs().into_iter().next()
+        } else {
+            self.inner.tool_spec(name)
+        }
+    }
+
+    fn arg_rules(&self, name: &str) -> Option<marlowe_agent::args::ArgRules> {
+        if name == DISPATCH_TOOL {
+            marlowe_agent::args::wired_rules(name)
+        } else {
+            self.inner.arg_rules(name)
+        }
+    }
+
+    fn prompt_hints(&self) -> Vec<String> {
+        self.inner.prompt_hints()
+    }
+
     fn manifest(&self, name: &str) -> Option<marlowe_agent::ToolManifest> {
         if name == DISPATCH_TOOL {
             Some(marlowe_agent::ToolManifest {

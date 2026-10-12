@@ -373,14 +373,8 @@ fn exposure_fixes_the_tool_set_and_refuses_the_rest() {
     let without_verify = |h: &BuiltinTools| {
         names(h).into_iter().filter(|n| !["project", "service", "http_check", "browser"].contains(&n.as_str())).collect::<Vec<_>>()
     };
-    // A local model with no known window is assumed to have 32k, where the rarely used tools wait
-    // behind `tool_search` (T31): the same set, minus them, plus the search tool.
-    let deferred_view = |all: Vec<String>| {
-        let mut v: Vec<String> = all.into_iter().filter(|n| !crate::deferral::DEFERRABLE.contains(&n.as_str())).collect();
-        v.push("tool_search".into());
-        v
-    };
-    assert_eq!(names(&BuiltinTools::new(None).with_model_exposure(&local)), deferred_view(without_verify(&everything)));
+    // Nothing hides behind a search: a local model on the assumed 32k window lists the same tools.
+    assert_eq!(names(&BuiltinTools::new(None).with_model_exposure(&local)), without_verify(&everything));
     assert_eq!(BuiltinTools::new(None).with_model_exposure(&local).exposure().0, ExposureProfile::Local);
     assert_eq!(BuiltinTools::new(None).with_model_exposure(&frontier).exposure().1, ToolGroup::ALL.as_slice());
 
@@ -459,7 +453,7 @@ fn every_group_file_registers_its_hooks() {
             "{:?}: a block needs its capability live first",
             g.group
         );
-        // Workflows are offered to a local model in any workspace (W; deferred on 32k, T31).
+        // Workflows are offered to a local model in any workspace (W).
         assert_eq!((g.detect)(None), g.group == marlowe_agent::ToolGroup::Workflow, "{:?}", g.group);
     }
     assert!(super::group(marlowe_agent::ToolGroup::Memory).is_none(), "memory tools are the daemon's");

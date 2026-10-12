@@ -188,6 +188,10 @@ impl ToolHost for CrewTools {
         self.inner.egress_host(call)
     }
 
+    fn arg_rules(&self, name: &str) -> Option<marlowe_agent::args::ArgRules> {
+        self.inner.arg_rules(name)
+    }
+
     fn manifest(&self, name: &str) -> Option<ToolManifest> {
         self.allow.iter().any(|t| t == name).then(|| self.inner.manifest(name)).flatten()
     }

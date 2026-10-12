@@ -772,3 +772,68 @@ fn an_output_cap_override_reaches_the_request() {
 // Seam extension points (middleware, observers, extensions), reusing the helpers above.
 #[path = "tests_seam.rs"]
 mod seam;
+
+// ---------------------------------------------------------------- the forgiving layer in the loop
+
+/// A host with real schemas, recording what actually ran.
+struct Fussy {
+    ran: Mutex<Vec<(String, Value)>>,
+}
+
+impl ToolHost for Fussy {
+    fn specs(&self) -> Vec<ToolSpec> {
+        vec![
+            ToolSpec {
+                name: "web_fetch".into(),
+                description: "fetch".into(),
+                input_schema: json!({"type": "object", "properties": {"url": {}, "offset": {"type": "integer"}}, "required": ["url"]}),
+            },
+            ToolSpec {
+                name: "task_output".into(),
+                description: "output".into(),
+                input_schema: json!({"type": "object", "properties": {"id": {}, "watch": {"type": "boolean"}}, "required": ["id"]}),
+            },
+        ]
+    }
+    fn call(&self, call: &ToolCallReq, _: &ToolCtx) -> ToolOutcome {
+        self.ran.lock().unwrap().push((call.name.clone(), call.args.clone()));
+        ToolOutcome::ok("done", "ok")
+    }
+    fn consequence(&self, _: &ToolCallReq) -> Consequence {
+        Consequence::Free
+    }
+}
+
+#[test]
+fn the_loop_runs_the_canonical_call_and_answers_a_bad_one_with_its_signature() {
+    let mut first = call(0, "a", "WebFetch", json!({"query": "https://example.com/x", "offset": "10"}));
+    first.extend(call(1, "b", "web_fetch", json!({"query": "min-p sampling"})));
+    first.extend(call(2, "c", "job_watch", json!({"task_id": "j1"})));
+    first.push(StreamEvent::Stop(StopReason::ToolUse));
+    let p = ScriptedProvider::new(vec![Step::Events(first), answer("ok")]);
+    let host = Arc::new(Fussy { ran: Mutex::new(Vec::new()) });
+    let a = Agent::new(p, model(), host.clone(), SystemPrompt::with_core("core"));
+    let mut c = convo();
+    let r = run(&a, &mut c, "go");
+    assert_eq!(r.outcome.stop, TurnStop::Done);
+
+    let ran = host.ran.lock().unwrap().clone();
+    assert!(ran.contains(&("web_fetch".into(), json!({"url": "https://example.com/x", "offset": 10}))), "{ran:?}");
+    assert!(ran.contains(&("task_output".into(), json!({"id": "j1", "watch": true}))), "legacy job_watch: {ran:?}");
+    assert_eq!(ran.len(), 2, "the invalid call did not run: {ran:?}");
+
+    // The transcript shows the canonical names and arguments.
+    let called: Vec<(String, Value)> = c.messages[1]
+        .content
+        .iter()
+        .filter_map(|p| if let Part::ToolCall(t) = p { Some((t.name.clone(), t.args.clone())) } else { None })
+        .collect();
+    assert_eq!(called[0].0, "web_fetch");
+    assert_eq!(called[2], ("task_output".into(), json!({"task_id": "j1", "watch": true})));
+
+    let results = tool_results(&c.messages[2]);
+    assert!(results[1].is_error && results[1].content.starts_with("web_fetch was not run: missing `url`; unknown `query`"), "{}", results[1].content);
+    assert!(results[1].content.contains("web_fetch(url, offset?: int)"), "{}", results[1].content);
+    // The rewrite is told once, on the result of the call that ran.
+    assert!(results[0].content.contains("[args: read `query` as `url`"), "{}", results[0].content);
+}

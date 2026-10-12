@@ -24,7 +24,6 @@
 #![forbid(unsafe_code)]
 
 pub mod corpus;
-mod deferral;
 pub mod git;
 pub mod jobs;
 mod monitor;
@@ -86,8 +85,6 @@ pub struct BuiltinTools {
     profile: ExposureProfile,
     /// The groups this host exposes (sorted).
     groups: Vec<ToolGroup>,
-    /// Rarely used tools wait behind `tool_search` (a small context window; see `deferral`).
-    defer: bool,
 }
 
 impl BuiltinTools {
@@ -113,7 +110,6 @@ impl BuiltinTools {
             states: Mutex::new(HashMap::new()),
             profile: ExposureProfile::Frontier,
             groups: ToolGroup::ALL.to_vec(),
-            defer: false,
         }
     }
 
@@ -235,8 +231,7 @@ impl BuiltinTools {
     pub fn with_model_exposure(self, model: &ModelInfo) -> Self {
         let profile = marlowe_agent::exposure_profile(model);
         let groups = specs::exposed_groups(profile, self.root.as_deref());
-        let defer = model.context_window.unwrap_or(DEFAULT_CONTEXT_TOKENS) <= deferral::DEFER_WINDOW;
-        self.with_exposure(profile, groups).with_deferral(defer)
+        self.with_exposure(profile, groups)
     }
 
     /// The model class and groups this host exposes.
@@ -332,8 +327,7 @@ pub(crate) fn first_line(s: &str, max: usize) -> String {
 
 impl ToolHost for BuiltinTools {
     fn specs(&self) -> Vec<ToolSpec> {
-        let all: Vec<ToolSpec> = specs::table().defs.iter().filter(|d| self.exposes(d) && (d.enabled)(self)).map(|d| d.spec.clone()).collect();
-        self.apply_deferral(all)
+        specs::table().defs.iter().filter(|d| self.exposes(d) && (d.enabled)(self)).map(|d| d.spec.clone()).collect()
     }
 
     fn call(&self, call: &ToolCallReq, ctx: &ToolCtx) -> ToolOutcome {
@@ -352,10 +346,6 @@ impl ToolHost for BuiltinTools {
                 first_line(&args.to_string(), 80)
             ));
         }
-        if self.defer && call.name == deferral::TOOL_SEARCH {
-            return self.tool_search(args);
-        }
-        self.note_called(&call.name);
         match self.tool(&call.name) {
             Some(def) if self.exposes(def) => (def.call)(self, args, cx),
             Some(_) => ToolOutcome::error(format!("`{}` is not available in this session", call.name)),
@@ -380,7 +370,6 @@ impl ToolHost for BuiltinTools {
             .iter()
             .filter(|g| self.groups.contains(&g.group))
             .filter(|g| table.defs.iter().any(|d| d.manifest.group == g.group && self.exposes(d) && (d.enabled)(self)))
-            .filter(|g| !self.block_deferred(g.group))
             .filter_map(|g| (g.persona_block)().map(|text| PersonaBlock::Tool { group: g.group, text }))
             .collect()
     }
@@ -413,6 +402,10 @@ impl ToolHost for BuiltinTools {
 
     fn manifest(&self, name: &str) -> Option<ToolManifest> {
         self.tool(name).map(|d| d.manifest.clone())
+    }
+
+    fn arg_rules(&self, name: &str) -> Option<marlowe_agent::args::ArgRules> {
+        self.tool(name).map(|d| d.rules)
     }
 
     fn mutation(&self, call: &ToolCallReq, ctx: &ToolCtx) -> Mutation {

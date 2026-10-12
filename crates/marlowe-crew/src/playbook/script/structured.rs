@@ -137,6 +137,15 @@ impl ToolHost for WithStructuredOutput {
         }
     }
 
+    fn arg_rules(&self, name: &str) -> Option<marlowe_agent::args::ArgRules> {
+        if name == STRUCTURED_OUTPUT {
+            // It validates against the script's schema itself, and counts the retries.
+            Some(marlowe_agent::args::ArgRules { skip: true, ..marlowe_agent::args::ArgRules::NONE })
+        } else {
+            self.inner.arg_rules(name)
+        }
+    }
+
     fn manifest(&self, name: &str) -> Option<ToolManifest> {
         if name == STRUCTURED_OUTPUT {
             Some(ToolManifest { group: ToolGroup::Workflow, profiles: Profiles::ALL, effects: Effects::NONE, path_args: &[] })
