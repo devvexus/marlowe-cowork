@@ -432,8 +432,8 @@ impl FilteredTools {
     pub fn new(inner: Arc<dyn ToolHost>, ty: &AgentType) -> Self {
         Self {
             inner,
-            allow: ty.tools.as_ref().map(|t| t.iter().cloned().collect()),
-            deny: ty.disallowed_tools.iter().cloned().collect(),
+            allow: ty.tools.as_ref().map(|t| t.iter().map(|n| crate::args::canonical_tool(n).to_string()).collect()),
+            deny: ty.disallowed_tools.iter().map(|n| crate::args::canonical_tool(n).to_string()).collect(),
             read_only: ty.read_only,
             extras: vec![Arc::new(subagent_tools::HandbackTool)],
             guard: None,

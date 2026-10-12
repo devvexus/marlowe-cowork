@@ -134,6 +134,12 @@ pub const LEGACY: &[Legacy] = &[
     Legacy { from: "ci_status", to: "gh", inject: Some(("op", "\"ci\"")) },
 ];
 
+/// A tool name as an allowlist or denylist should read it: a merged tool's old name is the tool
+/// that now runs the call, so a saved role or agent file keeps its grants and its refusals.
+pub fn canonical_tool(name: &str) -> &str {
+    LEGACY.iter().find(|l| l.from == name).map_or(name, |l| l.to)
+}
+
 /// Key names every tool's models send for the same idea; used only when the tool has the target
 /// key and lacks the source key.
 const SYNONYMS: &[(&str, &str)] = &[

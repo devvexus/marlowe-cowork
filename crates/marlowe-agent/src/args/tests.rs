@@ -134,6 +134,14 @@ fn the_legacy_table_is_data_with_no_duplicate_names() {
     assert!(LEGACY.len() >= 13);
 }
 
+#[test]
+fn an_allowlist_or_denylist_naming_an_old_tool_means_the_tool_that_runs_it() {
+    assert_eq!(canonical_tool("cron_create"), "schedule");
+    assert_eq!(canonical_tool("job_kill"), "task_stop");
+    assert_eq!(canonical_tool("paper"), "web_fetch");
+    assert_eq!(canonical_tool("read"), "read");
+}
+
 // ---------------------------------------------------------------- container
 
 #[test]

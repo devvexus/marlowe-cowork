@@ -114,7 +114,7 @@ def main(args):
 ## Running
 
 - `workflow{script: "...", args: {...}}` (inline; saved under the run's directory),
-  `workflow{script_path: "..."}`, `workflow{name: "code-review", args: {...}}`.
+  `workflow{path: "..."}`, `workflow{name: "code-review", args: {...}}`.
 - `validate_only: true` checks without running. `background: false` waits for the result.
 - Saved workflows: `.marlowe/workflows/<name>.star` (project), `<home>/workflows/<name>.star` (user),
   plugins' `workflows/`, and the built-ins `code-review` and `simplify`.

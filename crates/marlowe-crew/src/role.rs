@@ -180,6 +180,13 @@ pub fn parse_role(text: &str, source: RoleSource) -> Result<RoleCard, RoleError>
         None => Vec::new(),
         Some(s) => parse_list(&s).ok_or(RoleError::BadField { field: "tools", value: s })?,
     };
+    // A merged tool's old name grants the tool that now runs it (`paper` is `web_fetch`).
+    let tools = tools.into_iter().map(|t| marlowe_agent::args::canonical_tool(&t).to_string()).fold(Vec::new(), |mut v, t| {
+        if !v.contains(&t) {
+            v.push(t);
+        }
+        v
+    });
     let budget = match fields.remove("budget") {
         None => CrewBudget::default(),
         Some(s) => parse_budget(&s).ok_or(RoleError::BadField { field: "budget", value: s })?,

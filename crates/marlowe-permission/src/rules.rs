@@ -150,11 +150,14 @@ fn tool_pat(name: &str) -> ToolPat {
         "ask_user_question" => ToolPat::Named("ask_user".into()),
         "exit_plan_mode" => ToolPat::Named("exit_plan".into()),
         "enter_plan_mode" => ToolPat::Named("enter_plan".into()),
-        "task_create" => ToolPat::Named("todo_add".into()),
-        "task_update" => ToolPat::Named("todo_update".into()),
-        "task_get" | "task_list" => ToolPat::Named("todo_get".into()),
-        "bash_output" => ToolPat::Named("job_output".into()),
-        "kill_shell" | "kill_bash" => ToolPat::Named("job_kill".into()),
+        // Merged tools: a rule written for an old name (or Claude Code's) lands on the tool that
+        // now runs the call, so a saved deny keeps denying. `paper` and `ci_status` stay out: they
+        // fold into `web_fetch` / `gh`, and an allow there would open far more than they did.
+        "task_create" | "task_update" | "task_get" | "task_list" | "todo_add" | "todo_update" | "todo_get" => ToolPat::Named("todo".into()),
+        "bash_output" | "job_output" | "job_watch" => ToolPat::Named("task_output".into()),
+        "kill_shell" | "kill_bash" | "job_kill" | "cron_delete" => ToolPat::Named("task_stop".into()),
+        "cron_create" | "schedule_wakeup" => ToolPat::Named("schedule".into()),
+        "cron_list" | "list_agents" => ToolPat::Named("task_list".into()),
         _ => ToolPat::Named(snake),
     }
 }
@@ -832,6 +835,11 @@ mod tests {
         assert_eq!(Rule::parse("WebFetch(domain:x.org)").unwrap().spec, Spec::Domain("x.org".into()));
         assert_eq!(Rule::parse("mcp__srv__*").unwrap().tool, ToolPat::McpServer("srv".into()));
         assert_eq!(Rule::parse("Task").unwrap().tool, ToolPat::Named("agent".into()));
+        // A rule written for a merged tool's old name lands on the tool that now runs the call.
+        assert_eq!(Rule::parse("job_kill").unwrap().tool, ToolPat::Named("task_stop".into()));
+        assert_eq!(Rule::parse("KillShell").unwrap().tool, ToolPat::Named("task_stop".into()));
+        assert_eq!(Rule::parse("cron_create").unwrap().tool, ToolPat::Named("schedule".into()));
+        assert_eq!(Rule::parse("todo_add").unwrap().tool, ToolPat::Named("todo".into()));
         assert!(Rule::parse("bash(git").is_err());
         assert!(Rule::parse("web_fetch(x.org)").is_err());
         assert!(Rule::parse("").is_err());

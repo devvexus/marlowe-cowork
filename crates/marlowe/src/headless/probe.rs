@@ -641,7 +641,8 @@ mod tests {
     #[test]
     fn a_case_can_bring_an_mcp_stub_server_and_its_tools_are_called_by_name() {
         let stubs = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("eval").join("tool_probe");
-        if std::process::Command::new("python").arg("-V").output().is_err() || !stubs.join("mcp_stub.py").is_file() {
+        let has_python = std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("python.exe").is_file() || d.join("python").is_file()));
+        if !has_python || !stubs.join("mcp_stub.py").is_file() {
             return;
         }
         let (mut p, _seq, dir) = probe(vec![vec![("mcp__notes__search_notes", json!({"query": "tokenizer"}))], vec![("mcp__notes__search_notes", json!({"q": "x"}))]], vec![None]);

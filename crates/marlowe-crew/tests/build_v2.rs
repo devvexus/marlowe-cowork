@@ -216,6 +216,12 @@ fn parity_a9_build_v2_runs_a_three_task_dag_end_to_end() {
     let fx = start(&home, &provider, cfg, true);
     let id = fx.sup.dispatch(None, args("engineer", "Add the alpha, beta and gamma modules.", Some(Playbook::Build), Some(&work))).unwrap().run_id;
 
+    // NeedsYou also shows while an approval (the plan's) is being answered: wait for the result.
+    wait("the finished build", 240, || {
+        let s = info(&fx.sup, &id);
+        assert!(!(s.status.is_terminal() && s.status != CrewRunStatus::NeedsYou), "run ended {:?}, note {:?}", s.status, s.note);
+        s.status == CrewRunStatus::NeedsYou && s.result.is_some()
+    });
     let run = wait_status(&fx.sup, &id, CrewRunStatus::NeedsYou, 240);
     let result = run.result.clone().unwrap_or_else(|| panic!("a result; note {:?}", run.note));
     let summary = &result.summary;

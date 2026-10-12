@@ -4,6 +4,11 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Tool overhaul review fixes
+
+- **Fixed.** Merged tools' old names keep their grants and refusals: permission rules (`job_kill`, `cron_create`, `todo_add`, `KillShell`...), subagent allow/deny lists and crew role cards now read an old name as the tool that runs it (`args::canonical_tool`), so a saved deny still denies. `paper` and `ci_status` rules stay out of the rule map (they would widen an allow to `web_fetch` / `gh`).
+- **Fixed.** The probe's own test no longer spawns `python` directly (spawn audit); the build_v2 crew test waits for the run's result instead of the transient plan-approval `NeedsYou`; the workflow-authoring skill says `workflow{path}`.
+
 ### First-try tool probe (harness only)
 
 - **Added.** `marlowe headless --probe-first-call <cases.jsonl>` builds the real conductor or subagent host for a local model and window (the binary's tool factory, the MCP host over a case's stub servers, memory and `dispatch`, the persona blocks, the prefix fit, the Ollama wire), sends each case's request through the agent loop and prints one JSON line per run: every tool call as the provider parsed it, as the loop made it canonical and as the forgiving layer left it, with the layer's refusal text when it refused. Every call is answered `probe: not run` (or the case's canned answer), the turn stops after the case's `max_calls` steps, nothing executes and no approval is shown; a `workflow` script is checked the way `validate_only` checks it. `--calibrate` sends each surface twice behind a nonce, with and without tools, to read what the schemas really cost; `--dry` only builds and prints the surfaces. Local models only. The conductor surface is `marlowe_daemon::probe`.
