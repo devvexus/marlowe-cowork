@@ -72,10 +72,7 @@ fn query_after_taint(call: &ToolCallReq, exposure: &Exposure) -> Consequence {
 fn web_fetch_spec() -> ToolSpec {
     spec(
         "web_fetch",
-        "Fetch an https URL and return its main content as markdown (HTML, PDF, Office, text). \
-         Honours robots.txt. Long documents come back in windows; continue from the character \
-         `offset` given. With `prompt`, only its answer from the page comes back. A redirect to \
-         another host is returned, not followed.",
+        "Fetch an https URL as markdown (HTML, PDF, Office, text); robots.txt is honoured. Long documents come back in windows (continue from `offset`). With `prompt`, only its answer from the page comes back. A redirect to another host is returned, not followed.",
         json!({
             "url": {"type": "string"},
             "prompt": {"type": "string"},
@@ -89,10 +86,10 @@ fn web_fetch_spec() -> ToolSpec {
 fn arxiv_spec() -> ToolSpec {
     spec(
         "arxiv",
-        "Search arXiv. Plain keywords, or field queries (`ti:`, `au:`, `abs:`, `cat:`), or an              arXiv id. Returns titles, authors, dates, ids and abstracts. Results are the authors'              claims, not findings; read the paper with `paper`.",
+        "Search arXiv: keywords, field queries (`ti:`, `au:`, `abs:`, `cat:`) or an id. Returns titles, authors, dates, ids, abstracts. Results are the authors' claims, not findings; read a paper with `paper`.",
         json!({
             "query": {"type": "string"},
-            "max": {"type": "integer", "description": "Results to return (default 8, at most 25)."}
+            "max": {"type": "integer", "description": "Default 8, at most 25."}
         }),
         &["query"],
     )
@@ -101,15 +98,11 @@ fn arxiv_spec() -> ToolSpec {
 fn paper_spec() -> ToolSpec {
     spec(
         "paper",
-        "Read a paper from an https URL (HTML, PDF or LaTeX source) or an arXiv id (2301.01234; \
-         arXiv's HTML is read first, then the source, then the PDF). Returns title, authors when \
-         known, numbered sections, the abstract and the text as markdown; long papers come back \
-         in windows, continue with `offset`. `part: \"references\"` returns the parsed reference \
-         list with DOIs and arXiv ids.",
+        "Read a paper from an https URL (HTML, PDF, LaTeX source) or an arXiv id: title, authors, numbered sections, abstract and text as markdown, in windows (continue with `offset`). `part: \"references\"` returns the parsed reference list with DOIs and arXiv ids.",
         json!({
             "url_or_arxiv_id": {"type": "string"},
-            "offset": {"type": "integer", "description": "Character offset to continue from."},
-            "part": {"type": "string", "enum": ["text", "references"], "description": "What to return (default text)."}
+            "offset": {"type": "integer"},
+            "part": {"type": "string", "enum": ["text", "references"]}
         }),
         &["url_or_arxiv_id"],
     )

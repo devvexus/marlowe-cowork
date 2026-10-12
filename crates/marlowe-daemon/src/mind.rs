@@ -361,70 +361,65 @@ fn spec(name: &str, description: &str, schema: Value) -> ToolSpec {
     ToolSpec { name: name.into(), description: description.into(), input_schema: schema }
 }
 
+/// The four memory tools' declarations (what [`MindTools`] offers the model).
+pub(crate) fn memory_specs() -> Vec<ToolSpec> {
+    let kinds = ["preference", "decision", "fact", "procedure", "result", "note"];
+    vec![
+        spec(
+            "remember",
+            "Record something durable about the user, once, when they state it, unannounced; not \
+             one-offs. A decision needs its `reason`. Results and notes are retrieved when \
+             relevant; the rest goes in the profile. To change a record, use correct.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string", "description": "One self-contained statement." },
+                    "kind": { "type": "string", "enum": kinds },
+                    "reason": { "type": "string" },
+                    "scope": { "type": "string", "enum": ["global", "project"], "default": "global" }
+                },
+                "required": ["text", "kind"]
+            }),
+        ),
+        spec(
+            "recall",
+            "Search stored memories (past conversations, episodes, anything not in the profile) \
+             when the user asks about the past.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": RECALL_MAX, "default": RECALL_DEFAULT }
+                },
+                "required": ["query"]
+            }),
+        ),
+        spec(
+            "forget",
+            "Forget a memory by id. The audit journal keeps the record, not the text.",
+            json!({
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"]
+            }),
+        ),
+        spec(
+            "correct",
+            "Replace a memory's text (recall finds the id); use it, not remember, for something \
+             recorded that changed. A decision keeps its reason only if the text ends with \
+             \"(reason: ...)\". Refused if it would lower trust.",
+            json!({
+                "type": "object",
+                "properties": { "id": { "type": "string" }, "text": { "type": "string" } },
+                "required": ["id", "text"]
+            }),
+        ),
+    ]
+}
+
 impl ToolHost for MindTools {
     fn specs(&self) -> Vec<ToolSpec> {
-        let kinds = ["preference", "decision", "fact", "procedure", "result", "note"];
-        vec![
-            spec(
-                "remember",
-                "Record something durable about the user. Preferences, decisions, facts and \
-                 procedures go into the profile that is in context every turn. Call it once, when \
-                 the user states it, without announcing it. Not for one-off requests or small \
-                 talk. To change something already recorded, use correct instead.",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "text": { "type": "string",
-                                  "description": "One self-contained statement, e.g. \"use uv, not pip\"." },
-                        "kind": { "type": "string", "enum": kinds,
-                                  "description": "preference: a preference or standing instruction (\"don't push \
-                                                  to main\"); decision: a choice made, with its reason; fact: about \
-                                                  their work or life; procedure: how they do something; result: an \
-                                                  outcome worth keeping; note: anything else. Results and notes \
-                                                  are retrieved when relevant, not kept in the profile." },
-                        "reason": { "type": "string", "description": "Why it was decided. Required when kind is decision." },
-                        "scope": { "type": "string", "enum": ["global", "project"], "default": "global",
-                                   "description": "global: everywhere. project: only in this session's workspace." }
-                    },
-                    "required": ["text", "kind"]
-                }),
-            ),
-            spec(
-                "recall",
-                "Search stored memories: past conversations, episodes, imported history and anything \
-                 not in the profile, including ones not yet matured. Use it when the user asks about \
-                 the past. Each hit shows its id, kind, trust, date and provenance.",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string" },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": RECALL_MAX, "default": RECALL_DEFAULT }
-                    },
-                    "required": ["query"]
-                }),
-            ),
-            spec(
-                "forget",
-                "Forget a memory by id. The record of it stays in the audit journal; its text does not.",
-                json!({
-                    "type": "object",
-                    "properties": { "id": { "type": "string" } },
-                    "required": ["id"]
-                }),
-            ),
-            spec(
-                "correct",
-                "Replace a memory's text with a corrected version, keeping its kind and scope. Use it, \
-                 not remember, when something recorded has changed (recall finds the id). A decision \
-                 keeps a reason only if the new text ends with \"(reason: ...)\". Refused if it would \
-                 lower the memory's trust.",
-                json!({
-                    "type": "object",
-                    "properties": { "id": { "type": "string" }, "text": { "type": "string" } },
-                    "required": ["id", "text"]
-                }),
-            ),
-        ]
+        memory_specs()
     }
 
     fn call(&self, call: &ToolCallReq, ctx: &ToolCtx) -> ToolOutcome {
@@ -616,6 +611,78 @@ mod tests {
         assert!(s.starts_with("preference · tabs over spaces; fact · x"));
         assert!(!s.contains('\n'));
         assert_eq!(s.chars().count(), RECALLED_SUMMARY_CHARS + 1, "clipped with an ellipsis");
+    }
+
+    /// Gate A15 on the wired conductor, end to end: dusk at 32k in a git repository with a Cargo
+    /// manifest (so the git and verify groups are live next to the core ones), with the real
+    /// memory and dispatch declarations (the 13 built-in roles in `dispatch`'s menu) and the real
+    /// persona blocks the session would append. Persona and blocks, tool schemas, and the whole
+    /// fitted prefix stay inside the design's slices; project instructions at their cap arrive
+    /// uncut.
+    #[test]
+    fn the_wired_dusk_prefix_fits_its_slices_in_a_repository() {
+        use marlowe_agent::context::{estimate_tokens, fit_prefix, tool_spec_tokens, PrefixBudget};
+        use marlowe_agent::system::PromptSections;
+        use marlowe_agent::{PersonaBlock, SystemPrompt};
+        use marlowe_model::ProviderKind;
+
+        let root = std::env::temp_dir().join(format!("marlowe-a15-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\nversion = \"0.1.0\"\n").unwrap();
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let dusk = marlowe_model::ModelInfo { context_window: Some(32_768), ..marlowe_model::ModelInfo::bare(ProviderKind::Ollama, "marlowe-dusk:27b-super") };
+        let host = marlowe_exec::BuiltinTools::new(Some(root.clone())).with_model_exposure(&dusk);
+        let host = marlowe_exec::specs::configure(host, &marlowe_exec::specs::HostSetup { home: &home, workspace: Some(&root) });
+        let mut specs = host.specs();
+        specs.extend(memory_specs());
+        specs.push(marlowe_crew::dispatch::dispatch_spec(&marlowe_crew::Roles::builtin().infos()));
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        for live in ["project", "tool_search", "remember", "dispatch"] {
+            assert!(names.contains(&live), "{live} missing: {names:?}");
+        }
+        let search = specs.iter().find(|s| s.name == "tool_search").unwrap();
+        for deferred in ["git", "gh", "symbols", "multi_edit", "web_fetch", "workflow", "monitor"] {
+            assert!(!names.contains(&deferred), "{deferred} is listed at 32k");
+            assert!(search.description.contains(deferred), "tool_search does not name {deferred}");
+        }
+        let tools = tool_spec_tokens(&specs);
+        for s in &specs {
+            eprintln!("{:>5}  {}", tool_spec_tokens(std::slice::from_ref(s)), s.name);
+        }
+
+        let system = SystemPrompt::new().block(PersonaBlock::Memory).block(PersonaBlock::Crew).blocks_from(host.persona_blocks());
+        let persona_text = system.persona_text();
+        for live in ["<coding>", "<verify_tools>"] {
+            assert!(persona_text.contains(live), "{live} missing from the blocks");
+        }
+        for deferred in ["<git_tools>", "## Workflows", "<background_work>"] {
+            assert!(!persona_text.contains(deferred), "{deferred} is a deferred group's block; it rides with tool_search");
+        }
+        let persona = estimate_tokens(&persona_text);
+
+        let budget = PrefixBudget::for_window(32_768);
+        let sections = PromptSections {
+            instructions: format!("<instructions>\n{}\n</instructions>", "Follow the project rules. ".repeat(170)),
+            project_profile: "build: cargo build\ntest: cargo test\n".repeat(20),
+            repo_map: "src/lib.rs: fn main, struct Agent\n".repeat(200),
+            skills_index: "- skill: does a thing\n".repeat(40),
+            output_style: String::new(),
+            warnings: Vec::new(),
+        };
+        let fit = fit_prefix(persona, tools, &sections, budget);
+        eprintln!(
+            "A15 wired: persona+blocks {persona}/{} tools {tools}/{} prefix {}/{} warnings {:?}",
+            budget.persona, budget.tools, fit.tokens, budget.total, fit.warnings
+        );
+        let slack = budget.total - (budget.persona + budget.tools + budget.instructions.unwrap() + budget.profile + budget.repo_map + budget.skills + budget.style);
+        assert!(tools <= budget.tools, "tool schemas are {tools} tokens, over their {} slice", budget.tools);
+        assert!(persona <= budget.persona + slack, "persona and blocks are {persona} tokens, over their {} slice plus the {slack} slack", budget.persona);
+        assert!(fit.tokens <= budget.total, "the prefix is {} tokens: {:?}", fit.tokens, fit.warnings);
+        assert!(!fit.warnings.iter().any(|w| w.contains("over the prefix budget")), "the fitter had to cut: {:?}", fit.warnings);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

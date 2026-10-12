@@ -347,11 +347,7 @@ fn under_cwd(tools: &BuiltinTools, call: &ToolCallReq, ctx: &ToolCtx) -> Mutatio
 fn bash_spec() -> ToolSpec {
     spec(
         "bash",
-        "Run a command in bash (Git Bash on Windows). stdin is closed; the command is killed at the timeout \
-         (default 120000 ms, at most 600000). At most 30 KB of output comes back: when there is more, the lines that \
-         explain a failure and the end are kept, and `[full output: path, N lines]` names the whole log (read it with \
-         `read` or `grep`); `raw` cuts the middle instead. For a server, a watcher or a long build set \
-         `run_in_background`: you get a job id at once and are told when it exits.",
+        "Run a command in bash (Git Bash on Windows); stdin closed. Output is capped at 30 KB (failure lines and the end; the log's path is given). Killed at `timeout_ms` (default 120000). `run_in_background` for a server or long build: you get a job id and are told when it exits.",
         shell_props(json!({"command": {"type": "string"}})),
         &["command"],
     )
@@ -360,10 +356,7 @@ fn bash_spec() -> ToolSpec {
 fn powershell_spec() -> ToolSpec {
     spec(
         "powershell",
-        "Run a command in Windows PowerShell (-NoProfile -NonInteractive). stdin is closed; the command is killed at \
-         the timeout (default 120000 ms, at most 600000). At most 30 KB of output comes back, failure lines first, \
-         with `[full output: path, N lines]` for the whole log; `raw` cuts the middle instead. `run_in_background` \
-         returns a job id at once.",
+        "Run a command in Windows PowerShell (-NoProfile -NonInteractive); output, timeout and `run_in_background` work as in `bash`.",
         shell_props(json!({"command": {"type": "string"}})),
         &["command"],
     )
@@ -372,27 +365,25 @@ fn powershell_spec() -> ToolSpec {
 fn python_spec() -> ToolSpec {
     spec(
         "python",
-        "Run Python with the user's interpreter: either an inline snippet (`code`) or a script file (`path`). Give \
-         exactly one. Killed at the timeout; at most 30 KB of output comes back (see `bash`); `run_in_background` \
-         returns a job id at once.",
+        "Run Python: an inline snippet (`code`) or a script (`path`), exactly one. Output, timeout and `run_in_background` work as in `bash`.",
         shell_props(json!({
-            "code": {"type": "string", "description": "Inline source to run."},
-            "path": {"type": "string", "description": "Script file to run."},
-            "args": {"type": "array", "items": {"type": "string"}, "description": "Command-line arguments."}
+            "code": {"type": "string"},
+            "path": {"type": "string"},
+            "args": {"type": "array", "items": {"type": "string"}}
         })),
         &[],
     )
 }
 
-/// The properties every shell tool shares, after its own.
+//// The properties every shell tool shares, after its own.
 fn shell_props(own: Value) -> Value {
     let mut props = own;
     let shared = json!({
-        "cwd": {"type": "string", "description": "Working directory; default is the workspace."},
-        "timeout_ms": {"type": "integer", "description": "Kill the command after this long (default 120000, at most 600000)."},
-        "run_in_background": {"type": "boolean", "description": "Start it as a background job and return its id at once."},
-        "description": {"type": "string", "description": "What the command does, in a few words."},
-        "raw": {"type": "boolean", "description": "Cut a long output in the middle instead of choosing the lines about failures."}
+        "cwd": {"type": "string"},
+        "timeout_ms": {"type": "integer"},
+        "run_in_background": {"type": "boolean"},
+        "description": {"type": "string"},
+        "raw": {"type": "boolean"}
     });
     if let (Some(p), Some(s)) = (props.as_object_mut(), shared.as_object()) {
         p.extend(s.clone());
@@ -403,13 +394,11 @@ fn shell_props(own: Value) -> Value {
 fn job_output_spec() -> ToolSpec {
     spec(
         "job_output",
-        "Read a background job's output. Without `since` you get what is new since your last read; `since` is a byte \
-         offset (the `next since` of an earlier read) for an exact window. `filter` keeps only lines matching a regular \
-         expression. The result ends with the job's status and the next offset.",
+        "Read a background job's output: what is new since your last read, or from byte offset `since` (the `next since` of a read). `filter` keeps lines matching a regex. The result ends with the job's status and the next offset.",
         json!({
-            "id": {"type": "string", "description": "The job id, e.g. \"j3\"."},
-            "since": {"type": "integer", "description": "Byte offset to read from."},
-            "filter": {"type": "string", "description": "Regular expression; only matching lines are returned."}
+            "id": {"type": "string", "description": "e.g. \"j3\""},
+            "since": {"type": "integer"},
+            "filter": {"type": "string"}
         }),
         &["id"],
     )
@@ -418,13 +407,11 @@ fn job_output_spec() -> ToolSpec {
 fn job_watch_spec() -> ToolSpec {
     spec(
         "job_watch",
-        "Follow a running background job: its new output lines reach you as notices between your steps while you work \
-         on something else, until a line matches `until_regex` (then you are told which, and the watch ends) or the job \
-         exits. `filter` limits it to matching lines. The job's exit is reported even without a watch.",
+        "Follow a running background job: its new output lines reach you as notices between steps until a line matches `until_regex` (the watch ends and you are told) or the job exits. `filter` limits it to matching lines. A job's exit is reported without a watch.",
         json!({
-            "id": {"type": "string", "description": "The job id, e.g. \"j3\"."},
-            "until_regex": {"type": "string", "description": "Stop watching at the first line matching this."},
-            "filter": {"type": "string", "description": "Only report lines matching this."}
+            "id": {"type": "string", "description": "e.g. \"j3\""},
+            "until_regex": {"type": "string"},
+            "filter": {"type": "string"}
         }),
         &["id"],
     )
@@ -434,7 +421,7 @@ fn job_kill_spec() -> ToolSpec {
     spec(
         "job_kill",
         "Stop a background job and everything it started.",
-        json!({"id": {"type": "string", "description": "The job id, e.g. \"j3\"."}}),
+        json!({"id": {"type": "string"}}),
         &["id"],
     )
 }

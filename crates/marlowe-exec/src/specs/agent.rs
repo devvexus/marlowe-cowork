@@ -40,21 +40,18 @@ fn sources(t: &BuiltinTools) -> marlowe_agent::instructions::Sources {
 fn todo_spec() -> marlowe_model::ToolSpec {
     spec(
         "todo",
-        "Keep a todo list for multi-step work: send the whole list each time. Keep exactly one item in_progress and \
-         mark items completed as soon as they are done. Use it for tasks with three or more steps or when the user \
-         gives several things to do; skip it for a single quick step.",
+        "Todo list for work of three or more steps: send the whole list each time; one item in_progress; complete items as soon as done.",
         json!({
             "items": {
                 "type": "array",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "content": {"type": "string", "description": "What to do, imperative (\"Run the tests\")."},
+                        "content": {"type": "string"},
                         "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]},
-                        "active_form": {"type": "string", "description": "Present tense, shown while in progress (\"Running the tests\")."}
+                        "active_form": {"type": "string"}
                     },
-                    "required": ["content", "status"],
-                    "additionalProperties": false
+                    "required": ["content", "status"]
                 }
             }
         }),
@@ -65,9 +62,7 @@ fn todo_spec() -> marlowe_model::ToolSpec {
 fn ask_user_spec() -> marlowe_model::ToolSpec {
     spec(
         "ask_user",
-        "Ask the user 1-4 questions and wait. Only when blocked on a decision only the user can make; otherwise choose \
-         and say so. An option has a `label` and may have a `description` and a `preview` (monospace text shown beside \
-         it); `multi_select` allows several. The user can always type their own answer.",
+        "Ask the user 1-4 questions and wait, only when blocked on their decision; otherwise choose and say so.",
         json!({
             "questions": {
                 "type": "array",
@@ -75,7 +70,7 @@ fn ask_user_spec() -> marlowe_model::ToolSpec {
                     "type": "object",
                     "properties": {
                         "question": {"type": "string"},
-                        "header": {"type": "string", "description": "A label of at most 12 characters."},
+                        "header": {"type": "string"},
                         "options": {
                             "type": "array",
                             "items": {
@@ -83,16 +78,14 @@ fn ask_user_spec() -> marlowe_model::ToolSpec {
                                 "properties": {
                                     "label": {"type": "string"},
                                     "description": {"type": "string"},
-                                    "preview": {"type": "string", "description": "Monospace text shown when the option is focused."}
+                                    "preview": {"type": "string"}
                                 },
-                                "required": ["label"],
-                                "additionalProperties": false
+                                "required": ["label"]
                             }
                         },
                         "multi_select": {"type": "boolean"}
                     },
-                    "required": ["question", "options"],
-                    "additionalProperties": false
+                    "required": ["question", "options"]
                 }
             }
         }),
@@ -103,13 +96,11 @@ fn ask_user_spec() -> marlowe_model::ToolSpec {
 fn skill_spec() -> marlowe_model::ToolSpec {
     spec(
         "skill",
-        "Load a skill from the skills index: its instructions come back for you to follow (some run in a subagent and \
-         return a result; one marked `background` returns an agent id at once and reports later). Load the skill before \
-         starting work it covers.",
+        "Load a skill from the skills index and follow it before the work it covers.",
         json!({
-            "name": {"type": "string", "description": "The skill's name as listed."},
-            "args": {"type": "string", "description": "Arguments for the skill, if it takes any."},
-            "background": {"type": "boolean", "description": "For a skill that runs in a subagent: do not wait for it."}
+            "name": {"type": "string"},
+            "args": {"type": "string"},
+            "background": {"type": "boolean"}
         }),
         &["name"],
     )
@@ -118,20 +109,15 @@ fn skill_spec() -> marlowe_model::ToolSpec {
 fn agent_spec() -> marlowe_model::ToolSpec {
     spec(
         "agent",
-        "Run a subagent on one task. Types: `explore` (read-only search), `plan` (read-only plan), `general` (full tools), \
-         `fork` (a copy of you that starts from this conversation; give it only the task), `guide` (answers questions \
-         about Marlowe), and any in the agents directory. Other types cannot see this conversation: put everything in \
-         `prompt`. It runs in the background by default: you get an id now and are told when it finishes; \
-         `background: false` waits for the report. `name` lets `send_message` reach it. Independent agents in one \
-         step run in parallel.",
+        "Run a subagent. Types: `explore` (read-only search), `plan`, `general` (all tools), `fork` (a copy of you with this conversation), `guide` (questions about Marlowe), or one from the agents directory; all but `fork` need everything in `prompt`. Background by default (told when done); `background: false` waits.",
         json!({
-            "type": {"type": "string", "description": "explore, plan, general, fork, guide or a listed type."},
-            "description": {"type": "string", "description": "Three to five words naming the task."},
-            "prompt": {"type": "string", "description": "The complete task and what to report back."},
+            "type": {"type": "string"},
+            "description": {"type": "string"},
+            "prompt": {"type": "string"},
             "isolation": {"type": "string", "enum": ["worktree"]},
-            "background": {"type": "boolean", "description": "Default true."},
+            "background": {"type": "boolean"},
             "name": {"type": "string"},
-            "model": {"type": "string", "description": "sonnet, opus, haiku, inherit or a model id. Not for fork."},
+            "model": {"type": "string"},
             "effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max"]}
         }),
         &["type", "description", "prompt"],
@@ -164,9 +150,8 @@ fn enter_plan_spec() -> marlowe_model::ToolSpec {
 fn exit_plan_spec() -> marlowe_model::ToolSpec {
     spec(
         "exit_plan",
-        "In plan mode, present the finished plan. It is saved as a file the user can edit; they approve it (and choose \
-         the next mode) or send feedback.",
-        json!({"plan": {"type": "string", "description": "The steps and the files they change, in markdown."}}),
+        "In plan mode, present the finished plan (markdown); the user approves it or sends feedback.",
+        json!({"plan": {"type": "string"}}),
         &["plan"],
     )
 }
@@ -361,15 +346,14 @@ mod tests {
         }
     }
 
-    /// A15 re-measured by track F3 with the rarely used built-ins deferred behind `tool_search`
-    /// (T31, `deferral.rs`): the dusk profile at 32k is persona and blocks 5,230 tokens, 21 core
-    /// tools 5,444, and whatever sections fit: 11,289 against the 9,000 budget. The new F3 tools
-    /// (`todo_add/update/get`, `enter_plan`, `send_message`) cost 0 of it
-    /// (`the_f3_tools_cost_the_32k_prefix_nothing`). What is left is the core tool schemas against
-    /// their 3k slice and the persona against its 2k slice: shorter schemas or a re-sliced budget
-    /// (Matthew's call). Not A15 itself (that is `parity_a15_instructions_at_their_cap_reach_dusk_uncut`).
+    /// A15, the dusk profile at 32k, this host alone: persona and blocks (v3, memory, crew and
+    /// coding) inside their 2,000-token slice, the core tool schemas inside their 3,000, and the
+    /// fitter keeps the whole prefix inside 9,000 with every oversized section cut, visibly. (Was
+    /// persona 5,230 + tools 5,444 = 11,289 before the persona was condensed and the rarely used
+    /// built-ins went behind `tool_search`, T31; the wired conductor's own tools are counted in
+    /// `parity_a15_instructions_at_their_cap_reach_dusk_uncut` and in the daemon's
+    /// `the_wired_dusk_prefix_fits_its_slices_in_a_repository`.)
     #[test]
-    #[ignore = "A15 fails: the 21 core tools (5.4k tokens) and the persona (5.2k) overrun their 3k and 2k slices at 32k; deferral cannot cut them"]
     fn the_fitter_keeps_the_dusk_prefix_inside_nine_thousand_tokens() {
         use marlowe_agent::context::{estimate_tokens, fit_prefix, tool_spec_tokens, PrefixBudget};
         use marlowe_agent::system::PromptSections;
@@ -392,6 +376,8 @@ mod tests {
         };
         let fit = fit_prefix(persona, tools, &sections, budget);
         eprintln!("A15: prefix {} tokens = persona+blocks {persona} + tools {tools} + sections; budget {}", fit.tokens, budget.total);
+        assert!(persona <= budget.persona, "persona and blocks are {persona} tokens, over their {} slice", budget.persona);
+        assert!(tools <= budget.tools, "the core tools are {tools} tokens, over their {} slice", budget.tools);
         assert!(fit.tokens <= 9_000, "prefix {} tokens (persona {persona}, tools {tools}): {:?}", fit.tokens, fit.warnings);
         assert!(!fit.warnings.is_empty(), "the oversized sections were cut, visibly");
     }
@@ -415,16 +401,13 @@ mod tests {
         let big = configured().with_model_exposure(&frontier);
         let (small_tokens, big_tokens) = (tool_spec_tokens(&small.specs()), tool_spec_tokens(&big.specs()));
         assert!(big_tokens > small_tokens + 600, "deferral saves the new and rarely used tools: {small_tokens} vs {big_tokens}");
-        assert!(small_tokens <= 5_500, "the 32k tool list grew to {small_tokens} tokens (A15 tool slice is 3,000; it was 5,444 when F3 measured)");
+        assert!(small_tokens <= 1_900, "the 32k tool list grew to {small_tokens} tokens (A15 tool slice is 3,000, shared with the conductor's memory and dispatch tools: about 1,100)");
     }
 
-    /// A15: project instructions at their 1.5k cap reach dusk whole at 32k (counting this
-    /// host's tools only; the daemon's test counts the wired conductor's). Fails today: the
-    /// persona and its blocks (about 5.2k tokens, `persona/v3.md` alone about 4.2k) overrun
-    /// their 2k slice and the fitter takes the difference from the project sections. Ignored
-    /// until the persona is trimmed or the 9k budget re-sliced (Matthew's call). A15: failing.
+    /// A15: project instructions at their 1.5k cap reach dusk whole at 32k, with this host's
+    /// tools and the conductor's memory and dispatch tools (fixtures below) both inside their
+    /// slices, so the fitter has nothing to take from the project sections.
     #[test]
-    #[ignore = "A15 fails: persona + blocks overrun the 2k slice at 32k until trimmed or re-sliced"]
     fn parity_a15_instructions_at_their_cap_reach_dusk_uncut() {
         use marlowe_agent::context::{estimate_tokens, fit_prefix, tool_spec_tokens, PrefixBudget};
         use marlowe_agent::system::PromptSections;
@@ -441,7 +424,9 @@ mod tests {
         // About 1.5k tokens of instructions (chars/3), the per-section cap.
         let instructions = format!("<instructions>\n{}\n</instructions>", "Follow the project rules. ".repeat(170));
         let sections = PromptSections { instructions: instructions.clone(), ..Default::default() };
-        let fit = fit_prefix(persona, tools, &sections, PrefixBudget::for_window(32_768));
+        let budget = PrefixBudget::for_window(32_768);
+        let fit = fit_prefix(persona, tools, &sections, budget);
+        assert!(persona <= budget.persona && tools <= budget.tools, "persona {persona} / {}, tools {tools} / {}", budget.persona, budget.tools);
         assert_eq!(fit.sections.instructions, instructions, "instructions were cut (persona {persona}, tools {tools}): {:?}", fit.warnings);
     }
 
@@ -458,57 +443,47 @@ mod tests {
         vec![
             t(
                 "remember",
-                "Record something durable about the user. Preferences, decisions, facts and procedures go into the profile \
-                 that is in context every turn. Call it once, when the user states it, without announcing it. Not for \
-                 one-off requests or small talk. To change something already recorded, use correct instead.",
+                "Record something durable about the user, once, when they state it, unannounced; not one-offs. A decision needs its `reason`. Results and notes are retrieved when relevant; the rest goes in the profile. To change a record, use correct.",
                 json!({"type": "object", "properties": {
-                    "text": s("One self-contained statement, e.g. use uv, not pip."),
-                    "kind": {"type": "string", "enum": ["preference", "decision", "fact", "procedure", "result", "note"],
-                             "description": "preference: a preference or standing instruction; decision: a choice made, with its \
-                              reason; fact: about their work or life; procedure: how they do something; result: an outcome worth \
-                              keeping; note: anything else. Results and notes are retrieved when relevant, not kept in the profile."},
-                    "reason": s("Why it was decided. Required when kind is decision."),
-                    "scope": {"type": "string", "enum": ["global", "project"], "default": "global",
-                              "description": "global: everywhere. project: only in this session's workspace."}},
+                    "text": s("One self-contained statement."),
+                    "kind": {"type": "string", "enum": ["preference", "decision", "fact", "procedure", "result", "note"]},
+                    "reason": {"type": "string"},
+                    "scope": {"type": "string", "enum": ["global", "project"], "default": "global"}},
                     "required": ["text", "kind"]}),
             ),
             t(
                 "recall",
-                "Search stored memories: past conversations, episodes, imported history and anything not in the profile, \
-                 including ones not yet matured. Use it when the user asks about the past. Each hit shows its id, kind, \
-                 trust, date and provenance.",
+                "Search stored memories (past conversations, episodes, anything not in the profile) when the user asks about the past.",
                 json!({"type": "object", "properties": {"query": {"type": "string"},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5}}, "required": ["query"]}),
             ),
             t(
                 "forget",
-                "Forget a memory by id. The record of it stays in the audit journal; its text does not.",
+                "Forget a memory by id. The audit journal keeps the record, not the text.",
                 json!({"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}),
             ),
             t(
                 "correct",
-                "Replace a memory's text with a corrected version, keeping its kind and scope. Use it, not remember, when \
-                 something recorded has changed (recall finds the id). A decision keeps a reason only if the new text ends \
-                 with (reason: ...). Refused if it would lower the memory's trust.",
+                "Replace a memory's text (recall finds the id); use it, not remember, for something recorded that changed. A decision keeps its reason only if the text ends with \"(reason: ...)\". Refused if it would lower trust.",
                 json!({"type": "object", "properties": {"id": {"type": "string"}, "text": {"type": "string"}},
                     "required": ["id", "text"]}),
             ),
             t(
                 "dispatch",
-                "Send work to a crew agent that runs in the background in its own sandbox, and get its run id back \
-                 immediately. Use it for long, parallel or bulky work: a literature sweep, an implementation in a git \
-                 worktree, a long investigation. The result arrives later in this conversation. The crew cannot see this \
-                 conversation, so the goal must carry the context it needs.",
-                // Abridged: the role menu lists the profile's roles (three here).
+                "Send long, parallel or bulky work to a crew agent that runs in the background in its own sandbox. You get \
+                 its run id at once; the result arrives later in this conversation. The crew cannot see this conversation, \
+                 so the goal must carry the context it needs.",
+                // Abridged: the role menu lists the profile's roles (three here); the daemon's
+                // `the_wired_dusk_prefix_fits_its_slices_in_a_repository` counts the real menu.
                 json!({"type": "object", "properties": {
                     "role": {"type": "string", "enum": ["researcher", "engineer", "reviewer"],
                              "description": "Who does the work. researcher: literature and evidence · engineer: builds in a \
                               worktree · reviewer: adversarial review"},
-                    "goal": s("What to find out or build, with the facts, paths, constraints and definition of done the crew needs."),
+                    "goal": s("What to find out or build, with the paths, constraints and definition of done the crew needs."),
                     "playbook": {"type": "string", "enum": ["deep_research", "build"], "description": "deep_research: \
                      plan, parallel scouts, adversarial verify, cited report. build: plan, implement in a worktree, test \
-                     loop, review, diff for merge. Omit for a single role-prompt run (investigate, review, experiment)."},
-                    "workspace": s("Directory the run works on; default is this session's workspace."),
+                     loop, review, diff for merge. Omit for a single role run."},
+                    "workspace": s("Default: this session's workspace."),
                     "budget": {"type": "object", "properties": {"tokens": {"type": "integer"}, "steps": {"type": "integer"},
                              "usd": {"type": "number"}}}},
                     "required": ["role", "goal"]}),

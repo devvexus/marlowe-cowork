@@ -3,7 +3,9 @@
 //! A 32k model cannot spend 5.6k tokens of its prompt on tool schemas it will seldom call (gate
 //! A15: the whole stable prefix is 9k). So on a window of [`DEFER_WINDOW`] tokens or less the host
 //! lists the core tools and a `tool_search` tool, and leaves the [`DEFERRABLE`] ones out until the
-//! model asks for them: `select:monitor`, or keywords. A loaded tool's schema is appended at the
+//! model asks for them: `select:monitor`, or keywords. A group whose tools are all deferred also
+//! leaves its persona block out of the prefix; the block comes with the first `tool_search` that
+//! loads one of its tools. A loaded tool's schema is appended at the
 //! tail of the tool list, so the bytes before it never change and the provider's prefix cache
 //! holds. `tool_search`'s own description lists every deferrable name once, for the whole
 //! session, so it does not change either. A call to a deferred tool by name still runs, and loads
@@ -28,7 +30,29 @@ pub const TOOL_SEARCH: &str = "tool_search";
 
 /// Built-ins a small-window session lists only after `tool_search` loads them.
 pub const DEFERRABLE: &[&str] = &[
+    "multi_edit",
+    "symbols",
+    "definition",
+    "references",
+    "hover",
+    "diagnostics",
+    "rename_symbol",
+    "git",
     "notebook_edit",
+    "powershell",
+    "python",
+    "job_output",
+    "job_watch",
+    "job_kill",
+    "web_fetch",
+    "arxiv",
+    "paper",
+    "service",
+    "http_check",
+    "browser",
+    "gh",
+    "ci_status",
+    "watch",
     "monitor",
     "task_list",
     "task_output",
@@ -52,21 +76,35 @@ pub const DEFERRABLE: &[&str] = &[
     "report_findings",
 ];
 
-/// Tools loaded in this host's session, in the order they were loaded.
+/// Tools loaded in this host's session, in the order they were loaded, and the groups whose
+/// persona block has already been handed over with one of them.
 #[derive(Default)]
-pub(crate) struct Loaded(Mutex<Vec<String>>);
+pub(crate) struct Loaded {
+    names: Mutex<Vec<String>>,
+    blocks: Mutex<Vec<marlowe_agent::ToolGroup>>,
+}
 
 impl Loaded {
     fn names(&self) -> Vec<String> {
-        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.names.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     fn add(&self, name: &str) -> bool {
-        let mut g = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let mut g = self.names.lock().unwrap_or_else(|p| p.into_inner());
         if g.iter().any(|n| n == name) {
             return false;
         }
         g.push(name.to_string());
+        true
+    }
+
+    /// Whether `group`'s block has not been handed over yet (and now counts as handed over).
+    fn give_block(&self, group: marlowe_agent::ToolGroup) -> bool {
+        let mut g = self.blocks.lock().unwrap_or_else(|p| p.into_inner());
+        if g.contains(&group) {
+            return false;
+        }
+        g.push(group);
         true
     }
 }
@@ -91,6 +129,16 @@ impl BuiltinTools {
     /// The deferrable tools this host exposes, in table order.
     fn deferrable_defs(&self) -> Vec<&'static ToolDef> {
         specs::table().defs.iter().filter(|d| is_deferrable(d.name()) && self.exposes(d) && (d.enabled)(self)).collect()
+    }
+
+    /// Whether `group` has tools here and every one of them is deferred: its persona block stays
+    /// out of the prefix and rides with the first `tool_search` load of one of its tools instead.
+    pub(crate) fn block_deferred(&self, group: marlowe_agent::ToolGroup) -> bool {
+        if !self.defer {
+            return false;
+        }
+        let mut mine = specs::table().defs.iter().filter(|d| d.manifest.group == group && self.exposes(d) && (d.enabled)(self)).peekable();
+        mine.peek().is_some() && mine.all(|d| is_deferrable(d.name()))
     }
 
     /// The names of the tools that are deferred and not yet loaded.
@@ -163,6 +211,14 @@ impl BuiltinTools {
             loaded.add(d.name());
             text.push_str(&format!("\n- {}: {}\n  parameters: {}\n", d.name(), d.spec.description, d.spec.input_schema));
         }
+        for d in &picked {
+            let group = d.manifest.group;
+            if self.block_deferred(group) && loaded.give_block(group) {
+                if let Some(block) = specs::GROUPS.iter().find(|g| g.group == group).and_then(|g| (g.persona_block)()) {
+                    text.push_str(&format!("\nGuidance for these tools:\n{}\n", block.trim_end()));
+                }
+            }
+        }
         marlowe_agent::ToolOutcome::ok(text, format!("{} tools loaded", picked.len()))
     }
 }
@@ -171,15 +227,13 @@ fn search_spec(names: &[&str]) -> ToolSpec {
     ToolSpec {
         name: TOOL_SEARCH.into(),
         description: format!(
-            "Load tools that are not listed up front. Deferred: {}. Give `select:name1,name2` for exact names, or keywords \
-             (\"watch a log\"). The tools found become callable at once; the result lists each with its parameters.",
+            "Load tools not listed here: {}. `select:a,b` loads exact names, or give keywords.",
             names.join(", ")
         ),
         input_schema: json!({
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "keywords, or select:tool_name,tool_name"},
-                "limit": {"type": "integer", "description": "most tools to load (default 5)"}
+                "query": {"type": "string"}
             },
             "required": ["query"],
             "additionalProperties": false
@@ -299,6 +353,35 @@ mod tests {
         assert!(!h.deferred_names().contains(&"todo_add".to_string()));
     }
 
+    /// A15: a group whose tools are all deferred keeps its persona block out of the 32k prefix
+    /// (the tools are not there to describe), and the block arrives once, with the first load.
+    #[test]
+    fn parity_t31_a_wholly_deferred_groups_block_rides_with_its_first_load() {
+        let all = || {
+            specs::configure(BuiltinTools::new(None), &specs::HostSetup { home: Path::new("C:/home"), workspace: None })
+                .with_exposure(marlowe_agent::ExposureProfile::Local, marlowe_agent::ToolGroup::ALL.to_vec())
+        };
+        let text = |h: &BuiltinTools| h.persona_blocks().iter().map(|b| b.text()).collect::<Vec<_>>().join("\n");
+
+        let small = all().with_deferral(true);
+        let prefix = text(&small);
+        for gone in ["<background_work>", "## Workflows", "<git_tools>"] {
+            assert!(!prefix.contains(gone), "{gone} is in the 32k prefix");
+        }
+        assert!(prefix.contains("<coding>") && prefix.contains("<verify_tools>"), "groups with a listed tool keep their blocks");
+        assert!(text(&all()).contains("<background_work>") && text(&all()).contains("<git_tools>"), "a big window lists the tools and keeps every block");
+
+        let first = small.call_scoped(&call("tool_search", json!({"query": "select:monitor,task_list"})), &cx());
+        assert!(first.content.contains("Guidance for these tools:") && first.content.contains("<background_work>"), "{}", first.content);
+        assert_eq!(first.content.matches("<background_work>").count(), 1, "once per call");
+        let again = small.call_scoped(&call("tool_search", json!({"query": "select:cron_list"})), &cx());
+        assert!(!again.content.contains("<background_work>"), "the block is handed over once per session: {}", again.content);
+        let wf = small.call_scoped(&call("tool_search", json!({"query": "select:workflow"})), &cx());
+        assert!(wf.content.contains("## Workflows"), "{}", wf.content);
+        let git = small.call_scoped(&call("tool_search", json!({"query": "select:git"})), &cx());
+        assert!(git.content.contains("Commit only when the user asks"), "{}", git.content);
+    }
+
     #[test]
     fn keywords_find_deferred_tools_and_a_miss_lists_what_exists() {
         let h = host(&dusk());
@@ -325,6 +408,25 @@ mod measure {
     use marlowe_agent::context::estimate_tokens;
     use marlowe_agent::ToolHost;
     use marlowe_model::{ModelInfo, ProviderKind};
+
+    #[test]
+    #[ignore = "prints the per-tool schema cost with every group exposed"]
+    fn print_tool_costs_all_groups() {
+        let dusk = ModelInfo { context_window: Some(32_768), ..ModelInfo::bare(ProviderKind::Ollama, "d") };
+        let all: Vec<_> = marlowe_agent::ToolGroup::ALL.to_vec();
+        let h = specs::configure(BuiltinTools::new(None), &specs::HostSetup { home: std::path::Path::new("C:/home"), workspace: None })
+            .with_exposure(marlowe_agent::exposure_profile(&dusk), all)
+            .with_deferral(true);
+        let mut total = 0;
+        for s in h.specs() {
+            let t = estimate_tokens(&format!("{}{}{}", s.name, s.description, s.input_schema));
+            total += t;
+            eprintln!("{:>5}  {}", t, s.name);
+        }
+        eprintln!("{total:>5}  TOTAL");
+        let blocks: u32 = h.persona_blocks().iter().map(|b| estimate_tokens(b.text())).sum();
+        eprintln!("{blocks:>5}  PERSONA BLOCKS (tool groups)");
+    }
 
     #[test]
     #[ignore = "prints the per-tool schema cost"]

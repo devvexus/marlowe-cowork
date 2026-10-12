@@ -53,23 +53,20 @@ fn gh_ready(t: &BuiltinTools) -> bool {
 fn git_spec() -> marlowe_model::ToolSpec {
     spec(
         "git",
-        "Git for the repository you work in; `op` picks the operation and the other arguments are the ones that op uses.\n\
-         Free: status; diff (staged, stat, names_only, base e.g. `main...HEAD`, paths, context); log (limit, author, grep, since, rev, paths); \
-         show (rev, stat, paths); blame (paths, start, end); branch with no name lists (all).\n\
-         Asks: branch (name, from, delete); switch (name, create, from); add (paths, or all, or update); \
-         commit (message*, paths, all, amend); stash (action, message, include_untracked, rev); push (branch, remote, set_upstream); fetch (remote).\n\
-         Commit only when the user asked. Hooks always run. Force pushes, `--no-verify` and refspecs are not available; \
-         rebase, merge, cherry-pick, reset and tag go through bash.",
+        "Git for the repository you work in; `op` picks the operation, the other arguments are that op's.\n\
+         Free: status; diff (staged, stat, names_only, base, paths, context); log (limit, author, grep, since, rev, paths); show (rev, stat, paths); blame (paths, start, end); branch without a name lists (all).\n\
+         Asks: branch (name, from, delete); switch (name, create, from); add (paths, all, update); commit (message*, paths, all, amend); stash (action, message, include_untracked, rev); push (branch, remote, set_upstream); fetch (remote).\n\
+         Commit only when asked. Hooks always run. Force pushes and `--no-verify` are unavailable; rebase, merge, cherry-pick, reset and tag go through bash.",
         json!({
             "op": {"type": "string", "enum": git::GIT_OPS},
             "paths": {"type": "array", "items": {"type": "string"}},
             "message": {"type": "string"},
-            "name": {"type": "string", "description": "Branch name (branch, switch)."},
-            "from": {"type": "string", "description": "Start point for a new branch."},
+            "name": {"type": "string"},
+            "from": {"type": "string"},
             "rev": {"type": "string"},
-            "base": {"type": "string", "description": "diff: compare against this revision or range."},
-            "branch": {"type": "string", "description": "push: default the current branch."},
-            "remote": {"type": "string", "description": "Default the branch's, else origin."},
+            "base": {"type": "string", "description": "diff: revision or range, e.g. main...HEAD."},
+            "branch": {"type": "string"},
+            "remote": {"type": "string"},
             "staged": {"type": "boolean"},
             "stat": {"type": "boolean"},
             "names_only": {"type": "boolean"},
@@ -77,18 +74,18 @@ fn git_spec() -> marlowe_model::ToolSpec {
             "limit": {"type": "integer", "description": "log: default 20, at most 200."},
             "author": {"type": "string"},
             "grep": {"type": "string"},
-            "since": {"type": "string", "description": "log: e.g. `2 weeks ago`."},
+            "since": {"type": "string"},
             "start": {"type": "integer"},
             "end": {"type": "integer"},
-            "create": {"type": "boolean", "description": "switch: create the branch."},
-            "delete": {"type": "boolean", "description": "branch: delete the merged branch."},
-            "all": {"type": "boolean", "description": "branch: remote ones too; add: everything; commit: all tracked changes."},
-            "update": {"type": "boolean", "description": "add: tracked files only."},
+            "create": {"type": "boolean"},
+            "delete": {"type": "boolean"},
+            "all": {"type": "boolean"},
+            "update": {"type": "boolean"},
             "amend": {"type": "boolean"},
             "action": {"type": "string", "enum": ["push", "list", "show", "pop", "apply", "drop"], "description": "stash; default push."},
             "include_untracked": {"type": "boolean"},
-            "set_upstream": {"type": "boolean", "description": "push: automatic for a new branch."},
-            "cwd": {"type": "string", "description": "Repository directory; default the workspace."}
+            "set_upstream": {"type": "boolean"},
+            "cwd": {"type": "string"}
         }),
         &["op"],
     )

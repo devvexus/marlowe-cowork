@@ -399,23 +399,19 @@ fn browser_describe(call: &ToolCallReq) -> String {
 fn project_spec() -> ToolSpec {
     spec(
         "project",
-        "Build, test and check this project from what it declares. `profile` (default) shows the detected \
-         stacks, commands, services, migrations, lockfiles and hub files. `run` executes one command and \
-         returns failing test ids and compiler findings with file:line. `gate` runs format, lint, \
-         typecheck, build and test, stopping at the first failure. `migrate` runs the migrations on a \
-         throwaway sqlite database and reports the schema. .marlowe/project.toml overrides detection.",
+        "Build, test and check this project from what it declares. `profile` (default) shows stacks and commands. `run` executes one `command`, returning failing test ids and findings with file:line. `gate` runs format, lint, typecheck, build, test, stopping at the first failure (`baseline`: ids that failed before). `migrate` runs migrations on a throwaway sqlite database.",
         json!({
             "op": {"type": "string", "enum": ["profile", "run", "gate", "migrate"]},
-            "command": {"type": "string", "enum": ["install", "format", "lint", "typecheck", "build", "test"], "description": "For run."},
-            "args": {"type": "array", "items": {"type": "string"}, "description": "Extra arguments for run (a test name, -k expr)."},
-            "cwd": {"type": "string", "description": "Sub-project, when several have the command."},
-            "kinds": {"type": "array", "items": {"type": "string"}, "description": "For gate: only these."},
-            "keep_going": {"type": "boolean", "description": "For gate: do not stop at a failure."},
-            "baseline": {"type": "array", "items": {"type": "string"}, "description": "For gate: test ids that failed before; only new failures count."},
-            "roundtrip": {"type": "boolean", "description": "For migrate: also down and up again."},
-            "tool": {"type": "string", "description": "For migrate: alembic, prisma, ..."},
-            "database_url": {"type": "string", "description": "For migrate: a named database instead of the throwaway. Asks first."},
-            "timeout_ms": {"type": "integer", "description": "Per command; default 600000, at most 1800000."}
+            "command": {"type": "string", "enum": ["install", "format", "lint", "typecheck", "build", "test"]},
+            "args": {"type": "array", "items": {"type": "string"}},
+            "cwd": {"type": "string"},
+            "kinds": {"type": "array", "items": {"type": "string"}},
+            "keep_going": {"type": "boolean"},
+            "baseline": {"type": "array", "items": {"type": "string"}},
+            "roundtrip": {"type": "boolean"},
+            "tool": {"type": "string"},
+            "database_url": {"type": "string"},
+            "timeout_ms": {"type": "integer"}
         }),
         &[],
     )

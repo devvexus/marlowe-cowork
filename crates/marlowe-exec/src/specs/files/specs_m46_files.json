@@ -1,44 +1,39 @@
 [
   {
     "name": "read",
-    "description": "Read a file (relative to the workspace, or absolute). Text comes back numbered `cat -n` style (line number, tab, text): up to 2000 lines from `offset` (1-based, default 1), or `limit` lines; a result that stops early says how to continue. Lines over 2000 characters are cut. Images (png, jpg, gif, webp) come back as images, PDFs as text per page (`pages`, e.g. \"1-5\"; at most 20 per call, required above 10 pages), Jupyter notebooks as cells with their outputs (for a notebook, `offset` is a 0-based cell index and `limit` a number of cells). Read a file before you edit or overwrite it, and never copy the line-number prefix into an edit.",
+    "description": "Read a file: numbered lines (`N<tab>text`), 2000 from `offset` (1-based) or `limit`; a cut result says how to continue. Images, PDFs (`pages`) and notebooks work too. Read before you edit; never copy the line-number prefix into an edit.",
     "input_schema": {
-      "additionalProperties": false,
+      "type": "object",
       "properties": {
-        "limit": {
-          "description": "Number of lines (for a notebook, cells) to return.",
-          "type": "integer"
+        "path": {
+          "type": "string"
         },
         "offset": {
-          "description": "1-based line to start from (for a notebook, a 0-based cell index).",
+          "type": "integer"
+        },
+        "limit": {
           "type": "integer"
         },
         "pages": {
-          "description": "PDF pages, e.g. \"3\", \"1-5\" or \"1,4-6\".",
-          "type": "string"
-        },
-        "path": {
-          "description": "File path, relative to the workspace or absolute.",
           "type": "string"
         }
       },
       "required": [
         "path"
       ],
-      "type": "object"
+      "additionalProperties": false
     }
   },
   {
     "name": "write",
-    "description": "Create a file, or replace an existing one entirely with `content`; parent directories are created. Overwriting an existing file needs a `read` of it first in this session; it keeps its byte-order mark and CRLF line endings. Prefer `edit` for a change to part of a file.",
+    "description": "Create a file or replace one entirely. Overwriting needs a prior `read`; prefer `edit` for part of a file.",
     "input_schema": {
-      "additionalProperties": false,
+      "type": "object",
       "properties": {
-        "content": {
-          "description": "The complete new file content.",
+        "path": {
           "type": "string"
         },
-        "path": {
+        "content": {
           "type": "string"
         }
       },
@@ -46,28 +41,25 @@
         "path",
         "content"
       ],
-      "type": "object"
+      "additionalProperties": false
     }
   },
   {
     "name": "edit",
-    "description": "Replace `old_string` with `new_string` in one file. `old_string` must occur exactly once (copy it from `read` without the line-number prefix, with enough surrounding lines to be unique), or set `replace_all` to change every occurrence. A match that differs only in line endings or by one uniform indentation still applies when it is unique, and the result says so. `read` the file first in this session. To create a file use `write`.",
+    "description": "Replace `old_string` with `new_string` in a file. It must occur exactly once (copy it from `read` without line numbers, with context to be unique), or set `replace_all`. `read` the file first.",
     "input_schema": {
-      "additionalProperties": false,
+      "type": "object",
       "properties": {
-        "new_string": {
-          "description": "The replacement text.",
-          "type": "string"
-        },
-        "old_string": {
-          "description": "The exact text to replace.",
-          "type": "string"
-        },
         "path": {
           "type": "string"
         },
+        "old_string": {
+          "type": "string"
+        },
+        "new_string": {
+          "type": "string"
+        },
         "replace_all": {
-          "description": "Replace every occurrence (default false).",
           "type": "boolean"
         }
       },
@@ -76,26 +68,30 @@
         "old_string",
         "new_string"
       ],
-      "type": "object"
+      "additionalProperties": false
     }
   },
   {
     "name": "multi_edit",
-    "description": "Several `edit`s at once, in one or more files, applied all together or not at all. Edits run in order, each seeing the result of the ones before it. `path` is the default file; an edit may name its own. An empty `old_string` creates a file that does not exist. `read` each existing file first.",
+    "description": "Several `edit`s in one or more files, applied all together or not at all, in order (each sees the ones before it). `path` is the default file; an edit may name its own. An empty `old_string` creates a file. `read` each existing file first.",
     "input_schema": {
-      "additionalProperties": false,
+      "type": "object",
       "properties": {
+        "path": {
+          "type": "string"
+        },
         "edits": {
+          "type": "array",
           "items": {
-            "additionalProperties": false,
+            "type": "object",
             "properties": {
-              "new_string": {
+              "path": {
                 "type": "string"
               },
               "old_string": {
                 "type": "string"
               },
-              "path": {
+              "new_string": {
                 "type": "string"
               },
               "replace_all": {
@@ -106,19 +102,14 @@
               "old_string",
               "new_string"
             ],
-            "type": "object"
-          },
-          "type": "array"
-        },
-        "path": {
-          "description": "The file the edits apply to unless an edit names its own.",
-          "type": "string"
+            "additionalProperties": false
+          }
         }
       },
       "required": [
         "edits"
       ],
-      "type": "object"
+      "additionalProperties": false
     }
   },
   {

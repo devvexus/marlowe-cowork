@@ -380,6 +380,7 @@ impl ToolHost for BuiltinTools {
             .iter()
             .filter(|g| self.groups.contains(&g.group))
             .filter(|g| table.defs.iter().any(|d| d.manifest.group == g.group && self.exposes(d) && (d.enabled)(self)))
+            .filter(|g| !self.block_deferred(g.group))
             .filter_map(|g| (g.persona_block)().map(|text| PersonaBlock::Tool { group: g.group, text }))
             .collect()
     }

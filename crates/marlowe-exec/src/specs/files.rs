@@ -1351,19 +1351,12 @@ pub fn detect(_root: Option<&std::path::Path>) -> bool {
 fn read_spec() -> ToolSpec {
     spec(
         "read",
-        "Read a file (relative to the workspace, or absolute). Text comes back numbered `cat -n` \
-         style (line number, tab, text): up to 2000 lines from `offset` (1-based, default 1), or \
-         `limit` lines; a result that stops early says how to continue. Lines over 2000 characters \
-         are cut. Images (png, jpg, gif, webp) come back as images, PDFs as text per page (`pages`, \
-         e.g. \"1-5\"; at most 20 per call, required above 10 pages), Jupyter notebooks as cells \
-         with their outputs (for a notebook, `offset` is a 0-based cell index and `limit` a \
-         number of cells). Read a file before you edit or overwrite it, and never copy the \
-         line-number prefix into an edit.",
+        "Read a file: numbered lines (`N<tab>text`), 2000 from `offset` (1-based) or `limit`; a cut result says how to continue. Images, PDFs (`pages`) and notebooks work too. Read before you edit; never copy the line-number prefix into an edit.",
         json!({
-            "path": {"type": "string", "description": "File path, relative to the workspace or absolute."},
-            "offset": {"type": "integer", "description": "1-based line to start from (for a notebook, a 0-based cell index)."},
-            "limit": {"type": "integer", "description": "Number of lines (for a notebook, cells) to return."},
-            "pages": {"type": "string", "description": "PDF pages, e.g. \"3\", \"1-5\" or \"1,4-6\"."}
+            "path": {"type": "string"},
+            "offset": {"type": "integer"},
+            "limit": {"type": "integer"},
+            "pages": {"type": "string"}
         }),
         &["path"],
     )
@@ -1372,13 +1365,10 @@ fn read_spec() -> ToolSpec {
 fn write_spec() -> ToolSpec {
     spec(
         "write",
-        "Create a file, or replace an existing one entirely with `content`; parent directories are \
-         created. Overwriting an existing file needs a `read` of it first in this session; it \
-         keeps its byte-order mark and CRLF line endings. Prefer `edit` for a change to part of a \
-         file.",
+        "Create a file or replace one entirely. Overwriting needs a prior `read`; prefer `edit` for part of a file.",
         json!({
             "path": {"type": "string"},
-            "content": {"type": "string", "description": "The complete new file content."}
+            "content": {"type": "string"}
         }),
         &["path", "content"],
     )
@@ -1387,16 +1377,12 @@ fn write_spec() -> ToolSpec {
 fn edit_spec() -> ToolSpec {
     spec(
         "edit",
-        "Replace `old_string` with `new_string` in one file. `old_string` must occur exactly once \
-         (copy it from `read` without the line-number prefix, with enough surrounding lines to be \
-         unique), or set `replace_all` to change every occurrence. A match that differs only in \
-         line endings or by one uniform indentation still applies when it is unique, and the \
-         result says so. `read` the file first in this session. To create a file use `write`.",
+        "Replace `old_string` with `new_string` in a file. It must occur exactly once (copy it from `read` without line numbers, with context to be unique), or set `replace_all`. `read` the file first.",
         json!({
             "path": {"type": "string"},
-            "old_string": {"type": "string", "description": "The exact text to replace."},
-            "new_string": {"type": "string", "description": "The replacement text."},
-            "replace_all": {"type": "boolean", "description": "Replace every occurrence (default false)."}
+            "old_string": {"type": "string"},
+            "new_string": {"type": "string"},
+            "replace_all": {"type": "boolean"}
         }),
         &["path", "old_string", "new_string"],
     )
@@ -1405,12 +1391,9 @@ fn edit_spec() -> ToolSpec {
 fn multi_edit_spec() -> ToolSpec {
     spec(
         "multi_edit",
-        "Several `edit`s at once, in one or more files, applied all together or not at all. Edits \
-         run in order, each seeing the result of the ones before it. `path` is the default file; \
-         an edit may name its own. An empty `old_string` creates a file that does not exist. \
-         `read` each existing file first.",
+        "Several `edit`s in one or more files, applied all together or not at all, in order (each sees the ones before it). `path` is the default file; an edit may name its own. An empty `old_string` creates a file. `read` each existing file first.",
         json!({
-            "path": {"type": "string", "description": "The file the edits apply to unless an edit names its own."},
+            "path": {"type": "string"},
             "edits": {
                 "type": "array",
                 "items": {

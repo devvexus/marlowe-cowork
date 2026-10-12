@@ -65,6 +65,15 @@ fn expected(with_search: bool) -> Vec<ToolSpec> {
             *s = new.clone();
         }
     }
+    // A15 (prompt budget, 32k): the search, shell, job and research tools' descriptions and
+    // property notes were condensed so the dusk prefix fits its 3k tool slice. Same names, same
+    // properties; the reviewed text is pinned in `src/specs/specs_a15.json`, in place.
+    let compact: Vec<ToolSpec> = serde_json::from_str(include_str!("../src/specs/specs_a15.json")).unwrap();
+    for s in out.iter_mut() {
+        if let Some(new) = compact.iter().find(|c| c.name == s.name) {
+            *s = new.clone();
+        }
+    }
     out
 }
 

@@ -4,6 +4,13 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### A15: the dusk prefix fits 9k at 32k
+
+- **Changed (persona).** `persona/v3.md` condensed from 4,183 to 1,598 estimated tokens with the behaviour kept (address, rigour, voice, `words_to_avoid` in the bullet format the brief polish reads, consent and untrusted-content rules, the five register drops); the memory, crew, coding, git, verify, tasks and workflow blocks cut by about half, `blocks/coding.md` still says `ask_user` only when blocked. Persona and blocks in the A15 configuration (v3 + memory + crew + coding): 5,230 -> 1,999 of the 2,000 slice.
+- **Changed (tools).** Core tool descriptions and schema notes shortened (same names, same properties). More built-ins go behind `tool_search` on a window of 40k or less (T31): `multi_edit`, `powershell`, `python`, the job tools, `web_fetch`, `arxiv`, `paper`, `service`, `http_check`, `browser`, `git`, `gh`, `ci_status`, `watch`, and the code-intelligence tools. The core list is `read write edit glob grep bash project todo ask_user skill agent exit_plan`. `dispatch` lists the roles one picks directly (researcher, engineer, reviewer, analyst) and names the playbook stages by the enum alone. Core host tools 5,454 -> 1,758 tokens; the wired conductor in a git/Cargo repository (core, memory, `dispatch`) 2,990 of the 3,000 slice.
+- **Added.** A group whose tools are all deferred (git, tasks, workflow) keeps its persona block out of the prefix; the block comes back once, with the first `tool_search` load of one of its tools.
+- **Tests.** The two ignored A15 tests run (`the_fitter_keeps_the_dusk_prefix_inside_nine_thousand_tokens`, `parity_a15_instructions_at_their_cap_reach_dusk_uncut`) and now also pin the persona and tool slices; `marlowe-daemon`'s `the_wired_dusk_prefix_fits_its_slices_in_a_repository` builds the real host, memory tools, `dispatch` and blocks and fits them (8,464 of 9,000 with every optional section at its cap). The reviewed schema pins were edited on purpose: `specs_m46_files.json`, `specs_m46_web.json` (`web_fetch`) and the new `specs_a15.json` (search, shell, job, research tools), overlaid in `table_specs.rs`.
+
 ### M4.6 wave 2: integration
 
 - **Merged.** `m46/H3` into `m46/integ`, which carries `m46/W`, `N`, `F3`, `I`, `H2` and `L` at their final review-fix commits (208abc5, c69fb04, 57f6429, a1a1f0a, e983dda, f27d977). Every added line of each branch was checked against the merged tree: the only lines not present are the union resolutions H3 made (the subagent-forbidden list, `send_message`'s one schema, the role counts) and N's quit dialog, which H3's quit modal replaces.

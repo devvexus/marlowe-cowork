@@ -1,7 +1,7 @@
 [
   {
     "name": "web_fetch",
-    "description": "Fetch an https URL and return its main content as markdown (HTML, PDF, Office, text). Honours robots.txt. Long documents come back in windows; continue from the character `offset` given. With `prompt`, only its answer from the page comes back. A redirect to another host is returned, not followed.",
+    "description": "Fetch an https URL as markdown (HTML, PDF, Office, text); robots.txt is honoured. Long documents come back in windows (continue from `offset`). With `prompt`, only its answer from the page comes back. A redirect to another host is returned, not followed.",
     "input_schema": {
       "type": "object",
       "properties": {

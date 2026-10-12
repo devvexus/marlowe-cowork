@@ -15,19 +15,52 @@ use crate::supervisor::Supervisor;
 /// The tool's name.
 pub const DISPATCH_TOOL: &str = "dispatch";
 
+/// Built-in roles that run the stages of a playbook (and a review panel); a direct dispatch is
+/// possible but rare, so the `role` menu lists them by name only.
+const PLAYBOOK_ROLES: [&str; 8] =
+    ["scout", "compressor", "verifier", "lead", "integrator", "review-correctness", "review-security", "review-performance"];
+
+/// One-phrase menu entries for the built-in roles one picks directly.
+fn blurb(role: &str) -> Option<&'static str> {
+    Some(match role {
+        "researcher" => "literature and evidence",
+        "engineer" => "builds in a worktree",
+        "reviewer" => "tries to break things",
+        "analyst" => "data, logs, experiments",
+        _ => return None,
+    })
+}
+
+/// A role's description cut at its first clause (at most 56 characters, on a word), so a long
+/// menu does not eat the prompt: the full cards stay in the role files.
+fn short(description: &str) -> String {
+    let first = description.split(['.', ';', ':']).next().unwrap_or(description).trim();
+    if first.chars().count() <= 56 {
+        return first.to_string();
+    }
+    let cut: String = first.chars().take(56).collect();
+    match cut.rfind(' ') {
+        Some(i) => cut[..i].trim_end_matches(',').to_string(),
+        None => cut,
+    }
+}
+
 /// The tool declaration. `roles` fills the `role` enum and its description.
 pub fn dispatch_spec(roles: &[RoleInfo]) -> ToolSpec {
     // The workflow role runs only a workflow script's agents (the `workflow` tool starts those).
     let roles: Vec<&RoleInfo> = roles.iter().filter(|r| r.name != crate::playbook::script::WORKFLOW_ROLE).collect();
     let names: Vec<&str> = roles.iter().map(|r| r.name.as_str()).collect();
-    let menu: Vec<String> = roles.iter().map(|r| format!("{}: {}", r.name, r.description)).collect();
+    // The playbooks' own stages are named by the enum alone; the menu gives the roles to pick.
+    let menu: Vec<String> = roles
+        .iter()
+        .filter(|r| !PLAYBOOK_ROLES.contains(&r.name.as_str()))
+        .map(|r| format!("{}: {}", r.name, blurb(&r.name).map_or_else(|| short(&r.description), str::to_string)))
+        .collect();
     ToolSpec {
         name: DISPATCH_TOOL.to_string(),
-        description: "Send work to a crew agent that runs in the background in its own sandbox, and \
-                      get its run id back immediately. Use it for long, parallel or bulky work: a \
-                      literature sweep, an implementation in a git worktree, a long investigation. \
-                      The result arrives later in this conversation. The crew cannot see this \
-                      conversation, so the goal must carry the context it needs."
+        description: "Send long, parallel or bulky work to a background crew agent in its own \
+                      sandbox. You get a run id at once; the result arrives later. The crew cannot \
+                      see this conversation: the goal must carry the context it needs."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -35,25 +68,20 @@ pub fn dispatch_spec(roles: &[RoleInfo]) -> ToolSpec {
                 "role": {
                     "type": "string",
                     "enum": names,
-                    "description": format!("Who does the work. {}", menu.join(" · ")),
+                    "description": menu.join(" · "),
                 },
                 "goal": {
                     "type": "string",
-                    "description": "What to find out or build, with the facts, paths, constraints and \
-                                    definition of done the crew needs.",
+                    "description": "What to find out or build, with the paths, constraints and \
+                                    definition of done.",
                 },
                 "playbook": {
                     "type": "string",
                     "enum": ["deep_research", "build"],
-                    "description": "deep_research: plan, parallel scouts, adversarial verify, cited \
-                                    report. build: plan, implement in a worktree, test loop, review, \
-                                    diff for merge. Omit for a single role-prompt run (investigate, \
-                                    review, experiment).",
+                    "description": "deep_research: scouts, verify, cited report. build: plan, \
+                                    worktree, tests, review, diff. Omit for one role.",
                 },
-                "workspace": {
-                    "type": "string",
-                    "description": "Directory the run works on; default is this session's workspace.",
-                },
+                "workspace": { "type": "string" },
                 "budget": {
                     "type": "object",
                     "properties": {
@@ -61,8 +89,7 @@ pub fn dispatch_spec(roles: &[RoleInfo]) -> ToolSpec {
                         "steps": {"type": "integer"},
                         "usd": {"type": "number"}
                     },
-                    "additionalProperties": false,
-                    "description": "Overrides the role's budget; exceeding it pauses the run for the user.",
+                    "description": "Overrides the role's budget; overrun asks the user.",
                 }
             },
             "required": ["role", "goal"],

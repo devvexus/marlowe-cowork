@@ -39,6 +39,12 @@ model fabricate it. So v3 is a **stable core** that describes no feature-specifi
 The core plus any blocks form the stable tier; a block toggling changes the prefix and must
 invalidate the prompt cache, the same rule as a version bump.
 
+**Budget (gate A15).** At a 32k window `v3.md` plus the memory, crew and coding blocks stay inside
+2,000 estimated tokens (chars / 3), so every sentence has to earn its place. A block for a group whose
+tools are all deferred behind `tool_search` (git, tasks, workflow) is not in the prefix; it arrives with
+the first `tool_search` that loads one of that group's tools. `words_to_avoid` keeps its bullet format:
+the Wake brief's polish check reads the comma lists.
+
 ---
 
 ## v2 — history
