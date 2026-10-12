@@ -164,6 +164,9 @@ impl WindowsToaster {
 
 impl Toaster for WindowsToaster {
     fn show(&self, toast: &Toast) -> Result<(), OsError> {
+        if crate::desktop_quiet() {
+            return Ok(());
+        }
         #[cfg(windows)]
         {
             self.registered.call_once(|| {

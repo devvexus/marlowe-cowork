@@ -93,6 +93,9 @@ impl WindowsTray {
 
 impl Tray for WindowsTray {
     fn show(&self, tooltip: &str) -> Result<(), OsError> {
+        if crate::desktop_quiet() {
+            return Ok(());
+        }
         #[cfg(windows)]
         {
             let mut g = self.running.lock().unwrap_or_else(|p| p.into_inner());

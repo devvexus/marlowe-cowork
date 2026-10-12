@@ -36,6 +36,16 @@ pub mod workspace;
 pub use child::{ChildProc, ChildSpec, Containment, RunLimits, RunOutput, SCRUBBED_ENV};
 pub use job::{spawn_in_job, spawn_in_job_with_flags, JobChild, JobObject};
 
+/// Set (to anything but `0`) by `.cargo/config.toml` for every cargo build, run and test: the
+/// real toaster and tray icon then show nothing, so a test daemon never puts a notification or a
+/// tray icon on the desktop of whoever is building. The shipped binary runs without it.
+pub const QUIET_DESKTOP_ENV: &str = "MARLOWE_NO_DESKTOP";
+
+/// Whether desktop notifications and the tray icon are switched off ([`QUIET_DESKTOP_ENV`]).
+pub fn desktop_quiet() -> bool {
+    std::env::var_os(QUIET_DESKTOP_ENV).is_some_and(|v| !v.is_empty() && v != "0")
+}
+
 /// An OS wrapper failure.
 #[derive(Debug, thiserror::Error)]
 pub enum OsError {

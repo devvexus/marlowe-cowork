@@ -162,3 +162,10 @@ mod windows {
         assert!(matches!(spawn_in_job(&mut cmd), Err(crate::OsError::Io(_))));
     }
 }
+
+/// `.cargo/config.toml` keeps every cargo run quiet: a test daemon that toasts or shows a tray
+/// icon must not reach the desktop of whoever is building.
+#[test]
+fn cargo_runs_keep_the_desktop_quiet() {
+    assert!(crate::desktop_quiet(), "{} is not set: .cargo/config.toml's [env] is missing", crate::QUIET_DESKTOP_ENV);
+}

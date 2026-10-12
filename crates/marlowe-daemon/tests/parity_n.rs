@@ -1386,6 +1386,7 @@ fn a_remembered_keep_running_choice_holds_when_the_window_is_closed_with_its_x()
     let hooks = d.control.close_hooks();
     let tray = FakeTray::new();
     hooks.set_tray(tray.clone());
+    d.control.notify_hooks().set_toaster(FakeToaster::new());
     let mut window = Client::connect(&d.info, "tui");
     window.send(&Request::KeepRunning { on: Some(true) });
     window.until(|e| matches!(e, Event::KeepRunning { on: true }));

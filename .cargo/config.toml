@@ -1,0 +1,4 @@
+# Every cargo build, run and test: the real toaster and tray icon show nothing (marlowe_os::desktop_quiet),
+# so test daemons never put notifications or tray icons on the desktop.
+[env]
+MARLOWE_NO_DESKTOP = "1"
