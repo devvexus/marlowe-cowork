@@ -97,7 +97,7 @@ fn a_user_card_overrides_by_name_and_a_bad_one_is_reported_not_fatal() {
     assert_eq!(stat.tools, ["python", "read"]);
     assert_eq!(stat.budget, CrewBudget { tokens: None, steps: Some(30), usd: Some(1.25) });
     assert_eq!(stat.effort, Effort::Medium);
-    assert_eq!(roles.cards().count(), 8);
+    assert_eq!(roles.cards().count(), 13, "the 12 built-in cards and the user's statistician");
     assert_eq!(roles.problems().len(), 1);
     assert_eq!(roles.problems()[0].1, RoleError::NoFrontmatter);
     let _ = std::fs::remove_dir_all(&home);
