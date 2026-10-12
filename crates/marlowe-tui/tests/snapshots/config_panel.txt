@@ -3,23 +3,23 @@
 │                                                                                                ││ Claude Sonnet 4.5 ▾             medium │
 │                                                                                                ││ ctx ────────────┊──── 0 / 200k · cloud │
 │                                                                                                │╰────────────────────────────────── (m) ─╯
-│                                                                                                │╭ Workspace ─────────────────────────────╮
-│                     ╭ config ──────────────────────────────────────────────────────────────────────────────────────╮                     │
-│                     │ changes are written to the user settings                                                     │─────────────── (w) ─╯
-│                     │                                                                                              │─────────────────────╮
-│                     │ › editor_url                  vscode://file/{path}:{line}                              user  │                     │
-│                     │   where file links open: vscode://file/{path}:{line}:{col}                                   │─────────────── (1) ─╯
-│                     │   statusline.command          echo hi                                               project  │─────────────────────╮
-│                     │   a command whose first output line becomes the status line                                  │                     │
+│                     ╭ config ──────────────────────────────────────────────────────────────────────────────────────╮─────────────────────╮
+│                     │ changes are written to the user settings                                                     │                     │
+│                     │                                                                                              │─────────────── (w) ─╯
+│                     │ › editor_url                  vscode://file/{path}:{line}                              user  │─────────────────────╮
+│                     │   where file links open: vscode://file/{path}:{line}:{col}                                   │                     │
+│                     │   statusline.command          echo hi                                               project  │─────────────── (1) ─╯
+│                     │   a command whose first output line becomes the status line                                  │─────────────────────╮
 │                     │   permissions.default_mode    not set                                                        │                     │
 │                     │   plan, default, accept_edits, bypass or dont_ask                                            │                     │
 │                     │   network.allow_hosts         not set                                                        │                     │
 │                     │   hosts the agent may reach without asking                                                   │                     │
-│                ask a│   thinking.show               on                                                       user  │                     │
+│                     │   quit.choice                 not set                                                        │                     │
+│                ask a│   what ctrl+q does without asking: stop, keep (the agent running) or empty to ask            │                     │
+│                     │   thinking.show               on                                                       user  │                     │
 │                     │                                                                                              │                     │
 │                     │                                                                                              │                     │
 │                     ╰───────────────────────────────────────────────── ↵ change · x unset · tab layer · esc close ─╯                     │
-│                                                                                                ││                                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │

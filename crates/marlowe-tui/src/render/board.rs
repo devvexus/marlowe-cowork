@@ -48,7 +48,10 @@ fn model_box(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     let inner = region_box(r, titled(reg.label(), None, focus, theme), &reg.hotkey_label(), focus, theme, buf);
     let w = inner.width.saturating_sub(2);
     let conductor = state.library.conductor();
-    let (name, style) = match &conductor {
+    // `/fast`: the next call runs on the Quick slot's model (U17).
+    let fast = state.bg.fast_on(state.session.as_ref());
+    let shown = fast.and_then(|f| f.model.clone()).or_else(|| conductor.clone());
+    let (name, style) = match &shown {
         Some(m) => (text::short_model(m, state.library.info(m)), theme.normal()),
         None if state.library.known => ("add a model".to_string(), ink(Ink::Amber, theme)),
         None => ("…".to_string(), ink(Ink::Dim, theme)),
@@ -57,6 +60,9 @@ fn model_box(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     let mut facts = Vec::new();
     if conductor.is_some() {
         facts.push(state.library.slot_rows()[0].effort.as_str().to_string());
+    }
+    if fast.is_some() {
+        facts.insert(0, "fast".to_string());
     }
     // The name comes first: facts drop off from the right before it is cut.
     while !facts.is_empty() && text::width(&name) + 2 + text::width(&facts.join(" · ")) + 2 > w as usize {

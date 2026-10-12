@@ -27,6 +27,7 @@
 //! one borderless row; the conversation takes every row the header, composer and footer do not; the board column takes about three tenths of the width and shows its four
 //! sections stacked when there is height for them, else as numbered tabs.
 
+mod bg;
 mod board;
 mod boot;
 mod context;
@@ -339,7 +340,14 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
 fn plan_links(g: &Geometry, area: Rect, state: &State, buf: &Buffer) {
     let region = match (&state.overlay, state.view) {
         (None, View::Conversation) if !state.booting() => Some(g.conversation),
-        (Some(Overlay::Panel), _) if matches!(state.code.panel, Some(crate::panel::Panel::Transcript(_) | crate::panel::Panel::Diff(_))) => Some(area),
+        (Some(Overlay::Panel), _)
+            if matches!(
+                state.code.panel,
+                Some(crate::panel::Panel::Transcript(_) | crate::panel::Panel::Diff(_) | crate::panel::Panel::Findings(_) | crate::panel::Panel::Files { .. })
+            ) =>
+        {
+            Some(area)
+        }
         _ => None,
     };
     if let Some(r) = region {
@@ -820,6 +828,11 @@ fn builtin_status(state: &State) -> Option<String> {
     let jobs = state.code.running_jobs();
     if jobs > 0 {
         parts.push(format!("{jobs} job{}", if jobs == 1 { "" } else { "s" }));
+    }
+    // Everything else running in the background (agents, workflows, monitors).
+    let tasks = state.bg.strip(state.session.as_ref()).iter().filter(|t| t.kind != marlowe_proto::TaskKind::Job).count();
+    if tasks > 0 {
+        parts.push(format!("{tasks} task{}", if tasks == 1 { "" } else { "s" }));
     }
     (!parts.is_empty()).then(|| parts.join(" · "))
 }

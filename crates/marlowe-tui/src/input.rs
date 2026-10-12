@@ -357,8 +357,18 @@ impl State {
                 return;
             }
             Some(Overlay::Choice { .. }) => {
-                if let (Some(Target::Button(i)), Some(dialog)) = (self.target_at(at), self.closing.dialog.clone()) {
-                    self.choose(&dialog, i.min(dialog.choices().len() - 1), out);
+                match (self.target_at(at), self.closing.dialog.clone()) {
+                    (Some(Target::Button(i)), Some(dialog)) => self.choose(&dialog, i.min(dialog.choices().len() - 1), out),
+                    (Some(Target::Remember), Some(_)) => self.closing.remember = !self.closing.remember,
+                    _ => {}
+                }
+                return;
+            }
+            Some(Overlay::Panel) => {
+                match self.target_at(at) {
+                    Some(Target::Row(i)) => self.panel_row_click(i, out),
+                    Some(Target::Button(i)) => self.plan_button(i, out),
+                    _ => {}
                 }
                 return;
             }
@@ -437,7 +447,7 @@ impl State {
                 self.plan_action(run, action, out);
             }
             Target::PlanRow(i) => self.plan_row_click(i),
-            Target::Button(_) | Target::PlanCell(..) | Target::PlanField(_) => {}
+            Target::Button(_) | Target::PlanCell(..) | Target::PlanField(_) | Target::Remember => {}
         }
     }
 
@@ -672,6 +682,15 @@ impl State {
                 self.code.todos_hidden = !self.code.todos_hidden;
             }
             Command::Help => self.open_help(out),
+            Command::Tasks => self.open_tasks(out),
+            Command::Workflows => self.open_workflows(out),
+            Command::Findings => self.slash_findings(out),
+            Command::Files => self.open_files(out),
+            Command::Messages => self.open_threads(None, out),
+            Command::Bench => self.open_bench(out),
+            Command::Fast => {
+                let _ = self.run_slash("/fast", out);
+            }
         }
     }
 

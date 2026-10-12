@@ -18,6 +18,7 @@ fn is_edit_tool(tool: &str) -> bool {
 
 impl State {
     pub(crate) fn record_tool_start(&mut self, call_id: &str, tool: &str, summary: &str) {
+        self.bg_tool_started(call_id, tool, summary);
         let (_, rest) = crate::state::split_summary(summary);
         let diff = if is_edit_tool(tool) && crate::diff::looks_like_diff(&rest) { crate::diff::parse_unified(&rest) } else { None };
         let d = self.code.tool_detail.entry(call_id.to_string()).or_default();
@@ -29,6 +30,7 @@ impl State {
     }
 
     pub(crate) fn record_tool_finish(&mut self, call_id: &str, ok: bool, rest: &str) {
+        self.bg_tool_finished(call_id, ok, rest);
         let d: &mut ToolDetail = self.code.tool_detail.entry(call_id.to_string()).or_default();
         d.ok = Some(ok);
         if rest.is_empty() {
@@ -96,6 +98,7 @@ impl State {
         for id in ids {
             self.code.tool_detail.entry(id).or_default().full = true;
         }
+        self.bg_refresh_thread();
     }
 
     pub(crate) fn add_totals(&mut self, usage: &Usage) {
@@ -137,6 +140,7 @@ impl State {
         }
         self.statusline_tick();
         self.closing_tick(&mut out);
+        self.bg_idle(&mut out);
         out
     }
 
@@ -241,11 +245,15 @@ impl State {
                 self.code.instructions = Some(files);
                 self.clamp_panel();
             }
+            other => self.bg_local(other),
         }
     }
 
     /// The M4.6 events (everything `State::event` does not know by name).
     pub(crate) fn coding_event(&mut self, ev: &Event, reply: bool, out: &mut Vec<Request>) {
+        if self.bg_event(ev, reply, out) {
+            return;
+        }
         match ev {
             Event::ModeChanged { session, mode } if self.mine(session) => {
                 self.code.mode = *mode;

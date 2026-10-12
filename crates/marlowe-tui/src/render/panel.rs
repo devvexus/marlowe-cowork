@@ -2,7 +2,7 @@
 //! open [`Panel`]; none sets a background.
 
 use marlowe_proto::{RuleAction, SettingsScope};
-use marlowe_surface::chrome::Ink;
+use marlowe_surface::chrome::{self, Ink};
 use marlowe_surface::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use super::overlay::{centred, panel, panel_hints, row_marker};
 use super::{ink, put, put_row};
 use crate::panel::{
-    action_label, config_rows, rules_ordered, scope_label, value_text, ConfigUi, DiffUi, McpUi, Panel, PermUi, QuestionUi,
+    action_label, config_rows_for, rules_ordered, scope_label, value_text, ConfigUi, DiffUi, McpUi, Panel, PermUi, QuestionUi,
     RewindUi, SettingKind, REWIND_SCOPES,
 };
 use crate::state::{Entry, State, Target};
@@ -22,7 +22,7 @@ use crate::text;
 pub fn draw(area: Rect, state: &State, theme: &Theme, buf: &mut Buffer) -> Option<(u16, u16)> {
     let p = state.code.panel.as_ref()?;
     match p {
-        Panel::Help(sc) => help(area, sc, theme, buf),
+        Panel::Help(sc) => help(area, state, sc, theme, buf),
         Panel::Config(c) => return config(area, state, c, theme, buf),
         Panel::Permissions(p) => return permissions(area, state, p, theme, buf),
         Panel::Hooks { sel } => hooks(area, state, *sel, theme, buf),
@@ -36,28 +36,36 @@ pub fn draw(area: Rect, state: &State, theme: &Theme, buf: &mut Buffer) -> Optio
         Panel::Jobs { sel } => jobs(area, state, *sel, theme, buf),
         Panel::Question(q) => return question(area, q, theme, buf),
         Panel::Transcript(sc) => super::transcript::draw(area, state, sc, theme, buf),
+        Panel::Tasks(u) => super::bg::tasks(area, state, u, theme, buf),
+        Panel::Workflows(u) => super::bg::workflows(area, state, u, theme, buf),
+        Panel::Findings(u) => super::bg::findings(area, state, u, theme, buf),
+        Panel::Files { sel } => super::bg::files(area, state, *sel, theme, buf),
+        Panel::Plan(u) => return super::bg::plan(area, state, u, theme, buf),
+        Panel::Bench(u) => super::bg::bench(area, state, u, theme, buf),
+        Panel::Suggestions(u) => super::bg::suggestions(area, state, u, theme, buf),
+        Panel::Thread(u) => return super::bg::thread(area, state, u, theme, buf),
     }
     None
 }
 
 /// Rows `first..` of an `n`-row list that keep `sel` on screen in `rows` lines.
-fn first_row(sel: usize, rows: usize) -> usize {
+pub(super) fn first_row(sel: usize, rows: usize) -> usize {
     sel.saturating_sub(rows.saturating_sub(1))
 }
 
 /// A centred panel: its inner area, with the hints on the bottom border.
-fn frame(area: Rect, w: u16, h: u16, title: &str, hints: &[(&str, &str)], theme: &Theme, buf: &mut Buffer) -> Rect {
+pub(super) fn frame(area: Rect, w: u16, h: u16, title: &str, hints: &[(&str, &str)], theme: &Theme, buf: &mut Buffer) -> Rect {
     let r = centred(area, w, h, true);
     let inner = panel(r, title, ink(Ink::Accent, theme), false, buf);
     panel_hints(r, hints, theme, buf);
     inner
 }
 
-fn note(inner: Rect, y: u16, s: &str, theme: &Theme, buf: &mut Buffer) {
+pub(super) fn note(inner: Rect, y: u16, s: &str, theme: &Theme, buf: &mut Buffer) {
     put(buf, inner.x, y, &Line::from(Span::styled(text::truncate(&text::clean(s), inner.width as usize), ink(Ink::Dim, theme))), inner.width);
 }
 
-fn unavailable(state: &State, op: &str) -> bool {
+pub(super) fn unavailable(state: &State, op: &str) -> bool {
     state.code.unavailable.contains(op)
 }
 
@@ -89,9 +97,10 @@ const KEYS: &[(&str, &str)] = &[
     ("alt+r  ctrl+w  ctrl+g", "crew · watch · memory"),
     ("ctrl+l  ctrl+d", "library · dispatch a crew run"),
     ("ctrl+t  alt+v", "show thinking · voice"),
+    ("ctrl+q", "quit: stop the agent, or close the window and keep it running"),
 ];
 
-fn help(area: Rect, sc: &crate::panel::Scroll, theme: &Theme, buf: &mut Buffer) {
+fn help(area: Rect, state: &State, sc: &crate::panel::Scroll, theme: &Theme, buf: &mut Buffer) {
     let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled("Keys", ink(Ink::Accent, theme).add_modifier(Modifier::BOLD)))];
     for (k, d) in KEYS {
         lines.push(Line::from(vec![Span::styled(text::pad(k, 24), theme.normal()), Span::styled(*d, ink(Ink::Dim, theme))]));
@@ -108,6 +117,30 @@ fn help(area: Rect, sc: &crate::panel::Scroll, theme: &Theme, buf: &mut Buffer) 
             Span::styled(text::pad(&format!("/{}{hint}", b.name), 30), theme.normal()),
             Span::styled(b.help, ink(Ink::Dim, theme)),
         ]));
+    }
+    // Commands the daemon lists (project commands, skills, built-in prompts) and saved workflows.
+    let daemon: Vec<&marlowe_proto::CommandInfo> =
+        state.code.commands.iter().filter(|c| crate::slash::builtin(c.name.trim_start_matches('/')).is_none()).collect();
+    if !daemon.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled("From this project and your profile", ink(Ink::Accent, theme).add_modifier(Modifier::BOLD))));
+        for c in daemon {
+            let hint = c.argument_hint.as_deref().map(|h| format!(" {h}")).unwrap_or_default();
+            lines.push(Line::from(vec![
+                Span::styled(text::pad(&text::truncate(&format!("/{}{hint}", c.name.trim_start_matches('/')), 29), 30), theme.normal()),
+                Span::styled(text::truncate(&text::clean(&c.description), 58), ink(Ink::Dim, theme)),
+            ]));
+        }
+    }
+    if !state.bg.saved.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled("Saved workflows \u{b7} /workflow <name>", ink(Ink::Accent, theme).add_modifier(Modifier::BOLD))));
+        for w in &state.bg.saved {
+            lines.push(Line::from(vec![
+                Span::styled(text::pad(&text::truncate(&format!("/workflow {}", text::clean(&w.name)), 29), 30), theme.normal()),
+                Span::styled(text::truncate(&text::clean(&w.description), 58), ink(Ink::Dim, theme)),
+            ]));
+        }
     }
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
@@ -127,7 +160,7 @@ fn help(area: Rect, sc: &crate::panel::Scroll, theme: &Theme, buf: &mut Buffer) 
 // ---- /config ---------------------------------------------------------------------------------------
 
 fn config(area: Rect, state: &State, c: &ConfigUi, theme: &Theme, buf: &mut Buffer) -> Option<(u16, u16)> {
-    let rows = config_rows(state.code.settings.as_ref());
+    let rows = config_rows_for(state);
     let h = (rows.len() as u16 * 2 + 5).min(area.height.saturating_sub(2)).max(9);
     let hints: &[(&str, &str)] =
         if c.edit.is_some() { &[("↵", "save"), ("esc", "cancel")] } else { &[("↵", "change"), ("x", "unset"), ("tab", "layer"), ("esc", "close")] };
@@ -185,6 +218,11 @@ fn config(area: Rect, state: &State, c: &ConfigUi, theme: &Theme, buf: &mut Buff
             let gap = (inner.width as usize).saturating_sub(used + text::width(tag) + 1);
             spans.push(Span::raw(" ".repeat(gap)));
             spans.push(Span::styled(tag, ink(scope_ink(src), theme)));
+        } else if r.daemon {
+            let used = Line::from(spans.clone()).width();
+            let gap = (inner.width as usize).saturating_sub(used + 7);
+            spans.push(Span::raw(" ".repeat(gap)));
+            spans.push(Span::styled("daemon", ink(Ink::Dimmer, theme)));
         }
         put_row(state, buf, (inner.x, y, inner.width), Line::from(spans), Target::Row(i), theme);
         let help = match (&c.error, sel) {
@@ -741,19 +779,33 @@ fn jobs(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut Buffer) 
 
 fn question(area: Rect, q: &QuestionUi, theme: &Theme, buf: &mut Buffer) -> Option<(u16, u16)> {
     let cur = &q.questions[q.q];
-    let w: u16 = 84;
+    let detail = |i: usize| cur.option_details.get(i);
+    let preview_of = |i: usize| detail(i).and_then(|d| d.preview.as_deref()).filter(|p| !p.trim().is_empty());
+    let has_previews = (0..cur.options.len()).any(|i| preview_of(i).is_some());
+    // A preview sits beside the options when the window is wide enough, else under them.
+    let wide = has_previews && area.width >= 112;
+    let w: u16 = if wide { area.width.saturating_sub(8).min(124) } else { 84 };
     let tw = (w - 4) as usize;
+    let left_w = if wide { 48usize } else { tw };
     let q_lines = text::wrap(&text::clean(&cur.question), tw);
-    let h = (q_lines.len() + cur.options.len() + 9) as u16;
-    let r = centred(area, w, h, false);
+    // Each option is a row, and its description (two lines at most) under it.
+    let desc_lines = |i: usize| -> Vec<String> {
+        detail(i)
+            .map(|d| text::wrap(&text::clean(&d.description), left_w.saturating_sub(7)).into_iter().take(2).collect())
+            .unwrap_or_default()
+    };
+    let option_rows: usize = (0..cur.options.len()).map(|i| 1 + desc_lines(i).len()).sum();
+    let preview_rows = if has_previews && !wide { PREVIEW_ROWS + 2 } else { 0 };
+    let h = (q_lines.len() + option_rows + preview_rows + 9) as u16;
+    let r = centred(area, w, h.max(if wide { PREVIEW_ROWS as u16 + 12 } else { 0 }), false);
     let amber = ink(Ink::Amber, theme);
     let inner = panel(r, "question", amber, true, buf);
     let hint: &[(&str, &str)] = if q.typing {
-        &[("↵", "done"), ("esc", "back")]
+        &[("\u{21b5}", "done"), ("esc", "back")]
     } else if cur.multi_select {
-        &[("space", "toggle"), ("↵", "next"), ("esc", "skip")]
+        &[("space", "toggle"), ("\u{21b5}", "next"), ("esc", "skip")]
     } else {
-        &[("↵", "choose"), ("1-9", "pick"), ("esc", "skip")]
+        &[("\u{21b5}", "choose"), ("1-9", "pick"), ("esc", "skip")]
     };
     panel_hints(r, hint, theme, buf);
     let mut y = inner.y;
@@ -761,7 +813,7 @@ fn question(area: Rect, q: &QuestionUi, theme: &Theme, buf: &mut Buffer) -> Opti
         let mut tabs = Vec::new();
         for (i, qq) in q.questions.iter().enumerate() {
             let label = if qq.header.trim().is_empty() { format!("Q{}", i + 1) } else { text::truncate(&text::clean(&qq.header), 14) };
-            let mark = if q.answered(i) { "✓ " } else { "" };
+            let mark = if q.answered(i) { "\u{2713} " } else { "" };
             let st = if i == q.q { ink(Ink::Accent, theme).add_modifier(Modifier::BOLD) } else { ink(Ink::Dim, theme) };
             tabs.push(Span::styled(format!("{mark}{label}"), st));
             tabs.push(Span::raw("   "));
@@ -774,29 +826,61 @@ fn question(area: Rect, q: &QuestionUi, theme: &Theme, buf: &mut Buffer) -> Opti
         y += 1;
     }
     y += 1;
+    let opts_top = y;
+    let col = left_w as u16;
     for (i, o) in cur.options.iter().enumerate() {
         let on = i == q.cursor[q.q];
         let picked = q.picked[q.q][i];
-        let box_ = if cur.multi_select { if picked { "[x] " } else { "[ ] " } } else if picked { "(•) " } else { "( ) " };
+        let box_ = if cur.multi_select { if picked { "[x] " } else { "[ ] " } } else if picked { "(\u{2022}) " } else { "( ) " };
         let line = Line::from(vec![
             row_marker(on, false, theme),
             Span::styled(format!("{} ", i + 1), ink(Ink::Dimmer, theme)),
             Span::styled(box_, ink(if picked { Ink::Accent } else { Ink::Dim }, theme)),
-            Span::styled(text::truncate(&text::clean(o), tw.saturating_sub(10)), if on { theme.bright() } else { theme.normal() }),
+            Span::styled(text::truncate(&text::clean(o), left_w.saturating_sub(10)), if on { theme.bright() } else { theme.normal() }),
         ]);
-        put(buf, inner.x, y, &line, inner.width);
+        put(buf, inner.x, y, &line, col.min(inner.width));
         y += 1;
+        for d in desc_lines(i) {
+            put(buf, inner.x + 7, y, &Line::from(Span::styled(d, ink(Ink::Dim, theme))), col.saturating_sub(7).min(inner.width));
+            y += 1;
+        }
     }
     let other_on = q.cursor[q.q] == cur.options.len();
     let other = &q.other[q.q];
-    let shown = if other.text().is_empty() && !q.typing { Span::styled("something else…", ink(Ink::Dimmer, theme)) } else { Span::styled(text::clean(other.text()), theme.bright()) };
-    put(buf, inner.x, y, &Line::from(vec![row_marker(other_on, false, theme), Span::styled("   ", ink(Ink::Dim, theme)), shown]), inner.width);
+    let shown = if other.text().is_empty() && !q.typing { Span::styled("something else\u{2026}", ink(Ink::Dimmer, theme)) } else { Span::styled(text::clean(other.text()), theme.bright()) };
+    put(buf, inner.x, y, &Line::from(vec![row_marker(other_on, false, theme), Span::styled("   ", ink(Ink::Dim, theme)), shown]), col.min(inner.width));
     let cursor = q.typing.then(|| (inner.x + 5 + text::width(&text::clean(&other.text()[..other.cursor()])) as u16, y));
     y += 2;
+    // The focused option's preview: a monospace block, in the terminal's own font.
+    let focus = q.cursor[q.q];
+    if let Some(p) = preview_of(focus) {
+        let (px, py, pw, rows) = if wide {
+            let px = inner.x + col + 2;
+            (px, opts_top, inner.right().saturating_sub(px), PREVIEW_ROWS.max(option_rows + 2))
+        } else {
+            (inner.x, y, inner.width, PREVIEW_ROWS)
+        };
+        put(buf, px, py, &Line::from(Span::styled("preview", ink(Ink::Dimmer, theme))), pw);
+        let all: Vec<&str> = p.lines().collect();
+        for (i, l) in all.iter().take(rows).enumerate() {
+            let rule = format!("{} ", chrome::QUOTE_RULE);
+            let line = Line::from(vec![Span::styled(rule, ink(Ink::Dimmer, theme)), Span::styled(text::truncate(&text::clean(l), pw.saturating_sub(2) as usize), theme.normal())]);
+            put(buf, px, py + 1 + i as u16, &line, pw);
+        }
+        if all.len() > rows {
+            put(buf, px, py + 1 + rows as u16, &Line::from(Span::styled(format!("\u{2026} {} more lines", all.len() - rows), ink(Ink::Dimmer, theme))), pw);
+        }
+        if !wide {
+            y += rows.min(all.len()) as u16 + 2;
+        }
+    }
     if q.questions.len() > 1 {
         let left = (0..q.questions.len()).filter(|i| !q.answered(*i)).count();
-        let msg = if left == 0 { "all answered — ↵ sends".to_string() } else { format!("{left} left · ←→ between questions") };
-        put(buf, inner.x, y, &Line::from(Span::styled(msg, ink(Ink::Dimmer, theme))), inner.width);
+        let msg = if left == 0 { "all answered \u{2014} \u{21b5} sends".to_string() } else { format!("{left} left \u{b7} \u{2190}\u{2192} between questions") };
+        put(buf, inner.x, y.min(inner.bottom().saturating_sub(1)), &Line::from(Span::styled(msg, ink(Ink::Dimmer, theme))), inner.width);
     }
     cursor
 }
+
+/// Rows of a preview shown at once.
+const PREVIEW_ROWS: usize = 10;

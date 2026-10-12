@@ -16,6 +16,7 @@
 │                       │ alt+r  ctrl+w  ctrl+g   crew · watch · memory                                            │                       │
 │                       │ ctrl+l  ctrl+d          library · dispatch a crew run                                    │                       │
 │                ask any│ ctrl+t  alt+v           show thinking · voice                                            │                       │
+│                       │ ctrl+q                  quit: stop the agent, or close the window and keep it running    │                       │
 │                       │                                                                                          │                       │
 │                       │ Commands                                                                                 │                       │
 │                       │ /help                         keys and commands                                          │                       │
@@ -28,13 +29,12 @@
 │                       │ /ide                          the connected editor: which window, which folders          │                       │
 │                       │ /memory                       open the instruction files in your editor and reload them  │                       │
 │                       │ /model [model]                switch the conductor's model, keeping the conversation     │                       │
-│                       │ /effort [off|low|medium|high|…reasoning effort for the next turns                        │                       │
-│                       │ /mode [plan|default|accept_ed…permission mode (Shift+Tab cycles)                         │───────────────── (2) ─╯
-│                       │ /plan                         plan mode: read-only until you approve the plan            │───────────────────────╮
-│                       │ /resume                       pick an earlier session                                    │                       │
-│                       │ /clear                        start a new session; memory is kept                        │───────────────── (3) ─╯
-╰───────────────────────│ /compact [focus]              summarise older turns now, optionally keeping a focus      │───────────────────────╮
-╭ Message ──────────────│ /cost                         tokens and cost for this session                           │stats…                 │
+│                       │ /effort [off|low|medium|high|…reasoning effort for the next turns                        │───────────────── (2) ─╯
+│                       │ /mode [plan|default|accept_ed…permission mode (Shift+Tab cycles)                         │───────────────────────╮
+│                       │ /plan                         plan mode: read-only until you approve the plan            │                       │
+│                       │ /resume                       pick an earlier session                                    │───────────────── (3) ─╯
+╰───────────────────────│ /clear                        start a new session; memory is kept                        │───────────────────────╮
+╭ Message ──────────────│ /compact [focus]              summarise older turns now, optionally keeping a focus      │stats…                 │
 │ › message Marlowe…    ╰────────────────────────────────────────────────────────────────── ↑↓ scroll · esc close ─╯ this session          │
 ╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
  ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette       Friday 9 October · 21:40

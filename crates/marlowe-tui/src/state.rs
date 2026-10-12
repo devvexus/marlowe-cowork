@@ -82,6 +82,11 @@ pub enum Entry {
     Brief { text: String, offers: Vec<marlowe_proto::WatchCandidate> },
     /// A background job or the user's `!` shell: its command and what it has printed.
     Job { id: String, command: String, output: String, code: Option<i32> },
+    /// News from background work (a monitor's lines, a job that ended, a schedule that fired, a
+    /// crew run's result, a message from another session): not the user's words.
+    News { label: String, text: String },
+    /// A file the agent sent with `send_file`.
+    File { file: marlowe_proto::SentFile },
 }
 
 /// A turn in flight in the open session.
@@ -295,6 +300,8 @@ pub enum Target {
     PlanField(crate::context::PlanField),
     /// A reasoning block's fold marker, by entry index: opens or closes it.
     Thought(usize),
+    /// "Remember my choice" in the quit dialog.
+    Remember,
     /// A control on a research plan that waits for the user: the main window's banner and the
     /// Run view's plan panel.
     Plan(RunId, crate::crew::PlanAction),
@@ -340,10 +347,17 @@ pub enum Command {
     Jobs,
     Todos,
     Help,
+    Tasks,
+    Workflows,
+    Findings,
+    Files,
+    Messages,
+    Bench,
+    Fast,
 }
 
 impl Command {
-    pub const ALL: [Command; 35] = [
+    pub const ALL: [Command; 42] = [
         Command::NewSession,
         Command::Sessions,
         Command::Model,
@@ -379,6 +393,13 @@ impl Command {
         Command::Jobs,
         Command::Todos,
         Command::Help,
+        Command::Tasks,
+        Command::Workflows,
+        Command::Findings,
+        Command::Files,
+        Command::Messages,
+        Command::Bench,
+        Command::Fast,
     ];
 
     pub fn label(self) -> &'static str {
@@ -418,6 +439,13 @@ impl Command {
             Command::Jobs => "Background jobs",
             Command::Todos => "Show or hide the todo list",
             Command::Help => "Help — keys and commands",
+            Command::Tasks => "Tasks — everything running in the background",
+            Command::Workflows => "Workflows — progress, skip an agent, saved scripts",
+            Command::Findings => "Findings — the last code review",
+            Command::Files => "Files — what the agent sent you",
+            Command::Messages => "Messages — threads to crew runs and agents",
+            Command::Bench => "Bench and eval reports",
+            Command::Fast => "Fast — run the conductor on the Quick model",
         }
     }
 
@@ -458,6 +486,13 @@ impl Command {
             Command::Jobs => "/jobs",
             Command::Todos => "/todos",
             Command::Help => "/help",
+            Command::Tasks => "/tasks",
+            Command::Workflows => "/workflows",
+            Command::Findings => "/findings",
+            Command::Files => "/files",
+            Command::Messages => "/messages",
+            Command::Bench => "/bench",
+            Command::Fast => "/fast",
         }
     }
 }
@@ -642,6 +677,8 @@ pub struct State {
     pub context: crate::context::ContextUi,
     /// Quitting, closing the window and resuming what a close interrupted (track N).
     pub closing: crate::closing::Closing,
+    /// Background tasks, workflows, findings, files, plans, threads (M4.6 wave 2, track H3).
+    pub bg: crate::bg::Bg,
 
     pub view: View,
     /// Which box on the conversation screen has the keys.
@@ -733,6 +770,7 @@ impl State {
             code: crate::coding::Coding::default(),
             context: crate::context::ContextUi::default(),
             closing: Default::default(),
+            bg: Default::default(),
             view: View::Conversation,
             focus: Focus::Message,
             board_tab: BoardTab::Crew,
@@ -1060,7 +1098,7 @@ impl State {
             }
             Event::TurnStarted { session, turn, model, user } => {
                 if self.mine(session) {
-                    if self.title.is_none() {
+                    if self.title.is_none() && !crate::bg::is_news(user) {
                         self.title = Some(first_line(user));
                     }
                     self.close_thinking(at_ms);
@@ -1070,7 +1108,7 @@ impl State {
                     let shown = matches!(self.entries.last(),
                         Some(Entry::User { text, .. }) if text == user);
                     if !shown {
-                        self.entries.push(Entry::User { text: user.clone(), steer: false });
+                        self.entries.push(user_entry(user.clone()));
                     }
                     self.live = Some(LiveTurn { turn: *turn, model: model.clone(), started_ms: at_ms });
                     self.follow_tail();
@@ -1086,7 +1124,7 @@ impl State {
             // `tokens` counts this delta only. A provider may settle the count with an empty delta
             // after the answer began; that goes to this turn's last thinking line.
             Event::ReasoningDelta { session, text, tokens, .. } if self.mine(session) && text.is_empty() => {
-                let open = self.entries.iter_mut().rev().take_while(|e| !matches!(e, Entry::User { .. }));
+                let open = self.entries.iter_mut().rev().take_while(|e| !matches!(e, Entry::User { .. } | Entry::News { .. }));
                 for e in open {
                     if let Entry::Thinking { tokens: n, .. } = e {
                         *n += *tokens;
@@ -1407,7 +1445,7 @@ impl State {
                 Entry::Tool { status: ToolStatus::Running, .. } => return Activity::Running,
                 Entry::Thinking { live: true, .. } => return Activity::Thinking,
                 Entry::Prose { .. } => return Activity::Writing,
-                Entry::User { .. } => return Activity::Thinking,
+                Entry::User { .. } | Entry::News { .. } => return Activity::Thinking,
                 _ => {}
             }
         }
@@ -1448,6 +1486,14 @@ impl Activity {
     }
 }
 
+/// A user-role text as an entry: the user's words, or news from background work.
+pub fn user_entry(text: String) -> Entry {
+    match crate::bg::news_label(&text) {
+        Some(label) => Entry::News { label, text },
+        None => Entry::User { text, steer: false },
+    }
+}
+
 fn first_line(s: &str) -> String {
     crate::text::truncate(s.lines().next().unwrap_or("").trim(), 60)
 }
@@ -1468,7 +1514,7 @@ pub fn entries_from_transcript(turns: &[StoredTurn]) -> Vec<Entry> {
                     .collect::<Vec<_>>()
                     .join("\n");
                 if !text.is_empty() {
-                    out.push(Entry::User { text, steer: false });
+                    out.push(user_entry(text));
                 }
             }
             Role::Assistant => {

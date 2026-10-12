@@ -1,11 +1,13 @@
 //! Closing the window (track N, Matthew's decision of 2026-10-10): closing the terminal means
 //! everything stops. This is the client's part of it.
 //!
-//! - **Quitting** (`^q`, `^c`, `/exit`) with background work running asks first: stop everything,
-//!   keep running in the background, or cancel. With nothing running it just goes. Either way the
-//!   client says goodbye to the daemon on its way out ([`State::exit_request`]): `Detach` with
-//!   whether to keep running. The daemon then stops everything, or runs on with a tray icon and a
-//!   toast with `[Stop now]`.
+//! - **Quitting** (`^q`, `^c`, `/exit`, `/quit`) opens a modal (Matthew, 2026-10-10): "Stop and
+//!   close agent", "Close window (keep agent running)" or Cancel, and "Remember my choice". The
+//!   choice is stored as the user setting `quit.choice` (`stop` or `keep`) and as the daemon's
+//!   `keep running` switch, so closing the window by its X does the same as the remembered answer:
+//!   a safe shutdown that unloads the models first, or a background agent with a tray icon. With
+//!   a remembered choice the modal does not open. Either way the client says goodbye to the
+//!   daemon on its way out ([`State::exit_request`]): `Detach` with whether to keep running.
 //! - **Closing the window** (the console close handler, `term.rs`) sends `WindowClosed` straight
 //!   to the daemon: the process has a few seconds left and no event loop. A window that is simply
 //!   killed is the daemon's job to notice (it treats the last screen disconnecting without a
@@ -24,8 +26,17 @@ use marlowe_proto::{Event, Request, TaskInfo, TaskKind, TaskStatus};
 
 use crate::state::{NoteTone, Overlay, State};
 
-/// The quit dialog's buttons, left to right.
-pub const QUIT_CHOICES: [(&str, &str); 3] = [("s", "Stop everything"), ("k", "Keep running"), ("c", "Cancel")];
+/// The quit dialog's buttons, top to bottom.
+pub const QUIT_CHOICES: [(&str, &str); 3] =
+    [("s", "Stop and close agent"), ("w", "Close window (keep agent running)"), ("c", "Cancel")];
+/// What each quit button does, in a few words.
+pub const QUIT_HELP: [&str; 3] = [
+    "models unload, the GPU is freed, work is saved to resume later",
+    "the agent carries on in the background, with a tray icon",
+    "stay here",
+];
+/// The user setting that remembers the quit choice: `stop` or `keep`; absent means ask.
+pub const QUIT_SETTING: &str = "quit.choice";
 /// The resume offer's buttons.
 pub const RESUME_CHOICES: [(&str, &str); 2] = [("y", "Yes"), ("n", "Not now")];
 /// The quit dialog opens on Cancel: a stray Enter never ends background work.
@@ -36,7 +47,7 @@ pub const QUIT_DEFAULT: usize = 2;
 pub enum Dialog {
     /// "We were still working when you closed Marlowe last time (...). Resume?"
     Resume { summary: String },
-    /// "N things are still running."
+    /// Closing Marlowe; `summary` is what is running, empty when nothing is.
     Quit { summary: String },
 }
 
@@ -45,9 +56,10 @@ impl Dialog {
     pub fn prompt(&self) -> String {
         match self {
             Dialog::Resume { summary } => format!("We were still working when you closed Marlowe last time ({summary}). Resume?"),
-            Dialog::Quit { summary } => format!(
-                "Still running: {summary}. Closing Marlowe stops all of it and frees the GPU; or let it keep running in the background."
-            ),
+            Dialog::Quit { summary } => {
+                let state = if summary.is_empty() { "Nothing is running right now.".to_string() } else { format!("Still running: {summary}.") };
+                format!("{state} Stop the agent, or close the window and leave the agent running?")
+            }
         }
     }
 
@@ -77,6 +89,8 @@ pub struct Closing {
     pending_offer: Option<String>,
     /// What the goodbye says: keep the daemon running.
     pub keep_on_exit: bool,
+    /// "Remember my choice" is ticked in the quit dialog.
+    pub remember: bool,
     /// What is running and whether the daemon keeps running were asked for since the Welcome.
     asked: bool,
 }
@@ -189,19 +203,33 @@ impl State {
         }
     }
 
-    /// `^q`, `^c`, `/exit`: quit, after asking when work would be lost. A second `^q` with the
-    /// question up is the answer "stop everything".
+    /// The quit choice the user asked to be remembered: `Some(true)` keeps the agent running.
+    pub fn remembered_quit(&self) -> Option<bool> {
+        match self.code.settings.as_ref().and_then(|s| s.user_str(QUIT_SETTING)) {
+            Some("stop") => Some(false),
+            Some("keep") => Some(true),
+            _ => self.closing.keep_setting.then_some(true),
+        }
+    }
+
+    /// `^q`, `^c`, `/exit`, `/quit`: the quit modal, unless a choice is remembered. A second `^q`
+    /// with the modal up is the answer "stop and close agent".
     pub(crate) fn request_quit(&mut self) {
         if matches!(self.closing.dialog, Some(Dialog::Quit { .. })) {
             self.finish_quit(false);
             return;
         }
-        let summary = self.closing.running_summary();
-        // With the keep-running setting on, the daemon runs on whatever is said here.
-        if summary.is_empty() || self.closing.keep_setting {
-            self.finish_quit(self.closing.keep_setting);
+        // Nobody to ask the daemon's question of: the window just closes.
+        if !self.conn.is_online() {
+            self.finish_quit(false);
             return;
         }
+        if let Some(keep) = self.remembered_quit() {
+            self.finish_quit(keep);
+            return;
+        }
+        let summary = self.closing.running_summary();
+        self.closing.remember = false;
         self.closing.dialog = Some(Dialog::Quit { summary });
         self.overlay = Some(Overlay::Choice { sel: QUIT_DEFAULT });
     }
@@ -225,7 +253,20 @@ impl State {
             return;
         };
         let n = dialog.choices().len();
+        let quit = matches!(dialog, Dialog::Quit { .. });
         let pick = match k.code {
+            KeyCode::Char('r' | ' ') if quit => {
+                self.closing.remember = !self.closing.remember;
+                return;
+            }
+            KeyCode::Up | KeyCode::Char('k') if quit => {
+                self.overlay = Some(Overlay::Choice { sel: sel.saturating_sub(1) });
+                return;
+            }
+            KeyCode::Down | KeyCode::Char('j') if quit => {
+                self.overlay = Some(Overlay::Choice { sel: (sel + 1).min(n - 1) });
+                return;
+            }
             KeyCode::Left | KeyCode::BackTab => {
                 self.overlay = Some(Overlay::Choice { sel: (sel + n - 1) % n });
                 return;
@@ -256,10 +297,31 @@ impl State {
                 out.push(Request::ResumeInterrupted { resume: false });
                 self.close_choice();
             }
-            (Dialog::Quit { .. }, 0) => self.finish_quit(false),
-            (Dialog::Quit { .. }, 1) => self.finish_quit(true),
+            (Dialog::Quit { .. }, 0) => {
+                self.remember_quit(false, out);
+                self.finish_quit(false);
+            }
+            (Dialog::Quit { .. }, 1) => {
+                self.remember_quit(true, out);
+                self.finish_quit(true);
+            }
             (Dialog::Quit { .. }, _) => self.close_choice(),
         }
+    }
+
+    /// "Remember my choice": the user setting, and the daemon's `keep running` switch to match, so
+    /// closing the window by its X does what was chosen here.
+    fn remember_quit(&mut self, keep: bool, out: &mut Vec<Request>) {
+        if !std::mem::take(&mut self.closing.remember) {
+            return;
+        }
+        out.push(Request::SetSetting {
+            scope: marlowe_proto::SettingsScope::User,
+            key: QUIT_SETTING.into(),
+            value: serde_json::Value::String(if keep { "keep" } else { "stop" }.into()),
+            workspace: None,
+        });
+        out.push(Request::KeepRunning { on: Some(keep) });
     }
 
     pub(crate) fn close_choice(&mut self) {
@@ -277,7 +339,13 @@ impl State {
             }
             "on" | "yes" | "true" => out.push(Request::KeepRunning { on: Some(true) }),
             "off" | "no" | "false" => out.push(Request::KeepRunning { on: Some(false) }),
-            other => self.flash(format!("/keep-running takes on or off, not `{other}`"), NoteTone::Amber),
+            // Forget a remembered quit choice: the modal asks again.
+            "ask" | "reset" => {
+                out.push(Request::SetSetting { scope: marlowe_proto::SettingsScope::User, key: QUIT_SETTING.into(), value: serde_json::Value::Null, workspace: None });
+                out.push(Request::KeepRunning { on: Some(false) });
+                self.flash("closing Marlowe asks again", NoteTone::Dim);
+            }
+            other => self.flash(format!("/keep-running takes on, off or ask, not `{other}`"), NoteTone::Amber),
         }
     }
 }
@@ -327,7 +395,12 @@ mod tests {
         assert_eq!(d.prompt(), "We were still working when you closed Marlowe last time (2 crew runs, 1 workflow). Resume?");
         assert_eq!(d.choices().len(), 2);
         let q = Dialog::Quit { summary: "1 job".into() };
-        assert!(q.prompt().contains("1 job") && q.prompt().contains("frees the GPU"));
-        assert_eq!(q.choices().iter().map(|(_, l)| *l).collect::<Vec<_>>(), ["Stop everything", "Keep running", "Cancel"]);
+        assert!(q.prompt().contains("1 job") && q.prompt().contains("leave the agent running"));
+        assert_eq!(
+            q.choices().iter().map(|(_, l)| *l).collect::<Vec<_>>(),
+            ["Stop and close agent", "Close window (keep agent running)", "Cancel"]
+        );
+        let idle = Dialog::Quit { summary: String::new() };
+        assert!(idle.prompt().starts_with("Nothing is running right now."));
     }
 }

@@ -61,10 +61,10 @@ fn parity_U12_config_lists_the_settings_and_writes_the_layer_you_pick() {
         vec![Request::SetSetting { scope: SettingsScope::Project, key: "editor_url".into(), value: json!("cursor://file/{path}:{line}"), workspace: ws() }]
     );
     // A boolean toggles on enter.
-    let reqs = keys(&mut s, "down down down down enter");
+    let reqs = keys(&mut s, "down down down down down enter");
     assert_eq!(reqs, vec![Request::SetSetting { scope: SettingsScope::Project, key: "thinking.show".into(), value: json!(false), workspace: ws() }]);
     // A list is comma separated.
-    keys(&mut s, "up enter 'pypi.org, crates.io'");
+    keys(&mut s, "up up enter 'pypi.org, crates.io'");
     let reqs = keys(&mut s, "enter");
     assert_eq!(
         reqs,

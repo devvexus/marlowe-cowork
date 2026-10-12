@@ -890,6 +890,7 @@ impl State {
                         v.steps.push(CrewStep { step, role: "you".into(), action: "steer".into(), text: text.clone(), at_ms: self.now_ms });
                         v.steering = false;
                         v.scroll = 0;
+                        self.thread_user(&run, &text);
                         out.push(Request::Steer { run, text });
                     }
                 }
@@ -957,6 +958,8 @@ impl State {
             KeyCode::Char('e') if plan_pending => self.plan_action(run, PlanAction::Edit, out),
             KeyCode::Char('x') if plan_pending => self.plan_action(run, PlanAction::Reject, out),
             KeyCode::Char('r') => out.push(Request::WatchRun { run }),
+            // The messages sent to this run, yours and the conductor's.
+            KeyCode::Char('t') => self.open_threads(Some(run.0.clone()), out),
             _ => {}
         }
     }
