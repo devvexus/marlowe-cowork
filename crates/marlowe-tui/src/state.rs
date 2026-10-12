@@ -288,6 +288,8 @@ pub enum Target {
     AddModel,
     /// An approval button, left to right.
     Button(usize),
+    /// A button of the quit or resume modal. Not `Button`: an approval can sit under the modal.
+    ChoiceButton(usize),
     /// The Run view's steer line.
     Steer,
     /// The Model box's context meter: opens the planner.

@@ -742,6 +742,17 @@ fn parity_BG4_monitor_events_are_news_with_their_source_not_the_users_words() {
     let mut s = coding_session();
     feed(&mut s, 5, Event::Transcript { session: sid(), turns });
     assert!(matches!(s.entries.first(), Some(Entry::News { label, .. }) if label == "monitor \u{b7} mon_m2"), "{:?}", s.entries);
+    // Single-line news keeps its message: the exit code, the end reason, the wake-up reason.
+    for (text, label, want) in [
+        ("[job job_j1 exited with code 0 after 1.0s: `cargo test`]", "job \u{b7} job_j1", "exited with code 0 after 1.0s"),
+        ("[wake-up cron_2: you asked to be woken \u{2014} check the eval]", "wake-up \u{b7} cron_2", "check the eval"),
+        ("[monitor mon_a ended: `tail -f x` exited with code 0 after 12 min]", "monitor \u{b7} mon_a", "exited with code 0 after 12 min"),
+    ] {
+        let mut s = coding_session();
+        feed(&mut s, 5, Event::TurnStarted { session: sid(), turn: 2, model: sonnet_ref(), user: text.into() });
+        let buf = render(&s, W, H);
+        assert!(contains(&buf, label) && contains(&buf, want), "{want:?}\n{}", dump(&buf));
+    }
 }
 
 fn stored_default() -> marlowe_proto::StoredTurn {

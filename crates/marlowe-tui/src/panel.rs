@@ -443,8 +443,7 @@ impl State {
             | Panel::Suggestions(_)
             | Panel::Thread(_) => {}
         }
-        self.code.panel = Some(p);
-        self.overlay = Some(Overlay::Panel);
+        self.place_panel(p);
     }
 
     pub(crate) fn close_panel(&mut self) {
@@ -525,7 +524,7 @@ impl State {
             return;
         }
         let pending = crate::coding::PendingQuestion { session: session.clone(), id: id.to_string(), questions: questions.to_vec() };
-        if matches!(self.code.panel, Some(Panel::Question(_) | Panel::Plan(_))) {
+        if self.choice_up() || matches!(self.code.panel, Some(Panel::Question(_) | Panel::Plan(_))) {
             self.code.questions.push_back(pending);
         } else {
             self.show_question(pending);

@@ -215,7 +215,7 @@ fn the_quit_modal_answers_the_mouse() {
     // The checkbox, then the second button.
     click(&mut s, &Target::Remember);
     assert!(s.closing.remember);
-    let out = click(&mut s, &Target::Button(1));
+    let out = click(&mut s, &Target::ChoiceButton(1));
     assert!(s.quit);
     assert_eq!(s.exit_request(), Request::Detach { keep_running: true });
     assert!(out.contains(&Request::KeepRunning { on: Some(true) }), "{out:?}");
@@ -223,7 +223,7 @@ fn the_quit_modal_answers_the_mouse() {
     let mut s = online();
     with_work(&mut s);
     keys(&mut s, "ctrl-q");
-    click(&mut s, &Target::Button(2));
+    click(&mut s, &Target::ChoiceButton(2));
     assert!(!s.quit && s.overlay.is_none());
 }
 
@@ -393,4 +393,105 @@ fn the_quit_modal_answers_while_an_approval_waits_and_cancel_brings_a_covered_pa
     keys(&mut s, "c");
     assert_eq!(s.overlay, Some(Overlay::Panel));
     assert!(contains(&render(&s, W, H), "Yes, and accept edits"), "the plan is back");
+}
+
+fn plan(id: &str) -> Event {
+    Event::PlanReady { session: sid(), id: id.into(), path: "C:/plans/p.md".into(), text: format!("# Plan {id}\n- step") }
+}
+
+#[test]
+fn what_arrives_under_the_quit_modal_waits_behind_it_and_a_later_quit_still_asks() {
+    let mut s = online();
+    feed(&mut s, 3, plan("p1"));
+    keys(&mut s, "ctrl-q");
+    assert!(s.closing.dialog.is_some() && matches!(s.overlay, Some(Overlay::Choice { .. })));
+    // A second plan and a question arrive while the modal is up: neither takes the screen.
+    feed(&mut s, 4, plan("p2"));
+    feed(
+        &mut s,
+        5,
+        Event::QuestionAsked {
+            session: sid(),
+            id: "q1".into(),
+            questions: vec![marlowe_proto::Question {
+                question: "Which layout?".into(),
+                header: "layout".into(),
+                options: vec![],
+                multi_select: false,
+                option_details: vec![],
+            }],
+        },
+    );
+    assert!(matches!(s.overlay, Some(Overlay::Choice { .. })) && s.closing.dialog.is_some());
+    assert!(contains(&render(&s, W, H), "Stop and close agent"));
+    // Cancel: the first plan is back, unanswered, and the others wait for their turn.
+    keys(&mut s, "esc");
+    assert_eq!(s.overlay, Some(Overlay::Panel));
+    assert!(contains(&render(&s, W, H), "Plan p1"), "{}", dump(&render(&s, W, H)));
+    s.now_ms += 1_000;
+    let out = keys(&mut s, "1");
+    assert!(matches!(out.as_slice(), [Request::AnswerPlan { id, .. }] if id == "p1"), "{out:?}");
+    assert!(s.overlay == Some(Overlay::Panel) && !s.quit);
+    // The panel in front is still a quit away from the modal, never from a silent exit.
+    keys(&mut s, "ctrl-q");
+    assert!(!s.quit && matches!(s.overlay, Some(Overlay::Choice { .. })));
+    keys(&mut s, "esc");
+    assert!(!s.quit);
+}
+
+#[test]
+fn a_stale_quit_dialog_does_not_turn_a_ctrl_q_into_a_silent_exit() {
+    let mut s = online();
+    keys(&mut s, "ctrl-q");
+    // Something else took the overlay without the dialog being closed.
+    s.overlay = None;
+    keys(&mut s, "ctrl-q");
+    assert!(!s.quit, "the modal is shown again instead");
+    assert!(matches!(s.overlay, Some(Overlay::Choice { .. })));
+}
+
+#[test]
+fn a_quit_over_a_resume_offer_asks_the_offer_again_afterwards() {
+    let mut s = online();
+    feed(&mut s, 0, interrupted());
+    keys(&mut s, "ctrl-q");
+    assert!(contains(&render(&s, W, H), "Stop and close agent"));
+    keys(&mut s, "esc");
+    assert!(s.overlay.is_none());
+    s.on_idle();
+    assert!(matches!(s.overlay, Some(Overlay::Choice { .. })), "the resume offer comes back");
+    assert!(contains(&render(&s, W, H), "Resume?"));
+}
+
+#[test]
+fn a_click_on_an_approval_button_the_modal_does_not_cover_is_not_a_quit_choice() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let mut s = online();
+    feed(
+        &mut s,
+        3,
+        Event::ApprovalRequested {
+            approval: marlowe_proto::ApprovalId(1),
+            session: sid(),
+            tool: "bash".into(),
+            summary: "cargo test".into(),
+            detail: "cargo test".into(),
+            run: None,
+            proposed_rule: None,
+        },
+    );
+    s.now_ms += 1_000;
+    keys(&mut s, "ctrl-q");
+    let _ = render(&s, W, H);
+    let hits = s.hits.borrow().clone();
+    let modal: Vec<_> = hits.iter().filter(|(_, t)| matches!(t, Target::ChoiceButton(_) | Target::Remember)).map(|(r, _)| *r).collect();
+    assert!(!modal.is_empty());
+    let (rect, _) = hits
+        .iter()
+        .find(|(r, t)| matches!(t, Target::Button(_)) && !modal.iter().any(|m| m.intersects(*r)))
+        .unwrap_or_else(|| panic!("an approval button outside the modal\n{}", dump(&render(&s, W, H))));
+    let m = MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: rect.x, row: rect.y, modifiers: KeyModifiers::NONE };
+    let out = s.on_mouse(m, ratatui::layout::Rect::new(0, 0, W, H));
+    assert!(!s.quit && out.is_empty(), "{out:?}");
+    assert!(matches!(s.overlay, Some(Overlay::Choice { .. })));
 }

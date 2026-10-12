@@ -164,8 +164,7 @@ impl State {
     /// The progress view of `run`, opened by the run's first update.
     pub(crate) fn open_workflow_run(&mut self, run: RunId) {
         let ui = WorkflowsUi { open: Some(run), ..WorkflowsUi::default() };
-        self.code.panel = Some(Panel::Workflows(ui));
-        self.overlay = Some(Overlay::Panel);
+        self.place_panel(Panel::Workflows(ui));
     }
 
     pub fn open_files(&mut self, out: &mut Vec<Request>) {
@@ -200,8 +199,7 @@ impl State {
 
     pub(crate) fn open_findings_panel(&mut self) {
         let set = self.bg.findings.len().saturating_sub(1);
-        self.code.panel = Some(Panel::Findings(FindingsUi { sel: 0, set }));
-        self.overlay = Some(Overlay::Panel);
+        self.place_panel(Panel::Findings(FindingsUi { sel: 0, set }));
     }
 
     pub(crate) fn open_suggestions(&mut self, list: Vec<marlowe_proto::RuleSuggestion>) {
@@ -210,13 +208,12 @@ impl State {
             return;
         }
         let n = list.len();
-        self.code.panel = Some(Panel::Suggestions(SuggestUi { sel: 0, picked: vec![false; n], scope: SettingsScope::Project }));
-        self.overlay = Some(Overlay::Panel);
+        self.place_panel(Panel::Suggestions(SuggestUi { sel: 0, picked: vec![false; n], scope: SettingsScope::Project }));
     }
 
     /// A plan arrived: it takes the screen like a question does; later ones wait behind it.
     pub(crate) fn plan_ready(&mut self, ask: PlanAsk) {
-        if matches!(self.code.panel, Some(Panel::Plan(_) | Panel::Question(_))) {
+        if self.choice_up() || matches!(self.code.panel, Some(Panel::Plan(_) | Panel::Question(_))) {
             self.bg.plans.push_back(ask);
         } else {
             self.show_plan(ask);

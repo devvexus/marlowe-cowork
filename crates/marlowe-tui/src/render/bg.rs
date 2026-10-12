@@ -477,8 +477,15 @@ pub fn news_lines(label: &str, body: &str, width: usize, theme: &Theme, out: &mu
         Span::styled("\u{21b3} ", ink(Ink::Dimmer, theme)),
         Span::styled(text::truncate(&text::clean(label), width.saturating_sub(4).max(8)), ink(Ink::Dim, theme)),
     ]));
-    // The first line of the text is the header already shown.
-    let rest: Vec<&str> = body.lines().skip(1).filter(|l| !l.trim().is_empty()).collect();
+    // The label already says what a crew run's or another session's header says; every other form
+    // (`[job .. exited ..]`, `[wake-up ..: reason]`, `[monitor .. ended ..]`) carries its message on
+    // the first line, which is shown with its brackets taken off.
+    let first = body.lines().next().unwrap_or("").trim();
+    let header_only = first.starts_with("[crew \u{b7} run ") || first.starts_with("[message from session ");
+    let head = (!header_only)
+        .then(|| first.strip_prefix('[').map_or(first, |f| f.strip_suffix(']').unwrap_or(f)))
+        .filter(|h| !h.trim().is_empty());
+    let rest: Vec<&str> = head.into_iter().chain(body.lines().skip(1).filter(|l| !l.trim().is_empty())).collect();
     let shown = rest.len().min(NEWS_ROWS);
     for l in rest.iter().take(shown) {
         out.push(Line::from(vec![

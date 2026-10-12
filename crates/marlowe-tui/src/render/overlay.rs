@@ -373,7 +373,7 @@ pub fn choice(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut Bu
     let mut x = inner.x;
     for (i, (key, label)) in dialog.choices().iter().enumerate() {
         let on = i == sel;
-        let over = hovered(state, &Target::Button(i));
+        let over = hovered(state, &Target::ChoiceButton(i));
         let style = match (on, over) {
             (true, _) => ink(Ink::Accent, theme).add_modifier(Modifier::BOLD),
             (false, true) => theme.bright(),
@@ -385,7 +385,7 @@ pub fn choice(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut Bu
         spans.push(Span::raw("      "));
         let w = (2 + key.len() + 1 + label.len()) as u16;
         if y < inner.bottom() {
-            hit(state, Rect { x, y, width: w, height: 1 }.intersection(inner), Target::Button(i));
+            hit(state, Rect { x, y, width: w, height: 1 }.intersection(inner), Target::ChoiceButton(i));
         }
         x += w + 6;
     }
@@ -407,14 +407,14 @@ fn quit_dialog(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut B
     let mut y = inner.y + body.len() as u16 + 1;
     for (i, (key, label)) in dialog.choices().iter().enumerate() {
         let on = i == sel;
-        let over = hovered(state, &Target::Button(i));
+        let over = hovered(state, &Target::ChoiceButton(i));
         let style = match (on, over) {
             (true, _) => ink(Ink::Accent, theme).add_modifier(Modifier::BOLD),
             (false, true) => theme.bright(),
             (false, false) => theme.normal(),
         };
         let line = Line::from(vec![row_marker(on, over, theme), Span::styled(format!("{key} "), ink(Ink::Dimmer, theme)), Span::styled(*label, style)]);
-        hit(state, Rect { x: inner.x, y, width: inner.width, height: 1 }, Target::Button(i));
+        hit(state, Rect { x: inner.x, y, width: inner.width, height: 1 }, Target::ChoiceButton(i));
         put(buf, inner.x, y, &line, inner.width);
         if let Some(help) = crate::closing::QUIT_HELP.get(i) {
             put(buf, inner.x + 6, y + 1, &Line::from(Span::styled(*help, ink(Ink::Dimmer, theme))), inner.width.saturating_sub(6));

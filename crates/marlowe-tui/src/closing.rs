@@ -222,9 +222,20 @@ impl State {
     /// `^q`, `^c`, `/exit`, `/quit`: the quit modal, unless a choice is remembered. A second `^q`
     /// with the modal up is the answer "stop and close agent".
     pub(crate) fn request_quit(&mut self) {
-        if matches!(self.closing.dialog, Some(Dialog::Quit { .. })) {
-            self.finish_quit(false);
-            return;
+        let modal_up = matches!(self.overlay, Some(Overlay::Choice { .. }));
+        match self.closing.dialog.clone() {
+            Some(Dialog::Quit { .. }) if modal_up => {
+                self.finish_quit(false);
+                return;
+            }
+            // A dialog the screen no longer shows is stale: ask again.
+            Some(Dialog::Quit { .. }) => self.closing.dialog = None,
+            // The resume offer goes back in the queue, to be asked after the quit modal.
+            Some(Dialog::Resume { summary }) => {
+                self.closing.pending_offer = Some(summary);
+                self.closing.dialog = None;
+            }
+            None => {}
         }
         // Nobody to ask the daemon's question of: the window just closes.
         if !self.conn.is_online() {
@@ -335,12 +346,48 @@ impl State {
     }
 
     pub(crate) fn close_choice(&mut self) {
+        use crate::panel::Panel;
         self.closing.dialog = None;
         self.overlay = None;
-        if let Some(p) = self.closing.hidden_panel.take() {
-            self.code.panel = Some(p);
-            self.overlay = Some(Overlay::Panel);
+        let waiting = !self.code.questions.is_empty() || !self.bg.plans.is_empty();
+        match self.closing.hidden_panel.take() {
+            // The covered plan or question is still unanswered: it comes back first.
+            Some(p @ (Panel::Plan(_) | Panel::Question(_))) => self.restore_panel(p),
+            Some(p) if !waiting => self.restore_panel(p),
+            // A plan or question arrived under the modal: it is shown, the covered panel behind it.
+            Some(p) => {
+                if self.code.stashed_panel.is_none() {
+                    self.code.stashed_panel = Some(p);
+                }
+                self.next_question();
+            }
+            None if waiting => self.next_question(),
+            None => {}
         }
+    }
+
+    fn restore_panel(&mut self, p: crate::panel::Panel) {
+        self.code.panel = Some(p);
+        self.overlay = Some(Overlay::Panel);
+    }
+
+    /// Whether the quit or resume modal is on screen. Whatever arrives meanwhile waits behind it.
+    pub(crate) fn choice_up(&self) -> bool {
+        matches!(self.overlay, Some(Overlay::Choice { .. }))
+    }
+
+    /// Puts `p` on screen, or behind the modal when one is up and nothing else is waiting there.
+    pub(crate) fn place_panel(&mut self, p: crate::panel::Panel) {
+        if self.choice_up() {
+            if self.closing.hidden_panel.is_none() {
+                self.closing.hidden_panel = Some(p);
+            } else if self.code.stashed_panel.is_none() {
+                self.code.stashed_panel = Some(p);
+            }
+            return;
+        }
+        self.code.panel = Some(p);
+        self.overlay = Some(Overlay::Panel);
     }
 
     /// `/keep-running [on|off]`.

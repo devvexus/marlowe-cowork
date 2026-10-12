@@ -358,7 +358,7 @@ impl State {
             }
             Some(Overlay::Choice { .. }) => {
                 match (self.target_at(at), self.closing.dialog.clone()) {
-                    (Some(Target::Button(i)), Some(dialog)) => self.choose(&dialog, i.min(dialog.choices().len() - 1), out),
+                    (Some(Target::ChoiceButton(i)), Some(dialog)) => self.choose(&dialog, i.min(dialog.choices().len() - 1), out),
                     (Some(Target::Remember), Some(_)) => self.closing.remember = !self.closing.remember,
                     _ => {}
                 }
@@ -447,7 +447,7 @@ impl State {
                 self.plan_action(run, action, out);
             }
             Target::PlanRow(i) => self.plan_row_click(i),
-            Target::Button(_) | Target::PlanCell(..) | Target::PlanField(_) | Target::Remember => {}
+            Target::Button(_) | Target::ChoiceButton(_) | Target::PlanCell(..) | Target::PlanField(_) | Target::Remember => {}
         }
     }
 
