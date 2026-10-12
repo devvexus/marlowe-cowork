@@ -4,6 +4,12 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### First-try probe on the GPU
+
+- **Ollama gets typed tool schemas by default.** The probe (62 cases, dawn:9b and dusk:27b-super, `eval/tool_probe/results/SUMMARY.md`) showed typeless schemas make dusk nest every value (`{"path": {"path": ..}}`): 10.5% strict against 54.8% typed; dawn was level (51.6% / 50.0%). Typed costs about 1,000 prompt tokens on the conductor surface (measured 1.25x chars/3; typeless 1.09x). `MARLOWE_OLLAMA_TYPED_TOOLS=0` sends typeless.
+- **Descriptions tightened** for grep, symbols, references, hover, project, bash, powershell, monitor, enter_plan, enter_worktree, ask_user, agent and dispatch; strict first-try on those cases went from 2/30 to 13/45 (dawn) and 8/30 to 19/45 (dusk). `specs_a15.json` regenerated from `compact_specs.json` by design (grep, bash, powershell).
+- Probe grader: the edit tools' read-first state gate is no longer counted as a bad call.
+
 ### Tool overhaul review fixes
 
 - **Fixed.** Merged tools' old names keep their grants and refusals: permission rules (`job_kill`, `cron_create`, `todo_add`, `KillShell`...), subagent allow/deny lists and crew role cards now read an old name as the tool that runs it (`args::canonical_tool`), so a saved deny still denies. `paper` and `ci_status` rules stay out of the rule map (they would widen an allow to `web_fetch` / `gh`).

@@ -259,12 +259,13 @@ fn build(req: &ChatRequest, opts: &BodyOptions<'_>) -> Built {
         options["temperature"] = json!(t);
     }
 
-    // Plain-string properties go out typeless (fewer tokens, read fine); the probe's typed arm
-    // sets MARLOWE_OLLAMA_TYPED_TOOLS.
-    let tools = if std::env::var_os("MARLOWE_OLLAMA_TYPED_TOOLS").is_some_and(|v| v != "0" && !v.is_empty()) {
-        wire::tools_field_typed(&req.tools)
-    } else {
+    // Typed schemas: the chat templates render a typeless property as an object, and dusk then
+    // nests every value ({"path": {"path": ..}}; probe 10% vs 55% first-try). The probe's typeless
+    // arm sets MARLOWE_OLLAMA_TYPED_TOOLS=0.
+    let tools = if std::env::var_os("MARLOWE_OLLAMA_TYPED_TOOLS").is_some_and(|v| v == "0") {
         wire::tools_field(&req.tools)
+    } else {
+        wire::tools_field_typed(&req.tools)
     };
     let prompt_tokens = estimate_prompt_tokens(&messages, tools.as_ref()) + image_tokens;
 

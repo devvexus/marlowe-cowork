@@ -142,7 +142,21 @@ def grade_mode(case, run, mode, surfaces):
     return False, f"wrong_tool({name0})"
 
 
+# The edit tools' own read-first gate fires because a canned `read` is not a real read: not an argument error.
+STATE_GATES = ("you have not read it in this session",)
+
+
+def _ungate(run):
+    calls = []
+    for c in run.get("calls") or []:
+        if c.get("refused") and any(t in (c.get("result") or "") for t in STATE_GATES):
+            c = dict(c, refused=False, layer=c.get("layer") or c.get("prepared"))
+        calls.append(c)
+    return dict(run, calls=calls)
+
+
 def grade(case, run, surfaces):
+    run = _ungate(run)
     strict, strict_why = grade_mode(case, run, "raw", surfaces)
     lenient, lenient_why = grade_mode(case, run, "layer", surfaces)
     first = ((run.get("calls") or [{}])[0].get("raw") or {}).get("name")

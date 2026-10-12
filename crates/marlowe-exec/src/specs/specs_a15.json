@@ -21,7 +21,7 @@
   },
   {
     "name": "grep",
-    "description": "Search contents with ripgrep regex. `output_mode`: files_with_matches (default), content, count. `limit` default 250, 0 = all.",
+    "description": "Find text or a regex in file contents: any mention or use of a name. `output_mode`: files_with_matches (default), content, count. `limit` default 250, 0 = all.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -67,7 +67,7 @@
   },
   {
     "name": "bash",
-    "description": "Run a bash command (Git Bash on Windows; no stdin). Long output keeps failures and the end unless `raw`. `timeout_ms` default 120000. `background` for servers and long builds: returns a task id and you are told when it ends; don't poll.",
+    "description": "Run a bash command (Git Bash on Windows; no stdin). Long output keeps failures and the end unless `raw`. `timeout_ms` default 120000. `background: true` (never a trailing `&`) for servers and any long build or test run: returns a task id and you are told when it ends; don't poll.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -91,7 +91,7 @@
   },
   {
     "name": "powershell",
-    "description": "Run Windows PowerShell 5.1 (`;` not `&&`). Options as bash.",
+    "description": "Run Windows PowerShell 5.1 (`;` not `&&`) for Windows tasks: services, registry, .ps1. Options as bash.",
     "input_schema": {
       "type": "object",
       "properties": {

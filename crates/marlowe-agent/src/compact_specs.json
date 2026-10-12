@@ -160,7 +160,7 @@
  },
  {
   "name": "grep",
-  "description": "Search contents with ripgrep regex. `output_mode`: files_with_matches (default), content, count. `limit` default 250, 0 = all.",
+  "description": "Find text or a regex in file contents: any mention or use of a name. `output_mode`: files_with_matches (default), content, count. `limit` default 250, 0 = all.",
   "input_schema": {
    "type": "object",
    "properties": {
@@ -206,7 +206,7 @@
  },
  {
   "name": "bash",
-  "description": "Run a bash command (Git Bash on Windows; no stdin). Long output keeps failures and the end unless `raw`. `timeout_ms` default 120000. `background` for servers and long builds: returns a task id and you are told when it ends; don't poll.",
+  "description": "Run a bash command (Git Bash on Windows; no stdin). Long output keeps failures and the end unless `raw`. `timeout_ms` default 120000. `background: true` (never a trailing `&`) for servers and any long build or test run: returns a task id and you are told when it ends; don't poll.",
   "input_schema": {
    "type": "object",
    "properties": {
@@ -230,7 +230,7 @@
  },
  {
   "name": "powershell",
-  "description": "Run Windows PowerShell 5.1 (`;` not `&&`). Options as bash.",
+  "description": "Run Windows PowerShell 5.1 (`;` not `&&`) for Windows tasks: services, registry, .ps1. Options as bash.",
   "input_schema": {
    "type": "object",
    "properties": {
@@ -341,7 +341,7 @@
  },
  {
   "name": "symbols",
-  "description": "Find definitions by name across the workspace, or list file `path`'s definitions. Better than grep for \"where is X defined\".",
+  "description": "Find where a name is DEFINED, or list file `path`'s definitions. For uses of it, grep.",
   "input_schema": {
    "type": "object",
    "properties": {
@@ -398,7 +398,7 @@
  },
  {
   "name": "references",
-  "description": "Every use of a symbol (language server; same-named symbols are told apart).",
+  "description": "Who calls or uses a symbol: every use (language server; same-named symbols are told apart).",
   "input_schema": {
    "type": "object",
    "properties": {
@@ -415,7 +415,7 @@
  },
  {
   "name": "hover",
-  "description": "A symbol's type, signature and docs (language server).",
+  "description": "A symbol's type, signature and docs (language server); no need to read the file.",
   "input_schema": {
    "type": "object",
    "properties": {
@@ -466,7 +466,7 @@
  },
  {
   "name": "project",
-  "description": "Build, test and check the project from its own config. `op`: profile (default: stacks, commands), install, format, lint, typecheck, build, test (failing ids, file:line), gate (format..test, stops at the first failure; `baseline`: ids failing before you), migrate (throwaway sqlite db).",
+  "description": "Run the project's own build, test, lint and format. `op`: profile (default: stacks, commands), install, format, lint, typecheck, build, test (failing ids, file:line), gate (\"is it ready / does it pass\": format..test, stops at the first failure; `baseline`: ids failing before you), migrate (throwaway sqlite db).",
   "input_schema": {
    "type": "object",
    "properties": {
@@ -699,7 +699,7 @@
  },
  {
   "name": "ask_user",
-  "description": "Ask the user 1-4 multiple-choice questions and wait; only when blocked on their decision.",
+  "description": "Ask the user 1-4 multiple-choice questions and wait; only when blocked on their decision, or when they ask to be asked.",
   "input_schema": {
    "type": "object",
    "properties": {
@@ -759,7 +759,7 @@
  },
  {
   "name": "agent",
-  "description": "Start a subagent: explore (read-only), plan, general, fork (a copy of you with this chat), guide (about Marlowe) or an agents-folder type. Only fork sees this chat: `prompt` is the whole task. Background unless `background: false`. Long sandboxed work: dispatch; many agents: workflow.",
+  "description": "Start a quick, bounded subagent: explore (read-only), plan, general, fork (a copy of you with this chat), guide (about Marlowe) or an agents-folder type. Only fork sees this chat: `prompt` is the whole task. Background unless `background: false`. Long sandboxed work: dispatch; many agents: workflow.",
   "input_schema": {
    "type": "object",
    "properties": {
@@ -813,7 +813,7 @@
  },
  {
   "name": "enter_plan",
-  "description": "Enter plan mode for a large or risky change: nothing runs until the user approves your exit_plan.",
+  "description": "Plan mode, called first when the user wants to plan before changing anything (or the change is large or risky): nothing runs until the user approves your exit_plan.",
   "input_schema": {
    "type": "object",
    "properties": {
@@ -836,7 +836,7 @@
  },
  {
   "name": "enter_worktree",
-  "description": "Move this session to a new git worktree on its own branch.",
+  "description": "Move this session to a new git worktree on its own branch (`name` optional): call it at once when asked for a separate worktree.",
   "input_schema": {
    "type": "object",
    "properties": {
@@ -1179,7 +1179,7 @@
  },
  {
   "name": "monitor",
-  "description": "Run a bash `command`; each line it prints reaches you as an event (a new turn when idle). For builds, logs (`tail -n0 -F x.log`), poll loops; not for a result you need now. Ends on exit or at `timeout_ms` (default 300000) unless `persistent`. The same `id` re-arms it.",
+  "description": "Watch a command's output live: each line it prints reaches you as an event (a new turn when idle). For \"tell me when\" on logs (`tail -n0 -F x.log`), builds, poll loops; not for a result you need now. Ends on exit or at `timeout_ms` (default 300000) unless `persistent`. The same `id` re-arms it.",
   "input_schema": {
    "type": "object",
    "properties": {
@@ -1374,7 +1374,7 @@
  },
  {
   "name": "dispatch",
-  "description": "Hand long, parallel or bulky work to one sandboxed background crew agent; returns a run id, the result comes later. It cannot see this chat: `prompt` needs the context, paths and done-criteria. Tell the user in one line. Scripts: workflow.",
+  "description": "Hand long, parallel or bulky work (deep research, big builds, \"in the background\") to one sandboxed background crew agent; returns a run id, the result comes later. It cannot see this chat: `prompt` needs the context, paths and done-criteria. Tell the user in one line. A requested workflow or script: workflow, not this.",
   "input_schema": {
    "type": "object",
    "properties": {

@@ -1,0 +1,2180 @@
+{
+ "cases": 62,
+ "arms": {
+  "marlowe-dawn:9b|B": {
+   "runs": 124,
+   "strict": 64,
+   "lenient": 65,
+   "strict_pct": 51.6,
+   "lenient_pct": 52.4,
+   "scenarios_strict": "5/8",
+   "scenarios_all_pass": false,
+   "meets": {
+    "strict": false,
+    "lenient": false
+   },
+   "errors": 1,
+   "dawn_flagged": [
+    "multi_edit",
+    "grep",
+    "bash",
+    "powershell",
+    "references",
+    "hover",
+    "project-gate",
+    "service",
+    "ask_user",
+    "enter_plan",
+    "enter_worktree",
+    "git-diff",
+    "git-commit",
+    "gh-ci",
+    "gh-pr",
+    "workflow",
+    "report_findings",
+    "monitor",
+    "notices",
+    "correct",
+    "dispatch",
+    "read_mcp_resource",
+    "handback"
+   ]
+  },
+  "marlowe-dawn:9b|C": {
+   "runs": 124,
+   "strict": 62,
+   "lenient": 62,
+   "strict_pct": 50.0,
+   "lenient_pct": 50.0,
+   "scenarios_strict": "4/8",
+   "scenarios_all_pass": false,
+   "meets": {
+    "strict": false,
+    "lenient": false
+   },
+   "errors": 3,
+   "dawn_flagged": [
+    "read",
+    "multi_edit",
+    "grep",
+    "bash",
+    "powershell",
+    "references",
+    "hover",
+    "project-gate",
+    "browser",
+    "ask_user",
+    "agent",
+    "enter_plan",
+    "enter_worktree",
+    "git-diff",
+    "git-commit",
+    "gh-ci",
+    "gh-pr",
+    "workflow",
+    "report_findings",
+    "cancel-workflow",
+    "monitor",
+    "notices",
+    "correct",
+    "dispatch",
+    "read_mcp_resource",
+    "set_statusline"
+   ]
+  },
+  "marlowe-dusk:27b-super|B": {
+   "runs": 124,
+   "strict": 13,
+   "lenient": 16,
+   "strict_pct": 10.5,
+   "lenient_pct": 12.9,
+   "scenarios_strict": "0/8",
+   "scenarios_all_pass": false,
+   "meets": {
+    "strict": false,
+    "lenient": false
+   },
+   "errors": 0,
+   "dawn_flagged": []
+  },
+  "marlowe-dusk:27b-super|C": {
+   "runs": 124,
+   "strict": 68,
+   "lenient": 68,
+   "strict_pct": 54.8,
+   "lenient_pct": 54.8,
+   "scenarios_strict": "6/8",
+   "scenarios_all_pass": false,
+   "meets": {
+    "strict": false,
+    "lenient": false
+   },
+   "errors": 1,
+   "dawn_flagged": []
+  }
+ },
+ "rows": {
+  "read": {
+   "marlowe-dawn:9b|B": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "read",
+    "why": "value(offset)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read",
+    "why": "value(offset)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "write": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "write",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "read",
+    "why": "wrong_tool(read)",
+    "rewrite": null
+   }
+  },
+  "edit": {
+   "marlowe-dawn:9b|B": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "multi_edit",
+    "why": "wrong_tool(multi_edit)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read",
+    "why": "wrong_tool(read)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "multi_edit": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read",
+    "why": "wrong_tool(rename_symbol)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read",
+    "why": "wrong_tool(rename_symbol)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read",
+    "why": "wrong_tool(read)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "rename_symbol",
+    "why": "wrong_tool(rename_symbol)",
+    "rewrite": null
+   }
+  },
+  "notebook_edit": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "glob",
+    "why": "wrong_tool(glob)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "glob",
+    "why": "wrong_tool(glob)",
+    "rewrite": null
+   }
+  },
+  "glob": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "glob",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "grep": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "symbols",
+    "why": "wrong_tool(symbols)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "symbols",
+    "why": "wrong_tool(symbols)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "references",
+    "why": "wrong_tool(references)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "references",
+    "why": "wrong_tool(references)",
+    "rewrite": null
+   }
+  },
+  "bash": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "monitor",
+    "why": "wrong_tool(monitor)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "bash",
+    "why": "missing_expected(background)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "project",
+    "why": "wrong_tool(project)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "project",
+    "why": "wrong_tool(project)",
+    "rewrite": null
+   }
+  },
+  "powershell": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "powershell",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "python": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "python",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "web_fetch-arxiv": {
+   "marlowe-dawn:9b|B": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "arxiv",
+    "why": "wrong_tool(arxiv)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "web_fetch",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "web_fetch-url": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "web_fetch",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "arxiv": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "arxiv",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "web_search": {
+   "marlowe-dawn:9b|B": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "web_search",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "web_fetch",
+    "why": "wrong_tool(web_fetch)",
+    "rewrite": null
+   }
+  },
+  "symbols": {
+   "marlowe-dawn:9b|B": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "definition",
+    "why": "wrong_tool(definition)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "definition",
+    "why": "wrong_tool(definition)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "symbols",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "definition",
+    "why": "wrong_tool(definition)",
+    "rewrite": null
+   }
+  },
+  "definition": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "definition",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "references": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "symbols",
+    "why": "wrong_tool(symbols)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "symbols",
+    "why": "wrong_tool(symbols)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "references",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "hover": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read",
+    "why": "wrong_tool(read)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read",
+    "why": "wrong_tool(read)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "definition",
+    "why": "wrong_tool(definition)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "definition",
+    "why": "wrong_tool(definition)",
+    "rewrite": null
+   }
+  },
+  "diagnostics": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "diagnostics",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "rename_symbol": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "rename_symbol",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "references",
+    "why": "wrong_tool(references)",
+    "rewrite": null
+   }
+  },
+  "project-test": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "project-gate": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "git",
+    "why": "wrong_tool(git)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "git",
+    "why": "wrong_tool(git)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "git",
+    "why": "wrong_tool(git)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "git",
+    "why": "wrong_tool(git)",
+    "rewrite": null
+   }
+  },
+  "service": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "service",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "project",
+    "why": "wrong_tool(project)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "project",
+    "why": "wrong_tool(project)",
+    "rewrite": null
+   }
+  },
+  "http_check": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "2/2",
+    "wrong_first_call": "http_check",
+    "why": "type(expect_status)",
+    "rewrite": "http_check: expect_status coerced"
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "browser": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "browser",
+    "why": "value(op)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "1/2",
+    "lenient": "2/2",
+    "wrong_first_call": "browser",
+    "why": "type(url)",
+    "rewrite": "browser: url coerced"
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "todo": {
+   "marlowe-dawn:9b|B": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "glob",
+    "why": "wrong_tool(glob)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "grep",
+    "why": "wrong_tool(grep)",
+    "rewrite": null
+   }
+  },
+  "ask_user": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   }
+  },
+  "skill": {
+   "marlowe-dawn:9b|B": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "git",
+    "why": "wrong_tool(git)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "skill",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "agent": {
+   "marlowe-dawn:9b|B": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "dispatch",
+    "why": "wrong_tool(dispatch)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "dispatch",
+    "why": "wrong_tool(dispatch)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "agent",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "agent",
+    "why": "value(prompt)",
+    "rewrite": null
+   }
+  },
+  "send_message": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "send_message",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "enter_plan": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "grep",
+    "why": "wrong_tool(grep)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "grep",
+    "why": "wrong_tool(grep)",
+    "rewrite": null
+   }
+  },
+  "exit_plan": {
+   "marlowe-dawn:9b|B": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read",
+    "why": "wrong_tool(read)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read",
+    "why": "wrong_tool(read)",
+    "rewrite": null
+   }
+  },
+  "enter_worktree": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "recall",
+    "why": "wrong_tool(recall)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read",
+    "why": "wrong_tool(read)",
+    "rewrite": null
+   }
+  },
+  "exit_worktree": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "git",
+    "why": "wrong_tool(git)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "git",
+    "why": "wrong_tool(git)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "git",
+    "why": "wrong_tool(git)",
+    "rewrite": null
+   }
+  },
+  "git-diff": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "1/2",
+    "wrong_first_call": "git",
+    "why": "value(op)",
+    "rewrite": "git: path -> paths"
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "git",
+    "why": "value(op)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "git",
+    "why": "value(op)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "git",
+    "why": "value(op)",
+    "rewrite": null
+   }
+  },
+  "git-commit": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "git",
+    "why": "missing_expected(message)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "git",
+    "why": "missing_expected(message)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "git",
+    "why": "missing_expected(message)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "git",
+    "why": "missing_expected(message)",
+    "rewrite": null
+   }
+  },
+  "gh-ci": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "git",
+    "why": "wrong_tool(git)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "git",
+    "why": "wrong_tool(git)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "git",
+    "why": "wrong_tool(git)",
+    "rewrite": null
+   }
+  },
+  "gh-pr": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "git",
+    "why": "wrong_tool(git)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "git",
+    "why": "wrong_tool(git)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "git",
+    "why": "wrong_tool(git)",
+    "rewrite": "git: rev coerced"
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "git",
+    "why": "wrong_tool(git)",
+    "rewrite": null
+   }
+  },
+  "workflow": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "dispatch",
+    "why": "wrong_tool(dispatch)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "dispatch",
+    "why": "wrong_tool(dispatch)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "workflow",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   }
+  },
+  "report_findings": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read",
+    "why": "wrong_tool(diagnostics)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read",
+    "why": "wrong_tool(diagnostics)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read",
+    "why": "wrong_tool(read)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read",
+    "why": "wrong_tool(read)",
+    "rewrite": null
+   }
+  },
+  "task_list": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "task_output": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "task_output",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "task_stop": {
+   "marlowe-dawn:9b|B": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "task_stop",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "cancel-workflow": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": null,
+    "why": "error",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "task_list",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "monitor": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "grep",
+    "why": "wrong_tool(grep)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "grep",
+    "why": "wrong_tool(grep)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "glob",
+    "why": "wrong_tool(glob)",
+    "rewrite": null
+   }
+  },
+  "schedule": {
+   "marlowe-dawn:9b|B": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "schedule",
+    "why": "missing_expected(at)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "schedule",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "schedule",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   }
+  },
+  "watch": {
+   "marlowe-dawn:9b|B": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   }
+  },
+  "notify": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "notify",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "send_file": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   }
+  },
+  "notices": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "task_list",
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "remember": {
+   "marlowe-dawn:9b|B": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "remember",
+    "why": "type(text)",
+    "rewrite": "remember: text coerced"
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "recall": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "recall",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "forget": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "recall",
+    "why": "wrong_tool(recall)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "correct": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "remember",
+    "why": "wrong_tool(remember)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "dispatch": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "arxiv",
+    "why": "wrong_tool(arxiv)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "dispatch",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "dispatch",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "list_mcp_resources": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "list_mcp_resources",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "read_mcp_resource": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read_mcp_resource",
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "list_mcp_resources",
+    "why": "wrong_tool(list_mcp_resources)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "list_mcp_resources",
+    "why": "wrong_tool(list_mcp_resources)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "list_mcp_resources",
+    "why": "wrong_tool(list_mcp_resources)",
+    "rewrite": null
+   }
+  },
+  "mcp-direct": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "list_mcp_resources",
+    "why": "wrong_tool(list_mcp_resources)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "mcp-overflow": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "handback": {
+   "marlowe-dawn:9b|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read",
+    "why": "wrong_tool(read)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "read",
+    "why": "wrong_tool(read)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read",
+    "why": "wrong_tool(read)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "read",
+    "why": "wrong_tool(read)",
+    "rewrite": null
+   }
+  },
+  "set_statusline": {
+   "marlowe-dawn:9b|B": {
+    "strict": "2/2",
+    "lenient": "2/2",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "glob",
+    "why": "wrong_tool(glob)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "glob",
+    "why": "wrong_tool(glob)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "glob",
+    "why": "wrong_tool(grep)",
+    "rewrite": null
+   }
+  },
+  "create_agent": {
+   "marlowe-dawn:9b|B": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "glob",
+    "why": "wrong_tool(glob)",
+    "rewrite": null
+   },
+   "marlowe-dawn:9b|C": {
+    "strict": "1/2",
+    "lenient": "1/2",
+    "wrong_first_call": "glob",
+    "why": "wrong_tool(read)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|B": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "glob",
+    "why": "wrong_tool(glob)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/2",
+    "lenient": "0/2",
+    "wrong_first_call": "glob",
+    "why": "wrong_tool(glob)",
+    "rewrite": null
+   }
+  }
+ },
+ "calibration": {
+  "marlowe-dawn:9b|B": [
+   {
+    "surface": "conductor",
+    "measured_tokens": 7060,
+    "estimate_chars_3": 6424,
+    "estimate_harness": 6478,
+    "ratio_to_chars_3": 1.099,
+    "chars_per_token": 2.73
+   },
+   {
+    "surface": "conductor+mcp-d71929",
+    "measured_tokens": 7321,
+    "estimate_chars_3": 6616,
+    "estimate_harness": 6673,
+    "ratio_to_chars_3": 1.107,
+    "chars_per_token": 2.71
+   },
+   {
+    "surface": "conductor+mcp-e05666",
+    "measured_tokens": 7604,
+    "estimate_chars_3": 6926,
+    "estimate_harness": 6982,
+    "ratio_to_chars_3": 1.098,
+    "chars_per_token": 2.73
+   },
+   {
+    "surface": "subagent:explore",
+    "measured_tokens": 1123,
+    "estimate_chars_3": 801,
+    "estimate_harness": 813,
+    "ratio_to_chars_3": 1.402,
+    "chars_per_token": 2.14
+   },
+   {
+    "surface": "subagent:statusline",
+    "measured_tokens": 752,
+    "estimate_chars_3": 483,
+    "estimate_harness": 489,
+    "ratio_to_chars_3": 1.556,
+    "chars_per_token": 1.93
+   },
+   {
+    "surface": "subagent:agent-creator",
+    "measured_tokens": 841,
+    "estimate_chars_3": 575,
+    "estimate_harness": 580,
+    "ratio_to_chars_3": 1.463,
+    "chars_per_token": 2.05
+   }
+  ],
+  "marlowe-dawn:9b|C": [
+   {
+    "surface": "conductor",
+    "measured_tokens": 8077,
+    "estimate_chars_3": 6424,
+    "estimate_harness": 6478,
+    "ratio_to_chars_3": 1.257,
+    "chars_per_token": 2.39
+   },
+   {
+    "surface": "conductor+mcp-d71929",
+    "measured_tokens": 8351,
+    "estimate_chars_3": 6616,
+    "estimate_harness": 6673,
+    "ratio_to_chars_3": 1.262,
+    "chars_per_token": 2.38
+   },
+   {
+    "surface": "conductor+mcp-e05666",
+    "measured_tokens": 8634,
+    "estimate_chars_3": 6926,
+    "estimate_harness": 6982,
+    "ratio_to_chars_3": 1.247,
+    "chars_per_token": 2.41
+   },
+   {
+    "surface": "subagent:explore",
+    "measured_tokens": 1232,
+    "estimate_chars_3": 801,
+    "estimate_harness": 813,
+    "ratio_to_chars_3": 1.538,
+    "chars_per_token": 1.95
+   },
+   {
+    "surface": "subagent:statusline",
+    "measured_tokens": 812,
+    "estimate_chars_3": 483,
+    "estimate_harness": 489,
+    "ratio_to_chars_3": 1.68,
+    "chars_per_token": 1.79
+   },
+   {
+    "surface": "subagent:agent-creator",
+    "measured_tokens": 935,
+    "estimate_chars_3": 575,
+    "estimate_harness": 580,
+    "ratio_to_chars_3": 1.627,
+    "chars_per_token": 1.84
+   }
+  ],
+  "marlowe-dusk:27b-super|B": [
+   {
+    "surface": "conductor",
+    "measured_tokens": 7024,
+    "estimate_chars_3": 6424,
+    "estimate_harness": 6478,
+    "ratio_to_chars_3": 1.093,
+    "chars_per_token": 2.74
+   },
+   {
+    "surface": "conductor+mcp-d71929",
+    "measured_tokens": 7285,
+    "estimate_chars_3": 6616,
+    "estimate_harness": 6673,
+    "ratio_to_chars_3": 1.101,
+    "chars_per_token": 2.72
+   },
+   {
+    "surface": "conductor+mcp-e05666",
+    "measured_tokens": 7568,
+    "estimate_chars_3": 6926,
+    "estimate_harness": 6982,
+    "ratio_to_chars_3": 1.093,
+    "chars_per_token": 2.75
+   },
+   {
+    "surface": "subagent:explore",
+    "measured_tokens": 1115,
+    "estimate_chars_3": 801,
+    "estimate_harness": 813,
+    "ratio_to_chars_3": 1.392,
+    "chars_per_token": 2.16
+   },
+   {
+    "surface": "subagent:statusline",
+    "measured_tokens": 744,
+    "estimate_chars_3": 483,
+    "estimate_harness": 489,
+    "ratio_to_chars_3": 1.539,
+    "chars_per_token": 1.95
+   },
+   {
+    "surface": "subagent:agent-creator",
+    "measured_tokens": 833,
+    "estimate_chars_3": 575,
+    "estimate_harness": 580,
+    "ratio_to_chars_3": 1.45,
+    "chars_per_token": 2.07
+   }
+  ],
+  "marlowe-dusk:27b-super|C": [
+   {
+    "surface": "conductor",
+    "measured_tokens": 8041,
+    "estimate_chars_3": 6424,
+    "estimate_harness": 6478,
+    "ratio_to_chars_3": 1.252,
+    "chars_per_token": 2.4
+   },
+   {
+    "surface": "conductor+mcp-d71929",
+    "measured_tokens": 8315,
+    "estimate_chars_3": 6616,
+    "estimate_harness": 6673,
+    "ratio_to_chars_3": 1.257,
+    "chars_per_token": 2.39
+   },
+   {
+    "surface": "conductor+mcp-e05666",
+    "measured_tokens": 8598,
+    "estimate_chars_3": 6926,
+    "estimate_harness": 6982,
+    "ratio_to_chars_3": 1.241,
+    "chars_per_token": 2.42
+   },
+   {
+    "surface": "subagent:explore",
+    "measured_tokens": 1224,
+    "estimate_chars_3": 801,
+    "estimate_harness": 813,
+    "ratio_to_chars_3": 1.528,
+    "chars_per_token": 1.96
+   },
+   {
+    "surface": "subagent:statusline",
+    "measured_tokens": 804,
+    "estimate_chars_3": 483,
+    "estimate_harness": 489,
+    "ratio_to_chars_3": 1.663,
+    "chars_per_token": 1.8
+   },
+   {
+    "surface": "subagent:agent-creator",
+    "measured_tokens": 927,
+    "estimate_chars_3": 575,
+    "estimate_harness": 580,
+    "ratio_to_chars_3": 1.613,
+    "chars_per_token": 1.86
+   }
+  ]
+ }
+}

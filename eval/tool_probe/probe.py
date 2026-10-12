@@ -28,7 +28,7 @@ import grade as g  # noqa: E402
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 DEFAULT_MODELS = ["marlowe-dawn:9b", "marlowe-dusk:27b-super"]
-ARMS = {"B": {}, "C": {"MARLOWE_OLLAMA_TYPED_TOOLS": "1"}}
+ARMS = {"B": {"MARLOWE_OLLAMA_TYPED_TOOLS": "0"}, "C": {"MARLOWE_OLLAMA_TYPED_TOOLS": "1"}}
 # The pass criteria of the design (strict, lenient), per model family.
 CRITERIA = {"dusk": (0.95, 0.98), "dawn": (0.85, 0.98)}
 

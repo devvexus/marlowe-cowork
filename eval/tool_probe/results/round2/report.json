@@ -1,0 +1,209 @@
+{
+ "cases": 10,
+ "arms": {
+  "marlowe-dawn:9b|C": {
+   "runs": 30,
+   "strict": 7,
+   "lenient": 7,
+   "strict_pct": 23.3,
+   "lenient_pct": 23.3,
+   "scenarios_strict": "0/3",
+   "scenarios_all_pass": false,
+   "meets": {
+    "strict": false,
+    "lenient": false
+   },
+   "errors": 0,
+   "dawn_flagged": [
+    "bash",
+    "project-gate",
+    "service",
+    "ask_user",
+    "enter_worktree",
+    "workflow",
+    "monitor"
+   ]
+  },
+  "marlowe-dusk:27b-super|C": {
+   "runs": 30,
+   "strict": 11,
+   "lenient": 11,
+   "strict_pct": 36.7,
+   "lenient_pct": 36.7,
+   "scenarios_strict": "0/3",
+   "scenarios_all_pass": false,
+   "meets": {
+    "strict": false,
+    "lenient": false
+   },
+   "errors": 0,
+   "dawn_flagged": []
+  }
+ },
+ "rows": {
+  "grep": {
+   "marlowe-dawn:9b|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "wrong_first_call": "symbols",
+    "why": "wrong_tool(symbols)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "bash": {
+   "marlowe-dawn:9b|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "wrong_first_call": "project",
+    "why": "missing_expected(background)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "wrong_first_call": "project",
+    "why": "wrong_tool(project)",
+    "rewrite": null
+   }
+  },
+  "project-gate": {
+   "marlowe-dawn:9b|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "wrong_first_call": "git",
+    "why": "wrong_tool(git)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "1/3",
+    "lenient": "1/3",
+    "wrong_first_call": "git",
+    "why": "wrong_tool(git)",
+    "rewrite": null
+   }
+  },
+  "service": {
+   "marlowe-dawn:9b|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "wrong_first_call": "glob",
+    "why": "wrong_tool(glob)",
+    "rewrite": null
+   }
+  },
+  "ask_user": {
+   "marlowe-dawn:9b|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   }
+  },
+  "agent": {
+   "marlowe-dawn:9b|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "wrong_first_call": "grep",
+    "why": "wrong_tool(grep)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "enter_worktree": {
+   "marlowe-dawn:9b|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "1/3",
+    "lenient": "1/3",
+    "wrong_first_call": "recall",
+    "why": "wrong_tool(recall)",
+    "rewrite": null
+   }
+  },
+  "workflow": {
+   "marlowe-dawn:9b|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "wrong_first_call": "dispatch",
+    "why": "wrong_tool(dispatch)",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "wrong_first_call": "workflow",
+    "why": "bad_script",
+    "rewrite": null
+   }
+  },
+  "monitor": {
+   "marlowe-dawn:9b|C": {
+    "strict": "1/3",
+    "lenient": "1/3",
+    "wrong_first_call": "glob",
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "wrong_first_call": "glob",
+    "why": "wrong_tool(glob)",
+    "rewrite": null
+   }
+  },
+  "dispatch": {
+   "marlowe-dawn:9b|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   },
+   "marlowe-dusk:27b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  }
+ },
+ "calibration": {
+  "marlowe-dawn:9b|C": [],
+  "marlowe-dusk:27b-super|C": []
+ }
+}

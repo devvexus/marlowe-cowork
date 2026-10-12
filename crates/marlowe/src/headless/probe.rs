@@ -13,7 +13,7 @@
 //! Hosts: `conductor` (built-ins, MCP, memory, dispatch) or `subagent:<type>` (the type's filtered
 //! host with the subagent-only tools). Local models only: a probe is free or it does not run.
 //!
-//! The wire is the shipped one: `MARLOWE_OLLAMA_TYPED_TOOLS=1` sends the typed schemas (arm C).
+//! The wire is the shipped one: typed schemas are the default (arm C); `MARLOWE_OLLAMA_TYPED_TOOLS=0` sends them typeless (arm B).
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -53,7 +53,7 @@ marlowe headless --probe-first-call <cases.jsonl> [flags]
   --timeout SECS   per run (default 300)
   --out FILE       write the JSON lines here instead of stdout
 
-One JSON line per run. MARLOWE_OLLAMA_TYPED_TOOLS=1 sends typed schemas (the C arm).
+One JSON line per run. MARLOWE_OLLAMA_TYPED_TOOLS=0 sends typeless schemas (the B arm); typed is the default.
 ";
 
 const FIXTURE: &[(&str, &str)] = &[

@@ -1,0 +1,18 @@
+{
+ "marlowe-dawn_9b.B.jsonl": {
+  "model": "marlowe-dawn:9b",
+  "arm": "B"
+ },
+ "marlowe-dawn_9b.C.jsonl": {
+  "model": "marlowe-dawn:9b",
+  "arm": "C"
+ },
+ "marlowe-dusk_27b-super.B.jsonl": {
+  "model": "marlowe-dusk:27b-super",
+  "arm": "B"
+ },
+ "marlowe-dusk_27b-super.C.jsonl": {
+  "model": "marlowe-dusk:27b-super",
+  "arm": "C"
+ }
+}
