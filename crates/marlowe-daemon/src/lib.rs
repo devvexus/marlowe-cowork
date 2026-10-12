@@ -36,6 +36,7 @@ mod mind_ops;
 mod mode_ops;
 mod notify_ops;
 mod pr_ops;
+pub mod probe;
 mod schedule_ops;
 mod session;
 mod session_ops;

@@ -33,7 +33,7 @@ use marlowe_mcp::hub::{Hub, HubOpts};
 use marlowe_mcp::oauth::{KeyringTokens, TokenStore};
 use marlowe_proto::{Event, McpServerInfo, Request, SettingsScope, Slot};
 
-use host::McpTools;
+pub(crate) use host::McpTools;
 
 use crate::daemon::Core;
 

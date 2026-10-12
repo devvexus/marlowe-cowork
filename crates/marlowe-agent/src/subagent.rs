@@ -885,7 +885,7 @@ pub struct Subagents {
 }
 
 /// Appended to every subagent's system prompt.
-const SUBAGENT_FRAME: &str = "<subagent>\nYou are a subagent doing one task for the main agent. You cannot see its \
+pub const SUBAGENT_FRAME: &str = "<subagent>\nYou are a subagent doing one task for the main agent. You cannot see its \
 conversation: everything you need is in the task. Work on your own; nobody can answer questions. When you are done, \
 call `handback` with a concise report of what you found or did, with file paths and line numbers as evidence; that \
 message is returned to the main agent exactly as you write it. (If you answer without calling it, your final message is \

@@ -56,6 +56,9 @@ marlowe me [--name N] [--address sir|name|none]
 marlowe math [--grid | --images] [--width N]
                                           a sheet of hard equations and matrices, drawn as the
                                           conversation pane draws them (grid, and Sixel images)
+marlowe headless --probe-first-call <cases.jsonl> [--model M] [--num-ctx N] [--temps LIST] [--calibrate]
+                                          the first tool call a local model makes on the real surface
+                                          (nothing runs; eval/tool_probe grades it)
 marlowe status | shutdown | doctor [--json]
 marlowe -p [PROMPT] [flags]               one non-interactive run, like `claude -p` (marlowe -p --help)
 marlowe mcp [list | add | add-json | remove | get | trust | auth | logout | serve]
@@ -120,6 +123,7 @@ fn dispatch(home: &std::path::Path, args: &[String]) -> Result<i32, String> {
         Some("mcp") => mcp_cmd::run(home, rest),
         Some("eval") => eval_entry::run(home, rest),
         Some("math") => math_cmd::run(rest),
+        Some("headless") => headless::probe::run(home, rest),
         Some("--eval-adapter") => eval::run(rest),
         Some("-h" | "--help" | "help") => {
             print!("{USAGE}");

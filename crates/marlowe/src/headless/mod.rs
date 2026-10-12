@@ -8,6 +8,7 @@
 //! | [`policy`] | `--allowed-tools` / `--disallowed-tools` rules |
 //! | [`prompt_tool`] | `--permission-prompt-tool mcp__server__tool` |
 //! | [`settings`], [`worktree`] | `--settings` / `--mcp-config` values, `-w` |
+//! | [`probe`] | `marlowe headless --probe-first-call`: the first tool call a model makes, nothing run |
 //!
 //! The run talks to the shared daemon like any client, or with `--standalone` to a daemon inside
 //! this process (no sentinel, voice or crew; memory unless `--no-memory`). When the home already has
@@ -21,6 +22,7 @@ pub mod driver;
 pub mod input;
 pub mod output;
 pub mod policy;
+pub mod probe;
 pub mod prompt_tool;
 pub mod settings;
 pub mod worktree;
@@ -37,7 +39,7 @@ use driver::{Connector, Env, EXIT_ERROR};
 
 const SUBCOMMANDS: &[&str] = &[
     "tui", "daemon", "ask", "models", "sessions", "memory", "watch", "brief", "say", "me", "crew", "status", "shutdown", "doctor", "bench", "export", "mcp",
-    "eval", "math", "help",
+    "eval", "math", "headless", "help",
 ];
 
 /// Whether this command line is a print run: `-p` or `--print`, and no subcommand in front.
