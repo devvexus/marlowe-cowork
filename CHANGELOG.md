@@ -4,6 +4,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Run view transcript
+
+- **Fixed (crew).** A role-card run is one step, and its calls were only checkpointed (`crew_run_calls`) until that step ended, so the Run view said "no steps yet" while the rail showed step 22, and a paused, interrupted or failed run never showed what it did. `Supervisor::transcript` now adds each open step after the finished rows, built from its checkpoints with the same line format (`message_lines`), numbered as the runner's live events number it, its action "stopped here" plus the run's note when no thread is working on it. The runner streams `▸` tool starts and `↳`/`✗` results as text deltas of their own lines, so a model that mostly thinks and calls tools shows progress. The Run view no longer clips the last (open or only) step to its tail; earlier steps still keep six lines.
+
 ### A15: the dusk prefix fits 9k at 32k
 
 - **Changed (persona).** `persona/v3.md` condensed from 4,183 to 1,598 estimated tokens with the behaviour kept (address, rigour, voice, `words_to_avoid` in the bullet format the brief polish reads, consent and untrusted-content rules, the five register drops); the memory, crew, coding, git, verify, tasks and workflow blocks cut by about half, `blocks/coding.md` still says `ask_user` only when blocked. Persona and blocks in the A15 configuration (v3 + memory + crew + coding): 5,230 -> 1,999 of the 2,000 slice.

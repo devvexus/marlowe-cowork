@@ -246,6 +246,18 @@ impl RunStore {
         Ok(out)
     }
 
+    /// The steps with per-call checkpoints and no step row yet, in order of their first
+    /// checkpoint: the ones still open, or interrupted before they finished.
+    pub fn open_keys(&self, id: &RunId) -> Result<Vec<String>, CrewError> {
+        let mut st = self.conn.prepare(
+            "SELECT key FROM crew_run_calls WHERE run = ?1
+               AND key NOT IN (SELECT key FROM crew_run_steps WHERE run = ?1)
+             GROUP BY key ORDER BY MIN(at_ms), MIN(rowid)",
+        )?;
+        let keys = st.query_map([id.as_str()], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+        Ok(keys)
+    }
+
     /// Drops the per-call checkpoints of `key` once its step row holds the whole conversation.
     pub fn clear_calls(&self, run: &RunId, key: &str) -> Result<(), CrewError> {
         self.conn.execute("DELETE FROM crew_run_calls WHERE run = ?1 AND key = ?2", params![run.as_str(), key])?;

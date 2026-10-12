@@ -157,27 +157,32 @@ pub struct StepRecord {
 impl StepRecord {
     /// The transcript view: assistant text and tool summaries of this step.
     pub fn view(&self) -> CrewStep {
-        let mut lines: Vec<String> = Vec::new();
-        for m in &self.messages {
-            for part in &m.content {
-                match (m.role, part) {
-                    (Role::User, Part::Text { text }) => lines.push(format!("› {}", clip(text, 400))),
-                    (Role::Assistant, Part::Text { text }) if !text.trim().is_empty() => lines.push(text.trim().to_string()),
-                    (_, Part::ToolCall(c)) => lines.push(format!("▸ {}", call_line(c))),
-                    (_, Part::ToolResult(r)) => {
-                        let first = r.content.lines().next().unwrap_or("").trim();
-                        let n = r.content.lines().count();
-                        let mark = if r.is_error { "✗" } else { "↳" };
-                        let more = if n > 1 { format!(" (+{} lines)", n - 1) } else { String::new() };
-                        lines.push(format!("  {mark} {}{more}", clip(first, 120)));
-                    }
-                    _ => {}
+        CrewStep { step: self.step, role: self.role.clone(), action: self.action.clone(), text: message_lines(&self.messages), at_ms: self.at_ms }
+    }
+}
+
+/// The transcript text of a step's messages, one entry per line: `› ` user text, assistant text,
+/// `▸ ` tool calls, `↳`/`✗` the first line of each result. Finished and open steps share it.
+pub(crate) fn message_lines(messages: &[Message]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for m in messages {
+        for part in &m.content {
+            match (m.role, part) {
+                (Role::User, Part::Text { text }) => lines.push(format!("› {}", clip(text, 400))),
+                (Role::Assistant, Part::Text { text }) if !text.trim().is_empty() => lines.push(text.trim().to_string()),
+                (_, Part::ToolCall(c)) => lines.push(format!("▸ {}", call_line(c))),
+                (_, Part::ToolResult(r)) => {
+                    let first = r.content.lines().next().unwrap_or("").trim();
+                    let n = r.content.lines().count();
+                    let mark = if r.is_error { "✗" } else { "↳" };
+                    let more = if n > 1 { format!(" (+{} lines)", n - 1) } else { String::new() };
+                    lines.push(format!("  {mark} {}{more}", clip(first, 120)));
                 }
+                _ => {}
             }
         }
-        CrewStep { step: self.step, role: self.role.clone(), action: self.action.clone(), text: lines.join("
-"), at_ms: self.at_ms }
     }
+    lines.join("\n")
 }
 
 /// `name first-string-arg`, one line.

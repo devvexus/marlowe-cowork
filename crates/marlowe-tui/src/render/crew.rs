@@ -684,7 +684,9 @@ fn transcript_lines(v: &RunView, w: usize, theme: &Theme, out: &mut Vec<Line<'st
         return;
     }
     let rule = ink(Ink::Dimmer, theme);
-    for s in &v.steps {
+    // Earlier steps keep their tail; the last, still open or the only one, shows whole.
+    let last = v.steps.iter().rposition(|s| s.role != "you");
+    for (i, s) in v.steps.iter().enumerate() {
         out.push(step_head(s, w, theme));
         let body = text::clean(s.text.trim());
         if body.is_empty() {
@@ -692,7 +694,7 @@ fn transcript_lines(v: &RunView, w: usize, theme: &Theme, out: &mut Vec<Line<'st
         }
         let style = if s.role == "you" { theme.normal() } else { ink(Ink::Dim, theme) };
         let lines = text::wrap(&body, w.saturating_sub(5));
-        let skip = lines.len().saturating_sub(STEP_TAIL);
+        let skip = if Some(i) == last { 0 } else { lines.len().saturating_sub(STEP_TAIL) };
         if skip > 0 {
             out.push(Line::from(vec![Span::styled("   ▏ ", rule), Span::styled(format!("… {skip} lines"), rule)]));
         }

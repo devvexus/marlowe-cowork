@@ -220,6 +220,30 @@ fn ctrl_r_opens_the_most_urgent_run_and_streams_its_steps() {
 }
 
 #[test]
+fn an_open_step_shows_whole_and_earlier_steps_keep_their_tail() {
+    let mut s = with_runs(vec![research_run()]);
+    s.on_key(alt('r'));
+    let body = |tag: &str| {
+        let mut lines = vec![format!("{tag}-first")];
+        lines.extend((2..=11).map(|i| format!("{tag} mid {i}")));
+        lines.push(format!("{tag}-last"));
+        lines.join("\n")
+    };
+    let step = |n: u32, tag: &str| CrewStep { step: n, role: "researcher".into(), action: tag.into(), text: body(tag), at_ms: NOW };
+    feed(&mut s, 0, Event::RunTranscript { run: research_run(), steps: vec![step(1, "early")] });
+    let buf = render(&s, W, H);
+    assert!(!contains(&buf, "no steps yet"), "{}", dump(&buf));
+    assert!(contains(&buf, "early-first") && contains(&buf, "early-last") && !contains(&buf, "… 6 lines"), "the only step shows whole
+{}", dump(&buf));
+
+    feed(&mut s, 10, Event::RunTranscript { run: research_run(), steps: vec![step(1, "early"), step(2, "open")] });
+    let buf = render(&s, W, H);
+    assert!(contains(&buf, "open-first") && contains(&buf, "open-last"), "{}", dump(&buf));
+    assert!(contains(&buf, "… 6 lines") && !contains(&buf, "early-first"), "the earlier step is still clipped
+{}", dump(&buf));
+}
+
+#[test]
 fn research_run_view_renders_the_report() {
     let dir = std::env::temp_dir().join(format!("marlowe-tui-crew-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

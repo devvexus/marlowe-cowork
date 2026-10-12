@@ -38,7 +38,7 @@ use crate::dispatch::{DispatchArgs, DispatchReceipt, Estimate};
 use crate::playbook::research_v2::apply_decision;
 use crate::playbook::{slug, BuildV2Config, ResearchIo, ResearchV2Config, StepModel, REPORT_FILE};
 use crate::role::{RoleCard, Roles};
-use crate::run::{clip, Run};
+use crate::run::{clip, message_lines, Run};
 use crate::sandbox::MergeOutcome;
 use crate::store::RunStore;
 use crate::tools::CrewToolFactory;
@@ -684,10 +684,27 @@ impl Supervisor {
         }
     }
 
-    /// The run and its stored steps, for the Run view.
+    /// The run and its steps, for the Run view: the finished ones, then each open step (its
+    /// per-call checkpoints, until its row is written) numbered as the runner's live events number it.
     pub fn transcript(&self, run: &RunId) -> Result<(CrewRunInfo, Vec<CrewStep>), CrewError> {
-        let info = self.inner.run(run)?.info();
-        let steps = self.inner.store().steps(run)?.iter().map(|s| s.view()).collect();
+        let r = self.inner.run(run)?;
+        let info = r.info();
+        let live = self.inner.state().live.get(run).is_some_and(|l| l.running);
+        let store = self.inner.store();
+        let recs = store.steps(run)?;
+        let mut steps: Vec<CrewStep> = recs.iter().map(|s| s.view()).collect();
+        let mut row = recs.iter().map(|s| s.step).max().unwrap_or(0);
+        for key in store.open_keys(run)? {
+            let text = message_lines(&store.calls(run, &key)?.messages);
+            row += 1;
+            let role = if key == "main" { r.role.clone() } else { key.replace(':', " ") };
+            let action = match (&r.current_action, &r.note) {
+                (Some(a), _) if live => a.clone(),
+                (_, Some(n)) => format!("stopped here · {n}"),
+                _ => "stopped here".to_string(),
+            };
+            steps.push(CrewStep { step: row, role, action, text, at_ms: r.updated_ms });
+        }
         Ok((info, steps))
     }
 

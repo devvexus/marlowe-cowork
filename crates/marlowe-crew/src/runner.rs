@@ -1,7 +1,7 @@
 //! One run's thread: sandbox, the agent-backed step runner, and the hooks that make the run
 //! durable and controllable (checkpoints, spend, budget approvals, pause/stop, live events).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -94,6 +94,7 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
         done: Mutex::new(done),
         rows: Mutex::new(rows),
         live_rows: Mutex::new(HashMap::new()),
+        mid_line: Mutex::new(HashSet::new()),
         budget_gate: Mutex::new(()),
         in_flight: Mutex::new(0),
         pricing: Mutex::new(HashMap::new()),
@@ -276,6 +277,8 @@ struct Hooks {
     /// Row numbers reserved by steps in flight (by key), so live `Step` events and the checkpoint
     /// carry the number the transcript will show, also when steps run in parallel.
     live_rows: Mutex<HashMap<String, u32>>,
+    /// Steps (by key) whose streamed text stopped mid-line, so a tool line starts a fresh one.
+    mid_line: Mutex<HashSet<String>>,
     /// One budget approval at a time, however many steps run in parallel.
     budget_gate: Mutex<()>,
     /// Model calls admitted and not finished. They count against the steps budget, so parallel
@@ -296,6 +299,18 @@ impl Hooks {
         *rows += 1;
         live.insert(key.to_string(), *rows);
         *rows
+    }
+
+    /// One line of tool activity in the step's live transcript, on a line of its own.
+    fn tool_line(&self, spec: &StepSpec, line: String) {
+        let lead = if self.mid_line.lock().unwrap_or_else(|e| e.into_inner()).remove(&spec.key) { "\n" } else { "" };
+        let step = self.row(&spec.key);
+        self.inner.emit(CrewEvent::Step {
+            run: self.id.clone(),
+            step,
+            action: spec.label.clone(),
+            text_delta: Some(format!("{lead}{}\n", line.replace('\n', " "))),
+        });
     }
 
     /// Cancel → `Cancelled`; shutdown or pause → `Stopped`.
@@ -515,6 +530,14 @@ impl StepHooks for Hooks {
         // Spend is booked per model call in `after_call`.
         match ev {
             AgentEvent::TextDelta(t) => {
+                if let Some(last) = t.chars().last() {
+                    let mut mid = self.mid_line.lock().unwrap_or_else(|e| e.into_inner());
+                    if last == '\n' {
+                        mid.remove(&spec.key);
+                    } else {
+                        mid.insert(spec.key.clone());
+                    }
+                }
                 let step = self.row(&spec.key);
                 self.inner.emit(CrewEvent::Step {
                     run: self.id.clone(),
@@ -526,6 +549,11 @@ impl StepHooks for Hooks {
             AgentEvent::ToolStarted { summary, .. } => {
                 let action = format!("{} · {}", spec.label, clip(summary, 80));
                 self.inner.update(&self.id, |r| r.current_action = Some(action));
+                self.tool_line(spec, format!("▸ {}", clip(summary, 160)));
+            }
+            AgentEvent::ToolFinished { ok, summary, .. } => {
+                let mark = if *ok { "↳" } else { "✗" };
+                self.tool_line(spec, format!("  {mark} {}", clip(summary, 120)));
             }
             AgentEvent::SteerApplied { text } => {
                 let step = self.row(&spec.key);

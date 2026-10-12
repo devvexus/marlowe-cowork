@@ -431,12 +431,59 @@ fn live_step_numbers_match_the_transcript_rows_with_parallel_scouts() {
         let CrewEvent::Step { step, action, text_delta, .. } = e else { continue };
         let row = rows.iter().find(|r| r.step == step).unwrap_or_else(|| panic!("no row {step} for {action:?}"));
         assert!(row.action.starts_with(&action), "event {step} {action:?} vs row {:?}", row.action);
-        if let Some(t) = text_delta {
+        // Tool lines are the live form of the row's `▸`/`↳` lines, worded by the tool's summary.
+        if let Some(t) = text_delta.filter(|t| !t.starts_with(['▸', ' '])) {
             assert!(row.text.contains(t.trim()), "delta of {action:?} is in row {step}");
             live += 1;
         }
     }
     assert_eq!(live, 5, "plan, two scouts, verify, synthesize");
+    finish(fx, &[&home]);
+}
+
+#[test]
+fn an_open_step_shows_its_checkpointed_calls_and_streams_its_tool_lines() {
+    let home = home("open-step");
+    // One tool call, then a model call held until the pause is in: the "main" step stays open.
+    let release = Arc::new(AtomicBool::new(false));
+    let gate = release.clone();
+    let provider = cloud(move |_req, n, cancel| {
+        if n == 1 {
+            wait("the pause", || gate.load(Ordering::SeqCst) || cancel.is_cancelled());
+        }
+        Ok(call("note", json!({"text": "looked"})))
+    });
+    let fx = start(&home, &provider);
+    let id = fx.sup.dispatch(None, args("tester", "Look around", None, None)).unwrap().run_id;
+    wait("the second model call", || provider.calls.load(Ordering::SeqCst) == 2);
+
+    let (_, rows) = fx.sup.transcript(&id).unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!((rows[0].step, rows[0].role.as_str()), (1, "tester"));
+    assert!(rows[0].text.contains("› Goal: Look around"), "{}", rows[0].text);
+    assert!(rows[0].text.contains("▸ note") && rows[0].text.contains("↳ noted"), "{}", rows[0].text);
+
+    // Live: the tool's start and finish stream as lines of their own, on the same row.
+    let deltas: Vec<(u32, String)> = drain(&fx.events)
+        .into_iter()
+        .filter_map(|e| match e {
+            CrewEvent::Step { step, text_delta: Some(t), .. } => Some((step, t)),
+            _ => None,
+        })
+        .collect();
+    assert!(deltas.iter().any(|(n, t)| *n == 1 && t.starts_with("▸ note") && t.ends_with('\n')), "{deltas:?}");
+    assert!(deltas.iter().any(|(n, t)| *n == 1 && t.starts_with("  ↳ noted")), "{deltas:?}");
+
+    // Paused mid-step: the row stays, and says where it stopped.
+    fx.sup.pause(&id).unwrap();
+    release.store(true, Ordering::SeqCst);
+    let run = wait_status(&fx.sup, &id, CrewRunStatus::Paused);
+    let (_, rows) = fx.sup.transcript(&id).unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].step, 1);
+    assert!(rows[0].action.starts_with("stopped here"), "{}", rows[0].action);
+    assert!(rows[0].text.contains("▸ note"), "{}", rows[0].text);
+    assert_eq!(run.step, 2);
     finish(fx, &[&home]);
 }
 
