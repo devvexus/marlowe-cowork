@@ -133,7 +133,7 @@ fn spawn(core: &Arc<Core>, name: &str, f: impl FnOnce() + Send + 'static) {
     }
 }
 
-fn clip_line(s: &str, max: usize) -> String {
+pub(crate) fn clip_line(s: &str, max: usize) -> String {
     let line = s.lines().next().unwrap_or("").trim();
     if line.chars().count() <= max {
         return line.to_string();

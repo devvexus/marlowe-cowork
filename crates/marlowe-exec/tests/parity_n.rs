@@ -121,12 +121,16 @@ fn parity_bg1_one_task_of_each_kind_in_the_tool_output() {
     for kind in ["job", "agent", "workflow", "monitor", "cron"] {
         assert!(o.content.contains(kind), "kind {kind} missing:\n{}", o.content);
     }
-    assert!(o.content.contains("6 tasks (5 active)"), "{}", o.content);
-    assert!(!o.content.contains("job_j9"), "another session's task is hidden unless asked for:\n{}", o.content);
+    assert!(o.content.contains("7 tasks (6 active)"), "{}", o.content);
+    assert!(o.content.contains("job_j9") && o.content.contains("(other conversation other)"), "another conversation's running task is listed, tagged:\n{}", o.content);
     assert!(o.content.contains("[exit 0]"), "the finished job says how it ended:\n{}", o.content);
 
+    // Another conversation's finished task waits for `all`.
+    r.tasks.register(NewTask::new(TaskKind::Job, "theirs, done").raw_id("j8").session(Some(SessionId::from("other"))));
+    r.tasks.set_status("job_j8", TaskStatus::Done, Some("exit 0".into()));
+    assert!(!r.call("task_list", json!({})).content.contains("job_j8"));
     let all = r.call("task_list", json!({"all": true}));
-    assert!(all.content.contains("job_j9") && all.content.contains("(session other)"), "{}", all.content);
+    assert!(all.content.contains("job_j9") && all.content.contains("job_j8") && all.content.contains("(other conversation other)"), "{}", all.content);
     let running = r.call("task_list", json!({"running": true}));
     assert!(!running.content.contains("job_j1"), "{}", running.content);
 }

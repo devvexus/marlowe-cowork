@@ -946,6 +946,49 @@ fn parity_wf7_a_workflow_run_streams_progress_and_its_result_starts_a_turn() {
     stop(d);
 }
 
+/// A workflow is one `wf_*` task: its agents are not tasks, so nothing can stop one of them and
+/// strand the rest, and `task_stop` of the `wf_*` id stops the whole workflow.
+#[test]
+fn a_workflow_is_one_task_and_stopping_it_stops_the_whole_workflow() {
+    let home = temp_home("workflow-stop");
+    std::fs::write(home.join("roles").join("workflow.md"), WORKFLOW_ROLE).unwrap();
+    std::fs::create_dir_all(home.join("workflows")).unwrap();
+    std::fs::write(home.join("workflows").join("two.star"), TWO_AGENTS).unwrap();
+    let p = Arc::new(Routed::default());
+    p.crew(vec![Step::WaitCancel]);
+    p.crew(vec![Step::WaitCancel]);
+    let d = start(&home, p.clone(), true);
+    let mut a = Client::connect(&d.info);
+    a.send(&Request::RunWorkflow {
+        session: None,
+        name: Some("two".into()),
+        script_path: None,
+        args: serde_json::json!({"topic": "rust"}),
+        resume_from: None,
+    });
+    let queued = a.until(|e| matches!(&e.event, Event::RunUpdated(_)) && e.seq == 0);
+    let run = reply_run(&queued);
+    a.until_event(|e| matches!(e, Event::WorkflowUpdated(i) if i.run == run && i.agents.len() == 2));
+
+    a.send(&Request::ListTasks { session: None });
+    let got = a.until_event(|e| matches!(e, Event::Tasks { .. }));
+    let Event::Tasks { list } = &got.last().unwrap().event else { unreachable!() };
+    let wf_id = format!("wf_{}", run.as_str());
+    assert_eq!(list.len(), 1, "the workflow, not its two agents: {list:?}");
+    assert_eq!(list[0].id, wf_id);
+    assert_eq!(list[0].kind, marlowe_proto::TaskKind::Workflow);
+    assert!(!list[0].status.is_terminal());
+
+    a.send(&Request::StopTask { id: wf_id.clone() });
+    a.until_event(|e| matches!(e, Event::RunUpdated(i) if i.id == run && i.status == CrewRunStatus::Cancelled));
+    a.send(&Request::ListTasks { session: None });
+    let got = a.until_event(|e| matches!(e, Event::Tasks { .. }));
+    let Event::Tasks { list } = &got.last().unwrap().event else { unreachable!() };
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert_eq!(list[0].status, marlowe_proto::TaskStatus::Stopped);
+    stop(d);
+}
+
 /// The conductor's tools with a `workflow` that launches `two` through the session's launcher and
 /// waits, as the exec tool does for `background:false`.
 struct WaitingWorkflowTools;

@@ -4,6 +4,11 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Background work the conductor can see
+
+- **Added.** At the start of a turn the conductor gets one `<system-reminder>` in the turn tail (not the system prompt, so the cached prefix is unchanged) listing up to five active crew runs, workflows, shell jobs and monitors from any conversation, with `task_stop <id>` and `task_list` named. It is sent on the first turn and again only when the active set or a status changes, read from the conversation's own history.
+- **Changed.** `task_list` lists this conversation's tasks and every active task from other conversations (tagged "other conversation"); `all: true` adds their finished ones. A workflow stays one `wf_*` task; its agents are not tasks and `task_stop` of the `wf_*` id stops the whole workflow (tested in `marlowe-daemon/tests/crew.rs`).
+
 ### Thinking-only turns
 
 - **Fixed (conductor).** A step that only thought (reasoning, no text, no call) ended the turn silently. The loop guard now sends one `EMPTY_NUDGE` per turn ("You ended your turn without writing a reply. Write your answer to the user now."); crew steps keep their own retry in `playbook/agent.rs`. If the model still writes nothing, the Conversation shows a dim `ended without a reply` line for a finished turn that showed no prose, note, file or job output; no text is invented or stored. Not done: keeping the thinking-only step across a reload would put a thinking-only assistant message into what providers are sent, so it is left out.

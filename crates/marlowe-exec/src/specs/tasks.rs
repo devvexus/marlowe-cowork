@@ -62,7 +62,7 @@ fn task_line(t: &TaskInfo, me: &SessionId, now: i64) -> String {
         line.push_str(&format!("  [{}]", first_line(d, 60)));
     }
     if let Some(s) = t.session.as_ref().filter(|s| *s != me) {
-        line.push_str(&format!("  (session {s})"));
+        line.push_str(&format!("  (other conversation {s})"));
     }
     if let Some(f) = &t.output_file {
         line.push_str(&format!("\n{:<14} output: {f}", ""));
@@ -76,9 +76,11 @@ fn task_list_spec() -> marlowe_model::ToolSpec {
     spec(
         "task_list",
         "List background tasks: shell jobs (job_*), agents and crew runs (agent_*), workflows (wf_*), monitors (mon_*) \
-         and schedules (cron_*), with status, elapsed time and output file.",
+         and schedules (cron_*), with status, elapsed time and output file. \
+         Lists this conversation's tasks and every active one from other conversations (tagged); a workflow is one \
+         wf_* task, its agents are not listed.",
         json!({
-            "all": {"type": "boolean", "description": "Include other sessions' tasks."},
+            "all": {"type": "boolean", "description": "Also other conversations' finished tasks."},
             "running": {"type": "boolean", "description": "Only tasks still running or waiting."}
         }),
         &[],
@@ -89,7 +91,12 @@ fn task_list_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
     let Some(tasks) = cx.scope.services.get::<Tasks>() else { return ToolOutcome::error(NO_REGISTRY) };
     let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
     let running_only = args.get("running").and_then(Value::as_bool).unwrap_or(false);
-    let mut list = tasks.0.list(if all { None } else { Some(&cx.session) });
+    // Every conversation's running work is Matthew's, so it is listed; only the finished work of
+    // other conversations waits for `all`.
+    let mut list = tasks.0.list(None);
+    if !all {
+        list.retain(|t| !t.status.is_terminal() || t.session.as_ref().is_none_or(|owner| *owner == cx.session));
+    }
     if running_only {
         list.retain(|t| !t.status.is_terminal());
     }
