@@ -15,6 +15,7 @@ the harness will not pretend to run them.
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -78,7 +79,8 @@ class ArmConfig:
     out_dir: Path
     marlowe: str = ""
     model: str = ccmod.DEFAULT_MODEL
-    settings: Optional[Path] = None
+    #: the eval profile (settings.toml) copied into each Marlowe arm's private home
+    profile: Optional[Path] = None
     cc_bin: Optional[str] = None
     base_url: str = ccmod.DEFAULT_BASE_URL
     thinking: bool = False
@@ -110,7 +112,7 @@ def make_adapter(arm: str, cfg: ArmConfig) -> Adapter:
         shell_only=spec.shell_only,
         memory=spec.memory,
         daemon=spec.daemon,
-        settings=cfg.settings,
+        profile=cfg.profile,
         max_budget_usd=cfg.max_budget_usd,
         env_extra=cfg.env_extra,
     )
@@ -123,6 +125,8 @@ def seed_marlowe_home(a: MarloweAdapter, *, thinking: bool) -> list:
     """
     warnings = []
     a.home.mkdir(parents=True, exist_ok=True)
+    if a.profile and Path(a.profile).is_file():
+        shutil.copyfile(a.profile, a.home / "settings.toml")
     env = a.env()
     provider, _, ident = a.model.partition("/")
     steps = [

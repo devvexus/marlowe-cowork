@@ -35,7 +35,6 @@ def fake_marlowe(tmp: Path, plans, *, name="marlowe-full", shell_only=False, mem
         shell_only=shell_only,
         memory=memory,
         daemon=daemon,
-        settings=CODING / "settings.json",
         env_extra=env,
     )
     return a, record

@@ -13,7 +13,7 @@ from mcoding.adapters import CallableAdapter
 from mcoding.runner import RunOptions, run_matrix
 from mcoding.workspace import Context, grade, materialize
 
-from helpers import CODING, commit_all, git, init_repo
+from helpers import CODING, commit_all, init_repo
 
 PY_TEST = [["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]]
 

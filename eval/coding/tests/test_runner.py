@@ -6,8 +6,6 @@ import json
 import shutil
 from pathlib import Path
 
-import pytest
-
 from mcoding import report, stats
 from mcoding.adapters import CallableAdapter
 from mcoding.model import Task, load_records, load_tasks

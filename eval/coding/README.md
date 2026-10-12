@@ -25,4 +25,4 @@ Design: `docs/research/m46-design.md` section 6. Python on the standard library;
 
 See `mcoding/arms.py` and `mcoding/cc.py` (docstrings). `marlowe-shell` is the A3 baseline (the same binary with only the shell group). Thinking is off for both harnesses unless `--thinking`; budget and timeout are the same. Claude Code's prompt and tool list are large: at 32k context on the local model it may truncate, which `cc-check` cannot show; the first live run will.
 
-`settings.json` is the eval profile (network allowlist, design 9.2-l) passed to Marlowe as `--settings`.
+`settings.toml` is the eval profile (network allowlist, design 9.2-l); each Marlowe arm gets it as `<home>/settings.toml` in its private profile home (`marlowe -p --settings` takes permission keys only).

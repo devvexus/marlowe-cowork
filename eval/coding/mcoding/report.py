@@ -7,7 +7,6 @@ from collections import defaultdict
 from typing import Iterable, Optional
 
 from . import stats
-from .model import RunRecord
 
 
 def _avg(values: Iterable[Optional[float]]) -> Optional[float]:

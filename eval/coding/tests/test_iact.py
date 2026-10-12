@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 from mcoding import iact
 from mcoding.iact import Turn, evaluate, load_scenarios
 

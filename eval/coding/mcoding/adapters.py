@@ -103,6 +103,7 @@ class MarloweAdapter(Adapter):
         shell_only: bool = False,
         memory: bool = False,
         daemon: bool = False,
+        profile: Optional[Path] = None,
         settings: Optional[Path] = None,
         max_budget_usd: float = 5.0,
         env_extra: Optional[dict] = None,
@@ -118,6 +119,9 @@ class MarloweAdapter(Adapter):
         self.shell_only = shell_only
         self.memory = memory
         self.daemon = daemon
+        #: settings.toml for the arm's private home (see arms.seed_marlowe_home)
+        self.profile = profile
+        #: an extra --settings file for a single run (permissions only: -p takes no network key)
         self.settings = settings
         self.max_budget_usd = max_budget_usd
         self.env_extra = dict(env_extra or {})

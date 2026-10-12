@@ -66,12 +66,12 @@ def suite_tasks(args) -> list:
 
 
 def arm_config(args, out: Path) -> armsmod.ArmConfig:
-    settings = Path(args.settings) if args.settings else HERE / "settings.json"
+    profile = Path(args.profile) if args.profile else HERE / "settings.toml"
     return armsmod.ArmConfig(
         out_dir=out,
         marlowe=find_marlowe(args.marlowe),
         model=args.model,
-        settings=settings if settings.is_file() else None,
+        profile=profile if profile.is_file() else None,
         cc_bin=args.cc_bin,
         base_url=args.base_url,
         thinking=args.thinking,
@@ -300,7 +300,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--ids")
     r.add_argument("--out")
     r.add_argument("--marlowe")
-    r.add_argument("--settings")
+    r.add_argument("--profile", help="settings.toml copied to each Marlowe arm's home (default: eval/coding/settings.toml)")
     r.add_argument("--env", action="append", help="KEY=VALUE added to Marlowe's environment (repeatable)")
     r.add_argument("--polyglot-dir")
     r.add_argument("--own-file")
