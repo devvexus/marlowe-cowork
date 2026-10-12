@@ -107,3 +107,25 @@ fn a_latex_eprint_is_read_when_there_is_no_html() {
     );
     assert!(!http.1.lock().unwrap().iter().any(|u| u.contains("/pdf/")));
 }
+
+#[test]
+fn the_old_paper_name_reads_a_paper_through_web_fetch() {
+    let ws = Ws::new("paper-old");
+    let (t, _) = tools(
+        &ws,
+        vec![
+            ("api/query", 200, "application/atom+xml", SAMPLE.as_bytes().to_vec()),
+            ("arxiv.org/html/2301.01234", 200, "text/html; charset=utf-8", ARXIV_HTML.as_bytes().to_vec()),
+        ],
+    );
+    let cx = marlowe_agent::CallCtx::new(ctx(Some(&ws.root)), marlowe_agent::SessionScope::default());
+    let new = call(&t, "web_fetch", json!({"part": "text", "url": "2301.01234"}));
+    let (name, old) = via_loop(&t, &cx, "paper", json!({"id": "2301.01234", "part": "text"}));
+    assert_eq!(name, "web_fetch");
+    assert!(!old.is_error, "{}", old.content);
+    assert!(old.content.starts_with("paper https://arxiv.org/html/2301.01234 · arxiv-html"), "{}", old.content);
+    assert_eq!(old.content, new.content, "the old name and the new one read the same paper");
+    // A bare arXiv id sitting under any key is the url.
+    let (_, bare) = via_loop(&t, &cx, "paper", json!({"arxiv_id": "arXiv:2301.01234", "part": "text"}));
+    assert_eq!(bare.content, new.content);
+}

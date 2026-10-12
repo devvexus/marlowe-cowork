@@ -27,6 +27,7 @@ struct Rig {
     tasks: Arc<MemoryTaskRegistry>,
     bg: Arc<FakeBackground>,
     questions: Option<Questions>,
+    lists: marlowe_agent::tasklist::TaskLists,
 }
 
 fn rig(name: &str) -> Rig {
@@ -34,7 +35,7 @@ fn rig(name: &str) -> Rig {
     let home = ws.path("home");
     std::fs::create_dir_all(&home).unwrap();
     let tools = specs::configure(ws.tools(), &HostSetup { home: &home, workspace: Some(&ws.root) });
-    Rig { ws, tools, tasks: Arc::new(MemoryTaskRegistry::new()), bg: Arc::new(FakeBackground::default()), questions: None }
+    Rig { ws, tools, tasks: Arc::new(MemoryTaskRegistry::new()), bg: Arc::new(FakeBackground::default()), questions: None, lists: marlowe_agent::tasklist::TaskLists::in_memory() }
 }
 
 fn session() -> SessionId {
@@ -43,7 +44,7 @@ fn session() -> SessionId {
 
 impl Rig {
     fn cx(&self) -> CallCtx {
-        let mut services = Services::new().with(Tasks(self.tasks.clone())).with(Background(self.bg.clone()));
+        let mut services = Services::new().with(Tasks(self.tasks.clone())).with(Background(self.bg.clone())).with(self.lists.clone());
         if let Some(q) = &self.questions {
             services = services.with(q.clone());
         }
@@ -646,4 +647,106 @@ fn the_group_is_offered_only_where_the_daemon_provides_it() {
     assert!(o.is_error && o.content.contains("not available"), "{}", o.content);
     // No persona block: the tools' descriptions say what they are for.
     assert!(!r.tools.persona_blocks().iter().any(|b| b.text().contains("<background_work>")));
+}
+
+// ---------------------------------------------------------------- merged tools, old names
+
+/// The names the merged tools replaced still work, through the loop's name resolution and the
+/// argument layer, and do what the merged tool does.
+#[test]
+fn the_old_job_names_read_and_stop_like_the_task_tools() {
+    let r = rig("old-jobs");
+    let cx = r.cx();
+    r.call("monitor", json!({"command": "echo first; echo second", "id": "log"}));
+    wait_status(&r, "mon_log", TaskStatus::Done, 15);
+
+    let (name, out) = via_loop(&r.tools, &cx, "job_output", json!({"job_id": "mon_log"}));
+    assert_eq!(name, "task_output");
+    assert!(!out.is_error && out.content.contains("first") && out.content.contains("second"), "{}", out.content);
+    let ctl = Arc::new(Ctl::default());
+    r.tasks.register(NewTask::new(TaskKind::Job, "build").raw_id("j7").session(Some(session())).control(ctl.clone()));
+    let (name, out) = via_loop(&r.tools, &cx, "job_kill", json!({"id": "job_j7"}));
+    assert_eq!(name, "task_stop");
+    assert!(!out.is_error && out.content.contains("stopped"), "{}", out.content);
+    assert_eq!(*ctl.stops.lock().unwrap(), 1);
+}
+
+#[test]
+fn the_old_schedule_names_create_list_and_delete_like_schedule_task_list_and_task_stop() {
+    let r = rig("old-cron");
+    let cx = r.cx();
+    let (name, made) = via_loop(&r.tools, &cx, "cron_create", json!({"cron": "0 9 * * 1-5", "prompt": "check the nightly run"}));
+    assert_eq!(name, "schedule");
+    assert!(!made.is_error && made.content.contains("cron_1"), "{}", made.content);
+    // once_at is the old spelling of `at`.
+    let (_, once) = via_loop(&r.tools, &cx, "cron_create", json!({"once_at": "2999-01-02T09:00", "prompt": "remind me"}));
+    assert!(!once.is_error, "{}", once.content);
+    let (name, wake) = via_loop(&r.tools, &cx, "schedule_wakeup", json!({"delay_s": 5, "prompt": "keep watching", "reason": "training"}));
+    assert_eq!(name, "schedule");
+    assert!(wake.content.contains("woken in 60 s") && wake.content.contains("clamped"), "{}", wake.content);
+
+    let (name, list) = via_loop(&r.tools, &cx, "cron_list", json!({}));
+    assert_eq!(name, "task_list");
+    assert!(list.content.contains("cron `0 9 * * 1-5`") && list.content.contains("check the nightly run"), "{}", list.content);
+    assert_eq!(list.content, r.call("task_list", json!({})).content);
+
+    let (name, del) = via_loop(&r.tools, &cx, "cron_delete", json!({"id": "cron_1"}));
+    assert_eq!(name, "task_stop");
+    assert!(!del.is_error, "{}", del.content);
+    assert!(!r.call("task_list", json!({})).content.contains("nightly"));
+    // A durable schedule still asks, whichever name made it.
+    let durable = r.consequence("schedule", json!({"cron": "0 3 * * *", "prompt": "eval", "durable": true}));
+    assert!(matches!(durable, Consequence::Ask { .. }), "{durable:?}");
+}
+
+#[test]
+fn list_agents_is_task_list_and_a_session_is_still_reachable() {
+    let r = rig("old-agents");
+    use marlowe_agent::background::AgentRow;
+    *r.bg.agents.lock().unwrap() =
+        vec![AgentRow { id: "session:s-12".into(), kind: "session".into(), status: "idle".into(), title: "the eval harness".into(), workspace: None }];
+    let (name, out) = via_loop(&r.tools, &r.cx(), "list_agents", json!({}));
+    assert_eq!(name, "task_list");
+    assert!(out.content.contains("session:s-12") && out.content.contains("the eval harness"), "{}", out.content);
+}
+
+#[test]
+fn the_todo_tool_replaces_adds_updates_and_shows_and_the_old_names_do_the_same() {
+    let r = rig("todo");
+    let cx = r.cx();
+    let items = |r: &Rig| r.lists.snapshot(&session());
+
+    // New name: replace the list, then add one item, change it, show it.
+    let o = r.call("todo", json!({"items": [{"content": "write the parser", "status": "pending"}]}));
+    assert!(!o.is_error, "{}", o.content);
+    let o = r.call("todo", json!({"content": "test the parser", "blocked_by": ["1"]}));
+    assert!(!o.is_error && o.content.contains("Added item 2"), "{}", o.content);
+    let blocked = r.call("todo", json!({"id": "2", "status": "in_progress"}));
+    assert!(blocked.is_error && blocked.content.contains("blocked by #1"), "{}", blocked.content);
+    assert!(!r.call("todo", json!({"id": "1", "status": "in_progress"})).is_error);
+    let shown = r.call("todo", json!({}));
+    assert!(shown.content.contains("write the parser") && shown.content.contains("test the parser"), "{}", shown.content);
+    // A new item may start in progress.
+    let o = r.call("todo", json!({"content": "document it", "status": "completed"}));
+    assert!(!o.is_error, "{}", o.content);
+    assert_eq!(items(&r).len(), 3);
+    assert_eq!(items(&r)[2].status, marlowe_proto::TodoStatus::Completed);
+
+    // Old names, in the old argument spellings.
+    let (name, o) = via_loop(&r.tools, &cx, "todo_add", json!({"subject": "ship it"}));
+    assert_eq!(name, "todo");
+    assert!(!o.is_error && o.content.contains("Added item 4"), "{}", o.content);
+    let (name, o) = via_loop(&r.tools, &cx, "todo_update", json!({"id": "1", "status": "completed"}));
+    assert_eq!(name, "todo");
+    assert!(!o.is_error, "{}", o.content);
+    assert_eq!(items(&r)[0].status, marlowe_proto::TodoStatus::Completed);
+    let (name, o) = via_loop(&r.tools, &cx, "todo_get", json!({"id": "2"}));
+    assert_eq!(name, "todo");
+    assert!(o.content.contains("test the parser"), "{}", o.content);
+    let (_, all) = via_loop(&r.tools, &cx, "todo_get", json!({}));
+    assert!(all.content.contains("ship it") && all.content.contains("write the parser"), "{}", all.content);
+    // The Claude Code spelling of a replace.
+    let (_, o) = via_loop(&r.tools, &cx, "todo", json!({"todos": [{"content": "only one", "status": "pending", "activeForm": "Doing it"}]}));
+    assert!(!o.is_error, "{}", o.content);
+    assert_eq!(items(&r).len(), 1);
 }

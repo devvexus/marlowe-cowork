@@ -909,6 +909,20 @@ fn parity_b6_secret_shaped_files_need_approval_even_where_git_is_free() {
     assert_eq!(crew(json!({"op": "commit", "message": "ok"})), Consequence::Free);
 }
 
+/// A call as the loop makes it before approval (name resolved, arguments normalised), then run.
+fn via_loop(tools: &marlowe_exec::BuiltinTools, cx: &CallCtx, name: &str, args: Value) -> (String, ToolOutcome) {
+    let mut c = req(name, args);
+    marlowe_agent::args::prepare_call(tools, &mut c);
+    let spec = tools.tool_spec(&c.name).expect("a spec");
+    let rules = tools.arg_rules(&c.name).unwrap_or_default();
+    match marlowe_agent::args::normalize(&spec, &rules, &c.args) {
+        Ok(done) => c.args = done.args,
+        Err(e) => panic!("{}", marlowe_agent::args::invalid_text(&spec, &rules, &e, false)),
+    }
+    let out = tools.call_scoped(&c, cx);
+    (c.name, out)
+}
+
 // ---------------------------------------------------------------- G8
 
 #[test]
@@ -961,3 +975,30 @@ fn the_gh_command_is_the_configured_one_and_missing_gh_is_explained() {
 
 #[allow(dead_code)]
 fn unused(_: ToolCallReq, _: ToolOutcome) {}
+
+#[test]
+fn parity_t29_the_old_ci_status_name_is_gh_ci() {
+    let fx = Fx::new("g8-old");
+    fx.github_remote();
+    fx.git(&["switch", "-q", "-c", "feat/ci"]);
+    let sha = fx.commit_file("c.txt", "c
+", "ci change");
+    let t = fx.tools();
+    fx.respond(
+        "run list",
+        json!([{"databaseId": 901, "workflowName": "CI", "displayTitle": "ci change", "status": "completed", "conclusion": "failure", "headSha": sha, "event": "push", "url": "u1", "createdAt": "2026-10-10T10:00:00Z"}]),
+        0,
+    );
+    let cx = marlowe_agent::CallCtx::new(ctx(t.workspace().unwrap()), marlowe_agent::SessionScope::default());
+    let new = call(&t, "gh", json!({"op": "ci"}));
+    let (name, old) = via_loop(&t, &cx, "ci_status", json!({}));
+    assert_eq!(name, "gh");
+    assert_eq!((old.is_error, old.summary.as_str()), (false, "failed"), "{}", old.content);
+    assert_eq!(old.content, new.content);
+    // The old arguments (`pr`) and the pr_checks spelling of the op still reach the same place.
+    fx.respond("pr checks", json!([{"name": "build", "bucket": "pass", "workflow": "CI", "link": "l"}]), 0);
+    let (_, checks) = via_loop(&t, &cx, "ci_status", json!({"pr": 12}));
+    assert_eq!(checks.summary, "1 pass, 0 fail, 0 pending");
+    let (_, spelled) = via_loop(&t, &cx, "gh", json!({"op": "pr_checks", "number": "12"}));
+    assert_eq!(spelled.summary, checks.summary);
+}

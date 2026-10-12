@@ -688,3 +688,32 @@ fn two_unclaimed_hosts_in_one_workspace_are_not_guessed_between() {
     assert!(bg_hub().serves("amb-session"));
     drop(first);
 }
+
+#[test]
+fn the_old_job_names_are_the_task_tools() {
+    let rig = Rig::new("old-names");
+    let o = rig.run("c1", "bash", json!({"command": "echo boot; sleep 0.8; echo INFO ready on 8080; sleep 30", "background": true}));
+    let id = job_id(&o);
+    // Through the loop's name resolution and the argument layer, as the model would send them.
+    let old = |call: &str, name: &str, args: Value| {
+        let mut c = ToolCallReq { id: call.into(), name: name.into(), args };
+        marlowe_agent::args::prepare_call(&*rig.tools, &mut c);
+        let spec = rig.tools.tool_spec(&c.name).expect("a spec");
+        let rules = rig.tools.arg_rules(&c.name).unwrap_or_default();
+        c.args = marlowe_agent::args::normalize(&spec, &rules, &c.args).unwrap_or_else(|e| panic!("{e:?}")).args;
+        let cx = rig.cx();
+        (c.name.clone(), rig.tools.call_scoped(&c, &cx))
+    };
+    wait_for("the first line", Duration::from_secs(20), || rig.run("p", "task_output", json!({"id": id})).content.contains("boot"));
+    let (name, out) = old("c2", "job_output", json!({"id": id}));
+    assert_eq!(name, "task_output");
+    assert!(!out.is_error, "{}", out.content);
+    // job_watch(id, until_regex) is task_output(id, watch, until).
+    let (name, w) = old("c3", "job_watch", json!({"id": id, "until_regex": "ready on [0-9]+"}));
+    assert_eq!(name, "task_output");
+    assert!(!w.is_error && w.content.contains("watching job"), "{}", w.content);
+    wait_for("the match", Duration::from_secs(20), || bg_hub().waking_sessions().contains(&rig.session));
+    let (name, k) = old("c4", "job_kill", json!({"id": id}));
+    assert_eq!(name, "task_stop");
+    assert!(!k.is_error && k.content.contains("stopped job"), "{}", k.content);
+}

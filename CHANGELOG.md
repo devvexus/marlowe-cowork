@@ -4,6 +4,11 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Merged tools through their old names, `.star` validation
+
+- **Added.** A `.star` file written or edited by any file tool is run through the workflow validator after the call; its errors are appended to the tool result (`<workflow-errors>`), a valid one says so. The stop check ("you changed files, run checks") counts a validated script as checked and still reminds about one that fails. The `workflow` description already says: inline `script` first, save a `.star` only when asked.
+- **Tests.** Every merged path runs under its new and its old name through the loop's name resolution and argument layer: `paper`, `job_output`/`job_watch`/`job_kill`, `cron_create`/`schedule_wakeup`/`cron_list`/`cron_delete`/`list_agents`, `todo_add`/`todo_update`/`todo_get` (and `todo` replace, add, update, show), `ci_status`.
+
 ### Tool surface, specs: one reviewed file, fewer names
 
 - **Changed.** Every built-in spec (name, one-line description, flat schema) now comes from `marlowe-agent/src/compact_specs.json`; the group files, the memory and crew tools, the MCP resource tools and the subagent tools only look their spec up. Plain-string properties are typeless. Ollama sends them as they are; OpenRouter types them (`wire::tools_field_typed`: untyped and enum-only properties get `"type": "string"`, arrays without `items` hold strings). `MARLOWE_OLLAMA_TYPED_TOOLS=1` makes Ollama send the typed form too (the probe's arm).

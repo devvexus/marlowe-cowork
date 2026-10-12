@@ -233,9 +233,9 @@ pub fn tools() -> Vec<ToolDef> {
     ]
 }
 
-/// Loop middleware for this group (see `specs/mod.rs`): none.
-pub fn middleware(tools: &crate::BuiltinTools) -> Vec<std::sync::Arc<dyn marlowe_agent::ToolMiddleware>> {
-    super::no_middleware(tools)
+/// Loop middleware for this group (see `specs/mod.rs`): the `.star` validator.
+pub fn middleware(_tools: &crate::BuiltinTools) -> Vec<std::sync::Arc<dyn marlowe_agent::ToolMiddleware>> {
+    vec![std::sync::Arc::new(star::StarValidator::default())]
 }
 
 /// No block: the `workflow` description carries the script API and the rules for using it.
@@ -258,6 +258,8 @@ pub fn crew_configure(tools: crate::BuiltinTools, setup: &super::HostSetup<'_>) 
 pub fn detect(_root: Option<&std::path::Path>) -> bool {
     true
 }
+
+mod star;
 
 #[cfg(test)]
 mod tests;

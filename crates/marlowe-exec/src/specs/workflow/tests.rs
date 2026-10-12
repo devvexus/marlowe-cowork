@@ -231,3 +231,99 @@ fn parity_g13_invalid_findings_are_refused_with_a_retry_message_and_valid_ones_s
     assert_eq!(marlowe_workflow::findings::load(&home, "s1").len(), 1);
     assert_eq!(super::findings_key("crew:abc"), "run-abc");
 }
+
+// ---------------------------------------------------------------- .star files are validated as they are written
+
+mod star_files {
+    use super::*;
+    use crate::specs::workflow::star::StarValidator;
+    use marlowe_agent::todo::{VerifyState, WorkingSet};
+    use marlowe_agent::{Conversation, FinalFlow, Mutation, StepInfo, ToolMiddleware, ToolOutcome};
+    use marlowe_model::ToolCall;
+
+    fn written(star: &StarValidator, cx: &CallCtx, id: &str, path: &Path) -> ToolOutcome {
+        let call = ToolCall { id: id.into(), name: "write".into(), args: json!({"path": path}) };
+        let paths = Mutation::Paths(vec![path.to_path_buf()]);
+        star.pre_mutation(&call, cx, &paths).unwrap();
+        let mut out = ToolOutcome::ok("wrote it", "wrote");
+        star.after_call(&call, cx, &mut out);
+        out
+    }
+
+    #[test]
+    fn a_written_star_file_is_validated_and_its_errors_join_the_result() {
+        let ws = temp("star1");
+        let cx = cx(&ws, Services::new());
+        let star = StarValidator::default();
+        let good = ws.join("two.star");
+        std::fs::write(&good, SCRIPT).unwrap();
+        let out = written(&star, &cx, "a", &good);
+        assert!(out.content.starts_with("wrote it") && out.content.contains("is a valid workflow"), "{}", out.content);
+
+        // The kind of file a model writes when it has not read the API: no META, a while loop.
+        let bad = ws.join("bad.star");
+        std::fs::write(&bad, "def main(args):
+    while True:
+        agent(\"x\")
+").unwrap();
+        let out = written(&star, &cx, "b", &bad);
+        assert!(out.content.contains("<workflow-errors>") && out.content.contains("not a valid workflow"), "{}", out.content);
+        assert!(!out.is_error, "the write itself succeeded");
+
+        // Other files, failed writes and calls without paths are left alone.
+        let txt = ws.join("notes.txt");
+        std::fs::write(&txt, "x").unwrap();
+        assert_eq!(written(&star, &cx, "c", &txt).content, "wrote it");
+        let call = ToolCall { id: "d".into(), name: "write".into(), args: json!({}) };
+        star.pre_mutation(&call, &cx, &Mutation::Paths(vec![bad.clone()])).unwrap();
+        let mut failed = ToolOutcome::error("disk full");
+        star.after_call(&call, &cx, &mut failed);
+        assert_eq!(failed.content, "disk full");
+    }
+
+    #[test]
+    fn the_stop_check_counts_a_validated_star_file_as_checked_and_an_invalid_one_as_not() {
+        let ws = temp("star2");
+        std::fs::write(ws.join("Cargo.toml"), "[package]
+name = \"x\"
+").unwrap();
+        let cx = cx(&ws, Services::new());
+        let (star, set) = (StarValidator::default(), WorkingSet::new());
+        let (good, bad) = (ws.join("two.star"), ws.join("bad.star"));
+        std::fs::write(&good, SCRIPT).unwrap();
+        std::fs::write(&bad, "this is not starlark (
+").unwrap();
+        let mut convo = Conversation::new(SessionId("s1".into()), Some(ws.clone()));
+        let finish = |convo: &mut Conversation, cx: &CallCtx| {
+            convo.ext = std::mem::take(&mut *cx.scope.ext.lock().unwrap());
+            let flow = set.before_final(StepInfo { turn: 1, step: 1 }, convo, "done");
+            *cx.scope.ext.lock().unwrap() = std::mem::take(&mut convo.ext);
+            flow
+        };
+        for (path, id) in [(&good, "g"), (&bad, "b")] {
+            let call = ToolCall { id: id.into(), name: "write".into(), args: json!({}) };
+            let paths = Mutation::Paths(vec![path.clone()]);
+            set.pre_mutation(&call, &cx, &paths).unwrap();
+        }
+        assert_eq!(cx.scope.with_ext(|e| e.get_or_default::<VerifyState>().dirty.len()), 2);
+        // Validating the good file clears it; the bad one still holds the reminder.
+        written(&star, &cx, "g", &good);
+        written(&star, &cx, "b", &bad);
+        let dirty = cx.scope.with_ext(|e| e.get_or_default::<VerifyState>().dirty.clone());
+        assert_eq!(dirty.into_iter().collect::<Vec<_>>(), [bad.clone()]);
+        assert!(matches!(finish(&mut convo, &cx), FinalFlow::Continue(t) if t.contains("bad.star")));
+        // Fixed and validated: nothing is left to check.
+        std::fs::write(&bad, SCRIPT).unwrap();
+        written(&star, &cx, "b2", &bad);
+        assert!(matches!(finish(&mut convo, &cx), FinalFlow::Accept));
+    }
+
+    #[test]
+    fn the_group_installs_the_validator_and_the_description_says_when_to_write_a_file() {
+        let (home, ws) = (temp("home5"), temp("ws5"));
+        let t = host(&home, &ws);
+        assert!(t.middleware().iter().any(|m| m.name() == "star-validator"));
+        let d = t.specs().into_iter().find(|s| s.name == "workflow").unwrap().description;
+        assert!(d.contains("pass `script` inline") && d.contains("save a .star only when asked"), "{d}");
+    }
+}

@@ -71,3 +71,19 @@ pub fn req(name: &str, args: Value) -> ToolCall {
 pub fn call(tools: &BuiltinTools, name: &str, args: Value) -> ToolOutcome {
     tools.call(&req(name, args), &ctx(tools.workspace()))
 }
+
+/// A call as the loop makes it before approval: the name resolved (legacy names included) and
+/// the arguments normalised against the host's own spec and rules, then run. Panics with the
+/// model-facing text when the layer would have refused the call.
+pub fn via_loop(tools: &BuiltinTools, cx: &marlowe_agent::CallCtx, name: &str, args: Value) -> (String, ToolOutcome) {
+    let mut c = req(name, args);
+    marlowe_agent::args::prepare_call(tools, &mut c);
+    let spec = tools.tool_spec(&c.name).unwrap_or_else(|| panic!("`{name}` resolved to `{}`, which the host has no spec for", c.name));
+    let rules = tools.arg_rules(&c.name).unwrap_or_default();
+    match marlowe_agent::args::normalize(&spec, &rules, &c.args) {
+        Ok(done) => c.args = done.args,
+        Err(e) => panic!("{}", marlowe_agent::args::invalid_text(&spec, &rules, &e, false)),
+    }
+    let out = tools.call_scoped(&c, cx);
+    (c.name, out)
+}
