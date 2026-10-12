@@ -4,6 +4,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Stopping a run is easy to find
+
+- **Added (tui).** The Run view header shows a red `■ stop run` while the run is active, clickable (`Target::StopRun`); `x` is an alias of `c`; the footer leads with `x stop run` in red. The workflow view has the same control. Both ask y/n: "Stop this run? It ends now; its transcript stays." and "Stop this workflow? Running agents stop; finished agents’ results are kept for a resume." Words typed in the steer box are never read as commands, so "cancel" there still only steers.
+
 ### Background work the conductor can see
 
 - **Added.** At the start of a turn the conductor gets one `<system-reminder>` in the turn tail (not the system prompt, so the cached prefix is unchanged) listing up to five active crew runs, workflows, shell jobs and monitors from any conversation, with `task_stop <id>` and `task_list` named. It is sent on the first turn and again only when the active set or a status changes, read from the conversation's own history.

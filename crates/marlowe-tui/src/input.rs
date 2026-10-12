@@ -368,6 +368,11 @@ impl State {
                 match self.target_at(at) {
                     Some(Target::Row(i)) => self.panel_row_click(i, out),
                     Some(Target::Button(i)) => self.plan_button(i, out),
+                    Some(Target::StopRun) => {
+                        if let Some(crate::panel::Panel::Workflows(u)) = self.code.panel.as_mut() {
+                            u.confirm_stop = u.open.is_some();
+                        }
+                    }
                     _ => {}
                 }
                 return;
@@ -433,6 +438,7 @@ impl State {
                     v.steering = true;
                 }
             }
+            Target::StopRun => self.ask_stop_run(),
             Target::ContextMeter => self.open_context_for_conductor(out),
             Target::ModelCtx(i) => {
                 if let Some(m) = self.library.models.get(i).map(|m| m.model.clone()) {

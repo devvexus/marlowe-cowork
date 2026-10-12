@@ -848,6 +848,14 @@ impl State {
         }
     }
 
+    /// `x`, `c` or a click on the header's stop control: ask whether to stop the open run.
+    pub(crate) fn ask_stop_run(&mut self) {
+        let ended = self.crew.open_run().is_none_or(|r| r.status.is_terminal());
+        if let Some(v) = self.crew.open.as_mut().filter(|_| !ended) {
+            v.confirm = Some(RunConfirm::Cancel);
+        }
+    }
+
     fn run_key(&mut self, k: KeyEvent, out: &mut Vec<Request>) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let info = self.crew.open_run().cloned();
@@ -936,11 +944,8 @@ impl State {
                 }
                 _ => {}
             },
-            KeyCode::Char('c') => {
-                if !ended {
-                    v.confirm = Some(RunConfirm::Cancel);
-                }
-            }
+            KeyCode::Char('c') => self.ask_stop_run(),
+            KeyCode::Char('x') if !plan_pending => self.ask_stop_run(),
             KeyCode::Char('m') => match info {
                 Some(r) if mergeable(&r) => {
                     out.push(Request::MergeRun { run });

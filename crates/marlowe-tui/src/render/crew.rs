@@ -19,6 +19,8 @@ use crate::state::{State, Target};
 use crate::text;
 use crate::wake::Presence;
 
+/// The Run view's stop control.
+pub const STOP_LABEL: &str = "■ stop run";
 /// Changed files listed before `+N more`.
 const DIFF_FILES: usize = 12;
 /// Citations listed under a result.
@@ -152,9 +154,9 @@ fn run_hints(v: &RunView, r: &CrewRunInfo) -> &'static [(&'static str, &'static 
         (true, false, true) => &[("d", "discard"), ("↑↓", "scroll"), ("esc/⌫", "runs")],
         (true, false, false) => &[("↑↓", "scroll"), ("esc/⌫", "runs")],
         (false, false, _) if r.status == CrewRunStatus::Paused => {
-            &[("s", "steer"), ("t", "messages"), ("p", "resume"), ("c", "cancel"), ("↑↓", "scroll"), ("esc/⌫", "runs")]
+            &[("x", "stop run"), ("s", "steer"), ("t", "messages"), ("p", "resume"), ("↑↓", "scroll"), ("esc/⌫", "runs")]
         }
-        (false, false, _) => &[("s", "steer"), ("t", "messages"), ("p", "pause"), ("c", "cancel"), ("↑↓", "scroll"), ("esc/⌫", "runs")],
+        (false, false, _) => &[("x", "stop run"), ("s", "steer"), ("t", "messages"), ("p", "pause"), ("↑↓", "scroll"), ("esc/⌫", "runs")],
     }
 }
 
@@ -166,8 +168,10 @@ fn footer(main: Rect, state: &State, hints: &[(&str, &str)], theme: &Theme, buf:
         if i > 0 {
             spans.push(Span::styled("  ·  ", dimmer));
         }
-        spans.push(Span::styled(*k, dim));
-        spans.push(Span::styled(format!(" {v}"), dimmer));
+        // The way out of a run is never hard to find: the stop key reads in red.
+        let stop = *v == "stop run";
+        spans.push(Span::styled(*k, if stop { ink(Ink::Red, theme) } else { dim }));
+        spans.push(Span::styled(format!(" {v}"), if stop { dim } else { dimmer }));
     }
     spans.push(Span::raw(" "));
     let l = Line::from(spans);
@@ -256,16 +260,27 @@ fn draw_run(c: Rect, state: &State, v: &RunView, r: &CrewRunInfo, theme: &Theme,
     // Header: fixed at the top.
     let mut head: Vec<Line<'static>> = Vec::new();
     let word = status_word(r.status);
+    // While the run is active the header carries a stop control, clickable and always in view.
+    let stop = (!r.status.is_terminal()).then_some(STOP_LABEL);
+    let stop_w = stop.map_or(0, |s| text::width(s) + 2);
     let left = vec![
         Span::styled(format!("{glyph} "), ink(gink, theme)),
         Span::styled(text::clean(&r.role), ink(Ink::Accent, theme).add_modifier(Modifier::BOLD)),
         Span::styled(" · ", dimmer),
-        Span::styled(text::truncate(&text::clean_maths(&r.title), w.saturating_sub(24 + text::width(&r.role))), theme.bright()),
+        Span::styled(text::truncate(&text::clean_maths(&r.title), w.saturating_sub(24 + stop_w + text::width(&r.role))), theme.bright()),
     ];
     let lw: usize = left.iter().map(|s| s.width()).sum();
     let mut l = left;
-    l.push(Span::raw(" ".repeat(w.saturating_sub(lw + text::width(word)))));
+    l.push(Span::raw(" ".repeat(w.saturating_sub(lw + text::width(word) + stop_w))));
     l.push(Span::styled(word, ink(gink, theme)));
+    if let Some(label) = stop {
+        let tone = if v.confirm == Some(RunConfirm::Cancel) { Ink::Amber } else { Ink::Red };
+        let line = Line::from(Span::styled(format!("  {label}"), ink(tone, theme)));
+        let line = if hovered(state, &Target::StopRun) { lit(line, theme) } else { line };
+        l.extend(line.spans);
+        let sw = text::width(label) as u16;
+        hit(state, Rect { x: c.right().saturating_sub(sw), y: c.y, width: sw, height: 1 }, Target::StopRun);
+    }
     head.push(Line::from(l));
     head.push(Line::from(Span::styled(text::truncate(&progress_line(r, state.now_ms), w), dim)));
     head.push(Line::from(Span::styled(text::truncate(&where_line(r), w), dimmer)));
@@ -730,7 +745,7 @@ fn bottom_line(v: &RunView, r: &CrewRunInfo, w: usize, theme: &Theme) -> Option<
     let dimmer = ink(Ink::Dimmer, theme);
     if let Some(c) = v.confirm {
         let (q, why) = match c {
-            RunConfirm::Cancel => ("cancel this run?", "  its sandbox stays until you discard it  "),
+            RunConfirm::Cancel => ("Stop this run?", "  It ends now; its transcript stays.  "),
             RunConfirm::Discard => match r.sandbox.as_ref().map(|s| s.kind) {
                 Some(SandboxKind::Worktree) => ("discard this run?", "  the worktree and its branch are deleted  "),
                 _ => ("discard this run?", "  its scratch directory is deleted  "),

@@ -215,7 +215,7 @@ fn ctrl_r_opens_the_most_urgent_run_and_streams_its_steps() {
     assert_eq!(s.on_key(key(KeyCode::Char('p'))), vec![Request::PauseRun { run: id.clone() }]);
     assert!(s.on_key(key(KeyCode::Char('c'))).is_empty());
     assert_eq!(s.crew.open.as_ref().unwrap().confirm, Some(RunConfirm::Cancel));
-    assert!(contains(&render(&s, W, H), "cancel this run?"));
+    assert!(contains(&render(&s, W, H), "Stop this run?"));
     assert_eq!(s.on_key(key(KeyCode::Char('y'))), vec![Request::CancelRun { run: id }]);
 }
 
@@ -447,4 +447,76 @@ fn ctrl_d_stays_forget_in_the_memory_view_and_palette_has_crew() {
     assert_eq!(s.view, View::Memory);
     s.on_key(ctrl('d'));
     assert!(s.overlay.is_none(), "^d in the memory view is forget, not dispatch");
+}
+
+fn open_running() -> (State, RunId) {
+    let mut s = with_runs(vec![research_run()]);
+    s.on_key(alt('r'));
+    (s, RunId::from("aa11bb22cc33dd44"))
+}
+
+/// Clicks the centre of `target`, as the last frame laid it out.
+fn click_target(s: &mut State, target: &marlowe_tui::state::Target) -> Vec<Request> {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let _ = render(s, W, H);
+    let rect = s.hits.borrow().iter().rev().find(|(_, t)| t == target).map(|(r, _)| *r).unwrap_or_else(|| panic!("{target:?} is not on screen"));
+    let m = MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: rect.x + 1, row: rect.y, modifiers: KeyModifiers::NONE };
+    s.on_mouse(m, ratatui::layout::Rect::new(0, 0, W, H))
+}
+
+#[test]
+fn the_run_header_carries_a_stop_control_only_while_the_run_is_active() {
+    let (mut s, id) = open_running();
+    let buf = render(&s, W, H);
+    assert!(contains(&buf, "■ stop run"), "{}", dump(&buf));
+    assert!(contains(&buf, "x stop run"), "the footer leads with the stop key\n{}", dump(&buf));
+    assert_palette_only(&buf);
+    let mut done = research_run();
+    done.status = CrewRunStatus::Done;
+    feed(&mut s, 2, Event::RunUpdated(done));
+    assert!(!contains(&render(&s, W, H), "■ stop run"));
+    assert!(s.on_key(key(KeyCode::Char('x'))).is_empty());
+    assert!(s.crew.open.as_ref().unwrap().confirm.is_none(), "{id:?} has ended; nothing to stop");
+}
+
+#[test]
+fn x_and_c_ask_before_stopping_and_y_or_enter_confirms() {
+    for stop in ['x', 'c'] {
+        let (mut s, id) = open_running();
+        assert!(s.on_key(key(KeyCode::Char(stop))).is_empty());
+        assert_eq!(s.crew.open.as_ref().unwrap().confirm, Some(RunConfirm::Cancel));
+        let buf = render(&s, W, H);
+        assert!(contains(&buf, "Stop this run?") && contains(&buf, "its transcript stays"), "{}", dump(&buf));
+        assert_eq!(s.on_key(key(KeyCode::Char('y'))), vec![Request::CancelRun { run: id.clone() }]);
+        s.on_key(key(KeyCode::Char(stop)));
+        assert_eq!(s.on_key(key(KeyCode::Enter)), vec![Request::CancelRun { run: id }]);
+    }
+    for no in [KeyCode::Char('n'), KeyCode::Esc] {
+        let (mut s, _) = open_running();
+        s.on_key(key(KeyCode::Char('x')));
+        assert!(s.on_key(key(no)).is_empty());
+        assert!(s.crew.open.as_ref().unwrap().confirm.is_none(), "the run keeps going");
+        assert!(s.crew.open.is_some(), "esc answered the question, it did not leave the view");
+    }
+}
+
+#[test]
+fn clicking_the_stop_control_opens_the_same_confirm() {
+    use marlowe_tui::state::Target;
+    let (mut s, id) = open_running();
+    assert!(click_target(&mut s, &Target::StopRun).is_empty());
+    assert_eq!(s.crew.open.as_ref().unwrap().confirm, Some(RunConfirm::Cancel));
+    assert_eq!(s.on_key(key(KeyCode::Char('y'))), vec![Request::CancelRun { run: id }]);
+}
+
+#[test]
+fn words_typed_into_the_steer_box_are_not_commands() {
+    let (mut s, id) = open_running();
+    s.on_key(key(KeyCode::Char('s')));
+    type_str(&mut s, "cancel xc");
+    assert!(s.crew.open.as_ref().unwrap().confirm.is_none());
+    s.on_key(key(KeyCode::Esc));
+    assert!(s.crew.open.as_ref().unwrap().confirm.is_none(), "esc leaves the box first");
+    assert!(!s.crew.open.as_ref().unwrap().steering);
+    let _ = id;
 }

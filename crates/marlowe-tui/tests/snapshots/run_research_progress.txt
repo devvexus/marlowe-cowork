@@ -1,7 +1,7 @@
  * marlowe — gate work                                                                                                 3 runs · 1 needs you
 ╭ Run · LoRA rank ablations for 22B gates ─────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮
 │                                                                                                                                          │
-│  ● researcher · LoRA rank ablations for 22B gates                                                                               running  │
+│  ● researcher · LoRA rank ablations for 22B gates                                                                   running  ■ stop run  │
 │  step 6 of 40 · $0.0213 of $0.50 · 41.2k tokens of 400k · web_search "lora rank ablation" · 1m ago                                       │
 │  deep_research · C:/work/valiance · run aa11bb22                                                                                         │
 │  ✓ Plan → ✓ Explore → ✓ Compress → ✓ Corroborate → ● Verify 20/26 → ○ Synthesise                                                         │
@@ -36,5 +36,5 @@
 │                                                                                                                                          │
 │  steer › s to steer: a note the run reads at its next step                                                                               │
 │                                                                                                                                          │
-╰─────────────────────────────────────────────────────────── s steer  ·  t messages  ·  p pause  ·  c cancel  ·  ↑↓ scroll  ·  esc/⌫ runs ─╯
+╰───────────────────────────────────────────────────────── x stop run  ·  s steer  ·  t messages  ·  p pause  ·  ↑↓ scroll  ·  esc/⌫ runs ─╯
  ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette      quiet 23:00–07:00 · 21:40

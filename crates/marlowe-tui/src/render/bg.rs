@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 
 use super::overlay::{centred, panel, panel_hints, row_marker};
 use super::panel::{first_row, frame, note, unavailable};
-use super::{hit, ink, put, put_row};
+use super::{hit, hovered, ink, lit, put, put_row};
 use crate::bg::{severity_word, Delivery, ThreadFrom};
 use crate::bg_panels::{
     kind_label, ordered_agents, sorted_findings, task_rows, workflow_runs, BenchUi, FindingsUi, PlanUi, SuggestUi, TasksUi,
@@ -261,7 +261,7 @@ fn workflow_list(area: Rect, state: &State, ui: &WorkflowsUi, theme: &Theme, buf
 
 fn workflow_run(area: Rect, state: &State, ui: &WorkflowsUi, info: &WorkflowInfo, theme: &Theme, buf: &mut Buffer) {
     let hints: &[(&str, &str)] = if ui.confirm_stop {
-        &[("y", "stop it"), ("any", "keep going")]
+        &[("y/\u{21b5}", "stop it"), ("n/esc", "keep going")]
     } else {
         &[("s", "skip agent"), ("x", "stop run"), ("m", "messages"), ("\u{2191}\u{2193}", "select"), ("esc", "back")]
     };
@@ -284,6 +284,15 @@ fn workflow_run(area: Rect, state: &State, ui: &WorkflowsUi, info: &WorkflowInfo
         y += 1;
     }
     let status = state.crew.get(&info.run).map(|r| r.status);
+    if status.is_none_or(|s| !s.is_terminal()) && !ui.confirm_stop {
+        let label = super::crew::STOP_LABEL;
+        let sw = text::width(label) as u16;
+        let line = Line::from(Span::styled(label, ink(Ink::Red, theme)));
+        let line = if hovered(state, &Target::StopRun) { lit(line, theme) } else { line };
+        let x = inner.right().saturating_sub(sw);
+        put(buf, x, inner.y, &line, sw);
+        hit(state, Rect { x, y: inner.y, width: sw, height: 1 }, Target::StopRun);
+    }
     let mut head = vec![];
     if let Some(s) = status {
         let (g, gi) = crate::crew::status_glyph(s);
@@ -303,7 +312,7 @@ fn workflow_run(area: Rect, state: &State, ui: &WorkflowsUi, info: &WorkflowInfo
     put(buf, inner.x, y, &Line::from(head), inner.width);
     y += 2;
     if ui.confirm_stop {
-        put(buf, inner.x, y - 1, &Line::from(Span::styled("stop this workflow? agents in flight are cancelled; the run can be resumed \u{b7} y / n", ink(Ink::Amber, theme))), inner.width);
+        put(buf, inner.x, y - 1, &Line::from(Span::styled("Stop this workflow? Running agents stop; finished agents\u{2019} results are kept for a resume. y / n", ink(Ink::Amber, theme))), inner.width);
     }
 
     // The log takes the bottom; the agents take the rest.

@@ -1,7 +1,7 @@
  * marlowe — new session                                                                                                1 run · 1 needs you
 ╭ Run · LoRA rank ablations for 22B gates ─────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮
 │                                                                                                                                          │
-│  ◐ researcher · LoRA rank ablations for 22B gates                                                                             needs you  │
+│  ◐ researcher · LoRA rank ablations for 22B gates                                                                 needs you  ■ stop run  │
 │  step 6 of 40 · $0.0213 of $0.50 · 41.2k tokens of 400k · 1m ago                                                                         │
 │  deep_research · scratch C:/Users/m/AppData/Local/MarloweCowork/scratch/aa11bb22cc33dd44 · run aa11bb22                                  │
 │  goal  What does the literature say about LoRA rank for gating adapters at 22B?                                                          │

@@ -292,6 +292,8 @@ pub enum Target {
     ChoiceButton(usize),
     /// The Run view's steer line.
     Steer,
+    /// The "stop run" control in the Run view's header and the workflow view's title: asks y/n.
+    StopRun,
     /// The Model box's context meter: opens the planner.
     ContextMeter,
     /// A Library model's window column: opens the planner for model `i`.

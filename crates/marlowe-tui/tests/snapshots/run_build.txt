@@ -1,7 +1,7 @@
  * marlowe — new session                                                                                                1 run · 1 needs you
 ╭ Run · fix the gate threshold off-by-one ─────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮
 │                                                                                                                                          │
-│  ◐ engineer · fix the gate threshold off-by-one                                                                               needs you  │
+│  ◐ engineer · fix the gate threshold off-by-one                                                                   needs you  ■ stop run  │
 │  step 14 of 40 · $0.18 of $0.50 · 88k tokens of 400k · 1m ago                                                                            │
 │  build · worktree crew/ee55ff66 of C:/work/valiance · run ee55ff66                                                                       │
 │  goal  fix the gate threshold off-by-one                                                                                                 │

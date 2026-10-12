@@ -487,11 +487,26 @@ fn parity_WF7_skipping_an_agent_sends_its_index_and_shows_it_skipped() {
 }
 
 #[test]
+fn the_workflow_view_has_a_clickable_stop_control_with_the_same_confirm() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let mut s = workflows_open();
+    keys(&mut s, "enter");
+    let buf = render(&s, W, H);
+    assert!(contains(&buf, "\u{25a0} stop run"), "{}", dump(&buf));
+    let rect = s.hits.borrow().iter().rev().find(|(_, t)| *t == marlowe_tui::state::Target::StopRun).map(|(r, _)| *r).expect("stop control is registered");
+    let m = MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: rect.x + 1, row: rect.y, modifiers: KeyModifiers::NONE };
+    assert!(s.on_mouse(m, ratatui::layout::Rect::new(0, 0, W, H)).is_empty());
+    let buf = render(&s, W, H);
+    assert!(contains(&buf, "Stop this workflow? Running agents stop; finished agents\u{2019} results are kept for a resume."), "{}", dump(&buf));
+    assert_eq!(keys(&mut s, "y"), vec![Request::StopTask { id: "wf_wf1".into() }]);
+}
+
+#[test]
 fn parity_WF7_stopping_the_run_asks_first() {
     let mut s = workflows_open();
     keys(&mut s, "enter");
     assert!(keys(&mut s, "x").is_empty());
-    assert!(contains(&render(&s, W, H), "stop this workflow?"));
+    assert!(contains(&render(&s, W, H), "Stop this workflow?"));
     assert!(keys(&mut s, "n").is_empty(), "anything but y keeps it going");
     keys(&mut s, "x");
     assert_eq!(keys(&mut s, "y"), vec![Request::StopTask { id: "wf_wf1".into() }]);
