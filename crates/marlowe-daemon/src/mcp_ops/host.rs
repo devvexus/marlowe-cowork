@@ -86,7 +86,7 @@ impl McpTools {
         ToolSpec { name: t.exposed.clone(), description, input_schema: schema }
     }
 
-    fn search_spec(&self, tools: &[ExposedTool]) -> ToolSpec {
+    fn search_spec(&self, tools: &[ExposedTool], builtin: Option<&ToolSpec>) -> ToolSpec {
         let mut by_server: Vec<(String, usize)> = Vec::new();
         for t in tools {
             match by_server.iter_mut().find(|(s, _)| *s == t.server) {
@@ -95,12 +95,14 @@ impl McpTools {
             }
         }
         let servers = by_server.iter().map(|(s, n)| format!("{s} ({n})")).collect::<Vec<_>>().join(", ");
+        // The built-ins deferred on a small window (T31) load through the same call.
+        let builtin_note = builtin.map(|b| format!(" Also: {}", b.description)).unwrap_or_default();
         ToolSpec {
             name: TOOL_SEARCH.into(),
             description: format!(
                 "Find and load tools from connected MCP servers: {servers}. Their schemas are not listed up front. \
                  Give keywords (\"create invoice\") or `select:name1,name2` for exact names. The tools found become \
-                 callable at once; the result lists each with its parameters."
+                 callable at once; the result lists each with its parameters.{builtin_note}"
             ),
             input_schema: json!({
                 "type": "object",
@@ -144,7 +146,35 @@ impl McpTools {
         ToolOutcome::error(e.to_string())
     }
 
-    fn tool_search(&self, args: &Value) -> ToolOutcome {
+    /// `tool_search` over the MCP tools and, when the built-in host defers its rarely used tools
+    /// (a small window, T31), over those too.
+    fn tool_search(&self, args: &Value, cx: &CallCtx) -> ToolOutcome {
+        let inner_defers = self.inner.specs().iter().any(|s| s.name == TOOL_SEARCH);
+        let tools = self.hub.tools();
+        let mcp_defers = !tools.is_empty() && self.deferred(&tools);
+        if !inner_defers {
+            return self.tool_search_mcp(args);
+        }
+        let builtin = self.inner.call_scoped(&ToolCallReq { id: "tool_search".into(), name: TOOL_SEARCH.into(), args: args.clone() }, cx);
+        if !mcp_defers {
+            return builtin;
+        }
+        let mcp = self.tool_search_mcp(args);
+        match (builtin.summary == "no match", mcp.summary == "no match") {
+            (true, _) => mcp,
+            (false, true) => builtin,
+            (false, false) => ToolOutcome {
+                content: format!("{}
+
+{}", builtin.content, mcp.content),
+                is_error: builtin.is_error && mcp.is_error,
+                summary: format!("{}; {}", builtin.summary, mcp.summary),
+                parts: Vec::new(),
+            },
+        }
+    }
+
+    fn tool_search_mcp(&self, args: &Value) -> ToolOutcome {
         let Some(query) = args.get("query").and_then(Value::as_str).filter(|q| !q.trim().is_empty()) else {
             return ToolOutcome::error("tool_search needs a `query`");
         };
@@ -254,9 +284,17 @@ impl ToolHost for McpTools {
     fn specs(&self) -> Vec<ToolSpec> {
         let mut specs = self.inner.specs();
         let tools = self.hub.tools();
+        // A built-in host that defers its rarely used tools (T31) lists its own `tool_search`;
+        // it stays where it is (what is loaded later is appended after it) and, when MCP tools
+        // are deferred too, becomes the merged one.
+        let builtin_search = specs.iter().position(|s| s.name == TOOL_SEARCH);
         if !tools.is_empty() {
             if self.deferred(&tools) {
-                specs.push(self.search_spec(&tools));
+                let merged = self.search_spec(&tools, builtin_search.map(|i| &specs[i]));
+                match builtin_search {
+                    Some(i) => specs[i] = merged,
+                    None => specs.push(merged),
+                }
                 let active = self.activated();
                 specs.extend(tools.iter().filter(|t| active.contains(&t.exposed)).map(Self::spec_of));
             } else {
@@ -278,7 +316,7 @@ impl ToolHost for McpTools {
             return self.inner.call_scoped(call, cx);
         }
         match call.name.as_str() {
-            TOOL_SEARCH => self.tool_search(&call.args),
+            TOOL_SEARCH => self.tool_search(&call.args, cx),
             LIST_RESOURCES => self.list_resources(&call.args),
             READ_RESOURCE => self.read_resource(&call.args, cx),
             LIST_PROMPTS => self.list_prompts(),

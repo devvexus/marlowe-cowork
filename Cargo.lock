@@ -3304,6 +3304,7 @@ dependencies = [
  "marlowe-mind",
  "marlowe-model",
  "marlowe-os",
+ "marlowe-permission",
  "marlowe-proto",
  "marlowe-research",
  "marlowe-sentinel",

@@ -27,6 +27,7 @@ pub mod planfile;
 mod run_tools;
 pub mod steer;
 pub mod subagent;
+pub mod subagent_tools;
 pub mod system;
 pub mod tasklist;
 pub mod tasks;

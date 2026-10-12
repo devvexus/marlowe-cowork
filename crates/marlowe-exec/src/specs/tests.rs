@@ -240,8 +240,9 @@ fn every_tool_is_registered_once_in_its_group_in_the_old_order() {
         [
             "read", "write", "edit", "multi_edit", "edit_lines", "notebook_edit", "glob", "grep", "bash", "powershell",
             "python", "job_output", "job_watch", "job_kill", "web_fetch", "arxiv", "paper", "web_search", "symbols",
-            "definition", "references", "hover", "diagnostics", "rename_symbol", "todo", "ask_user", "skill", "agent",
-            "send_message", "exit_plan", "enter_worktree", "exit_worktree"
+            "definition", "references", "hover", "diagnostics", "rename_symbol", "todo", "todo_add", "todo_update", "todo_get",
+            "ask_user", "skill", "agent",
+            "send_message", "enter_plan", "exit_plan", "enter_worktree", "exit_worktree"
         ]
     );
     let git: Vec<&str> = table().defs.iter().filter(|d| d.manifest.group == marlowe_agent::ToolGroup::Git).map(|d| d.name()).collect();
@@ -372,7 +373,14 @@ fn exposure_fixes_the_tool_set_and_refuses_the_rest() {
     let without_verify = |h: &BuiltinTools| {
         names(h).into_iter().filter(|n| !["project", "service", "http_check", "browser"].contains(&n.as_str())).collect::<Vec<_>>()
     };
-    assert_eq!(names(&BuiltinTools::new(None).with_model_exposure(&local)), without_verify(&everything));
+    // A local model with no known window is assumed to have 32k, where the rarely used tools wait
+    // behind `tool_search` (T31): the same set, minus them, plus the search tool.
+    let deferred_view = |all: Vec<String>| {
+        let mut v: Vec<String> = all.into_iter().filter(|n| !crate::deferral::DEFERRABLE.contains(&n.as_str())).collect();
+        v.push("tool_search".into());
+        v
+    };
+    assert_eq!(names(&BuiltinTools::new(None).with_model_exposure(&local)), deferred_view(without_verify(&everything)));
     assert_eq!(BuiltinTools::new(None).with_model_exposure(&local).exposure().0, ExposureProfile::Local);
     assert_eq!(BuiltinTools::new(None).with_model_exposure(&frontier).exposure().1, ToolGroup::ALL.as_slice());
 

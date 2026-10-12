@@ -11,7 +11,7 @@
 //! | `web.rs` | web | seam | web_fetch, arxiv, paper, web_search |
 //! | `code.rs` | code | C | (symbols, definition, references, hover, diagnostics, rename_symbol) |
 //! | `verify.rs` | verify | D | (project, service, http_check, browser) |
-//! | `agent.rs` | agent | F | (todo, ask_user, skill, agent, send_message, exit_plan, worktrees) |
+//! | `agent.rs` | agent | F, F3 | (todo, todo_add/update/get, ask_user, skill, agent, send_message, enter_plan, exit_plan, worktrees) |
 //! | `git.rs` | git | J | (git, gh, ci_status) |
 //! | `ml.rs` | ml | J2 | (train_launch, experiments) |
 //! | `mcp.rs` | mcp | K | (tool_search; `mcp__srv__tool` come from the MCP host) |

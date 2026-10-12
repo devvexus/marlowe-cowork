@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use marlowe_model::{CancelToken, Message, Part, Role};
-use marlowe_proto::{Question, SessionId, TodoItem, TodoStatus};
+use marlowe_proto::{Question, QuestionOption, SessionId, TodoItem, TodoStatus};
 use serde_json::Value;
 
 use crate::convo::Conversation;
@@ -61,7 +61,16 @@ pub fn render_todos(items: &[TodoItem]) -> String {
                 TodoStatus::InProgress => "[~]",
                 TodoStatus::Completed => "[x]",
             };
-            format!("{mark} {}", i.content.trim())
+            let id = i.id.as_deref().map(|x| format!("#{x} ")).unwrap_or_default();
+            let mut notes: Vec<String> = Vec::new();
+            if let Some(o) = &i.owner {
+                notes.push(format!("owner {o}"));
+            }
+            if !i.blocked_by.is_empty() {
+                notes.push(format!("blocked by {}", i.blocked_by.iter().map(|b| format!("#{b}")).collect::<Vec<_>>().join(", ")));
+            }
+            let notes = if notes.is_empty() { String::new() } else { format!(" ({})", notes.join("; ")) };
+            format!("{mark} {id}{}{notes}", i.content.trim())
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -96,14 +105,24 @@ pub fn todo_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
         Ok(i) => i,
         Err(e) => return ToolOutcome::error(e),
     };
+    // The conductor's list is the shared task list (T34): it keeps item ids, owners and blockers
+    // across a rewrite and is what subagents update. A subagent's `todo` stays its own.
+    let shared = crate::tasklist::is_conductor(&cx.session).then(|| cx.scope.services.get::<crate::tasklist::TaskLists>()).flatten();
+    let items = match shared {
+        Some(lists) => lists.replace(&cx.session, items),
+        None => items,
+    };
     cx.scope.with_ext(|e| {
         let st = e.get_or_default::<TodoState>();
         st.items = items.clone();
         st.steps_since_update = 0;
         st.reminded = false;
     });
-    if let Some(sink) = cx.scope.services.get::<TodoSink>() {
-        (sink.0)(&cx.session, &items);
+    // The shared list announces its own changes.
+    if shared.is_none() {
+        if let Some(sink) = cx.scope.services.get::<TodoSink>() {
+            (sink.0)(&cx.session, &items);
+        }
     }
     let open = items.iter().filter(|i| i.status != TodoStatus::Completed).count();
     let doing = items.iter().filter(|i| i.status == TodoStatus::InProgress).count();
@@ -143,30 +162,55 @@ pub fn parse_questions(args: &Value) -> Result<Vec<Question>, String> {
         let question = q.get("question").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
         let question = question.ok_or_else(|| format!("question {}: `question` is required", n + 1))?;
         let header = q.get("header").and_then(Value::as_str).unwrap_or("").chars().take(24).collect();
-        let options = q
-            .get("options")
-            .and_then(Value::as_array)
-            .map(|opts| {
-                opts.iter()
-                    .filter_map(|o| match o {
-                        Value::String(s) => Some(s.clone()),
-                        Value::Object(_) => {
-                            let label = o.get("label").and_then(Value::as_str)?;
-                            Some(match o.get("description").and_then(Value::as_str).filter(|d| !d.trim().is_empty()) {
-                                Some(d) => format!("{label} — {d}"),
-                                None => label.to_string(),
-                            })
-                        }
-                        _ => None,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Options are labels, or `{label, description, preview}` (T33): the labels go in
+        // `options`, always, and the rest in `option_details` when any option has more.
+        let mut details: Vec<QuestionOption> = Vec::new();
+        if let Some(opts) = q.get("options").and_then(Value::as_array) {
+            for o in opts {
+                match o {
+                    Value::String(s) if !s.trim().is_empty() => details.push(QuestionOption { label: s.trim().to_string(), ..Default::default() }),
+                    Value::Object(_) => {
+                        let Some(label) = o.get("label").and_then(Value::as_str).map(str::trim).filter(|l| !l.is_empty()) else { continue };
+                        let text = |k: &str| o.get(k).and_then(Value::as_str).map(str::trim).filter(|d| !d.is_empty()).map(str::to_string);
+                        details.push(QuestionOption {
+                            label: label.to_string(),
+                            description: text("description").unwrap_or_default(),
+                            preview: text("preview"),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let options: Vec<String> = details.iter().map(|d| d.label.clone()).collect();
+        let has_more = details.iter().any(|d| !d.description.is_empty() || d.preview.is_some());
+        let option_details = if has_more { details } else { Vec::new() };
         let multi_select = q.get("multi_select").or_else(|| q.get("multiSelect")).and_then(Value::as_bool).unwrap_or(false);
-        out.push(Question { question: question.to_string(), header, options, multi_select, option_details: Vec::new() });
+        out.push(Question { question: question.to_string(), header, options, multi_select, option_details });
     }
     Ok(out)
 }
+
+/// Whether `answer` is free text ("Other") rather than a pick: some part of it (a multi-select
+/// answer is its labels joined with `, ` or on separate lines) is not one of the question's
+/// options. A question with no options is all free text.
+fn own_words(q: &Question, answer: &str) -> bool {
+    if q.options.is_empty() || answer.is_empty() || answer == NO_ANSWER {
+        return false;
+    }
+    let is_label = |s: &str| q.options.iter().any(|o| o.trim().eq_ignore_ascii_case(s.trim()));
+    if is_label(answer) {
+        return false;
+    }
+    if q.multi_select {
+        let parts: Vec<&str> = answer.split(['\n', ';']).flat_map(|p| p.split(", ")).collect();
+        return !parts.iter().all(|p| is_label(p));
+    }
+    true
+}
+
+/// What a client sends for a question nobody answered.
+const NO_ANSWER: &str = "(no answer)";
 
 /// The `ask_user` tool.
 pub fn ask_user_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
@@ -182,7 +226,11 @@ pub fn ask_user_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
             let pairs: Vec<String> = questions
                 .iter()
                 .zip(answers.iter().map(String::as_str).chain(std::iter::repeat("(no answer)")))
-                .map(|(q, a)| format!("\"{}\" = \"{}\"", q.question, a.trim()))
+                .map(|(q, a)| {
+                    let a = a.trim();
+                    let own = if own_words(q, a) { " (their own words, not one of the options)" } else { "" };
+                    format!("\"{}\" = \"{}\"{own}", q.question, a)
+                })
                 .collect();
             ToolOutcome::ok(
                 format!("The user answered: {}. Continue with these answers in mind.", pairs.join("; ")),
@@ -199,25 +247,6 @@ pub struct PlanState {
     pub plan: Option<String>,
     /// Set when the user approved leaving plan mode with it (the mode switch is track E's).
     pub approved: bool,
-}
-
-/// The `exit_plan` tool: it only runs once the approval gate let it through (its consequence is
-/// Ask), so running it means the user approved the plan.
-pub fn exit_plan_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
-    let Some(plan) = args.get("plan").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty()) else {
-        return ToolOutcome::error("`plan` is required: the steps you will take and the files you will change");
-    };
-    cx.scope.with_ext(|e| {
-        *e.get_or_default::<PlanState>() = PlanState { plan: Some(plan.to_string()), approved: true };
-    });
-    // The approval was the user's yes: leave plan mode (track E) and tell the clients.
-    if let Some(p) = cx.scope.services.get::<crate::approval::Permissions>() {
-        let mode = p.exit_plan();
-        if let Some(sink) = cx.scope.services.get::<crate::approval::ModeSink>() {
-            (sink.0)(&cx.session, mode);
-        }
-    }
-    ToolOutcome::ok("The user approved the plan. Leave plan mode and carry it out, keeping the todo list current.", "plan approved")
 }
 
 /// The edit ledger and the last failure.
@@ -526,9 +555,82 @@ mod tests {
     #[test]
     fn questions_take_claude_code_options() {
         let q = parse_questions(&json!({"questions": [{"question": "Which DB?", "header": "DB", "options": [{"label": "sqlite", "description": "local"}, "postgres"], "multiSelect": true}]})).unwrap();
-        assert_eq!(q[0].options, ["sqlite — local", "postgres"]);
+        assert_eq!(q[0].options, ["sqlite", "postgres"]);
+        assert_eq!(q[0].option_details[0].description, "local");
         assert!(q[0].multi_select);
         assert!(parse_questions(&json!({"questions": []})).is_err());
+        assert!(parse_questions(&json!({"questions": [{"question": "a"}, {"question": "b"}, {"question": "c"}, {"question": "d"}, {"question": "e"}]})).is_err());
+    }
+
+    #[test]
+    fn plain_labels_leave_option_details_empty_so_old_clients_see_the_same_question() {
+        let q = parse_questions(&json!({"questions": [{"question": "Which?", "options": ["a", {"label": "b"}]}]})).unwrap();
+        assert_eq!(q[0].options, ["a", "b"]);
+        assert!(q[0].option_details.is_empty());
+        assert!(serde_json::to_string(&q[0]).unwrap().find("option_details").is_none());
+    }
+
+    #[derive(Default)]
+    struct Canned {
+        answers: Vec<String>,
+        seen: std::sync::Mutex<Vec<Question>>,
+    }
+
+    impl QuestionAsker for Canned {
+        fn ask(&self, _s: &SessionId, questions: &[Question], _c: &CancelToken) -> Result<Vec<String>, String> {
+            *self.seen.lock().unwrap() = questions.to_vec();
+            Ok(self.answers.clone())
+        }
+    }
+
+    fn ask_cx(asker: Arc<Canned>) -> CallCtx {
+        use crate::tools::{SessionScope, ToolCtx};
+        let tool = ToolCtx::new(SessionId("s".into()), 0, None, CancelToken::new(), false);
+        CallCtx::new(tool, SessionScope { ext: Default::default(), services: crate::Services::new().with(Questions(asker)) })
+    }
+
+    #[test]
+    fn parity_t33_descriptions_previews_multi_select_and_other_round_trip() {
+        let asker = Arc::new(Canned { answers: vec!["sqlite, postgres".into(), "a third way".into(), "yes".into()], ..Default::default() });
+        let cx = ask_cx(asker.clone());
+        let args = json!({"questions": [
+            {"question": "Which stores?", "header": "Stores", "multiSelect": true, "options": [
+                {"label": "sqlite", "description": "embedded", "preview": "CREATE TABLE t (id INTEGER);"},
+                {"label": "postgres", "description": "server"}]},
+            {"question": "Which layout?", "options": [{"label": "flat", "preview": "src/\n  a.rs"}, {"label": "nested"}]},
+            {"question": "Proceed?", "options": ["yes", "no"]}]});
+        let out = ask_user_call(&args, &cx);
+        assert!(!out.is_error, "{}", out.content);
+        // The asker (the daemon's modal) gets every field.
+        let seen = asker.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[0].options, ["sqlite", "postgres"]);
+        assert_eq!(seen[0].option_details[0].preview.as_deref(), Some("CREATE TABLE t (id INTEGER);"));
+        assert_eq!(seen[1].option_details[0].preview.as_deref(), Some("src/\n  a.rs"));
+        assert!(seen[0].multi_select);
+        // Two picks come back as two labels; typed text comes back verbatim and is marked.
+        assert!(out.content.contains("\"Which stores?\" = \"sqlite, postgres\""), "{}", out.content);
+        assert!(!out.content.contains("\"sqlite, postgres\" (their own"), "a multi-select of labels is not free text");
+        assert!(out.content.contains("\"Which layout?\" = \"a third way\" (their own words"), "{}", out.content);
+        assert!(out.content.contains("\"Proceed?\" = \"yes\"") && !out.content.contains("\"yes\" (their"), "{}", out.content);
+    }
+
+    #[test]
+    fn headless_the_question_json_carries_every_field() {
+        let q = parse_questions(&json!({"questions": [{"question": "Which?", "options": [{"label": "a", "description": "d", "preview": "p"}]}]})).unwrap();
+        let wire = serde_json::to_value(&q[0]).unwrap();
+        assert_eq!(wire["option_details"][0], json!({"label": "a", "description": "d", "preview": "p"}));
+        assert_eq!(wire["multi_select"], json!(false));
+    }
+
+    #[test]
+    fn a_shared_list_item_renders_with_its_id_owner_and_blockers() {
+        let items = vec![
+            TodoItem { content: "design".into(), status: TodoStatus::Completed, id: Some("1".into()), ..Default::default() },
+            TodoItem { content: "build".into(), id: Some("2".into()), owner: Some("worker".into()), blocked_by: vec!["1".into()], ..Default::default() },
+            TodoItem { content: "plain".into(), ..Default::default() },
+        ];
+        assert_eq!(render_todos(&items), "[x] #1 design\n[ ] #2 build (owner worker; blocked by #1)\n[ ] plain");
     }
 
     #[test]

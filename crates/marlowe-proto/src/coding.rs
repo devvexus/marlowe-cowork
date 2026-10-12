@@ -312,6 +312,10 @@ pub struct HeadlessOptions {
     pub append_system_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<PermissionMode>,
+    /// The run is `marlowe -p`: it ends with its first answer, so an `agent` call that does not say
+    /// `background` waits for the agent's report instead of returning an id nobody will collect.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub print: bool,
 }
 
 /// A background job (B: `run_in_background`, Ctrl+B detach, the `!` shell).

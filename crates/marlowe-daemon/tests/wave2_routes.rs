@@ -197,13 +197,6 @@ fn every_wave2_request_reaches_its_tracks_stub() {
     let mut c = Client::connect(&r.info);
 
     let cases: Vec<(Request, &str, &str)> = vec![
-        (Request::SetFast { session: sid(), on: true }, "set_fast", "F3"),
-        (
-            Request::AnswerPlan { session: sid(), id: "p1".into(), decision: PlanFileDecision::Approve { mode: PermissionMode::Default } },
-            "answer_plan",
-            "F3",
-        ),
-        (Request::SuggestRules { workspace: None }, "suggest_rules", "F3"),
     ];
     for (req, op, track) in cases {
         c.send(&req);
@@ -213,6 +206,17 @@ fn every_wave2_request_reaches_its_tracks_stub() {
         let named = serde_json::to_value(&req).unwrap().get("session").is_some();
         assert_eq!(session.is_some(), named, "{op}: the error names the session exactly when the request does");
     }
+
+    // F3 filled its three in (`f3_ops.rs`): they answer for real now (`tests/f3.rs` covers the
+    // behaviour); here only that they no longer say "not available yet".
+    c.send(&Request::SetFast { session: sid(), on: true });
+    let e = c.until(|e| matches!(e, Event::Error { .. })).pop().unwrap().event;
+    assert!(matches!(&e, Event::Error { message, .. } if message.contains("unknown session")), "{e:?}");
+    c.send(&Request::AnswerPlan { session: sid(), id: "p1".into(), decision: PlanFileDecision::Approve { mode: PermissionMode::Default } });
+    let e = c.until(|e| matches!(e, Event::Error { .. })).pop().unwrap().event;
+    assert!(matches!(&e, Event::Error { message, .. } if message.contains("not waiting")), "{e:?}");
+    c.send(&Request::SuggestRules { workspace: None });
+    c.until(|e| matches!(e, Event::RuleSuggestions { .. }));
 
     // Track W's requests are live: no crew in this daemon, so a run is refused with why, and the
     // lists answer.
