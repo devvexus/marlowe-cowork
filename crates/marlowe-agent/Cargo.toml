@@ -24,3 +24,5 @@ chrono.workspace = true
 marlowe-os.workspace = true
 marlowe-settings.workspace = true
 marlowe-permission.workspace = true
+# W: /workflow convert hands the model the converter's prompt.
+marlowe-workflow.workspace = true

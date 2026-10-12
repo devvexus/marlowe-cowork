@@ -207,15 +207,6 @@ fn every_wave2_request_reaches_its_tracks_stub() {
         ),
         (Request::NotifySettings { toast: Some(false), voice: None }, "notify_settings", "N"),
         (Request::OpenFile { path: "C:/x".into(), reveal: false }, "open_file", "N"),
-        (Request::ListWorkflows, "list_workflows", "W"),
-        (Request::WatchWorkflow { run: run() }, "watch_workflow", "W"),
-        (
-            Request::RunWorkflow { session: Some(sid()), name: Some("code-review".into()), script_path: None, args: serde_json::Value::Null, resume_from: None },
-            "run_workflow",
-            "W",
-        ),
-        (Request::SkipWorkflowAgent { run: run(), agent: 2 }, "skip_workflow_agent", "W"),
-        (Request::ListFindings { run: Some(run()), session: None }, "list_findings", "W"),
         (Request::SetFast { session: sid(), on: true }, "set_fast", "F3"),
         (
             Request::AnswerPlan { session: sid(), id: "p1".into(), decision: PlanFileDecision::Approve { mode: PermissionMode::Default } },
@@ -232,6 +223,18 @@ fn every_wave2_request_reaches_its_tracks_stub() {
         let named = serde_json::to_value(&req).unwrap().get("session").is_some();
         assert_eq!(session.is_some(), named, "{op}: the error names the session exactly when the request does");
     }
+
+    // Track W's requests are live: no crew in this daemon, so a run is refused with why, and the
+    // lists answer.
+    c.send(&Request::ListWorkflows);
+    let got = c.until(|e| matches!(e, Event::WorkflowList { .. })).pop().unwrap();
+    assert!(matches!(&got.event, Event::WorkflowList { saved, .. } if saved.iter().any(|s| s.name == "code-review")));
+    c.send(&Request::ListFindings { run: Some(run()), session: None });
+    c.until(|e| matches!(e, Event::Findings { findings, .. } if findings.is_empty()));
+    c.send(&Request::RunWorkflow { session: None, name: Some("code-review".into()), script_path: None, args: serde_json::Value::Null, resume_from: None });
+    c.until(|e| matches!(e, Event::Error { message, .. } if message.contains("crew is not running")));
+    c.send(&Request::SkipWorkflowAgent { run: run(), agent: 2 });
+    c.until(|e| matches!(e, Event::Error { message, .. } if message.contains("not running")));
 
     // The connection is still good.
     c.send(&Request::Status);

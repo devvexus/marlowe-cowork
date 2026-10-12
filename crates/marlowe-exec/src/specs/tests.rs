@@ -408,13 +408,16 @@ fn parity_g7_the_shell_guard_holds_without_the_git_group() {
 fn every_group_file_registers_its_hooks() {
     let setup = super::HostSetup { home: Path::new("C:/home"), workspace: None };
     let host = super::configure(BuiltinTools::new(None), &setup);
-    // Configuring adds the git group (track J), the agent group (track F) and, where Edge is
-    // installed, the browser (D).
+    // Configuring adds the git group (track J), the agent group (track F), the workflow group
+    // (track W) and, where Edge is installed, the browser (D).
     let rest = |h: &BuiltinTools| {
         h.specs()
             .iter()
             .filter(|s| !matches!(s.name.as_str(), "git" | "gh" | "ci_status" | "browser"))
-            .filter(|s| h.manifest(&s.name).is_some_and(|m| m.group != marlowe_agent::ToolGroup::Agent))
+            .filter(|s| {
+                h.manifest(&s.name)
+                    .is_some_and(|m| m.group != marlowe_agent::ToolGroup::Agent && m.group != marlowe_agent::ToolGroup::Workflow)
+            })
             .count()
     };
     assert_eq!(rest(&host), rest(&BuiltinTools::new(None)), "the other configures change nothing here");
@@ -432,12 +435,16 @@ fn every_group_file_registers_its_hooks() {
             (g.persona_block)().is_some(),
             matches!(
                 g.group,
-                marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Verify | marlowe_agent::ToolGroup::Agent
+                marlowe_agent::ToolGroup::Git
+                    | marlowe_agent::ToolGroup::Verify
+                    | marlowe_agent::ToolGroup::Agent
+                    | marlowe_agent::ToolGroup::Workflow
             ),
             "{:?}: a block needs its capability live first",
             g.group
         );
-        assert!(!(g.detect)(None));
+        // Workflows are offered to a local model in any workspace (W; deferred on 32k, T31).
+        assert_eq!((g.detect)(None), g.group == marlowe_agent::ToolGroup::Workflow, "{:?}", g.group);
     }
     assert!(super::group(marlowe_agent::ToolGroup::Memory).is_none(), "memory tools are the daemon's");
 }

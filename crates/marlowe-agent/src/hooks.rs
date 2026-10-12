@@ -352,6 +352,22 @@ impl HookRunner {
         ctx.agent_type = Some(agent_type.to_string());
         self.run(&EventData::SubagentStart { agent_id: agent_id.to_string(), agent_type: agent_type.to_string() }, &ctx, &|| false)
     }
+
+    /// SubagentStop hooks for an agent that ran outside this loop (a workflow agent, X22): they
+    /// inform; the agent has already ended, so a block cannot keep it going.
+    pub fn subagent_stop(&self, agent_id: &str, agent_type: &str, last_message: &str) -> HookOutcome {
+        let mut ctx = self.context(None);
+        ctx.agent_id = Some(agent_id.to_string());
+        ctx.agent_type = Some(agent_type.to_string());
+        let data = EventData::SubagentStop {
+            agent_id: agent_id.to_string(),
+            agent_type: agent_type.to_string(),
+            agent_transcript_path: None,
+            stop_hook_active: false,
+            last_assistant_message: last_message.to_string(),
+        };
+        self.run(&data, &ctx, &|| false)
+    }
 }
 
 /// Git Bash on Windows (as Claude Code runs hooks), `sh -c` elsewhere.

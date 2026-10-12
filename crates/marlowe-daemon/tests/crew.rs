@@ -849,3 +849,219 @@ fn a_relay_never_loads_the_model_and_waits_for_the_users_next_turn() {
     drop(store);
     stop(d);
 }
+
+// ---------------------------------------------------------------- workflows (track W)
+
+/// The workflow role card for these tests: the fake tools, routed as crew by its marker.
+const WORKFLOW_ROLE: &str = "---
+name: workflow
+description: A workflow agent for the daemon tests.
+effort: off
+tools: [echo]
+budget: {tokens: 100000, steps: 50, usd: 1.00}
+sandbox: scratch
+---
+ROLE:tester. Do the one task in the prompt and answer.
+";
+
+const TWO_AGENTS: &str = "META = {\"name\": \"two\", \"description\": \"Two agents and a finding\", \"phases\": [\"ask\"]}\n\
+def main(args):\n    phase(\"ask\")\n    log(\"asking\", args[\"topic\"])\n    got = parallel([lambda: agent(\"first \" + args[\"topic\"], label = \"one\"), lambda: agent(\"second\", label = \"two\")])\n    return {\"answers\": got, \"findings\": [{\"lens\": \"correctness\", \"severity\": \"high\", \"file\": \"a.rs\", \"line\": 3, \"claim\": \"off by one\", \"evidence\": \"i <= n\"}]}\n";
+
+/// WF1, WF7, BG3 through the daemon: `RunWorkflow` answers with the queued run at once; progress,
+/// `log()` lines and findings are broadcast; the result relays into the parent session, starting a
+/// turn there; the run is listed with its journal.
+#[test]
+fn parity_wf7_a_workflow_run_streams_progress_and_its_result_starts_a_turn() {
+    let home = temp_home("workflow");
+    std::fs::write(home.join("roles").join("workflow.md"), WORKFLOW_ROLE).unwrap();
+    std::fs::create_dir_all(home.join("workflows")).unwrap();
+    std::fs::write(home.join("workflows").join("two.star"), TWO_AGENTS).unwrap();
+    let p = Arc::new(Routed::default());
+    p.conductor(reply("Hello."));
+    p.conductor(reply("The workflow found one issue."));
+    p.crew(reply("answer one"));
+    p.crew(reply("answer two"));
+    let d = start(&home, p.clone(), true);
+    let mut a = Client::connect(&d.info);
+    a.send(&Request::Ask { session: None, text: "hello".into(), workspace: None, images: Vec::new(), options: None });
+    let first = a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
+    let session = first
+        .iter()
+        .find_map(|e| match &e.event {
+            Event::TurnStarted { session, .. } => Some(session.clone()),
+            _ => None,
+        })
+        .unwrap();
+
+    a.send(&Request::RunWorkflow {
+        session: Some(session.clone()),
+        name: Some("two".into()),
+        script_path: None,
+        args: serde_json::json!({"topic": "rust"}),
+        resume_from: None,
+    });
+    let queued = a.until(|e| matches!(&e.event, Event::RunUpdated(_)) && e.seq == 0);
+    let run = reply_run(&queued);
+    let rest = a.until_event(|e| matches!(e, Event::TurnStarted { session: s, .. } if *s == session));
+    let all: Vec<&Event> = queued.iter().chain(rest.iter()).map(|e| &e.event).collect();
+    assert!(
+        all.iter().any(|e| matches!(e, Event::WorkflowUpdated(i) if i.run == run && i.agents.len() == 2 && i.phases == ["ask"])),
+        "progress with both agents"
+    );
+    assert!(all.iter().any(|e| matches!(e, Event::WorkflowLog { line, .. } if line == "asking rust")));
+    assert!(all.iter().any(|e| matches!(e, Event::Findings { run: Some(r), findings, .. } if *r == run && findings.len() == 1)));
+    let dispatch = all
+        .iter()
+        .find_map(|e| match e {
+            Event::RunFinished { run: r, dispatch } if *r == run => Some(dispatch.clone()),
+            _ => None,
+        })
+        .expect("the run finished");
+    assert!(dispatch.summary.contains("answer one") && dispatch.summary.contains("answer two"), "{}", dispatch.summary);
+    let relay = rest
+        .iter()
+        .find_map(|e| match &e.event {
+            Event::TurnStarted { session: s, user, .. } if *s == session => Some(user.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(relay.contains("Workflow `two` finished"), "the completion notice starts a turn: {relay}");
+    a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
+
+    // Listed, with its journal and findings.
+    a.send(&Request::ListWorkflows);
+    let got = a.until_event(|e| matches!(e, Event::WorkflowList { .. }));
+    let Event::WorkflowList { saved, runs } = &got.last().unwrap().event else { unreachable!() };
+    assert!(saved.iter().any(|s| s.name == "two") && saved.iter().any(|s| s.name == "code-review"));
+    assert!(runs.iter().any(|r| r.run == run && r.agents.len() == 2));
+    a.send(&Request::ListFindings { run: Some(run.clone()), session: None });
+    let got = a.until_event(|e| matches!(e, Event::Findings { .. }));
+    assert!(matches!(&got.last().unwrap().event, Event::Findings { findings, .. } if findings.len() == 1));
+    let journal = home.join("workflows").join("runs").join(run.as_str()).join("journal.jsonl");
+    assert_eq!(std::fs::read_to_string(&journal).unwrap().lines().count(), 3, "two agents and the result");
+    // A bad script is refused before anything is queued.
+    a.send(&Request::RunWorkflow { session: None, name: Some("nope".into()), script_path: None, args: serde_json::Value::Null, resume_from: None });
+    let got = a.until_event(|e| matches!(e, Event::Error { .. }));
+    assert!(matches!(&got.last().unwrap().event, Event::Error { message, .. } if message.contains("no workflow named")));
+    stop(d);
+}
+
+/// The conductor's tools with a `workflow` that launches `two` through the session's launcher and
+/// waits, as the exec tool does for `background:false`.
+struct WaitingWorkflowTools;
+
+impl ToolHost for WaitingWorkflowTools {
+    fn specs(&self) -> Vec<ToolSpec> {
+        let mut s = FakeTools.specs();
+        s.push(ToolSpec { name: "workflow".into(), description: "workflow".into(), input_schema: serde_json::json!({"type": "object"}) });
+        s
+    }
+
+    fn call(&self, call: &ToolCallReq, ctx: &ToolCtx) -> ToolOutcome {
+        FakeTools.call(call, ctx)
+    }
+
+    fn consequence(&self, call: &ToolCallReq) -> Consequence {
+        if call.name == "workflow" {
+            return Consequence::Free;
+        }
+        FakeTools.consequence(call)
+    }
+
+    fn call_scoped(&self, call: &ToolCallReq, cx: &marlowe_agent::CallCtx) -> ToolOutcome {
+        use marlowe_workflow::service::{LaunchRequest, Waited};
+        if call.name != "workflow" {
+            return FakeTools.call(call, &cx.tool);
+        }
+        let Some(marlowe_workflow::Workflows(launcher)) = cx.scope.services.get::<marlowe_workflow::Workflows>().cloned() else {
+            return ToolOutcome::error("no launcher");
+        };
+        let req = LaunchRequest {
+            session: Some(cx.session.clone()),
+            name: Some("two".into()),
+            args: serde_json::json!({"topic": "rust"}),
+            background: false,
+            ..Default::default()
+        };
+        let launched = match launcher.launch(req) {
+            Ok(l) => l,
+            Err(e) => return ToolOutcome::error(e),
+        };
+        match launcher.wait(&launched.run_id, &cx.cancel) {
+            Waited::Done { value, .. } => ToolOutcome::ok(format!("returned {value}"), "done"),
+            other => ToolOutcome::error(format!("{other:?}")),
+        }
+    }
+}
+
+/// A waited-on workflow (`/code-review`, `/simplify`) is delivered once: as the tool result. The
+/// crew's relay holds off, so no second turn re-reports it.
+#[test]
+fn parity_wf7_a_waited_workflow_is_delivered_once_as_the_tool_result() {
+    use marlowe_workflow::service;
+    let home = temp_home("workflow-wait");
+    std::fs::write(home.join("roles").join("workflow.md"), WORKFLOW_ROLE).unwrap();
+    std::fs::create_dir_all(home.join("workflows")).unwrap();
+    std::fs::write(home.join("workflows").join("two.star"), TWO_AGENTS).unwrap();
+    // Approved earlier, so the launch runs without a fresh approval.
+    service::trust(&home, &service::prepare(&service::roots(&home, None, vec![]), None, None, Some("two")).unwrap()).unwrap();
+    let p = Arc::new(Routed::default());
+    p.conductor(tool_call("c1", "workflow", r#"{"name":"two","background":false}"#));
+    p.conductor(reply("The review found one issue."));
+    p.conductor(reply("Second request answered."));
+    p.crew(reply("answer one"));
+    p.crew(reply("answer two"));
+    let mut deps = deps(p.clone(), true);
+    deps.tools = Arc::new(|_| Arc::new(WaitingWorkflowTools) as Arc<dyn ToolHost>);
+    let d = Daemon::start(deps, &home, DaemonConfig::default()).expect("daemon starts");
+    let info = d.info();
+    let d = Running { info, join: std::thread::spawn(move || d.wait()) };
+    let mut a = Client::connect(&d.info);
+
+    a.send(&Request::Ask { session: None, text: "review it".into(), workspace: None, images: Vec::new(), options: None });
+    let first = a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
+    assert!(first.iter().any(|e| matches!(&e.event, Event::ToolFinished { ok: true, .. })), "{first:#?}");
+    let session = first
+        .iter()
+        .find_map(|e| match &e.event {
+            Event::TurnStarted { session, .. } => Some(session.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let run = first
+        .iter()
+        .find_map(|e| match &e.event {
+            Event::RunFinished { run, .. } => Some(run.clone()),
+            _ => None,
+        })
+        .expect("the run finished inside the turn");
+    // The value came back as the tool result.
+    let reqs = p.requests();
+    let follow_up = reqs.iter().filter(|(c, _)| !c).nth(1).map(|(_, r)| r.clone()).expect("the conductor's follow-up");
+    assert!(serde_json::to_string(&follow_up.messages).unwrap().contains("answer one"), "the tool result carries the value");
+
+    // The next turn in the session is the user's, not a relay of the same result.
+    a.send(&Request::Ask { session: Some(session.clone()), text: "next".into(), workspace: None, images: Vec::new(), options: None });
+    let next = a.until_event(|e| matches!(e, Event::TurnStarted { session: s, .. } if *s == session));
+    let user = next
+        .iter()
+        .find_map(|e| match &e.event {
+            Event::TurnStarted { user, .. } => Some(user.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(user, "next", "no relay turn for a result the tool already returned");
+    a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
+    assert_eq!(p.requests().iter().filter(|(c, _)| !c).count(), 3, "the tool call, its follow-up, the user's next turn");
+    stop(d);
+    // Nothing is left due for a later relay: a restart does not deliver it again.
+    let p2 = Arc::new(Routed::default());
+    let d = start(&home, p2.clone(), true);
+    let mut b = Client::connect(&d.info);
+    b.send(&Request::ListRuns { limit: 10 });
+    let got = b.until_event(|e| matches!(e, Event::Runs { .. }));
+    assert!(matches!(&got.last().unwrap().event, Event::Runs { list } if list.iter().any(|r| r.id == run)));
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(p2.requests().is_empty(), "no relay turn after the restart");
+    stop(d);
+}

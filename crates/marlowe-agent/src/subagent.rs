@@ -41,9 +41,9 @@ use crate::tools::{
 };
 
 /// Tools a subagent never gets: no nesting (depth 1), no questions to the user, no session-level
-/// moves, no crew dispatch.
+/// moves, no crew dispatch, no workflows (WF2: only the conductor starts them).
 pub const NEVER_FOR_SUBAGENTS: &[&str] =
-    &["agent", "send_message", "ask_user", "enter_worktree", "exit_worktree", "exit_plan", "dispatch"];
+    &["agent", "send_message", "ask_user", "enter_worktree", "exit_worktree", "exit_plan", "dispatch", "workflow"];
 
 /// Read-only tools by name, for hosts that do not publish manifests.
 const READ_ONLY_NAMES: &[&str] = &[

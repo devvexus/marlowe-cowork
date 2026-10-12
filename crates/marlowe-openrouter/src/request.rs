@@ -187,6 +187,12 @@ pub fn request_body_with(req: &ChatRequest, opts: &BodyOptions<'_>) -> Value {
     if let Some(r) = &opts.reasoning {
         body["reasoning"] = r.clone();
     }
+    // Structured output (a workflow agent's finalisation call). Not `strict`: strict mode (OpenAI
+    // models) refuses any schema with an optional property or without `additionalProperties:
+    // false` on every object, which script schemas rarely have. The answer is validated after.
+    if let Some(schema) = &req.format {
+        body["response_format"] = json!({"type": "json_schema", "json_schema": {"name": "answer", "strict": false, "schema": schema}});
+    }
     body
 }
 
@@ -334,6 +340,24 @@ mod tests {
         ];
         req.tools = vec![ToolSpec { name: "read".into(), description: "Read".into(), input_schema: json!({"type":"object"}) }];
         req
+    }
+
+    #[test]
+    fn a_schema_rides_as_a_non_strict_response_format_and_is_absent_otherwise() {
+        let mut req = convo("openai/gpt-5");
+        assert!(request_body(&req, None).get("response_format").is_none());
+        // code-review's FINDING: optional `line` and `fix`, no `additionalProperties`.
+        let schema = json!({
+            "type": "object",
+            "properties": {"file": {"type": "string"}, "line": {"type": "integer"}, "fix": {"type": "string"}},
+            "required": ["file"]
+        });
+        req.format = Some(schema.clone());
+        let body = request_body(&req, None);
+        let rf = &body["response_format"];
+        assert_eq!(rf["type"], "json_schema");
+        assert_eq!(rf["json_schema"]["strict"], false, "strict mode would reject optional properties");
+        assert_eq!(rf["json_schema"]["schema"], schema, "the schema rides unchanged");
     }
 
     #[test]

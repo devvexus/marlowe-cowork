@@ -135,6 +135,12 @@ pub enum CrewEvent {
     PlanProposed { run: RunId, session: Option<SessionId>, plan: ResearchPlan, quote: CostQuote },
     /// A deep research run's stage moved.
     Research { run: RunId, progress: ResearchProgress },
+    /// A workflow run's progress view changed (track W).
+    Workflow(marlowe_proto::WorkflowInfo),
+    /// One `log()` line of a workflow run.
+    WorkflowLog { run: RunId, line: String },
+    /// A workflow run returned findings in the 3.7 schema; they are stored under the run.
+    Findings { run: RunId, session: Option<SessionId>, findings: Vec<marlowe_proto::Finding> },
 }
 
 /// Handle to the supervisor. Clones share one.
@@ -598,6 +604,43 @@ impl Supervisor {
         Ok(receipt)
     }
 
+    /// Queues a workflow run (track W) and returns at once, like [`Supervisor::dispatch`], with
+    /// `Run.workflow` set before the run can start. `prepare` gets the new run's id and returns
+    /// the script reference (an inline script is written under the run's directory there); its
+    /// error means nothing was queued.
+    pub fn dispatch_workflow(
+        &self,
+        session: Option<SessionId>,
+        args: DispatchArgs,
+        prepare: impl FnOnce(&RunId) -> Result<marlowe_proto::WorkflowRef, String>,
+    ) -> Result<DispatchReceipt, CrewError> {
+        let card = lock(&self.inner.roles).get(&args.role).cloned().ok_or_else(|| CrewError::UnknownRole(args.role.clone()))?;
+        let budget = args.budget.unwrap_or_default();
+        let workspace = args.workspace.as_deref().map(str::trim).filter(|w| !w.is_empty()).map(PathBuf::from);
+        let mut run = Run::new(session, &card, &args.goal, None, workspace, budget);
+        run.tainted = args.tainted;
+        run.workflow = Some(prepare(&run.id).map_err(|message| CrewError::Step { step: "workflow".into(), message })?);
+        let pricing = self.inner.priced_model(&card).and_then(|m| m.pricing);
+        let receipt = DispatchReceipt {
+            run_id: run.id.clone(),
+            role: card.name.clone(),
+            playbook: None,
+            estimate: Estimate::for_run(&card, None, &budget, pricing.as_ref()),
+        };
+        self.inner.store().save(&run)?;
+        let ev = CrewEvent::Updated(run.info());
+        {
+            let mut st = self.inner.state();
+            if st.stopping {
+                return Err(CrewError::Stopped);
+            }
+            self.inner.enqueue(&mut st, run);
+        }
+        self.inner.emit(ev);
+        self.inner.wake();
+        Ok(receipt)
+    }
+
     /// The role cards in force.
     /// Runs with a live thread now (running, or waiting on the user mid-run).
     pub fn running(&self) -> usize {
@@ -893,6 +936,7 @@ impl Supervisor {
             MergeOutcome::MergeCommit { commit } => format!("merged: merge commit {}", short_sha(commit)),
             MergeOutcome::NothingToMerge => "nothing to merge; the worktree is removed".into(),
             MergeOutcome::ReportCopied { path } => format!("report saved to {}", path.display()),
+            MergeOutcome::Applied { files } => format!("applied to the working tree, uncommitted: {} file(s)", files.len()),
         });
         self.inner.save_detached(r)?;
         Ok(outcome)

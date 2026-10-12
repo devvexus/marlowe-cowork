@@ -22,7 +22,7 @@ use marlowe_model::Effort;
 use marlowe_proto::{CrewBudget, RoleInfo, SandboxKind, Slot};
 
 /// The shipped cards, `(file stem, text)`.
-pub const BUILTIN_ROLES: [(&str, &str); 7] = [
+pub const BUILTIN_ROLES: [(&str, &str); 8] = [
     ("researcher", include_str!("../../../roles/researcher.md")),
     ("engineer", include_str!("../../../roles/engineer.md")),
     ("reviewer", include_str!("../../../roles/reviewer.md")),
@@ -30,6 +30,8 @@ pub const BUILTIN_ROLES: [(&str, &str); 7] = [
     ("scout", include_str!("../../../roles/scout.md")),
     ("compressor", include_str!("../../../roles/compressor.md")),
     ("verifier", include_str!("../../../roles/verifier.md")),
+    // A workflow script's agents (M4.6 W).
+    ("workflow", include_str!("../../../roles/workflow.md")),
 ];
 
 /// Where a card came from.

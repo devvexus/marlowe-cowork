@@ -21,7 +21,7 @@ fn temp_home(name: &str) -> PathBuf {
 fn every_builtin_card_parses_with_its_intended_shape() {
     let roles = Roles::builtin();
     let names: Vec<&str> = roles.cards().map(|c| c.name.as_str()).collect();
-    assert_eq!(names, ["analyst", "compressor", "engineer", "researcher", "reviewer", "scout", "verifier"]);
+    assert_eq!(names, ["analyst", "compressor", "engineer", "researcher", "reviewer", "scout", "verifier", "workflow"]);
     for card in roles.cards() {
         assert_eq!(card.source, RoleSource::Builtin);
         // The compression role is cheap work on the Quick slot; every other card has its own.
@@ -42,7 +42,7 @@ fn every_builtin_card_parses_with_its_intended_shape() {
     assert_eq!(scout.budget, CrewBudget { tokens: Some(150_000), steps: Some(25), usd: Some(0.5) });
     assert!(scout.allows("arxiv") && scout.allows("paper") && !scout.allows("write"));
     assert_eq!(roles.get("researcher").unwrap().sandbox, SandboxKind::Scratch);
-    assert_eq!(roles.infos().len(), 7);
+    assert_eq!(roles.infos().len(), 8);
     for name in ["compressor", "verifier"] {
         let card = roles.get(name).unwrap();
         assert!(card.tools.is_empty() && card.sandbox == SandboxKind::None, "{name} reads only what it is given");
@@ -81,7 +81,7 @@ fn a_user_card_overrides_by_name_and_a_bad_one_is_reported_not_fatal() {
     assert_eq!(stat.tools, ["python", "read"]);
     assert_eq!(stat.budget, CrewBudget { tokens: None, steps: Some(30), usd: Some(1.25) });
     assert_eq!(stat.effort, Effort::Medium);
-    assert_eq!(roles.cards().count(), 8);
+    assert_eq!(roles.cards().count(), 9);
     assert_eq!(roles.problems().len(), 1);
     assert_eq!(roles.problems()[0].1, RoleError::NoFrontmatter);
     let _ = std::fs::remove_dir_all(&home);

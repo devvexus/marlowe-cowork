@@ -18,6 +18,8 @@ marlowe-os.workspace = true
 # dependency list for it; integ regenerates Cargo.lock rather than hand-merging it.
 marlowe-code.workspace = true
 marlowe-verify.workspace = true
+# M4.6 W: the `workflow` tool checks scripts and reaches the launcher service.
+marlowe-workflow.workspace = true
 # Chrome DevTools Protocol over a synchronous websocket (tungstenite; no tokio), driving the system
 # Microsoft Edge for client-rendered pages. Default `offline` feature: the protocol bindings are
 # pre-generated, nothing is downloaded at build time; the `fetch` feature (downloads a Chromium)

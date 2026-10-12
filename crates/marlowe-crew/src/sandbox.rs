@@ -8,6 +8,14 @@
 //!
 //! A worktree shares `.git/config` and hooks with the original checkout, so the sandbox records a
 //! digest of them at creation and refuses to diff or merge once they have changed.
+//!
+//! A workflow run works on the user's checkout as it is, uncommitted changes included (a
+//! `/code-review` of "the pending changes"): its worktree is seeded with a snapshot of the
+//! original working tree (tracked changes, staged or not, and untracked files git does not
+//! ignore), kept alive by `refs/marlowe-seed/<run-id>`. In the worktree those changes show as
+//! uncommitted, so `git diff` there sees what it would see in the checkout. Diffs are taken against
+//! the snapshot, and the merge copies the run's own changes into the original working tree, file by
+//! file, refusing when the user changed one of those files since the run started.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -49,6 +57,8 @@ pub enum MergeOutcome {
     NothingToMerge,
     /// A research run's report was accepted and copied into the workspace.
     ReportCopied { path: PathBuf },
+    /// A seeded run's changes were copied into the original working tree, uncommitted.
+    Applied { files: Vec<String> },
 }
 
 /// Whether a crew shell command may run without asking.
@@ -67,6 +77,11 @@ pub fn branch_name(run: &RunId) -> String {
 /// `<home>\worktrees\<run-id>`.
 pub fn worktree_path(home: &Path, run: &RunId) -> PathBuf {
     home.join("worktrees").join(run.as_str())
+}
+
+/// The ref that keeps a seeded worktree's snapshot commit (and marks the sandbox as seeded).
+fn seed_ref(branch: &str) -> String {
+    format!("refs/marlowe-seed/{}", branch.strip_prefix("crew/").unwrap_or(branch))
 }
 
 /// `<home>\scratch\<run-id>`.
@@ -243,8 +258,14 @@ impl Sandbox {
     /// `Scratch`) creates `<home>\scratch\<run-id>`. `None` creates the scratch dir as a cwd only.
     /// Idempotent: a resumed run finds its existing worktree or scratch dir.
     pub fn create(home: &Path, run: &RunId, workspace: Option<&Path>, want: SandboxKind) -> Result<Sandbox, CrewError> {
+        Self::create_with(home, run, workspace, want, false)
+    }
+
+    /// [`Sandbox::create`]; with `pending`, a worktree starts from the original working tree as it
+    /// is, uncommitted changes included, and merges back into that working tree (workflow runs).
+    pub fn create_with(home: &Path, run: &RunId, workspace: Option<&Path>, want: SandboxKind, pending: bool) -> Result<Sandbox, CrewError> {
         if want == SandboxKind::Worktree {
-            if let Some(sb) = Self::worktree(home, run, workspace)? {
+            if let Some(sb) = Self::worktree(home, run, workspace, pending)? {
                 return Ok(sb);
             }
         }
@@ -255,7 +276,7 @@ impl Sandbox {
     }
 
     /// The worktree for `run`, or `None` when the workspace is not a git checkout with a commit.
-    fn worktree(home: &Path, run: &RunId, workspace: Option<&Path>) -> Result<Option<Sandbox>, CrewError> {
+    fn worktree(home: &Path, run: &RunId, workspace: Option<&Path>, pending: bool) -> Result<Option<Sandbox>, CrewError> {
         let Some(ws) = workspace.filter(|w| is_git_repo(w)) else { return Ok(None) };
         let origin = PathBuf::from(git(ws, &["rev-parse", "--show-toplevel"])?);
         let Ok(head) = git(&origin, &["rev-parse", "--verify", "HEAD"]) else { return Ok(None) };
@@ -271,9 +292,11 @@ impl Sandbox {
             base: Some(base),
             repo_digest: repo_digest(&origin),
         };
+        let seeded = git(&origin, &["rev-parse", "--verify", "--quiet", &seed_ref(&branch)]).ok();
         if root.join(".git").exists() && branch_exists {
-            // Resumed: the base is where the branch left the checkout's history.
-            let base = git(&origin, &["merge-base", &branch, "HEAD"]).unwrap_or(head);
+            // Resumed: the base is the snapshot it was seeded with, or where the branch left the
+            // checkout's history.
+            let base = seeded.unwrap_or_else(|| git(&origin, &["merge-base", &branch, "HEAD"]).unwrap_or(head));
             return Ok(Some(sandbox(base)));
         }
         if let Some(parent) = root.parent() {
@@ -287,7 +310,18 @@ impl Sandbox {
             git(&origin, &["worktree", "add", "-b", &branch, &path, &head])?;
             head
         };
-        Ok(Some(sandbox(base)))
+        if !pending || branch_exists {
+            return Ok(Some(sandbox(seeded.unwrap_or(base))));
+        }
+        let seed = snapshot(&origin, &base, &root.with_extension("seed-index"))?;
+        git(&origin, &["update-ref", &seed_ref(&branch), &seed])?;
+        if seed != base {
+            // The snapshot's files into the worktree, then the index back to HEAD: the changes are
+            // uncommitted there, as they are in the checkout.
+            git(&root, &["read-tree", "-u", "--reset", &seed])?;
+            git(&root, &["reset", "--quiet"])?;
+        }
+        Ok(Some(sandbox(seed)))
     }
 
     /// The wire view.
@@ -362,17 +396,29 @@ impl Sandbox {
         git(&self.root, &["diff", "--no-ext-diff", "--no-textconv", base])
     }
 
+    /// Whether the worktree was seeded with the original working tree ([`Sandbox::create_with`]).
+    pub fn is_seeded(&self) -> bool {
+        match (self.kind, self.origin.as_deref(), self.branch.as_deref()) {
+            (SandboxKind::Worktree, Some(origin), Some(branch)) => git(origin, &["rev-parse", "--verify", "--quiet", &seed_ref(branch)]).is_ok(),
+            _ => false,
+        }
+    }
+
     /// Daemon only, after the user approved: commits anything uncommitted in the worktree, then
     /// fast-forwards (else merge-commits) `crew/<run-id>` into the origin's current branch.
-    /// Refuses when the origin has uncommitted changes to the same files. Never pushes.
+    /// Refuses when the origin has uncommitted changes to the same files. Never pushes. A seeded
+    /// worktree's changes are copied into the origin's working tree instead ([`MergeOutcome::Applied`]).
     pub fn merge(&self) -> Result<MergeOutcome, CrewError> {
-        let (origin, branch, _) = self.worktree_parts()?;
+        let (origin, branch, base) = self.worktree_parts()?;
         git(&self.root, &["add", "--all"])?;
         if !git(&self.root, &["status", "--porcelain"])?.is_empty() {
             let msg = format!("{branch}: crew changes");
             let mut args = identity_args(&self.root);
             args.extend(["commit", "--quiet", "--no-verify", "-m", &msg]);
             git(&self.root, &args)?;
+        }
+        if self.is_seeded() {
+            return self.apply_to_working_tree(origin, base);
         }
         let current = git(origin, &["symbolic-ref", "--quiet", "--short", "HEAD"])
             .map_err(|_| CrewError::Git("the original checkout is on a detached HEAD; check out a branch first".into()))?;
@@ -427,9 +473,102 @@ impl Sandbox {
             if git(origin, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_ok() {
                 git(origin, &["branch", "-D", branch])?;
             }
+            let seed = seed_ref(branch);
+            if git(origin, &["rev-parse", "--verify", "--quiet", &seed]).is_ok() {
+                git(origin, &["update-ref", "-d", &seed])?;
+            }
         }
         Ok(())
     }
+
+    /// A seeded worktree's merge: every file the run changed since the snapshot `seed` is copied
+    /// (or deleted) in the origin's working tree, uncommitted. Refuses, changing nothing, when one
+    /// of those files in the origin is no longer what the snapshot had.
+    fn apply_to_working_tree(&self, origin: &Path, seed: &str) -> Result<MergeOutcome, CrewError> {
+        let listing = git(&self.root, &["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-status", "-z", seed, "HEAD"])?;
+        let mut parts = listing.split('\0').filter(|p| !p.is_empty());
+        let mut changes: Vec<(char, String)> = Vec::new();
+        while let (Some(status), Some(path)) = (parts.next(), parts.next()) {
+            changes.push((status.chars().next().unwrap_or('M'), path.to_string()));
+        }
+        if changes.is_empty() {
+            return Ok(MergeOutcome::NothingToMerge);
+        }
+        // What the origin's file is now, as a blob id (through the same filters git uses).
+        let now = |path: &str| -> Option<String> {
+            let full = origin.join(path);
+            full.is_file().then(|| git(origin, &["hash-object", "--", path]).ok()).flatten()
+        };
+        let mut clash = Vec::new();
+        for (status, path) in &changes {
+            let full = normalize(origin, Path::new(path));
+            if !within(origin, &full) {
+                return Err(CrewError::Git(format!("refusing a path outside the checkout: {path}")));
+            }
+            let was = if *status == 'A' { None } else { git(&self.root, &["rev-parse", "--verify", "--quiet", &format!("{seed}:{path}")]).ok() };
+            if now(path) != was {
+                clash.push(path.as_str());
+            }
+        }
+        if !clash.is_empty() {
+            return Err(CrewError::Git(format!(
+                "the original checkout changed since this run started ({}); nothing was changed",
+                clash.iter().take(5).copied().collect::<Vec<_>>().join(", ")
+            )));
+        }
+        for (status, path) in &changes {
+            let dest = origin.join(path);
+            if *status == 'D' {
+                match std::fs::remove_file(&dest) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                    _ => {}
+                }
+            } else {
+                if let Some(dir) = dest.parent() {
+                    std::fs::create_dir_all(dir)?;
+                }
+                std::fs::copy(self.root.join(path), &dest)?;
+            }
+        }
+        Ok(MergeOutcome::Applied { files: changes.into_iter().map(|(_, p)| p).collect() })
+    }
+}
+
+/// A commit of `origin`'s working tree as it is (tracked changes, staged or not, and untracked
+/// files git does not ignore) on top of `head`; `head` itself when nothing is pending. Built in a
+/// scratch index, so the checkout's own index is never touched.
+fn snapshot(origin: &Path, head: &str, scratch_index: &Path) -> Result<String, CrewError> {
+    let index = PathBuf::from(git(origin, &["rev-parse", "--path-format=absolute", "--git-path", "index"])?);
+    let _ = std::fs::remove_file(scratch_index);
+    let with_index = |args: &[&str]| -> Result<String, CrewError> {
+        let out = git_cmd(origin)
+            .env("GIT_INDEX_FILE", scratch_index)
+            .args(args)
+            .output()
+            .map_err(|e| CrewError::Git(format!("cannot run git: {e}")))?;
+        if !out.status.success() {
+            return Err(CrewError::Git(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim())));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
+    };
+    // A copy of the real index keeps its stat data, so unchanged files are not hashed again.
+    let built = (|| {
+        if index.is_file() {
+            std::fs::copy(&index, scratch_index)?;
+        } else {
+            with_index(&["read-tree", head])?;
+        }
+        with_index(&["add", "--all"])?;
+        with_index(&["write-tree"])
+    })();
+    let _ = std::fs::remove_file(scratch_index);
+    let tree = built?;
+    if tree == git(origin, &["rev-parse", &format!("{head}^{{tree}}")])? {
+        return Ok(head.to_string());
+    }
+    let mut args = identity_args(origin);
+    args.extend(["commit-tree", &tree, "-p", head, "-m", "marlowe: the working tree a workflow run started from"]);
+    git(origin, &args)
 }
 
 /// Paths named by `git status --porcelain` (both sides of a rename).

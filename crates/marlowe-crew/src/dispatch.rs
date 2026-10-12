@@ -17,6 +17,8 @@ pub const DISPATCH_TOOL: &str = "dispatch";
 
 /// The tool declaration. `roles` fills the `role` enum and its description.
 pub fn dispatch_spec(roles: &[RoleInfo]) -> ToolSpec {
+    // The workflow role runs only a workflow script's agents (the `workflow` tool starts those).
+    let roles: Vec<&RoleInfo> = roles.iter().filter(|r| r.name != crate::playbook::script::WORKFLOW_ROLE).collect();
     let names: Vec<&str> = roles.iter().map(|r| r.name.as_str()).collect();
     let menu: Vec<String> = roles.iter().map(|r| format!("{}: {}", r.name, r.description)).collect();
     ToolSpec {
