@@ -1,33 +1,43 @@
 [
   {
     "name": "glob",
-    "description": "List files by gitignore-style pattern, newest first (`*.rs`, `src/*.rs`, `**/x`, `!x` excludes). Hidden files are listed; ignored files are not.",
+    "description": "Find files by glob (`**/*.rs`; `!x` excludes), newest first; gitignored files are skipped.",
     "input_schema": {
-      "additionalProperties": false,
+      "type": "object",
       "properties": {
-        "head_limit": {
+        "pattern": {},
+        "path": {},
+        "limit": {
           "type": "integer"
         },
         "offset": {
           "type": "integer"
-        },
-        "path": {
-          "type": "string"
-        },
-        "pattern": {
-          "type": "string"
         }
       },
-      "required": [],
-      "type": "object"
+      "required": [
+        "pattern"
+      ]
     }
   },
   {
     "name": "grep",
-    "description": "Search contents with ripgrep (Rust regex). `output_mode`: files_with_matches (default), content (`path:line:text`), count. Hidden files are searched, gitignored ones are not. `head_limit` default 250, 0 for all.",
+    "description": "Search contents with ripgrep regex. `output_mode`: files_with_matches (default), content, count. `limit` default 250, 0 = all.",
     "input_schema": {
-      "additionalProperties": false,
+      "type": "object",
       "properties": {
+        "pattern": {},
+        "path": {},
+        "glob": {},
+        "type": {
+          "description": "e.g. rs, py"
+        },
+        "output_mode": {
+          "enum": [
+            "files_with_matches",
+            "content",
+            "count"
+          ]
+        },
         "-A": {
           "type": "integer"
         },
@@ -40,248 +50,109 @@
         "-i": {
           "type": "boolean"
         },
-        "glob": {
-          "type": "string"
-        },
-        "head_limit": {
-          "type": "integer"
-        },
         "multiline": {
           "type": "boolean"
         },
-        "offset": {
+        "limit": {
           "type": "integer"
         },
-        "output_mode": {
-          "enum": [
-            "files_with_matches",
-            "content",
-            "count"
-          ],
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        },
-        "pattern": {
-          "type": "string"
-        },
-        "type": {
-          "type": "string"
+        "offset": {
+          "type": "integer"
         }
       },
       "required": [
         "pattern"
-      ],
-      "type": "object"
+      ]
     }
   },
   {
     "name": "bash",
-    "description": "Run a command in bash (Git Bash on Windows); stdin closed. Output is capped at 30 KB (failure lines and the end; the log's path is given). Killed at `timeout_ms` (default 120000). `run_in_background` for a server or long build: you get a job id and are told when it exits.",
+    "description": "Run a bash command (Git Bash on Windows; no stdin). Long output keeps failures and the end unless `raw`. `timeout_ms` default 120000. `background` for servers and long builds: returns a task id and you are told when it ends; don't poll.",
     "input_schema": {
-      "additionalProperties": false,
+      "type": "object",
       "properties": {
-        "command": {
-          "type": "string"
-        },
-        "cwd": {
-          "type": "string"
-        },
-        "description": {
-          "type": "string"
-        },
-        "raw": {
-          "type": "boolean"
-        },
-        "run_in_background": {
-          "type": "boolean"
-        },
+        "command": {},
+        "cwd": {},
         "timeout_ms": {
           "type": "integer"
+        },
+        "background": {
+          "type": "boolean"
+        },
+        "label": {},
+        "raw": {
+          "type": "boolean"
         }
       },
       "required": [
         "command"
-      ],
-      "type": "object"
+      ]
     }
   },
   {
     "name": "powershell",
-    "description": "Run a command in Windows PowerShell (-NoProfile -NonInteractive); output, timeout and `run_in_background` work as in `bash`.",
+    "description": "Run Windows PowerShell 5.1 (`;` not `&&`). Options as bash.",
     "input_schema": {
-      "additionalProperties": false,
+      "type": "object",
       "properties": {
-        "command": {
-          "type": "string"
-        },
-        "cwd": {
-          "type": "string"
-        },
-        "description": {
-          "type": "string"
-        },
-        "raw": {
-          "type": "boolean"
-        },
-        "run_in_background": {
-          "type": "boolean"
-        },
+        "command": {},
+        "cwd": {},
         "timeout_ms": {
           "type": "integer"
+        },
+        "background": {
+          "type": "boolean"
+        },
+        "label": {},
+        "raw": {
+          "type": "boolean"
         }
       },
       "required": [
         "command"
-      ],
-      "type": "object"
+      ]
     }
   },
   {
     "name": "python",
-    "description": "Run Python: an inline snippet (`code`) or a script (`path`), exactly one. Output, timeout and `run_in_background` work as in `bash`.",
+    "description": "Run Python `code`, or the script at `path` with `args`. Options as bash.",
     "input_schema": {
-      "additionalProperties": false,
+      "type": "object",
       "properties": {
+        "code": {},
+        "path": {},
         "args": {
-          "items": {
-            "type": "string"
-          },
           "type": "array"
         },
-        "code": {
-          "type": "string"
-        },
-        "cwd": {
-          "type": "string"
-        },
-        "description": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        },
-        "raw": {
-          "type": "boolean"
-        },
-        "run_in_background": {
-          "type": "boolean"
-        },
+        "cwd": {},
         "timeout_ms": {
           "type": "integer"
-        }
-      },
-      "required": [],
-      "type": "object"
-    }
-  },
-  {
-    "name": "job_output",
-    "description": "Read a background job's output: what is new since your last read, or from byte offset `since` (the `next since` of a read). `filter` keeps lines matching a regex. The result ends with the job's status and the next offset.",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "filter": {
-          "type": "string"
         },
-        "id": {
-          "description": "e.g. \"j3\"",
-          "type": "string"
+        "background": {
+          "type": "boolean"
         },
-        "since": {
-          "type": "integer"
+        "label": {},
+        "raw": {
+          "type": "boolean"
         }
-      },
-      "required": [
-        "id"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "name": "job_watch",
-    "description": "Follow a running background job: its new output lines reach you as notices between steps until a line matches `until_regex` (the watch ends and you are told) or the job exits. `filter` limits it to matching lines. A job's exit is reported without a watch.",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "filter": {
-          "type": "string"
-        },
-        "id": {
-          "description": "e.g. \"j3\"",
-          "type": "string"
-        },
-        "until_regex": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "id"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "name": "job_kill",
-    "description": "Stop a background job and everything it started.",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "id": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "id"
-      ],
-      "type": "object"
+      }
     }
   },
   {
     "name": "arxiv",
-    "description": "Search arXiv: keywords, field queries (`ti:`, `au:`, `abs:`, `cat:`) or an id. Returns titles, authors, dates, ids, abstracts. Results are the authors' claims, not findings; read a paper with `paper`.",
+    "description": "Search arXiv: keywords, `ti:` `au:` `abs:` `cat:` fields or an id. Read a hit with web_fetch.",
     "input_schema": {
-      "additionalProperties": false,
+      "type": "object",
       "properties": {
-        "max": {
-          "description": "Default 8, at most 25.",
-          "type": "integer"
-        },
-        "query": {
-          "type": "string"
+        "query": {},
+        "limit": {
+          "type": "integer",
+          "description": "default 8, max 25"
         }
       },
       "required": [
         "query"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "name": "paper",
-    "description": "Read a paper from an https URL (HTML, PDF, LaTeX source) or an arXiv id: title, authors, numbered sections, abstract and text as markdown, in windows (continue with `offset`). `part: \"references\"` returns the parsed reference list with DOIs and arXiv ids.",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "offset": {
-          "type": "integer"
-        },
-        "part": {
-          "enum": [
-            "text",
-            "references"
-          ],
-          "type": "string"
-        },
-        "url_or_arxiv_id": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "url_or_arxiv_id"
-      ],
-      "type": "object"
+      ]
     }
   }
 ]

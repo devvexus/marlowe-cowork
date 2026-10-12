@@ -12,7 +12,7 @@ use marlowe_mind::{
 };
 use marlowe_model::ToolSpec;
 use marlowe_proto::{Event, SessionId};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::{lock, now_ms};
 
@@ -357,64 +357,9 @@ fn local(ms: i64) -> Option<chrono::DateTime<chrono::Local>> {
     chrono::DateTime::from_timestamp_millis(ms).map(|d| d.with_timezone(&chrono::Local))
 }
 
-fn spec(name: &str, description: &str, schema: Value) -> ToolSpec {
-    ToolSpec { name: name.into(), description: description.into(), input_schema: schema }
-}
-
 /// The four memory tools' declarations (what [`MindTools`] offers the model).
 pub(crate) fn memory_specs() -> Vec<ToolSpec> {
-    let kinds = ["preference", "decision", "fact", "procedure", "result", "note"];
-    vec![
-        spec(
-            "remember",
-            "Record something durable about the user, once, when they state it, unannounced; not \
-             one-offs. A decision needs its `reason`. Results and notes are retrieved when \
-             relevant; the rest goes in the profile. To change a record, use correct.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "text": { "type": "string", "description": "One self-contained statement." },
-                    "kind": { "type": "string", "enum": kinds },
-                    "reason": { "type": "string" },
-                    "scope": { "type": "string", "enum": ["global", "project"], "default": "global" }
-                },
-                "required": ["text", "kind"]
-            }),
-        ),
-        spec(
-            "recall",
-            "Search stored memories (past conversations, episodes, anything not in the profile) \
-             when the user asks about the past.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string" },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": RECALL_MAX, "default": RECALL_DEFAULT }
-                },
-                "required": ["query"]
-            }),
-        ),
-        spec(
-            "forget",
-            "Forget a memory by id. The audit journal keeps the record, not the text.",
-            json!({
-                "type": "object",
-                "properties": { "id": { "type": "string" } },
-                "required": ["id"]
-            }),
-        ),
-        spec(
-            "correct",
-            "Replace a memory's text (recall finds the id); use it, not remember, for something \
-             recorded that changed. A decision keeps its reason only if the text ends with \
-             \"(reason: ...)\". Refused if it would lower trust.",
-            json!({
-                "type": "object",
-                "properties": { "id": { "type": "string" }, "text": { "type": "string" } },
-                "required": ["id", "text"]
-            }),
-        ),
-    ]
+    ["remember", "recall", "forget", "correct"].map(marlowe_agent::compact_specs::spec).to_vec()
 }
 
 impl ToolHost for MindTools {
@@ -703,7 +648,7 @@ mod tests {
                 assert!(persona_text.contains(block.trim_end()), "{:?}'s block is held back", g.group);
             }
         }
-        for held in ["<coding>", "<verify_tools>", "<git_tools>", "## Workflows", "<background_work>"] {
+        for held in ["<coding>", "<verify_tools>", "<git_tools>"] {
             assert!(persona_text.contains(held), "{held} is held back");
         }
         assert_eq!(w.host.persona_blocks().len(), w.system.blocks().len() - 2, "memory and crew are the daemon's; the rest are the host's");
@@ -713,7 +658,6 @@ mod tests {
     /// 2,000, the fitted prefix inside 12,500 with project instructions at their cap arriving
     /// uncut.
     #[test]
-    #[ignore = "until the compact specs land (Specs stage)"]
     fn the_wired_dusk_prefix_fits_its_slices_in_a_repository() {
         use marlowe_agent::context::{estimate_tokens, fit_prefix, tool_spec_tokens, PrefixBudget};
         use marlowe_agent::system::PromptSections;

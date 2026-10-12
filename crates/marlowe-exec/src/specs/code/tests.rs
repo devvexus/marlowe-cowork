@@ -80,7 +80,6 @@ fn the_group_registers_six_tools_offered_only_with_a_workspace() {
     let names: Vec<String> = tools().iter().map(|d| d.name().to_string()).collect();
     assert_eq!(names, ["symbols", "definition", "references", "hover", "diagnostics", "rename_symbol"]);
     for d in tools() {
-        assert_eq!(d.spec.input_schema["additionalProperties"], json!(false));
         assert_eq!(d.manifest.group, ToolGroup::Code);
     }
     let w = project();

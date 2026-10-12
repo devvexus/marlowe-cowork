@@ -56,56 +56,27 @@ pub fn dispatch_spec(roles: &[RoleInfo]) -> ToolSpec {
         .filter(|r| !PLAYBOOK_ROLES.contains(&r.name.as_str()))
         .map(|r| format!("{}: {}", r.name, blurb(&r.name).map_or_else(|| short(&r.description), str::to_string)))
         .collect();
-    ToolSpec {
-        name: DISPATCH_TOOL.to_string(),
-        description: "Send long, parallel or bulky work to a background crew agent in its own \
-                      sandbox. You get a run id at once; the result arrives later. The crew cannot \
-                      see this conversation: the goal must carry the context it needs."
-            .to_string(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "role": {
-                    "type": "string",
-                    "enum": names,
-                    "description": menu.join(" · "),
-                },
-                "goal": {
-                    "type": "string",
-                    "description": "What to find out or build, with the paths, constraints and \
-                                    definition of done.",
-                },
-                "playbook": {
-                    "type": "string",
-                    "enum": ["deep_research", "build"],
-                    "description": "deep_research: scouts, verify, cited report. build: plan, \
-                                    worktree, tests, review, diff. Omit for one role.",
-                },
-                "workspace": { "type": "string" },
-                "budget": {
-                    "type": "object",
-                    "properties": {
-                        "tokens": {"type": "integer"},
-                        "steps": {"type": "integer"},
-                        "usd": {"type": "number"}
-                    },
-                    "description": "Overrides the role's budget; overrun asks the user.",
-                }
-            },
-            "required": ["role", "goal"],
-            "additionalProperties": false,
-        }),
+    let mut spec = marlowe_agent::compact_specs::spec(DISPATCH_TOOL);
+    if let Some(role) = spec.input_schema.pointer_mut("/properties/role") {
+        role["enum"] = json!(names);
+        if !menu.is_empty() {
+            role["description"] = json!(menu.join(" · "));
+        }
     }
+    spec
 }
 
 /// Parsed `dispatch` arguments.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DispatchArgs {
     pub role: String,
+    /// The task, with the context the crew lacks (`prompt` in the tool's schema).
+    #[serde(alias = "prompt")]
     pub goal: String,
     #[serde(default)]
     pub playbook: Option<Playbook>,
-    #[serde(default)]
+    /// Where the run works (`cwd` in the tool's schema).
+    #[serde(default, alias = "cwd")]
     pub workspace: Option<String>,
     #[serde(default)]
     pub budget: Option<CrewBudget>,
@@ -123,7 +94,7 @@ impl DispatchArgs {
             return Err("`role` is required".into());
         }
         if a.goal.trim().is_empty() {
-            return Err("`goal` is required".into());
+            return Err("`prompt` is required: the task, with the context, paths and done-criteria".into());
         }
         Ok(a)
     }
@@ -218,13 +189,13 @@ impl ToolHost for DispatchTools {
             return self.consequence(call);
         }
         let role = call.args.get("role").and_then(Value::as_str).unwrap_or("crew");
-        let goal = crate::run::clip(call.args.get("goal").and_then(Value::as_str).unwrap_or(""), 120);
+        let goal = crate::run::clip(call.args.get("prompt").or_else(|| call.args.get("goal")).and_then(Value::as_str).unwrap_or(""), 120);
         Consequence::Ask { summary: format!("dispatch {role} after untrusted content: {goal}") }
     }
 
     fn describe(&self, call: &ToolCallReq) -> String {
         let role = call.args.get("role").and_then(Value::as_str).unwrap_or("crew");
-        let goal: String = call.args.get("goal").and_then(Value::as_str).unwrap_or("").chars().take(60).collect();
+        let goal: String = call.args.get("prompt").or_else(|| call.args.get("goal")).and_then(Value::as_str).unwrap_or("").chars().take(60).collect();
         format!("dispatch {role} · {goal}")
     }
 }

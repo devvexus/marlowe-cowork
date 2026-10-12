@@ -1,5 +1,6 @@
 //! The tool-facing half of the jobs: running a shell call as a foreground or background job,
-//! `job_output`, `job_watch`, `job_kill`, and the middleware that delivers notices.
+//! the readers behind `task_output` (read, `watch`) and `task_stop` for a job id, and the middleware that delivers
+//! notices.
 
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -164,11 +165,11 @@ pub(crate) fn run_background(
             return Ok(ToolOutcome { content: text, is_error: code != 0, summary: format!("{id} · exit {code}"), parts: Vec::new() });
         }
         None if jobs.delivers_notices() => text.push_str(&format!(
-            "you will be told when it exits. job_output {{\"id\":\"{id}\"}} reads its output, job_watch {{\"id\":\"{id}\",\"until_regex\":\"...\"}} \
-             tells you when a line appears, job_kill {{\"id\":\"{id}\"}} stops it."
+            "you will be told when it exits. task_output {{\"id\":\"{id}\"}} reads its output, task_output {{\"id\":\"{id}\",\"watch\":true,\"until\":\"...\"}} \
+             tells you when a line appears, task_stop {{\"id\":\"{id}\"}} stops it."
         )),
         None => text.push_str(&format!(
-            "you will NOT be told when it exits in this session: poll with job_output {{\"id\":\"{id}\"}}. job_kill \
+            "you will NOT be told when it exits in this session: poll with task_output {{\"id\":\"{id}\"}}. task_stop \
              {{\"id\":\"{id}\"}} stops it."
         )),
     }
@@ -183,8 +184,9 @@ fn slash(p: &std::path::Path) -> String {
 fn own_job(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> Result<(Arc<HostJobs>, Arc<Job>), ToolOutcome> {
     let jobs = tools.state::<HostJobs>();
     let Some(id) = str_arg(args, "id").map(str::trim).filter(|i| !i.is_empty()) else {
-        return Err(ToolOutcome::error("`id` is required: the job id a background `bash` call returned, e.g. \"j3\""));
+        return Err(ToolOutcome::error("`id` is required: the job id a background `bash` call returned, e.g. \"job_j3\""));
     };
+    let id = id.strip_prefix("job_").unwrap_or(id);
     match jobs.find(id).filter(|j| j.session == cx.session.0) {
         Some(j) => Ok((jobs, j)),
         None => {
@@ -203,20 +205,20 @@ fn own_job(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> Result<(Arc<Host
     }
 }
 
-const NO_NOTICES: &str = "this session does not receive job notices between steps; poll with job_output";
+const NO_NOTICES: &str = "this session does not receive job notices between steps; poll with task_output";
 
 fn status(job: &Job, next: u64) -> String {
     let len = job.len();
     match job.exit_code() {
-        None => format!("[job {} running {} · {len} bytes so far · next since={next}]", job.id, fmt_secs(job.started.elapsed())),
-        Some(c) => format!("[job {} exited {c} · {len} bytes · next since={next}]", job.id),
+        None => format!("[job {} running {} · {len} bytes so far · next offset={next}]", job.id, fmt_secs(job.started.elapsed())),
+        Some(c) => format!("[job {} exited {c} · {len} bytes · next offset={next}]", job.id),
     }
 }
 
 /// Output the window of one explicit `since` read.
 const WINDOW: usize = 30_000;
 
-/// Reads `job_output {id, since, filter}`.
+/// Reads `task_output {id, offset, filter}` for a job (the caller renames `offset` to `since`).
 pub fn job_output(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
     let (_, job) = match own_job(tools, args, cx) {
         Ok(j) => j,
@@ -233,7 +235,7 @@ pub fn job_output(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutco
         None | Some(Value::Null) => None,
         Some(_) => match int_arg(args, "since") {
             Some(n) if n >= 0 => Some(n as u64),
-            _ => return ToolOutcome::error("`since` must be a byte offset, 0 or more (the `next since` of the last read)"),
+            _ => return ToolOutcome::error("`since` must be a byte offset, 0 or more (the `next offset` of the last read)"),
         },
     };
     let len = job.len();
@@ -292,7 +294,7 @@ pub fn job_output(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutco
     ToolOutcome::ok(out, summary)
 }
 
-/// Starts `job_watch {id, until_regex, filter}`.
+/// Starts `task_output {id, watch, until, filter}` for a job (the caller renames `until` to `until_regex`).
 pub fn job_watch(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
     let (jobs, job) = match own_job(tools, args, cx) {
         Ok(j) => j,
@@ -312,12 +314,12 @@ pub fn job_watch(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcom
     };
     if let Some(code) = job.exit_code() {
         return ToolOutcome::ok(
-            format!("job {} has already exited with code {code}; job_output {{\"id\":\"{}\"}} reads what it wrote.", job.id, job.id),
+            format!("job {} has already exited with code {code}; task_output {{\"id\":\"{}\"}} reads what it wrote.", job.id, job.id),
             format!("{} · exited", job.id),
         );
     }
     if !jobs.delivers_notices() {
-        return ToolOutcome::error(format!("job_watch cannot work here: {NO_NOTICES} {{\"id\":\"{}\"}}", job.id));
+        return ToolOutcome::error(format!("task_output watch cannot work here: {NO_NOTICES} {{\"id\":\"{}\"}}", job.id));
     }
     let until_src = until.as_ref().map(|(_, s)| s.clone()).unwrap_or_default();
     if let Some(line) = job.watch(filter.map(|(r, _)| r), until.map(|(r, _)| r), until_src.clone(), true) {
@@ -346,7 +348,7 @@ no watch was started; job {} is still running.",
     )
 }
 
-/// Stops `job_kill {id}`.
+/// Stops a job (`task_stop {id}`).
 pub fn job_kill(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
     let (jobs, job) = match own_job(tools, args, cx) {
         Ok(j) => j,

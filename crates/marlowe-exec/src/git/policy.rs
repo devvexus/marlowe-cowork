@@ -107,7 +107,7 @@ pub fn deny_structured(tool: &str, args: &serde_json::Value) -> Option<String> {
         }
     }
     if tool == "gh" {
-        for key in ["remote", "head", "base"] {
+        for key in ["remote", "branch", "head", "base"] {
             if let Some(s) = obj.get(key).and_then(|v| v.as_str()) {
                 if let Some(why) = bad_ref(s) {
                     return Some(why);

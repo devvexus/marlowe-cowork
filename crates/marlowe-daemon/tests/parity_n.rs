@@ -734,7 +734,7 @@ fn parity_bg6_a_self_paced_loop_runs_until_the_model_stops_waking_itself() {
     let session = session_of(&a.ask(None, "/loop watch the build", Some(&ws)));
     let bg = d.control.background();
     let first = shown(&p.conductor_requests()[0]);
-    assert!(first.contains("self-paced loop") && first.contains("schedule_wakeup"), "the first run explains how the loop continues: {first}");
+    assert!(first.contains("self-paced loop") && first.contains("`schedule`"), "the first run explains how the loop continues: {first}");
     assert_eq!(bg.cron_list(&session).len(), 1, "one wake-up is waiting");
     let mut woken = 0;
     for _ in 0..4 {

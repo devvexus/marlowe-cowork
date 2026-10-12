@@ -38,9 +38,7 @@ impl WithStructuredOutput {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: STRUCTURED_OUTPUT.into(),
-            description: "Give your final answer as structured data. Its parameters are exactly the answer's schema. Call it once, when you are done; \
-                          if it reports errors, fix them and call it again."
-                .into(),
+            description: marlowe_agent::compact_specs::spec(STRUCTURED_OUTPUT).description,
             input_schema: self.schema.clone(),
         }
     }

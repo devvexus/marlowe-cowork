@@ -921,7 +921,7 @@ pub fn init_prompt(workspace: Option<&Path>, repo_map: &str, run: ShellRunner<'_
 
 /// `/loop [interval] <prompt>`: the interval in seconds (`30s`, `5m`, `2h`, `1d`) and the prompt.
 /// Without an interval the loop is self-paced (BG6): the model decides when to run again by
-/// calling `schedule_wakeup`, and the loop ends when it stops doing so.
+/// calling `schedule`, and the loop ends when it stops doing so.
 pub fn parse_loop(args: &str) -> Option<(Option<u64>, String)> {
     let args = args.trim();
     let (first, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
@@ -934,7 +934,7 @@ pub fn parse_loop(args: &str) -> Option<(Option<u64>, String)> {
 
 /// What a self-paced `/loop` appends to its first run: how to run again, and how it ends.
 pub fn self_paced_note() -> &'static str {
-    "[harness: self-paced loop. Do the work now. To run again, call `schedule_wakeup` with `delay_s`      (60 to 3600) and this same prompt as `prompt`; you will be woken then. If there is nothing left      to watch or do, do not call it: the loop ends when you stop waking yourself.]"
+    "[harness: self-paced loop. Do the work now. To run again, call `schedule` with `delay_s`      (60 to 3600) and this same prompt as `prompt`; you will be woken then. If there is nothing left      to watch or do, do not call it: the loop ends when you stop waking yourself.]"
 }
 
 fn parse_interval(s: &str) -> Option<u64> {
@@ -1056,7 +1056,7 @@ impl ToolMiddleware for CommandsMiddleware {
                 return TurnFlow::Block("usage: /loop [interval like 5m, 2h, 30s] <prompt or /command>".into());
             };
             let Some(secs) = secs else {
-                // Self-paced: nothing is stored; the model re-arms itself with `schedule_wakeup`.
+                // Self-paced: nothing is stored; the model re-arms itself with `schedule`.
                 *text = prompt;
                 let flow = self.before_turn(convo, text);
                 text.push_str(&format!("

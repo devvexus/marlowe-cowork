@@ -9,7 +9,7 @@ use serde_json::Value;
 use super::walk::{collect, skipped_notice, Filters};
 use super::{join_within, Page, SearchEnv, RESULT_BYTES};
 
-const PARAMS: [&str; 4] = ["pattern", "path", "head_limit", "offset"];
+const PARAMS: [&str; 5] = ["pattern", "path", "limit", "head_limit", "offset"];
 
 pub fn glob(env: &SearchEnv, args: &Value) -> ToolOutcome {
     if let Some(bad) = unknown_param(args, &PARAMS, &PARAMS, "glob") {

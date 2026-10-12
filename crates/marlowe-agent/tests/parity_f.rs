@@ -798,7 +798,7 @@ fn parity_a1_claude_code_agent_files_parse_with_every_key() {
     assert_eq!((worker.effort, worker.max_turns, worker.model.as_deref()), (Some(Effort::Low), Some(80), None), "inherit is the caller's model");
     assert!(t("silent-failure-hunter").description.contains("silent failures"));
     let explorer = t("feature-dev:code-explorer");
-    for want in ["glob", "grep", "read", "web_fetch", "todo", "web_search", "job_kill", "job_output"] {
+    for want in ["glob", "grep", "read", "web_fetch", "todo", "web_search", "task_stop", "task_output"] {
         assert!(explorer.tools.as_ref().unwrap().contains(&want.to_string()), "{want}");
     }
     assert_eq!(t("code-explorer").name, "feature-dev:code-explorer", "a plugin's agent is found by its short name");
@@ -1358,9 +1358,9 @@ fn parity_t23_b5_ask_user_round_trips_and_is_refused_where_nobody_can_answer() {
     assert!(tool_results(&p.requests()[1])[0].contains("make the most reasonable choice"));
     assert_eq!(out.stop, TurnStop::Done);
 
-    // B5: the coding block says to ask only when blocked.
-    let block = include_str!("../../../persona/blocks/coding.md");
-    assert!(block.contains("only when you are blocked") && !block.contains("Matthew"));
+    // B5: the tool says to ask only when blocked (the coding block no longer repeats it).
+    assert!(marlowe_agent::compact_specs::spec("ask_user").description.contains("only when blocked"));
+    assert!(!include_str!("../../../persona/blocks/coding.md").contains("Matthew"));
 }
 
 #[test]

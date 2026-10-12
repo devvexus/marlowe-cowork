@@ -203,14 +203,14 @@ fn parity_wf1_the_launch_runs_the_approved_digest_or_nothing() {
 }
 
 #[test]
-fn parity_wf9_the_block_rides_only_with_the_live_group() {
+fn parity_wf9_the_description_carries_the_api_and_no_block_is_needed() {
     let (home, ws) = (temp("home5"), temp("ws5"));
     let with = host(&home, &ws);
-    assert!(with.persona_blocks().iter().any(|b| b.text().contains("## Workflows")));
+    assert!(!with.persona_blocks().iter().any(|b| b.text().contains("## Workflows")), "the workflow group has no persona block");
     let all_but: Vec<ToolGroup> = ToolGroup::ALL.iter().copied().filter(|g| *g != ToolGroup::Workflow).collect();
     let without = host(&home, &ws).with_exposure(ExposureProfile::Frontier, all_but);
-    assert!(!without.persona_blocks().iter().any(|b| b.text().contains("## Workflows")));
-    // The schema carries the API on its own.
+    assert!(!without.specs().iter().any(|s| s.name == "workflow"));
+    // The description carries the API on its own.
     let spec = with.specs().into_iter().find(|s| s.name == "workflow").unwrap();
     assert!(spec.description.contains("pipeline(") && spec.description.contains("def main(args)"));
 }

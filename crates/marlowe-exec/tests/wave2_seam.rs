@@ -19,16 +19,16 @@ fn the_wave2_groups_follow_mcp_and_each_declares_only_what_its_track_landed() {
     let w = specs::group(ToolGroup::Workflow).unwrap();
     let names = |g: ToolGroup| -> Vec<String> { (specs::group(g).unwrap().tools)().iter().map(|d| d.name().to_string()).collect() };
     assert_eq!(names(ToolGroup::Workflow), ["workflow", "report_findings"]);
-    assert!((w.persona_block)().is_some() && (w.detect)(None));
+    assert!((w.persona_block)().is_none() && (w.detect)(None));
     // Tasks and notify (track N): their tools, a block with the tasks group, and detection
     // wherever there is a workspace.
     assert_eq!(
         names(ToolGroup::Tasks),
-        ["task_list", "task_output", "task_stop", "monitor", "cron_create", "cron_list", "cron_delete", "schedule_wakeup", "list_agents", "watch"]
+        ["task_list", "task_output", "task_stop", "monitor", "schedule", "watch"]
     );
     assert_eq!(names(ToolGroup::Notify), ["notify", "send_file", "notices"]);
     let t = specs::group(ToolGroup::Tasks).unwrap();
-    assert!((t.persona_block)().is_some_and(|b| b.contains("<background_work>")));
+    assert!((t.persona_block)().is_none(), "the tools say what they are for; no block");
     for g in [ToolGroup::Tasks, ToolGroup::Notify] {
         let g = specs::group(g).unwrap();
         assert!(!(g.detect)(None) && (g.detect)(Some(std::path::Path::new("C:/work/valiance"))));

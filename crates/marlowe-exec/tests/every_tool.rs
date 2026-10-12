@@ -9,10 +9,9 @@ use marlowe_agent::{Consequence, Exposure, ToolHost};
 use marlowe_exec::{BuiltinTools, SearchResponse, SearchResult};
 use serde_json::json;
 
-const NAMES: [&str; 22] = [
-    "read", "write", "edit", "multi_edit", "notebook_edit", "glob", "grep", "bash", "powershell", "python", "job_output",
-    "job_watch", "job_kill", "web_fetch", "arxiv", "paper", "symbols", "definition", "references", "hover", "diagnostics",
-    "rename_symbol",
+const NAMES: [&str; 20] = [
+    "read", "write", "edit", "multi_edit", "notebook_edit", "glob", "grep", "bash", "powershell", "python", "web_fetch",
+    "arxiv", "symbols", "definition", "references", "hover", "diagnostics", "rename_symbol", "task_output", "task_stop",
 ];
 
 const VERIFY: [&str; 4] = ["project", "service", "http_check", "browser"];
@@ -29,7 +28,7 @@ fn the_declared_tools_are_exactly_the_implemented_ones() {
         assert!(!s.description.is_empty());
         assert_eq!(s.input_schema["type"], "object");
         // Every required parameter is declared.
-        for r in s.input_schema["required"].as_array().unwrap() {
+        for r in s.input_schema["required"].as_array().into_iter().flatten() {
             assert!(s.input_schema["properties"].get(r.as_str().unwrap()).is_some(), "{}", s.name);
         }
         // No tool answers "unknown tool".

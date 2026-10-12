@@ -28,11 +28,8 @@ pub mod watch;
 
 use std::path::{Path, PathBuf};
 
-pub(crate) use ci::{ci_consequence, ci_describe, ci_status_call};
-pub(crate) use gh_tool::{describe as gh_describe, gh_call, gh_consequence, gh_taints, host as gh_host, OPS as GH_OPS};
-pub(crate) use git_tool::{
-    describe as git_describe, flag, git_call, git_consequence, git_crew_consequence, git_mutation, OPS as GIT_OPS,
-};
+pub(crate) use gh_tool::{describe as gh_describe, gh_call, gh_consequence, gh_taints, host as gh_host};
+pub(crate) use git_tool::{describe as git_describe, git_call, git_consequence, git_crew_consequence, git_mutation};
 pub(crate) use run::Env;
 
 /// The hard denials for shell command lines, without the git group: for a host to install next to

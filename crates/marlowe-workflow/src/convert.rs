@@ -1,7 +1,7 @@
 //! The one-time converter for Claude Code's JavaScript workflows (`.claude\workflows\*.js`,
 //! 9.2-q): their `meta` is read here so the listing can show it, and `/workflow convert <name>`
 //! hands the model [`conversion_prompt`], which writes `.marlowe\workflows\<name>.star` and
-//! checks it with `workflow{script_path, validate_only:true}` until it is clean. The JavaScript
+//! checks it with `workflow{path, validate_only:true}` until it is clean. The JavaScript
 //! file is never modified and never run.
 
 use serde_json::Value;
@@ -146,7 +146,7 @@ Starlark is Python-like. Map it this way:\n\
 - `x.length` -> `len(x)`, `arr.map(f)` -> `[f(v) for v in arr]`, `arr.filter(f)` -> `[v for v in arr if f(v)]`, `null` -> `None`, `===` -> `==`, `&&`/`||`/`!` -> `and`/`or`/`not`.\n\
 - `while` loops and recursion do not exist: use `for i in range(N):` with `break`; `try`/`catch` does not exist: a failed agent returns `None`, check for it.\n\
 - `budget.total`, `budget.spent()`, `budget.remaining()`, `phase()`, `log()` and `workflow(name, args)` keep their names.\n\
-Write the file with the write tool, then call `workflow{{script_path:\"{target}\", validate_only:true}}` and fix every error it reports until it says the script is valid. \
+Write the file with the write tool, then call `workflow{{path:\"{target}\", validate_only:true}}` and fix every error it reports until it says the script is valid. \
 Then tell the user the workflow can run as `/workflow {name}`."
     )
 }

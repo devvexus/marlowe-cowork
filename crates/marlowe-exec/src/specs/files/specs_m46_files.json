@@ -1,64 +1,48 @@
 [
   {
     "name": "read",
-    "description": "Read a file: numbered lines (`N<tab>text`), 2000 from `offset` (1-based) or `limit`; a cut result says how to continue. Images, PDFs (`pages`) and notebooks work too. Read before you edit; never copy the line-number prefix into an edit.",
+    "description": "Read a file as numbered lines (N<tab>text), 2000 from `offset` unless `limit`. Also images, PDFs (`pages`: \"1-5\") and notebooks. Never copy line numbers into an edit.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "path": {
-          "type": "string"
-        },
+        "path": {},
         "offset": {
           "type": "integer"
         },
         "limit": {
           "type": "integer"
         },
-        "pages": {
-          "type": "string"
-        }
+        "pages": {}
       },
       "required": [
         "path"
-      ],
-      "additionalProperties": false
+      ]
     }
   },
   {
     "name": "write",
-    "description": "Create a file or replace one entirely. Overwriting needs a prior `read`; prefer `edit` for part of a file.",
+    "description": "Create or overwrite a whole file (read an existing one first). For part of a file use edit.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "path": {
-          "type": "string"
-        },
-        "content": {
-          "type": "string"
-        }
+        "path": {},
+        "content": {}
       },
       "required": [
         "path",
         "content"
-      ],
-      "additionalProperties": false
+      ]
     }
   },
   {
     "name": "edit",
-    "description": "Replace `old_string` with `new_string` in a file. It must occur exactly once (copy it from `read` without line numbers, with context to be unique), or set `replace_all`. `read` the file first.",
+    "description": "Replace `old_string` with `new_string` in a file you have read. It must match exactly once (no line numbers; add context) unless `replace_all`.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "path": {
-          "type": "string"
-        },
-        "old_string": {
-          "type": "string"
-        },
-        "new_string": {
-          "type": "string"
-        },
+        "path": {},
+        "old_string": {},
+        "new_string": {},
         "replace_all": {
           "type": "boolean"
         }
@@ -67,33 +51,24 @@
         "path",
         "old_string",
         "new_string"
-      ],
-      "additionalProperties": false
+      ]
     }
   },
   {
     "name": "multi_edit",
-    "description": "Several `edit`s in one or more files, applied all together or not at all, in order (each sees the ones before it). `path` is the default file; an edit may name its own. An empty `old_string` creates a file. `read` each existing file first.",
+    "description": "Several edits applied in order, all or none. An edit may name its own `path`; an empty `old_string` creates a file.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "path": {
-          "type": "string"
-        },
+        "path": {},
         "edits": {
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
-              "path": {
-                "type": "string"
-              },
-              "old_string": {
-                "type": "string"
-              },
-              "new_string": {
-                "type": "string"
-              },
+              "path": {},
+              "old_string": {},
+              "new_string": {},
               "replace_all": {
                 "type": "boolean"
               }
@@ -101,92 +76,66 @@
             "required": [
               "old_string",
               "new_string"
-            ],
-            "additionalProperties": false
+            ]
           }
         }
       },
       "required": [
         "edits"
-      ],
-      "additionalProperties": false
+      ]
     }
   },
   {
     "name": "edit_lines",
-    "description": "Edit lines by anchor. `read` shows each line as `N:hhh|text`; name a line by its anchor `N:hhh` (and the last line of a range by `end`). `op`: replace (default), insert_after, insert_before or delete. An anchor whose line changed since you read it is refused with fresh anchors. `anchor` \"0\" with insert_after writes at the top of the file.",
+    "description": "Edit by the `N:hhh` anchors read prints (`end`: a range's last line). `op`: replace (default), insert_after, insert_before, delete. Anchor \"0\" + insert_after writes at the top.",
     "input_schema": {
-      "additionalProperties": false,
+      "type": "object",
       "properties": {
-        "anchor": {
-          "description": "`N:hhh` as `read` printed it.",
-          "type": "string"
-        },
-        "end": {
-          "description": "Anchor of the last line of the range (default: `anchor`).",
-          "type": "string"
-        },
+        "path": {},
+        "anchor": {},
+        "end": {},
         "op": {
           "enum": [
             "replace",
             "insert_after",
             "insert_before",
             "delete"
-          ],
-          "type": "string"
+          ]
         },
-        "path": {
-          "type": "string"
-        },
-        "text": {
-          "description": "The new lines.",
-          "type": "string"
-        }
+        "text": {}
       },
       "required": [
         "path",
         "anchor"
-      ],
-      "type": "object"
+      ]
     }
   },
   {
     "name": "notebook_edit",
-    "description": "Edit one cell of a Jupyter notebook (.ipynb). `cell` is the cell's id or 0-based index as `read` shows it. `mode`: replace (default) the cell's source, insert a new cell after `cell` (at the top without one), or delete it. `cell_type` sets the new cell's type and changes it on replace. Replacing a code cell clears its outputs. `read` the notebook first.",
+    "description": "Edit a .ipynb cell (`cell`: id or 0-based index). `op`: replace (default), insert after `cell`, delete.",
     "input_schema": {
-      "additionalProperties": false,
+      "type": "object",
       "properties": {
-        "cell": {
-          "description": "Cell id, or 0-based index.",
-          "type": "string"
-        },
+        "path": {},
+        "cell": {},
+        "new_source": {},
         "cell_type": {
           "enum": [
             "code",
             "markdown"
-          ],
-          "type": "string"
+          ]
         },
-        "mode": {
+        "op": {
           "enum": [
             "replace",
             "insert",
             "delete"
-          ],
-          "type": "string"
-        },
-        "new_source": {
-          "description": "The cell's new source.",
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
+          ]
         }
       },
       "required": [
         "path"
-      ],
-      "type": "object"
+      ]
     }
   }
 ]

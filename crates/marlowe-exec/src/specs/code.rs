@@ -28,9 +28,9 @@ use marlowe_code::lsp::intel::{self, Caller, CodeIntel, IntelError, Roots, Sourc
 use marlowe_code::lsp::{Diag, LspManager};
 use marlowe_code::repomap::{self, MapOptions};
 use marlowe_model::ToolSpec;
-use serde_json::{json, Value};
+use serde_json::Value;
 
-use super::{spec, ToolDef};
+use super::ToolDef;
 use crate::{int_arg, paths, str_arg, BuiltinTools};
 
 pub use diag::DiagnosticsMiddleware;
@@ -520,88 +520,27 @@ pub fn repo_map(tools: &BuiltinTools, root: &Path, focus: Vec<PathBuf>, mentione
 }
 
 fn symbols_spec() -> ToolSpec {
-    spec(
-        "symbols",
-        "Find definitions by name across the workspace (functions, types, methods, constants), or \
-         list one file's definitions. Faster and more precise than grep for \"where is X defined\".",
-        json!({
-            "query": {"type": "string", "description": "Part of a name (case-insensitive); exact matches first."},
-            "path": {"type": "string", "description": "A file: list its definitions. A folder: only definitions under it."},
-            "kind": {"type": "string", "description": "Only this kind: function, method, class, interface, type, constant, module, macro."},
-            "limit": {"type": "integer", "description": "Most results (default 50)."}
-        }),
-        &[],
-    )
+    marlowe_agent::compact_specs::spec("symbols")
 }
 
 fn definition_spec() -> ToolSpec {
-    spec(
-        "definition",
-        "Show where a symbol is defined, with its full body. Name it as `name`, `Type::method`, \
-         `module::name` or `obj.method`; give `path` to resolve a name used in that file.",
-        json!({
-            "symbol": {"type": "string", "description": "The name, e.g. `parse`, `Engine::start`."},
-            "path": {"type": "string", "description": "A file that defines or uses the symbol (disambiguates)."},
-            "kind": {"type": "string", "description": "Only definitions of this kind."},
-            "limit": {"type": "integer", "description": "Most definitions shown (default 5)."}
-        }),
-        &["symbol"],
-    )
+    marlowe_agent::compact_specs::spec("definition")
 }
 
 fn references_spec() -> ToolSpec {
-    spec(
-        "references",
-        "Every place a symbol is used, from the language server (precise: same-named symbols are \
-         told apart). The symbol must name one definition; ambiguous names list the candidates.",
-        json!({
-            "symbol": {"type": "string", "description": "The name, e.g. `Engine::start`."},
-            "path": {"type": "string", "description": "A file that defines or uses the symbol (disambiguates)."},
-            "limit": {"type": "integer", "description": "Most references (default 100)."}
-        }),
-        &["symbol"],
-    )
+    marlowe_agent::compact_specs::spec("references")
 }
 
 fn hover_spec() -> ToolSpec {
-    spec(
-        "hover",
-        "A symbol's type, signature and documentation, as the language server describes it.",
-        json!({
-            "symbol": {"type": "string", "description": "The name, e.g. `Engine::start`."},
-            "path": {"type": "string", "description": "A file that defines or uses the symbol (disambiguates)."}
-        }),
-        &["symbol"],
-    )
+    marlowe_agent::compact_specs::spec("hover")
 }
 
 fn diagnostics_spec() -> ToolSpec {
-    spec(
-        "diagnostics",
-        "Compiler and type-checker errors and warnings from the language server: for one file \
-         (opened and checked now), or for every file the servers have checked. Edits already \
-         report new errors on their own.",
-        json!({
-            "path": {"type": "string", "description": "The file to check."},
-            "severity": {"type": "string", "description": "error, warning (default: errors and warnings), info or hint."},
-            "limit": {"type": "integer", "description": "Most diagnostics listed (default 100)."}
-        }),
-        &[],
-    )
+    marlowe_agent::compact_specs::spec("diagnostics")
 }
 
 fn rename_spec() -> ToolSpec {
-    spec(
-        "rename_symbol",
-        "Rename a symbol everywhere it is used, through the language server, in one atomic change \
-         across files. Returns the diff and any new errors. Prefer this to edits for renames.",
-        json!({
-            "symbol": {"type": "string", "description": "The current name, e.g. `Engine::start`."},
-            "new_name": {"type": "string", "description": "The new identifier."},
-            "path": {"type": "string", "description": "A file that defines or uses the symbol (disambiguates)."}
-        }),
-        &["symbol", "new_name"],
-    )
+    marlowe_agent::compact_specs::spec("rename_symbol")
 }
 
 /// Loop middleware for this group: diagnostics after edits, and re-tagging of edited files. Only

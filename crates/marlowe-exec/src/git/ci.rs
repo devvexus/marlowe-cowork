@@ -1,4 +1,4 @@
-//! `ci_status`: the state of CI for a branch, a commit or a PR, read through `gh`, and (with
+//! `gh{op: ci}`: the state of CI for a branch, a commit or a PR, read through `gh`, and (with
 //! `watch`) a request that the Sentinel keep watching and raise a notice when it settles.
 
 use marlowe_agent::{CallCtx, ToolOutcome};
@@ -127,21 +127,4 @@ pub(crate) fn ci_status_call(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -
         out.push_str(&format!("\n{note}\n"));
     }
     ToolOutcome::ok(text::head_and_tail(out.trim_end(), MAX_RESULT_BYTES), overall)
-}
-
-pub(crate) fn ci_describe(call: &marlowe_agent::ToolCallReq) -> String {
-    match (call.args.get("pr"), str_arg(&call.args, "branch")) {
-        (Some(pr), _) => format!("ci_status pr {}", pr.to_string().trim_matches('"')),
-        (None, Some(b)) => format!("ci_status {b}"),
-        _ => "ci_status".into(),
-    }
-}
-
-/// Reading CI is a network read: free, except for a new host after untrusted content.
-pub(crate) fn ci_consequence(
-    _tools: &BuiltinTools,
-    call: &marlowe_agent::ToolCallReq,
-    exposure: &marlowe_agent::Exposure,
-) -> marlowe_agent::Consequence {
-    gh_tool::net_read(&call.name, exposure)
 }

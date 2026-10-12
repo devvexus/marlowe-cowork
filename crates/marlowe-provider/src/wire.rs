@@ -11,8 +11,19 @@ use serde_json::{json, Value};
 /// The role an unlinkable tool result is demoted to. Content is not rewritten.
 const DEMOTED_ROLE: &str = "user";
 
-/// Tools in the OpenAI function schema, or `None` when there are none (omit the key).
+/// Tools in the OpenAI function schema, or `None` when there are none (omit the key). Property
+/// schemas go out as declared: the built-in specs leave plain strings typeless (Ollama reads them
+/// fine and the tokens add up).
 pub fn tools_field(tools: &[ToolSpec]) -> Option<Value> {
+    build_tools(tools, false)
+}
+
+/// The same for a strict endpoint (OpenRouter): every untyped property is a `"type": "string"`.
+pub fn tools_field_typed(tools: &[ToolSpec]) -> Option<Value> {
+    build_tools(tools, true)
+}
+
+fn build_tools(tools: &[ToolSpec], typed: bool) -> Option<Value> {
     if tools.is_empty() {
         return None;
     }
@@ -20,17 +31,48 @@ pub fn tools_field(tools: &[ToolSpec]) -> Option<Value> {
         tools
             .iter()
             .map(|t| {
+                let parameters = normalise_schema(&t.input_schema);
                 json!({
                     "type": "function",
                     "function": {
                         "name": t.name,
                         "description": t.description,
-                        "parameters": normalise_schema(&t.input_schema),
+                        "parameters": if typed { typed_schema(&parameters) } else { parameters },
                     }
                 })
             })
             .collect(),
     ))
+}
+
+/// Gives every property of an object schema a `type`: a property with none (or only an `enum`)
+/// is a string, an array with no `items` holds strings. Properties that already say what they
+/// are (a type, `anyOf`, `$ref`, `const`, nested `properties`) are left alone.
+pub fn typed_schema(schema: &Value) -> Value {
+    fn prop(v: &Value) -> Value {
+        let mut v = typed_schema(v);
+        let Some(o) = v.as_object_mut() else { return v };
+        let described = ["type", "anyOf", "oneOf", "allOf", "$ref", "const", "properties"];
+        if !described.iter().any(|k| o.contains_key(*k)) {
+            o.insert("type".into(), json!("string"));
+        }
+        if o.get("type") == Some(&json!("array")) && !o.contains_key("items") {
+            o.insert("items".into(), json!({"type": "string"}));
+        }
+        v
+    }
+    let mut out = schema.clone();
+    if let Some(o) = out.as_object_mut() {
+        if let Some(Value::Object(props)) = o.get_mut("properties") {
+            for v in props.values_mut() {
+                *v = prop(v);
+            }
+        }
+        if let Some(items) = o.get_mut("items") {
+            *items = prop(items);
+        }
+    }
+    out
 }
 
 /// A parameters schema must be an object schema; anything else becomes an empty one.
@@ -89,6 +131,20 @@ mod tests {
         assert_eq!(t[0]["type"], "function");
         assert_eq!(t[0]["function"]["name"], "read");
         assert_eq!(t[0]["function"]["parameters"]["properties"]["path"]["type"], "string");
+    }
+
+    #[test]
+    fn typed_schema_gives_untyped_properties_a_string_type() {
+        let schema = json!({"type":"object","properties":{
+            "a":{}, "b":{"enum":["x","y"]}, "c":{"type":"array"}, "d":{"type":"integer"},
+            "e":{"type":"array","items":{"type":"object","properties":{"f":{}}}}}});
+        let t = typed_schema(&schema);
+        assert_eq!(t["properties"]["a"], json!({"type":"string"}));
+        assert_eq!(t["properties"]["b"], json!({"enum":["x","y"],"type":"string"}));
+        assert_eq!(t["properties"]["c"]["items"], json!({"type":"string"}));
+        assert_eq!(t["properties"]["d"], json!({"type":"integer"}));
+        assert_eq!(t["properties"]["e"]["items"]["properties"]["f"], json!({"type":"string"}));
+        assert_eq!(tools_field(&[]), None);
     }
 
     #[test]

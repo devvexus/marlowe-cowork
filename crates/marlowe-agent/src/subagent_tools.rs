@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use marlowe_model::ToolSpec;
 use marlowe_proto::SettingsScope;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::tools::{CallCtx, Consequence, Effects, ToolCallReq, ToolOutcome};
 
@@ -44,27 +44,13 @@ pub trait SubagentTool: Send + Sync {
     fn call(&self, args: &Value, cx: &CallCtx) -> ToolOutcome;
 }
 
-fn tool_spec(name: &str, description: &str, properties: Value, required: &[&str]) -> ToolSpec {
-    ToolSpec {
-        name: name.into(),
-        description: description.into(),
-        input_schema: json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false}),
-    }
-}
-
 // ---------------------------------------------------------------- handback
 
 pub struct HandbackTool;
 
 impl SubagentTool for HandbackTool {
     fn spec(&self) -> ToolSpec {
-        tool_spec(
-            HANDBACK,
-            "Hand your final report back to the agent that started you, and finish. Call it once, when the task is done: \
-             the message is returned exactly as you write it, and anything you write after it is dropped.",
-            json!({"message": {"type": "string", "description": "The complete report: what you found or did, with file paths as evidence."}}),
-            &["message"],
-        )
+        crate::compact_specs::spec(HANDBACK)
     }
 
     fn effects(&self) -> Effects {
@@ -72,8 +58,8 @@ impl SubagentTool for HandbackTool {
     }
 
     fn call(&self, args: &Value, cx: &CallCtx) -> ToolOutcome {
-        let Some(message) = args.get("message").or_else(|| args.get("report")).and_then(Value::as_str).map(str::trim).filter(|m| !m.is_empty()) else {
-            return ToolOutcome::error("`message` is required: the report to hand back");
+        let Some(message) = args.get("text").or_else(|| args.get("message")).or_else(|| args.get("report")).and_then(Value::as_str).map(str::trim).filter(|m| !m.is_empty()) else {
+            return ToolOutcome::error("`text` is required: the report to hand back");
         };
         cx.scope.with_ext(|e| {
             e.insert(Handback(message.to_string()));
@@ -102,15 +88,7 @@ fn scope_of(args: &Value, default: SettingsScope) -> Result<SettingsScope, Strin
 
 impl SubagentTool for SetStatusline {
     fn spec(&self) -> ToolSpec {
-        tool_spec(
-            "set_statusline",
-            "Set the command that prints the status line, in a settings layer. The user approves the exact command first.",
-            json!({
-                "command": {"type": "string", "description": "A shell command that reads the session JSON on stdin and prints one line."},
-                "scope": {"type": "string", "enum": ["user", "project", "local"], "description": "user (default): all projects; project: shared with the repository; local: this project only."}
-            }),
-            &["command"],
-        )
+        crate::compact_specs::spec("set_statusline")
     }
 
     fn effects(&self) -> Effects {
@@ -220,20 +198,7 @@ pub fn draft_agent(args: &Value) -> Result<(String, String), String> {
 
 impl SubagentTool for CreateAgent {
     fn spec(&self) -> ToolSpec {
-        tool_spec(
-            "create_agent",
-            "Save a drafted subagent as an agent file. The user reviews the whole draft first. Refuses to overwrite an existing agent.",
-            json!({
-                "name": {"type": "string", "description": "Lower-case words joined by hyphens."},
-                "description": {"type": "string", "description": "When the main agent should use it."},
-                "prompt": {"type": "string", "description": "The agent's system prompt."},
-                "tools": {"type": "array", "items": {"type": "string"}, "description": "Tools it may use; leave out to inherit all."},
-                "model": {"type": "string", "description": "sonnet, opus, haiku, inherit or a model id."},
-                "effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max"]},
-                "scope": {"type": "string", "enum": ["project", "user"], "description": "project (default): .marlowe/agents; user: the profile's agents folder."}
-            }),
-            &["name", "description", "prompt"],
-        )
+        crate::compact_specs::spec("create_agent")
     }
 
     fn effects(&self) -> Effects {
@@ -375,6 +340,7 @@ impl PathGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn call(name: &str, args: Value) -> ToolCallReq {
         ToolCallReq { id: "c".into(), name: name.into(), args }

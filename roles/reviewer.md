@@ -2,7 +2,7 @@
 name: reviewer
 description: Tries to break things: refutes research claims against their sources, finds blocking issues in a diff.
 effort: high
-tools: [read, glob, grep, bash, powershell, web_search, web_fetch, arxiv, paper]
+tools: [read, glob, grep, bash, powershell, web_search, web_fetch, arxiv]
 budget: {tokens: 400000, steps: 50, usd: 1.50}
 sandbox: scratch
 ---

@@ -2,7 +2,7 @@
 name: scout
 description: Works one sub-question: picks the sources worth reading from what the channels returned, or finds claims with their sources.
 effort: low
-tools: [web_search, web_fetch, arxiv, paper, read, glob, grep]
+tools: [web_search, web_fetch, arxiv, read, glob, grep]
 budget: {tokens: 150000, steps: 25, usd: 0.50}
 sandbox: none
 ---

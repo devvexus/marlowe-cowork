@@ -22,7 +22,7 @@ use crate::lock;
 use crate::session::{Enqueue, RELAY_PREFIX};
 
 /// Tools whose results are untrusted content; a role allowed any of them relays tainted.
-const UNTRUSTED_TOOLS: [&str; 4] = ["web_search", "web_fetch", "arxiv", "paper"];
+const UNTRUSTED_TOOLS: [&str; 3] = ["web_search", "web_fetch", "arxiv"];
 /// Longest relayed summary, in characters; the rest is one `marlowe crew show` away.
 const RELAY_SUMMARY_CHARS: usize = 6_000;
 const RELAY_GOAL_CHARS: usize = 300;

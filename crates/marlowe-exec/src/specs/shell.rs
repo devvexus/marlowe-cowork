@@ -1,10 +1,9 @@
-//! The shell group (track B): bash, powershell, python, `job_output` / `job_watch` / `job_kill`,
-//! and the runner ([`run_shell`], [`shell_outcome`]).
+//! The shell group (track B): bash, powershell, python and the runner ([`run_shell`], [`shell_outcome`]).
 //!
 //! Every call starts through the host's workspace port, so K's `DockerExec` runs them in its
 //! container; on this machine that is `marlowe_os::child` (scrubbed environment, kill-on-close
 //! Job Object). A call is a job (`marlowe-exec/src/jobs/`): a foreground call waits for it and
-//! can be detached with Ctrl+B, `run_in_background` answers with the job's id at once. The model
+//! can be detached with Ctrl+B, `background` answers with the job's id at once. The model
 //! sees at most 30 KB of output, chosen failure-first (`summarize/`), with the whole log on disk.
 //! E's shell parser and tripwire replace the crew's `classify_shell` behind the same
 //! `crew_consequence` hook.
@@ -18,16 +17,13 @@ use marlowe_agent::{
 };
 use marlowe_model::ToolSpec;
 use marlowe_os::workspace::ExecRequest;
-use serde_json::{json, Value};
+use serde_json::Value;
 
-use super::{describe_by, spec, ToolDef};
+use super::{describe_by, ToolDef};
 use crate::jobs::{self, FgEnd, FgRun, HostJobs, JobsMiddleware};
 use crate::shell::{self, ShellLimits, ShellRun};
 use crate::summarize;
 use crate::{first_line, int_arg, more_lines, paths, str_arg, BuiltinTools, Interpreter};
-
-/// Stopping your own job: a process action, but never a write to the user's files.
-const KILL: Effects = Effects { reads: true, writes: false, runs: true, network: false };
 
 pub fn tools() -> Vec<ToolDef> {
     vec![
@@ -51,11 +47,6 @@ pub fn tools() -> Vec<ToolDef> {
             .crew_consequence(crew_python_consequence)
             .describe(|c| describe_by(c, "code"))
             .mutation(under_cwd),
-        ToolDef::new(job_output_spec(), ToolGroup::Shell, Effects::READ, jobs::job_output)
-            .describe(|c| describe_by(c, "id")),
-        ToolDef::new(job_watch_spec(), ToolGroup::Shell, Effects::READ, jobs::job_watch)
-            .describe(|c| describe_by(c, "id")),
-        ToolDef::new(job_kill_spec(), ToolGroup::Shell, KILL, jobs::job_kill).describe(|c| describe_by(c, "id")),
     ]
 }
 
@@ -153,7 +144,7 @@ pub(crate) fn run_shell(tools: &BuiltinTools, kind: Interpreter, args: &Value, c
     jobs.bind(tools);
     let raw = flag(args, "raw");
 
-    if flag(args, "run_in_background") {
+    if flag(args, "background") {
         let timeout = explicit_timeout.map(|_| Duration::from_millis(limits.timeout_ms));
         return match jobs::run_background(tools, &jobs, cx, req, display, timeout) {
             Ok(o) => o,
@@ -195,7 +186,7 @@ fn foreground_outcome(
         return ToolOutcome::ok(
             format!(
                 "[moved to the background by the user as job {job}: `{display}`. It keeps running and you will be told when it \
-                 exits. job_output / job_watch / job_kill take id \"{job}\".]\noutput so far:\n{shown}\n{}",
+                 exits. task_output / task_stop take id \"{job}\".]\noutput so far:\n{shown}\n{}",
                 summarize::pointer(&log, lines)
             ),
             format!("detached · {job}"),
@@ -278,7 +269,7 @@ fn shell_outcome(run: ShellRun, limits: ShellLimits, opts: OutputOpts) -> ToolOu
 /// Shells always ask here (E's rules and modes decide in front of this).
 pub(super) fn command_consequence(_tools: &BuiltinTools, call: &ToolCallReq, _exposure: &Exposure) -> Consequence {
     let command = str_arg(&call.args, "command").unwrap_or("");
-    let bg = if flag(&call.args, "run_in_background") { " (background)" } else { "" };
+    let bg = if flag(&call.args, "background") { " (background)" } else { "" };
     Consequence::Ask { summary: format!("{}{bg}: {}{}", call.name, first_line(command, 100), more_lines(command)) }
 }
 
@@ -345,85 +336,15 @@ fn under_cwd(tools: &BuiltinTools, call: &ToolCallReq, ctx: &ToolCtx) -> Mutatio
 }
 
 fn bash_spec() -> ToolSpec {
-    spec(
-        "bash",
-        "Run a command in bash (Git Bash on Windows); stdin closed. Output is capped at 30 KB (failure lines and the end; the log's path is given). Killed at `timeout_ms` (default 120000). `run_in_background` for a server or long build: you get a job id and are told when it exits.",
-        shell_props(json!({"command": {"type": "string"}})),
-        &["command"],
-    )
+    marlowe_agent::compact_specs::spec("bash")
 }
 
 fn powershell_spec() -> ToolSpec {
-    spec(
-        "powershell",
-        "Run a command in Windows PowerShell (-NoProfile -NonInteractive); output, timeout and `run_in_background` work as in `bash`.",
-        shell_props(json!({"command": {"type": "string"}})),
-        &["command"],
-    )
+    marlowe_agent::compact_specs::spec("powershell")
 }
 
 fn python_spec() -> ToolSpec {
-    spec(
-        "python",
-        "Run Python: an inline snippet (`code`) or a script (`path`), exactly one. Output, timeout and `run_in_background` work as in `bash`.",
-        shell_props(json!({
-            "code": {"type": "string"},
-            "path": {"type": "string"},
-            "args": {"type": "array", "items": {"type": "string"}}
-        })),
-        &[],
-    )
-}
-
-//// The properties every shell tool shares, after its own.
-fn shell_props(own: Value) -> Value {
-    let mut props = own;
-    let shared = json!({
-        "cwd": {"type": "string"},
-        "timeout_ms": {"type": "integer"},
-        "run_in_background": {"type": "boolean"},
-        "description": {"type": "string"},
-        "raw": {"type": "boolean"}
-    });
-    if let (Some(p), Some(s)) = (props.as_object_mut(), shared.as_object()) {
-        p.extend(s.clone());
-    }
-    props
-}
-
-fn job_output_spec() -> ToolSpec {
-    spec(
-        "job_output",
-        "Read a background job's output: what is new since your last read, or from byte offset `since` (the `next since` of a read). `filter` keeps lines matching a regex. The result ends with the job's status and the next offset.",
-        json!({
-            "id": {"type": "string", "description": "e.g. \"j3\""},
-            "since": {"type": "integer"},
-            "filter": {"type": "string"}
-        }),
-        &["id"],
-    )
-}
-
-fn job_watch_spec() -> ToolSpec {
-    spec(
-        "job_watch",
-        "Follow a running background job: its new output lines reach you as notices between steps until a line matches `until_regex` (the watch ends and you are told) or the job exits. `filter` limits it to matching lines. A job's exit is reported without a watch.",
-        json!({
-            "id": {"type": "string", "description": "e.g. \"j3\""},
-            "until_regex": {"type": "string"},
-            "filter": {"type": "string"}
-        }),
-        &["id"],
-    )
-}
-
-fn job_kill_spec() -> ToolSpec {
-    spec(
-        "job_kill",
-        "Stop a background job and everything it started.",
-        json!({"id": {"type": "string"}}),
-        &["id"],
-    )
+    marlowe_agent::compact_specs::spec("python")
 }
 
 /// Loop middleware for this group, built once per host next to its state (see `specs/mod.rs`):

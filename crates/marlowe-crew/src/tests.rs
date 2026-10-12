@@ -57,7 +57,7 @@ fn every_builtin_card_parses_with_its_intended_shape() {
     let scout = roles.get("scout").unwrap();
     assert_eq!(scout.sandbox, SandboxKind::None);
     assert_eq!(scout.budget, CrewBudget { tokens: Some(150_000), steps: Some(25), usd: Some(0.5) });
-    assert!(scout.allows("arxiv") && scout.allows("paper") && !scout.allows("write"));
+    assert!(scout.allows("arxiv") && scout.allows("web_fetch") && !scout.allows("write"));
     assert_eq!(roles.get("researcher").unwrap().sandbox, SandboxKind::Scratch);
     assert_eq!(roles.infos().len(), 13);
     for name in ["compressor", "verifier"] {
@@ -128,7 +128,7 @@ fn the_dispatch_declaration_lists_roles_and_its_arguments_parse() {
     let spec = dispatch_spec(&roles);
     assert_eq!(spec.name, "dispatch");
     let schema = &spec.input_schema;
-    assert_eq!(schema["required"], json!(["role", "goal"]));
+    assert_eq!(schema["required"], json!(["role", "prompt"]));
     assert_eq!(schema["properties"]["role"]["enum"], json!([
             "analyst",
             "compressor",
@@ -144,13 +144,13 @@ fn the_dispatch_declaration_lists_roles_and_its_arguments_parse() {
             "verifier"
         ]));
     assert_eq!(schema["properties"]["playbook"]["enum"], json!(["deep_research", "build"]));
-    assert_eq!(schema["additionalProperties"], json!(false));
 
-    let a = DispatchArgs::parse(&json!({"role": "researcher", "goal": "LoRA rank", "playbook": "deep_research", "budget": {"usd": 2.0}}))
+    let a = DispatchArgs::parse(&json!({"role": "researcher", "prompt": "LoRA rank", "cwd": "C:/w", "playbook": "deep_research", "budget": {"usd": 2.0}}))
         .unwrap();
     assert_eq!(a.playbook, Some(Playbook::DeepResearch));
     assert_eq!(a.budget, Some(CrewBudget { usd: Some(2.0), ..Default::default() }));
-    assert!(DispatchArgs::parse(&json!({"role": "scout", "goal": "  "})).unwrap_err().contains("goal"));
+    assert_eq!((a.goal.as_str(), a.workspace.as_deref()), ("LoRA rank", Some("C:/w")), "prompt and cwd are the schema's names for goal and workspace");
+    assert!(DispatchArgs::parse(&json!({"role": "scout", "goal": "  "})).unwrap_err().contains("prompt"));
     assert!(DispatchArgs::parse(&json!({"goal": "x"})).is_err());
     assert!(DispatchArgs::parse(&json!({"role": "scout", "goal": "x", "playbook": "dance"})).is_err());
 

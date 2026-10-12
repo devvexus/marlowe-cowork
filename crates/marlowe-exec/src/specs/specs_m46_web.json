@@ -1,31 +1,47 @@
 [
   {
     "name": "web_fetch",
-    "description": "Fetch an https URL as markdown (HTML, PDF, Office, text); robots.txt is honoured. Long documents come back in windows (continue from `offset`). With `prompt`, only its answer from the page comes back. A redirect to another host is returned, not followed.",
+    "description": "Read a URL or an arXiv id (2301.01234) as markdown; papers come as sections, `part: references` lists their references. Continue long text with `offset`. `prompt` returns only its answer from the page; `raw` the page itself.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "url": {"type": "string"},
-        "prompt": {"type": "string"},
-        "raw": {"type": "boolean"},
-        "offset": {"type": "integer"}
+        "url": {},
+        "prompt": {},
+        "offset": {
+          "type": "integer"
+        },
+        "part": {
+          "enum": [
+            "text",
+            "references"
+          ]
+        },
+        "raw": {
+          "type": "boolean"
+        }
       },
-      "required": ["url"],
-      "additionalProperties": false
+      "required": [
+        "url"
+      ]
     }
   },
   {
     "name": "web_search",
-    "description": "Search the web. Returns a short answer and the sources it cites, with URLs; use `web_fetch` to read a source in full.",
+    "description": "Search the web: a short answer with cited source URLs. Read a source with web_fetch.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "query": {"type": "string"},
-        "allowed_domains": {"type": "array", "items": {"type": "string"}},
-        "blocked_domains": {"type": "array", "items": {"type": "string"}}
+        "query": {},
+        "allowed_domains": {
+          "type": "array"
+        },
+        "blocked_domains": {
+          "type": "array"
+        }
       },
-      "required": ["query"],
-      "additionalProperties": false
+      "required": [
+        "query"
+      ]
     }
   }
 ]

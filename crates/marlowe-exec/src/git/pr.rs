@@ -57,14 +57,15 @@ pub(crate) fn plan(c: &Ctx, args: &Value) -> Result<Plan, String> {
         return Err("pr_create needs `title`".into());
     }
     let current = c.branch();
-    let head = str_arg(args, "head")
+    let head = str_arg(args, "branch")
+        .or_else(|| str_arg(args, "head"))
         .filter(|h| !h.is_empty())
         .map(String::from)
         .or_else(|| current.clone())
-        .ok_or("HEAD is detached: switch to the branch to propose, or name it in `head`")?;
+        .ok_or("HEAD is detached: switch to the branch to propose, or name it in `branch`")?;
     let (head_sha, create_branch) = match verify(c, &format!("refs/heads/{head}")) {
         Some(sha) => (sha, false),
-        None => match str_arg(args, "head_sha").and_then(|s| verify(c, s)) {
+        None => match str_arg(args, "sha").or_else(|| str_arg(args, "head_sha")).and_then(|s| verify(c, s)) {
             Some(sha) => (sha, true),
             None => return Err(format!("there is no branch `{head}` here")),
         },
@@ -220,7 +221,7 @@ impl Plan {
         let mut v = args.clone();
         if let Some(o) = v.as_object_mut() {
             o.insert("remote".into(), json!(self.remote));
-            o.insert("head".into(), json!(self.head));
+            o.insert("branch".into(), json!(self.head));
             o.insert("base".into(), json!(self.base));
             o.insert("title".into(), json!(self.title));
             o.insert("body".into(), json!(self.body));

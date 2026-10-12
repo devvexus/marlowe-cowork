@@ -241,7 +241,8 @@ impl BuiltinTools {
 
     /// Whether `def` is in this host's tool set (its group is exposed and it admits the profile).
     pub fn exposes(&self, def: &specs::ToolDef) -> bool {
-        self.groups.contains(&def.manifest.group) && def.manifest.profiles.admits(self.profile)
+        (self.groups.contains(&def.manifest.group) || def.also_with.is_some_and(|g| self.groups.contains(&g)))
+            && def.manifest.profiles.admits(self.profile)
     }
 
     /// The registered tool `name`.
@@ -295,7 +296,7 @@ pub(crate) fn str_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
 
 /// The `paper` tool's input, under any of its accepted names.
 pub(crate) fn research_input(args: &Value) -> &str {
-    str_arg(args, "url_or_arxiv_id").or_else(|| str_arg(args, "url")).or_else(|| str_arg(args, "id")).unwrap_or("")
+    str_arg(args, "url").or_else(|| str_arg(args, "url_or_arxiv_id")).or_else(|| str_arg(args, "id")).unwrap_or("")
 }
 
 pub(crate) fn int_arg(args: &Value, key: &str) -> Option<i64> {
@@ -369,7 +370,8 @@ impl ToolHost for BuiltinTools {
         specs::GROUPS
             .iter()
             .filter(|g| self.groups.contains(&g.group))
-            .filter(|g| table.defs.iter().any(|d| d.manifest.group == g.group && self.exposes(d) && (d.enabled)(self)))
+            // (a tool that rides with another group does not bring its own group's block along)
+            .filter(|g| table.defs.iter().any(|d| d.manifest.group == g.group && d.also_with.is_none() && self.exposes(d) && (d.enabled)(self)))
             .filter_map(|g| (g.persona_block)().map(|text| PersonaBlock::Tool { group: g.group, text }))
             .collect()
     }

@@ -338,7 +338,7 @@ mod tests {
     fn the_memory_block_describes_the_tools_and_names_no_operator() {
         assert!(!SystemPrompt::new().render_text().contains("<memory_tools>"));
         let t = SystemPrompt::new().block(PersonaBlock::Memory).render_text();
-        for want in ["<memory_tools>", "<profile>", "`remember`", "`recall`", "`correct`", "use uv, not pip"] {
+        for want in ["<memory_tools>", "<profile>", "`recall`"] {
             assert!(t.contains(want), "{want}");
         }
         assert!(!PersonaBlock::Memory.text().contains("Matthew"));

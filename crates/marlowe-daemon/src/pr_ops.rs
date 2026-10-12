@@ -114,7 +114,7 @@ pub(crate) fn open_pr(
     let mut args = json!({
         "op": "pr_create",
         "title": title,
-        "head": branch,
+        "branch": branch,
         "cwd": origin.to_string_lossy(),
     });
     if let Some(b) = &body {
@@ -122,7 +122,7 @@ pub(crate) fn open_pr(
     }
     if let Some(sha) = merged_commit(info.note.as_deref()) {
         // The merge removed the branch; propose the commit it ended at.
-        args["head_sha"] = json!(sha);
+        args["sha"] = json!(sha);
     }
     let ctx = ToolCtx::new(session.clone(), 0, Some(origin), CancelToken::new(), false);
     let call = |args: &Value| host.call(&ToolCallReq { id: "open-pr".into(), name: "gh".into(), args: args.clone() }, &ctx);

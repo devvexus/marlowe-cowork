@@ -16,7 +16,7 @@ use super::walk::{collect, skipped_notice, Filters};
 use super::{join_within, lenient_bool, lenient_int, Page, SearchEnv, RESULT_BYTES};
 
 /// The parameters as the model should send them; the bare spellings are accepted too.
-const PARAMS: [&str; 19] = [
+const PARAMS: [&str; 20] = [
     "pattern",
     "path",
     "glob",
@@ -28,6 +28,7 @@ const PARAMS: [&str; 19] = [
     "-i",
     "-n",
     "multiline",
+    "limit",
     "head_limit",
     "offset",
     "A",

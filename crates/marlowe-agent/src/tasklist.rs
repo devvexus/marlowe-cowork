@@ -250,12 +250,16 @@ impl TaskLists {
             s.next_id = s.next_id.max(next_after(&old));
             let mut out: Vec<TodoItem> = Vec::with_capacity(incoming.len());
             for mut it in incoming {
-                if let Some(at) = old.iter().position(|o| o.content.trim() == it.content.trim()) {
+                let by_id = it.id.as_deref().and_then(|id| old.iter().position(|o| o.id.as_deref() == Some(id)));
+                let found = by_id.or_else(|| old.iter().position(|o| o.content.trim() == it.content.trim()));
+                if let Some(at) = found {
                     let o = old.remove(at);
                     it.id = o.id;
-                    it.owner = o.owner;
+                    it.owner = it.owner.or(o.owner);
                     it.description = o.description;
-                    it.blocked_by = o.blocked_by;
+                    if it.blocked_by.is_empty() {
+                        it.blocked_by = o.blocked_by;
+                    }
                 } else {
                     it.id = Some(s.next_id.to_string());
                     s.next_id += 1;
@@ -392,6 +396,44 @@ fn listing(items: &[TodoItem]) -> String {
         "The list is empty.".into()
     } else {
         format!("Task list:\n{}", render_todos(items))
+    }
+}
+
+/// The `todo` tool: `items` replaces the list; item fields alone add an item, or change item `id`;
+/// an `id` alone shows that item; no arguments show the list.
+pub fn todo_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
+    let has = |k: &str| args.get(k).is_some_and(|v| !v.is_null());
+    if has("items") || has("todos") {
+        return crate::todo::todo_call(args, cx);
+    }
+    let fields = ["content", "status", "owner", "blocked_by", "active_form"].iter().any(|k| has(k));
+    match (has("id"), fields) {
+        (true, true) => todo_update_call(args, cx),
+        (false, true) => {
+            let added = todo_add_call(args, cx);
+            // A new item may start already in progress or done.
+            match str_arg(args, &["status"]).map(|s| parse_status(&s)).transpose() {
+                Ok(Some(s)) if s != TodoStatus::Pending && !added.is_error => {
+                    let Some(lists) = lists(cx).ok() else { return added };
+                    let id = lists.snapshot(&cx.session).last().and_then(|i| i.id.clone());
+                    match id {
+                        Some(id) => todo_update_call(&serde_json::json!({"id": id, "status": status_key(s)}), cx),
+                        None => added,
+                    }
+                }
+                Err(e) => ToolOutcome::error(e),
+                _ => added,
+            }
+        }
+        _ => todo_get_call(args, cx),
+    }
+}
+
+fn status_key(s: TodoStatus) -> &'static str {
+    match s {
+        TodoStatus::Pending => "pending",
+        TodoStatus::InProgress => "in_progress",
+        TodoStatus::Completed => "completed",
     }
 }
 

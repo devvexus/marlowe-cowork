@@ -1,16 +1,21 @@
-//! The web group (seam): web_fetch, arxiv, paper, web_search. Untrusted by construction: every
+//! The web group (seam): web_fetch (pages and papers), arxiv, web_search. Untrusted by construction: every
 //! result taints the session, and after taint a new host (or any search) asks.
 
 use marlowe_agent::{Consequence, Effects, Exposure, ToolCallReq, ToolGroup, ToolOutcome};
 use marlowe_model::ToolSpec;
-use serde_json::json;
 
-use super::{describe_by, spec, ToolDef};
+use super::{describe_by, ToolDef};
 use crate::{first_line, research, research_input, str_arg, web, BuiltinTools};
 
 pub fn tools() -> Vec<ToolDef> {
     vec![
-        ToolDef::new(web_fetch_spec(), ToolGroup::Web, Effects::NETWORK, |t, a, c| web::web_fetch(t, a, c))
+        ToolDef::new(web_fetch_spec(), ToolGroup::Web, Effects::NETWORK, |t, a, c| {
+            if is_paper(a) {
+                research::paper(&t.research, a, &c.cancel)
+            } else {
+                web::web_fetch(t, a, c)
+            }
+        })
             .consequence(fetch_consequence)
             .describe(|c| describe_by(c, "url"))
             .taints(always)
@@ -19,11 +24,6 @@ pub fn tools() -> Vec<ToolDef> {
             .consequence(|_, call, exposure| query_after_taint(call, exposure))
             .describe(|c| describe_by(c, "query"))
             .taints(always),
-        ToolDef::new(paper_spec(), ToolGroup::Web, Effects::NETWORK, |t, a, c| research::paper(&t.research, a, &c.cancel))
-            .consequence(paper_consequence)
-            .describe(|c| describe_by(c, "url_or_arxiv_id"))
-            .taints(always)
-            .egress(|_, c| research::paper_host(research_input(&c.args))),
         ToolDef::new(web_search_spec(), ToolGroup::Web, Effects::NETWORK, |t, a, c| match &t.search {
             Some(b) => web::web_search(b.as_ref(), a, &c.cancel),
             None => ToolOutcome::error("web_search is not available in this build"),
@@ -39,7 +39,25 @@ fn always(_tools: &BuiltinTools, _call: &ToolCallReq) -> bool {
     true
 }
 
+/// Whether a `web_fetch` is a paper read: an arXiv id or abs/pdf URL, openreview or doi.org, or any
+/// call that sets `part` (the paper reader owns sections and references).
+fn is_paper(args: &serde_json::Value) -> bool {
+    if str_arg(args, "part").is_some() {
+        return true;
+    }
+    let url = research_input(args);
+    if research::arxiv_id(url).is_some() {
+        return true;
+    }
+    marlowe_net::Target::parse(url)
+        .ok()
+        .is_some_and(|t| t.host == "doi.org" || t.host == "openreview.net" || t.host.ends_with(".openreview.net"))
+}
+
 fn fetch_host(_tools: &BuiltinTools, call: &ToolCallReq) -> Option<String> {
+    if is_paper(&call.args) {
+        return research::paper_host(research_input(&call.args));
+    }
     let url = str_arg(&call.args, "url")?;
     marlowe_net::Target::parse(url).ok().map(|t| t.host)
 }
@@ -48,14 +66,6 @@ fn fetch_host(_tools: &BuiltinTools, call: &ToolCallReq) -> Option<String> {
 fn fetch_consequence(tools: &BuiltinTools, call: &ToolCallReq, exposure: &Exposure) -> Consequence {
     match fetch_host(tools, call).filter(|h| exposure.tainted && !exposure.approved_hosts.contains(h)) {
         Some(host) => Consequence::Ask { summary: format!("web_fetch {host}: a new host, after untrusted content") },
-        None => Consequence::Free,
-    }
-}
-
-fn paper_consequence(_tools: &BuiltinTools, call: &ToolCallReq, exposure: &Exposure) -> Consequence {
-    let host = research::paper_host(research_input(&call.args));
-    match host.filter(|h| exposure.tainted && !exposure.approved_hosts.contains(h)) {
-        Some(host) => Consequence::Ask { summary: format!("paper {host}: a new host, after untrusted content") },
         None => Consequence::Free,
     }
 }
@@ -70,56 +80,15 @@ fn query_after_taint(call: &ToolCallReq, exposure: &Exposure) -> Consequence {
 }
 
 fn web_fetch_spec() -> ToolSpec {
-    spec(
-        "web_fetch",
-        "Fetch an https URL as markdown (HTML, PDF, Office, text); robots.txt is honoured. Long documents come back in windows (continue from `offset`). With `prompt`, only its answer from the page comes back. A redirect to another host is returned, not followed.",
-        json!({
-            "url": {"type": "string"},
-            "prompt": {"type": "string"},
-            "raw": {"type": "boolean"},
-            "offset": {"type": "integer"}
-        }),
-        &["url"],
-    )
+    marlowe_agent::compact_specs::spec("web_fetch")
 }
 
 fn arxiv_spec() -> ToolSpec {
-    spec(
-        "arxiv",
-        "Search arXiv: keywords, field queries (`ti:`, `au:`, `abs:`, `cat:`) or an id. Returns titles, authors, dates, ids, abstracts. Results are the authors' claims, not findings; read a paper with `paper`.",
-        json!({
-            "query": {"type": "string"},
-            "max": {"type": "integer", "description": "Default 8, at most 25."}
-        }),
-        &["query"],
-    )
-}
-
-fn paper_spec() -> ToolSpec {
-    spec(
-        "paper",
-        "Read a paper from an https URL (HTML, PDF, LaTeX source) or an arXiv id: title, authors, numbered sections, abstract and text as markdown, in windows (continue with `offset`). `part: \"references\"` returns the parsed reference list with DOIs and arXiv ids.",
-        json!({
-            "url_or_arxiv_id": {"type": "string"},
-            "offset": {"type": "integer"},
-            "part": {"type": "string", "enum": ["text", "references"]}
-        }),
-        &["url_or_arxiv_id"],
-    )
+    marlowe_agent::compact_specs::spec("arxiv")
 }
 
 fn web_search_spec() -> ToolSpec {
-    spec(
-        "web_search",
-        "Search the web. Returns a short answer and the sources it cites, with URLs; use \
-         `web_fetch` to read a source in full.",
-        json!({
-            "query": {"type": "string"},
-            "allowed_domains": {"type": "array", "items": {"type": "string"}},
-            "blocked_domains": {"type": "array", "items": {"type": "string"}}
-        }),
-        &["query"],
-    )
+    marlowe_agent::compact_specs::spec("web_search")
 }
 
 /// Loop middleware for this group, built once per host next to its state (see `specs/mod.rs`).

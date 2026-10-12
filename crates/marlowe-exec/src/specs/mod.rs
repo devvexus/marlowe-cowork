@@ -103,6 +103,8 @@ pub struct ToolDef {
     pub enabled: EnabledFn,
     /// Argument names, requirements and examples for the forgiving layer (default: `rules.rs`).
     pub rules: marlowe_agent::args::ArgRules,
+    /// A second group that also offers the tool (`task_output` rides with the shell group).
+    pub also_with: Option<ToolGroup>,
 }
 
 impl ToolDef {
@@ -113,6 +115,7 @@ impl ToolDef {
         Self {
             spec,
             rules,
+            also_with: None,
             manifest: ToolManifest { group, profiles: Profiles::ALL, effects, path_args: &[] },
             call,
             consequence: |_, _, _| Consequence::Free,
@@ -171,6 +174,11 @@ impl ToolDef {
 
     pub fn enabled(mut self, f: EnabledFn) -> Self {
         self.enabled = f;
+        self
+    }
+
+    pub fn also_with(mut self, group: ToolGroup) -> Self {
+        self.also_with = Some(group);
         self
     }
 

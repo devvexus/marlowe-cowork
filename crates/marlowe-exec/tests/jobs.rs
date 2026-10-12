@@ -109,8 +109,8 @@ fn wait_for(what: &str, within: Duration, mut f: impl FnMut() -> bool) {
 }
 
 fn next_since(out: &ToolOutcome) -> u64 {
-    let tail = out.content.rsplit("next since=").next().unwrap();
-    tail.trim_end_matches(']').trim().parse().unwrap_or_else(|_| panic!("no next since in {}", out.content))
+    let tail = out.content.rsplit("next offset=").next().unwrap();
+    tail.trim_end_matches(']').trim().parse().unwrap_or_else(|_| panic!("no next offset in {}", out.content))
 }
 
 /// Notices of `session` that are already queued, drained from the registry.
@@ -129,13 +129,13 @@ fn parity_t12_t13_a_shell_never_sees_the_api_keys() {
     let o = rig.run("c2", "powershell", json!({"command": "Write-Output \"[$env:ANTHROPIC_API_KEY] [$env:OPENROUTER_API_KEY]\""}));
     assert_eq!(o.content.trim(), "[] []", "{}", o.content);
     // A background job is a child of the same spawner.
-    let o = rig.run("c3", "bash", json!({"command": "echo \"[${ANTHROPIC_API_KEY:-unset}]\"", "run_in_background": true}));
+    let o = rig.run("c3", "bash", json!({"command": "echo \"[${ANTHROPIC_API_KEY:-unset}]\"", "background": true}));
     assert!(o.content.contains("[unset]") || o.content.contains("started background job"), "{}", o.content);
     let id = job_id(&o);
     wait_for("the job", Duration::from_secs(20), || {
-        rig.run("c4", "job_output", json!({"id": id, "since": 0})).content.contains("exited")
+        rig.run("c4", "task_output", json!({"id": id, "offset": 0})).content.contains("exited")
     });
-    let read = rig.run("c5", "job_output", json!({"id": id, "since": 0}));
+    let read = rig.run("c5", "task_output", json!({"id": id, "offset": 0}));
     assert!(read.content.contains("[unset]") && !read.content.contains("sk-ant"), "{}", read.content);
 }
 
@@ -147,7 +147,7 @@ fn parity_t14_the_cap_is_ten_minutes_and_a_timeout_kills_the_tree() {
     let rig = Rig::new("t14");
     let marker = rig.ws.path("alive.txt");
     let cmd = format!("( (sleep 2.5; echo up > '{}') & ); sleep 60", posix(&marker));
-    let o = rig.run("c1", "bash", json!({"command": cmd, "run_in_background": true, "timeout_ms": 700}));
+    let o = rig.run("c1", "bash", json!({"command": cmd, "background": true, "timeout_ms": 700}));
     let id = job_id(&o);
     wait_for("the stop notice", Duration::from_secs(20), || bg_hub().waking_sessions().contains(&rig.session));
     let notes = hub_notices(&rig.session);
@@ -163,34 +163,34 @@ fn parity_t15_job_output_streams_since_an_offset() {
     let o = rig.run(
         "c1",
         "bash",
-        json!({"command": "for i in 1 2 3 4; do echo line$i; sleep 0.4; done; echo end", "run_in_background": true}),
+        json!({"command": "for i in 1 2 3 4; do echo line$i; sleep 0.4; done; echo end", "background": true}),
     );
     assert!(!o.is_error && o.content.contains("started background job"), "{}", o.content);
     let id = job_id(&o);
     wait_for("the job to finish", Duration::from_secs(30), || {
-        rig.run("c2", "job_output", json!({"id": id, "since": 0})).content.contains("exited")
+        rig.run("c2", "task_output", json!({"id": id, "offset": 0})).content.contains("exited")
     });
     // An explicit offset reads the stream from exactly there ("line1\n" is 6 bytes).
-    let rest = rig.run("c5", "job_output", json!({"id": id, "since": 6}));
+    let rest = rig.run("c5", "task_output", json!({"id": id, "offset": 6}));
     assert!(rest.content.starts_with("line2") && rest.content.contains("end") && !rest.content.contains("line1"), "{}", rest.content);
     assert_eq!(next_since(&rest), 28);
-    let past = rig.run("c5b", "job_output", json!({"id": id, "since": 999}));
+    let past = rig.run("c5b", "task_output", json!({"id": id, "offset": 999}));
     assert!(past.content.starts_with("(no new output") && next_since(&past) == 28, "{}", past.content);
-    let all = rig.run("c6", "job_output", json!({"id": id, "since": 0}));
+    let all = rig.run("c6", "task_output", json!({"id": id, "offset": 0}));
     assert!(all.content.contains("line1") && all.content.contains("line4") && all.content.contains("end"), "{}", all.content);
     assert!(all.content.contains("exited 0"), "{}", all.content);
     // Without `since`: what is new since the last such read, once.
-    let new1 = rig.run("c7", "job_output", json!({"id": id}));
+    let new1 = rig.run("c7", "task_output", json!({"id": id}));
     assert!(new1.content.contains("line1") && new1.content.contains("end"), "{}", new1.content);
-    let new2 = rig.run("c8", "job_output", json!({"id": id}));
+    let new2 = rig.run("c8", "task_output", json!({"id": id}));
     assert!(new2.content.contains("no new output"), "{}", new2.content);
     // A filter keeps matching lines only.
-    let f = rig.run("c9", "job_output", json!({"id": id, "since": 0, "filter": "line[24]"}));
+    let f = rig.run("c9", "task_output", json!({"id": id, "offset": 0, "filter": "line[24]"}));
     assert!(f.content.contains("line2") && f.content.contains("line4") && !f.content.contains("line3"), "{}", f.content);
     // Unknown jobs and bad arguments say so.
-    let bad = rig.run("c10", "job_output", json!({"id": "nope"}));
+    let bad = rig.run("c10", "task_output", json!({"id": "nope"}));
     assert!(bad.is_error && bad.content.contains("no job `nope`"), "{}", bad.content);
-    let bad = rig.run("c11", "job_output", json!({"id": id, "filter": "("}));
+    let bad = rig.run("c11", "task_output", json!({"id": id, "filter": "("}));
     assert!(bad.is_error, "{}", bad.content);
     bg_hub().take_notices(&rig.session);
 }
@@ -198,26 +198,26 @@ fn parity_t15_job_output_streams_since_an_offset() {
 #[test]
 fn parity_t15_a_running_job_streams_from_where_the_last_read_ended() {
     let rig = Rig::new("t15b");
-    let o = rig.run("c1", "bash", json!({"command": "echo first; sleep 1; echo second; sleep 60", "run_in_background": true}));
+    let o = rig.run("c1", "bash", json!({"command": "echo first; sleep 1; echo second; sleep 60", "background": true}));
     let id = job_id(&o);
     wait_for("the first line", Duration::from_secs(20), || {
-        rig.run("c2", "job_output", json!({"id": id})).content.starts_with("first")
+        rig.run("c2", "task_output", json!({"id": id})).content.starts_with("first")
     });
     // The read above moved the cursor: nothing is new until the job writes again.
-    let idle = rig.run("c3", "job_output", json!({"id": id}));
+    let idle = rig.run("c3", "task_output", json!({"id": id}));
     assert!(idle.content.starts_with("(no new output)") || idle.content.starts_with("second"), "{}", idle.content);
     let second = if idle.content.starts_with("second") {
         idle
     } else {
         wait_for("the second line", Duration::from_secs(20), || {
-            let r = rig.run("c4", "job_output", json!({"id": id, "since": 6}));
+            let r = rig.run("c4", "task_output", json!({"id": id, "offset": 6}));
             r.content.starts_with("second")
         });
-        rig.run("c5", "job_output", json!({"id": id, "since": 6}))
+        rig.run("c5", "task_output", json!({"id": id, "offset": 6}))
     };
     assert!(second.content.contains("running") && !second.content.contains("first"), "{}", second.content);
     assert_eq!(next_since(&second), 13);
-    rig.run("c6", "job_kill", json!({"id": id}));
+    rig.run("c6", "task_stop", json!({"id": id}));
     bg_hub().take_notices(&rig.session);
 }
 
@@ -225,7 +225,7 @@ fn parity_t15_a_running_job_streams_from_where_the_last_read_ended() {
 fn parity_t16_an_exit_notice_reaches_the_next_step_and_wakes_an_idle_session() {
     let rig = Rig::new("t16");
     let events = bg_hub().subscribe();
-    let o = rig.run("c1", "bash", json!({"command": "sleep 2; echo done", "run_in_background": true}));
+    let o = rig.run("c1", "bash", json!({"command": "sleep 2; echo done", "background": true}));
     let id = job_id(&o);
     // The call came back at once, and the job is announced to the daemon.
     assert!(o.content.contains("you will be told when it exits"), "{}", o.content);
@@ -258,7 +258,7 @@ fn parity_t16_an_exit_notice_reaches_the_next_step_and_wakes_an_idle_session() {
 fn parity_t16_a_notice_lands_between_steps_and_ahead_of_the_next_turn() {
     // While the model works: delivered by `after_step`, once.
     let rig = Rig::new("t16b");
-    let o = rig.run("c1", "bash", json!({"command": "echo quick; exit 3", "run_in_background": true}));
+    let o = rig.run("c1", "bash", json!({"command": "echo quick; exit 3", "background": true}));
     // A command that has already failed says so in its own result, and queues nothing; a slow
     // start (a busy machine) gets the notice instead.
     if o.content.contains("already exited") {
@@ -268,7 +268,7 @@ fn parity_t16_a_notice_lands_between_steps_and_ahead_of_the_next_turn() {
         wait_for("the quick job's notice", Duration::from_secs(20), || bg_hub().waking_sessions().contains(&rig.session));
         assert_eq!(rig.step_notices().len(), 1);
     }
-    let o = rig.run("c2", "bash", json!({"command": "sleep 1; echo slow; exit 4", "run_in_background": true}));
+    let o = rig.run("c2", "bash", json!({"command": "sleep 1; echo slow; exit 4", "background": true}));
     let id = job_id(&o);
     wait_for("the exit notice", Duration::from_secs(20), || bg_hub().waking_sessions().contains(&rig.session));
     let notes = rig.step_notices();
@@ -277,7 +277,7 @@ fn parity_t16_a_notice_lands_between_steps_and_ahead_of_the_next_turn() {
     assert!(rig.step_notices().is_empty(), "a notice is delivered once");
 
     // Between turns: `before_turn` puts it ahead of the user's message.
-    let o = rig.run("c3", "bash", json!({"command": "sleep 1; echo later", "run_in_background": true}));
+    let o = rig.run("c3", "bash", json!({"command": "sleep 1; echo later", "background": true}));
     let id = job_id(&o);
     wait_for("the second exit", Duration::from_secs(20), || bg_hub().waking_sessions().contains(&rig.session));
     let mut convo = rig.convo();
@@ -296,10 +296,10 @@ fn parity_t16_job_watch_reports_lines_until_the_pattern_appears() {
     let o = rig.run(
         "c1",
         "bash",
-        json!({"command": "echo boot; sleep 0.8; echo INFO ready on 8080; sleep 0.8; echo after; sleep 30", "run_in_background": true}),
+        json!({"command": "echo boot; sleep 0.8; echo INFO ready on 8080; sleep 0.8; echo after; sleep 30", "background": true}),
     );
     let id = job_id(&o);
-    let w = rig.run("c2", "job_watch", json!({"id": id, "until_regex": "ready on \\d+"}));
+    let w = rig.run("c2", "task_output", json!({"id": id, "watch": true, "until": "ready on \\d+"}));
     assert!(!w.is_error && w.content.contains("watching job"), "{}", w.content);
     // The match ends the watch and wakes the session even though the job still runs.
     wait_for("the match", Duration::from_secs(20), || bg_hub().waking_sessions().contains(&rig.session));
@@ -311,9 +311,9 @@ fn parity_t16_job_watch_reports_lines_until_the_pattern_appears() {
     // The watch is over: later lines are not reported.
     std::thread::sleep(Duration::from_millis(1_500));
     assert!(hub_notices(&rig.session).is_empty());
-    let k = rig.run("c3", "job_kill", json!({"id": id}));
+    let k = rig.run("c3", "task_stop", json!({"id": id}));
     assert!(!k.is_error && k.content.contains("stopped job"), "{}", k.content);
-    let bad = rig.run("c4", "job_watch", json!({"id": id, "until_regex": "("}));
+    let bad = rig.run("c4", "task_output", json!({"id": id, "watch": true, "until": "("}));
     assert!(bad.is_error || bad.content.contains("already exited"), "{}", bad.content);
 }
 
@@ -321,21 +321,21 @@ fn parity_t16_job_watch_reports_lines_until_the_pattern_appears() {
 fn parity_t16_a_line_printed_before_job_watch_still_matches() {
     let rig = Rig::new("t16d");
     // The usual order: the server prints "ready" within a second, the model watches a step later.
-    let o = rig.run("c1", "bash", json!({"command": "echo boot; echo INFO ready on 8080; printf 'half a li'; sleep 30", "run_in_background": true}));
+    let o = rig.run("c1", "bash", json!({"command": "echo boot; echo INFO ready on 8080; printf 'half a li'; sleep 30", "background": true}));
     let id = job_id(&o);
     wait_for("the ready line", Duration::from_secs(20), || {
-        rig.run("c0", "job_output", json!({"id": id, "since": 0})).content.contains("ready on 8080")
+        rig.run("c0", "task_output", json!({"id": id, "offset": 0})).content.contains("ready on 8080")
     });
-    let w = rig.run("c2", "job_watch", json!({"id": id, "until_regex": "ready on \\d+"}));
+    let w = rig.run("c2", "task_output", json!({"id": id, "watch": true, "until": "ready on \\d+"}));
     assert!(!w.is_error && w.content.contains("already matched") && w.content.contains("INFO ready on 8080"), "{}", w.content);
     assert!(w.content.contains("no watch was started"), "{}", w.content);
     // Nothing was installed, so no notice follows.
     std::thread::sleep(Duration::from_millis(400));
     assert!(hub_notices(&rig.session).is_empty());
     // A pattern that has not printed yet installs a watch.
-    let w2 = rig.run("c3", "job_watch", json!({"id": id, "until_regex": "never printed"}));
+    let w2 = rig.run("c3", "task_output", json!({"id": id, "watch": true, "until": "never printed"}));
     assert!(!w2.is_error && w2.content.contains("watching job"), "{}", w2.content);
-    let k = rig.run("c4", "job_kill", json!({"id": id}));
+    let k = rig.run("c4", "task_stop", json!({"id": id}));
     assert!(!k.is_error, "{}", k.content);
 }
 
@@ -344,19 +344,19 @@ fn a_watch_started_mid_line_sees_the_whole_next_line() {
     let rig = Rig::new("t16e");
     let marker = rig.ws.path("go.txt");
     let cmd = format!("printf 'half a li'; while [ ! -e '{}' ]; do sleep 0.1; done; echo 'ne done'; sleep 30", posix(&marker));
-    let o = rig.run("c1", "bash", json!({"command": cmd, "run_in_background": true}));
+    let o = rig.run("c1", "bash", json!({"command": cmd, "background": true}));
     let id = job_id(&o);
     wait_for("the fragment", Duration::from_secs(20), || {
-        rig.run("c0", "job_output", json!({"id": id, "since": 0})).content.contains("half a li")
+        rig.run("c0", "task_output", json!({"id": id, "offset": 0})).content.contains("half a li")
     });
-    let w = rig.run("c2", "job_watch", json!({"id": id, "until_regex": "^half a line done$"}));
+    let w = rig.run("c2", "task_output", json!({"id": id, "watch": true, "until": "^half a line done$"}));
     assert!(!w.is_error && w.content.contains("watching job"), "{}", w.content);
     std::fs::write(&marker, "go").unwrap();
     wait_for("the match", Duration::from_secs(20), || bg_hub().waking_sessions().contains(&rig.session));
     let all = hub_notices(&rig.session).iter().map(|n| n.text.clone()).collect::<Vec<_>>().join("
 ");
     assert!(all.contains("half a line done"), "{all}");
-    rig.run("c3", "job_kill", json!({"id": id}));
+    rig.run("c3", "task_stop", json!({"id": id}));
 }
 
 #[test]
@@ -381,16 +381,16 @@ fn parity_t17_job_kill_takes_the_whole_tree() {
     let marker = rig.ws.path("grandchild.txt");
     // The middle subshell exits at once, so the writer has no living parent in the tree.
     let cmd = format!("( (sleep 3; echo up > '{}') & ); sleep 60", posix(&marker));
-    let o = rig.run("c1", "bash", json!({"command": cmd, "run_in_background": true}));
+    let o = rig.run("c1", "bash", json!({"command": cmd, "background": true}));
     let id = job_id(&o);
     std::thread::sleep(Duration::from_millis(400));
-    let k = rig.run("c2", "job_kill", json!({"id": id}));
+    let k = rig.run("c2", "task_stop", json!({"id": id}));
     assert!(!k.is_error && k.content.contains(&format!("stopped job {id}")), "{}", k.content);
     // The model asked for it, so no notice follows.
     assert!(hub_notices(&rig.session).is_empty());
     std::thread::sleep(Duration::from_millis(4_000));
     assert!(!marker.exists(), "the grandchild survived job_kill");
-    let again = rig.run("c3", "job_kill", json!({"id": id}));
+    let again = rig.run("c3", "task_stop", json!({"id": id}));
     assert!(again.content.contains("had already exited"), "{}", again.content);
     // The registry lists it as finished, and killing by id works from the daemon's side too.
     let listed = bg_hub().list(Some(&rig.session));
@@ -448,7 +448,7 @@ fn parity_t18_a_detached_foreground_call_keeps_its_output() {
     assert!(notes[0].text.contains(&format!("job {detached} exited with code 0")), "{}", notes[0].text);
     let log = std::fs::read_to_string(announced.log.expect("a log")).unwrap();
     assert!(log.contains("first") && log.contains("second"), "{log}");
-    let read = rig.run("c2", "job_output", json!({"id": detached, "since": 0}));
+    let read = rig.run("c2", "task_output", json!({"id": detached, "offset": 0}));
     assert!(read.content.contains("first") && read.content.contains("second"), "{}", read.content);
     // Detaching again, or something that is not running, does nothing.
     assert!(bg_hub().detach(&rig.session, Some("call-detach-1")).is_none());
@@ -545,15 +545,15 @@ fn parity_t32_a_long_failing_command_returns_30k_with_the_whole_log_readable() {
 #[test]
 fn a_powershell_job_runs_in_the_background_and_is_killed_as_a_tree() {
     let rig = Rig::new("ps");
-    let o = rig.run("c1", "powershell", json!({"command": "Write-Output ps-up; Start-Sleep -Seconds 60", "run_in_background": true}));
+    let o = rig.run("c1", "powershell", json!({"command": "Write-Output ps-up; Start-Sleep -Seconds 60", "background": true}));
     assert!(!o.is_error && o.content.contains("started background job"), "{}", o.content);
     let id = job_id(&o);
     wait_for("the output", Duration::from_secs(30), || {
-        rig.run("c2", "job_output", json!({"id": id, "since": 0})).content.contains("ps-up")
+        rig.run("c2", "task_output", json!({"id": id, "offset": 0})).content.contains("ps-up")
     });
-    let k = rig.run("c3", "job_kill", json!({"id": id}));
+    let k = rig.run("c3", "task_stop", json!({"id": id}));
     assert!(!k.is_error, "{}", k.content);
-    assert!(rig.run("c4", "job_output", json!({"id": id, "since": 0})).content.contains("exited"));
+    assert!(rig.run("c4", "task_output", json!({"id": id, "offset": 0})).content.contains("exited"));
     assert!(hub_notices(&rig.session).is_empty(), "the kill was the model's own");
 }
 
@@ -589,7 +589,7 @@ fn reading_a_job_log_back_does_not_taint_the_session() {
         cancel: CancelToken::new(),
         tainted: false,
     });
-    let call = ToolCallReq { id: "c1".into(), name: "bash".into(), args: json!({"command": "seq 1 20000", "run_in_background": false}) };
+    let call = ToolCallReq { id: "c1".into(), name: "bash".into(), args: json!({"command": "seq 1 20000", "background": false}) };
     let out = tools.call_scoped(&call, &cx);
     let (log, _) = pointer_of(&out.content);
     assert!(log.starts_with(posix(&home.root.join("jobs"))), "logs live under the profile's jobs folder: {}", log.display());

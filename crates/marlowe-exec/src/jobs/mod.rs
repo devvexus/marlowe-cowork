@@ -1,4 +1,4 @@
-//! Background shells: `run_in_background`, `job_output`, `job_watch`, `job_kill`, Ctrl+B detach and
+//! Background shells: `background`, `task_output`, `task_stop`, Ctrl+B detach and
 //! the user's `!` shell (design 2.1 T15-T18). Track B.
 //!
 //! Every shell call is a job. [`HostJobs`] (one per tool host, in `BuiltinTools::state`) starts the
@@ -10,7 +10,7 @@
 //!   can detach it (`marlowe_os::job::bg_hub().detach`, Ctrl+B): the call returns at once with
 //!   what the job had written, and the job runs on as a background job.
 //! - A background call answers with the job's id at once. The job's exit queues a [`BgNotice`]; a
-//!   `job_watch` queues the lines it follows (and its `until_regex` match) as they appear.
+//!   `task_output` with `watch` queues the lines it follows (and its `until` match) as they appear.
 //!   [`JobsMiddleware`] hands the queue to the model at the next step boundary
 //!   (`after_step`) or at the start of the next turn (`before_turn`); an idle session is woken by
 //!   the daemon, which asks [`marlowe_os::job::BgHub::waking_sessions`] and relays the notices.
@@ -127,7 +127,7 @@ impl Notices {
     }
 }
 
-/// What a `job_watch` follows.
+/// What a `task_output` watch follows.
 struct Watch {
     filter: Option<Regex>,
     until: Option<Regex>,
@@ -150,7 +150,7 @@ struct St {
     cap: u64,
     flooded: bool,
     partial: Vec<u8>,
-    /// Where `job_output` without `since` continues from.
+    /// Where `task_output` without `offset` continues from.
     cursor: u64,
     exit: Option<i32>,
     /// A tool call is waiting for this job.
@@ -375,7 +375,7 @@ impl Job {
         }
         let hidden = lines.len() - shown + dropped;
         if hidden > 0 {
-            text.push_str(&format!("\n[... {hidden} more lines; job_output {{\"id\":\"{}\"}} reads them]", self.id));
+            text.push_str(&format!("\n[... {hidden} more lines; task_output {{\"id\":\"{}\"}} reads them]", self.id));
         }
         self.notices.push(BgNotice {
             session: self.session.clone(),

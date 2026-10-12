@@ -2,7 +2,7 @@
 name: researcher
 description: Plans an investigation, then writes the cited report from the evidence that survived verification.
 effort: high
-tools: [read, glob, grep, write, edit, web_search, web_fetch, arxiv, paper]
+tools: [read, glob, grep, write, edit, web_search, web_fetch, arxiv]
 budget: {tokens: 800000, steps: 80, usd: 3.00}
 sandbox: scratch
 ---

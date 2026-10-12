@@ -183,7 +183,7 @@ fn diff(c: &Ctx, args: &Value) -> ToolOutcome {
     if let Some(n) = int_arg(args, "context").filter(|n| (0..=100).contains(n)) {
         a.push(format!("-U{n}"));
     }
-    if let Some(base) = str_arg(args, "base").filter(|b| !b.is_empty()) {
+    if let Some(base) = first_of(args, &["rev", "base"]) {
         a.push(base.to_string());
     }
     a.extend(paths_tail(args));
@@ -275,8 +275,13 @@ fn blame(c: &Ctx, args: &Value) -> ToolOutcome {
     ToolOutcome::ok(bounded(o.out()), format!("{} lines", o.out().lines().count()))
 }
 
+/// The first of `keys` that holds a non-empty string: the schema's name, then the one it replaced.
+fn first_of<'a>(args: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|k| str_arg(args, k).filter(|v| !v.is_empty()))
+}
+
 fn branch(c: &Ctx, args: &Value) -> ToolOutcome {
-    let name = str_arg(args, "name").filter(|n| !n.is_empty());
+    let name = first_of(args, &["branch", "name"]);
     let Some(name) = name else {
         let mut a = vec!["branch", "--list", "-vv", "--no-color"];
         if flag(args, "all") {
@@ -293,7 +298,7 @@ fn branch(c: &Ctx, args: &Value) -> ToolOutcome {
         let o = c.write(&["branch", "-d", name]);
         return if o.ok() { ToolOutcome::ok(o.all(), format!("deleted {name}")) } else { fail(&o, "git branch -d") };
     }
-    let from = str_arg(args, "from").filter(|f| !f.is_empty());
+    let from = first_of(args, &["rev", "from"]);
     let mut a = vec!["branch", name];
     a.extend(from);
     let o = c.write(&a);
@@ -305,15 +310,15 @@ fn branch(c: &Ctx, args: &Value) -> ToolOutcome {
 }
 
 fn switch(c: &Ctx, args: &Value) -> ToolOutcome {
-    let Some(name) = str_arg(args, "name").filter(|n| !n.is_empty()) else {
-        return ToolOutcome::error("switch needs `name` (the branch)");
+    let Some(name) = first_of(args, &["branch", "name"]) else {
+        return ToolOutcome::error("switch needs `branch`");
     };
     let mut a = vec!["switch"];
     if flag(args, "create") {
         a.push("-c");
     }
     a.push(name);
-    if let Some(from) = str_arg(args, "from").filter(|f| !f.is_empty()) {
+    if let Some(from) = first_of(args, &["rev", "from"]) {
         a.push(from);
     }
     let o = c.write(&a);
@@ -391,7 +396,7 @@ fn commit(c: &Ctx, args: &Value) -> ToolOutcome {
 }
 
 fn stash(c: &Ctx, args: &Value) -> ToolOutcome {
-    let action = str_arg(args, "action").filter(|a| !a.is_empty()).unwrap_or("push");
+    let action = first_of(args, &["stash", "action"]).unwrap_or("push");
     let rev = str_arg(args, "rev").filter(|r| !r.is_empty());
     let mut a: Vec<String> = vec!["stash".into()];
     match action {
@@ -515,12 +520,12 @@ enum Class {
 fn classify(args: &Value) -> Class {
     match str_arg(args, "op").unwrap_or("") {
         "status" | "diff" | "log" | "show" | "blame" => Class::Read,
-        "branch" => match (str_arg(args, "name").is_some_and(|n| !n.is_empty()), flag(args, "delete")) {
+        "branch" => match (first_of(args, &["branch", "name"]).is_some(), flag(args, "delete")) {
             (false, _) => Class::Read,
             (true, true) => Class::BranchDelete,
             (true, false) => Class::Local,
         },
-        "stash" if matches!(str_arg(args, "action"), Some("list" | "show")) => Class::Read,
+        "stash" if matches!(first_of(args, &["stash", "action"]), Some("list" | "show")) => Class::Read,
         "stash" | "switch" | "add" | "commit" => Class::Local,
         "push" => Class::Push,
         "fetch" => Class::Fetch,
@@ -637,11 +642,11 @@ fn ask_summary(c: &Ctx, call: &ToolCallReq, class: Class) -> (String, Vec<String
             let protected = if policy::is_protected(&branch) { format!(" — WARNING: {branch} is a protected branch") } else { String::new() };
             (format!("git push {branch} to {remote} ({url}){ahead}{protected}"), Vec::new())
         }
-        (_, Class::BranchDelete) => (format!("git branch -d {}", str_arg(args, "name").unwrap_or("?")), Vec::new()),
+        (_, Class::BranchDelete) => (format!("git branch -d {}", first_of(args, &["branch", "name"]).unwrap_or("?")), Vec::new()),
         (_, Class::Fetch) => (format!("git fetch {}(after untrusted content)", str_arg(args, "remote").map(|r| format!("{r} ")).unwrap_or_default()), Vec::new()),
-        ("branch", _) => (format!("git branch {}", str_arg(args, "name").unwrap_or("?")), Vec::new()),
-        ("switch", _) => (format!("git switch {}{}", if flag(args, "create") { "-c " } else { "" }, str_arg(args, "name").unwrap_or("?")), Vec::new()),
-        ("stash", _) => (format!("git stash {}", str_arg(args, "action").unwrap_or("push")), Vec::new()),
+        ("branch", _) => (format!("git branch {}", first_of(args, &["branch", "name"]).unwrap_or("?")), Vec::new()),
+        ("switch", _) => (format!("git switch {}{}", if flag(args, "create") { "-c " } else { "" }, first_of(args, &["branch", "name"]).unwrap_or("?")), Vec::new()),
+        ("stash", _) => (format!("git stash {}", first_of(args, &["stash", "action"]).unwrap_or("push")), Vec::new()),
         _ => (format!("git {op}"), Vec::new()),
     }
 }
@@ -705,7 +710,7 @@ fn consequence(tools: &BuiltinTools, call: &ToolCallReq, exposure: &Exposure, sa
 pub(crate) fn git_mutation(tools: &BuiltinTools, call: &ToolCallReq, ctx: &ToolCtx) -> Mutation {
     let changes_files = match str_arg(&call.args, "op").unwrap_or("") {
         "switch" => true,
-        "stash" => !matches!(str_arg(&call.args, "action"), Some("list" | "show")),
+        "stash" => !matches!(first_of(&call.args, &["stash", "action"]), Some("list" | "show")),
         _ => false,
     };
     if !changes_files {
@@ -722,9 +727,9 @@ pub(crate) fn describe(call: &ToolCallReq) -> String {
     let op = str_arg(a, "op").unwrap_or("");
     let detail = match op {
         "commit" => first_line(str_arg(a, "message").unwrap_or(""), 50),
-        "switch" | "branch" => str_arg(a, "name").unwrap_or("").to_string(),
+        "switch" | "branch" => first_of(a, &["branch", "name"]).unwrap_or("").to_string(),
         "add" => first_line(&list(a, "paths").join(" "), 50),
-        "show" | "log" | "diff" => str_arg(a, "rev").or_else(|| str_arg(a, "base")).unwrap_or("").to_string(),
+        "show" | "log" | "diff" => first_of(a, &["rev", "base"]).unwrap_or("").to_string(),
         "push" | "fetch" => str_arg(a, "branch").or_else(|| str_arg(a, "remote")).unwrap_or("").to_string(),
         _ => String::new(),
     };

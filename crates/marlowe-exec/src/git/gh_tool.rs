@@ -14,7 +14,7 @@ use super::{pr, policy, threads, watch};
 use crate::{first_line, int_arg, str_arg, text, BuiltinTools};
 
 pub(crate) const OPS: &[&str] =
-    &["pr_create", "pr_view", "pr_list", "pr_diff", "pr_checks", "pr_comments", "pr_comment", "pr_reply", "pr_review", "issue_view"];
+    &["pr_view", "pr_diff", "pr_list", "issue_view", "pr_comments", "ci", "pr_create", "pr_comment", "pr_reply", "pr_review"];
 
 /// Ops that read other people's words.
 fn reads_untrusted(op: &str) -> bool {
@@ -99,7 +99,8 @@ pub(crate) fn gh_call(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolO
         "pr_view" => pr_view(&c, args),
         "pr_list" => pr_list(&c, args),
         "pr_diff" => pr_diff(&c, args),
-        "pr_checks" => pr_checks(&c, args),
+        // CI for a branch, a commit or (with `number`) a PR's checks; `pr_checks` is the old spelling.
+        "ci" | "pr_checks" => return super::ci::ci_status_call(tools, &ci_args(args), cx),
         "pr_comments" => pr_comments(&c, args),
         "pr_comment" => pr_comment(&c, args),
         "pr_reply" => pr_reply(&c, args),
@@ -188,7 +189,7 @@ fn pr_list(c: &Ctx, args: &Value) -> Res {
         .map(String::from)
         .to_vec();
     a.push(limit);
-    for (key, opt) in [("state", "--state"), ("author", "--author"), ("search", "--search"), ("head", "--head"), ("base", "--base")] {
+    for (key, opt) in [("state", "--state"), ("author", "--author"), ("search", "--search"), ("branch", "--head"), ("base", "--base")] {
         if let Some(v) = str_arg(args, key).filter(|v| !v.is_empty()) {
             if v.starts_with('-') {
                 return Err(format!("`{key}` must not start with `-`"));
@@ -411,7 +412,19 @@ fn issue_view(c: &Ctx, args: &Value) -> Res {
 // ---------------------------------------------------------------- consequence
 
 pub(crate) fn gh_taints(_tools: &BuiltinTools, call: &ToolCallReq) -> bool {
-    reads_untrusted(str_arg(&call.args, "op").unwrap_or(""))
+    let op = str_arg(&call.args, "op").unwrap_or("");
+    reads_untrusted(op) || (matches!(op, "ci" | "pr_checks") && flag(&call.args, "log"))
+}
+
+/// `gh{op: ci}` arguments as the CI reader takes them: `number` is its `pr`.
+fn ci_args(args: &Value) -> Value {
+    let mut a = args.clone();
+    if let Some(o) = a.as_object_mut() {
+        if let Some(n) = o.remove("number") {
+            o.insert("pr".into(), n);
+        }
+    }
+    a
 }
 
 /// A network read: free, but a host not yet approved asks once untrusted content is in.

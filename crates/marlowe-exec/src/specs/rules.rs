@@ -69,11 +69,6 @@ pub fn for_tool(name: &str) -> ArgRules {
             see_also: Some("To search instead: web_search(query) or arxiv(query)."),
             ..ArgRules::NONE
         },
-        "paper" => ArgRules {
-            aliases: &[("url", "url_or_arxiv_id"), ("id", "url_or_arxiv_id"), ("arxiv_id", "url_or_arxiv_id"), ("link", "url_or_arxiv_id")],
-            see_also: Some("To search papers: arxiv(query)."),
-            ..ArgRules::NONE
-        },
         "arxiv" => ArgRules {
             aliases: &[("q", "query"), ("search", "query"), ("keywords", "query"), ("terms", "query"), ("max", "limit"), ("max_results", "limit"), ("n", "limit")],
             example: Some(r#"arxiv{"query": "speculative decoding"}"#),

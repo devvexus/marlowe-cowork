@@ -13,6 +13,7 @@ pub mod background;
 pub mod budget;
 pub mod checkpoint;
 pub mod commands;
+pub mod compact_specs;
 pub mod context;
 pub mod convo;
 pub mod cron;

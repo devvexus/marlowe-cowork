@@ -20,7 +20,7 @@ use marlowe_workflow::service::{self, LaunchRequest, Waited};
 use marlowe_workflow::Workflows;
 use serde_json::{json, Value};
 
-use super::{spec, ToolDef};
+use super::ToolDef;
 use crate::BuiltinTools;
 
 /// The group's state on a host: the profile home, and whether the host is the conductor's.
@@ -41,7 +41,7 @@ impl WorkflowGroup {
 
 /// What a call names, as the key the consequence and the call share.
 fn call_key(a: &Value) -> String {
-    json!([script(a), s(a, "script_path"), s(a, "name")]).to_string()
+    json!([script(a), path(a), s(a, "name")]).to_string()
 }
 
 /// Longest result a waited-on workflow puts in the tool result (the journal has it whole).
@@ -58,47 +58,21 @@ fn roots(t: &BuiltinTools, workspace: Option<&std::path::Path>) -> Option<marlow
     Some(service::roots(home, workspace, marlowe_agent::commands::plugin::bundle_roots(Some(home), workspace)))
 }
 
-/// The tool's description carries the script API, so the schema alone teaches the model enough to
-/// write a script (WF9).
-const WORKFLOW_DESCRIPTION: &str = "Run a workflow: a Starlark script (Python-like) that orchestrates many agents, in the background as a crew run. \
-Returns {run_id, script_path} at once; the result arrives as a notice (or set background:false to wait). \
-Give exactly one of: script (inline), script_path (a .star file), name (saved: .marlowe/workflows, <home>/workflows, built-ins code-review and simplify). \
-Script shape: META = {\"name\": ..., \"description\": ..., \"phases\": [...]} (a pure literal), then def main(args): ... return result. \
-API: agent(prompt, label=, phase=, schema=, model=, effort=, isolation=\"worktree\", agent_type=) -> text, dict (with schema) or None; \
-parallel([lambda: agent(...), ...]) runs them together (barrier); pipeline(items, lambda prev, item, i: ..., ...) moves each item through stages with no barrier; \
-phase(name); log(...); workflow(name, args) (one level); args; budget.total, budget.spent(), budget.remaining(); json.encode/decode. \
-No while, no recursion, no clock, randomness or files: agents do the work. In loops bind the variable: lambda f=f: agent(f). \
-The script is checked before it runs; errors come back to you. validate_only:true checks without running.";
-
 fn workflow_spec() -> marlowe_model::ToolSpec {
-    spec(
-        "workflow",
-        WORKFLOW_DESCRIPTION,
-        json!({
-            "script": {"type": "string", "description": "An inline Starlark workflow script."},
-            "script_path": {"type": "string", "description": "A .star file (relative to the workspace or absolute)."},
-            "name": {"type": "string", "description": "A saved workflow's name."},
-            "args": {"type": "object", "description": "JSON the script gets as `args` (verbatim)."},
-            "background": {"type": "boolean", "description": "Default true: return the run id at once. false: wait for the result."},
-            "resume_from": {"type": "string", "description": "A previous run's id: unchanged calls reuse its results (the first changed call and everything after it run live)."},
-            "validate_only": {"type": "boolean", "description": "Check the script and report its META or its errors; run nothing."}
-        }),
-        &[],
-    )
+    marlowe_agent::compact_specs::spec("workflow")
 }
 
 fn report_findings_spec() -> marlowe_model::ToolSpec {
-    spec(
-        "report_findings",
-        "Report review findings so they show in the findings panel: each with lens, severity (info, low, medium, high, critical), file, \
-         line, claim (one sentence), evidence and fix. Invalid entries are refused with what to fix; send the whole list again.",
-        json!({"findings": {"type": "array", "items": marlowe_workflow::findings::finding_schema()}}),
-        &["findings"],
-    )
+    marlowe_agent::compact_specs::spec("report_findings")
 }
 
 fn s<'a>(a: &'a Value, k: &str) -> Option<&'a str> {
     a.get(k).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty())
+}
+
+/// The `.star` file a call names (`path`; `script_path` is the older spelling).
+fn path<'a>(a: &'a Value) -> Option<&'a str> {
+    s(a, "path").or_else(|| s(a, "script_path"))
 }
 
 /// The inline script exactly as given (its digest is the trust key, so it is not trimmed).
@@ -110,7 +84,7 @@ fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
     let Some(roots) = roots(t, cx.workspace.as_deref()) else {
         return ToolOutcome::error("workflows are not available on this host");
     };
-    let (script, script_path, name) = (script(a), s(a, "script_path"), s(a, "name"));
+    let (script, script_path, name) = (script(a), path(a), s(a, "name"));
     if a.get("validate_only").and_then(Value::as_bool).unwrap_or(false) {
         return match service::prepare(&roots, script, script_path, name) {
             Ok(p) => ToolOutcome::ok(format!("{} is valid. META: {}", p.filename, serde_json::to_string(&p.meta).unwrap_or_default()), "valid"),
@@ -188,7 +162,7 @@ fn workflow_consequence(t: &BuiltinTools, c: &ToolCallReq) -> Consequence {
     };
     let key = call_key(a);
     let mut approved = g.approved.lock().unwrap_or_else(|e| e.into_inner());
-    match service::prepare(&roots, script(a), s(a, "script_path"), s(a, "name")) {
+    match service::prepare(&roots, script(a), path(a), s(a, "name")) {
         // Nothing will run: the call returns the errors. A script that appears by the time the
         // call runs (a write in the same batch) has no approved digest, so the launch refuses it.
         Err(_) => {
@@ -207,7 +181,7 @@ fn workflow_consequence(t: &BuiltinTools, c: &ToolCallReq) -> Consequence {
 }
 
 fn describe_workflow(c: &ToolCallReq) -> String {
-    match (s(&c.args, "name"), s(&c.args, "script_path")) {
+    match (s(&c.args, "name"), path(&c.args)) {
         (Some(n), _) => format!("workflow {n}"),
         (None, Some(p)) => format!("workflow {p}"),
         _ => "workflow (inline script)".into(),
@@ -264,9 +238,9 @@ pub fn middleware(tools: &crate::BuiltinTools) -> Vec<std::sync::Arc<dyn marlowe
     super::no_middleware(tools)
 }
 
-/// `persona/blocks/workflow.md`: appended only while the group is exposed and live (WF9).
+/// No block: the `workflow` description carries the script API and the rules for using it.
 pub fn persona_block() -> Option<&'static str> {
-    Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../persona/blocks/workflow.md")))
+    None
 }
 
 /// The conductor's hosts: `workflow` is live and findings are stored under the profile home.

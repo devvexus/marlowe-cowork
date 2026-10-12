@@ -213,21 +213,8 @@ impl McpTools {
 
     fn resource_specs() -> Vec<ToolSpec> {
         vec![
-            ToolSpec {
-                name: LIST_RESOURCES.into(),
-                description: "List the resources (files, records, documents) that connected MCP servers offer, optionally for one server.".into(),
-                input_schema: json!({"type": "object", "properties": {"server": {"type": "string"}}, "additionalProperties": false}),
-            },
-            ToolSpec {
-                name: READ_RESOURCE.into(),
-                description: "Read one MCP resource by server name and URI (from list_mcp_resources).".into(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {"server": {"type": "string"}, "uri": {"type": "string"}},
-                    "required": ["server", "uri"],
-                    "additionalProperties": false
-                }),
-            },
+            marlowe_agent::compact_specs::spec(LIST_RESOURCES),
+            marlowe_agent::compact_specs::spec(READ_RESOURCE),
         ]
     }
 

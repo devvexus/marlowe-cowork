@@ -3,10 +3,9 @@
 
 use marlowe_agent::{Effects, ToolGroup};
 use marlowe_model::ToolSpec;
-use serde_json::json;
 
 use super::files::untrusted_read;
-use super::{describe_by, spec, ToolDef};
+use super::{describe_by, ToolDef};
 use crate::search::{self, SearchEnv};
 
 pub fn tools() -> Vec<ToolDef> {
@@ -27,39 +26,11 @@ pub fn tools() -> Vec<ToolDef> {
 }
 
 fn glob_spec() -> ToolSpec {
-    spec(
-        "glob",
-        "List files by gitignore-style pattern, newest first (`*.rs`, `src/*.rs`, `**/x`, `!x` excludes). Hidden files are listed; ignored files are not.",
-        json!({
-            "pattern": {"type": "string"},
-            "path": {"type": "string"},
-            "head_limit": {"type": "integer"},
-            "offset": {"type": "integer"}
-        }),
-        &[],
-    )
+    marlowe_agent::compact_specs::spec("glob")
 }
 
 fn grep_spec() -> ToolSpec {
-    spec(
-        "grep",
-        "Search contents with ripgrep (Rust regex). `output_mode`: files_with_matches (default), content (`path:line:text`), count. Hidden files are searched, gitignored ones are not. `head_limit` default 250, 0 for all.",
-        json!({
-            "pattern": {"type": "string"},
-            "path": {"type": "string"},
-            "glob": {"type": "string"},
-            "type": {"type": "string"},
-            "output_mode": {"type": "string", "enum": ["files_with_matches", "content", "count"]},
-            "-A": {"type": "integer"},
-            "-B": {"type": "integer"},
-            "-C": {"type": "integer"},
-            "-i": {"type": "boolean"},
-            "multiline": {"type": "boolean"},
-            "head_limit": {"type": "integer"},
-            "offset": {"type": "integer"}
-        }),
-        &["pattern"],
-    )
+    marlowe_agent::compact_specs::spec("grep")
 }
 
 // Loop middleware for this group, built once per host next to its state (see `specs/mod.rs`).

@@ -94,7 +94,7 @@ fn arxiv_parses_and_renders_recorded_atom() {
     let ws = Ws::new("rs-arxiv");
     let http = Fake::new(vec![("export.arxiv.org/api/query", 200, "application/atom+xml", atom(SAMPLE))]);
     let t = ws.tools().with_research(cfg(http.clone(), None));
-    let o = call(&t, "arxiv", json!({"query": "attention memory", "max": 2}));
+    let o = call(&t, "arxiv", json!({"query": "attention memory", "limit": 2}));
     assert!(!o.is_error, "{}", o.content);
     assert!(o.content.contains("2 of 1234 papers"), "{}", o.content);
     assert!(
@@ -183,7 +183,7 @@ fn paper_reads_a_pdf_by_arxiv_id() {
         ("arxiv.org/pdf/2301.01234", 200, "application/pdf", pdf),
     ]);
     let t = ws.tools().with_research(cfg(http, None));
-    let o = call(&t, "paper", json!({"url_or_arxiv_id": "arXiv:2301.01234v2"}));
+    let o = call(&t, "web_fetch", json!({"part": "text", "url": "arXiv:2301.01234v2"}));
     assert!(!o.is_error, "{}", o.content);
     assert!(o.content.contains("paper https://arxiv.org/pdf/2301.01234v2"), "{}", o.content);
     assert!(o.content.contains("Title: Attention & Memory in Small Models"));
@@ -201,11 +201,11 @@ fn paper_reads_html_and_windows_long_text() {
     html.push_str("</p></body></html>");
     let http = Fake::new(vec![("example.org/p", 200, "text/html; charset=utf-8", html.into_bytes())]);
     let t = ws.tools().with_research(cfg(http, None));
-    let o = call(&t, "paper", json!({"url_or_arxiv_id": "https://example.org/p"}));
+    let o = call(&t, "web_fetch", json!({"part": "text", "url": "https://example.org/p"}));
     assert!(!o.is_error, "{}", o.content);
     assert!(o.content.contains("Title: On Widgets") && o.content.contains("Methods"), "{}", &o.content[..300]);
     assert!(o.content.contains("Continue with offset"), "long paper is windowed");
-    let o2 = call(&t, "paper", json!({"url_or_arxiv_id": "https://example.org/p", "offset": 12000}));
+    let o2 = call(&t, "web_fetch", json!({"part": "text", "url": "https://example.org/p", "offset": 12000}));
     assert!(!o2.is_error && o2.content.contains("[showing characters 12000-"));
 }
 
@@ -214,10 +214,10 @@ fn paper_refuses_bad_input_and_http_errors() {
     let ws = Ws::new("rs-paper-bad");
     let http = Fake::new(vec![("example.org/gone", 404, "text/html", b"nope".to_vec())]);
     let t = ws.tools().with_research(cfg(http, None));
-    assert!(call(&t, "paper", json!({})).is_error);
-    assert!(call(&t, "paper", json!({"url_or_arxiv_id": "http://example.org/a.pdf"})).is_error);
-    assert!(call(&t, "paper", json!({"url_or_arxiv_id": "not a paper"})).is_error);
-    let o = call(&t, "paper", json!({"url_or_arxiv_id": "https://example.org/gone"}));
+    assert!(call(&t, "web_fetch", json!({"part": "text"})).is_error);
+    assert!(call(&t, "web_fetch", json!({"part": "text", "url": "http://example.org/a.pdf"})).is_error);
+    assert!(call(&t, "web_fetch", json!({"part": "text", "url": "not a paper"})).is_error);
+    let o = call(&t, "web_fetch", json!({"part": "text", "url": "https://example.org/gone"}));
     assert!(o.is_error && o.content.contains("HTTP 404"));
 }
 
@@ -226,8 +226,8 @@ fn research_tools_are_untrusted_content_with_egress_rules() {
     let ws = Ws::new("rs-taint");
     let t = ws.tools();
     let a = req("arxiv", json!({"query": "x"}));
-    let p = req("paper", json!({"url_or_arxiv_id": "2301.01234"}));
-    let other = req("paper", json!({"url_or_arxiv_id": "https://example.org/a.pdf"}));
+    let p = req("web_fetch", json!({"part": "text", "url": "2301.01234"}));
+    let other = req("web_fetch", json!({"part": "text", "url": "https://example.org/a.pdf"}));
     assert!(t.taints(&a) && t.taints(&p));
     assert_eq!(t.egress_host(&p).as_deref(), Some("arxiv.org"));
     assert_eq!(t.consequence(&a), Consequence::Free);
@@ -247,15 +247,15 @@ fn research_tools_are_untrusted_content_with_egress_rules() {
 fn live_arxiv_search_and_paper() {
     let ws = Ws::new("rs-live");
     let t = ws.tools();
-    let o = call(&t, "arxiv", json!({"query": "ti:\"attention is all you need\"", "max": 3}));
+    let o = call(&t, "arxiv", json!({"query": "ti:\"attention is all you need\"", "limit": 3}));
     assert!(!o.is_error, "{}", o.content);
     assert!(o.content.contains("1706.03762"), "{}", o.content);
-    let p = call(&t, "paper", json!({"url_or_arxiv_id": "1706.03762"}));
+    let p = call(&t, "web_fetch", json!({"part": "text", "url": "1706.03762"}));
     assert!(!p.is_error, "{}", p.content);
     assert!(p.content.contains("Attention"));
     let head: String = p.content.chars().take(700).collect();
     eprintln!("{head}");
-    let r = call(&t, "paper", json!({"url_or_arxiv_id": "1706.03762", "part": "references"}));
+    let r = call(&t, "web_fetch", json!({"url": "1706.03762", "part": "references"}));
     assert!(!r.is_error, "{}", r.content);
     eprintln!("{}", r.summary);
 }

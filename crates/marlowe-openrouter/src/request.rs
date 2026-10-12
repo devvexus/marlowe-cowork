@@ -252,7 +252,7 @@ fn tools_field(tools: &[ToolSpec]) -> Option<Value> {
     let (server, functions): (Vec<&ToolSpec>, Vec<&ToolSpec>) =
         tools.iter().partition(|t| t.name.starts_with(SERVER_TOOL_PREFIX));
     let functions: Vec<ToolSpec> = functions.into_iter().cloned().collect();
-    let mut out = match wire::tools_field(&functions) {
+    let mut out = match wire::tools_field_typed(&functions) {
         Some(Value::Array(a)) => a,
         _ => Vec::new(),
     };

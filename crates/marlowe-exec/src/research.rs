@@ -181,7 +181,7 @@ pub(crate) fn arxiv(cfg: &ResearchConfig, args: &Value, cancel: &CancelToken) ->
     let Some(query) = str_arg(args, "query").map(str::trim).filter(|q| !q.is_empty()) else {
         return ToolOutcome::error("`query` is required: keywords, or a field query such as `ti:\"attention\" AND au:vaswani`");
     };
-    let max = int_arg(args, "max").map_or(DEFAULT_RESULTS, |m| (m.max(1) as usize).min(MAX_RESULTS));
+    let max = int_arg(args, "limit").map_or(DEFAULT_RESULTS, |m| (m.max(1) as usize).min(MAX_RESULTS));
     let url = arxiv_url(query, max);
     let (feed, cached) = match feed_for(cfg, &url, cancel) {
         Ok(f) => f,
@@ -222,7 +222,7 @@ fn render_feed(query: &str, feed: &ArxivFeed, cached: bool) -> String {
         let ell = if cut < e.summary.len() { "…" } else { "" };
         out.push_str(&format!("   {}{ell}\n", &e.summary[..cut]));
     }
-    out.push_str("\nRead one in full with `paper` (an id or URL). Abstracts are the authors' claims, not findings.");
+    out.push_str("\nRead one in full with `web_fetch` (its id or URL). Abstracts are the authors' claims, not findings.");
     out
 }
 
@@ -231,7 +231,7 @@ fn render_feed(query: &str, feed: &ArxivFeed, cached: bool) -> String {
 pub(crate) fn paper_url(input: &str) -> Result<String, String> {
     let s = input.trim();
     if s.is_empty() {
-        return Err("`url_or_arxiv_id` is required: an https URL or an arXiv id such as 2301.01234".into());
+        return Err("`url` is required: an https URL or an arXiv id such as 2301.01234".into());
     }
     if let Some(id) = arxiv_id(s) {
         return Ok(format!("https://arxiv.org/pdf/{id}"));

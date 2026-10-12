@@ -86,7 +86,7 @@ fn parity_g3_a_crew_pr_is_one_approval_then_the_push_and_the_pr() {
     assert_eq!(calls[1]["expect_sha"], "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d", "the push is pinned to the commit the user was shown");
     for c in &calls {
         assert_eq!(c["op"], "pr_create");
-        assert_eq!(c["head"], "crew/abcd1234");
+        assert_eq!(c["branch"], "crew/abcd1234");
         assert_eq!(c["cwd"], "C:\\work\\proj");
         assert_eq!(c["title"], "Fix the parser");
         assert!(c["body"].as_str().unwrap().starts_with("Fixed the parser.") && c["body"].as_str().unwrap().contains("crew run abcd1234"), "{c}");
@@ -117,7 +117,7 @@ fn a_denied_pr_pushes_and_posts_nothing() {
 fn a_merged_run_proposes_the_commit_it_ended_at() {
     let host = FakeGh::new(ToolOutcome::ok(PLAN, "plan"), ToolOutcome::ok("https://github.com/o/r/pull/4", "PR #4"));
     open_pr(&host, &SessionId("s".into()), &info("done", Some("merged: fast-forward to 1a2b3c4"), true), None, None, &|_, _| ApprovalDecision::Allow).unwrap();
-    assert_eq!(host.calls()[0]["head_sha"], "1a2b3c4");
+    assert_eq!(host.calls()[0]["sha"], "1a2b3c4");
     assert_eq!(merged_commit(Some("merged: merge commit deadbeef0")).as_deref(), Some("deadbeef0"));
     assert_eq!(merged_commit(Some("report saved to C:\\x")), None);
     assert_eq!(merged_commit(None), None);

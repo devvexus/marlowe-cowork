@@ -136,11 +136,15 @@ fn parity_bg1_one_task_of_each_kind_in_the_tool_output() {
 }
 
 #[test]
-fn parity_bg1_the_job_tools_stay_as_aliases() {
-    // B's job_output / job_watch / job_kill keep working beside the registry.
+fn parity_bg1_the_job_tools_are_the_task_tools() {
+    // B's jobs are read and stopped with task_output / task_stop (watch: true follows one); the
+    // old job_*, cron_* and list_agents names are gone from the list.
     let names: Vec<String> = rig("bg1-alias").tools.specs().into_iter().map(|s| s.name).collect();
-    for t in ["job_output", "job_watch", "job_kill", "task_list", "task_output", "task_stop", "monitor"] {
+    for t in ["task_list", "task_output", "task_stop", "monitor", "schedule"] {
         assert!(names.contains(&t.to_string()), "{t} missing from {names:?}");
+    }
+    for t in ["job_output", "job_watch", "job_kill", "cron_create", "cron_list", "cron_delete", "schedule_wakeup", "list_agents"] {
+        assert!(!names.contains(&t.to_string()), "{t} is still listed");
     }
 }
 
@@ -256,11 +260,11 @@ fn parity_bg3_output_is_readable_while_the_monitor_runs() {
     let out = r.call("task_output", json!({"id": "mon_log"}));
     assert!(out.content.contains("first") && out.content.contains("second") && !out.content.contains("third"), "{}", out.content);
     assert!(out.content.contains("still running"), "{}", out.content);
-    let next: u64 = out.content.rsplit("next since ").next().unwrap().split(';').next().unwrap().parse().unwrap();
+    let next: u64 = out.content.rsplit("next offset ").next().unwrap().split(';').next().unwrap().parse().unwrap();
     assert_eq!(next as usize, mid.len(), "the offset is where the file ends");
     // The rest, from the offset; and a filter.
     wait_status(&r, "mon_log", TaskStatus::Done, 15);
-    let rest = r.call("task_output", json!({"id": "mon_log", "since": next}));
+    let rest = r.call("task_output", json!({"id": "mon_log", "offset": next}));
     assert!(rest.content.contains("third") && !rest.content.contains("first"), "{}", rest.content);
     assert!(rest.content.contains("finished"), "{}", rest.content);
     let only = r.call("task_output", json!({"id": "mon_log", "filter": "^s"}));
@@ -412,19 +416,19 @@ fn parity_bg4_a_monitor_asks_like_bash() {
 #[test]
 fn parity_bg5_cron_create_list_delete() {
     let r = rig("bg5");
-    let made = r.call("cron_create", json!({"cron": "0 9 * * 1-5", "prompt": "check the nightly run"}));
+    let made = r.call("schedule", json!({"cron": "0 9 * * 1-5", "prompt": "check the nightly run"}));
     assert!(!made.is_error, "{}", made.content);
     assert!(made.content.contains("cron_1") && made.content.contains("dies with this session"), "{}", made.content);
-    let once = r.call("cron_create", json!({"once_at": "2999-01-02T09:00", "prompt": "remind me"}));
+    let once = r.call("schedule", json!({"at": "2999-01-02T09:00", "prompt": "remind me"}));
     assert!(!once.is_error, "{}", once.content);
-    let list = r.call("cron_list", json!({}));
+    let list = r.call("task_list", json!({}));
     assert!(list.content.contains("cron `0 9 * * 1-5`") && list.content.contains("once"), "{}", list.content);
     assert!(list.content.contains("check the nightly run"), "{}", list.content);
-    let del = r.call("cron_delete", json!({"id": "cron_1"}));
+    let del = r.call("task_stop", json!({"id": "cron_1"}));
     assert!(!del.is_error, "{}", del.content);
-    let list = r.call("cron_list", json!({}));
+    let list = r.call("task_list", json!({}));
     assert!(!list.content.contains("nightly"), "{}", list.content);
-    let missing = r.call("cron_delete", json!({"id": "cron_1"}));
+    let missing = r.call("task_stop", json!({"id": "cron_1"}));
     assert!(missing.is_error, "{}", missing.content);
 }
 
@@ -432,17 +436,17 @@ fn parity_bg5_cron_create_list_delete() {
 fn parity_bg5_a_bad_schedule_is_handed_back_in_words() {
     let r = rig("bg5-bad");
     let table: [(Value, &str); 8] = [
-        (json!({"prompt": "x"}), "exactly one of `cron` and `once_at`"),
-        (json!({"cron": "* * * * *", "once_at": "2999-01-01T00:00", "prompt": "x"}), "exactly one"),
+        (json!({"prompt": "x"}), "exactly one of `delay_s`"),
+        (json!({"cron": "* * * * *", "at": "2999-01-01T00:00", "prompt": "x"}), "exactly one"),
         (json!({"cron": "* * * *", "prompt": "x"}), "5 fields"),
         (json!({"cron": "61 * * * *", "prompt": "x"}), "minute field"),
         (json!({"cron": "0 0 31 2 *", "prompt": "x"}), "never fires"),
-        (json!({"once_at": "yesterday", "prompt": "x"}), "must be a local time"),
-        (json!({"once_at": "2001-01-01T00:00", "prompt": "x"}), "in the past"),
+        (json!({"at": "yesterday", "prompt": "x"}), "must be a local time"),
+        (json!({"at": "2001-01-01T00:00", "prompt": "x"}), "in the past"),
         (json!({"cron": "* * * * *"}), "`prompt` is required"),
     ];
     for (args, want) in table {
-        let o = r.call("cron_create", args.clone());
+        let o = r.call("schedule", args.clone());
         assert!(o.is_error && o.content.contains(want), "{args}: {}", o.content);
     }
     assert!(r.bg.schedules.lock().unwrap().is_empty(), "nothing was scheduled by a bad call");
@@ -451,9 +455,9 @@ fn parity_bg5_a_bad_schedule_is_handed_back_in_words() {
 #[test]
 fn parity_bg5_a_durable_schedule_asks_the_user() {
     let r = rig("bg5-durable");
-    let durable = r.consequence("cron_create", json!({"cron": "0 3 * * *", "prompt": "eval", "durable": true}));
+    let durable = r.consequence("schedule", json!({"cron": "0 3 * * *", "prompt": "eval", "durable": true}));
     assert!(matches!(&durable, Consequence::Ask { summary } if summary.contains("survives restarts") && summary.contains("0 3 * * *")), "{durable:?}");
-    assert_eq!(r.consequence("cron_create", json!({"cron": "0 3 * * *", "prompt": "eval"})), Consequence::Free);
+    assert_eq!(r.consequence("schedule", json!({"cron": "0 3 * * *", "prompt": "eval"})), Consequence::Free);
 }
 
 #[test]
@@ -461,14 +465,14 @@ fn parity_bg6_wakeup_delays_clamp_to_a_minute_and_an_hour() {
     let r = rig("bg6");
     for (asked, want) in [(5i64, 60i64), (60, 60), (900, 900), (3600, 3600), (99_999, 3600)] {
         let before = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
-        let o = r.call("schedule_wakeup", json!({"delay_s": asked, "prompt": "keep watching", "reason": "training"}));
+        let o = r.call("schedule", json!({"delay_s": asked, "prompt": "keep watching", "reason": "training"}));
         assert!(!o.is_error, "{}", o.content);
         assert!(o.content.contains(&format!("woken in {want} s")), "{asked}: {}", o.content);
         assert_eq!(o.content.contains("clamped"), asked != want, "{asked}: {}", o.content);
         let at = r.bg.schedules.lock().unwrap().last().unwrap().1.once_at_ms.unwrap();
         assert!(at >= before + want * 1000 && at < before + want * 1000 + 5_000, "{asked}: wakes at +{} ms", at - before);
     }
-    let o = r.call("schedule_wakeup", json!({"prompt": "x"}));
+    let o = r.call("schedule", json!({"prompt": "x"}));
     assert!(o.is_error && o.content.contains("delay_s"), "{}", o.content);
 }
 
@@ -563,13 +567,15 @@ fn parity_bg10_list_agents_shows_a_subagent_a_run_and_a_session() {
         AgentRow { id: "r-9f2c".into(), kind: "crew run".into(), status: "running".into(), title: "builder: add the cache".into(), workspace: None },
         AgentRow { id: "session:s-12".into(), kind: "session".into(), status: "idle".into(), title: "the eval harness".into(), workspace: Some("C:/work/eval".into()) },
     ];
-    let o = r.call("list_agents", json!({}));
+    // Subagents and runs are tasks in the registry; the listing adds the sessions you can message.
+    let o = r.call("task_list", json!({}));
     assert!(!o.is_error, "{}", o.content);
-    for want in ["agent-2", "subagent", "r-9f2c", "crew run", "session:s-12", "the eval harness", "C:/work/eval"] {
+    for want in ["sessions you can send_message to", "session:s-12", "the eval harness", "C:/work/eval"] {
         assert!(o.content.contains(want), "{want}: {}", o.content);
     }
+    assert!(!o.content.contains("agent-2"), "{}", o.content);
     r.bg.agents.lock().unwrap().clear();
-    assert!(r.call("list_agents", json!({})).content.contains("No agents"));
+    assert!(r.call("task_list", json!({})).content.contains("No background tasks"));
 }
 
 #[test]
@@ -629,8 +635,7 @@ fn the_group_is_offered_only_where_the_daemon_provides_it() {
     let r = rig("group");
     let names: Vec<String> = r.tools.specs().into_iter().map(|s| s.name).collect();
     for t in [
-        "task_list", "task_output", "task_stop", "monitor", "cron_create", "cron_list", "cron_delete", "schedule_wakeup",
-        "list_agents", "watch", "notify", "send_file", "notices",
+        "task_list", "task_output", "task_stop", "monitor", "schedule", "watch", "notify", "send_file", "notices",
     ] {
         assert!(names.contains(&t.to_string()), "{t} missing");
     }
@@ -639,7 +644,6 @@ fn the_group_is_offered_only_where_the_daemon_provides_it() {
     // Without the services a configured host still answers in words, never a panic.
     let o = r.tools.call(&req("task_list", json!({})), &ctx(Some(&r.ws.root)));
     assert!(o.is_error && o.content.contains("not available"), "{}", o.content);
-    // The persona block rides with the group.
-    assert!(r.tools.persona_blocks().iter().any(|b| b.text().contains("<background_work>")));
-    assert!(!BuiltinTools::new(None).persona_blocks().iter().any(|b| b.text().contains("<background_work>")));
+    // No persona block: the tools' descriptions say what they are for.
+    assert!(!r.tools.persona_blocks().iter().any(|b| b.text().contains("<background_work>")));
 }

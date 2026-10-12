@@ -33,8 +33,8 @@ pub fn goal(arg: &str) -> String {
         condition => format!(
             "Goal for this session: {condition}\n\
              Work toward it until it is met, without stopping to report progress. First break it into concrete items on the \
-             task list with todo_add (each one checkable: a test that passes, a command that succeeds, a file that exists), \
-             then work through them, marking each done with todo_update only when you have checked it. When every item is \
+             task list with `todo` (each one checkable: a test that passes, a command that succeeds, a file that exists), \
+             then work through them, marking each done with `todo` only when you have checked it. When every item is \
              done, verify the goal itself once more and finish with a line that starts `Goal met:` and says how you checked. \
              If it cannot be met, stop and say exactly what blocks it."
         ),
@@ -49,7 +49,7 @@ mod tests {
     fn recap_and_goal_expand_and_other_names_do_not() {
         assert!(builtin("recap").unwrap()("the tests").contains("Pay most attention to: the tests."));
         let g = builtin("goal").unwrap()("cargo test passes");
-        assert!(g.contains("Goal for this session: cargo test passes") && g.contains("todo_add") && g.contains("Goal met:"));
+        assert!(g.contains("Goal for this session: cargo test passes") && g.contains("`todo`") && g.contains("Goal met:"));
         assert!(builtin("goal").unwrap()("  ").contains("Ask me what the goal"));
         assert!(builtin("commit").is_none());
     }

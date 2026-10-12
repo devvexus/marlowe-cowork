@@ -94,7 +94,18 @@ pub fn parse_todos(args: &Value) -> Result<Vec<TodoItem>, String> {
             other => return Err(format!("item {}: status `{other}` is not pending, in_progress or completed", n + 1)),
         };
         let active_form = it.get("active_form").or_else(|| it.get("activeForm")).and_then(Value::as_str).map(str::to_string);
-        out.push(TodoItem { content: content.to_string(), status, active_form, ..Default::default() });
+        // A kept id (the model copies the list back) lets the shared list match the item by it.
+        let text = |k: &str| match it.get(k) {
+            Some(Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_string()),
+            Some(Value::Number(n)) => Some(n.to_string()),
+            _ => None,
+        };
+        let blocked_by = it
+            .get("blocked_by")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string).or_else(|| v.as_u64().map(|n| n.to_string()))).collect())
+            .unwrap_or_default();
+        out.push(TodoItem { content: content.to_string(), status, active_form, id: text("id"), owner: text("owner"), blocked_by, ..Default::default() });
     }
     Ok(out)
 }

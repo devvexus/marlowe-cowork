@@ -24,9 +24,9 @@ use marlowe_model::{CancelToken, ResultPart, ToolSpec};
 use marlowe_verify::browser::Step;
 use marlowe_verify::tools::{self as vt, Out, ProjectOp, ServiceOp};
 use marlowe_verify::{Env, VerifyState};
-use serde_json::{json, Value};
+use serde_json::Value;
 
-use super::{clip, spec, ToolDef};
+use super::{clip, ToolDef};
 use crate::BuiltinTools;
 
 pub fn tools() -> Vec<ToolDef> {
@@ -397,93 +397,19 @@ fn browser_describe(call: &ToolCallReq) -> String {
 // ---- schemas -----------------------------------------------------------------------------------
 
 fn project_spec() -> ToolSpec {
-    spec(
-        "project",
-        "Build, test and check this project from what it declares. `profile` (default) shows stacks and commands. `run` executes one `command`, returning failing test ids and findings with file:line. `gate` runs format, lint, typecheck, build, test, stopping at the first failure (`baseline`: ids that failed before). `migrate` runs migrations on a throwaway sqlite database.",
-        json!({
-            "op": {"type": "string", "enum": ["profile", "run", "gate", "migrate"]},
-            "command": {"type": "string", "enum": ["install", "format", "lint", "typecheck", "build", "test"]},
-            "args": {"type": "array", "items": {"type": "string"}},
-            "cwd": {"type": "string"},
-            "kinds": {"type": "array", "items": {"type": "string"}},
-            "keep_going": {"type": "boolean"},
-            "baseline": {"type": "array", "items": {"type": "string"}},
-            "roundtrip": {"type": "boolean"},
-            "tool": {"type": "string"},
-            "database_url": {"type": "string"},
-            "timeout_ms": {"type": "integer"}
-        }),
-        &[],
-    )
+    marlowe_agent::compact_specs::spec("project")
 }
 
 fn service_spec() -> ToolSpec {
-    spec(
-        "service",
-        "Run a dev server or other long-lived process to verify against. `start` returns when it is ready \
-         and fails with its output if it exits or times out; it stops with this session. Name a profile \
-         service, or give a `command` (program and arguments, no shell syntax). `{free_port}` in command \
-         and ready_url picks a free port.",
-        json!({
-            "op": {"type": "string", "enum": ["start", "stop", "restart", "status", "logs"]},
-            "name": {"type": "string", "description": "A profile service, or a name for this one."},
-            "command": {"type": "string", "description": "e.g. python -m http.server 8000"},
-            "cwd": {"type": "string"},
-            "ready_url": {"type": "string", "description": "e.g. http://localhost:5173/ ; {port} is the `port` group of ready_log."},
-            "ready_port": {"type": "integer"},
-            "ready_log": {"type": "string", "description": "Regex over the output; groups `port`, `url` are captured."},
-            "ready_status": {"type": "string", "description": "e.g. 200 or 2xx; default below 500."},
-            "ready_timeout_ms": {"type": "integer", "description": "Default 60000."},
-            "env_allow": {"type": "array", "items": {"type": "string"}, "description": "Credential variables the service may see (e.g. HF_TOKEN). Asks."},
-            "tail": {"type": "integer", "description": "For logs: lines (default 60)."}
-        }),
-        &["op"],
-    )
+    marlowe_agent::compact_specs::spec("service")
 }
 
 fn http_spec() -> ToolSpec {
-    spec(
-        "http_check",
-        "Request a URL and check the answer: status, body text, JSON values, headers. Use it on the \
-         service you started. `wait_ms` retries until the checks pass. Another host is a plain https GET \
-         and asks first. Without `expect_status` the status must be below 400.",
-        json!({
-            "url": {"type": "string", "description": "http://localhost:3000/api/health or :3000/api/health"},
-            "method": {"type": "string", "description": "GET (default), POST, PUT, PATCH, DELETE, HEAD; localhost only."},
-            "headers": {"type": "array", "items": {"type": "string"}, "description": "Name: value"},
-            "body": {"type": "string"},
-            "expect_status": {"type": "integer", "description": "200, or a class like 2xx (string)."},
-            "expect_contains": {"type": "array", "items": {"type": "string"}},
-            "expect_not_contains": {"type": "array", "items": {"type": "string"}},
-            "expect_json": {"type": "array", "items": {"type": "string"}, "description": "path=value, e.g. data.items.0.id=7; a path alone must exist."},
-            "expect_header": {"type": "array", "items": {"type": "string"}, "description": "Name: substring"},
-            "wait_ms": {"type": "integer", "description": "Retry every 250 ms for this long."},
-            "timeout_ms": {"type": "integer"}
-        }),
-        &["url"],
-    )
+    marlowe_agent::compact_specs::spec("http_check")
 }
 
 fn browser_spec() -> ToolSpec {
-    spec(
-        "browser",
-        "Open a page in headless Edge and report the console (errors, exceptions, failed requests) with \
-         the page outline or a screenshot you can see. `steps` drive the page first, one string each: \
-         `click #id`, `fill #id = text`, `select #id = value`, `press Enter`, `wait .css`, `wait_text \
-         words`, `eval js`, `goto /path`. A page can reach only the hosts its url and `goto` steps name; \
-         a page on this machine reaches only this machine and files of the workspace.",
-        json!({
-            "url": {"type": "string", "description": "http://localhost:5173/, :5173/path, or an html file in the workspace."},
-            "action": {"type": "string", "enum": ["snapshot", "screenshot", "console"], "description": "snapshot (default): outline, text, console; screenshot: image, console; console: console and network only."},
-            "steps": {"type": "array", "items": {"type": "string"}, "description": "Run first, in order; stops at the first that fails."},
-            "wait_for": {"type": "string", "description": "CSS selector, or text:<words>, to wait for after load."},
-            "width": {"type": "integer", "description": "Default 1280."},
-            "height": {"type": "integer", "description": "Default 800."},
-            "full_page": {"type": "boolean", "description": "Screenshot up to 2400 px tall."},
-            "timeout_ms": {"type": "integer", "description": "Whole run; default 45000."}
-        }),
-        &["url"],
-    )
+    marlowe_agent::compact_specs::spec("browser")
 }
 
 // ---- group hooks -------------------------------------------------------------------------------

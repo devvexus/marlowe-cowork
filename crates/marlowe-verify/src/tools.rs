@@ -426,7 +426,7 @@ pub fn plan_service(env: &Env<'_>, state: &VerifyState, args: &Value) -> Result<
         Some(o) => return Err(format!("unknown op `{o}`; ops are start, stop, restart, status, logs")),
     };
     let name = a.str("name").map(String::from);
-    let tail = a.int("tail").unwrap_or(60).clamp(1, 500) as usize;
+    let tail = a.int("limit").or_else(|| a.int("tail")).unwrap_or(60).clamp(1, 500) as usize;
     if matches!(op, ServiceOp::Stop | ServiceOp::Logs | ServiceOp::Status) {
         return Ok(ServicePlan { op, name, spec: None, tail, credentials: Vec::new(), runs: Vec::new() });
     }
@@ -735,7 +735,7 @@ pub fn plan_browser(env: &Env<'_>, args: &Value) -> Result<BrowserPlan, String> 
         hosts.sort();
         hosts.dedup();
     }
-    let action = a.str("action").map(str::to_ascii_lowercase);
+    let action = a.str("op").or_else(|| a.str("action")).map(str::to_ascii_lowercase);
     let show = match action.as_deref() {
         None | Some("snapshot") | Some("check") | Some("text") => Show::Snapshot,
         Some("screenshot") | Some("image") | Some("shot") => Show::Screenshot,

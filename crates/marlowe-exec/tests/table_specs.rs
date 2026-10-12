@@ -1,86 +1,85 @@
-//! The registration table declares exactly the tools M4.5 declared, byte for byte, in the same
-//! order, except where M4.6 replaced a group with a reviewed surface of its own. `fixtures/specs_m45.rs`
-//! is the old `specs.rs`, kept verbatim and never regenerated: a schema or description change must
-//! show up here as a deliberate fixture edit.
+//! The registration table declares the reviewed compact surface (`marlowe-agent/src/compact_specs.json`),
+//! byte for byte, and the pinned fixtures say so independently of the code. A schema or description
+//! change must show up here as a deliberate fixture edit:
 //!
-//! The files group (track A) replaced `read`/`write`/`edit`: its surface is pinned in
-//! `src/specs/files/specs_m46_files.json` (`the_files_group_declares_the_reviewed_m46_schemas`), and
-//! here it must sit where the M4.5 file tools sat; `web_fetch` and `web_search` (T20/T21) are pinned
-//! in `src/specs/specs_m46_web.json` the same way. The groups M4.6 added (code, verify, agent, git)
-//! pin their own lists in their own tests.
+//! - `src/specs/files/specs_m46_files.json`: read, write, edit, multi_edit, edit_lines, notebook_edit;
+//! - `src/specs/specs_m46_web.json`: web_fetch, web_search;
+//! - `src/specs/specs_a15.json`: glob, grep, bash, powershell, python, arxiv.
+//!
+//! The other groups (code, verify, agent, git, workflow, tasks, notify) pin themselves against the
+//! compact file here. The 2026-10-12 tool overhaul regenerated all three fixtures from the new specs
+//! (merged and renamed tools, one-line descriptions, typeless plain strings).
 
 use std::sync::Arc;
 
-use marlowe_agent::{ToolGroup, ToolHost};
+use marlowe_agent::{compact_specs, ToolGroup, ToolHost};
 use marlowe_exec::{BuiltinTools, SearchResponse};
 use marlowe_model::{CancelToken, ToolSpec};
 
-#[allow(dead_code)]
-#[path = "fixtures/specs_m45.rs"]
-mod specs_m45;
-
-const M45_FILES: [&str; 3] = ["read", "write", "edit"];
-
-/// The groups M4.5 had, as the host declares them.
-fn m45_groups(t: &BuiltinTools) -> Vec<ToolSpec> {
-    t.specs()
-        .into_iter()
-        .filter(|s| {
-            t.manifest(&s.name)
-                .is_some_and(|m| {
-                    !matches!(
-                        m.group,
-                        ToolGroup::Verify
-                            | ToolGroup::Code
-                            | ToolGroup::Agent
-                            | ToolGroup::Git
-                            | ToolGroup::Workflow
-                            | ToolGroup::Tasks
-                            | ToolGroup::Notify
-                    )
-                })
-        })
-        .collect()
-}
-
-/// The M4.5 declaration with its file tools replaced, in place, by the reviewed M4.6 files group
-/// (`edit_lines` is off unless a host asks for it).
-fn expected(with_search: bool) -> Vec<ToolSpec> {
-    let files: Vec<ToolSpec> =
-        serde_json::from_str::<Vec<ToolSpec>>(include_str!("../src/specs/files/specs_m46_files.json"))
-            .unwrap()
-            .into_iter()
-            .filter(|s| s.name != "edit_lines")
-            .collect();
-    let old = specs_m45::all(with_search);
-    let at = old.iter().position(|s| M45_FILES.contains(&s.name.as_str())).expect("M4.5 declared the file tools");
-    let mut out: Vec<ToolSpec> = old.iter().take(at).cloned().collect();
-    out.extend(files);
-    out.extend(old.into_iter().skip(at).filter(|s| !M45_FILES.contains(&s.name.as_str())));
-    // T20/T21 (integ, M4.6): `web_fetch` gained `prompt`/`raw` and `web_search` its domain
-    // filters. The reviewed surface is pinned in `src/specs/specs_m46_web.json`, in place.
-    let web: Vec<ToolSpec> = serde_json::from_str(include_str!("../src/specs/specs_m46_web.json")).unwrap();
-    for s in out.iter_mut() {
-        if let Some(new) = web.iter().find(|w| w.name == s.name) {
-            *s = new.clone();
-        }
-    }
-    // A15 (prompt budget, 32k): the search, shell, job and research tools' descriptions and
-    // property notes were condensed so the dusk prefix fits its 3k tool slice. Same names, same
-    // properties; the reviewed text is pinned in `src/specs/specs_a15.json`, in place.
-    let compact: Vec<ToolSpec> = serde_json::from_str(include_str!("../src/specs/specs_a15.json")).unwrap();
-    for s in out.iter_mut() {
-        if let Some(new) = compact.iter().find(|c| c.name == s.name) {
-            *s = new.clone();
-        }
+fn pinned() -> Vec<ToolSpec> {
+    let mut out: Vec<ToolSpec> = Vec::new();
+    for json in [
+        include_str!("../src/specs/files/specs_m46_files.json"),
+        include_str!("../src/specs/specs_m46_web.json"),
+        include_str!("../src/specs/specs_a15.json"),
+    ] {
+        out.extend(serde_json::from_str::<Vec<ToolSpec>>(json).unwrap());
     }
     out
 }
 
-#[test]
-fn the_table_declares_the_m45_tools_unchanged() {
-    assert_eq!(m45_groups(&BuiltinTools::new(None)), expected(false));
+/// A host that exposes every group and has a search backend.
+fn host() -> BuiltinTools {
     let search = |_: &str, _: &CancelToken| -> Result<SearchResponse, String> { Err("offline".into()) };
-    let with_search = BuiltinTools::new(None).with_search(Arc::new(search));
-    assert_eq!(m45_groups(&with_search), expected(true));
+    BuiltinTools::new(None).with_search(Arc::new(search))
+}
+
+#[test]
+fn the_pinned_fixtures_are_the_table_and_the_compact_file() {
+    let t = host();
+    let pins = pinned();
+    assert_eq!(pins.len(), 14);
+    for p in &pins {
+        let def = t.tool(&p.name).unwrap_or_else(|| panic!("`{}` is pinned but not registered", p.name));
+        assert_eq!(&def.spec, p, "{} differs from its fixture", p.name);
+        assert_eq!(&compact_specs::spec(&p.name), p, "{} differs from compact_specs.json", p.name);
+    }
+}
+
+#[test]
+fn every_registered_tool_is_in_the_compact_file_unchanged() {
+    for def in marlowe_exec::specs::table().defs.iter() {
+        assert_eq!(def.spec, compact_specs::spec(def.name()), "{}", def.name());
+    }
+}
+
+#[test]
+fn every_compact_spec_is_registered_or_belongs_to_the_daemon() {
+    // Declared by other crates: the memory and crew tools, MCP resources, the subagent-only tools
+    // and a workflow agent's `structured_output`.
+    const ELSEWHERE: [&str; 11] = [
+        "remember", "recall", "forget", "correct", "dispatch", "list_mcp_resources", "read_mcp_resource", "handback",
+        "set_statusline", "create_agent", "structured_output",
+    ];
+    let table = marlowe_exec::specs::table();
+    for s in compact_specs::all() {
+        let here = table.get(&s.name).is_some();
+        assert_ne!(here, ELSEWHERE.contains(&s.name.as_str()), "`{}` is {}", s.name, if here { "registered here and listed as elsewhere" } else { "neither registered nor listed as elsewhere" });
+    }
+}
+
+#[test]
+fn a_full_host_offers_the_registered_tools_in_group_order() {
+    let t = host().with_exposure(marlowe_agent::ExposureProfile::Frontier, ToolGroup::ALL.to_vec());
+    let names: Vec<String> = t.specs().into_iter().map(|s| s.name).collect();
+    // Hosts that are not configured hide the groups that need the daemon (agent, git, tasks...);
+    // what remains keeps the table's order.
+    let table_order: Vec<&str> = marlowe_exec::specs::table().defs.iter().map(|d| d.name()).collect();
+    let mut at = 0;
+    for n in &names {
+        let i = table_order.iter().position(|t| t == n).unwrap_or_else(|| panic!("`{n}` is not in the table"));
+        assert!(i >= at, "`{n}` is out of order");
+        at = i;
+    }
+    assert!(names.contains(&"read".to_string()) && names.contains(&"web_search".to_string()));
 }

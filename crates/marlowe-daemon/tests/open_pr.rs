@@ -69,7 +69,7 @@ impl ToolHost for RecordingGh {
         self.calls.lock().unwrap().push((call.args.clone(), ctx.workspace.clone()));
         // Like the real tool: the plan names the branch's commit, and a call pinned to another
         // commit (the branch moved after the yes) is refused before anything is pushed.
-        let branch = call.args["head"].as_str().unwrap_or("?");
+        let branch = call.args["branch"].as_str().unwrap_or("?");
         let sha = git(ctx.workspace.as_deref().unwrap(), &["rev-parse", &format!("refs/heads/{branch}")]);
         if call.args["dry_run"] == json!(true) {
             ToolOutcome::ok(PLAN.replace("BRANCH", branch).replace("SHORT", &sha[..7]).replace("SHA", &sha), "plan")
@@ -227,7 +227,7 @@ fn parity_g3_open_pr_asks_once_then_pushes_and_opens() {
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].0["dry_run"], json!(true));
         assert_eq!(calls[1].0.get("dry_run"), None);
-        assert_eq!(calls[1].0["head"], json!(branch));
+        assert_eq!(calls[1].0["branch"], json!(branch));
         assert_eq!(calls[1].0["expect_sha"], json!(git(&worktree, &["rev-parse", "HEAD"])), "pinned to the commit shown");
         assert_eq!(calls[1].0["op"], "pr_create");
         let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").to_lowercase();

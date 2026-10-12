@@ -38,9 +38,9 @@ use marlowe_code::filestate::{self, FileStates, Freshness};
 use marlowe_code::notebook::{self, media, pdf, CellEdit, EditMode};
 use marlowe_model::{ImageRef, Message, ResultPart, ToolCall, ToolSpec};
 use marlowe_os::workspace::{Meta, Workspace};
-use serde_json::{json, Value};
+use serde_json::Value;
 
-use super::{clip, describe_by, spec, ToolDef};
+use super::{clip, describe_by, ToolDef};
 use crate::text::*;
 use crate::{int_arg, paths, str_arg, BuiltinTools};
 
@@ -1193,8 +1193,8 @@ fn notebook_edit(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcom
         Err(e) => return e,
     };
     let shown = f.shown(&abs);
-    let Some(mode) = EditMode::parse(str_arg(args, "mode").unwrap_or("replace")) else {
-        return ToolOutcome::error("`mode` must be replace, insert or delete.");
+    let Some(mode) = EditMode::parse(str_arg(args, "op").or_else(|| str_arg(args, "mode")).unwrap_or("replace")) else {
+        return ToolOutcome::error("`op` must be replace, insert or delete.");
     };
     let cell = match args.get("cell") {
         Some(Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_string()),
@@ -1349,104 +1349,27 @@ pub fn detect(_root: Option<&std::path::Path>) -> bool {
 // ---------------------------------------------------------------- schemas
 
 fn read_spec() -> ToolSpec {
-    spec(
-        "read",
-        "Read a file: numbered lines (`N<tab>text`), 2000 from `offset` (1-based) or `limit`; a cut result says how to continue. Images, PDFs (`pages`) and notebooks work too. Read before you edit; never copy the line-number prefix into an edit.",
-        json!({
-            "path": {"type": "string"},
-            "offset": {"type": "integer"},
-            "limit": {"type": "integer"},
-            "pages": {"type": "string"}
-        }),
-        &["path"],
-    )
+    marlowe_agent::compact_specs::spec("read")
 }
 
 fn write_spec() -> ToolSpec {
-    spec(
-        "write",
-        "Create a file or replace one entirely. Overwriting needs a prior `read`; prefer `edit` for part of a file.",
-        json!({
-            "path": {"type": "string"},
-            "content": {"type": "string"}
-        }),
-        &["path", "content"],
-    )
+    marlowe_agent::compact_specs::spec("write")
 }
 
 fn edit_spec() -> ToolSpec {
-    spec(
-        "edit",
-        "Replace `old_string` with `new_string` in a file. It must occur exactly once (copy it from `read` without line numbers, with context to be unique), or set `replace_all`. `read` the file first.",
-        json!({
-            "path": {"type": "string"},
-            "old_string": {"type": "string"},
-            "new_string": {"type": "string"},
-            "replace_all": {"type": "boolean"}
-        }),
-        &["path", "old_string", "new_string"],
-    )
+    marlowe_agent::compact_specs::spec("edit")
 }
 
 fn multi_edit_spec() -> ToolSpec {
-    spec(
-        "multi_edit",
-        "Several `edit`s in one or more files, applied all together or not at all, in order (each sees the ones before it). `path` is the default file; an edit may name its own. An empty `old_string` creates a file. `read` each existing file first.",
-        json!({
-            "path": {"type": "string"},
-            "edits": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "old_string": {"type": "string"},
-                        "new_string": {"type": "string"},
-                        "replace_all": {"type": "boolean"}
-                    },
-                    "required": ["old_string", "new_string"],
-                    "additionalProperties": false
-                }
-            }
-        }),
-        &["edits"],
-    )
+    marlowe_agent::compact_specs::spec("multi_edit")
 }
 
 fn edit_lines_spec() -> ToolSpec {
-    spec(
-        "edit_lines",
-        "Edit lines by anchor. `read` shows each line as `N:hhh|text`; name a line by its anchor \
-         `N:hhh` (and the last line of a range by `end`). `op`: replace (default), insert_after, \
-         insert_before or delete. An anchor whose line changed since you read it is refused with \
-         fresh anchors. `anchor` \"0\" with insert_after writes at the top of the file.",
-        json!({
-            "path": {"type": "string"},
-            "anchor": {"type": "string", "description": "`N:hhh` as `read` printed it."},
-            "end": {"type": "string", "description": "Anchor of the last line of the range (default: `anchor`)."},
-            "op": {"type": "string", "enum": ["replace", "insert_after", "insert_before", "delete"]},
-            "text": {"type": "string", "description": "The new lines."}
-        }),
-        &["path", "anchor"],
-    )
+    marlowe_agent::compact_specs::spec("edit_lines")
 }
 
 fn notebook_edit_spec() -> ToolSpec {
-    spec(
-        "notebook_edit",
-        "Edit one cell of a Jupyter notebook (.ipynb). `cell` is the cell's id or 0-based index as \
-         `read` shows it. `mode`: replace (default) the cell's source, insert a new cell after \
-         `cell` (at the top without one), or delete it. `cell_type` sets the new cell's type and \
-         changes it on replace. Replacing a code cell clears its outputs. `read` the notebook first.",
-        json!({
-            "path": {"type": "string"},
-            "cell": {"type": "string", "description": "Cell id, or 0-based index."},
-            "new_source": {"type": "string", "description": "The cell's new source."},
-            "cell_type": {"type": "string", "enum": ["code", "markdown"]},
-            "mode": {"type": "string", "enum": ["replace", "insert", "delete"]}
-        }),
-        &["path"],
-    )
+    marlowe_agent::compact_specs::spec("notebook_edit")
 }
 
 #[cfg(test)]

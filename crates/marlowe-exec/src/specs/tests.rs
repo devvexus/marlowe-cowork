@@ -55,12 +55,6 @@ mod legacy {
                         };
                     }
                 }
-                "paper" => {
-                    let input = research_input(args);
-                    if let Some(host) = research::paper_host(input).filter(|h| !exposure.approved_hosts.contains(h)) {
-                        return Consequence::Ask { summary: format!("paper {host}: a new host, after untrusted content") };
-                    }
-                }
                 "arxiv" => {
                     return Consequence::Ask {
                         summary: format!(
@@ -85,18 +79,22 @@ mod legacy {
 
     pub fn taints(t: &BuiltinTools, call: &ToolCallReq) -> bool {
         match call.name.as_str() {
-            "web_fetch" | "web_search" | "arxiv" | "paper" => true,
+            "web_fetch" | "web_search" | "arxiv" => true,
             "read" | "glob" | "grep" => !t.trusted_read(str_arg(&call.args, "path").unwrap_or(".")),
             _ => false,
         }
     }
 
     pub fn egress_host(_t: &BuiltinTools, call: &ToolCallReq) -> Option<String> {
-        if call.name == "paper" {
-            return research::paper_host(research_input(&call.args));
-        }
         if call.name != "web_fetch" {
             return None;
+        }
+        // A paper read (an arXiv id or URL, openreview, doi.org, or `part`) goes through the paper reader.
+        let paperish = str_arg(&call.args, "part").is_some()
+            || research::arxiv_id(research_input(&call.args)).is_some()
+            || marlowe_net::Target::parse(research_input(&call.args)).is_ok_and(|t| t.host == "doi.org" || t.host.ends_with("openreview.net"));
+        if paperish {
+            return research::paper_host(research_input(&call.args));
         }
         let url = str_arg(&call.args, "url")?;
         marlowe_net::Target::parse(url).ok().map(|t| t.host)
@@ -112,7 +110,6 @@ mod legacy {
             "python" => "code",
             "web_fetch" => "url",
             "web_search" | "arxiv" => "query",
-            "paper" => "url_or_arxiv_id",
             _ => "",
         };
         let detail = str_arg(args, key).or_else(|| str_arg(args, "path")).map(|s| first_line(s, 60)).unwrap_or_default();
@@ -172,9 +169,9 @@ fn calls() -> Vec<ToolCallReq> {
         ("web_fetch", json!({"url": "not a url"})),
         ("web_search", json!({"query": "rust job objects\nsecond line"})),
         ("arxiv", json!({"query": "ti:transformers"})),
-        ("paper", json!({"url_or_arxiv_id": "2301.01234"})),
-        ("paper", json!({"url": "https://openreview.net/pdf?id=abc"})),
-        ("paper", json!({"id": "https://approved.example.org/p.pdf"})),
+        ("web_fetch", json!({"url": "2301.01234"})),
+        ("web_fetch", json!({"url": "https://openreview.net/pdf?id=abc"})),
+        ("web_fetch", json!({"url": "https://approved.example.org/p.pdf", "part": "references"})),
         ("unknown_tool", json!({"path": "x", "text": "y"})),
         ("unknown_tool", json!({})),
     ];
@@ -239,21 +236,23 @@ fn every_tool_is_registered_once_in_its_group_in_the_old_order() {
         names,
         [
             "read", "write", "edit", "multi_edit", "edit_lines", "notebook_edit", "glob", "grep", "bash", "powershell",
-            "python", "job_output", "job_watch", "job_kill", "web_fetch", "arxiv", "paper", "web_search", "symbols",
-            "definition", "references", "hover", "diagnostics", "rename_symbol", "todo", "todo_add", "todo_update", "todo_get",
+            "python", "web_fetch", "arxiv", "web_search", "symbols",
+            "definition", "references", "hover", "diagnostics", "rename_symbol", "todo",
             "ask_user", "skill", "agent",
             "send_message", "enter_plan", "exit_plan", "enter_worktree", "exit_worktree"
         ]
     );
     let git: Vec<&str> = table().defs.iter().filter(|d| d.manifest.group == marlowe_agent::ToolGroup::Git).map(|d| d.name()).collect();
-    assert_eq!(git, ["git", "gh", "ci_status"]);
+    assert_eq!(git, ["git", "gh"]);
     let verify: Vec<&str> =
         table().defs.iter().filter(|d| d.manifest.group == marlowe_agent::ToolGroup::Verify).map(|d| d.name()).collect();
     assert_eq!(verify, ["project", "service", "http_check", "browser"]);
     for d in &table().defs {
         let schema = &d.spec.input_schema;
-        assert_eq!(schema["additionalProperties"], json!(false), "{} schema is flat and closed", d.name());
-        assert_eq!(schema["type"], json!("object"));
+        assert_eq!(schema["type"], json!("object"), "{} schema is an object", d.name());
+        for (key, p) in schema["properties"].as_object().into_iter().flatten() {
+            assert!(!matches!(p.get("type").and_then(Value::as_str), Some("object")) || key == "args" || key == "budget", "{}.{key} is flat", d.name());
+        }
     }
     let host = BuiltinTools::new(None);
     assert_eq!(host.manifest("write").unwrap().group, marlowe_agent::ToolGroup::Files);
@@ -444,11 +443,7 @@ fn every_group_file_registers_its_hooks() {
             (g.persona_block)().is_some(),
             matches!(
                 g.group,
-                marlowe_agent::ToolGroup::Git
-                    | marlowe_agent::ToolGroup::Verify
-                    | marlowe_agent::ToolGroup::Agent
-                    | marlowe_agent::ToolGroup::Workflow
-                    | marlowe_agent::ToolGroup::Tasks
+                marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Verify | marlowe_agent::ToolGroup::Agent
             ),
             "{:?}: a block needs its capability live first",
             g.group

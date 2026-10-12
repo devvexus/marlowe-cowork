@@ -57,14 +57,14 @@ use crate::tools::{
 pub const NEVER_FOR_SUBAGENTS: &[&str] = &[
     "agent", "send_message", "ask_user", "enter_worktree", "exit_worktree", "enter_plan", "exit_plan", "dispatch", "workflow",
     // Background work and the user's attention belong to the session that conducts (track N).
-    "task_list", "task_output", "task_stop", "monitor", "cron_create", "cron_list", "cron_delete", "schedule_wakeup",
-    "list_agents", "watch", "notify", "send_file", "notices",
+    // (`task_output` and `task_stop` stay: a subagent reads and stops its own shell jobs, and only those.)
+    "task_list", "monitor", "schedule", "watch", "notify", "send_file", "notices",
 ];
 
 /// Read-only tools by name, for hosts that do not publish manifests.
 const READ_ONLY_NAMES: &[&str] = &[
     "read", "glob", "grep", "symbols", "definition", "references", "hover", "diagnostics", "web_fetch", "web_search",
-    "arxiv", "paper", "recall", "todo", "todo_add", "todo_update", "todo_get", "job_output",
+    "arxiv", "recall", "todo", "task_output",
 ];
 
 /// Tools a read-only agent never gets, whatever their manifest says: a skill can run its
@@ -138,14 +138,12 @@ pub fn map_tool(name: &str) -> Vec<String> {
         "Grep" => &["grep"],
         "Bash" => &["bash"],
         "PowerShell" => &["powershell"],
-        "BashOutput" | "TaskOutput" => &["job_output"],
-        "KillShell" | "KillBash" | "TaskStop" => &["job_kill"],
+        "BashOutput" | "TaskOutput" => &["task_output"],
+        "KillShell" | "KillBash" | "TaskStop" => &["task_stop"],
         "WebFetch" => &["web_fetch"],
         "WebSearch" => &["web_search"],
         "TodoWrite" => &["todo"],
-        "TaskCreate" => &["todo_add"],
-        "TaskUpdate" => &["todo_update"],
-        "TaskList" | "TaskGet" => &["todo_get"],
+        "TaskCreate" | "TaskUpdate" | "TaskList" | "TaskGet" => &["todo"],
         "EnterPlanMode" => &["enter_plan"],
         "SendMessage" => &["send_message"],
         "Task" | "Agent" => &["agent"],
@@ -757,7 +755,7 @@ impl AgentRequest {
         };
         Ok(Self {
             agent_type: s("type").or_else(|| s("subagent_type")).unwrap_or_else(|| "general".into()),
-            description: s("description").unwrap_or_default(),
+            description: s("label").or_else(|| s("description")).unwrap_or_default(),
             prompt: s("prompt").ok_or("`prompt` is required: the full task, since the agent cannot see this conversation")?,
             isolation: s("isolation"),
             background: args.get("background").or_else(|| args.get("run_in_background")).and_then(Value::as_bool).unwrap_or(background),
@@ -1333,10 +1331,10 @@ pub fn agent_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
 
 /// The `send_message` tool.
 pub fn send_message_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
-    let id = args.get("agent_id").or_else(|| args.get("to")).and_then(Value::as_str).map(str::trim).unwrap_or("");
+    let id = args.get("to").or_else(|| args.get("agent_id")).and_then(Value::as_str).map(str::trim).unwrap_or("");
     let text = args.get("text").or_else(|| args.get("message")).and_then(Value::as_str).unwrap_or("");
     if id.is_empty() || text.trim().is_empty() {
-        return ToolOutcome::error("`agent_id` and `text` are required");
+        return ToolOutcome::error("`to` and `text` are required: an agent name or id, a crew run id or session:<id> (see task_list), and the message");
     }
     // A subagent this session started continues here; anything else (a crew run, a workflow
     // agent, `session:<id>`) goes to the daemon's messenger (track N).
@@ -1365,7 +1363,7 @@ pub fn may_taint(name: &str, home: Option<&Path>, workspace: Option<&Path>) -> b
     match find_type(&types, name) {
         Some(t) => match &t.tools {
             None => true,
-            Some(tools) => tools.iter().any(|x| x.starts_with("web_") || x.starts_with("mcp__") || x == "arxiv" || x == "paper"),
+            Some(tools) => tools.iter().any(|x| x.starts_with("web_") || x.starts_with("mcp__") || x == "arxiv"),
         },
         None => true,
     }

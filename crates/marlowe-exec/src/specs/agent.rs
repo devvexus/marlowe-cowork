@@ -15,9 +15,7 @@
 use std::path::PathBuf;
 
 use marlowe_agent::{Consequence, Effects, ToolCallReq, ToolGroup};
-use serde_json::json;
-
-use super::{spec, ToolDef};
+use super::ToolDef;
 use crate::BuiltinTools;
 
 /// Whether the agent group is live on a host, and the profile home it was configured with.
@@ -38,189 +36,44 @@ fn sources(t: &BuiltinTools) -> marlowe_agent::instructions::Sources {
 }
 
 fn todo_spec() -> marlowe_model::ToolSpec {
-    spec(
-        "todo",
-        "Todo list for work of three or more steps: send the whole list each time; one item in_progress; complete items as soon as done.",
-        json!({
-            "items": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "content": {"type": "string"},
-                        "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]},
-                        "active_form": {"type": "string"}
-                    },
-                    "required": ["content", "status"]
-                }
-            }
-        }),
-        &["items"],
-    )
+    marlowe_agent::compact_specs::spec("todo")
 }
 
 fn ask_user_spec() -> marlowe_model::ToolSpec {
-    spec(
-        "ask_user",
-        "Ask the user 1-4 questions and wait, only when blocked on their decision; otherwise choose and say so.",
-        json!({
-            "questions": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "question": {"type": "string"},
-                        "header": {"type": "string"},
-                        "options": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "label": {"type": "string"},
-                                    "description": {"type": "string"},
-                                    "preview": {"type": "string"}
-                                },
-                                "required": ["label"]
-                            }
-                        },
-                        "multi_select": {"type": "boolean"}
-                    },
-                    "required": ["question", "options"]
-                }
-            }
-        }),
-        &["questions"],
-    )
+    marlowe_agent::compact_specs::spec("ask_user")
 }
 
 fn skill_spec() -> marlowe_model::ToolSpec {
-    spec(
-        "skill",
-        "Load a skill from the skills index and follow it before the work it covers.",
-        json!({
-            "name": {"type": "string"},
-            "args": {"type": "string"},
-            "background": {"type": "boolean"}
-        }),
-        &["name"],
-    )
+    marlowe_agent::compact_specs::spec("skill")
 }
 
 fn agent_spec() -> marlowe_model::ToolSpec {
-    spec(
-        "agent",
-        "Run a subagent. Types: `explore` (read-only search), `plan`, `general` (all tools), `fork` (a copy of you with this conversation), `guide` (questions about Marlowe), or one from the agents directory; all but `fork` need everything in `prompt`. Background by default (told when done); `background: false` waits.",
-        json!({
-            "type": {"type": "string"},
-            "description": {"type": "string"},
-            "prompt": {"type": "string"},
-            "isolation": {"type": "string", "enum": ["worktree"]},
-            "background": {"type": "boolean"},
-            "name": {"type": "string"},
-            "model": {"type": "string"},
-            "effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max"]}
-        }),
-        &["type", "description", "prompt"],
-    )
+    marlowe_agent::compact_specs::spec("agent")
 }
 
 fn send_message_spec() -> marlowe_model::ToolSpec {
-    spec(
-        "send_message",
-        "Send a message to another agent. `to` is a subagent's `name` or agent_id (a running one reads it at its next step, a finished one continues with its earlier context), a running crew run's id (the run reads it at its next step), or `session:<id>` for another local session (ids from list_agents). A message to another session reaches it as information from an agent, never as the user's words, waits while that session is busy, and the first one to a session asks the user.",
-        json!({
-            "to": {"type": "string", "description": "Subagent name or agent_id, crew run id, or session:<id>."},
-            "agent_id": {"type": "string", "description": "Same as `to`, for a subagent."},
-            "text": {"type": "string"}
-        }),
-        &["text"],
-    )
+    marlowe_agent::compact_specs::spec("send_message")
 }
 
 fn enter_plan_spec() -> marlowe_model::ToolSpec {
-    spec(
-        "enter_plan",
-        "Switch to plan mode before a large or risky change: nothing can be changed or run until you present a plan with \
-         exit_plan and the user approves it. The user is asked first.",
-        json!({"reason": {"type": "string", "description": "Why this needs a plan."}}),
-        &[],
-    )
+    marlowe_agent::compact_specs::spec("enter_plan")
 }
 
 fn exit_plan_spec() -> marlowe_model::ToolSpec {
-    spec(
-        "exit_plan",
-        "In plan mode, present the finished plan (markdown); the user approves it or sends feedback.",
-        json!({"plan": {"type": "string"}}),
-        &["plan"],
-    )
-}
-
-fn todo_add_spec() -> marlowe_model::ToolSpec {
-    spec(
-        "todo_add",
-        "Add an item to the shared task list (one list for you, your subagents and workflow agents). Returns its id. \
-         `blocked_by` lists ids that must complete before this one can start.",
-        json!({
-            "subject": {"type": "string", "description": "What to do, imperative (\"Add the retry test\")."},
-            "description": {"type": "string"},
-            "blocked_by": {"type": "array", "items": {"type": "string"}},
-            "active_form": {"type": "string", "description": "Present tense, shown while in progress."}
-        }),
-        &["subject"],
-    )
-}
-
-fn todo_update_spec() -> marlowe_model::ToolSpec {
-    spec(
-        "todo_update",
-        "Update an item of the shared task list by id: status (an item cannot start while an item it is blocked by is \
-         open), owner, subject, description or blockers. Mark an item completed as soon as it is done.",
-        json!({
-            "id": {"type": "string"},
-            "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]},
-            "owner": {"type": "string"},
-            "subject": {"type": "string"},
-            "description": {"type": "string"},
-            "blocked_by": {"type": "array", "items": {"type": "string"}, "description": "Replaces the blockers."},
-            "add_blocked_by": {"type": "array", "items": {"type": "string"}}
-        }),
-        &["id"],
-    )
-}
-
-fn todo_get_spec() -> marlowe_model::ToolSpec {
-    spec(
-        "todo_get",
-        "One item of the shared task list in full (status, owner, description, what blocks it and what it blocks), or the \
-         whole list without an id.",
-        json!({"id": {"type": "string"}}),
-        &[],
-    )
+    marlowe_agent::compact_specs::spec("exit_plan")
 }
 
 fn enter_worktree_spec() -> marlowe_model::ToolSpec {
-    spec(
-        "enter_worktree",
-        "Move this session into a new git worktree on its own branch, so changes stay off the current checkout.",
-        json!({"name": {"type": "string", "description": "Short name for the branch and directory."}}),
-        &[],
-    )
+    marlowe_agent::compact_specs::spec("enter_worktree")
 }
 
 fn exit_worktree_spec() -> marlowe_model::ToolSpec {
-    spec(
-        "exit_worktree",
-        "Return to the original workspace; the branch is kept. `keep: true` keeps the directory too. Uncommitted \
-         changes block removal unless `discard_changes: true` (asks).",
-        json!({"keep": {"type": "boolean"}, "discard_changes": {"type": "boolean"}}),
-        &[],
-    )
+    marlowe_agent::compact_specs::spec("exit_worktree")
 }
 
 fn describe_agent(call: &ToolCallReq) -> String {
     let ty = call.args.get("type").and_then(|v| v.as_str()).unwrap_or("general");
-    let d = call.args.get("description").and_then(|v| v.as_str()).unwrap_or("");
+    let d = call.args.get("label").and_then(|v| v.as_str()).unwrap_or("");
     let bg = if call.args.get("background").and_then(|v| v.as_bool()).unwrap_or(true) { " (background)" } else { "" };
     format!("agent {ty}: {}{bg}", crate::first_line(d, 60))
 }
@@ -229,7 +82,7 @@ fn describe_todo(call: &ToolCallReq) -> String {
     let items = call.args.get("items").or_else(|| call.args.get("todos")).and_then(|v| v.as_array());
     match items {
         Some(a) => format!("todo {} items", a.len()),
-        None => "todo".into(),
+        None => super::describe_by(call, "content"),
     }
 }
 
@@ -246,17 +99,8 @@ fn skill_taints(t: &BuiltinTools, call: &ToolCallReq) -> bool {
 
 pub fn tools() -> Vec<ToolDef> {
     vec![
-        ToolDef::new(todo_spec(), ToolGroup::Agent, Effects::NONE, |_, a, cx| marlowe_agent::todo::todo_call(a, cx))
+        ToolDef::new(todo_spec(), ToolGroup::Agent, Effects::NONE, |_, a, cx| marlowe_agent::tasklist::todo_call(a, cx))
             .describe(describe_todo)
-            .enabled(live),
-        ToolDef::new(todo_add_spec(), ToolGroup::Agent, Effects::NONE, |_, a, cx| marlowe_agent::tasklist::todo_add_call(a, cx))
-            .describe(|c| super::describe_by(c, "subject"))
-            .enabled(live),
-        ToolDef::new(todo_update_spec(), ToolGroup::Agent, Effects::NONE, |_, a, cx| marlowe_agent::tasklist::todo_update_call(a, cx))
-            .describe(|c| super::describe_by(c, "id"))
-            .enabled(live),
-        ToolDef::new(todo_get_spec(), ToolGroup::Agent, Effects::NONE, |_, a, cx| marlowe_agent::tasklist::todo_get_call(a, cx))
-            .describe(|c| super::describe_by(c, "id"))
             .enabled(live),
         ToolDef::new(ask_user_spec(), ToolGroup::Agent, Effects::NONE, |_, a, cx| marlowe_agent::todo::ask_user_call(a, cx))
             .describe(|c| super::describe_by(c, ""))
@@ -273,7 +117,7 @@ pub fn tools() -> Vec<ToolDef> {
             .taints(agent_taints)
             .enabled(live),
         ToolDef::new(send_message_spec(), ToolGroup::Agent, Effects::RUN, |_, a, cx| marlowe_agent::subagent::send_message_call(a, cx))
-            .describe(|c| super::describe_by(c, "agent_id"))
+            .describe(|c| super::describe_by(c, "to"))
             .taints(|t, _| marlowe_agent::subagent::may_taint("general", t.state::<AgentGroup>().home.as_deref(), t.workspace()))
             .enabled(live),
         ToolDef::new(enter_plan_spec(), ToolGroup::Agent, Effects::NONE, |_, a, cx| marlowe_agent::planfile::enter_plan_call(a, cx))
@@ -341,9 +185,6 @@ mod tests {
         }
         assert!(configured().persona_blocks().iter().any(|b| b.text().contains("<coding>")));
         assert!(!BuiltinTools::new(None).persona_blocks().iter().any(|b| b.text().contains("<coding>")));
-        for d in super::tools() {
-            assert_eq!(d.spec.input_schema["additionalProperties"], json!(false), "{}", d.name());
-        }
     }
 
     /// A15, the dusk profile at 32k, this host alone: persona and blocks (v3, memory, crew and the
@@ -354,7 +195,6 @@ mod tests {
     /// `parity_a15_instructions_at_their_cap_reach_dusk_uncut` and in the daemon's
     /// `the_wired_dusk_prefix_fits_its_slices_in_a_repository`.
     #[test]
-    #[ignore = "until the compact specs land (Specs stage)"]
     fn the_fitter_keeps_the_dusk_prefix_inside_its_budget() {
         use marlowe_agent::context::{estimate_tokens, fit_prefix, tool_spec_tokens, PrefixBudget};
         use marlowe_agent::system::PromptSections;
@@ -392,7 +232,7 @@ mod tests {
         let dusk = ModelInfo { context_window: Some(32_768), ..ModelInfo::bare(ProviderKind::Ollama, "marlowe-dusk:27b-super") };
         let small = configured().with_model_exposure(&dusk);
         let names: Vec<String> = small.specs().into_iter().map(|s| s.name).collect();
-        for t in ["todo_add", "todo_update", "todo_get", "enter_plan", "send_message", "enter_worktree", "exit_worktree", "web_fetch", "workflow"] {
+        for t in ["todo", "enter_plan", "send_message", "enter_worktree", "exit_worktree", "web_fetch", "workflow"] {
             assert!(names.contains(&t.to_string()), "{t} is not listed at 32k: {names:?}");
         }
         assert!(!names.contains(&"tool_search".to_string()), "no search for built-ins");
@@ -405,7 +245,6 @@ mod tests {
     /// tools and the conductor's memory and dispatch tools (fixtures below) both inside their
     /// slices, so the fitter has nothing to take from the project sections.
     #[test]
-    #[ignore = "until the compact specs land (Specs stage)"]
     fn parity_a15_instructions_at_their_cap_reach_dusk_uncut() {
         use marlowe_agent::context::{estimate_tokens, fit_prefix, tool_spec_tokens, PrefixBudget};
         use marlowe_agent::system::PromptSections;
@@ -429,64 +268,11 @@ mod tests {
     }
 
     /// The tools the wired conductor adds to this host (the daemon's memory tools, crew
-    /// dispatch), as fixtures of their schemas (`marlowe-daemon/src/mind.rs`,
-    /// `marlowe-crew/src/dispatch.rs`, abridged only where marked). MCP tools are not counted.
+    /// dispatch), from the compact specs; the real dispatch menu lists the profile's roles, which
+    /// the daemon's `the_wired_dusk_prefix_fits_its_slices_in_a_repository` counts. MCP tools are
+    /// not counted.
     fn wired_conductor_extras() -> Vec<marlowe_model::ToolSpec> {
-        let t = |name: &str, description: &str, schema: serde_json::Value| marlowe_model::ToolSpec {
-            name: name.into(),
-            description: description.into(),
-            input_schema: schema,
-        };
-        let s = |d: &str| json!({"type": "string", "description": d});
-        vec![
-            t(
-                "remember",
-                "Record something durable about the user, once, when they state it, unannounced; not one-offs. A decision needs its `reason`. Results and notes are retrieved when relevant; the rest goes in the profile. To change a record, use correct.",
-                json!({"type": "object", "properties": {
-                    "text": s("One self-contained statement."),
-                    "kind": {"type": "string", "enum": ["preference", "decision", "fact", "procedure", "result", "note"]},
-                    "reason": {"type": "string"},
-                    "scope": {"type": "string", "enum": ["global", "project"], "default": "global"}},
-                    "required": ["text", "kind"]}),
-            ),
-            t(
-                "recall",
-                "Search stored memories (past conversations, episodes, anything not in the profile) when the user asks about the past.",
-                json!({"type": "object", "properties": {"query": {"type": "string"},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5}}, "required": ["query"]}),
-            ),
-            t(
-                "forget",
-                "Forget a memory by id. The audit journal keeps the record, not the text.",
-                json!({"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}),
-            ),
-            t(
-                "correct",
-                "Replace a memory's text (recall finds the id); use it, not remember, for something recorded that changed. A decision keeps its reason only if the text ends with \"(reason: ...)\". Refused if it would lower trust.",
-                json!({"type": "object", "properties": {"id": {"type": "string"}, "text": {"type": "string"}},
-                    "required": ["id", "text"]}),
-            ),
-            t(
-                "dispatch",
-                "Send long, parallel or bulky work to a crew agent that runs in the background in its own sandbox. You get \
-                 its run id at once; the result arrives later in this conversation. The crew cannot see this conversation, \
-                 so the goal must carry the context it needs.",
-                // Abridged: the role menu lists the profile's roles (three here); the daemon's
-                // `the_wired_dusk_prefix_fits_its_slices_in_a_repository` counts the real menu.
-                json!({"type": "object", "properties": {
-                    "role": {"type": "string", "enum": ["researcher", "engineer", "reviewer"],
-                             "description": "Who does the work. researcher: literature and evidence · engineer: builds in a \
-                              worktree · reviewer: adversarial review"},
-                    "goal": s("What to find out or build, with the paths, constraints and definition of done the crew needs."),
-                    "playbook": {"type": "string", "enum": ["deep_research", "build"], "description": "deep_research: \
-                     plan, parallel scouts, adversarial verify, cited report. build: plan, implement in a worktree, test \
-                     loop, review, diff for merge. Omit for a single role run."},
-                    "workspace": s("Default: this session's workspace."),
-                    "budget": {"type": "object", "properties": {"tokens": {"type": "integer"}, "steps": {"type": "integer"},
-                             "usd": {"type": "number"}}}},
-                    "required": ["role", "goal"]}),
-            ),
-        ]
+        ["remember", "recall", "forget", "correct", "dispatch"].map(marlowe_agent::compact_specs::spec).to_vec()
     }
 
     fn tmp(name: &str) -> std::path::PathBuf {

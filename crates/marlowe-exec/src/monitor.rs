@@ -114,7 +114,7 @@ pub(crate) fn start(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOut
     };
     let persistent = args.get("persistent").and_then(Value::as_bool).unwrap_or(false);
     let timeout_ms = int_arg(args, "timeout_ms").filter(|m| *m > 0).map(|m| (m as u64).min(MAX_TIMEOUT_MS)).unwrap_or(DEFAULT_TIMEOUT_MS);
-    let description = str_arg(args, "description").map(str::trim).filter(|d| !d.is_empty()).map(str::to_string);
+    let description = str_arg(args, "label").map(str::trim).filter(|d| !d.is_empty()).map(str::to_string);
 
     // The same working directory rules as `bash`.
     let root = tools.shell_root(cx);

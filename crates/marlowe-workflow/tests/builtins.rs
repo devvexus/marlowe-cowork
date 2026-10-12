@@ -188,9 +188,9 @@ fn parity_wf6_cc_javascript_is_listed_and_named_for_conversion() {
 }
 
 #[test]
-fn parity_wf9_the_authoring_skill_and_persona_examples_are_valid_scripts() {
+fn parity_wf9_the_authoring_skill_examples_are_valid_scripts() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    for file in ["workflows/workflow-authoring.md", "persona/blocks/workflow.md"] {
+    for file in ["workflows/workflow-authoring.md"] {
         let text = std::fs::read_to_string(root.join(file)).unwrap();
         let blocks: Vec<&str> = text.split("```python").skip(1).map(|b| b.split("```").next().unwrap()).filter(|b| b.contains("def main")).collect();
         assert!(!blocks.is_empty(), "{file} has an example");

@@ -36,7 +36,7 @@ use serde_json::Value;
 pub use glob::glob;
 pub use grep::grep;
 
-/// Bytes of one tool result before the output is cut (the model's `head_limit` comes first).
+/// Bytes of one tool result before the output is cut (the model's `limit` comes first).
 pub(crate) const RESULT_BYTES: usize = 60_000;
 
 /// What a search call runs against.
@@ -106,7 +106,7 @@ pub(crate) fn lenient_int(v: &Value) -> Option<i64> {
     }
 }
 
-/// `head_limit` and `offset`, shared by both tools. `head_limit` 0 means no limit.
+/// `limit` (the older `head_limit` still works) and `offset`, shared by both tools. A `limit` of 0 means no limit.
 pub(crate) struct Page {
     pub limit: usize,
     pub offset: usize,
@@ -125,7 +125,8 @@ impl Page {
                 },
             }
         };
-        let limit = one("head_limit", DEFAULT_HEAD_LIMIT as i64)?;
+        let key = if args.get("limit").is_some_and(|v| !v.is_null()) { "limit" } else { "head_limit" };
+        let limit = one(key, DEFAULT_HEAD_LIMIT as i64)?;
         let offset = one("offset", 0)?;
         Ok(Page { limit: if limit == 0 { usize::MAX } else { limit }, offset })
     }

@@ -11,9 +11,9 @@ use std::sync::Arc;
 
 use marlowe_agent::background::{parse_urgency, NoticeQuery};
 use marlowe_agent::{CallCtx, Effects, ToolGroup, ToolOutcome};
-use serde_json::{json, Value};
+use serde_json::Value;
 
-use super::{describe_by, spec, ToolDef};
+use super::{describe_by, ToolDef};
 use crate::{first_line, int_arg, paths, str_arg, BuiltinTools};
 
 /// Whether the group is live on a host: the daemon's conductor sessions configure it.
@@ -32,17 +32,7 @@ const NO_DAEMON: &str = "this needs the daemon, which this session does not have
 pub const MAX_SEND_BYTES: u64 = 100 << 20;
 
 fn notify_spec() -> marlowe_model::ToolSpec {
-    spec(
-        "notify",
-        "Tell the user something outside the conversation (a Windows notification, a spoken line outside quiet hours): \
-         a long job finished or failed, or you need a decision; not progress. One a minute unless urgent.",
-        json!({
-            "title": {"type": "string"},
-            "body": {"type": "string"},
-            "urgency": {"type": "string", "enum": ["low", "normal", "urgent"], "description": "Low is silent."}
-        }),
-        &["title"],
-    )
+    marlowe_agent::compact_specs::spec("notify")
 }
 
 fn notify_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
@@ -62,16 +52,7 @@ fn notify_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
 }
 
 fn send_file_spec() -> marlowe_model::ToolSpec {
-    spec(
-        "send_file",
-        "Give the user a file (report, plot, log, HTML) as a card they can open. Files in the workspace or sandbox \
-         only, 100 MB at most.",
-        json!({
-            "path": {"type": "string"},
-            "note": {"type": "string"}
-        }),
-        &["path"],
-    )
+    marlowe_agent::compact_specs::spec("send_file")
 }
 
 fn send_file_call(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
@@ -108,19 +89,7 @@ fn send_file_call(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutco
 }
 
 fn notices_spec() -> marlowe_model::ToolSpec {
-    spec(
-        "notices",
-        "Read what the daemon noticed on its own (runs finished or stalled, CI, jobs, monitors, schedules, messages). \
-         Reading marks them seen; `unread` keeps only new ones; `since` is a local time or Unix ms; `source` e.g. run, \
-         ci, task, message, notify.",
-        json!({
-            "unread": {"type": "boolean"},
-            "since": {"type": "string"},
-            "source": {"type": "string"},
-            "limit": {"type": "integer"}
-        }),
-        &[],
-    )
+    marlowe_agent::compact_specs::spec("notices")
 }
 
 fn notices_call(args: &Value, cx: &CallCtx) -> ToolOutcome {

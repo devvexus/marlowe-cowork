@@ -55,7 +55,7 @@ fn arxiv_html_is_read_first_with_sections_and_parsed_references() {
             ("arxiv.org/html/2301.01234", 200, "text/html; charset=utf-8", ARXIV_HTML.as_bytes().to_vec()),
         ],
     );
-    let o = call(&t, "paper", json!({"url_or_arxiv_id": "2301.01234"}));
+    let o = call(&t, "web_fetch", json!({"part": "text", "url": "2301.01234"}));
     assert!(!o.is_error, "{}", o.content);
     assert!(o.content.starts_with("paper https://arxiv.org/html/2301.01234 · arxiv-html"), "{}", o.content);
     assert!(o.content.contains("Title: Attention & Memory in Small Models"), "API metadata wins: {}", o.content);
@@ -65,7 +65,7 @@ fn arxiv_html_is_read_first_with_sections_and_parsed_references() {
     assert!(o.content.contains("| Heads kept | No memory | With memory |"), "{}", o.content);
     assert!(!http.1.lock().unwrap().iter().any(|u| u.contains("/pdf/") || u.contains("e-print")), "HTML sufficed");
 
-    let r = call(&t, "paper", json!({"url_or_arxiv_id": "2301.01234", "part": "references"}));
+    let r = call(&t, "web_fetch", json!({"url": "2301.01234", "part": "references"}));
     assert!(!r.is_error, "{}", r.content);
     assert!(
         r.content.contains("[1] A. Vaswani, N. Shazeer, N. Parmar, et al. Attention is all you need."),
@@ -95,7 +95,7 @@ fn a_latex_eprint_is_read_when_there_is_no_html() {
             ("arxiv.org/e-print/2301.01234", 200, "application/x-eprint", tex.into_bytes()),
         ],
     );
-    let o = call(&t, "paper", json!({"url_or_arxiv_id": "arXiv:2301.01234"}));
+    let o = call(&t, "web_fetch", json!({"part": "text", "url": "arXiv:2301.01234"}));
     assert!(!o.is_error, "{}", o.content);
     assert!(o.content.starts_with("paper https://arxiv.org/e-print/2301.01234 · latex"), "{}", o.content);
     assert!(o.content.contains("[arXiv HTML: HTTP 404]"), "{}", o.content);
