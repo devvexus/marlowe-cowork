@@ -636,7 +636,7 @@ impl StepHooks for Hooks {
     }
 
     fn checkpoint_call(&self, spec: &StepSpec, checkpoint: &CallCheckpoint<'_>) {
-        let _ = self.inner.store().append_call(&self.id, &spec.key, checkpoint);
+        let _ = self.inner.store().append_call(&self.id, &spec.key, self.row(&spec.key), checkpoint);
     }
 }
 

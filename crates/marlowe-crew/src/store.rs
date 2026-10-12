@@ -45,13 +45,14 @@ CREATE TABLE IF NOT EXISTS crew_run_calls (
     summary   TEXT,
     pinned    TEXT,
     tainted   INTEGER NOT NULL DEFAULT 0,
+    row       INTEGER,
     PRIMARY KEY (run, key, seq)
 );
 ";
 
 /// Columns added after a table first shipped: `ALTER TABLE` on an older `cowork.db`, each with
 /// the probe that says whether it is there.
-const MIGRATIONS: [(&str, &str); 2] = [
+const MIGRATIONS: [(&str, &str); 3] = [
     ("SELECT truncated FROM crew_run_steps LIMIT 0", "ALTER TABLE crew_run_steps ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0"),
     (
         "SELECT summary, pinned, tainted FROM crew_run_calls LIMIT 0",
@@ -59,6 +60,7 @@ const MIGRATIONS: [(&str, &str); 2] = [
          ALTER TABLE crew_run_calls ADD COLUMN pinned TEXT;
          ALTER TABLE crew_run_calls ADD COLUMN tainted INTEGER NOT NULL DEFAULT 0;",
     ),
+    ("SELECT row FROM crew_run_calls LIMIT 0", "ALTER TABLE crew_run_calls ADD COLUMN row INTEGER"),
 ];
 
 /// Applies [`SCHEMA`], then each migration whose column is missing.
@@ -203,13 +205,13 @@ impl RunStore {
 
     /// Appends a per-call checkpoint of the unfinished step `key` (design 3.7): the messages a
     /// model call or a tool batch added, or (`full`) the whole conversation and its compaction
-    /// state after it was compacted.
-    pub fn append_call(&self, run: &RunId, key: &str, c: &CallCheckpoint<'_>) -> Result<(), CrewError> {
+    /// state after it was compacted. `row` is the transcript row the runner reserved for the step.
+    pub fn append_call(&self, run: &RunId, key: &str, row: u32, c: &CallCheckpoint<'_>) -> Result<(), CrewError> {
         self.conn.execute(
-            "INSERT INTO crew_run_calls (run, key, seq, full, messages, at_ms, summary, pinned, tainted)
+            "INSERT INTO crew_run_calls (run, key, seq, full, messages, at_ms, summary, pinned, tainted, row)
              VALUES (?1, ?2, (SELECT COALESCE(MAX(seq), 0) + 1 FROM crew_run_calls WHERE run = ?1 AND key = ?2),
-                     ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![run.as_str(), key, c.full, to_json(&c.messages)?, crate::now_ms(), c.summary, c.pinned, c.tainted],
+                     ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![run.as_str(), key, c.full, to_json(&c.messages)?, crate::now_ms(), c.summary, c.pinned, c.tainted, row],
         )?;
         Ok(())
     }
@@ -247,14 +249,18 @@ impl RunStore {
     }
 
     /// The steps with per-call checkpoints and no step row yet, in order of their first
-    /// checkpoint: the ones still open, or interrupted before they finished.
-    pub fn open_keys(&self, id: &RunId) -> Result<Vec<String>, CrewError> {
+    /// checkpoint: the ones still open, or interrupted before they finished, each with the
+    /// transcript row its latest checkpoint carries (none on a checkpoint from before rows).
+    pub fn open_keys(&self, id: &RunId) -> Result<Vec<(String, Option<u32>)>, CrewError> {
         let mut st = self.conn.prepare(
-            "SELECT key FROM crew_run_calls WHERE run = ?1
-               AND key NOT IN (SELECT key FROM crew_run_steps WHERE run = ?1)
-             GROUP BY key ORDER BY MIN(at_ms), MIN(rowid)",
+            "SELECT key, (SELECT row FROM crew_run_calls c WHERE c.run = ?1 AND c.key = k.key ORDER BY seq DESC LIMIT 1)
+             FROM crew_run_calls k WHERE run = ?1
+               AND k.key NOT IN (SELECT key FROM crew_run_steps WHERE run = ?1)
+             GROUP BY k.key ORDER BY MIN(at_ms), MIN(rowid)",
         )?;
-        let keys = st.query_map([id.as_str()], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+        let keys = st
+            .query_map([id.as_str()], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<u32>>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(keys)
     }
 
@@ -340,7 +346,7 @@ mod tests {
             let schema = SCHEMA
                 .replace("    summary   TEXT,\n", "")
                 .replace("    pinned    TEXT,\n", "")
-                .replace("    tainted   INTEGER NOT NULL DEFAULT 0,\n    PRIMARY KEY (run, key, seq)", "    PRIMARY KEY (run, key, seq)");
+                .replace("    tainted   INTEGER NOT NULL DEFAULT 0,\n    row       INTEGER,\n    PRIMARY KEY (run, key, seq)", "    PRIMARY KEY (run, key, seq)");
             old.execute_batch(&schema).unwrap();
             assert!(old.prepare("SELECT summary FROM crew_run_calls LIMIT 0").is_err());
         }
@@ -359,15 +365,17 @@ mod tests {
         let early: &'static [Message] = Box::leak(Box::new([Message::user("one"), Message::assistant("two")]));
         let tail: &'static [Message] = Box::leak(Box::new([Message::user("kept tail")]));
         let last: &'static [Message] = Box::leak(Box::new([Message::assistant("four")]));
-        store.append_call(&run, "k", &cp(early, false, None, false)).unwrap();
-        store.append_call(&run, "k", &cp(&[], false, None, true)).unwrap();
-        store.append_call(&run, "k", &cp(tail, true, Some("SUMMARY"), false)).unwrap();
-        store.append_call(&run, "k", &cp(last, false, None, false)).unwrap();
+        store.append_call(&run, "k", 1, &cp(early, false, None, false)).unwrap();
+        store.append_call(&run, "k", 1, &cp(&[], false, None, true)).unwrap();
+        store.append_call(&run, "k", 1, &cp(tail, true, Some("SUMMARY"), false)).unwrap();
+        store.append_call(&run, "k", 1, &cp(last, false, None, false)).unwrap();
         let p = store.calls(&run, "k").unwrap();
         assert_eq!(p.messages, [tail[0].clone(), last[0].clone()], "from the last full snapshot on");
         assert_eq!((p.summary.as_deref(), p.pinned.as_deref()), (Some("SUMMARY"), Some("PINNED")));
         assert!(p.tainted, "a tainted checkpoint before the snapshot still counts");
         assert_eq!(store.calls(&run, "other").unwrap(), PartialStep::default());
+        store.append_call(&run, "j", 4, &cp(last, false, None, false)).unwrap();
+        assert_eq!(store.open_keys(&run).unwrap(), [("k".to_string(), Some(1)), ("j".to_string(), Some(4))]);
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }

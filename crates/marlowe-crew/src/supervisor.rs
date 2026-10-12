@@ -685,7 +685,7 @@ impl Supervisor {
     }
 
     /// The run and its steps, for the Run view: the finished ones, then each open step (its
-    /// per-call checkpoints, until its row is written) numbered as the runner's live events number it.
+    /// per-call checkpoints, until its row is written) carrying the row the runner reserved for it.
     pub fn transcript(&self, run: &RunId) -> Result<(CrewRunInfo, Vec<CrewStep>), CrewError> {
         let r = self.inner.run(run)?;
         let info = r.info();
@@ -693,10 +693,14 @@ impl Supervisor {
         let store = self.inner.store();
         let recs = store.steps(run)?;
         let mut steps: Vec<CrewStep> = recs.iter().map(|s| s.view()).collect();
-        let mut row = recs.iter().map(|s| s.step).max().unwrap_or(0);
-        for key in store.open_keys(run)? {
+        let mut next = recs.iter().map(|s| s.step).max().unwrap_or(0);
+        for (key, stored) in store.open_keys(run)? {
             let text = message_lines(&store.calls(run, &key)?.messages);
-            row += 1;
+            // The row the runner reserved, so live deltas land on it; older checkpoints have none.
+            let row = stored.unwrap_or_else(|| {
+                next += 1;
+                next
+            });
             let role = if key == "main" { r.role.clone() } else { key.replace(':', " ") };
             let action = match (&r.current_action, &r.note) {
                 (Some(a), _) if live => a.clone(),
