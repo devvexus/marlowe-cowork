@@ -34,6 +34,15 @@ CREATE TABLE IF NOT EXISTS crew_run_steps (
     truncated INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (run, step)
 );
+CREATE TABLE IF NOT EXISTS crew_run_calls (
+    run       TEXT NOT NULL REFERENCES crew_runs(id) ON DELETE CASCADE,
+    key       TEXT NOT NULL,
+    seq       INTEGER NOT NULL,
+    full      INTEGER NOT NULL,
+    messages  TEXT NOT NULL,
+    at_ms     INTEGER NOT NULL,
+    PRIMARY KEY (run, key, seq)
+);
 ";
 
 /// Columns added after a table first shipped: `ALTER TABLE` on an older `cowork.db`.
@@ -176,6 +185,42 @@ impl RunStore {
             });
         }
         Ok(out)
+    }
+
+    /// Appends a per-call checkpoint of the unfinished step `key` (design 3.7): the messages a
+    /// model call or a tool batch added, or (`full`) the whole conversation after it was
+    /// compacted.
+    pub fn append_call(&self, run: &RunId, key: &str, messages: &[marlowe_model::Message], full: bool) -> Result<(), CrewError> {
+        self.conn.execute(
+            "INSERT INTO crew_run_calls (run, key, seq, full, messages, at_ms)
+             VALUES (?1, ?2, (SELECT COALESCE(MAX(seq), 0) + 1 FROM crew_run_calls WHERE run = ?1 AND key = ?2), ?3, ?4, ?5)",
+            params![run.as_str(), key, full, to_json(&messages)?, crate::now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// The conversation of the unfinished step `key`, rebuilt from its per-call checkpoints:
+    /// from the last full snapshot on. Empty when the step has none.
+    pub fn calls(&self, run: &RunId, key: &str) -> Result<Vec<marlowe_model::Message>, CrewError> {
+        let mut st = self.conn.prepare("SELECT full, messages FROM crew_run_calls WHERE run = ?1 AND key = ?2 ORDER BY seq")?;
+        let rows = st.query_map(params![run.as_str(), key], |r| Ok((r.get::<_, bool>(0)?, r.get::<_, String>(1)?)))?;
+        let mut out: Vec<marlowe_model::Message> = Vec::new();
+        for row in rows {
+            let (full, messages) = row?;
+            let messages: Vec<marlowe_model::Message> = from_json(&messages)?;
+            if full {
+                out = messages;
+            } else {
+                out.extend(messages);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Drops the per-call checkpoints of `key` once its step row holds the whole conversation.
+    pub fn clear_calls(&self, run: &RunId, key: &str) -> Result<(), CrewError> {
+        self.conn.execute("DELETE FROM crew_run_calls WHERE run = ?1 AND key = ?2", params![run.as_str(), key])?;
+        Ok(())
     }
 
     fn select(&self, sql: &str, args: impl rusqlite::Params) -> Result<Vec<Run>, CrewError> {

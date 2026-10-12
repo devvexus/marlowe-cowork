@@ -36,6 +36,14 @@ pub struct Sandbox {
     /// was made ([`repo_digest`]). `None` for scratch sandboxes and runs from before it existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_digest: Option<String>,
+    /// Hub files (relative, forward slashes) this sandbox may not write: a build_v2 child
+    /// worktree after the contract stage. Changes to them go through the lead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frozen: Vec<String>,
+    /// `CARGO_TARGET_DIR` for every process the run spawns: one `<home>\targets\<repo-hash>` per
+    /// repository, shared by the run's worktree and its children (Cargo's lock serialises them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_dir: Option<PathBuf>,
 }
 
 /// What a merge did to the original checkout's current branch.
@@ -72,6 +80,38 @@ pub fn worktree_path(home: &Path, run: &RunId) -> PathBuf {
 /// `<home>\scratch\<run-id>`.
 pub fn scratch_path(home: &Path, run: &RunId) -> PathBuf {
     home.join("scratch").join(run.as_str())
+}
+
+/// `<home>\targets\<repo-hash>`: the build output directory every crew process working on
+/// `origin` shares, so child worktrees do not each build from cold.
+pub fn target_dir(home: &Path, origin: &Path) -> PathBuf {
+    let key = origin.display().to_string().replace('\\', "/");
+    let key = if cfg!(windows) { key.to_lowercase() } else { key };
+    let hash = format!("{:x}", Sha256::digest(key.trim_end_matches('/').as_bytes()));
+    home.join("targets").join(&hash[..16])
+}
+
+/// A branch- and directory-safe form of `name`: lower-case ASCII letters, digits, `-` and `_`,
+/// at most 40 characters, never empty.
+pub fn safe_name(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.trim().chars() {
+        let c = c.to_ascii_lowercase();
+        if c.is_ascii_alphanumeric() || c == '_' {
+            out.push(c);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+        if out.len() >= 40 {
+            break;
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out.is_empty() {
+        "task".into()
+    } else {
+        out
+    }
 }
 
 /// The URL every crew push is rewritten to. Not a scheme git can reach.
@@ -251,7 +291,16 @@ impl Sandbox {
         let root = scratch_path(home, run);
         std::fs::create_dir_all(&root)?;
         let kind = if want == SandboxKind::None { SandboxKind::None } else { SandboxKind::Scratch };
-        Ok(Sandbox { kind, root, origin: workspace.map(Path::to_path_buf), branch: None, base: None, repo_digest: None })
+        Ok(Sandbox {
+            kind,
+            root,
+            origin: workspace.map(Path::to_path_buf),
+            branch: None,
+            base: None,
+            repo_digest: None,
+            frozen: Vec::new(),
+            target_dir: None,
+        })
     }
 
     /// The worktree for `run`, or `None` when the workspace is not a git checkout with a commit.
@@ -270,6 +319,8 @@ impl Sandbox {
             branch: Some(branch.clone()),
             base: Some(base),
             repo_digest: repo_digest(&origin),
+            frozen: Vec::new(),
+            target_dir: Some(target_dir(home, &origin)),
         };
         if root.join(".git").exists() && branch_exists {
             // Resumed: the base is where the branch left the checkout's history.
@@ -303,7 +354,27 @@ impl Sandbox {
     /// Whether writes to `path` are free: inside `root` (after normalising `..`), and the
     /// sandbox is not `None`.
     pub fn allows_write(&self, path: &Path) -> bool {
-        self.kind != SandboxKind::None && within(&self.root, &normalize(&self.root, path))
+        let abs = normalize(&self.root, path);
+        self.kind != SandboxKind::None && within(&self.root, &abs) && self.frozen_path(&abs).is_none()
+    }
+
+    /// The frozen hub file `path` names, if it is one (relative to the root, forward slashes).
+    pub fn frozen_path(&self, path: &Path) -> Option<String> {
+        if self.frozen.is_empty() {
+            return None;
+        }
+        let abs = normalize(&self.root, path);
+        if !within(&self.root, &abs) {
+            return None;
+        }
+        let rel = abs.strip_prefix(&self.root).ok().map(|p| p.to_string_lossy().replace('\\', "/")).or_else(|| {
+            // A case or separator difference on Windows: count components instead.
+            let n = self.root.components().count();
+            let parts: Vec<String> = abs.components().skip(n).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+            Some(parts.join("/"))
+        })?;
+        let same = |a: &str, b: &str| if cfg!(windows) { a.eq_ignore_ascii_case(b) } else { a == b };
+        self.frozen.iter().find(|f| same(f.trim_start_matches("./"), &rel)).cloned()
     }
 
     /// Environment for the run's child processes ([`no_push_git_env`] with the origin's remotes).
@@ -315,7 +386,51 @@ impl Sandbox {
             .and_then(|o| git(o, &["remote"]).ok())
             .map(|out| out.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
             .unwrap_or_default();
-        no_push_git_env(&remotes)
+        let mut env = no_push_git_env(&remotes);
+        if let Some(dir) = &self.target_dir {
+            env.push(("CARGO_TARGET_DIR".into(), dir.display().to_string()));
+        }
+        env
+    }
+
+    /// A child worktree for one build_v2 task: `<home>\worktrees\<run-id>-<task>` on
+    /// `crew/<run-id>-<task>`, cut from this worktree's committed HEAD, sharing its origin, digest
+    /// and target dir, with `frozen` hub files it may not write. Idempotent: a resumed run finds
+    /// the child it made.
+    pub fn create_child(&self, home: &Path, run: &RunId, task: &str, frozen: &[String]) -> Result<Sandbox, CrewError> {
+        let (origin, _, _) = self.worktree_parts()?;
+        let origin = origin.to_path_buf();
+        let name = format!("{}-{}", run.as_str(), safe_name(task));
+        let root = home.join("worktrees").join(&name);
+        let branch = format!("crew/{name}");
+        let branch_ref = format!("refs/heads/{branch}");
+        let branch_exists = git(&origin, &["rev-parse", "--verify", "--quiet", &branch_ref]).is_ok();
+        let head = git(&self.root, &["rev-parse", "--verify", "HEAD"])?;
+        let base = if root.join(".git").exists() && branch_exists {
+            git(&origin, &["merge-base", &branch, &head]).unwrap_or(head)
+        } else {
+            if let Some(parent) = root.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let path = root.display().to_string();
+            if branch_exists {
+                git(&origin, &["worktree", "add", &path, &branch])?;
+                git(&origin, &["merge-base", &branch, &head]).unwrap_or(head)
+            } else {
+                git(&origin, &["worktree", "add", "-b", &branch, &path, &head])?;
+                head
+            }
+        };
+        Ok(Sandbox {
+            kind: SandboxKind::Worktree,
+            root,
+            origin: Some(origin),
+            branch: Some(branch),
+            base: Some(base),
+            repo_digest: self.repo_digest.clone(),
+            frozen: frozen.to_vec(),
+            target_dir: self.target_dir.clone(),
+        })
     }
 
     /// The worktree's parts, once the original repository's config and hooks are known to be as
@@ -439,4 +554,24 @@ fn dirty_paths(porcelain: &str) -> Vec<String> {
         .filter(|l| l.len() > 3)
         .flat_map(|l| l[3..].split(" -> ").map(|p| p.trim_matches('"').to_string()).collect::<Vec<_>>())
         .collect()
+}
+
+/// Daemon only: stages everything in `dir` and commits it as `msg` (hooks off, an identity when
+/// the repository has none). `Ok(false)` when there was nothing to commit.
+pub(crate) fn commit_all(dir: &Path, msg: &str) -> Result<bool, CrewError> {
+    git(dir, &["add", "--all"])?;
+    if git(dir, &["status", "--porcelain"])?.is_empty() {
+        return Ok(false);
+    }
+    let mut args = identity_args(dir);
+    args.extend(["commit", "--quiet", "--no-verify", "-m", msg]);
+    git(dir, &args)?;
+    Ok(true)
+}
+
+/// [`git`] with an identity when the repository has none (merge commits made by the daemon).
+pub(crate) fn git_as_crew(dir: &Path, args: &[&str]) -> Result<String, CrewError> {
+    let mut all = identity_args(dir);
+    all.extend(args.iter().copied());
+    git(dir, &all)
 }

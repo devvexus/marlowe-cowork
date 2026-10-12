@@ -291,6 +291,8 @@ fn deep_research_v2_runs_on_the_local_model() {
         branch: None,
         base: None,
         repo_digest: None,
+        frozen: Vec::new(),
+        target_dir: None,
     };
     let mut runner =
         AgentRunner::new(RunId::new_random(), Roles::builtin(), resolver, Arc::new(NoTools), sandbox, None);

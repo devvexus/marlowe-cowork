@@ -48,12 +48,46 @@ impl CrewTools {
     }
 }
 
+/// Argument names file tools give their target in, for tools that declare no mutation.
+const PATH_ARGS: [&str; 4] = ["path", "file_path", "notebook_path", "file"];
+
+/// Tools that write the file their path argument names.
+const WRITERS: [&str; 6] = ["write", "edit", "multi_edit", "edit_lines", "notebook_edit", "apply_patch"];
+
 impl CrewTools {
-    /// The refusal for a call this host will not run: off the allowlist, or a shell command the
-    /// policy denies in every mode (force push, `--no-verify`, shared git config writes).
-    fn refusal(&self, call: &ToolCallReq) -> Option<ToolOutcome> {
+    /// The frozen hub file a file-writing call targets, if any: by the paths the tool says it
+    /// changes, else by its path argument when it is a writer. Shells are not read here; the
+    /// build puts back hub files a shell changed and tells the engineer.
+    fn frozen_target(&self, call: &ToolCallReq, ctx: &ToolCtx) -> Option<String> {
+        if self.sandbox.frozen.is_empty() || Dialect::of_tool(&call.name).is_some() {
+            return None;
+        }
+        let by_arg = || {
+            PATH_ARGS
+                .iter()
+                .filter_map(|k| call.args.get(*k).and_then(|v| v.as_str()))
+                .find_map(|p| self.sandbox.frozen_path(Path::new(p)))
+        };
+        match self.inner.mutation(call, ctx) {
+            Mutation::Paths(paths) => paths.iter().find_map(|p| self.sandbox.frozen_path(p)),
+            Mutation::Under(_) => None,
+            Mutation::None if WRITERS.contains(&call.name.as_str()) => by_arg(),
+            Mutation::None => None,
+        }
+    }
+
+    /// The refusal for a call this host will not run: off the allowlist, a write to a frozen hub
+    /// file, or a shell command the policy denies in every mode (force push, `--no-verify`,
+    /// shared git config writes).
+    fn refusal(&self, call: &ToolCallReq, ctx: &ToolCtx) -> Option<ToolOutcome> {
         if !self.allow.contains(&call.name) {
             return Some(ToolOutcome::error(format!("`{}` is not on this role's tool list", call.name)));
+        }
+        if let Some(hub) = self.frozen_target(call, ctx) {
+            return Some(ToolOutcome::error(format!(
+                "`{hub}` is a hub file, frozen after the build's contract stage. Do not change it; end your reply with \
+                 `NEED_HUB_CHANGE: {hub}: <what and why>` and the lead will make the change."
+            )));
         }
         let dialect = Dialect::of_tool(&call.name)?;
         let command = call.args.get("command").and_then(|v| v.as_str())?;
@@ -73,7 +107,7 @@ impl ToolHost for CrewTools {
 
     /// Refuses tools off the allowlist and denied shell commands; otherwise delegates.
     fn call(&self, call: &ToolCallReq, ctx: &ToolCtx) -> ToolOutcome {
-        match self.refusal(call) {
+        match self.refusal(call, ctx) {
             Some(out) => out,
             None => self.inner.call(call, ctx),
         }
@@ -82,7 +116,7 @@ impl ToolHost for CrewTools {
     /// [`ToolHost::call`] with the loop's session scope, which the inner host's tools need
     /// (jobs, file state, the todo list).
     fn call_scoped(&self, call: &ToolCallReq, cx: &CallCtx) -> ToolOutcome {
-        match self.refusal(call) {
+        match self.refusal(call, cx) {
             Some(out) => out,
             None => self.inner.call_scoped(call, cx),
         }

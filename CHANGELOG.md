@@ -4,6 +4,13 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### M4.6 wave 2: I (build_v2 and crew mechanics)
+
+- **Added.** `build_v2` (design 3.6), the default for a build run with a git worktree: baseline (`<home>\runs\<id>\baseline.json`, each failure retried once, flaky marked), a lead's validated task DAG with a cost quote put to the user, a contract stage after which hub files are frozen (crew file tools refuse them; shell edits are put back), parallel engineers in child worktrees `crew/<run>-<task>` sharing one `CARGO_TARGET_DIR` per repo (`<home>\targets\<hash>`), a stall (same failures twice) replanned by the lead, `NEED_HUB_CHANGE` requests made by the lead, `merge --no-ff` in topo order with lockfiles taken from one side and regenerated, integrator rounds then the serial fallback, the gate as "no new failures vs baseline", three lens reviewers (`review-correctness`/`-security`/`-performance`) with structured findings, the fix loop (stall -> replan -> ask; rounds -> ask), a wall-clock budget, `dag {json}` reports for the TUI strip, and the diff held for merge approval. Gate commands, hubs and lockfiles come from `marlowe-verify`'s profile. New roles `lead`, `integrator` and the three reviewers.
+- **Added.** Per-call crew checkpoints (3.7): every model call and tool batch of an unfinished step is a `crew_run_calls` row; a resumed step continues from them, closing any call that never reported back as interrupted, and never runs a finished tool call again.
+- **Added.** `Supervisor::notify_run`: the run inbox (A12). Messages arrive at the next step boundary framed with their sender, never as the user, and taint the run.
+- **Added.** `GitWorktrees`, the real `WorktreeProvider` (A5), installed at daemon boot; `/security-review` expands to the security lens over the pending diff (G6).
+
 ### M4.6 wave 2: seam2
 
 - **Added.** Wave-2 protocol (`marlowe-proto/src/background.rs`): `TaskInfo`/`TaskKind`/`TaskStatus` (typed ids `job_`, `agent_`, `wf_`, `mon_`, `cron_`), workflow views (`WorkflowInfo`, `SavedWorkflow`, `WorkflowRef`), `Finding`, `SentFile`, `NotifyState`, `PlanFileDecision`, `RuleSuggestion`, `FastState`; 14 requests (`ListTasks`, `StopTask`, `TaskOutput`, `CronCreate`, `NotifySettings`, `OpenFile`, `ListWorkflows`, `WatchWorkflow`, `RunWorkflow`, `SkipWorkflowAgent`, `ListFindings`, `SetFast`, `AnswerPlan`, `SuggestRules`) and 13 events, routed to stub `task_ops`/`notify_ops` (N), `workflow_ops` (W) and `f3_ops` (F3) that answer with an error naming the track.

@@ -16,6 +16,7 @@ use marlowe_proto::{
     ResearchProgress, RunId, SandboxKind, SessionId,
 };
 
+use crate::playbook::build_v2::{BuildPlan, BuildQuote};
 use crate::playbook::research_v2::{Finding, Recalled};
 use crate::playbook::{
     self, sandbox_shell, AgentRunner, PlaybookConfig, ResearchIo, ShellResult, StepFailure, StepHooks, StepModel,
@@ -115,6 +116,7 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
         max_test_iterations: inner.cfg.max_test_iterations,
         test_command: None,
         research: inner.cfg.research.clone(),
+        build: inner.cfg.build.clone(),
     };
     hooks.check()?;
     let research = match (&run.playbook, &inner.deps.research) {
@@ -125,14 +127,12 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
         }),
         _ => None,
     };
-    playbook::run_with(
-        run.playbook,
-        &run.role,
-        &run.goal,
-        &runner,
-        &cfg,
-        research.as_ref().map(|r| r as &dyn playbook::ResearchHost),
-    )
+    let build = (run.playbook == Some(Playbook::Build)).then(|| RunBuild { hooks: hooks.clone(), created_ms: run.created_ms });
+    let hosts = playbook::Hosts {
+        research: research.as_ref().map(|r| r as &dyn playbook::ResearchHost),
+        build: build.as_ref().map(|b| b as &dyn playbook::BuildHost),
+    };
+    playbook::run_with(run.playbook, &run.role, &run.goal, &runner, &cfg, hosts)
 }
 
 /// Records how a run thread ended. A user's cancel wins over pause and shutdown; a stopped run
@@ -529,6 +529,8 @@ impl StepHooks for Hooks {
             at_ms: crate::now_ms(),
         };
         let _ = self.inner.store().append_step(&rec);
+        // The step row holds the whole conversation now; its per-call checkpoints are done.
+        let _ = self.inner.store().clear_calls(&self.id, &spec.key);
         self.done.lock().unwrap_or_else(|e| e.into_inner()).insert(spec.key.clone(), result.clone());
         if result.tainted {
             self.inner.update(&self.id, |r| r.tainted = true);
@@ -569,6 +571,14 @@ impl StepHooks for Hooks {
     fn progress(&self, action: &str) {
         let action = clip(action, 120);
         self.inner.update(&self.id, |r| r.current_action = Some(action));
+    }
+
+    fn partial(&self, key: &str) -> Vec<Message> {
+        self.inner.store().calls(&self.id, key).unwrap_or_default()
+    }
+
+    fn checkpoint_call(&self, spec: &StepSpec, messages: &[Message], full: bool) {
+        let _ = self.inner.store().append_call(&self.id, &spec.key, messages, full);
     }
 }
 
@@ -744,6 +754,121 @@ impl playbook::ResearchHost for RunResearch {
             source: Provenance::Agent { session: format!("crew:{}", self.hooks.id), turn, tainted },
         };
         mind.remember_derived(memory, finding.derived_from.clone()).map(|r| r.id).map_err(|e| e.to_string())
+    }
+}
+
+/// build_v2's view of its run: plan approval and questions through the run's approvals, data
+/// checkpoints, child worktrees, memory.
+struct RunBuild {
+    hooks: Arc<Hooks>,
+    created_ms: i64,
+}
+
+impl RunBuild {
+    /// Asks on the run's behalf; a cancel while waiting ends the run.
+    fn ask(&self, tool: &str, summary: String, detail: String) -> Result<bool, CrewError> {
+        let (inner, id) = (&self.hooks.inner, &self.hooks.id);
+        self.hooks.check()?;
+        let req = ApprovalReq {
+            session: crew_session(id),
+            call_id: format!("{tool}-{}-{}", id.short(), crate::now_ms()),
+            tool: tool.into(),
+            summary,
+            detail,
+        };
+        let decision = ask_for_run(inner, id, self.hooks.session.as_ref(), req);
+        if self.hooks.ctl.user_cancel.load(Ordering::SeqCst) || self.hooks.ctl.cancel.is_cancelled() {
+            return Err(CrewError::Cancelled);
+        }
+        Ok(decision.is_allowed())
+    }
+}
+
+impl playbook::BuildHost for RunBuild {
+    fn progress(&self, action: &str) {
+        self.hooks.progress(action);
+    }
+
+    fn check(&self) -> Result<(), CrewError> {
+        self.hooks.check()
+    }
+
+    fn propose_plan(&self, plan: &BuildPlan, quote: &BuildQuote) -> Result<bool, CrewError> {
+        let summary = format!(
+            "build plan: {} task{} in {} wave{}, about {} agent steps; approve it?",
+            plan.tasks.len(),
+            if plan.tasks.len() == 1 { "" } else { "s" },
+            quote.waves,
+            if quote.waves == 1 { "" } else { "s" },
+            quote.steps
+        );
+        self.ask("build_plan", summary, playbook::build_v2::render_plan(plan, quote))
+    }
+
+    /// Approving the plan approves its quote: the steps and tokens limits rise to cover it
+    /// (+25%), never fall, and an unlimited dimension stays unlimited.
+    fn plan_approved(&self, _plan: &BuildPlan, quote: &BuildQuote) {
+        let tokens = quote.model_tokens.saturating_add(quote.model_tokens / 4);
+        let steps = quote.steps.saturating_mul(12);
+        self.hooks.inner.update(&self.hooks.id, |r| {
+            if let Some(t) = r.budget.tokens.as_mut() {
+                *t = (*t).max(tokens);
+            }
+            if let Some(s) = r.budget.steps.as_mut() {
+                *s = (*s).max(steps);
+            }
+        });
+    }
+
+    fn ask_user(&self, summary: &str, detail: &str) -> Result<bool, CrewError> {
+        self.ask("build", summary.to_string(), detail.to_string())
+    }
+
+    fn dag(&self, report: &str) {
+        let step = self.hooks.run().map(|r| r.step).unwrap_or(0);
+        self.hooks.inner.emit(CrewEvent::Step { run: self.hooks.id.clone(), step, action: report.to_string(), text_delta: None });
+    }
+
+    fn load(&self, key: &str) -> Option<String> {
+        self.hooks.completed(key).map(|r| r.text)
+    }
+
+    fn save(&self, key: &str, label: &str, data: &str) {
+        self.hooks.save_data(key, label, data);
+    }
+
+    fn spawn_worktree(&self, parent: &Sandbox, task: &str, frozen: &[String]) -> Result<Sandbox, CrewError> {
+        parent.create_child(&self.hooks.inner.home, &self.hooks.id, task, frozen)
+    }
+
+    fn artifacts_dir(&self) -> Option<PathBuf> {
+        Some(self.hooks.inner.home.join("runs").join(self.hooks.id.as_str()))
+    }
+
+    fn elapsed(&self) -> Duration {
+        Duration::from_millis(crate::now_ms().saturating_sub(self.created_ms).max(0) as u64)
+    }
+
+    fn recall(&self, query: &str) -> Vec<String> {
+        let Some(mind) = self.hooks.inner.deps.mind.as_ref() else { return Vec::new() };
+        let scope = self.hooks.run().ok().and_then(|r| r.workspace).map(|w| MemoryScope::Project(w.display().to_string()));
+        mind.recall(RecallQuery { text: query.to_string(), scope, limit: 5 })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|h| format!("- ({:?} trust) {}", h.trust, clip(&h.text, 300)))
+            .collect()
+    }
+
+    /// The build's outcome as a Result memory, at the run's trust (worst case over what it read).
+    fn remember(&self, text: &str) {
+        let Some(mind) = self.hooks.inner.deps.mind.as_ref() else { return };
+        let Ok(run) = self.hooks.run() else { return };
+        let _ = mind.remember(MemoryIn {
+            text: format!("Crew build run {}: {text}", run.id.short()),
+            kind: Kind::Result,
+            scope: run.workspace.as_ref().map(|w| MemoryScope::Project(w.display().to_string())).unwrap_or(MemoryScope::Global),
+            source: Provenance::Agent { session: format!("crew:{}", run.id), turn: run.step, tainted: run.tainted },
+        });
     }
 }
 

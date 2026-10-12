@@ -16,9 +16,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
-use marlowe_agent::{Agent, AgentEvent, ApprovalGate, Budget, Conversation, DenyAll, Steer, SystemPrompt, ToolHost, TurnStop};
+use marlowe_agent::{
+    Agent, AgentEvent, ApprovalGate, Budget, Conversation, DenyAll, ModelCall, Steer, StepInfo, SystemPrompt, ToolHost,
+    TurnObserver, TurnStop,
+};
 use marlowe_model::{
-    CancelToken, ChatRequest, Completion, Message, ModelInfo, Provider, ProviderError, ProviderKind, Role, StreamEvent, Usage,
+    CancelToken, ChatRequest, Completion, Message, ModelInfo, Provider, ProviderError, ProviderKind, Role, StreamEvent, ToolCall,
+    ToolResult, Usage,
 };
 use marlowe_proto::{RunId, SandboxKind, SessionId};
 
@@ -34,6 +38,15 @@ pub const MAX_CONTINUES: u32 = 3;
 /// The prompt of a continuation turn.
 pub const CONTINUE_PROMPT: &str =
     "You stopped at a step limit. Continue from where you stopped and finish the task; end with your answer.";
+
+/// The prompt a step resumed from its per-call checkpoints continues with.
+pub const RESUME_PROMPT: &str = "The run restarted while you were on this step. Your work so far is above and nothing in it \
+    will run again. A tool call marked as interrupted never reported back, so check the state it may have changed before \
+    you repeat it. Continue the task and end with your answer.";
+
+/// The result a tool call gets on resume when the run stopped before it reported back.
+pub const INTERRUPTED_CALL: &str =
+    "interrupted: the run stopped before this call reported back. It may or may not have taken effect; re-check the state before repeating it.";
 
 /// A shell command's wall-clock limit.
 pub const SHELL_TIMEOUT: Duration = Duration::from_secs(20 * 60);
@@ -118,6 +131,17 @@ pub trait StepHooks: Send + Sync {
     /// A step ended without an answer: what it spent and why, for the record. Nothing is
     /// checkpointed, so a resumed run asks again.
     fn failed(&self, _spec: &StepSpec, _messages: &[Message], _failure: &StepFailure) {}
+
+    /// The conversation an unfinished step `key` had reached, from its per-call checkpoints
+    /// (design 3.7). A resumed step continues from it instead of starting over; empty when there
+    /// is none.
+    fn partial(&self, _key: &str) -> Vec<Message> {
+        Vec::new()
+    }
+
+    /// A per-call checkpoint: the messages one model call or one tool batch added to the step's
+    /// conversation, or (`full`) the whole conversation after compaction rewrote its history.
+    fn checkpoint_call(&self, _spec: &StepSpec, _messages: &[Message], _full: bool) {}
 
     /// The run's one-line current action.
     fn progress(&self, _action: &str) {}
@@ -292,10 +316,24 @@ impl AgentRunner {
         let session = SessionId::from(format!("crew:{}", self.run).as_str());
         let mut convo = Conversation::new(session, Some(sandbox.root.clone()));
         convo.exposure.tainted = self.hooks.tainted();
+        // A step the run stopped in continues from its per-call checkpoints: completed model
+        // calls and tool batches are never repeated.
+        let seeded = self.hooks.partial(&spec.key);
+        let resumed = !seeded.is_empty();
+        let stored = seeded.len();
+        if resumed {
+            convo.next_turn = seeded.iter().filter(|m| m.role == Role::User).count() as u32;
+            convo.messages = close_dangling(seeded);
+        }
+        agent.observers.push(Arc::new(CallRecorder {
+            hooks: self.hooks.clone(),
+            spec: spec.clone(),
+            cursor: Mutex::new(stored),
+        }));
 
         self.hooks.progress(&spec.label);
         let mut usage = Usage::default();
-        let mut prompt = spec.prompt.clone();
+        let mut prompt = if resumed { RESUME_PROMPT.to_string() } else { spec.prompt.clone() };
         let mut finished = false;
         let mut truncated = false;
         for _ in 0..=MAX_CONTINUES {
@@ -336,6 +374,67 @@ impl AgentRunner {
         let result = StepResult { text, usage, tainted: convo.exposure.tainted, truncated };
         self.hooks.finished(spec, &convo.messages, &result);
         Ok(result)
+    }
+}
+
+/// A stored conversation made well-formed for the model: tool calls of the last assistant
+/// message that never got results get [`INTERRUPTED_CALL`] (they are not run again).
+pub fn close_dangling(mut messages: Vec<Message>) -> Vec<Message> {
+    let Some(last) = messages.last() else { return messages };
+    if last.role != Role::Assistant {
+        return messages;
+    }
+    let calls: Vec<String> = last.tool_calls().map(|c| c.id.clone()).collect();
+    if calls.is_empty() {
+        return messages;
+    }
+    messages.push(Message::tool_results(calls.into_iter().map(|call_id| ToolResult {
+        call_id,
+        content: INTERRUPTED_CALL.into(),
+        is_error: true,
+        parts: Vec::new(),
+    })));
+    messages
+}
+
+/// Writes a step's conversation as the loop produces it: one checkpoint per model call (its
+/// answer, with whatever was appended since the last write) and one per tool batch (its results).
+/// A run killed mid-step loses at most the model call in flight.
+struct CallRecorder {
+    hooks: Arc<dyn StepHooks>,
+    spec: StepSpec,
+    /// Messages of the conversation below this are stored.
+    cursor: Mutex<usize>,
+}
+
+impl CallRecorder {
+    /// Stores what the conversation gained since the last write, plus `next` (the message the
+    /// loop pushes right after the observer returns).
+    fn write(&self, convo: &Conversation, next: Option<Message>) {
+        let mut cursor = self.cursor.lock().unwrap_or_else(|e| e.into_inner());
+        let len = convo.messages.len();
+        // Compaction rewrote the history: store all of it as a snapshot.
+        let full = *cursor > len;
+        let mut messages: Vec<Message> = convo.messages[if full { 0 } else { *cursor }..].to_vec();
+        let pushed = next.is_some();
+        messages.extend(next);
+        if !messages.is_empty() {
+            self.hooks.checkpoint_call(&self.spec, &messages, full);
+        }
+        *cursor = len + usize::from(pushed);
+    }
+}
+
+impl TurnObserver for CallRecorder {
+    fn on_model_call(&self, convo: &Conversation, call: &ModelCall<'_>) {
+        let c = call.completion;
+        // The loop keeps an answer only when it has text or tool calls.
+        let kept = !c.text.is_empty() || !c.tool_calls.is_empty();
+        self.write(convo, kept.then(|| c.to_message()));
+    }
+
+    fn on_tools_done(&self, convo: &Conversation, _info: StepInfo, _calls: &[ToolCall], results: &[ToolResult]) {
+        self.write(convo, Some(Message::tool_results(results.iter().cloned())));
     }
 }
 
@@ -438,6 +537,13 @@ impl StepRunner for AgentRunner {
             return Err(CrewError::Cancelled);
         }
         (self.shell)(&self.sandbox, command, &self.cancel)
+    }
+
+    fn shell_in(&self, sandbox: &Sandbox, command: &str) -> Result<ShellResult, CrewError> {
+        if self.cancel.is_cancelled() {
+            return Err(CrewError::Cancelled);
+        }
+        (self.shell)(sandbox, command, &self.cancel)
     }
 
     fn sandbox(&self) -> &Sandbox {
@@ -588,6 +694,22 @@ pub fn tail_chars(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A step stopped while its tool calls ran resumes with each call closed as interrupted (never
+    /// run again); a stored result or a plain answer is left as it is.
+    #[test]
+    fn dangling_calls_close_as_interrupted() {
+        let call = marlowe_model::ToolCall { id: "c1".into(), name: "bash".into(), args: serde_json::json!({"command": "make"}) };
+        let mut asked = Message::assistant("running it");
+        asked.content.push(marlowe_model::Part::ToolCall(call));
+        let closed = close_dangling(vec![Message::user("go"), asked.clone()]);
+        assert_eq!(closed.len(), 3);
+        let r = closed[2].tool_results_iter().next().unwrap();
+        assert_eq!((r.call_id.as_str(), r.content.as_str(), r.is_error), ("c1", INTERRUPTED_CALL, true));
+        let done = vec![Message::user("go"), asked, closed[2].clone()];
+        assert_eq!(close_dangling(done.clone()), done);
+        assert_eq!(close_dangling(vec![Message::user("go")]).len(), 1);
+    }
 
     /// dusk at 32k: a 9k-token prompt leaves room for a 22.7k reply, so a retry's doubled budget
     /// is honoured; a prompt that fills the window still gets a minimal reply.

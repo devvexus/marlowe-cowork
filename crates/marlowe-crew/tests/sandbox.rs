@@ -121,6 +121,8 @@ fn shells_ask_for_writes_to_the_checkout_shared_git_state_and_paths_outside() {
         branch: Some("crew/r1".into()),
         base: Some("abc".into()),
         repo_digest: None,
+        frozen: Vec::new(),
+        target_dir: None,
     };
     let o = origin.display().to_string().replace('\\', "/");
     for free in [
