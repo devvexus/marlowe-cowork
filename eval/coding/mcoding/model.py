@@ -139,15 +139,17 @@ class RunRecord:
 
 
 def load_records(path) -> list:
-    out = []
+    """The records file, one record per (run, task, arm, seed): a later line (a rerun) replaces an earlier one."""
+    out: dict = {}
     p = Path(path)
     if not p.is_file():
-        return out
+        return []
     for line in p.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line:
-            out.append(RunRecord.from_json(line))
-    return out
+            r = RunRecord.from_json(line)
+            out[(r.run, r.task, r.arm, r.seed)] = r
+    return list(out.values())
 
 
 def load_tasks(folder) -> list:

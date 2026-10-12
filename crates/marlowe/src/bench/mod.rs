@@ -190,12 +190,13 @@ impl Card {
                 id: "A4",
                 pass: t.meets_a4(self.local),
                 detail: format!(
-                    "valid after repair {} (need {}), needing repair {} (need <= {}), {} prompts",
+                    "valid after repair {} of all prompts (need {}), needing repair {} (need <= {}), {} prompts, {} got a tool call",
                     pct(t.valid_rate),
                     pct(valid),
                     pct(t.repair_rate),
                     if self.local { pct(repair) } else { "any".into() },
-                    t.prompts
+                    t.prompts,
+                    pct(t.call_rate())
                 ),
             });
         }

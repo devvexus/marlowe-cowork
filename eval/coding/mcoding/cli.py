@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -65,9 +66,35 @@ def suite_tasks(args) -> list:
     return tasks
 
 
+def default_out_root() -> Path:
+    """Where runs go when ``--out`` is not given: outside every checkout (marlowe/eval under LOCALAPPDATA)."""
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME") or tempfile.gettempdir()
+    return Path(base) / "marlowe" / "eval"
+
+
+def check_out_dir(out: Path) -> Optional[str]:
+    """Why ``out`` is unsafe for agent workspaces, or None.
+
+    The agents run with no permission prompts and a shell, so everything above their workspace is
+    reachable. A run folder inside this checkout (or inside any git checkout) puts the tasks' reference
+    solutions, hidden tests and the fix commits one ``cd ..`` away, and the scores would measure that.
+    """
+    here = out.resolve()
+    for guarded, what in ((REPO, "this repository"), (HERE, "the eval folder")):
+        g = guarded.resolve()
+        if here == g or g in here.parents:
+            return f"--out {out} is inside {what} ({g}); the agents could read the solutions and the fix commits from there"
+    for parent in [here, *here.parents]:
+        if (parent / ".git").exists():
+            return f"--out {out} is inside a git checkout ({parent}); its history is reachable from the agents' workspaces"
+    return None
+
+
 def arm_config(args, out: Path) -> armsmod.ArmConfig:
     profile = Path(args.profile) if args.profile else HERE / "settings.toml"
     return armsmod.ArmConfig(
+        cargo_idle=args.cargo_idle or str(REPO / "scripts" / "cargo-idle.ps1"),
+        target_dir=args.target_dir or str(out / "cargo-target"),
         out_dir=out,
         marlowe=find_marlowe(args.marlowe),
         model=args.model,
@@ -114,15 +141,20 @@ def _summary(records: list) -> dict:
 
 
 def cmd_run(args) -> int:
-    out = Path(args.out) if args.out else HERE / "results" / time.strftime("%Y%m%d-%H%M%S")
+    names = [a for a in args.arm.split(",") if a]
+    unknown = [n for n in names if n not in armsmod.ARMS]
+    if unknown or not names:
+        print(f"unknown arm {', '.join(unknown) or '(none given)'}; arms: {', '.join(sorted(armsmod.ARMS))}", file=sys.stderr)
+        return 2
+    out = Path(args.out) if args.out else default_out_root() / time.strftime("%Y%m%d-%H%M%S")
+    why = check_out_dir(out)
+    if why:
+        print(why + "; use a folder outside every checkout (the default is marlowe/eval under LOCALAPPDATA)", file=sys.stderr)
+        return 2
     out.mkdir(parents=True, exist_ok=True)
     cfg = arm_config(args, out)
-    names = [a for a in args.arm.split(",") if a]
     adapters = {n: armsmod.make_adapter(n, cfg) for n in names}
-    ctx = Context(
-        cargo_idle=args.cargo_idle or str(REPO / "scripts" / "cargo-idle.ps1"),
-        target_dir=args.target_dir or str(out / "cargo-target"),
-    )
+    ctx = Context(cargo_idle=cfg.cargo_idle, target_dir=cfg.target_dir)
     tasks = [] if args.suite == "iact" else suite_tasks(args)
     scenarios = iact.load_scenarios(HERE / "iact" / "scenarios.json") if args.suite == "iact" else []
     if args.suite == "iact" and args.ids:
@@ -252,17 +284,27 @@ def cmd_own_validate(args) -> int:
     work = Path(args.work or (Path(os.environ.get("TEMP", ".")) / "marlowe-own-validate"))
     ctx = Context(cargo_idle=args.cargo_idle or str(REPO / "scripts" / "cargo-idle.ps1"), target_dir=args.target_dir or str(work / "cargo-target"))
     ids = set(args.ids.split(",")) if args.ids else None
-    bad = 0
+    bad = unfair = infra = 0
     for c in cands:
         if ids and c["id"] not in ids:
             continue
         r = own.validate(own.to_task(c, path.parent), work / c["id"], ctx)
-        c["validated"] = {k: r[k] for k in ("broken_fails", "fixed_passes", "ok")}
+        if r["infra"]:
+            infra += 1
+            print(f"{c['id']}: not checked, the machine guard held or never let it start ({r['broken_reason']})")
+            continue
+        c["validated"] = {k: r[k] for k in ("broken_fails", "broken_compile_error", "unfair", "fixed_passes", "ok")}
         c["validated"]["at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        print(f"{c['id']}: {'ok' if r['ok'] else 'NOT SOUND'} (bug fails: {r['broken_fails']}, fix passes: {r['fixed_passes']})")
+        verdict = "ok" if r["ok"] else "UNFAIR (hidden tests do not compile on the pre-fix tree)" if r["unfair"] else "NOT SOUND"
+        print(f"{c['id']}: {verdict} (bug fails: {r['broken_fails']}, by compile error: {r['broken_compile_error']}, fix passes: {r['fixed_passes']})")
         bad += 0 if r["ok"] else 1
+        unfair += 1 if r["unfair"] else 0
         own.save_candidates(cands, path)
-    return 1 if bad else 0
+    if unfair:
+        print(f"{unfair} task(s) marked unfair: they are left out of approved runs; give the names they need in the statement to bring them back")
+    if infra:
+        print(f"{infra} task(s) not checked (infrastructure); run again when the machine is free")
+    return 1 if bad else 3 if infra else 0
 
 
 def build_parser() -> argparse.ArgumentParser:

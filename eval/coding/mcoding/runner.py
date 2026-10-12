@@ -70,7 +70,7 @@ def run_one(task: Task, adapter: Adapter, seed: int, opts: RunOptions) -> RunRec
             (run_dir / f"adapter-error-a{attempt}.txt").write_text(traceback.format_exc(), encoding="utf-8")
         agent = res if agent is None else agent.merge(res)
         result = grade(task, ws, opts.ctx)
-        if result.passed:
+        if result.passed or result.infra:
             break
     assert agent is not None and result is not None
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -78,6 +78,10 @@ def run_one(task: Task, adapter: Adapter, seed: int, opts: RunOptions) -> RunRec
     (run_dir / "test-output.txt").write_text(result.output_tail, encoding="utf-8")
     if not opts.keep_workspaces and not shared:
         rmtree(ws)
+    if result.infra:
+        # The machine decided, not the agent: left out of every rate, and run again on resume.
+        return RunRecord(**base, passed=False, graded=False, skip_reason=result.reason, attempts_used=used,
+                         test_output_tail=tail(result.output_tail, 1500), agent=asdict(agent), meta={"infra": True, "reason": result.reason})
     return RunRecord(
         **base,
         passed=result.passed,
@@ -96,7 +100,7 @@ def _append(path: Path, rec: RunRecord) -> None:
 
 def run_matrix(tasks: Iterable[Task], adapters: dict, opts: RunOptions) -> list:
     """Runs every (task, arm, seed) not already in the records file; returns all records."""
-    done = {(r.task, r.arm, r.seed) for r in load_records(opts.records_path)} if opts.resume else set()
+    done = {(r.task, r.arm, r.seed) for r in load_records(opts.records_path) if not r.meta.get("infra")} if opts.resume else set()
     tasks = list(tasks)
     total = len(tasks) * len(adapters) * opts.seeds
     n = 0

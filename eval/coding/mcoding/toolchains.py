@@ -70,10 +70,14 @@ def _java() -> Toolchain:
 
 _DETECT: dict = {"python": _python, "rust": _cargo, "javascript": _node, "go": _go, "cpp": _cpp, "java": _java}
 
+#: Every cargo run goes through the machine guard (one build at a time machine-wide, memory headroom,
+#: the training hold file); `{cargo_idle}` is filled in from the Context.
+CARGO_IDLE = ["powershell", "-NoProfile", "-File", "{cargo_idle}"]
+
 #: Aider's test command per language (benchmark.py), and any one-time step before the agent starts.
 COMMANDS = {
     "python": {"tests": [["{python}", "-m", "pytest", "-q", "-x"]], "prepare": []},
-    "rust": {"tests": [["cargo", "test", "--", "--include-ignored"]], "prepare": []},
+    "rust": {"tests": [CARGO_IDLE + ["test", "--", "--include-ignored"]], "prepare": []},
     "javascript": {"tests": [["npm", "test", "--silent"]], "prepare": [["npm", "install", "--no-audit", "--no-fund", "--loglevel=error"]]},
     "go": {"tests": [["go", "test", "./..."]], "prepare": []},
     "cpp": {"tests": [["cmake", "--build", "build"]], "prepare": []},

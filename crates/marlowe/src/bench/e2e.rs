@@ -290,12 +290,15 @@ pub struct CodingReport {
     pub error: Option<String>,
 }
 
+/// The harness arm the report card runs: the product as shipped (`eval/coding/mcoding/arms.py`).
+const CODING_ARM: &str = "marlowe-full";
+
 /// The micro coding suite through the Python harness (`marlowe eval run`), one run per task.
 pub fn coding(sp: &dyn Spawn, exe: &Path, cwd: &Path, model: &str, limit: Option<usize>, timeout: Duration, scratch: &Path) -> CodingReport {
     let summary = scratch.join("coding-summary.json");
     let _ = std::fs::remove_file(&summary);
     let mut argv: Vec<String> =
-        ["eval", "run", "--suite", "micro", "--arm", "full", "--model", model, "--summary-json"].iter().map(|s| s.to_string()).collect();
+        ["eval", "run", "--suite", "micro", "--arm", CODING_ARM, "--model", model, "--summary-json"].iter().map(|s| s.to_string()).collect();
     argv.insert(0, exe.to_string_lossy().into_owned());
     argv.push(summary.to_string_lossy().into_owned());
     if let Some(n) = limit {
@@ -442,6 +445,39 @@ mod tests {
         assert_eq!((r.runs, r.passed, r.pass_rate), (8, 6, 0.75));
         let r = coding(&Harness(false), Path::new("marlowe.exe"), &dir, "ollama/test", None, Duration::from_secs(5), &dir);
         assert!(r.error.unwrap().contains("without a summary"));
+    }
+
+    /// The fake harness above never looks at the arm, so this one asks the real harness: the argv
+    /// `coding()` builds must be accepted by `run.py run --dry-run`, which names unknown arms.
+    #[test]
+    fn coding_names_an_arm_the_real_harness_knows() {
+        struct Record(Mutex<Vec<String>>);
+        impl Spawn for Record {
+            fn run(&self, argv: &[String], _e: &[(String, String)], _c: &Path, _t: Duration) -> Result<Out, String> {
+                *self.0.lock().unwrap() = argv.to_vec();
+                Ok(Out { code: 0, ..Out::default() })
+            }
+        }
+        let dir = scratch("coding-arm");
+        let rec = Record(Mutex::new(Vec::new()));
+        coding(&rec, Path::new("marlowe.exe"), &dir, "ollama/test", Some(1), Duration::from_secs(5), &dir);
+        let argv = rec.0.lock().unwrap().clone();
+        let run_py = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../eval/coding/run.py");
+        let mut args: Vec<String> = vec!["-I".into(), run_py.to_string_lossy().into_owned()];
+        args.extend(argv[2..].iter().cloned());
+        // Drop the summary file (a dry run writes none) and keep everything else.
+        if let Some(i) = args.iter().position(|a| a == "--summary-json") {
+            args.drain(i..=i + 1);
+        }
+        args.extend(["--dry-run".into(), "--out".into(), dir.join("harness-out").to_string_lossy().into_owned()]);
+        let ran = ["python", "py"].iter().find_map(|py| Command::new(py).args(&args).output().ok());
+        let Some(out) = ran else { return }; // no Python on this machine: nothing to ask
+        assert!(
+            out.status.success(),
+            "the harness refused the report card's argv {argv:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(String::from_utf8_lossy(&out.stdout).contains(CODING_ARM));
     }
 
     #[test]

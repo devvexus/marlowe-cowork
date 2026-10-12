@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import cc as ccmod
+from .guard import install_cargo_shim
 from .adapters import Adapter, CallableAdapter, ClaudeCodeAdapter, MarloweAdapter
 from .util import run_cmd
 
@@ -86,6 +87,9 @@ class ArmConfig:
     thinking: bool = False
     max_budget_usd: float = 5.0
     env_extra: dict = field(default_factory=dict)
+    #: the machine guard script and the shared cargo target dir the agents' own cargo runs use
+    cargo_idle: str = ""
+    target_dir: str = ""
 
 
 def make_adapter(arm: str, cfg: ArmConfig) -> Adapter:
@@ -94,6 +98,14 @@ def make_adapter(arm: str, cfg: ArmConfig) -> Adapter:
     spec = ARMS[arm]
     if spec.kind == "noop":
         return CallableAdapter(None, name=arm)
+    a = _build(arm, spec, cfg)
+    if cfg.cargo_idle:
+        a.guard = install_cargo_shim(cfg.out_dir / "cargo-shim", cfg.cargo_idle)
+        a.guard.target_dir = cfg.target_dir
+    return a
+
+
+def _build(arm: str, spec: ArmSpec, cfg: ArmConfig) -> Adapter:
     if spec.kind == "cc":
         return ClaudeCodeAdapter(
             ccmod.find_claude(cfg.cc_bin),

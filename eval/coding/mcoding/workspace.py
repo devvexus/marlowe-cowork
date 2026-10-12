@@ -19,7 +19,13 @@ from pathlib import Path
 from typing import Optional
 
 from .model import Task
-from .util import popen, rmtree, run_cmd, scrubbed_env, tail
+from .util import is_guarded, popen, rmtree, run_cmd, run_guarded, scrubbed_env, tail
+
+
+#: the machine guard every cargo run goes through (one build at a time, memory headroom, hold file)
+DEFAULT_CARGO_IDLE = Path(__file__).resolve().parents[3] / "scripts" / "cargo-idle.ps1"
+#: exit code of the guard when the hold file pauses all builds (training has the machine)
+GUARD_HOLD = 75
 
 
 @dataclass
@@ -27,7 +33,7 @@ class Context:
     """Paths the task commands may mention: ``{python}``, ``{cargo_idle}``, ``{target_dir}``."""
 
     python: str = sys.executable
-    cargo_idle: str = ""
+    cargo_idle: str = str(DEFAULT_CARGO_IDLE)
     target_dir: str = ""
     extra_env: dict = field(default_factory=dict)
 
@@ -39,8 +45,8 @@ class Context:
         env = scrubbed_env()
         if self.target_dir:
             env["CARGO_TARGET_DIR"] = self.target_dir
-        env.setdefault("CARGO_BUILD_JOBS", "2")
-        env.setdefault("RUST_TEST_THREADS", "2")
+        env.setdefault("CARGO_BUILD_JOBS", "1")
+        env.setdefault("RUST_TEST_THREADS", "1")
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         env.update(self.extra_env)
         return env
@@ -210,6 +216,17 @@ class Grade:
     output_tail: str = ""
     reason: str = ""
     tests_passed: Optional[int] = None
+    #: the machine, not the work, decided this (guard hold or a wait that never ended): not a result
+    infra: bool = False
+    #: the failure was the code not compiling, not a test assertion
+    compile_error: bool = False
+
+
+_COMPILE_FAIL = re.compile(r"error\[E\d+\]|could not compile|error: aborting due to")
+
+
+def is_compile_failure(output: str) -> bool:
+    return bool(_COMPILE_FAIL.search(output))
 
 
 def grade(task: Task, ws: Path, ctx: Optional[Context] = None) -> Grade:
@@ -225,12 +242,20 @@ def grade(task: Task, ws: Path, ctx: Optional[Context] = None) -> Grade:
     total = 0
     unknown = False
     for cmd in task.tests:
-        r = run_cmd(ctx.expand(cmd), cwd=ws, env=ctx.env(), timeout=task.test_timeout)
+        argv = ctx.expand(cmd)
+        if is_guarded(argv):
+            # The guard may wait a long time for the machine; the clock starts when the command does.
+            r = run_guarded(argv, cwd=ws, env=ctx.env(), timeout=task.test_timeout)
+            if r.never_started or r.code == GUARD_HOLD:
+                why = "the machine guard never let the tests start" if r.never_started else "the machine guard is holding all builds"
+                return Grade(False, tail("\n".join(log) + "\n" + r.out), f"infrastructure: {why}; not graded", infra=True)
+        else:
+            r = run_cmd(argv, cwd=ws, env=ctx.env(), timeout=task.test_timeout)
         log.append(f"$ {' '.join(cmd)}\n{r.out}\n{r.err}")
         if r.timed_out:
             return Grade(False, tail("\n".join(log)), f"tests timed out after {task.test_timeout}s")
         if r.code != 0:
-            return Grade(False, tail("\n".join(log)), f"exit {r.code}")
+            return Grade(False, tail("\n".join(log)), f"exit {r.code}", compile_error=is_compile_failure(r.out + "\n" + r.err))
         n = count_passed(r.out + "\n" + r.err)
         if n is None:
             unknown = True

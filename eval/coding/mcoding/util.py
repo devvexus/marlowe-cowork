@@ -9,6 +9,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -94,6 +95,73 @@ def run_cmd(
             except subprocess.TimeoutExpired:
                 out, err = "", ""
             return CmdResult(p.returncode if p.returncode is not None else -9, out or "", err or "", True, time.monotonic() - started)
+
+
+@dataclass
+class GuardedResult(CmdResult):
+    #: the guard never let the command start within ``wait_cap`` (machine busy): not the command's fault
+    never_started: bool = False
+
+
+def is_guarded(argv: Sequence[str]) -> bool:
+    """True when the command goes through ``scripts/cargo-idle.ps1`` (it may wait for the machine)."""
+    return any(os.path.basename(str(a)).lower() == "cargo-idle.ps1" for a in argv)
+
+
+def run_guarded(
+    argv: Sequence[str],
+    *,
+    cwd=None,
+    env: Optional[Mapping[str, str]] = None,
+    timeout: float = 600,
+    wait_cap: float = 6 * 3600,
+) -> GuardedResult:
+    """``run_cmd`` for a command behind the cargo-idle guard: ``timeout`` counts from when it starts.
+
+    The guard waits, silently or with a ``[cargo-idle]`` line, for the machine-wide lock and for
+    free memory; that wait is normal and is not the command's running time. The clock starts at the
+    first line of output that is not the guard's own; ``wait_cap`` bounds the wait itself.
+    """
+    t0 = time.monotonic()
+    try:
+        p = popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as e:
+        return GuardedResult(127, "", f"cannot start {argv[0]!r}: {e}", False, 0.0)
+    bufs = {"out": [], "err": []}
+    started = threading.Event()
+
+    def pump(stream, key):
+        for line in stream:
+            bufs[key].append(line)
+            if line.strip() and not line.startswith("[cargo-idle]"):
+                started.set()
+
+    threads = [threading.Thread(target=pump, args=(p.stdout, "out"), daemon=True), threading.Thread(target=pump, args=(p.stderr, "err"), daemon=True)]
+    for t in threads:
+        t.start()
+    clock = None
+    timed_out = never = False
+    with p:
+        while p.poll() is None:
+            now = time.monotonic()
+            if clock is None and started.is_set():
+                clock = now
+            if clock is not None and now - clock > timeout:
+                timed_out = True
+            elif clock is None and now - t0 > wait_cap:
+                never = True
+            if timed_out or never:
+                kill_tree(p.pid)
+                break
+            time.sleep(0.2)
+        try:
+            p.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            pass
+        for t in threads:
+            t.join(timeout=5)
+    code = p.returncode if p.returncode is not None else -9
+    return GuardedResult(code, "".join(bufs["out"]), "".join(bufs["err"]), timed_out, time.monotonic() - t0, never)
 
 
 def rmtree(path) -> None:

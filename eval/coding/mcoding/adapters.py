@@ -14,6 +14,7 @@ from typing import Callable, Optional
 
 from . import cc as ccmod
 from . import stream
+from .guard import CargoGuard
 from .model import AgentResult
 from .util import kill_tree, popen, read_json, scrubbed_env, tail
 
@@ -31,6 +32,13 @@ class Adapter:
     name = "adapter"
     #: Marlowe-only features (rewind) are skipped on harnesses that lack them
     supports_rewind = False
+    #: puts the agent's own cargo runs behind the machine guard (set by ``arms.make_adapter``)
+    guard: Optional[CargoGuard] = None
+
+    def guarded(self, inv: ccmod.Invocation) -> ccmod.Invocation:
+        if self.guard is not None:
+            self.guard.apply(inv.env)
+        return inv
 
     def invocation(self, prompt: str, ws: Path, *, run_dir: Path, tag: str, continue_session: bool = False) -> ccmod.Invocation:
         raise NotImplementedError
@@ -158,22 +166,26 @@ class MarloweAdapter(Adapter):
 
     def invocation(self, prompt, ws, *, run_dir, tag, continue_session=False):
         stats = run_dir / f"repairs-{tag}.json"
-        return ccmod.Invocation(
-            argv=self.flags(ws, continue_session=continue_session),
-            env=self.env(stats),
-            cwd=str(ws),
-            stdin=prompt,
-            label=f"marlowe -p ({self.name})",
+        return self.guarded(
+            ccmod.Invocation(
+                argv=self.flags(ws, continue_session=continue_session),
+                env=self.env(stats),
+                cwd=str(ws),
+                stdin=prompt,
+                label=f"marlowe -p ({self.name})",
+            )
         )
 
     def session_invocation(self, ws, *, run_dir, tag, continue_session=False):
         run_dir.mkdir(parents=True, exist_ok=True)
-        return ccmod.Invocation(
-            argv=self.flags(ws, continue_session=continue_session, stream_input=True),
-            env=self.env(run_dir / f"repairs-{tag}.json"),
-            cwd=str(ws),
-            stdin=None,
-            label=f"marlowe -p stream-json ({self.name})",
+        return self.guarded(
+            ccmod.Invocation(
+                argv=self.flags(ws, continue_session=continue_session, stream_input=True),
+                env=self.env(run_dir / f"repairs-{tag}.json"),
+                cwd=str(ws),
+                stdin=None,
+                label=f"marlowe -p stream-json ({self.name})",
+            )
         )
 
     def after_run(self, inv, res, run_dir, tag):
@@ -247,7 +259,7 @@ class ClaudeCodeAdapter(Adapter):
             continue_session=continue_session,
         )
         inv.argv[1:1] = self.prefix
-        return inv
+        return self.guarded(inv)
 
     def session_invocation(self, ws, *, run_dir, tag, continue_session=False):
         self.config_dir.mkdir(parents=True, exist_ok=True)
@@ -266,7 +278,7 @@ class ClaudeCodeAdapter(Adapter):
             permission_prompt_stdio=True,
         )
         inv.argv[1:1] = self.prefix
-        return inv
+        return self.guarded(inv)
 
     def preflight(self) -> list:
         if self.claude is None or not Path(self.claude).is_file():

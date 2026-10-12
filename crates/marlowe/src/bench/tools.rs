@@ -34,10 +34,15 @@ pub struct ToolsReport {
     pub schema_valid: usize,
     pub provider_errors: usize,
     pub aborted: bool,
-    /// Calls the providers counted, and how they came out (the A4 rates).
+    /// Calls the providers counted (the repair layer's own denominator).
     pub repair_calls: u64,
+    /// Share of ALL prompts whose first call ran with valid arguments after repair; a prompt
+    /// answered in prose, with an unknown tool, or lost to an error counts as not valid (A4).
     pub valid_rate: f64,
+    /// Share of all prompts whose valid call needed repair.
     pub repair_rate: f64,
+    /// Share of the calls the provider counted that came out valid (the per-call view).
+    pub call_valid_rate: f64,
     pub fixes: BTreeMap<String, u64>,
     pub mean_ms: f64,
     pub input_tokens: u64,
@@ -57,10 +62,16 @@ impl ToolsReport {
         ratio(self.args_ok, self.prompts)
     }
 
-    /// Gate A4 for a local model (98% valid after repair, at most 5% needing repair) or a
-    /// frontier one (99.5% valid).
+    /// Share of prompts that got any tool call.
+    pub fn call_rate(&self) -> f64 {
+        ratio(self.called, self.prompts)
+    }
+
+    /// Gate A4 for a local model (98% of the prompts valid after repair, at most 5% needing
+    /// repair) or a frontier one (99.5% valid). Both rates are over all prompts, so a model that
+    /// answers most of them in prose fails.
     pub fn meets_a4(&self, local: bool) -> bool {
-        self.prompts > 0 && if local { self.valid_rate >= 0.98 && self.repair_rate <= 0.05 } else { self.valid_rate >= 0.995 }
+        self.prompts > 0 && !self.aborted && if local { self.valid_rate >= 0.98 && self.repair_rate <= 0.05 } else { self.valid_rate >= 0.995 }
     }
 }
 
@@ -161,7 +172,8 @@ pub fn run(
     let before = stats.map(RepairStats::snapshot).unwrap_or_default();
     let mut r = ToolsReport { prompts: prompts.len(), ..ToolsReport::default() };
     let (mut total_ms, mut answered, mut streak) = (0.0, 0usize, 0usize);
-    let mut own_valid = 0usize;
+    // Prompts whose first call was valid after repair, and how many of those needed repair.
+    let (mut valid_prompts, mut repaired_prompts) = (0usize, 0usize);
     for (i, p) in prompts.iter().enumerate() {
         if cancel.is_cancelled() {
             r.aborted = true;
@@ -172,6 +184,7 @@ pub fn run(
         req.system = vec![SystemBlock { text: SYSTEM.into(), cache: false }];
         req.tools = specs.to_vec();
         req.max_output_tokens = Some(2048);
+        let pre = stats.map(RepairStats::snapshot).unwrap_or_default();
         let started = Instant::now();
         let done = match provider.stream(&req, cancel, &mut |_| {}) {
             Ok(d) => d,
@@ -204,7 +217,15 @@ pub fn run(
         r.called += 1;
         let spec = specs.iter().find(|s| s.name == call.name);
         let valid = spec.is_some_and(|s| satisfies_schema(s, &call.args));
-        own_valid += usize::from(valid);
+        // The provider's repair layer judges this prompt's calls when it counted any; otherwise
+        // (a provider with no counter) the schema check does, and nothing was repaired.
+        match stats.map(|s| delta(&s.snapshot(), &pre)).filter(|d| d.calls > 0) {
+            Some(d) => {
+                valid_prompts += usize::from(d.clean + d.repaired + d.from_text >= d.calls);
+                repaired_prompts += usize::from(d.clean + d.repaired + d.from_text >= d.calls && d.repaired + d.from_text > 0);
+            }
+            None => valid_prompts += usize::from(valid),
+        }
         r.schema_valid += usize::from(valid);
         let right_tool = call.name == p.tool;
         let right_args = right_tool && carries(&call.args, &p.expect);
@@ -219,17 +240,17 @@ pub fn run(
         }
     }
     r.mean_ms = if answered == 0 { 0.0 } else { total_ms / answered as f64 };
+    r.valid_rate = ratio(valid_prompts, r.prompts);
+    r.repair_rate = ratio(repaired_prompts, r.prompts);
     match stats.map(|s| delta(&s.snapshot(), &before)).filter(|d| d.calls > 0) {
         Some(d) => {
             r.repair_calls = d.calls;
-            r.valid_rate = d.valid_rate();
-            r.repair_rate = d.repair_rate();
+            r.call_valid_rate = d.valid_rate();
             r.fixes = d.fixes;
         }
         None => {
             r.repair_calls = r.called as u64;
-            r.valid_rate = if r.called == 0 { 0.0 } else { own_valid as f64 / r.called as f64 };
-            r.repair_rate = 0.0;
+            r.call_valid_rate = ratio(valid_prompts, r.called);
         }
     }
     r
@@ -339,6 +360,62 @@ mod tests {
         assert_eq!(r.repair_calls, 3);
         assert_eq!(r.valid_rate, 1.0);
         assert_eq!(r.repair_rate, 0.0);
+    }
+
+    #[test]
+    fn a_model_that_answers_in_prose_fails_a4_however_clean_its_few_calls_are() {
+        use marlowe_provider::ollama::repair::ArgsOutcome;
+        // 150 of 200 prompts get prose; the 50 calls are all clean, as the provider records them.
+        let every_tool: Vec<String> =
+            ["read", "grep", "bash", "edit", "glob", "write", "todo", "web_fetch", "multi_edit", "python", "ask_user", "arxiv"].iter().map(|s| s.to_string()).collect();
+        let prompts = tool_prompts(&every_tool, 200);
+        assert_eq!(prompts.len(), 200);
+        for counted in [true, false] {
+            let stats = std::sync::Arc::new(RepairStats::new());
+            let s2 = stats.clone();
+            let n = std::sync::atomic::AtomicUsize::new(0);
+            let fake = Fake::new(move |_| {
+                if n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 4 == 0 {
+                    s2.record(&ArgsOutcome::Clean(json!({"command": "ls"})), false);
+                    Reply::call("bash", json!({"command": "ls"}))
+                } else {
+                    Reply::text("Sure, I would run ls.")
+                }
+            });
+            let r = run(&fake, "m", &specs(), &prompts, counted.then_some(&*stats), &CancelToken::new(), |_, _| {});
+            assert_eq!((r.prompts, r.called), (200, 50));
+            assert_eq!(r.call_rate(), 0.25);
+            assert!((r.valid_rate - 0.25).abs() < 1e-9, "valid over all prompts, not over calls: {r:?}");
+            assert!(!r.meets_a4(true) && !r.meets_a4(false), "{r:?}");
+        }
+    }
+
+    #[test]
+    fn repair_is_counted_per_prompt_and_an_unknown_tool_is_not_valid() {
+        use marlowe_provider::ollama::repair::{ArgsOutcome, Fix};
+        let stats = std::sync::Arc::new(RepairStats::new());
+        let s2 = stats.clone();
+        let n = std::sync::atomic::AtomicUsize::new(0);
+        let fake = Fake::new(move |_| match n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => {
+                s2.record(&ArgsOutcome::Clean(json!({"command": "ls"})), false);
+                Reply::call("bash", json!({"command": "ls"}))
+            }
+            1 => {
+                s2.record(&ArgsOutcome::Repaired(json!({"command": "ls"}), vec![Fix::SingleQuotes]), false);
+                Reply::call("bash", json!({"command": "ls"}))
+            }
+            _ => {
+                s2.record_unknown_tool();
+                Reply::call("nope", json!({}))
+            }
+        });
+        let prompts = tool_prompts(&["bash".to_string()], 3);
+        let r = run(&fake, "m", &specs(), &prompts, Some(&stats), &CancelToken::new(), |_, _| {});
+        assert_eq!(r.repair_calls, 3);
+        assert!((r.valid_rate - 2.0 / 3.0).abs() < 1e-9, "{r:?}");
+        assert!((r.repair_rate - 1.0 / 3.0).abs() < 1e-9, "{r:?}");
+        assert!(!r.meets_a4(true));
     }
 
     #[test]

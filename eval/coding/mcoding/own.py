@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from .model import Task
+from .toolchains import CARGO_IDLE
 from .util import read_json, run_cmd, write_json
 from .workspace import Context, git_bytes, grade, materialize
 
@@ -34,7 +35,6 @@ FIX_WORDS = re.compile(r"review fix|\bfix(es|ed)?\b|\bbug\b|repair", re.I)
 FEATURE_START = re.compile(r"^M4\.6 \w+: (background work|trajectory export|wave-2|TUI parity|proton|the conductor at)", re.I)
 TEST_PATH = re.compile(r"(^|/)(tests?|fixtures)/|(^|/)tests\.rs$|(^|/)tests_[^/]*\.rs$|_tests\.rs$|(^|/)test_[^/]*\.py$|_test\.py$")
 FIXTURE_ONLY = re.compile(r"(^|/)fixtures?/")
-CARGO_IDLE = ["powershell", "-NoProfile", "-File", "{cargo_idle}"]
 
 
 def _git(repo, *args) -> str:
@@ -268,7 +268,9 @@ def to_task(c: dict, root: Path, *, timeout: int = 1800) -> Task:
         timeout=timeout,
         test_timeout=1800,
         meta={"category": c.get("category", "bugfix"), "subject": c.get("subject", ""), "status": c.get("status", "draft"),
-              "fix_commit": c["fix_commit"], "src_files": list(c["src_files"]), "crate": c.get("crate", "")},
+              "fix_commit": c["fix_commit"], "src_files": list(c["src_files"]), "crate": c.get("crate", ""),
+              **({"skip": "unfair: the hidden tests do not compile on the pre-fix tree (they call names the statement does not give)"}
+                 if (c.get("validated") or {}).get("unfair") else {})},
     )
 
 
@@ -276,7 +278,7 @@ def load_tasks(path, root: Optional[Path] = None, *, approved_only: bool = False
     root = root or Path(path).parent
     cands = load_candidates(path)
     if approved_only:
-        cands = [c for c in cands if c.get("status") == "approved"]
+        cands = [c for c in cands if c.get("status") == "approved" and not (c.get("validated") or {}).get("unfair")]
     if ids:
         cands = [c for c in cands if c["id"] in ids]
     return [to_task(c, root) for c in cands]
@@ -299,23 +301,34 @@ def apply_fix(task: Task, ws: Path) -> None:
 def validate(task: Task, work: Path, ctx: Optional[Context] = None) -> dict:
     """Proof a task is sound and fair.
 
-    * with the bug in place (the parent's tree) the hidden tests must fail;
+    * with the bug in place (the parent's tree) the hidden tests must fail, and by an assertion:
+      a failure to compile means the tests call names the fix added, which the agent cannot know
+      from the statement, so the task is ``unfair``;
     * with only this crate's source files taken from the fix they must pass, which shows the fix
-      is self-contained: an agent can reach it without the commit's changes to other crates.
+      is self-contained: an agent can reach it without the commit's changes to other crates;
+    * a guard hold or a wait that never ended is ``infra``: the task is neither sound nor unsound.
     """
     ctx = ctx or Context()
     broken_ws = work / "broken"
     materialize(task, broken_ws, ctx)
     broken = grade(task, broken_ws, ctx)
+    if broken.infra:
+        return {"id": task.id, "infra": True, "ok": None, "broken_reason": broken.reason}
     fixed_ws = work / "fixed"
     materialize(task, fixed_ws, ctx)
     apply_fix(task, fixed_ws)
     fixed = grade(task, fixed_ws, ctx)
+    if fixed.infra:
+        return {"id": task.id, "infra": True, "ok": None, "broken_reason": broken.reason, "fixed_reason": fixed.reason}
+    unfair = (not broken.passed) and broken.compile_error
     return {
         "id": task.id,
+        "infra": False,
         "broken_fails": not broken.passed,
+        "broken_compile_error": broken.compile_error,
+        "unfair": unfair,
         "fixed_passes": fixed.passed,
-        "ok": (not broken.passed) and fixed.passed,
+        "ok": (not broken.passed) and (not unfair) and fixed.passed,
         "broken_reason": broken.reason,
         "fixed_reason": fixed.reason,
         "fixed_tail": fixed.output_tail[-600:] if not fixed.passed else "",
