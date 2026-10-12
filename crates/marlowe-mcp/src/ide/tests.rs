@@ -91,8 +91,8 @@ fn the_window_with_the_workspace_open_is_found() {
     let home = tmp("find");
     let (_l, port) = listening();
     write_lock(&home, port, &lock_json(port, &["C:\\Work\\Proj"], "2026-10-11T10:00:00Z"));
-    // The workspace is the folder, below it, or above it.
-    for ws in ["C:\\Work\\Proj", "C:\\Work\\Proj\\crates\\x", "C:\\Work"] {
+    // The workspace is the folder or below it.
+    for ws in ["C:\\Work\\Proj", "C:\\Work\\Proj\\crates\\x"] {
         let found = discover(&home, Some(Path::new(ws)));
         assert_eq!(found.len(), 1, "{ws}");
         assert_eq!(found[0].name, "ide");
@@ -101,6 +101,10 @@ fn the_window_with_the_workspace_open_is_found() {
     // A sibling that shares a prefix is not the project.
     assert!(discover(&home, Some(Path::new("C:\\Work\\Project2"))).is_empty());
     assert!(discover(&home, Some(Path::new("D:\\Other"))).is_empty());
+    // Marlowe started in a parent does not adopt an unrelated window below it.
+    for parent in ["C:\\Work", "C:\\"] {
+        assert!(discover(&home, Some(Path::new(parent))).is_empty(), "{parent}");
+    }
     assert!(discover(&home, None).is_empty(), "no workspace, no editor");
 }
 
@@ -136,7 +140,8 @@ fn of_several_windows_the_one_containing_the_workspace_then_the_newest_wins() {
     let (_a, pa) = listening();
     let (_b, pb) = listening();
     let (_c, pc) = listening();
-    // `pa` has a subfolder of the project open, `pb` the project, `pc` its parent.
+    // `pa` has a subfolder of the project open, `pb` the project, `pc` its parent. A window only
+    // below the workspace never counts.
     write_lock(&home, pa, &lock_json(pa, &["C:\\w\\proj\\sub"], "2026-10-11T12:00:00Z"));
     write_lock(&home, pb, &lock_json(pb, &["C:\\w\\proj"], "2026-10-11T09:00:00Z"));
     write_lock(&home, pc, &lock_json(pc, &["C:\\w"], "2026-10-11T11:00:00Z"));
@@ -211,4 +216,18 @@ fn load_all_offers_the_editor_beside_the_configured_servers() {
     assert_eq!(names, ["ide", "other"]);
     let elsewhere = config::load_all(&config::Paths::new(&home, Some(Path::new("D:\\x"))), &[]);
     assert_eq!(elsewhere.servers.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["other"]);
+}
+
+#[test]
+fn parity_u14_status_says_which_editor_is_connected_and_what_it_has_open() {
+    let home = tmp("status");
+    assert!(status(&home, Some(Path::new("C:\\w"))).contains("no editor running"));
+    let (_l, port) = listening();
+    write_lock(&home, port, &lock_json(port, &["C:\\w\\proj"], "2026-10-11T10:00:00Z"));
+    let on = status(&home, Some(Path::new("C:\\w\\proj\\src")));
+    assert!(on.contains("Visual Studio Code connected as `ide`") && on.contains("C:\\w\\proj"), "{on}");
+    assert!(status(&home, Some(Path::new("D:\\elsewhere"))).contains("none has D:\\elsewhere open"));
+    assert!(status(&home, None).contains("no workspace"));
+    let list = editors(&home);
+    assert_eq!((list.len(), list[0].port), (1, port));
 }

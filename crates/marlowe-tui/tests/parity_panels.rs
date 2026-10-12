@@ -290,8 +290,8 @@ fn parity_X16_mcp_lists_servers_adds_and_removes() {
         0,
         Event::McpServers {
             list: vec![
-                McpServerInfo { name: "github".into(), scope: SettingsScope::Project, transport: "http".into(), tools: 31, status: "needs auth".into() },
-                McpServerInfo { name: "files".into(), scope: SettingsScope::User, transport: "stdio".into(), tools: 6, status: "connected".into() },
+                McpServerInfo { name: "github".into(), scope: SettingsScope::Project, transport: "http".into(), tools: 31, status: "needs auth".into(), detail: String::new() },
+                McpServerInfo { name: "files".into(), scope: SettingsScope::User, transport: "stdio".into(), tools: 6, status: "connected".into(), detail: String::new() },
             ],
         },
     );
@@ -776,4 +776,51 @@ fn parity_T23_a_question_does_not_discard_the_panel_it_covers() {
     // The config panel is back, and its edit with it.
     let buf = palette_frame(&s);
     assert!(contains(&buf, "config") && contains(&buf, "vscode://x"), "{}", dump(&buf));
+}
+
+// ---- U14 -------------------------------------------------------------------------------------------
+
+fn last_note(s: &marlowe_tui::State) -> String {
+    match s.entries.last() {
+        Some(marlowe_tui::state::Entry::Note { text, .. }) => text.clone(),
+        other => panic!("no note, got {other:?}"),
+    }
+}
+
+#[test]
+fn parity_u14_ide_says_which_editor_is_connected_and_what_it_has_open() {
+    let mut s = coding_session();
+    let reqs = keys(&mut s, "'/ide' enter");
+    assert!(reqs.contains(&Request::McpList { workspace: ws() }), "{reqs:?}");
+    assert_eq!(s.overlay, None, "a line in the transcript, not a panel");
+    feed(
+        &mut s,
+        0,
+        Event::McpServers {
+            list: vec![McpServerInfo {
+                name: "ide".into(),
+                scope: SettingsScope::Session,
+                transport: "http".into(),
+                tools: 6,
+                status: "connected".into(),
+                detail: "Visual Studio Code connected as `ide` (http://127.0.0.1:5001/mcp); it has C:/work/valiance open".into(),
+            }],
+        },
+    );
+    let note = last_note(&s);
+    assert!(note.contains("editor: connected") && note.contains("6 tools") && note.contains("Visual Studio Code") && note.contains("C:/work/valiance"), "{note}");
+    palette_frame(&s);
+}
+
+#[test]
+fn parity_u14_ide_with_no_editor_says_how_to_get_one() {
+    let mut s = coding_session();
+    keys(&mut s, "'/ide' enter");
+    feed(&mut s, 0, Event::McpServers { list: Vec::new() });
+    let note = last_note(&s);
+    assert!(note.contains("none connected") && note.contains("VS Code extension"), "{note}");
+    // A later server list (the /mcp panel's) says nothing more.
+    let before = s.entries.len();
+    feed(&mut s, 1, Event::McpServers { list: Vec::new() });
+    assert_eq!(s.entries.len(), before);
 }

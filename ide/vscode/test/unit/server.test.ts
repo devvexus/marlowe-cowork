@@ -121,3 +121,55 @@ test("two bridges on one home get two lock files, and stale locks are swept at t
   await second.stop();
   await third.stop();
 });
+
+/** What a spec-following client does: `initialize`, keep the session id it is given. */
+async function connect(r: Rig): Promise<{ sid: string; send: (body: unknown) => ReturnType<typeof post> }> {
+  const init = await post(r.lock, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: SUPPORTED_PROTOCOLS[0] } });
+  const sid = init.headers["mcp-session-id"];
+  assert.equal(typeof sid, "string");
+  return { sid: sid as string, send: (body) => post(r.lock, body, { "Mcp-Session-Id": sid as string }) };
+}
+
+test("initialize hands out a session id of its own to each client, and a made-up one is refused", async () => {
+  const a = await connect(r);
+  const b = await connect(r);
+  assert.notEqual(a.sid, b.sid);
+  assert.equal((await a.send(ping)).status, 200);
+  const stranger = await post(r.lock, ping, { "Mcp-Session-Id": "not-one-we-gave" });
+  assert.equal(stranger.status, 404, "the client starts over with initialize");
+});
+
+test("two clients that both number their requests from 1 cannot cancel each other's calls", async () => {
+  const a = await connect(r);
+  const b = await connect(r);
+  const hang = { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "execute_code", arguments: { code: "hang()", timeout_seconds: 60 } } };
+  const fromA = a.send(hang);
+  const fromB = b.send(hang);
+  await new Promise((res) => setTimeout(res, 150));
+  // A cancels its request 2; B has a request 2 in flight too.
+  await a.send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 2 } });
+  const slow = new Promise((res) => setTimeout(() => res("still waiting"), 3000));
+  assert.notEqual(await Promise.race([fromA, slow]), "still waiting", "A's call was stopped");
+  assert.equal(r.host.kernelCancelled, 1, "one kernel run was interrupted, not two");
+  const early = await Promise.race([fromB, new Promise((res) => setTimeout(() => res("still waiting"), 400))]);
+  assert.equal(early, "still waiting", "B's call is untouched");
+  // B can still cancel its own: A's finishing did not remove B's entry.
+  await b.send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 2 } });
+  assert.notEqual(await Promise.race([fromB, slow]), "still waiting");
+  assert.equal(r.host.kernelCancelled, 2);
+});
+
+test("DELETE ends a session", async () => {
+  const a = await connect(r);
+  const del = await new Promise<number>((resolve, reject) => {
+    const u = new URL(r.lock.url);
+    const req = http.request({ host: u.hostname, port: u.port, path: u.pathname, method: "DELETE", headers: { Authorization: `Bearer ${r.lock.authToken}`, "Mcp-Session-Id": a.sid } }, (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+    });
+    req.on("error", reject);
+    req.end();
+  });
+  assert.equal(del, 204);
+  assert.equal((await a.send(ping)).status, 404);
+});

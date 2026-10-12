@@ -11,6 +11,7 @@ fn main() {
         list_changed: args.iter().any(|a| a == "--list-changed"),
         echo_description: value("--desc-file").and_then(|p| std::fs::read_to_string(p).ok()),
         gate: args.iter().any(|a| a == "--gate"),
+        context: None,
     };
     marlowe_mcp::fake::run_stdio(opts, &args);
 }

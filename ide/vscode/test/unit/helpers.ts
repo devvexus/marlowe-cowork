@@ -24,7 +24,7 @@ export interface Rig {
 }
 
 /** What Marlowe does: read the lock file, then POST JSON-RPC with the bearer token. */
-export function post(lock: Pick<LockInfo, "url" | "authToken">, body: unknown, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
+export function post(lock: Pick<LockInfo, "url" | "authToken">, body: unknown, headers: Record<string, string> = {}): Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const u = new URL(lock.url);
     const payload = typeof body === "string" ? body : JSON.stringify(body);
@@ -33,7 +33,7 @@ export function post(lock: Pick<LockInfo, "url" | "authToken">, body: unknown, h
       (res) => {
         const chunks: Buffer[] = [];
         res.on("data", (c) => chunks.push(c));
-        res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8"), headers: res.headers }));
       },
     );
     req.on("error", reject);

@@ -202,7 +202,10 @@ fn server_list(core: &Arc<Core>, ws: Option<&Path>, viewer: u64) -> Vec<McpServe
             .statuses()
             .into_iter()
             .filter(|s| !is_hidden(&s.name, s.scope))
-            .map(|s| McpServerInfo { name: s.name, scope: from_scope(s.scope), transport: s.transport.to_string(), tools: s.tools, status: s.status.label() })
+            .map(|s| {
+                let detail = ide_detail(core, ws, &s.name, s.scope);
+                McpServerInfo { name: s.name, scope: from_scope(s.scope), transport: s.transport.to_string(), tools: s.tools, status: s.status.label(), detail }
+            })
             .collect();
     }
     let session = reg.session_servers(&ws_key(ws));
@@ -222,9 +225,20 @@ fn server_list(core: &Arc<Core>, ws: Option<&Path>, viewer: u64) -> Vec<McpServe
             } else {
                 "idle (connects with a session)"
             };
-            McpServerInfo { name: s.name.clone(), scope: from_scope(s.scope), transport: s.transport.name().to_string(), tools: 0, status: status.to_string() }
+            let detail = ide_detail(core, ws, &s.name, s.scope);
+            McpServerInfo { name: s.name.clone(), scope: from_scope(s.scope), transport: s.transport.name().to_string(), tools: 0, status: status.to_string(), detail }
         })
         .collect()
+}
+
+/// What `/ide` shows for the discovered editor server (session scope, named `ide`): the window
+/// and the folders it has open. Other servers have nothing to add.
+fn ide_detail(core: &Arc<Core>, ws: Option<&Path>, name: &str, scope: Scope) -> String {
+    if name == marlowe_mcp::ide::SERVER_NAME && scope == Scope::Session {
+        marlowe_mcp::ide::status(&core.home, ws)
+    } else {
+        String::new()
+    }
 }
 
 fn workspace_path(ws: &Option<String>) -> Option<PathBuf> {

@@ -36,6 +36,7 @@ pub const BUILTINS: &[Builtin] = &[
     b("hooks", &[], Args::None, "configured hooks and whether they are trusted"),
     b("agents", &[], Args::None, "agent types the agent tool can start"),
     b("mcp", &[], Args::None, "MCP servers: add, remove, status"),
+    b("ide", &[], Args::None, "the connected editor: which window, which folders"),
     b("memory", &[], Args::None, "open the instruction files in your editor and reload them"),
     b("model", &[], Args::Optional("model"), "switch the conductor's model, keeping the conversation"),
     b("effort", &["think"], Args::Optional("off|low|medium|high|max"), "reasoning effort for the next turns"),
@@ -210,6 +211,10 @@ impl State {
             "hooks" => self.open_hooks(out),
             "agents" => self.open_agents(out),
             "mcp" => self.open_mcp(out),
+            "ide" => {
+                self.code.expect_ide = true;
+                out.push(Request::McpList { workspace: self.ws() });
+            }
             "memory" => self.open_instructions(out),
             "model" => self.slash_model(&args, out),
             "effort" => self.slash_effort(&args, out),

@@ -338,4 +338,8 @@ pub struct McpServerInfo {
     pub tools: u32,
     /// `connected`, `failed: ...`, `needs auth`, `disabled`.
     pub status: String,
+    /// More the daemon knows about this server, shown by `/ide` for the editor connection: which
+    /// window is connected and the folders it has open. Empty for most servers.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
 }

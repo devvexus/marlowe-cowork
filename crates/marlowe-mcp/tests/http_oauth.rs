@@ -259,3 +259,34 @@ fn parity_x13_an_https_authorization_page_is_allowed() {
     let url = shown.lock().unwrap().clone();
     assert!(url.starts_with("https://login.example.com/oauth2/authorize?tenant=1&response_type=code"), "{url}");
 }
+
+/// Passes everything to the real backend and remembers the read timeout each POST was given.
+struct Recording(std::sync::Mutex<Vec<Duration>>);
+
+impl HttpBackend for Recording {
+    fn send(&self, req: &HttpRequest, read_timeout: Duration) -> Result<marlowe_mcp::http::HttpResponse, marlowe_mcp::McpError> {
+        if req.method == "POST" {
+            self.0.lock().unwrap().push(read_timeout);
+        }
+        DefaultHttp.send(req, read_timeout)
+    }
+}
+
+#[test]
+fn a_servers_long_tool_timeout_reaches_the_http_socket() {
+    let server = FakeHttp::start(HttpOpts { sessions: true, ..Default::default() });
+    let rec = Arc::new(Recording(Default::default()));
+    let text = json!({"mcpServers": {"ide": {"type": "http", "url": server.url(), "consequence": "inert", "timeout": 960_000}}}).to_string();
+    let mut connect = ConnectOpts::new(Arc::new(MemoryTokens::default()));
+    connect.http = rec.clone();
+    let mut opts = HubOpts::new(Paths::new(&tmp("longcall"), None), connect);
+    opts.session = config::parse_session(&[text]).unwrap();
+    let hub = Hub::start(opts);
+    assert!(hub.wait_settled(Duration::from_secs(20)));
+    assert_eq!(hub.statuses()[0].status, SlotStatus::Connected, "{:?}", hub.statuses());
+    hub.call("mcp__ide__echo", json!({"text": "x"}), &no_cancel).unwrap();
+    let seen = rec.0.lock().unwrap().clone();
+    assert!(!seen.is_empty());
+    // The server's 960 s deadline, not the 300 s default, bounds the socket read, plus a margin.
+    assert!(seen.iter().all(|t| *t > Duration::from_secs(960)), "{seen:?}");
+}

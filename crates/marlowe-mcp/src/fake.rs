@@ -35,6 +35,9 @@ pub struct FakeOpts {
     /// Adds `approve{tool_name,input}`, a permission prompt tool: it denies a `Bash` input whose
     /// command contains `rm ` and allows everything else.
     pub gate: bool,
+    /// Adds `get_context`, which answers with the text in this cell: an editor stand-in whose
+    /// selection a test changes between turns.
+    pub context: Option<Arc<Mutex<String>>>,
 }
 
 struct FakeState {
@@ -65,6 +68,9 @@ impl FakeMcp {
         ];
         if opts.gate {
             tools.push(tool("approve", "Decide whether a tool call may run.", json!({"tool_name": {"type": "string"}, "input": {"type": "object"}}), &["tool_name", "input"]));
+        }
+        if opts.context.is_some() {
+            tools.push(tool("get_context", "What the user is looking at in the editor.", json!({}), &[]));
         }
         for i in 0..opts.extra_tools {
             tools.push(tool(
@@ -122,6 +128,10 @@ impl FakeMcp {
                         out.push(reply(text("done".into())));
                     }
                     "pid" => out.push(reply(text(std::process::id().to_string()))),
+                    "get_context" => {
+                        let now = self.opts.context.as_ref().map(|c| c.lock().unwrap_or_else(|e| e.into_inner()).clone()).unwrap_or_default();
+                        out.push(reply(text(now)));
+                    }
                     "approve" => {
                         let bad = args["tool_name"] == "Bash" && args["input"]["command"].as_str().is_some_and(|c| c.contains("rm "));
                         let answer = if bad { json!({"behavior": "deny", "message": "the gate refuses rm"}) } else { json!({"behavior": "allow", "updatedInput": args["input"]}) };

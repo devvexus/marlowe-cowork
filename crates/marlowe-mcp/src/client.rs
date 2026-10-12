@@ -242,6 +242,13 @@ fn never() -> bool {
     false
 }
 
+/// How long a read on the HTTP socket may wait. It must outlast the tool deadline (the server's
+/// own `timeout` when set), or a long call dies as a transport error before the server can
+/// answer or time out cleanly; the margin lets the server's reply to its own deadline arrive.
+pub(crate) fn socket_timeout(cfg: &ServerConfig, opts: &ConnectOpts) -> Duration {
+    cfg.timeout.unwrap_or(opts.tool_timeout).max(opts.request_timeout).max(Duration::from_secs(60)) + Duration::from_secs(30)
+}
+
 impl Client {
     /// Connects and completes the handshake. `cfg` must already be expanded.
     pub fn connect(cfg: &ServerConfig, opts: &ConnectOpts) -> Result<Client, McpError> {
@@ -269,7 +276,7 @@ impl Client {
                     oauth = Some(o.clone());
                     Some(o)
                 };
-                let (wire, rx) = http_wire::connect(&cfg.name, &u, headers.clone(), opts.http.clone(), auth, opts.tool_timeout.max(Duration::from_secs(60)));
+                let (wire, rx) = http_wire::connect(&cfg.name, &u, headers.clone(), opts.http.clone(), auth, socket_timeout(cfg, opts));
                 let wire: Box<dyn Wire> = Box::new(Arc::new(wire));
                 Peer::start(&cfg.name, wire, rx, handler)
             }

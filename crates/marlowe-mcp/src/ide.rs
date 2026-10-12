@@ -14,8 +14,13 @@
 //!   not know loads as `irreversible`, so a lock cannot make a tool quieter than Marlowe decided.
 //!   Reads and showing something in the editor are free; `execute_code` asks every time.
 //! - A lock whose port does not answer is skipped (the editor died without removing it).
+//! - Only a window that has the workspace itself (or a folder containing it) open is adopted. A
+//!   window that has some folder below the workspace open is not: started from the home directory
+//!   or a drive root, Marlowe would otherwise take in any unrelated window and hand its tabs and
+//!   selection to the model.
 //!
-//! `MARLOWE_NO_IDE=1` turns discovery off; `--strict-mcp-config` already does.
+//! `MARLOWE_NO_IDE=1` turns discovery off; `--strict-mcp-config` already does. [`status`] is the
+//! text behind `/ide` and the `editor` line of `marlowe doctor`.
 
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
@@ -119,18 +124,13 @@ fn inside(root: &str, child: &str) -> bool {
     c == r || c.strip_prefix(r.as_str()).is_some_and(|rest| rest.starts_with('/') || r.ends_with('/'))
 }
 
-/// How well a lock fits `workspace`: 2 when the workspace is inside one of the window's folders
-/// (the usual case), 1 when a folder is inside the workspace (Marlowe started in a parent), 0 not
-/// at all.
-fn fit(lock: &Lock, workspace: &Path) -> u8 {
+/// Whether `workspace` is one of the window's folders or inside one. A window whose folder is
+/// merely somewhere below the workspace does not count: started from a parent such as the home
+/// directory or a drive root, Marlowe would otherwise adopt any unrelated window under it and
+/// send its tabs to the model.
+fn has_open(lock: &Lock, workspace: &Path) -> bool {
     let ws = workspace.display().to_string();
-    if lock.folders.iter().any(|f| inside(f, &ws)) {
-        2
-    } else if lock.folders.iter().any(|f| inside(&ws, f)) {
-        1
-    } else {
-        0
-    }
+    lock.folders.iter().any(|f| inside(f, &ws))
 }
 
 fn reachable(port: u16) -> bool {
@@ -150,16 +150,11 @@ pub fn entry(lock: &Lock) -> Value {
     })
 }
 
-/// The editor server for `workspace`, if a window that has it open is running: the best-fitting
-/// lock under `<home>\ide`, newest first among equals. Empty when there is no workspace, no
-/// lock, or discovery is off.
-pub fn discover(home: &Path, workspace: Option<&Path>) -> Vec<ServerConfig> {
-    if std::env::var(DISABLE_ENV).is_ok_and(|v| v.trim() == "1") {
-        return Vec::new();
-    }
-    let Some(workspace) = workspace else { return Vec::new() };
+/// Every running editor under `<home>\ide` (a lock that parses and whose port answers), newest
+/// first.
+pub fn editors(home: &Path) -> Vec<Lock> {
     let Ok(dir) = std::fs::read_dir(home.join("ide")) else { return Vec::new() };
-    let mut found: Vec<(u8, Lock)> = Vec::new();
+    let mut found: Vec<Lock> = Vec::new();
     for e in dir.flatten() {
         let path = e.path();
         if path.extension().and_then(|x| x.to_str()) != Some("lock") {
@@ -167,21 +162,44 @@ pub fn discover(home: &Path, workspace: Option<&Path>) -> Vec<ServerConfig> {
         }
         let Ok(text) = std::fs::read_to_string(&path) else { continue };
         let Ok(lock) = parse_lock(&text) else { continue };
-        let f = fit(&lock, workspace);
-        if f > 0 {
-            found.push((f, lock));
+        if reachable(lock.port) {
+            found.push(lock);
         }
     }
-    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.started.cmp(&a.1.started)));
-    for (_, lock) in found {
-        if !reachable(lock.port) {
-            continue;
-        }
-        if let Ok(cfg) = config::parse_entry(SERVER_NAME, Scope::Session, &entry(&lock)) {
-            return vec![cfg];
-        }
+    found.sort_by(|a, b| b.started.cmp(&a.started));
+    found
+}
+
+/// The editor window that has `workspace` open: the newest one among those containing it.
+pub fn matching(home: &Path, workspace: &Path) -> Option<Lock> {
+    editors(home).into_iter().find(|l| has_open(l, workspace))
+}
+
+/// The editor server for `workspace`, if a window that has it open is running. Empty when there
+/// is no workspace, no lock, or discovery is off.
+pub fn discover(home: &Path, workspace: Option<&Path>) -> Vec<ServerConfig> {
+    if std::env::var(DISABLE_ENV).is_ok_and(|v| v.trim() == "1") {
+        return Vec::new();
     }
-    Vec::new()
+    let Some(workspace) = workspace else { return Vec::new() };
+    matching(home, workspace).and_then(|lock| config::parse_entry(SERVER_NAME, Scope::Session, &entry(&lock)).ok()).into_iter().collect()
+}
+
+/// What `/ide` and `marlowe doctor` say about the editor connection for `workspace`: which window
+/// is connected and what it has open, or why there is none.
+pub fn status(home: &Path, workspace: Option<&Path>) -> String {
+    if std::env::var(DISABLE_ENV).is_ok_and(|v| v.trim() == "1") {
+        return format!("off ({DISABLE_ENV}=1)");
+    }
+    let running = editors(home);
+    if let Some(l) = workspace.and_then(|w| running.iter().find(|l| has_open(l, w))) {
+        return format!("{} connected as `{SERVER_NAME}` ({}); it has {} open", l.ide_name, l.url, l.folders.join(", "));
+    }
+    match (running.len(), workspace) {
+        (0, _) => "no editor running; install the Marlowe VS Code extension (ide/vscode) and open this folder in it".into(),
+        (n, Some(w)) => format!("{n} editor window(s) running, none has {} open", w.display()),
+        (n, None) => format!("{n} editor window(s) running; no workspace to match"),
+    }
 }
 
 // ---------------------------------------------------------------- what the user is looking at
@@ -192,6 +210,10 @@ const SELECTION_CHARS: usize = 4_000;
 const TABS_NAMED: usize = 8;
 /// The longest the start of a turn waits for the editor to answer `get_context`.
 pub const CONTEXT_WAIT: Duration = Duration::from_millis(1_500);
+
+/// What every context note starts with; the daemon looks for it in the history to know the
+/// current note is already there.
+pub const NOTE_PREFIX: &str = "Editor context from the user's editor";
 
 /// The exposed name of the context tool.
 pub const CONTEXT_TOOL: &str = "mcp__ide__get_context";
@@ -249,7 +271,7 @@ pub fn render_context(answer: &str) -> Option<String> {
     if lines.is_empty() {
         return None;
     }
-    Some(format!("Editor context from the user's editor (not typed by them; use it if the request refers to \"this\" or \"here\"):\n{}", lines.join("\n")))
+    Some(format!("{NOTE_PREFIX} (not typed by them; use it if the request refers to \"this\" or \"here\"):\n{}", lines.join("\n")))
 }
 
 /// Asks the connected editor what the user is looking at, waiting at most `wait`. `None` when no

@@ -1,4 +1,5 @@
-// The loopback HTTP face of the MCP server (streamable HTTP, POST only). Three checks come before
+// The loopback HTTP face of the MCP server (streamable HTTP, POST only, plus DELETE to end a
+// session). `initialize` mints an `Mcp-Session-Id`; later requests carry it. Three checks come before
 // any JSON is read, because any web page can make a browser send a request to 127.0.0.1:
 //   1. the bearer token from the lock file (constant-time compare),
 //   2. no `Origin` header (a browser always sends one; the Marlowe client never does),
@@ -46,7 +47,11 @@ async function readBody(req: http.IncomingMessage): Promise<Buffer | "too-large"
   return Buffer.concat(chunks);
 }
 
+/** Sessions kept at once; the oldest is forgotten past this. */
+const MAX_SESSIONS = 256;
+
 export function startServer(mcp: McpServer, token: string = newToken(), port = 0): Promise<RunningServer> {
+  const sessions = new Set<string>();
   const server = http.createServer(async (req, res) => {
     try {
       const addr = server.address() as AddressInfo;
@@ -58,6 +63,12 @@ export function startServer(mcp: McpServer, token: string = newToken(), port = 0
       if (!sameToken(given, token)) return reply(res, 401, { error: "unauthorized" }, { "WWW-Authenticate": "Bearer" });
       const path = (req.url ?? "").split("?")[0];
       if (path !== ENDPOINT) return reply(res, 404, { error: "not found" });
+      const sidHeader = req.headers["mcp-session-id"];
+      const sid = typeof sidHeader === "string" ? sidHeader : "";
+      if (req.method === "DELETE") {
+        if (sid === "" || !sessions.delete(sid)) return reply(res, 404, { error: "no such session" });
+        return reply(res, 204, undefined);
+      }
       if (req.method !== "POST") return reply(res, 405, { error: "POST only" }, { Allow: "POST" });
 
       const body = await readBody(req);
@@ -69,6 +80,19 @@ export function startServer(mcp: McpServer, token: string = newToken(), port = 0
         return reply(res, 400, { jsonrpc: "2.0", id: null, error: { code: ERR.parse, message: "not valid JSON" } });
       }
 
+      // A client that names a session this server did not hand out is told so (it starts over
+      // with `initialize`); one that names none shares the unnamed scope.
+      const opens = !Array.isArray(message) && typeof message === "object" && message !== null && (message as { method?: unknown }).method === "initialize";
+      if (sid !== "" && !opens && !sessions.has(sid)) return reply(res, 404, { jsonrpc: "2.0", id: null, error: { code: -32001, message: "unknown session" } });
+      let scope = sid;
+      const headers: Record<string, string> = {};
+      if (opens) {
+        scope = crypto.randomBytes(16).toString("hex");
+        sessions.add(scope);
+        if (sessions.size > MAX_SESSIONS) sessions.delete(sessions.values().next().value as string);
+        headers["Mcp-Session-Id"] = scope;
+      }
+
       // The call stops when the client goes away (a cancelled turn, a killed process).
       const gone = new AbortController();
       res.on("close", () => {
@@ -76,11 +100,11 @@ export function startServer(mcp: McpServer, token: string = newToken(), port = 0
       });
 
       if (Array.isArray(message)) {
-        const answers = (await Promise.all(message.map((m) => mcp.handle(m, gone.signal)))).filter((a) => a !== undefined);
-        return answers.length === 0 ? reply(res, 202, undefined) : reply(res, 200, answers);
+        const answers = (await Promise.all(message.map((m) => mcp.handle(m, gone.signal, scope)))).filter((a) => a !== undefined);
+        return answers.length === 0 ? reply(res, 202, undefined) : reply(res, 200, answers, headers);
       }
-      const answer = await mcp.handle(message, gone.signal);
-      return answer === undefined ? reply(res, 202, undefined) : reply(res, 200, answer);
+      const answer = await mcp.handle(message, gone.signal, scope);
+      return answer === undefined ? reply(res, 202, undefined) : reply(res, 200, answer, headers);
     } catch {
       if (!res.headersSent) reply(res, 500, { error: "internal error" });
       else res.destroy();
