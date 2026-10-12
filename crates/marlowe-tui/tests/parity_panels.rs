@@ -164,13 +164,13 @@ fn parity_M11_dont_ask_again_offers_the_rule_for_the_session_or_the_project() {
     s.now_ms += 1_000;
     assert_eq!(
         keys(&mut s, "a"),
-        vec![Request::Approve { approval: ApprovalId(1), decision: ApprovalDecision::AllowPattern { scope: SettingsScope::Session } }]
+        vec![Request::Approve { approval: ApprovalId(1), decision: ApprovalDecision::AllowPattern { scope: SettingsScope::Session }, reason: None }]
     );
     feed(&mut s, 4, bash_approval(2, Some("bash(cargo test*)")));
     s.now_ms += 1_000;
     assert_eq!(
         keys(&mut s, "p"),
-        vec![Request::Approve { approval: ApprovalId(2), decision: ApprovalDecision::AllowPattern { scope: SettingsScope::Local } }]
+        vec![Request::Approve { approval: ApprovalId(2), decision: ApprovalDecision::AllowPattern { scope: SettingsScope::Local }, reason: None }]
     );
     // The buttons work from the arrow keys too: left from deny twice is the session rule.
     feed(&mut s, 5, bash_approval(3, Some("bash(cargo test*)")));
@@ -178,15 +178,15 @@ fn parity_M11_dont_ask_again_offers_the_rule_for_the_session_or_the_project() {
     keys(&mut s, "left left");
     assert_eq!(
         keys(&mut s, "enter"),
-        vec![Request::Approve { approval: ApprovalId(3), decision: ApprovalDecision::AllowPattern { scope: SettingsScope::Session } }]
+        vec![Request::Approve { approval: ApprovalId(3), decision: ApprovalDecision::AllowPattern { scope: SettingsScope::Session }, reason: None }]
     );
     // Allow-once and deny are as they were.
     feed(&mut s, 6, bash_approval(4, Some("bash(cargo test*)")));
     s.now_ms += 1_000;
-    assert_eq!(keys(&mut s, "y"), vec![Request::Approve { approval: ApprovalId(4), decision: ApprovalDecision::Allow }]);
+    assert_eq!(keys(&mut s, "y"), vec![Request::Approve { approval: ApprovalId(4), decision: ApprovalDecision::Allow, reason: None }]);
     feed(&mut s, 7, bash_approval(5, Some("bash(cargo test*)")));
     s.now_ms += 1_000;
-    assert_eq!(keys(&mut s, "n"), vec![Request::Approve { approval: ApprovalId(5), decision: ApprovalDecision::Deny }]);
+    assert_eq!(keys(&mut s, "n"), vec![Request::Approve { approval: ApprovalId(5), decision: ApprovalDecision::Deny, reason: None }]);
 }
 
 #[test]
@@ -196,7 +196,7 @@ fn parity_M11_with_no_proposed_rule_the_buttons_are_the_old_three() {
     let buf = palette_frame(&s);
     assert!(contains(&buf, "allow for session") && !contains(&buf, "always"), "{}", dump(&buf));
     s.now_ms += 1_000;
-    assert_eq!(keys(&mut s, "a"), vec![Request::Approve { approval: ApprovalId(1), decision: ApprovalDecision::AllowForSession }]);
+    assert_eq!(keys(&mut s, "a"), vec![Request::Approve { approval: ApprovalId(1), decision: ApprovalDecision::AllowForSession, reason: None }]);
 }
 
 // ---- X16 -------------------------------------------------------------------------------------------
@@ -823,4 +823,56 @@ fn parity_u14_ide_with_no_editor_says_how_to_get_one() {
     let before = s.entries.len();
     feed(&mut s, 1, Event::McpServers { list: Vec::new() });
     assert_eq!(s.entries.len(), before);
+}
+
+#[test]
+fn deny_and_tell_marlowe_why_is_an_option_that_opens_a_one_line_input() {
+    let mut s = coding_session();
+    feed(&mut s, 3, bash_approval(1, None));
+    let buf = palette_frame(&s);
+    assert!(contains(&buf, "deny, and tell Marlowe why"), "{}", dump(&buf));
+    s.now_ms += 1_000;
+    // w opens the input; nothing is sent yet, and the line takes the keys (even the buttons' own).
+    assert!(keys(&mut s, "w").is_empty());
+    let buf = palette_frame(&s);
+    assert!(contains(&buf, "tell Marlowe why") && contains(&buf, "esc back"), "{}", dump(&buf));
+    assert!(keys(&mut s, "n y a").is_empty());
+    assert_eq!(s.approvals.len(), 1);
+    // Esc goes back to the options with the reason option selected.
+    assert!(keys(&mut s, "esc").is_empty());
+    assert!(s.approval_reason.is_none() && s.approval_sel == s.approvals[0].why_index());
+    // Enter on that option opens it again; Enter sends Deny with what was typed.
+    assert!(keys(&mut s, "enter").is_empty());
+    type_str(&mut s, "use the scratch copy");
+    assert_eq!(
+        s.on_key(key(crossterm::event::KeyCode::Enter)),
+        vec![Request::Approve { approval: ApprovalId(1), decision: ApprovalDecision::Deny, reason: Some("use the scratch copy".into()) }]
+    );
+    assert!(s.approvals.is_empty());
+    assert!(contains(&palette_frame(&s), "you told Marlowe why: use the scratch copy"));
+}
+
+#[test]
+fn an_empty_reason_is_a_plain_denial_and_a_click_opens_the_input() {
+    use marlowe_tui::state::Target;
+    let mut s = coding_session();
+    feed(&mut s, 3, bash_approval(1, None));
+    s.now_ms += 1_000;
+    keys(&mut s, "w");
+    assert_eq!(
+        s.on_key(key(crossterm::event::KeyCode::Enter)),
+        vec![Request::Approve { approval: ApprovalId(1), decision: ApprovalDecision::Deny, reason: None }]
+    );
+    feed(&mut s, 4, bash_approval(2, None));
+    s.now_ms += 1_000;
+    let _ = palette_frame(&s);
+    let rect = s.hits.borrow().iter().rev().find(|(_, t)| *t == Target::Button(3)).map(|(r, _)| *r).expect("the reason option is clickable");
+    let m = crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: rect.x + 2,
+        row: rect.y,
+        modifiers: crossterm::event::KeyModifiers::NONE,
+    };
+    assert!(s.on_mouse(m, ratatui::layout::Rect::new(0, 0, W, H)).is_empty());
+    assert!(s.approval_reason.is_some());
 }

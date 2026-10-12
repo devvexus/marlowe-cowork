@@ -89,7 +89,7 @@ pub fn ask(home: &Path, a: AskArgs) -> CmdResult {
                 if Some(session) == mine.as_ref() =>
             {
                 let decision = if a.yes { ApprovalDecision::Allow } else { prompt(tool, summary, detail) };
-                send(&mut c, &Request::Approve { approval: *approval, decision })?;
+                send(&mut c, &Request::Approve { approval: *approval, decision, reason: None })?;
             }
             _ => {}
         }

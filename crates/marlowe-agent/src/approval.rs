@@ -50,6 +50,12 @@ pub trait ApprovalGate: Send + Sync {
     fn ask_with(&self, req: ApprovalReq, _proposed_rule: Option<String>) -> ApprovalDecision {
         self.ask(req)
     }
+
+    /// What the user said when they denied call `call_id` ("deny, and tell Marlowe why"), taken
+    /// once, right after `ask` returned `Deny`. Their own words, user trust.
+    fn denial_reason(&self, _call_id: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Allows everything. Tests and headless trusted runs only.

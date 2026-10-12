@@ -587,6 +587,11 @@ impl Approval {
         self.detail_len().saturating_sub(APPROVAL_DETAIL_ROWS)
     }
 
+    /// The extra option after the buttons: deny and say why. Its index is `choices().len()`.
+    pub fn why_index(&self) -> usize {
+        self.choices().len()
+    }
+
     /// What the buttons are: allow, then (when the daemon proposed a rule) allow-this-rule for the
     /// session and for the project, or (with none) allow-for-session, then deny.
     pub fn choices(&self) -> Vec<ApprovalDecision> {
@@ -654,6 +659,8 @@ pub struct State {
 
     pub approvals: Vec<Approval>,
     pub approval_sel: usize,
+    /// "Deny, and tell Marlowe why": the reason being typed in the modal, one line.
+    pub approval_reason: Option<Composer>,
     /// When the front approval came up (`now_ms`); decision keys before the guard are ignored.
     pub approval_since_ms: i64,
     /// Detail lines scrolled past in the front approval.
@@ -758,6 +765,7 @@ impl State {
             pending_open: None,
             approvals: Vec::new(),
             approval_sel: APPROVAL_DENY,
+            approval_reason: None,
             approval_since_ms: 0,
             approval_scroll: 0,
             approval_read: false,
@@ -897,6 +905,7 @@ impl State {
     pub(crate) fn front_approval_changed(&mut self) {
         self.approval_sel = self.approvals.first().map_or(APPROVAL_DENY, |a| a.choices().len() - 1);
         self.approval_since_ms = self.now_ms;
+        self.approval_reason = None;
         self.approval_scroll = 0;
         self.approval_read = self.approvals.first().is_some_and(|a| a.detail_scroll_max() == 0);
     }

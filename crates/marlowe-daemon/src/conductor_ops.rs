@@ -307,6 +307,7 @@ impl ApprovalGate for SubagentGate {
         if self.core.is_shutting_down() || self.cancel.is_cancelled() {
             return ApprovalDecision::Deny;
         }
+        let call_id = req.call_id.clone();
         let (id, tx, rx) = self.core.approvals.register();
         let _hook = self.cancel.on_cancel(move || {
             let _ = tx.try_send(ApprovalDecision::Deny);
@@ -323,9 +324,14 @@ impl ApprovalGate for SubagentGate {
             proposed_rule: None,
         });
         let decision = wait_decision(&self.core, &rx, Some(&self.cancel));
+        self.core.approvals.note_denial(id, &call_id);
         self.core.approvals.remove(id);
         self.core.bus.publish(Event::ApprovalResolved { approval: id, decision });
         decision
+    }
+
+    fn denial_reason(&self, call_id: &str) -> Option<String> {
+        self.core.approvals.denial_reason(call_id)
     }
 }
 

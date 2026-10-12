@@ -213,7 +213,7 @@ fn parity_g3_open_pr_asks_once_then_pushes_and_opens() {
     assert!(summary.contains(&format!("push {branch} to origin")) && summary.contains("into main"), "{summary}");
     assert!(detail.contains("title:  Fix the parser") && detail.contains("remote: origin"), "{detail}");
     assert_eq!(gh.calls.lock().unwrap().len(), 1, "only the dry run so far: nothing is pushed before the yes");
-    c.send(&Request::Approve { approval, decision: ApprovalDecision::Allow });
+    c.send(&Request::Approve { approval, decision: ApprovalDecision::Allow, reason: None });
     let got = c.until_event(|e| matches!(e, Event::PrOpened { .. } | Event::Error { .. }));
     match &got.last().unwrap().event {
         Event::PrOpened { run: r, url } => {
@@ -238,7 +238,7 @@ fn parity_g3_open_pr_asks_once_then_pushes_and_opens() {
     c.send(&Request::OpenPr { run: run.clone(), title: Some("Other title".into()), body: None });
     let got = c.until_event(|e| matches!(e, Event::ApprovalRequested { .. }));
     let Event::ApprovalRequested { approval, .. } = got.last().unwrap().event.clone() else { unreachable!() };
-    c.send(&Request::Approve { approval, decision: ApprovalDecision::Deny });
+    c.send(&Request::Approve { approval, decision: ApprovalDecision::Deny, reason: None });
     let got = c.until_event(|e| matches!(e, Event::PrOpened { .. } | Event::Error { .. }));
     match &got.last().unwrap().event {
         Event::Error { message, .. } => assert!(message.contains("was not approved; nothing was pushed"), "{message}"),
@@ -253,7 +253,7 @@ fn parity_g3_open_pr_asks_once_then_pushes_and_opens() {
     std::fs::write(worktree.join("late.rs"), "fn late() {}\n").unwrap();
     git(&worktree, &["add", "late.rs"]);
     git(&worktree, &["commit", "-q", "-m", "late"]);
-    c.send(&Request::Approve { approval, decision: ApprovalDecision::Allow });
+    c.send(&Request::Approve { approval, decision: ApprovalDecision::Allow, reason: None });
     let got = c.until_event(|e| matches!(e, Event::PrOpened { .. } | Event::Error { .. }));
     match &got.last().unwrap().event {
         Event::Error { message, .. } => assert!(message.contains("moved") && message.contains("nothing was pushed"), "{message}"),

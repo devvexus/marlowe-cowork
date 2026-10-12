@@ -22,8 +22,8 @@
 │                              ║ ▏ 3. Run the tests                                                         ║                              │
 │                              ║                                                                            ║                              │
 │                              ║   y approve the plan      › n keep planning                                ║                              │
+│                              ║   w deny, and tell Marlowe why                                             ║                              │
 │                              ╚════════════════════════════════════════════════════════════════════════════╝                              │
-│                                                                                                ││                                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │

@@ -24,8 +24,8 @@
 │                              ║ always allow  edit(src/**)                                                 ║                              │
 │                              ║                                                                            ║                              │
 │                              ║   y allow      a always · session      p always · project    › n deny      ║                              │
+│                              ║   w deny, and tell Marlowe why                                             ║                              │
 │                              ╚════════════════════════════════════════════════════════════════════════════╝                              │
-│                                                                                                ││                                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │

@@ -166,7 +166,14 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace: Option<String>,
     },
-    Approve { approval: ApprovalId, decision: ApprovalDecision },
+    /// `reason` is the user's own words on a `Deny` ("No, and tell Marlowe what to do instead");
+    /// the daemon passes it to the agent that asked.
+    Approve {
+        approval: ApprovalId,
+        decision: ApprovalDecision,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
     LibraryState,
     DetectProviders,
     ListCatalog { provider: ProviderKind },

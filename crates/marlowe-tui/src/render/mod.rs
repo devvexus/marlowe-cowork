@@ -317,7 +317,9 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
     }
     if let (false, Some(a)) = (quit_over_approval, state.current_approval()) {
         state.hits.borrow_mut().clear();
-        overlay::approval(area, state, a, theme, buf);
+        if let Some(c) = overlay::approval(area, state, a, theme, buf) {
+            frame.set_cursor_position(c);
+        }
         return;
     }
     plan_links(&g, area, state, buf);

@@ -123,8 +123,8 @@ fn dispatch(core: &Arc<Core>, client: u64, client_name: &str, req: Request) {
                 refuse(r);
             }
         }
-        Request::Approve { approval, decision } => {
-            if !core.approvals.resolve(approval, decision) {
+        Request::Approve { approval, decision, reason } => {
+            if !core.approvals.resolve_with(approval, decision, reason) {
                 refuse((None, format!("approval {approval} is not pending")));
             }
         }

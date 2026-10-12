@@ -424,7 +424,7 @@ fn approval_buttons_answer_with_a_click() {
     assert_eq!(s.hover, Some(Target::Button(2)));
     frame(&s);
     let out = s.on_mouse(click(x, y), area());
-    assert_eq!(out, vec![Request::Approve { approval: ApprovalId(7), decision: ApprovalDecision::Deny }]);
+    assert_eq!(out, vec![Request::Approve { approval: ApprovalId(7), decision: ApprovalDecision::Deny, reason: None }]);
     assert!(s.approvals.is_empty());
 }
 

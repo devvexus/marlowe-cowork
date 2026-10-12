@@ -82,7 +82,7 @@ fn parity_M1_plan_mode_is_a_chip_and_exit_plan_is_an_approval_of_the_plan() {
     // 'a' is not a plan decision.
     assert!(keys(&mut s, "a").is_empty());
     let reqs = keys(&mut s, "y");
-    assert_eq!(reqs, vec![Request::Approve { approval: ApprovalId(11), decision: ApprovalDecision::Allow }]);
+    assert_eq!(reqs, vec![Request::Approve { approval: ApprovalId(11), decision: ApprovalDecision::Allow, reason: None }]);
     feed(&mut s, 7, Event::ModeChanged { session: sid(), mode: PermissionMode::Default });
     assert!(!contains(&palette_frame(&s), "plan mode"));
 }

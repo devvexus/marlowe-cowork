@@ -21,8 +21,8 @@
 │                              ║ ▏ command  Remove-Item -Recurse build                                      ║                              │
 │                              ║                                                                            ║                              │
 │                              ║   y allow        a allow for session      › n deny                         ║                              │
+│                              ║   w deny, and tell Marlowe why                                             ║                              │
 │                              ╚════════════════════════════════════════════════════════════════════════════╝                              │
-│                                                                                                ││                                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │

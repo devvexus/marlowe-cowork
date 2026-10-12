@@ -958,6 +958,10 @@ impl ApprovalGate for RunGate {
     fn ask(&self, req: ApprovalReq) -> ApprovalDecision {
         ask_for_run(&self.inner, &self.id, self.session.as_ref(), req)
     }
+
+    fn denial_reason(&self, call_id: &str) -> Option<String> {
+        self.inner.deps.approvals.denial_reason(call_id)
+    }
 }
 
 fn ask_for_run(inner: &Inner, id: &RunId, session: Option<&SessionId>, req: ApprovalReq) -> ApprovalDecision {
@@ -986,15 +990,17 @@ fn guarded_shell(inner: Arc<Inner>, id: RunId, session: Option<SessionId>) -> pl
             return Ok(ShellResult { ok: false, exit_code: None, output: format!("not run: refused ({why})") });
         }
         if let ShellVerdict::Ask(summary) = sandbox.classify_shell(command, tainted) {
+            let call_id = format!("shell-{}-{}", id.short(), crate::now_ms());
             let req = ApprovalReq {
                 session: crew_session(&id),
-                call_id: format!("shell-{}-{}", id.short(), crate::now_ms()),
+                call_id: call_id.clone(),
                 tool: "shell".into(),
                 summary: summary.clone(),
                 detail: command.to_string(),
             };
             if !ask_for_run(&inner, &id, session.as_ref(), req).is_allowed() {
-                return Ok(ShellResult { ok: false, exit_code: None, output: format!("not run: the user declined ({summary})") });
+                let said = inner.deps.approvals.denial_reason(&call_id).map(|r| format!(" and said: \"{r}\"")).unwrap_or_default();
+                return Ok(ShellResult { ok: false, exit_code: None, output: format!("not run: the user declined ({summary}){said}") });
             }
         }
         sandbox_shell(sandbox, command, cancel)

@@ -22,8 +22,8 @@
 │                              ║ from the context planner · every Ollama model is affected                  ║                              │
 │                              ║                                                                            ║                              │
 │                              ║   y allow      › n deny                                                    ║                              │
+│                              ║   w deny, and tell Marlowe why                                             ║                              │
 │                              ╚════════════════════════════════════════════════════════════════════════════╝                              │
-│                                                                                                ││                                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │

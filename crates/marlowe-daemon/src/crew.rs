@@ -398,6 +398,11 @@ fn relay_taints(link: &CrewLink, info: &CrewRunInfo, dispatch: Option<&Dispatch>
 /// Raises `ApprovalRequested` for a run (or a merge/discard of one) and waits for the answer.
 /// Denies on timeout and shutdown. `AllowForSession` counts as `Allow`.
 pub(crate) fn ask(core: &Core, run: &RunId, session: Option<&SessionId>, tool: String, summary: String, detail: String) -> ApprovalDecision {
+    ask_call(core, run, session, tool, summary, detail, None)
+}
+
+/// [`ask`] for a tool call of the run's agent: a denial's reason is kept for `call_id`.
+fn ask_call(core: &Core, run: &RunId, session: Option<&SessionId>, tool: String, summary: String, detail: String, call_id: Option<&str>) -> ApprovalDecision {
     if core.is_shutting_down() {
         return ApprovalDecision::Deny;
     }
@@ -408,6 +413,9 @@ pub(crate) fn ask(core: &Core, run: &RunId, session: Option<&SessionId>, tool: S
     let session = session.cloned().unwrap_or_else(|| orphan_session(run));
     core.bus.publish(Event::ApprovalRequested { approval: id, session, tool, summary, detail, run: Some(run.clone()), proposed_rule: None });
     let decision = rx.recv_timeout(core.cfg.approval_timeout).unwrap_or(ApprovalDecision::Deny);
+    if let Some(call_id) = call_id {
+        core.approvals.note_denial(id, call_id);
+    }
     core.approvals.remove(id);
     if let Some(link) = core.crew.get() {
         let mut pending = lock(&link.pending);
@@ -439,7 +447,11 @@ impl RunApprovals for RunGate {
     fn ask(&self, run: &RunId, session: Option<&SessionId>, req: ApprovalReq) -> ApprovalDecision {
         let Some(core) = self.core.upgrade() else { return ApprovalDecision::Deny };
         let session = session.cloned().or_else(|| (!req.session.as_str().is_empty()).then(|| req.session.clone()));
-        ask(&core, run, session.as_ref(), req.tool, req.summary, req.detail)
+        ask_call(&core, run, session.as_ref(), req.tool, req.summary, req.detail, Some(&req.call_id))
+    }
+
+    fn denial_reason(&self, call_id: &str) -> Option<String> {
+        self.core.upgrade()?.approvals.denial_reason(call_id)
     }
 }
 

@@ -252,7 +252,7 @@ fn approval_modal() {
     let reqs = s.on_key(key(KeyCode::Char('a')));
     assert_eq!(
         reqs,
-        vec![Request::Approve { approval: ApprovalId(7), decision: marlowe_proto::ApprovalDecision::AllowForSession }]
+        vec![Request::Approve { approval: ApprovalId(7), decision: marlowe_proto::ApprovalDecision::AllowForSession, reason: None }]
     );
     assert!(s.composer.text().is_empty());
     assert!(s.approvals.is_empty());

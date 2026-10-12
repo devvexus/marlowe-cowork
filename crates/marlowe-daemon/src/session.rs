@@ -730,6 +730,7 @@ impl ApprovalGate for Gate {
         for o in &self.observers {
             let _ = guard(|| o.on_notification(&req.session, &note));
         }
+        let call_id = req.call_id.clone();
         let (id, tx, rx) = self.core.approvals.register();
         let _hook = self.cancel.on_cancel(move || {
             let _ = tx.try_send(ApprovalDecision::Deny);
@@ -744,9 +745,14 @@ impl ApprovalGate for Gate {
             proposed_rule,
         });
         let decision = rx.recv_timeout(self.core.cfg.approval_timeout).unwrap_or(ApprovalDecision::Deny);
+        self.core.approvals.note_denial(id, &call_id);
         self.core.approvals.remove(id);
         self.core.bus.publish(Event::ApprovalResolved { approval: id, decision });
         decision
+    }
+
+    fn denial_reason(&self, call_id: &str) -> Option<String> {
+        self.core.approvals.denial_reason(call_id)
     }
 }
 

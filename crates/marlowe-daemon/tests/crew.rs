@@ -551,7 +551,7 @@ fn run_approvals_carry_the_run_and_discard_asks_first() {
         }
         e => panic!("{e:?}"),
     };
-    a.send(&Request::Approve { approval, decision: ApprovalDecision::Allow });
+    a.send(&Request::Approve { approval, decision: ApprovalDecision::Allow, reason: None });
     a.until_event(finished(&run));
 
     // Discard: denied first, then allowed.
@@ -565,14 +565,14 @@ fn run_approvals_carry_the_run_and_discard_asks_first() {
         }
         e => panic!("{e:?}"),
     };
-    a.send(&Request::Approve { approval, decision: ApprovalDecision::Deny });
+    a.send(&Request::Approve { approval, decision: ApprovalDecision::Deny, reason: None });
     let got = a.until(|e| e.seq == 0 && matches!(e.event, Event::Error { .. }));
     assert!(matches!(&got.last().unwrap().event, Event::Error { message, .. } if message.contains("not approved")));
 
     a.send(&Request::DiscardRun { run: RunId(run.short().to_string()) });
     let got = a.until_event(|e| matches!(e, Event::ApprovalRequested { .. }));
     let Event::ApprovalRequested { approval, .. } = got.last().unwrap().event.clone() else { unreachable!() };
-    a.send(&Request::Approve { approval, decision: ApprovalDecision::Allow });
+    a.send(&Request::Approve { approval, decision: ApprovalDecision::Allow, reason: None });
     let got = a.until(|e| e.seq == 0 && matches!(e.event, Event::RunUpdated(_) | Event::Error { .. }));
     match &got.last().unwrap().event {
         Event::RunUpdated(info) => {
@@ -1106,5 +1106,34 @@ fn parity_wf7_a_waited_workflow_is_delivered_once_as_the_tool_result() {
     assert!(matches!(&got.last().unwrap().event, Event::Runs { list } if list.iter().any(|r| r.id == run)));
     std::thread::sleep(Duration::from_millis(500));
     assert!(p2.requests().is_empty(), "no relay turn after the restart");
+    stop(d);
+}
+
+#[test]
+fn a_denial_with_a_reason_reaches_the_runs_agent_in_its_tool_result() {
+    let home = temp_home("deny-why");
+    let p = Arc::new(Routed::default());
+    p.crew(tool_call("d1", "danger", "{}"));
+    p.crew(reply("Skipped it.\nConfidence: high"));
+    let d = start(&home, p.clone(), true);
+    let mut a = Client::connect(&d.info);
+
+    a.send(&dispatch_req("tester", "Run the dangerous tool once"));
+    let got = a.until_event(|e| matches!(e, Event::ApprovalRequested { .. }));
+    let run = reply_run(&got);
+    let Event::ApprovalRequested { approval, .. } = got.last().unwrap().event.clone() else { unreachable!() };
+    a.send(&Request::Approve { approval, decision: ApprovalDecision::Deny, reason: Some("use the dry-run flag instead".into()) });
+    a.until_event(finished(&run));
+
+    let seen: Vec<String> = p
+        .requests()
+        .into_iter()
+        .filter(|(crew, _)| *crew)
+        .flat_map(|(_, r)| r.messages.iter().flat_map(|m| m.tool_results_iter().map(|t| t.content.clone())).collect::<Vec<_>>())
+        .collect();
+    assert!(
+        seen.iter().any(|c| c == "The user denied this call and said: \"use the dry-run flag instead\". Do what they said; do not retry the call unless they ask."),
+        "{seen:?}"
+    );
     stop(d);
 }

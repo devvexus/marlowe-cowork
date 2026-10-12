@@ -1007,7 +1007,7 @@ impl Driver {
     // ------------------------------------------------------------ approvals and questions
 
     fn decide(&mut self, approval: ApprovalId, decision: ApprovalDecision) {
-        let _ = self.send(&Request::Approve { approval, decision });
+        let _ = self.send(&Request::Approve { approval, decision, reason: None });
     }
 
     fn deny(&mut self, approval: ApprovalId, tool: &str, input: &Value, why: &str) {

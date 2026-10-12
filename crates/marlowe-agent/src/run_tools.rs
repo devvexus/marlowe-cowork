@@ -37,6 +37,19 @@ use crate::ApprovalDecision;
 /// Content returned to the model for a denied call.
 pub(crate) const DENIED: &str =
     "The user denied this call. Do not retry it; continue without it or ask the user how to proceed.";
+/// Characters of a denial reason the model is shown.
+const MAX_DENIAL_REASON: usize = 600;
+
+/// What a denied call returns: [`DENIED`], or with the user's reason the same opening sentence
+/// (clients that report denials match on it) and what they said.
+pub fn denied_text(reason: Option<&str>) -> String {
+    let said: String = reason.map_or_else(String::new, |r| r.split_whitespace().collect::<Vec<_>>().join(" "));
+    if said.is_empty() {
+        return DENIED.into();
+    }
+    let said: String = said.chars().take(MAX_DENIAL_REASON).collect();
+    format!("The user denied this call and said: \"{said}\". Do what they said; do not retry the call unless they ask.")
+}
 
 /// Content returned to the model for a call skipped because the turn was interrupted.
 pub(crate) const INTERRUPTED: &str = "Not run: the user interrupted the turn.";
@@ -204,7 +217,8 @@ pub(crate) fn run_calls(
                         None => gate.ask(req(host, ctx, c, summary)),
                     };
                     if !decision.is_allowed() {
-                        let denied = ToolOutcome { summary: "denied".into(), ..ToolOutcome::error(DENIED) };
+                        let said = gate.denial_reason(&c.id);
+                        let denied = ToolOutcome { summary: "denied".into(), ..ToolOutcome::error(denied_text(said.as_deref())) };
                         let _ = tx.send(Msg::Done { i, out: denied, ran: false });
                         continue;
                     }

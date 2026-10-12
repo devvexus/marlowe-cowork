@@ -530,9 +530,9 @@ fn approvals_round_trip_and_time_out_to_deny() {
         _ => unreachable!(),
     };
     // Any client may answer; an unknown id is refused.
-    b.send(&Request::Approve { approval: marlowe_proto::ApprovalId(9_999), decision: ApprovalDecision::Allow });
+    b.send(&Request::Approve { approval: marlowe_proto::ApprovalId(9_999), decision: ApprovalDecision::Allow, reason: None });
     b.until(|e| matches!(e, Event::Error { message, .. } if message.contains("not pending")));
-    b.send(&Request::Approve { approval, decision: ApprovalDecision::Allow });
+    b.send(&Request::Approve { approval, decision: ApprovalDecision::Allow, reason: None });
     let log = a.until(is_finished);
     assert!(log.iter().any(|e| matches!(e.event, Event::ApprovalResolved { approval: x, decision: ApprovalDecision::Allow } if x == approval)));
     assert!(log.iter().any(|e| matches!(&e.event, Event::ToolFinished { ok: true, call_id, .. } if call_id == "c1")));
@@ -1128,7 +1128,7 @@ fn forgetting_what_the_user_said_asks_the_user_first() {
             Event::ApprovalRequested { approval, tool, summary, .. } => {
                 assert_eq!(tool, "forget");
                 assert!(summary.starts_with("forget a memory from you: My manager is Dana"), "{summary}");
-                a.send(&Request::Approve { approval: *approval, decision });
+                a.send(&Request::Approve { approval: *approval, decision, reason: None });
             }
             _ => unreachable!(),
         }
@@ -1141,6 +1141,33 @@ fn forgetting_what_the_user_said_asks_the_user_first() {
     let forgotten = |e: &Envelope| matches!(&e.event, Event::MemoryChanged { id: x, change: marlowe_proto::MemoryChange::Forgotten } if *x == id);
     assert!(log.iter().any(forgotten), "{log:#?}");
     assert!(mind.get(&id).unwrap().is_none(), "allowed: forgotten with the user's authority");
+    stop(d, &home);
+}
+
+#[test]
+fn a_denial_with_a_reason_tells_the_model_what_the_user_said() {
+    let home = temp_home("deny-why");
+    seed_model(&home);
+    let mind = open_mind(&home, no_models(&home));
+    let source = Provenance::User { session: None };
+    let id = mind.remember(MemoryIn { text: "My manager is Dana.".into(), kind: Kind::Fact, scope: Scope::Global, source }).unwrap().id;
+    let p = Arc::new(Scripted::default());
+    p.push(tool_call("f1", "forget", &format!(r#"{{"id":"{id}"}}"#)));
+    p.push(vec![text("Kept it.")]);
+    let d = start_with(&home, p.clone(), mem_cfg(), Some(mind.clone()));
+    let mut a = Client::connect(&d.info, None);
+    a.send(&Request::Ask { session: None, text: "forget who my manager is".into(), workspace: None, images: Vec::new(), options: None });
+    let asked = a.until(|e| matches!(e, Event::ApprovalRequested { .. }));
+    let Event::ApprovalRequested { approval, .. } = asked.last().unwrap().event.clone() else { unreachable!() };
+    a.send(&Request::Approve { approval, decision: ApprovalDecision::Deny, reason: Some("keep it, I only asked what it was".into()) });
+    a.until(is_finished);
+    let second = &p.requests()[1];
+    let seen: Vec<String> = second.messages.iter().flat_map(|m| m.tool_results_iter().map(|t| t.content.clone())).collect();
+    assert_eq!(
+        seen,
+        vec!["The user denied this call and said: \"keep it, I only asked what it was\". Do what they said; do not retry the call unless they ask.".to_string()]
+    );
+    assert!(mind.get(&id).unwrap().is_some());
     stop(d, &home);
 }
 

@@ -268,7 +268,7 @@ fn approvals_queue_and_resolve_from_any_client() {
     // Deny is the default; Enter confirms it once the type-ahead guard has passed.
     s.now_ms += 1_000;
     let reqs = s.on_key(key(KeyCode::Enter));
-    assert_eq!(reqs, vec![Request::Approve { approval: ApprovalId(2), decision: ApprovalDecision::Deny }]);
+    assert_eq!(reqs, vec![Request::Approve { approval: ApprovalId(2), decision: ApprovalDecision::Deny, reason: None }]);
     assert!(s.approvals.is_empty());
 }
 
@@ -295,7 +295,7 @@ fn type_ahead_cannot_answer_an_approval() {
     assert_eq!(s.approvals.len(), 1);
     // Later, a bare Enter denies: nothing moved the selection off Deny.
     s.now_ms += 1_000;
-    assert_eq!(s.on_key(key(KeyCode::Enter)), vec![Request::Approve { approval: ApprovalId(1), decision: ApprovalDecision::Deny }]);
+    assert_eq!(s.on_key(key(KeyCode::Enter)), vec![Request::Approve { approval: ApprovalId(1), decision: ApprovalDecision::Deny, reason: None }]);
 }
 
 #[test]
@@ -314,7 +314,7 @@ fn allow_needs_the_whole_detail_to_have_been_shown() {
     s.on_key(key(KeyCode::PageDown));
     assert!(s.approval_read);
     assert!(contains(&render(&s, W, H), "echo 29"));
-    assert_eq!(s.on_key(key(KeyCode::Char('y'))), vec![Request::Approve { approval: ApprovalId(1), decision: ApprovalDecision::Allow }]);
+    assert_eq!(s.on_key(key(KeyCode::Char('y'))), vec![Request::Approve { approval: ApprovalId(1), decision: ApprovalDecision::Allow, reason: None }]);
 }
 
 #[test]

@@ -223,7 +223,7 @@ fn usage_policies_and_the_approval_gated_restart() {
     let Some(Event::ApprovalRequested { approval, tool, detail, .. }) = asked.last() else { unreachable!() };
     assert_eq!(tool, SERVER_RESTART_TOOL);
     assert!(detail.contains("every Ollama model") && detail.contains("setx OLLAMA_KV_CACHE_TYPE q4_0"), "{detail}");
-    c.send(&Request::Approve { approval: *approval, decision: ApprovalDecision::Deny });
+    c.send(&Request::Approve { approval: *approval, decision: ApprovalDecision::Deny, reason: None });
     let done = c.until(|e| matches!(e, Event::ServerApplied { .. }));
     assert!(matches!(done.last(), Some(Event::ServerApplied { ok: false, message }) if message.contains("setx")));
     assert!(server.0.lock().unwrap().is_empty(), "denied means not run");
@@ -232,7 +232,7 @@ fn usage_policies_and_the_approval_gated_restart() {
     c.send(&Request::ApplyOllamaServer { kv_type: Some(KvType::Q4_0), parallel: None, flash_attn: None });
     let asked = c.until(|e| matches!(e, Event::ApprovalRequested { .. }));
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
-    c.send(&Request::Approve { approval: *approval, decision: ApprovalDecision::Allow });
+    c.send(&Request::Approve { approval: *approval, decision: ApprovalDecision::Allow, reason: None });
     let done = c.until(|e| matches!(e, Event::ServerApplied { .. }));
     assert!(matches!(done.last(), Some(Event::ServerApplied { ok: true, .. })));
     assert_eq!(server.0.lock().unwrap().as_slice(), &[ServerChange { kv_type: Some(KvType::Q4_0), parallel: None, flash_attn: None }]);
@@ -269,7 +269,7 @@ fn a_cold_load_that_does_not_fit_asks_with_its_cost() {
     assert_eq!(tool, "load model");
     assert!(summary.contains("llama3:8b"), "{summary}");
     assert!(detail.contains("GiB of GPU memory") && detail.contains("1.9 GiB is free"), "{detail}");
-    c.send(&Request::Approve { approval: *approval, decision: ApprovalDecision::Deny });
+    c.send(&Request::Approve { approval: *approval, decision: ApprovalDecision::Deny, reason: None });
     let refused = c.until(|e| matches!(e, Event::Error { .. }));
     assert!(matches!(refused.last(), Some(Event::Error { message, .. }) if message.contains("not loading")), "{refused:#?}");
     assert!(!refused.iter().any(|e| matches!(e, Event::TurnStarted { .. })), "denied: no model call");
@@ -277,7 +277,7 @@ fn a_cold_load_that_does_not_fit_asks_with_its_cost() {
     c.send(&Request::Ask { session: None, text: "hi again".into(), workspace: None, images: Vec::new(), options: None });
     let asked = c.until(|e| matches!(e, Event::ApprovalRequested { .. }));
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
-    c.send(&Request::Approve { approval: *approval, decision: ApprovalDecision::Allow });
+    c.send(&Request::Approve { approval: *approval, decision: ApprovalDecision::Allow, reason: None });
     c.until(|e| matches!(e, Event::TurnFinished { .. }));
     c.send(&Request::Ask { session: None, text: "and again".into(), workspace: None, images: Vec::new(), options: None });
     let evs = c.until(|e| matches!(e, Event::TurnFinished { .. }));

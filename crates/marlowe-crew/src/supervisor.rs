@@ -49,6 +49,11 @@ use crate::CrewError;
 pub trait RunApprovals: Send + Sync {
     /// Blocks the run's thread; returns `Deny` on timeout, cancel or shutdown.
     fn ask(&self, run: &RunId, session: Option<&SessionId>, req: ApprovalReq) -> ApprovalDecision;
+
+    /// What the user said when they denied call `call_id`, once (`ApprovalGate::denial_reason`).
+    fn denial_reason(&self, _call_id: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Whether the Sentinel reports the GPU busy right now.

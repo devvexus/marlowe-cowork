@@ -146,6 +146,9 @@ impl State {
     pub fn on_paste(&mut self, text: &str) {
         self.wake.boot = None;
         if !self.approvals.is_empty() {
+            if let Some(r) = self.approval_reason.as_mut() {
+                r.insert_str(&text.replace(['\r', '\n'], " "));
+            }
             return;
         }
         match (&mut self.overlay, self.view) {
@@ -268,7 +271,8 @@ impl State {
         if !self.approvals.is_empty() && !matches!(self.overlay, Some(Overlay::Choice { .. })) {
             if let Some(Target::Button(i)) = self.target_at(at) {
                 if self.now_ms.saturating_sub(self.approval_since_ms) >= APPROVAL_GUARD_MS {
-                    let n = self.approvals.first().map_or(APPROVAL_CHOICES.len(), |a| a.choices().len());
+                    // One past the buttons is "deny, and tell Marlowe why".
+                    let n = self.approvals.first().map_or(APPROVAL_CHOICES.len(), |a| a.choices().len()) + 1;
                     self.approval_sel = i.min(n - 1);
                     self.approval_key(KeyEvent::from(KeyCode::Enter), out);
                 }
@@ -706,6 +710,10 @@ impl State {
         let Some(a) = self.approvals.first() else { return };
         let id = a.id;
         let max = a.detail_scroll_max();
+        if self.approval_reason.is_some() {
+            self.approval_reason_key(k, id, out);
+            return;
+        }
         let scroll = match k.code {
             KeyCode::Up => Some(self.approval_scroll.saturating_sub(1)),
             KeyCode::Down => Some(self.approval_scroll + 1),
@@ -729,6 +737,8 @@ impl State {
         let once_only = self.approvals.first().is_some_and(|a| a.tool == marlowe_proto::SERVER_RESTART_TOOL);
         let choices = self.approvals.first().map(|a| a.choices()).unwrap_or_else(|| APPROVAL_CHOICES.to_vec());
         let last = choices.len() - 1;
+        // One past the buttons: "deny, and tell Marlowe why".
+        let why = choices.len();
         let decision = match k.code {
             KeyCode::Left | KeyCode::BackTab if once_only => {
                 self.approval_sel = 0;
@@ -743,7 +753,16 @@ impl State {
                 None
             }
             KeyCode::Right | KeyCode::Tab => {
-                self.approval_sel = (self.approval_sel + 1).min(last);
+                self.approval_sel = (self.approval_sel + 1).min(why);
+                None
+            }
+            KeyCode::Enter if self.approval_sel >= why => {
+                self.approval_reason = Some(crate::composer::Composer::default());
+                None
+            }
+            KeyCode::Char('w') => {
+                self.approval_sel = why;
+                self.approval_reason = Some(crate::composer::Composer::default());
                 None
             }
             KeyCode::Enter => Some(choices[self.approval_sel.min(last)]),
@@ -759,10 +778,45 @@ impl State {
             if decision.is_allowed() && !self.approval_read {
                 return;
             }
-            out.push(Request::Approve { approval: id, decision });
+            out.push(Request::Approve { approval: id, decision, reason: None });
             // Resolve locally; the daemon's ApprovalResolved is then a no-op.
             self.approvals.remove(0);
             self.front_approval_changed();
+        }
+    }
+
+    /// Keys while the reason line is open: Enter denies with it (blank is a plain denial), Esc
+    /// goes back to the buttons.
+    fn approval_reason_key(&mut self, k: KeyEvent, id: marlowe_proto::ApprovalId, out: &mut Vec<Request>) {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(r) = self.approval_reason.as_mut() else { return };
+        match k.code {
+            KeyCode::Esc => {
+                self.approval_reason = None;
+                self.approval_sel = self.approvals.first().map_or(crate::state::APPROVAL_DENY, |a| a.why_index());
+            }
+            KeyCode::Enter => {
+                let said = r.take().trim().to_string();
+                let reason = (!said.is_empty()).then_some(said);
+                if let Some(said) = &reason {
+                    // Under the denied tool line: what the model is about to be told.
+                    self.note(&format!("you told Marlowe why: {said}"), NoteTone::Dim);
+                }
+                out.push(Request::Approve { approval: id, decision: marlowe_proto::ApprovalDecision::Deny, reason });
+                self.approvals.remove(0);
+                self.front_approval_changed();
+            }
+            KeyCode::Backspace if ctrl => r.backspace_word(),
+            KeyCode::Char('w') if ctrl => r.backspace_word(),
+            KeyCode::Char('u') if ctrl => r.clear(),
+            KeyCode::Backspace => r.backspace(),
+            KeyCode::Delete => r.delete(),
+            KeyCode::Left => r.left(),
+            KeyCode::Right => r.right(),
+            KeyCode::Home => r.home(),
+            KeyCode::End => r.end(),
+            KeyCode::Char(c) if !ctrl => r.insert(c),
+            _ => {}
         }
     }
 

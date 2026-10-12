@@ -203,7 +203,7 @@ fn settle(home: &Path, req: Request, run: &RunId, yes: bool) -> CmdResult {
                 if asking.as_str().starts_with(run.as_str()) =>
             {
                 let decision = if yes { ApprovalDecision::Allow } else { prompt(&tool, &summary, &detail) };
-                send(&mut c, &Request::Approve { approval, decision })?;
+                send(&mut c, &Request::Approve { approval, decision, reason: None })?;
             }
             Event::Error { message, .. } if env.seq == 0 => return Err(message),
             Event::RunUpdated(info) if env.seq == 0 => {

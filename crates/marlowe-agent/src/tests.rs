@@ -218,6 +218,19 @@ impl ApprovalGate for RecordingGate {
     }
 }
 
+/// Denies, and says why, as "deny and tell Marlowe why" does.
+struct SayingGate(&'static str);
+
+impl ApprovalGate for SayingGate {
+    fn ask(&self, _req: ApprovalReq) -> ApprovalDecision {
+        ApprovalDecision::Deny
+    }
+
+    fn denial_reason(&self, call_id: &str) -> Option<String> {
+        (call_id == "b1").then(|| self.0.to_string())
+    }
+}
+
 // ---------------------------------------------------------------- harness
 
 fn agent(provider: Arc<ScriptedProvider>, tools: Arc<TestTools>) -> Agent {
@@ -391,6 +404,29 @@ fn malformed_arguments_are_reported_not_run() {
     assert_eq!(tools.ran("echo"), 0);
     let res = tool_results(&c.messages[2]);
     assert!(res[0].is_error && res[0].content.contains("not valid JSON"));
+}
+
+#[test]
+fn a_denial_with_a_reason_carries_the_users_words_and_without_one_the_old_text() {
+    let p = ScriptedProvider::new(vec![Step::Events(call(0, "b1", "bash", json!({"command": "rm -rf x"}))), answer("ok")]);
+    let tools = TestTools::new();
+    let mut a = agent(p, tools.clone());
+    a.approvals = Arc::new(SayingGate("use
+the scratch copy instead"));
+    let mut c = convo();
+    run(&a, &mut c, "clean up");
+    assert_eq!(tools.ran("bash"), 0);
+    let res = tool_results(&c.messages[2]);
+    assert_eq!(
+        res[0].content,
+        "The user denied this call and said: \"use the scratch copy instead\". Do what they said; do not retry the call unless they ask."
+    );
+    assert!(res[0].is_error && res[0].content.starts_with("The user denied this call"));
+
+    assert_eq!(crate::run_tools::denied_text(None), DENIED);
+    assert_eq!(crate::run_tools::denied_text(Some("   ")), DENIED, "an empty reason is a plain denial");
+    let long = crate::run_tools::denied_text(Some(&"x".repeat(5_000)));
+    assert!(long.len() < 800, "the reason is clipped");
 }
 
 #[test]

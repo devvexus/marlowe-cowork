@@ -32,7 +32,7 @@ fn every_request_round_trips_and_is_tagged_by_op() {
         Request::ListSessions { limit: 20 },
         Request::OpenSession { session: sid() },
         Request::NewSession { workspace: None },
-        Request::Approve { approval: ApprovalId(3), decision: ApprovalDecision::AllowForSession },
+        Request::Approve { approval: ApprovalId(3), decision: ApprovalDecision::AllowForSession, reason: None },
         Request::LibraryState,
         Request::DetectProviders,
         Request::ListCatalog { provider: ProviderKind::OpenRouter },
@@ -41,6 +41,7 @@ fn every_request_round_trips_and_is_tagged_by_op() {
         Request::SetSlot { slot: Slot::Crew("researcher".into()), model: Some(mref()), effort: Effort::High },
         Request::SetCredential { provider: ProviderKind::OpenRouter, secret: Secret("sk-or-xyz".into()) },
         Request::Status,
+        Request::Approve { approval: ApprovalId(4), decision: ApprovalDecision::Deny, reason: Some("use the sandbox copy".into()) },
         Request::Shutdown,
     ];
     for r in &reqs {
@@ -69,6 +70,17 @@ fn minimal_requests_parse_with_defaults() {
     let r: Request = serde_json::from_str(r#"{"op":"set_slot","slot":"quick"}"#).unwrap();
     assert_eq!(r, Request::SetSlot { slot: Slot::Quick, model: None, effort: Effort::Medium });
     assert!(serde_json::from_str::<Request>(r#"{"op":"set_slot","slot":"chef"}"#).is_err());
+}
+
+#[test]
+fn approve_without_a_reason_is_the_old_wire_form_and_old_json_still_parses() {
+    let plain = Request::Approve { approval: ApprovalId(3), decision: ApprovalDecision::Deny, reason: None };
+    let s = serde_json::to_string(&plain).unwrap();
+    assert!(!s.contains("reason"), "{s}");
+    let old: Request = serde_json::from_str(r#"{"op":"approve","approval":3,"decision":"deny"}"#).unwrap();
+    assert_eq!(old, plain);
+    let said = Request::Approve { approval: ApprovalId(3), decision: ApprovalDecision::Deny, reason: Some("not that file".into()) };
+    assert!(serde_json::to_string(&said).unwrap().contains(r#""reason":"not that file""#));
 }
 
 #[test]

@@ -217,7 +217,7 @@ fn approve_all(c: &mut Client) -> Vec<Envelope> {
         let last = batch.last().unwrap().event.clone();
         all.extend(batch);
         match last {
-            Event::ApprovalRequested { approval, .. } => c.send(&Request::Approve { approval, decision: ApprovalDecision::Allow }),
+            Event::ApprovalRequested { approval, .. } => c.send(&Request::Approve { approval, decision: ApprovalDecision::Allow, reason: None }),
             _ => return all,
         }
     }

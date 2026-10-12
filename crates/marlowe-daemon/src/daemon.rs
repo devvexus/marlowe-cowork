@@ -35,7 +35,14 @@ const TITLE_CHARS: usize = 60;
 pub(crate) struct Approvals {
     next: AtomicU64,
     pending: Mutex<HashMap<ApprovalId, Sender<ApprovalDecision>>>,
+    /// What the user said with a `Deny`, by approval, until the asking gate takes it.
+    reasons: Mutex<HashMap<ApprovalId, String>>,
+    /// The same, by tool call id, until the agent loop takes it for the call's result.
+    denials: Mutex<HashMap<String, String>>,
 }
+
+/// Characters of a denial reason kept.
+const MAX_DENIAL_REASON: usize = 600;
 
 impl Approvals {
     pub fn register(&self) -> (ApprovalId, Sender<ApprovalDecision>, Receiver<ApprovalDecision>) {
@@ -47,8 +54,17 @@ impl Approvals {
 
     /// Delivers a decision; false when `id` is not pending.
     pub fn resolve(&self, id: ApprovalId, decision: ApprovalDecision) -> bool {
+        self.resolve_with(id, decision, None)
+    }
+
+    /// [`Approvals::resolve`] with the user's words on a denial (kept only for a `Deny`).
+    pub fn resolve_with(&self, id: ApprovalId, decision: ApprovalDecision, reason: Option<String>) -> bool {
         match lock(&self.pending).remove(&id) {
             Some(tx) => {
+                let said: String = reason.as_deref().map_or_else(String::new, |r| r.trim().chars().take(MAX_DENIAL_REASON).collect());
+                if !decision.is_allowed() && !said.is_empty() {
+                    lock(&self.reasons).insert(id, said);
+                }
                 let _ = tx.try_send(decision);
                 true
             }
@@ -56,8 +72,26 @@ impl Approvals {
         }
     }
 
+    /// The reason that came with a denial of `id`, once.
+    pub fn take_reason(&self, id: ApprovalId) -> Option<String> {
+        lock(&self.reasons).remove(&id)
+    }
+
+    /// Hands the reason of denied approval `id` to the agent loop, which asks for it by the call.
+    pub fn note_denial(&self, id: ApprovalId, call_id: &str) {
+        if let Some(r) = self.take_reason(id) {
+            lock(&self.denials).insert(call_id.to_string(), r);
+        }
+    }
+
+    /// What the user said when they denied call `call_id`, once.
+    pub fn denial_reason(&self, call_id: &str) -> Option<String> {
+        lock(&self.denials).remove(call_id)
+    }
+
     pub fn remove(&self, id: ApprovalId) {
         lock(&self.pending).remove(&id);
+        lock(&self.reasons).remove(&id);
     }
 
     pub fn deny_all(&self) {

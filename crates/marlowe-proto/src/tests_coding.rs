@@ -247,7 +247,7 @@ fn the_seam_review_additions_round_trip_and_old_json_still_loads() {
         (Request::KillJob { id: "job-1".into() }, "kill_job"),
         (Request::UserShell { session: sid(), command: "git status".into() }, "user_shell"),
         (
-            Request::Approve { approval: ApprovalId(4), decision: ApprovalDecision::AllowPattern { scope: SettingsScope::Local } },
+            Request::Approve { approval: ApprovalId(4), decision: ApprovalDecision::AllowPattern { scope: SettingsScope::Local }, reason: None },
             "approve",
         ),
     ];

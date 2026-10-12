@@ -68,7 +68,8 @@ pub(crate) fn scrim(area: Rect, theme: &Theme, buf: &mut Buffer) {
     }
 }
 
-pub fn approval(area: Rect, state: &State, a: &Approval, theme: &Theme, buf: &mut Buffer) {
+/// Draws the approval modal; the cursor is where the reason line is typed, when it is open.
+pub fn approval(area: Rect, state: &State, a: &Approval, theme: &Theme, buf: &mut Buffer) -> Option<(u16, u16)> {
     scrim(area, theme, buf);
     let amber = ink(Ink::Amber, theme);
     let dim = ink(Ink::Dim, theme);
@@ -175,6 +176,40 @@ pub fn approval(area: Rect, state: &State, a: &Approval, theme: &Theme, buf: &mu
     }
     let buttons_row = lines.len();
     lines.push(Line::from(choice));
+    // Under the buttons: deny and say why. Opening it turns the row into a one-line input.
+    let why_row = lines.len();
+    let why_sel = state.approval_sel == a.why_index();
+    let why_over = hovered(state, &Target::Button(a.why_index()));
+    let mut cursor_at: Option<(usize, usize)> = None;
+    if let Some(r) = &state.approval_reason {
+        let shown = text::clean(r.text());
+        let room = tw.saturating_sub(24);
+        let before = text::clean(&r.text()[..r.cursor()]);
+        let col = text::width(&before).min(room);
+        // A long reason shows its tail, where the cursor is.
+        let tail: String = {
+            let w = text::width(&shown);
+            if w > room { shown.chars().skip(shown.chars().count().saturating_sub(room)).collect() } else { shown.clone() }
+        };
+        cursor_at = Some((col, lines.len()));
+        lines.push(Line::from(vec![
+            Span::styled("› ", ink(Ink::Accent, theme)),
+            Span::styled("tell Marlowe why  ", dimmer),
+            Span::styled(tail, theme.normal()),
+        ]));
+        lines.push(Line::from(Span::styled("↵ deny with this reason · esc back", dimmer)));
+    } else {
+        let style = match (why_sel, why_over) {
+            (true, _) => ink(Ink::Red, theme).add_modifier(Modifier::BOLD),
+            (false, true) => theme.bright(),
+            (false, false) => theme.normal(),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(if why_sel || why_over { "› " } else { "  " }, if why_sel { ink(Ink::Accent, theme) } else { ink(Ink::Hover, theme) }),
+            Span::styled("w ", dimmer),
+            Span::styled("deny, and tell Marlowe why", style),
+        ]));
+    }
     if !state.approval_read {
         lines.push(Line::from(Span::styled("read the whole request (↓ / PgDn) to enable allow", amber)));
     }
@@ -194,6 +229,11 @@ pub fn approval(area: Rect, state: &State, a: &Approval, theme: &Theme, buf: &mu
             hit(state, rect.intersection(inner), Target::Button(i));
         }
     }
+    if state.approval_reason.is_none() && why_row < inner.height as usize {
+        let rect = Rect { x: inner.x, y: inner.y + why_row as u16, width: 30.min(inner.width), height: 1 };
+        hit(state, rect, Target::Button(a.why_index()));
+    }
+    cursor_at.filter(|(_, row)| *row < inner.height as usize).map(|(col, row)| (inner.x + 2 + 18 + col as u16, inner.y + row as u16))
 }
 
 pub fn palette(area: Rect, state: &State, query: &str, sel: usize, theme: &Theme, buf: &mut Buffer) {
