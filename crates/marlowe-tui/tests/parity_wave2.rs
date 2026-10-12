@@ -810,6 +810,10 @@ fn parity_BG8_a_sent_file_is_a_card_in_the_conversation_and_in_files() {
     }
     assert!(matches!(s.entries.last(), Some(Entry::File { .. })));
     snapshot("file_card", &buf);
+    // A page is opened by the daemon's OpenFile (outbox only), never by a link the terminal would
+    // hand to a browser; text the terminal may show is an OSC 8 link, as the links policy says.
+    assert!(!s.code.link_plan.borrow().iter().any(|l| l.url.contains("loss.html")), "{:?}", s.code.link_plan.borrow());
+
     // /files lists what was sent; Enter opens it, r shows it in Explorer.
     feed(&mut s, 6, Event::FileSent { session: sid(), file: sent("curves.png") });
     keys(&mut s, "'/files' enter");
@@ -1109,4 +1113,33 @@ fn every_wave2_surface_draws_at_every_size_inside_the_palette() {
             assert!(!dump(&buf).contains("needs a window"), "{name} at {w}x{h}");
         }
     }
+}
+
+#[test]
+fn parity_G13_a_session_wide_list_and_a_runs_report_do_not_double_the_findings() {
+    let mut s = coding_session();
+    feed(&mut s, 5, review());
+    // /findings asks for the session's: the answer replaces what was held.
+    feed(&mut s, 0, Event::Findings { session: Some(sid()), run: None, findings: vec![finding(FindingSeverity::High, "correctness", "src/a.rs", Some(1), "one")] });
+    assert_eq!(s.bg.findings.len(), 1);
+    assert_eq!(s.bg.findings[0].findings.len(), 1);
+    // A later review of a run supersedes the session-wide list.
+    feed(&mut s, 6, review());
+    assert_eq!(s.bg.findings.len(), 1);
+    assert_eq!(s.bg.findings[0].findings.len(), 3);
+    // Two different runs are two reports, and Tab walks between them.
+    feed(&mut s, 7, Event::Findings { session: Some(sid()), run: Some(RunId::from("wf2")), findings: vec![finding(FindingSeverity::Low, "reuse", "src/b.rs", None, "two")] });
+    assert_eq!(s.bg.findings.len(), 2);
+    keys(&mut s, "'/findings' enter");
+    assert!(contains(&render(&s, W, H), "1 finding (1 low)"));
+    keys(&mut s, "tab");
+    assert!(contains(&render(&s, W, H), "3 findings"));
+}
+
+#[test]
+fn parity_BG8_a_sent_text_file_is_an_osc8_link_on_its_card() {
+    let mut s = coding_session();
+    feed(&mut s, 5, Event::FileSent { session: sid(), file: sent("notes.txt") });
+    let _ = render(&s, W, H);
+    assert!(s.code.link_plan.borrow().iter().any(|l| l.url.contains("notes.txt")), "{:?}", s.code.link_plan.borrow());
 }

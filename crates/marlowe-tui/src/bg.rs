@@ -381,6 +381,13 @@ impl State {
 
     fn on_findings(&mut self, session: Option<SessionId>, run: Option<RunId>, findings: Vec<Finding>, reply: bool) {
         let expected = std::mem::take(&mut self.bg.expect_findings);
+        // A session-wide list is all of the session's findings: it replaces what was held. A
+        // report on one run replaces the session-wide list (now out of date) and its own earlier one.
+        if run.is_none() {
+            self.bg.findings.retain(|s| s.session != session);
+        } else {
+            self.bg.findings.retain(|s| !(s.run.is_none() && s.session == session));
+        }
         match self.bg.findings.iter_mut().find(|s| s.run == run && s.session == session) {
             Some(s) => s.findings = findings.clone(),
             None => self.bg.findings.push(FindingSet { session, run, findings: findings.clone() }),
