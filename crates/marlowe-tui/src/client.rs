@@ -4,7 +4,7 @@
 use std::io::{BufReader, BufWriter};
 use std::net::{Shutdown, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -27,6 +27,54 @@ pub struct Client {
     requests: Sender<Request>,
     events: Receiver<ClientEvent>,
     last_seq: Arc<AtomicU64>,
+    live: Live,
+}
+
+/// The live connection's socket, for [`Closer`]: set while online.
+type Live = Arc<Mutex<Option<TcpStream>>>;
+
+/// Writes one request to the daemon at once, without the connection thread: for the console's
+/// close handler (a few seconds left, no event loop) and a clean goodbye. Cheap to clone.
+#[derive(Clone)]
+pub struct Closer {
+    live: Live,
+}
+
+impl Closer {
+    /// Writes `r` on the live connection, waiting at most a second. False when offline.
+    pub fn send_now(&self, r: &Request) -> bool {
+        let stream = self.live.lock().unwrap_or_else(|p| p.into_inner()).as_ref().and_then(|s| s.try_clone().ok());
+        let Some(mut stream) = stream else { return false };
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+        write_line(&mut stream, r).is_ok()
+    }
+
+    /// [`Closer::send_now`], then waits (at most `wait`) until the daemon has closed the
+    /// connection, which it does only after reading the request. Closing a socket with unread
+    /// events in it resets the connection on Windows, and a reset can take the request with it:
+    /// this is what makes a `Detach { keep_running: true }` arrive. True when the daemon closed.
+    pub fn goodbye(&self, r: &Request, wait: Duration) -> bool {
+        use std::io::Read;
+        let stream = self.live.lock().unwrap_or_else(|p| p.into_inner()).as_ref().and_then(|s| s.try_clone().ok());
+        let Some(mut stream) = stream else { return false };
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+        if write_line(&mut stream, r).is_err() {
+            return false;
+        }
+        // No more from us: the daemon's reader sees the end of the stream after the request.
+        let _ = stream.shutdown(Shutdown::Write);
+        let _ = stream.set_read_timeout(Some(wait));
+        let end = std::time::Instant::now() + wait;
+        let mut buf = [0u8; 8192];
+        while std::time::Instant::now() < end {
+            match stream.read(&mut buf) {
+                Ok(0) => return true,
+                Ok(_) => continue,
+                Err(_) => return false,
+            }
+        }
+        false
+    }
 }
 
 impl Client {
@@ -36,11 +84,13 @@ impl Client {
         let (ev_tx, ev_rx) = unbounded::<ClientEvent>();
         let last_seq = Arc::new(AtomicU64::new(0));
         let seq = last_seq.clone();
+        let live: Live = Arc::default();
+        let for_thread = live.clone();
         thread::Builder::new()
             .name("marlowe-tui-conn".into())
-            .spawn(move || connection(resolve, req_rx, ev_tx, seq))
+            .spawn(move || connection(resolve, req_rx, ev_tx, seq, for_thread))
             .expect("spawn connection thread");
-        Client { requests: req_tx, events: ev_rx, last_seq }
+        Client { requests: req_tx, events: ev_rx, last_seq, live }
     }
 
     /// Queues a request. Requests sent while offline are dropped.
@@ -50,6 +100,11 @@ impl Client {
 
     pub fn events(&self) -> &Receiver<ClientEvent> {
         &self.events
+    }
+
+    /// A handle that can write a request right now (see [`Closer`]).
+    pub fn closer(&self) -> Closer {
+        Closer { live: self.live.clone() }
     }
 
     /// Highest broadcast seq received.
@@ -63,12 +118,13 @@ fn connection(
     requests: Receiver<Request>,
     events: Sender<ClientEvent>,
     last_seq: Arc<AtomicU64>,
+    live: Live,
 ) {
     let mut attempt: u32 = 0;
     loop {
         let reason = match resolve() {
             None => "no daemon is running (daemon.json not found)".to_string(),
-            Some(info) => match session(&info, &requests, &events, &last_seq) {
+            Some(info) => match session(&info, &requests, &events, &last_seq, &live) {
                 Outcome::Closed => return,
                 Outcome::Refused(msg) => {
                     let _ = events.send(ClientEvent::Refused(msg));
@@ -125,6 +181,7 @@ fn session(
     requests: &Receiver<Request>,
     events: &Sender<ClientEvent>,
     last_seq: &Arc<AtomicU64>,
+    live: &Live,
 ) -> Outcome {
     let lost = |reason: String, was_online| Outcome::Lost { reason, was_online };
     let stream = match TcpStream::connect_timeout(&info.addr, CONNECT_TIMEOUT) {
@@ -165,6 +222,8 @@ fn session(
         other => return Outcome::Refused(format!("unexpected first event: {other:?}")),
     }
     let _ = reader.get_ref().get_ref().set_read_timeout(None);
+    // Online from the Welcome on, before anything hears of it: the close handler may fire at any time.
+    *live.lock().unwrap_or_else(|p| p.into_inner()) = writer.get_ref().try_clone().ok();
     if events.send(ClientEvent::Envelope(first)).is_err() {
         return Outcome::Closed;
     }
@@ -212,6 +271,7 @@ fn session(
             recv(dead_rx) -> r => break r.unwrap_or_else(|_| "connection lost".into()),
         }
     };
+    *live.lock().unwrap_or_else(|p| p.into_inner()) = None;
     let _ = writer.get_ref().shutdown(Shutdown::Both);
     lost(reason, true)
 }
@@ -293,6 +353,52 @@ mod tests {
         assert!(matches!(next_env(&client).event, Event::Welcome { .. }));
         assert_eq!(next_env(&client).seq, 3);
         assert_eq!(client.last_seq(), 3);
+    }
+
+    /// The console's close handler has seconds and no event loop: its request is written on the
+    /// live connection at once, not queued behind the connection thread.
+    #[test]
+    fn the_close_handlers_request_reaches_the_daemon_without_the_event_loop() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = Client::spawn(Box::new(move || Some(ConnectInfo { addr, token: TOKEN.into() })));
+        let closer = client.closer();
+        // Offline until the handshake: nothing to write to.
+        assert!(!closer.send_now(&Request::WindowClosed));
+
+        let (s, _) = listener.accept().unwrap();
+        let mut r = LineReader::new(std::io::BufReader::new(s.try_clone().unwrap()));
+        let mut w = s;
+        let _hello: Request = r.next().unwrap().unwrap();
+        write_line(&mut w, &welcome(0)).unwrap();
+        assert!(matches!(next_env(&client).event, Event::Welcome { .. }));
+
+        // The event loop is not running (nothing reads `client.events()` from here on): the
+        // request still gets there.
+        assert!(closer.send_now(&Request::WindowClosed));
+        let got: Request = r.next().unwrap().unwrap();
+        assert_eq!(got, Request::WindowClosed);
+        // A clean goodbye is the same path.
+        assert!(closer.send_now(&Request::Detach { keep_running: true }));
+        let got: Request = r.next().unwrap().unwrap();
+        assert_eq!(got, Request::Detach { keep_running: true });
+
+        // A goodbye waits for the daemon to close its side, which it does after reading it.
+        let farewell = Request::Detach { keep_running: false };
+        let closer2 = closer.clone();
+        let said = std::thread::spawn(move || closer2.goodbye(&farewell, Duration::from_secs(10)));
+        let got: Request = r.next().unwrap().unwrap();
+        assert_eq!(got, Request::Detach { keep_running: false });
+        assert!(r.next::<Request>().unwrap().is_none(), "the client shut its write side");
+        // The daemon went away: offline again, and the closer says so.
+        drop(w);
+        drop(r);
+        assert!(said.join().unwrap(), "the goodbye saw the daemon close");
+        let end = std::time::Instant::now() + Duration::from_secs(10);
+        while closer.send_now(&Request::Status) && std::time::Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!closer.send_now(&Request::Status));
     }
 
     #[test]

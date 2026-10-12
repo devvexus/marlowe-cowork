@@ -18,6 +18,7 @@ fn is_edit_tool(tool: &str) -> bool {
 
 impl State {
     pub(crate) fn record_tool_start(&mut self, call_id: &str, tool: &str, summary: &str) {
+        self.bg_tool_started(call_id, tool, summary);
         let (_, rest) = crate::state::split_summary(summary);
         let diff = if is_edit_tool(tool) && crate::diff::looks_like_diff(&rest) { crate::diff::parse_unified(&rest) } else { None };
         let d = self.code.tool_detail.entry(call_id.to_string()).or_default();
@@ -29,6 +30,7 @@ impl State {
     }
 
     pub(crate) fn record_tool_finish(&mut self, call_id: &str, ok: bool, rest: &str) {
+        self.bg_tool_finished(call_id, ok, rest);
         let d: &mut ToolDetail = self.code.tool_detail.entry(call_id.to_string()).or_default();
         d.ok = Some(ok);
         if rest.is_empty() {
@@ -96,6 +98,7 @@ impl State {
         for id in ids {
             self.code.tool_detail.entry(id).or_default().full = true;
         }
+        self.bg_refresh_thread();
     }
 
     pub(crate) fn add_totals(&mut self, usage: &Usage) {
@@ -131,11 +134,15 @@ impl State {
         if !self.code.bootstrapped || self.code.boot_ws != ws {
             self.code.bootstrapped = true;
             self.code.boot_ws = ws.clone();
-            self.code.quiet_ops = 2;
+            self.code.quiet_ops = 3;
             out.push(Request::GetSettings { workspace: ws.clone() });
             out.push(Request::ListCommands { workspace: ws });
+            // The notification switches `/config` lists (a query: both None).
+            out.push(Request::NotifySettings { toast: None, voice: None });
         }
         self.statusline_tick();
+        self.closing_tick(&mut out);
+        self.bg_idle(&mut out);
         out
     }
 
@@ -240,11 +247,15 @@ impl State {
                 self.code.instructions = Some(files);
                 self.clamp_panel();
             }
+            other => self.bg_local(other),
         }
     }
 
     /// The M4.6 events (everything `State::event` does not know by name).
     pub(crate) fn coding_event(&mut self, ev: &Event, reply: bool, out: &mut Vec<Request>) {
+        if self.bg_event(ev, reply, out) {
+            return;
+        }
         match ev {
             Event::ModeChanged { session, mode } if self.mine(session) => {
                 self.code.mode = *mode;
@@ -283,6 +294,15 @@ impl State {
             Event::McpServers { list } => {
                 self.code.mcp = Some(list.clone());
                 self.clamp_panel();
+                if std::mem::take(&mut self.code.expect_ide) {
+                    let line = match list.iter().find(|s| s.name == "ide") {
+                        Some(s) if !s.detail.is_empty() => format!("editor: {} \u{b7} {} tools \u{b7} {}", s.status, s.tools, s.detail),
+                        Some(s) => format!("editor: `ide` server from your configuration \u{b7} {}", s.status),
+                        None => "editor: none connected. Install the Marlowe VS Code extension (ide/vscode) and open this folder in it; MARLOWE_NO_IDE=1 turns discovery off".to_string(),
+                    };
+                    let tone = if list.iter().any(|s| s.name == "ide" && s.status == "connected") { NoteTone::Dim } else { NoteTone::Amber };
+                    self.note(&line, tone);
+                }
             }
             Event::Checkpoints { session, list } if self.mine(session) => {
                 self.code.checkpoints = Some(list.clone());

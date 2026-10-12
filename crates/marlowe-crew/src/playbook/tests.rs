@@ -194,7 +194,7 @@ fn temp_dir(name: &str) -> PathBuf {
 }
 
 fn scratch(root: &Path) -> Sandbox {
-    Sandbox { kind: SandboxKind::Scratch, root: root.to_path_buf(), origin: None, branch: None, base: None, repo_digest: None }
+    Sandbox { kind: SandboxKind::Scratch, root: root.to_path_buf(), origin: None, branch: None, base: None, repo_digest: None, frozen: Vec::new(), target_dir: None }
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -226,6 +226,8 @@ fn repo_with_worktree(name: &str, run: &RunId) -> (PathBuf, Sandbox) {
         branch: Some(branch),
         base: Some(head),
         repo_digest: crate::sandbox::repo_digest(&repo),
+        frozen: Vec::new(),
+        target_dir: None,
     };
     (repo, sandbox)
 }

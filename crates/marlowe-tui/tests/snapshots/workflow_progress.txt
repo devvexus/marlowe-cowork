@@ -1,0 +1,40 @@
+ * marlowe — gate work                                                                                                   1 run · 0 need you
+╭ Conversation╭ workflow · code-review ──────────────────────────────────────────────────────────────────────────────────────╮─────────────╮
+│             │ find › verify                                                                                                │      medium │
+│             │ ● running · 1 of 3 agents done · budget 54k of 500k                                                          │200k · cloud │
+│             │                                                                                                              │─────── (m) ─╯
+│             │ find                                                                                                         │─────────────╮
+│             │ › ✓ #1  correctness lens                             done     41.2k tok  1m02s                               │             │
+│             │   ● #2  security lens                                running  12.8k tok  31s                                 │─────── (w) ─╯
+│             │ verify                                                                                                       │─ 1 running ─╮
+│             │   ○ #3  verify finding 1                             queued   0 tok      0s                                  │             │
+│             │                                                                                                              │             │
+│             │                                                                                                              │─────── (1) ─╯
+│             │                                                                                                              │─────────────╮
+│             │                                                                                                              │             │
+│             │                                                                                                              │             │
+│             │                                                                                                              │             │
+│             │                                                                                                              │             │
+│             │                                                                                                              │             │
+│             │                                                                                                              │             │
+│             │                                                                                                              │             │
+│             │                                                                                                              │             │
+│             │                                                                                                              │             │
+│             │                                                                                                              │             │
+│             │                                                                                                              │             │
+│             │                                                                                                              │             │
+│             │                                                                                                              │             │
+│             │                                                                                                              │             │
+│             │                                                                                                              │             │
+│             │                                                                                                              │             │
+│             │                                                                                                              │             │
+│             │                                                                                                              │             │
+│             │                                                                                                              │─────── (2) ─╯
+│             │                                                                                                              │─────────────╮
+│             │ log                                                                                                          │             │
+│             │   2 lenses chosen                                                                                            │─────── (3) ─╯
+╰─────────────│   correctness: 3 candidates                                                                                  │─────────────╮
+╭ Message ────╰────────────────────────────────────────────── s skip agent · x stop run · m messages · ↑↓ select · esc back ─╯             │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette       Friday 9 October · 21:40

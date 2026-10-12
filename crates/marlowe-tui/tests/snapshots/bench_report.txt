@@ -1,0 +1,40 @@
+ * marlowe — gate work                                                                                                  0 runs · 0 need you
+╭ Con╭ bench and eval ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮────╮
+│    │ bench · ollama-marlowe-dusk-1                                                                                                  │ium │
+│    │                                                                                                                                │oud │
+│    │ ollama/marlowe-dusk:27b-super (local)                                                                                          │m) ─╯
+│    │ tools     200 prompts: right tool 95.0%, right values 93.0%, schema-valid 98.0%; valid after repair 98.5%, needing repair 4.0… │────╮
+│    │ edits     edit       first attempt 95.0% (38/40), within 2 retries 100.0% (40/40), 1.10 calls/edit                             │    │
+│    │             recommended: edit                                                                                                  │w) ─╯
+│    │ coding    micro tasks passed 7/10 (70.0%)                                                                                      │────╮
+│    │ gates                                                                                                                          │    │
+│    │ A4   PASS  valid after repair 98.5%                                                                                            │1) ─╯
+│    │ A5   FAIL  first attempt 88%                                                                                                   │────╮
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │2) ─╯
+│    │                                                                                                                                │────╮
+│    │                                                                                                                                │    │
+│    │                                                                                                                                │3) ─╯
+╰────│                                                                                                                                │────╮
+╭ Mes╰───────────────────────────────────────────────────────────────────────────────────────────────────────── ↑↓ scroll · esc back ─╯    │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette       Friday 9 October · 21:40

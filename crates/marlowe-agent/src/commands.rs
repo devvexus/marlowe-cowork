@@ -68,6 +68,8 @@ pub struct Command {
     pub user_invocable: bool,
     /// `context: fork`: runs in a subagent.
     pub fork: bool,
+    /// `background: true` on a forked skill: the `skill` call returns the agent id at once (X23).
+    pub background: bool,
     /// The agent type a forked skill runs as.
     pub agent: Option<String>,
     pub body: String,
@@ -152,6 +154,10 @@ pub const BUILTINS: &[(&str, &str, Option<&str>)] = &[
     ("pr-comments", "Read a pull request's review feedback and address it", Some("[number]")),
     ("review", "Review a pull request or the pending diff", Some("[pr]")),
     ("security-review", "Security review of the pending changes", None),
+    ("code-review", "Review the diff, a PR or a branch for bugs with verified findings", Some("[low|medium|high|xhigh|max|default] [pr|base] [--fix] [--comment] [--max-findings n|all|default]")),
+    ("simplify", "Find and apply reuse, simplification and efficiency cleanups in the changed code", Some("[base]")),
+    ("workflow", "Run a saved workflow, or convert a Claude Code one", Some("<name> [json args] | convert <name>")),
+    ("workflows", "Workflow runs and saved workflows", None),
     ("todos", "Show the todo list", None),
     ("help", "List commands", None),
 ];
@@ -382,6 +388,7 @@ fn parse_entry(
             || bool_of(&["hide-from-slash-command-tool"]).unwrap_or(false),
         user_invocable: bool_of(&["user-invocable", "userInvocable"]).unwrap_or(true),
         fork: front_str(&front, &["context"]).is_some_and(|c| c == "fork"),
+        background: bool_of(&["background"]).unwrap_or(false),
         agent: front_str(&front, &["agent"]),
         body: body.trim_start_matches(['\r', '\n']).to_string(),
         path: path.to_path_buf(),
@@ -917,17 +924,22 @@ pub fn init_prompt(workspace: Option<&Path>, repo_map: &str, run: ShellRunner<'_
     )
 }
 
-/// `/loop [interval] <prompt>`: the interval in seconds (`30s`, `5m`, `2h`, `1d`; default 10
-/// minutes) and the prompt.
-pub fn parse_loop(args: &str) -> Option<(u64, String)> {
+/// `/loop [interval] <prompt>`: the interval in seconds (`30s`, `5m`, `2h`, `1d`) and the prompt.
+/// Without an interval the loop is self-paced (BG6): the model decides when to run again by
+/// calling `schedule_wakeup`, and the loop ends when it stops doing so.
+pub fn parse_loop(args: &str) -> Option<(Option<u64>, String)> {
     let args = args.trim();
     let (first, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
-    let interval = parse_interval(first);
-    let (secs, text) = match interval {
-        Some(s) => (s, rest.trim()),
-        None => (600, args),
+    let (secs, text) = match parse_interval(first) {
+        Some(s) => (Some(s), rest.trim()),
+        None => (None, args),
     };
-    (!text.is_empty() && secs > 0).then(|| (secs, text.to_string()))
+    (!text.is_empty() && secs != Some(0)).then(|| (secs, text.to_string()))
+}
+
+/// What a self-paced `/loop` appends to its first run: how to run again, and how it ends.
+pub fn self_paced_note() -> &'static str {
+    "[harness: self-paced loop. Do the work now. To run again, call `schedule_wakeup` with `delay_s`      (60 to 3600) and this same prompt as `prompt`; you will be woken then. If there is nothing left      to watch or do, do not call it: the loop ends when you stop waking yourself.]"
 }
 
 fn parse_interval(s: &str) -> Option<u64> {
@@ -1045,11 +1057,20 @@ impl ToolMiddleware for CommandsMiddleware {
         let ws = convo.workspace.clone();
         let run = |c: &str, d: Option<&Path>| (self.run)(c, d);
         if name == "loop" {
-            let Some(schedule) = &self.schedule else {
-                return TurnFlow::Block("/loop needs the daemon's scheduler".into());
-            };
             let Some((secs, prompt)) = parse_loop(&args) else {
                 return TurnFlow::Block("usage: /loop [interval like 5m, 2h, 30s] <prompt or /command>".into());
+            };
+            let Some(secs) = secs else {
+                // Self-paced: nothing is stored; the model re-arms itself with `schedule_wakeup`.
+                *text = prompt;
+                let flow = self.before_turn(convo, text);
+                text.push_str(&format!("
+
+{}", self_paced_note()));
+                return flow;
+            };
+            let Some(schedule) = &self.schedule else {
+                return TurnFlow::Block("/loop needs the daemon's scheduler".into());
             };
             return match schedule(&convo.session, secs, &prompt) {
                 Ok(id) => {
@@ -1082,7 +1103,8 @@ impl ToolMiddleware for CommandsMiddleware {
         let catalog = Catalog::load(&sources);
         let Some(found) = catalog.find(&name).filter(|c| c.user_invocable) else {
             // The built-in git commands (track J), unless a command file of that name exists.
-            if let Some(expand) = crate::git_prompts::builtin(&name) {
+            // The git commands (track J) and the workflow commands (track W).
+            if let Some(expand) = crate::git_prompts::builtin(&name).or_else(|| crate::workflow_prompts::builtin(&name)) {
                 let mut out = format!("<command-name>/{name}</command-name>\n");
                 if !args.is_empty() {
                     out.push_str(&format!("<command-args>{args}</command-args>\n"));
@@ -1226,8 +1248,10 @@ pub fn skill_call_with(args: &Value, cx: &CallCtx, run: ShellRunner<'_>) -> Tool
             description: format!("skill {}", skill.name),
             prompt: ex.prompt,
             isolation: None,
-            background: false,
+            background: args.get("background").and_then(Value::as_bool).unwrap_or(skill.background),
             model: ex.model.clone(),
+            effort: None,
+            name: None,
         };
         return sub.run(req, cx);
     }
@@ -1301,10 +1325,11 @@ mod tests {
 
     #[test]
     fn loop_intervals() {
-        assert_eq!(parse_loop("5m /babysit"), Some((300, "/babysit".into())));
-        assert_eq!(parse_loop("check the deploy"), Some((600, "check the deploy".into())));
-        assert_eq!(parse_loop("30s ping"), Some((30, "ping".into())));
+        assert_eq!(parse_loop("5m /babysit"), Some((Some(300), "/babysit".into())));
+        assert_eq!(parse_loop("check the deploy"), Some((None, "check the deploy".into())), "no interval: self-paced");
+        assert_eq!(parse_loop("30s ping"), Some((Some(30), "ping".into())));
         assert_eq!(parse_loop("2h"), None);
+        assert_eq!(parse_loop("0s ping"), None);
     }
 
     #[test]

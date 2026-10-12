@@ -208,8 +208,14 @@ pub fn assemble_with(
     convo: &Conversation,
     cfg: &ContextConfig,
 ) -> Assembled {
-    let mut blocks = system.render_stable();
-    if !profile.trim().is_empty() {
+    // A fork (A14) starts from its parent's request: the parent's system blocks and messages go
+    // first, untouched, and everything below applies to the fork's own messages only.
+    let inherited = convo.ext.get::<crate::fork::ForkPrefix>();
+    let mut blocks = match inherited {
+        Some(p) => p.system.clone(),
+        None => system.render_stable(),
+    };
+    if inherited.is_none() && !profile.trim().is_empty() {
         blocks.push(SystemBlock { text: profile.trim().to_string(), cache: true });
     }
     if let Some(s) = convo.summary.as_deref().filter(|s| !s.trim().is_empty()) {
@@ -218,7 +224,7 @@ pub fn assemble_with(
             None => blocks.push(summary_block(s)),
         }
     }
-    if !cfg.volatile_tail {
+    if !cfg.volatile_tail && inherited.is_none() {
         blocks.extend(
             memory
                 .iter()
@@ -255,6 +261,11 @@ pub fn assemble_with(
     }
     if cfg.masking == Masking::Rolling {
         mask_tool_results(&mut messages, cfg.keep_tool_results);
+    }
+    if let Some(p) = inherited {
+        let mut all = p.messages.clone();
+        all.append(&mut messages);
+        messages = all;
     }
 
     let tokens = system_tokens(&blocks) + messages.iter().map(estimate_message_tokens).sum::<u32>();

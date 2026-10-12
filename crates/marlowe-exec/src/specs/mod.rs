@@ -11,7 +11,7 @@
 //! | `web.rs` | web | seam | web_fetch, arxiv, paper, web_search |
 //! | `code.rs` | code | C | (symbols, definition, references, hover, diagnostics, rename_symbol) |
 //! | `verify.rs` | verify | D | (project, service, http_check, browser) |
-//! | `agent.rs` | agent | F | (todo, ask_user, skill, agent, send_message, exit_plan, worktrees) |
+//! | `agent.rs` | agent | F, F3 | (todo, todo_add/update/get, ask_user, skill, agent, send_message, enter_plan, exit_plan, worktrees) |
 //! | `git.rs` | git | J | (git, gh, ci_status) |
 //! | `ml.rs` | ml | J2 | (train_launch, experiments) |
 //! | `mcp.rs` | mcp | K | (tool_search; `mcp__srv__tool` come from the MCP host) |
@@ -242,8 +242,36 @@ pub fn configure(tools: BuiltinTools, setup: &HostSetup<'_>) -> BuiltinTools {
 /// The groups a session exposes for `profile` in `root`: every group for a frontier model; the
 /// core groups plus the detected ones for a local model (design 3, fixed per session).
 pub fn exposed_groups(profile: ExposureProfile, root: Option<&Path>) -> Vec<ToolGroup> {
+    if let Ok(list) = std::env::var(GROUPS_OVERRIDE_ENV) {
+        match parse_group_list(&list) {
+            Ok(groups) => return groups,
+            // A typo must not quietly run the full tool set in an ablation arm.
+            Err(e) => eprintln!("marlowe: {GROUPS_OVERRIDE_ENV} ignored: {e}"),
+        }
+    }
     let detected: Vec<ToolGroup> = GROUPS.iter().filter(|g| (g.detect)(root)).map(|g| g.group).collect();
     marlowe_agent::select_groups(profile, &detected)
+}
+
+/// The eval ablation switch (`marlowe eval`, A3): a comma-separated group list (`shell`) replaces
+/// the session's groups, so the shell-only arm runs the same binary, prompt and model with only a
+/// shell to work with. Unset in every normal run.
+pub const GROUPS_OVERRIDE_ENV: &str = "MARLOWE_TOOL_GROUPS";
+
+/// `shell,files` to the groups it names; any unknown name rejects the whole list.
+pub fn parse_group_list(list: &str) -> Result<Vec<ToolGroup>, String> {
+    let mut out = Vec::new();
+    for name in list.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        let group: ToolGroup = serde_json::from_value(serde_json::Value::String(name.to_string()))
+            .map_err(|_| format!("unknown tool group {name:?}"))?;
+        out.push(group);
+    }
+    if out.is_empty() {
+        return Err("no tool groups named".into());
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
 }
 
 /// For group files: no middleware.

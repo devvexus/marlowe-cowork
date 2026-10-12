@@ -183,6 +183,17 @@ impl Sentinel {
         self.inner.store().notices(client, limit, unseen_only)
     }
 
+    /// Records a notice raised by the daemon itself (a finished job, a monitor, a `notify` call,
+    /// a message). `None`: it duplicated one already recorded at the same severity. This only
+    /// records: the daemon broadcasts, speaks and toasts it.
+    pub fn raise(&self, draft: NoticeDraft) -> Result<Option<Notice>, SentinelError> {
+        let at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        self.inner.store().record(&draft, at_ms)
+    }
+
     /// Notices raised or refreshed at or after `since_ms`, ranked. Feeds the brief.
     pub fn notices_since(&self, since_ms: i64) -> Result<Vec<Notice>, SentinelError> {
         self.inner.store().notices_since(since_ms)

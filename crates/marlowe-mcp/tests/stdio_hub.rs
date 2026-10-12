@@ -61,6 +61,8 @@ fn parity_x12_tools_are_listed_namespaced_and_called() {
     assert!(out.is_error && out.text == "it failed");
     let out = hub.call("mcp__fake__image", json!({}), &no_cancel).unwrap();
     assert!(out.text.contains("image/png image"), "an image is named, not dropped: {}", out.text);
+    assert_eq!(out.images.len(), 1, "and handed on for the caller to show");
+    assert_eq!(out.images[0].0, "image/png");
     assert!(hub.call("mcp__fake__nope", json!({}), &no_cancel).is_err());
 }
 

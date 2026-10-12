@@ -108,7 +108,7 @@ fn runner_with_verifier(crew: &Crew, verifier: Arc<dyn Provider>, root: &Path) -
         }
     });
     let sandbox =
-        Sandbox { kind: SandboxKind::Scratch, root: root.to_path_buf(), origin: None, branch: None, base: None, repo_digest: None };
+        Sandbox { kind: SandboxKind::Scratch, root: root.to_path_buf(), origin: None, branch: None, base: None, repo_digest: None, frozen: Vec::new(), target_dir: None };
     let mut r = AgentRunner::new(RunId::new_random(), Roles::builtin(), resolver, Arc::new(NoTools), sandbox, None);
     r.hooks = Arc::new(Checkpoints::default());
     r

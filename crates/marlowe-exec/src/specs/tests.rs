@@ -240,8 +240,9 @@ fn every_tool_is_registered_once_in_its_group_in_the_old_order() {
         [
             "read", "write", "edit", "multi_edit", "edit_lines", "notebook_edit", "glob", "grep", "bash", "powershell",
             "python", "job_output", "job_watch", "job_kill", "web_fetch", "arxiv", "paper", "web_search", "symbols",
-            "definition", "references", "hover", "diagnostics", "rename_symbol", "todo", "ask_user", "skill", "agent",
-            "send_message", "exit_plan", "enter_worktree", "exit_worktree"
+            "definition", "references", "hover", "diagnostics", "rename_symbol", "todo", "todo_add", "todo_update", "todo_get",
+            "ask_user", "skill", "agent",
+            "send_message", "enter_plan", "exit_plan", "enter_worktree", "exit_worktree"
         ]
     );
     let git: Vec<&str> = table().defs.iter().filter(|d| d.manifest.group == marlowe_agent::ToolGroup::Git).map(|d| d.name()).collect();
@@ -372,7 +373,14 @@ fn exposure_fixes_the_tool_set_and_refuses_the_rest() {
     let without_verify = |h: &BuiltinTools| {
         names(h).into_iter().filter(|n| !["project", "service", "http_check", "browser"].contains(&n.as_str())).collect::<Vec<_>>()
     };
-    assert_eq!(names(&BuiltinTools::new(None).with_model_exposure(&local)), without_verify(&everything));
+    // A local model with no known window is assumed to have 32k, where the rarely used tools wait
+    // behind `tool_search` (T31): the same set, minus them, plus the search tool.
+    let deferred_view = |all: Vec<String>| {
+        let mut v: Vec<String> = all.into_iter().filter(|n| !crate::deferral::DEFERRABLE.contains(&n.as_str())).collect();
+        v.push("tool_search".into());
+        v
+    };
+    assert_eq!(names(&BuiltinTools::new(None).with_model_exposure(&local)), deferred_view(without_verify(&everything)));
     assert_eq!(BuiltinTools::new(None).with_model_exposure(&local).exposure().0, ExposureProfile::Local);
     assert_eq!(BuiltinTools::new(None).with_model_exposure(&frontier).exposure().1, ToolGroup::ALL.as_slice());
 
@@ -408,13 +416,23 @@ fn parity_g7_the_shell_guard_holds_without_the_git_group() {
 fn every_group_file_registers_its_hooks() {
     let setup = super::HostSetup { home: Path::new("C:/home"), workspace: None };
     let host = super::configure(BuiltinTools::new(None), &setup);
-    // Configuring adds the git group (track J), the agent group (track F) and, where Edge is
-    // installed, the browser (D).
+    // Configuring adds the git group (track J), the agent group (track F), the workflow group
+    // (track W), the tasks and notify groups (track N) and, where Edge is installed, the browser (D).
     let rest = |h: &BuiltinTools| {
         h.specs()
             .iter()
             .filter(|s| !matches!(s.name.as_str(), "git" | "gh" | "ci_status" | "browser"))
-            .filter(|s| h.manifest(&s.name).is_some_and(|m| m.group != marlowe_agent::ToolGroup::Agent))
+            .filter(|s| {
+                h.manifest(&s.name).is_some_and(|m| {
+                    !matches!(
+                        m.group,
+                        marlowe_agent::ToolGroup::Agent
+                            | marlowe_agent::ToolGroup::Workflow
+                            | marlowe_agent::ToolGroup::Tasks
+                            | marlowe_agent::ToolGroup::Notify
+                    )
+                })
+            })
             .count()
     };
     assert_eq!(rest(&host), rest(&BuiltinTools::new(None)), "the other configures change nothing here");
@@ -432,12 +450,26 @@ fn every_group_file_registers_its_hooks() {
             (g.persona_block)().is_some(),
             matches!(
                 g.group,
-                marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Verify | marlowe_agent::ToolGroup::Agent
+                marlowe_agent::ToolGroup::Git
+                    | marlowe_agent::ToolGroup::Verify
+                    | marlowe_agent::ToolGroup::Agent
+                    | marlowe_agent::ToolGroup::Workflow
+                    | marlowe_agent::ToolGroup::Tasks
             ),
             "{:?}: a block needs its capability live first",
             g.group
         );
-        assert!(!(g.detect)(None));
+        // Workflows are offered to a local model in any workspace (W; deferred on 32k, T31).
+        assert_eq!((g.detect)(None), g.group == marlowe_agent::ToolGroup::Workflow, "{:?}", g.group);
     }
     assert!(super::group(marlowe_agent::ToolGroup::Memory).is_none(), "memory tools are the daemon's");
+}
+
+#[test]
+fn the_group_override_names_known_groups_only() {
+    use marlowe_agent::ToolGroup;
+    assert_eq!(super::parse_group_list("shell").unwrap(), vec![ToolGroup::Shell]);
+    assert_eq!(super::parse_group_list(" files , shell,shell ").unwrap(), vec![ToolGroup::Files, ToolGroup::Shell]);
+    assert!(super::parse_group_list("shell,nonsense").unwrap_err().contains("nonsense"));
+    assert!(super::parse_group_list(" , ").is_err());
 }

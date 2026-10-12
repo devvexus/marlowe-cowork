@@ -23,7 +23,8 @@ use marlowe_mcp::hub::{ExposedTool, Hub};
 use marlowe_mcp::names::{self, GET_PROMPT, LIST_PROMPTS, LIST_RESOURCES, READ_RESOURCE, TOOL_SEARCH};
 use marlowe_mcp::output;
 use marlowe_mcp::McpError;
-use marlowe_model::ToolSpec;
+use marlowe_model::image::{base64_decode, ingest, BlobStore, STORE_LONG_EDGE};
+use marlowe_model::{ResultPart, ToolSpec};
 use serde_json::{json, Map, Value};
 
 /// MCP tools beyond this many are deferred behind `tool_search`.
@@ -44,11 +45,35 @@ pub struct McpTools {
     /// Tools `tool_search` has loaded this session.
     activated: Mutex<BTreeSet<String>>,
     budget: usize,
+    /// Where an image a server returns is kept (`<home>lobs`); without one images are named
+    /// in the text and not shown.
+    blobs: Option<Arc<dyn BlobStore>>,
 }
 
 impl McpTools {
     pub fn new(inner: Arc<dyn ToolHost>, hub: Arc<Hub>, window: Option<u32>) -> Self {
-        Self { inner, hub, activated: Mutex::new(BTreeSet::new()), budget: schema_budget(window) }
+        Self { inner, hub, activated: Mutex::new(BTreeSet::new()), budget: schema_budget(window), blobs: None }
+    }
+
+    /// Keeps the images MCP tools return (a notebook's plot, a screenshot) as `Part::Image`.
+    pub fn with_blobs(mut self, blobs: Arc<dyn BlobStore>) -> Self {
+        self.blobs = Some(blobs);
+        self
+    }
+
+    /// Stores the server's images and attaches them to the outcome; one that cannot be decoded
+    /// or stored is named in the text instead.
+    pub(super) fn attach_images(&self, mut out: ToolOutcome, images: &[(String, String)]) -> ToolOutcome {
+        let Some(store) = &self.blobs else { return out };
+        for (i, (mime, data)) in images.iter().enumerate() {
+            let stored = base64_decode(data).ok_or_else(|| "it is not valid base64".to_string()).and_then(|bytes| ingest(store.as_ref(), &bytes, STORE_LONG_EDGE).map_err(|e| e.to_string()));
+            match stored {
+                Ok(r) => out = out.with_part(ResultPart::Image(r)),
+                Err(why) => out.content.push_str(&format!("
+[image {} ({mime}) was not attached: {why}]", i + 1)),
+            }
+        }
+        out
     }
 
     fn activated(&self) -> BTreeSet<String> {
@@ -86,7 +111,7 @@ impl McpTools {
         ToolSpec { name: t.exposed.clone(), description, input_schema: schema }
     }
 
-    fn search_spec(&self, tools: &[ExposedTool]) -> ToolSpec {
+    fn search_spec(&self, tools: &[ExposedTool], builtin: Option<&ToolSpec>) -> ToolSpec {
         let mut by_server: Vec<(String, usize)> = Vec::new();
         for t in tools {
             match by_server.iter_mut().find(|(s, _)| *s == t.server) {
@@ -95,12 +120,14 @@ impl McpTools {
             }
         }
         let servers = by_server.iter().map(|(s, n)| format!("{s} ({n})")).collect::<Vec<_>>().join(", ");
+        // The built-ins deferred on a small window (T31) load through the same call.
+        let builtin_note = builtin.map(|b| format!(" Also: {}", b.description)).unwrap_or_default();
         ToolSpec {
             name: TOOL_SEARCH.into(),
             description: format!(
                 "Find and load tools from connected MCP servers: {servers}. Their schemas are not listed up front. \
                  Give keywords (\"create invoice\") or `select:name1,name2` for exact names. The tools found become \
-                 callable at once; the result lists each with its parameters."
+                 callable at once; the result lists each with its parameters.{builtin_note}"
             ),
             input_schema: json!({
                 "type": "object",
@@ -144,7 +171,35 @@ impl McpTools {
         ToolOutcome::error(e.to_string())
     }
 
-    fn tool_search(&self, args: &Value) -> ToolOutcome {
+    /// `tool_search` over the MCP tools and, when the built-in host defers its rarely used tools
+    /// (a small window, T31), over those too.
+    fn tool_search(&self, args: &Value, cx: &CallCtx) -> ToolOutcome {
+        let inner_defers = self.inner.specs().iter().any(|s| s.name == TOOL_SEARCH);
+        let tools = self.hub.tools();
+        let mcp_defers = !tools.is_empty() && self.deferred(&tools);
+        if !inner_defers {
+            return self.tool_search_mcp(args);
+        }
+        let builtin = self.inner.call_scoped(&ToolCallReq { id: "tool_search".into(), name: TOOL_SEARCH.into(), args: args.clone() }, cx);
+        if !mcp_defers {
+            return builtin;
+        }
+        let mcp = self.tool_search_mcp(args);
+        match (builtin.summary == "no match", mcp.summary == "no match") {
+            (true, _) => mcp,
+            (false, true) => builtin,
+            (false, false) => ToolOutcome {
+                content: format!("{}
+
+{}", builtin.content, mcp.content),
+                is_error: builtin.is_error && mcp.is_error,
+                summary: format!("{}; {}", builtin.summary, mcp.summary),
+                parts: Vec::new(),
+            },
+        }
+    }
+
+    fn tool_search_mcp(&self, args: &Value) -> ToolOutcome {
         let Some(query) = args.get("query").and_then(Value::as_str).filter(|q| !q.trim().is_empty()) else {
             return ToolOutcome::error("tool_search needs a `query`");
         };
@@ -232,7 +287,8 @@ impl McpTools {
                 // A tool the model called without loading it is loaded from now on.
                 self.activated.lock().unwrap_or_else(|e| e.into_inner()).insert(call.name.clone());
                 let note = if out.capped.truncated { format!("{} chars (truncated)", out.text.chars().count()) } else { String::new() };
-                Self::outcome(out.text, out.is_error, &note)
+                let images = out.images.clone();
+                self.attach_images(Self::outcome(out.text, out.is_error, &note), &images)
             }
             Err(e) => Self::fail(e),
         }
@@ -254,9 +310,17 @@ impl ToolHost for McpTools {
     fn specs(&self) -> Vec<ToolSpec> {
         let mut specs = self.inner.specs();
         let tools = self.hub.tools();
+        // A built-in host that defers its rarely used tools (T31) lists its own `tool_search`;
+        // it stays where it is (what is loaded later is appended after it) and, when MCP tools
+        // are deferred too, becomes the merged one.
+        let builtin_search = specs.iter().position(|s| s.name == TOOL_SEARCH);
         if !tools.is_empty() {
             if self.deferred(&tools) {
-                specs.push(self.search_spec(&tools));
+                let merged = self.search_spec(&tools, builtin_search.map(|i| &specs[i]));
+                match builtin_search {
+                    Some(i) => specs[i] = merged,
+                    None => specs.push(merged),
+                }
                 let active = self.activated();
                 specs.extend(tools.iter().filter(|t| active.contains(&t.exposed)).map(Self::spec_of));
             } else {
@@ -278,7 +342,7 @@ impl ToolHost for McpTools {
             return self.inner.call_scoped(call, cx);
         }
         match call.name.as_str() {
-            TOOL_SEARCH => self.tool_search(&call.args),
+            TOOL_SEARCH => self.tool_search(&call.args, cx),
             LIST_RESOURCES => self.list_resources(&call.args),
             READ_RESOURCE => self.read_resource(&call.args, cx),
             LIST_PROMPTS => self.list_prompts(),
@@ -288,7 +352,9 @@ impl ToolHost for McpTools {
     }
 
     fn middleware(&self) -> Vec<Arc<dyn ToolMiddleware>> {
-        self.inner.middleware()
+        let mut m = self.inner.middleware();
+        m.push(Arc::new(super::ide_context::IdeContext::new(self.hub.clone())));
+        m
     }
 
     fn persona_blocks(&self) -> Vec<PersonaBlock> {

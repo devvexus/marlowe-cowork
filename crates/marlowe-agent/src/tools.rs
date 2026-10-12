@@ -329,6 +329,12 @@ pub trait ToolHost: Send + Sync {
         self.consequence(call)
     }
 
+    /// The text the approval modal shows for `call` when it is not the call's arguments (a file the
+    /// tool will write is shown as the file). `None`: the pretty-printed arguments.
+    fn approval_detail(&self, _call: &ToolCallReq) -> Option<String> {
+        None
+    }
+
     /// Whether running `call` brings untrusted content into the conversation.
     fn taints(&self, _call: &ToolCallReq) -> bool {
         false

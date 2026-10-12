@@ -23,9 +23,13 @@ pub fn draw(full: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     }
     // The pinned todo list takes the bottom of the pane while anything is open.
     let todo_h = todo_height(state, full);
-    let r = Rect { height: full.height - todo_h, ..full };
+    let strip_h = super::bg::strip_height(state, full);
+    let r = Rect { height: full.height.saturating_sub(todo_h + strip_h), ..full };
+    if strip_h > 0 {
+        super::bg::draw_strip(Rect { y: r.bottom(), height: strip_h, ..full }, state, theme, buf, PAD);
+    }
     if todo_h > 0 {
-        draw_todos(Rect { y: r.bottom(), height: todo_h, ..full }, state, theme, buf);
+        draw_todos(Rect { y: r.bottom() + strip_h, height: todo_h, ..full }, state, theme, buf);
     }
     // Text column: padding on the left, one blank column and the scrollbar on the right.
     let tw = r.width.saturating_sub(PAD + 2) as usize;
@@ -413,6 +417,8 @@ pub(super) fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, th
             }
         }
         Entry::Job { command, output, code, .. } => job_lines(command, output, *code, width, theme, out),
+        Entry::News { label, text } => super::bg::news_lines(label, text, width, theme, out),
+        Entry::File { file } => super::bg::file_lines(file, width, theme, out),
         Entry::Note { text: t, tone } => {
             for (i, l) in text::wrap(&text::clean(t), width.saturating_sub(2)).into_iter().enumerate() {
                 let lead = if i == 0 { "· " } else { "  " };
@@ -499,8 +505,17 @@ fn draw_todos(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     let skip = todos.len().saturating_sub(room).min(done);
     let shown: Vec<_> = todos.iter().enumerate().filter(|(i, t)| !(t.status == TodoStatus::Completed && *i < skip)).take(room).collect();
     for (row, (_, t)) in shown.into_iter().enumerate() {
+        // An item whose blocker is not completed cannot be started (T34).
+        let blockers: Vec<&str> = t
+            .blocked_by
+            .iter()
+            .filter(|b| todos.iter().any(|o| o.id.as_deref() == Some(b.as_str()) && o.status != TodoStatus::Completed))
+            .map(String::as_str)
+            .collect();
+        let blocked = t.status != TodoStatus::Completed && !blockers.is_empty();
         let (glyph, gink, text_ink) = match t.status {
             TodoStatus::Completed => ("✓", Ink::Green, Ink::Dimmer),
+            _ if blocked => ("⊘", Ink::Amber, Ink::Dim),
             TodoStatus::InProgress => ("●", Ink::Accent, Ink::Body),
             TodoStatus::Pending => ("○", Ink::Dim, Ink::Dim),
         };
@@ -508,10 +523,21 @@ fn draw_todos(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
             (TodoStatus::InProgress, Some(a)) if !a.trim().is_empty() => a.as_str(),
             _ => t.content.as_str(),
         };
-        let room = (r.width as usize).saturating_sub(PAD as usize + 4);
+        // `#3` for a task-list item, `@name` for who has it, `needs #1` while it waits.
+        let mut tail = String::new();
+        if let Some(o) = t.owner.as_deref().filter(|o| !o.trim().is_empty()) {
+            tail.push_str(&format!("  @{}", text::clean(o)));
+        }
+        if blocked {
+            tail.push_str(&format!("  needs {}", blockers.iter().map(|b| format!("#{b}")).collect::<Vec<_>>().join(", ")));
+        }
+        let lead = t.id.as_deref().map(|i| format!("#{i} ")).unwrap_or_default();
+        let room = (r.width as usize).saturating_sub(PAD as usize + 4 + text::width(&tail) + text::width(&lead));
         let line = Line::from(vec![
             Span::styled(format!("{glyph} "), ink(gink, theme)),
+            Span::styled(lead, ink(Ink::Dimmer, theme)),
             Span::styled(text::truncate(&text::clean(label), room), ink(text_ink, theme)),
+            Span::styled(tail, ink(if blocked { Ink::Amber } else { Ink::Dimmer }, theme)),
         ]);
         put(buf, r.x + PAD, r.y + 1 + row as u16, &line, r.width.saturating_sub(PAD));
     }

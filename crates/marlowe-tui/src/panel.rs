@@ -1,5 +1,7 @@
 //! The panels: `/config`, `/permissions`, `/hooks`, `/agents`, `/mcp`, `/memory`, `/context`,
-//! `/cost`, `/rewind`, `/diff`, `/jobs`, the `ask_user` modal, `/help` and the Ctrl+O transcript.
+//! `/cost`, `/rewind`, `/diff`, `/jobs`, the `ask_user` modal, `/help` and the Ctrl+O transcript;
+//! wave 2's (`/tasks`, `/workflows`, `/findings`, `/files`, the plan file, `/bench`, rule
+//! suggestions, message threads) are in [`crate::bg_panels`].
 //!
 //! A panel is `Overlay::Panel` plus [`Panel`] in `State::code.panel`. Each one lists data the
 //! daemon owns (rules, hooks, settings, ...), held in [`crate::coding::Coding`]; the panel itself
@@ -35,6 +37,14 @@ pub enum Panel {
     Jobs { sel: usize },
     Question(QuestionUi),
     Transcript(Scroll),
+    Tasks(crate::bg_panels::TasksUi),
+    Workflows(crate::bg_panels::WorkflowsUi),
+    Findings(crate::bg_panels::FindingsUi),
+    Files { sel: usize },
+    Plan(crate::bg_panels::PlanUi),
+    Bench(crate::bg_panels::BenchUi),
+    Suggestions(crate::bg_panels::SuggestUi),
+    Thread(crate::bg_panels::ThreadUi),
 }
 
 /// A scroll position and the furthest it can go, which the renderer writes back (it alone knows
@@ -86,6 +96,14 @@ pub const CATALOGUE: &[SettingDef] = &[
     SettingDef { key: "statusline.command", kind: SettingKind::Text, help: "a command whose first output line becomes the status line" },
     SettingDef { key: "permissions.default_mode", kind: SettingKind::Text, help: "plan, default, accept_edits, bypass or dont_ask" },
     SettingDef { key: "network.allow_hosts", kind: SettingKind::List, help: "hosts the agent may reach without asking" },
+    SettingDef { key: "quit.choice", kind: SettingKind::Text, help: "what ctrl+q does without asking: stop, keep (the agent running) or empty to ask" },
+];
+
+/// The switches the daemon holds rather than a settings file (the notification toggles). `/config`
+/// lists them with the rest and sends them as `NotifySettings`.
+pub const DAEMON_SWITCHES: [(&str, &str); 2] = [
+    ("notify.toast", "a Windows toast when the agent notifies you"),
+    ("notify.voice", "a spoken line with the toast, outside quiet hours"),
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -95,6 +113,8 @@ pub struct ConfigRow {
     pub help: String,
     pub value: Option<Value>,
     pub source: Option<SettingsScope>,
+    /// Held by the daemon, not written to a settings layer.
+    pub daemon: bool,
 }
 
 /// The rows `/config` shows: the catalogue, then any other scalar or list key a layer sets.
@@ -107,6 +127,7 @@ pub fn config_rows(settings: Option<&Settings>) -> Vec<ConfigRow> {
             help: d.help.to_string(),
             value: settings.and_then(|s| s.get(d.key)).cloned(),
             source: settings.and_then(|s| s.source(d.key)),
+            daemon: false,
         })
         .collect();
     if let Some(s) = settings {
@@ -124,7 +145,26 @@ pub fn config_rows(settings: Option<&Settings>) -> Vec<ConfigRow> {
                 Value::Array(_) => SettingKind::List,
                 _ => SettingKind::Text,
             };
-            rows.push(ConfigRow { key: k.clone(), kind, help: String::new(), value: Some(v.clone()), source: Some(*scope) });
+            rows.push(ConfigRow { key: k.clone(), kind, help: String::new(), value: Some(v.clone()), source: Some(*scope), daemon: false });
+        }
+    }
+    rows
+}
+
+/// The rows `/config` shows in `state`: the settings, then the daemon's switches once it has said
+/// what they are.
+pub fn config_rows_for(state: &State) -> Vec<ConfigRow> {
+    let mut rows = config_rows(state.code.settings.as_ref());
+    if let Some(n) = state.bg.notify {
+        for ((key, help), on) in DAEMON_SWITCHES.iter().zip([n.toast, n.voice]) {
+            rows.push(ConfigRow {
+                key: (*key).to_string(),
+                kind: SettingKind::Bool,
+                help: (*help).to_string(),
+                value: Some(Value::Bool(on)),
+                source: None,
+                daemon: true,
+            });
         }
     }
     rows
@@ -356,7 +396,7 @@ impl State {
         self.code.panel.as_ref()
     }
 
-    fn ws(&self) -> Option<String> {
+    pub(crate) fn ws(&self) -> Option<String> {
         self.shown_workspace().map(str::to_string)
     }
 
@@ -389,10 +429,21 @@ impl State {
                 }
             }
             Panel::Jobs { .. } => out.push(Request::ListJobs { session: self.session.clone() }),
-            Panel::Help(_) | Panel::Context | Panel::Diff(_) | Panel::Question(_) | Panel::Transcript(_) => {}
+            Panel::Tasks(_) => out.push(Request::ListTasks { session: None }),
+            Panel::Workflows(_) => out.push(Request::ListWorkflows),
+            Panel::Bench(_) => self.code.effects.push(Effect::ListReports),
+            Panel::Help(_)
+            | Panel::Context
+            | Panel::Diff(_)
+            | Panel::Question(_)
+            | Panel::Transcript(_)
+            | Panel::Findings(_)
+            | Panel::Files { .. }
+            | Panel::Plan(_)
+            | Panel::Suggestions(_)
+            | Panel::Thread(_) => {}
         }
-        self.code.panel = Some(p);
-        self.overlay = Some(Overlay::Panel);
+        self.place_panel(p);
     }
 
     pub(crate) fn close_panel(&mut self) {
@@ -473,7 +524,7 @@ impl State {
             return;
         }
         let pending = crate::coding::PendingQuestion { session: session.clone(), id: id.to_string(), questions: questions.to_vec() };
-        if matches!(self.code.panel, Some(Panel::Question(_))) {
+        if self.choice_up() || matches!(self.code.panel, Some(Panel::Question(_) | Panel::Plan(_))) {
             self.code.questions.push_back(pending);
         } else {
             self.show_question(pending);
@@ -495,9 +546,11 @@ impl State {
 
     /// A question was answered or skipped: the next waits its turn on screen, or the panel it
     /// covered returns.
-    fn next_question(&mut self) {
+    pub(crate) fn next_question(&mut self) {
         if let Some(next) = self.code.questions.pop_front() {
             self.show_question(next);
+        } else if let Some(plan) = self.bg.plans.pop_front() {
+            self.show_plan(plan);
         } else if let Some(p) = self.code.stashed_panel.take() {
             self.code.panel = Some(p);
             self.overlay = Some(Overlay::Panel);
@@ -515,7 +568,22 @@ impl State {
             self.code.instructions.as_ref().map_or(0, Vec::len),
             self.code.checkpoints.as_ref().map_or(0, Vec::len),
         );
-        let cfg = config_rows(self.code.settings.as_ref()).len();
+        let cfg = config_rows_for(self).len();
+        let tasks = match self.code.panel.as_ref() {
+            Some(Panel::Tasks(u)) => crate::bg_panels::task_rows(&self.bg, self.session.as_ref(), u).len(),
+            _ => 0,
+        };
+        let wf = crate::bg_panels::workflow_runs(self).len() + self.bg.saved.len();
+        let files = self.shown_files().len();
+        let reports = self.bg.reports.as_ref().map_or(0, Vec::len);
+        let found = match self.code.panel.as_ref() {
+            Some(Panel::Findings(u)) => self.bg.findings.get(u.set).map_or(0, |s| s.findings.len()),
+            _ => 0,
+        };
+        let agents_in_run = match self.code.panel.as_ref() {
+            Some(Panel::Workflows(u)) => u.open.as_ref().and_then(|r| self.bg.workflow(r)).map_or(0, |w| w.agents.len()),
+            _ => 0,
+        };
         let last = |n: usize| n.saturating_sub(1);
         match self.code.panel.as_mut() {
             Some(Panel::Permissions(p)) => p.sel = p.sel.min(last(rules)),
@@ -526,6 +594,14 @@ impl State {
             Some(Panel::Instructions { sel }) => *sel = (*sel).min(last(instr)),
             Some(Panel::Rewind(r)) => r.sel = r.sel.min(last(cps)),
             Some(Panel::Config(c)) => c.sel = c.sel.min(last(cfg)),
+            Some(Panel::Tasks(u)) => u.sel = u.sel.min(last(tasks)),
+            Some(Panel::Workflows(u)) => {
+                u.sel = u.sel.min(last(wf));
+                u.agent = u.agent.min(last(agents_in_run));
+            }
+            Some(Panel::Findings(u)) => u.sel = u.sel.min(last(found)),
+            Some(Panel::Files { sel }) => *sel = (*sel).min(last(files)),
+            Some(Panel::Bench(u)) => u.sel = u.sel.min(last(reports)),
             _ => {}
         }
     }
@@ -558,13 +634,24 @@ impl State {
                     scroll_up_key(k, sc)
                 }
             }
+            Panel::Tasks(u) => self.tasks_key(u, k, out),
+            Panel::Workflows(u) => self.workflows_key(u, k, out),
+            Panel::Findings(u) => self.findings_key(u, k, out),
+            Panel::Files { sel } => self.files_key(sel, k, out),
+            Panel::Plan(u) => self.plan_key(u, k, out),
+            Panel::Bench(u) => self.bench_key(u, k, out),
+            Panel::Suggestions(u) => self.suggestions_key(u, k, out),
+            Panel::Thread(u) => self.thread_key(u, k, out),
         };
         let was_question = matches!(panel, Panel::Question(_));
-        if keep {
+        let was_plan = matches!(panel, Panel::Plan(_));
+        // A key handler may have opened another panel (a run's progress from the task list).
+        let replaced = self.code.panel.is_some();
+        if keep && !replaced {
             self.code.panel = Some(panel);
-        } else {
+        } else if !keep && !replaced {
             self.close_panel();
-            if was_question {
+            if was_question || was_plan {
                 self.next_question();
             }
         }
@@ -593,6 +680,12 @@ impl State {
                 let i = q.q;
                 q.other[i].insert_str(text.trim());
             }
+            Some(Panel::Plan(p)) => {
+                if let Some(f) = p.feedback.as_mut() {
+                    f.insert_str(&text.replace(['\r', '\n'], " "));
+                }
+            }
+            Some(Panel::Thread(t)) if t.typing => t.input.insert_str(&text.replace(['\r', '\n'], " ")),
             _ => {}
         }
     }
@@ -603,6 +696,10 @@ impl State {
             Some(Panel::Help(sc)) => sc.by(if up { -3 } else { 3 }),
             Some(Panel::Diff(d)) => d.scroll.by(if up { -3 } else { 3 }),
             Some(Panel::Transcript(sc)) => sc.by(if up { 3 } else { -3 }),
+            Some(Panel::Plan(p)) => p.scroll.by(if up { -3 } else { 3 }),
+            Some(Panel::Tasks(u)) if u.output => u.scroll.by(if up { 3 } else { -3 }),
+            Some(Panel::Bench(u)) if u.reading => u.scroll.by(if up { -3 } else { 3 }),
+            Some(Panel::Thread(t)) => t.scroll.by(if up { 3 } else { -3 }),
             _ => {}
         }
     }
@@ -637,7 +734,7 @@ impl State {
     // -- /config
 
     fn config_key(&mut self, c: &mut ConfigUi, k: KeyEvent, out: &mut Vec<Request>) -> bool {
-        let rows = config_rows(self.code.settings.as_ref());
+        let rows = config_rows_for(self);
         if let Some(input) = c.edit.as_mut() {
             match k.code {
                 KeyCode::Esc => {
@@ -668,7 +765,12 @@ impl State {
                 if let Some(row) = rows.get(c.sel) {
                     if row.kind == SettingKind::Bool {
                         let cur = row.value.as_ref().and_then(Value::as_bool).unwrap_or(false);
-                        out.push(Request::SetSetting { scope: c.scope, key: row.key.clone(), value: Value::Bool(!cur), workspace: self.ws() });
+                        match row.key.as_str() {
+                            // The daemon holds these; it answers with the new state.
+                            "notify.toast" => out.push(Request::NotifySettings { toast: Some(!cur), voice: None }),
+                            "notify.voice" => out.push(Request::NotifySettings { toast: None, voice: Some(!cur) }),
+                            _ => out.push(Request::SetSetting { scope: c.scope, key: row.key.clone(), value: Value::Bool(!cur), workspace: self.ws() }),
+                        }
                     } else {
                         let mut input = Composer::default();
                         if let Some(v) = &row.value {
@@ -679,7 +781,7 @@ impl State {
                 }
             }
             KeyCode::Delete | KeyCode::Char('x') => {
-                if let Some(row) = rows.get(c.sel).filter(|r| r.value.is_some()) {
+                if let Some(row) = rows.get(c.sel).filter(|r| r.value.is_some() && !r.daemon) {
                     out.push(Request::SetSetting { scope: c.scope, key: row.key.clone(), value: Value::Null, workspace: self.ws() });
                 }
             }
@@ -871,6 +973,9 @@ impl State {
 
     /// The editor exited: tell the conductor to re-read what it may have changed.
     pub(crate) fn editor_closed(&mut self, path: &str, result: &Result<(), String>, out: &mut Vec<Request>) {
+        if self.plan_editor_closed(path, result) {
+            return;
+        }
         match result {
             Ok(()) => {
                 if let Some(s) = self.session.clone() {
@@ -1059,7 +1164,7 @@ impl State {
 }
 
 /// Edits a one-line field.
-fn edit_key(c: &mut Composer, k: KeyEvent) {
+pub(crate) fn edit_key(c: &mut Composer, k: KeyEvent) {
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     match k.code {
         KeyCode::Backspace if ctrl => c.backspace_word(),
@@ -1088,7 +1193,7 @@ fn pick(q: &mut QuestionUi, i: usize, multi: bool) {
 }
 
 /// Scrolls a top-anchored view. False closes.
-fn scroll_key(k: KeyEvent, sc: &mut Scroll) -> bool {
+pub(crate) fn scroll_key(k: KeyEvent, sc: &mut Scroll) -> bool {
     match k.code {
         KeyCode::Esc | KeyCode::Char('q') => return false,
         KeyCode::Up | KeyCode::Char('k') => sc.by(-1),
@@ -1103,7 +1208,7 @@ fn scroll_key(k: KeyEvent, sc: &mut Scroll) -> bool {
 }
 
 /// Scrolls a bottom-anchored view: `pos` counts rows up from the end. False closes.
-fn scroll_up_key(k: KeyEvent, sc: &mut Scroll) -> bool {
+pub(crate) fn scroll_up_key(k: KeyEvent, sc: &mut Scroll) -> bool {
     match k.code {
         KeyCode::Esc | KeyCode::Char('q') => return false,
         KeyCode::Up | KeyCode::Char('k') => sc.by(1),

@@ -6,8 +6,6 @@ license.workspace = true
 description = "Workflow scripts: a hermetic Starlark engine, the host API (agent, parallel, pipeline, phase, log, budget), the call journal and the schema validator. M4.6 track W."
 
 [dependencies]
-# Pre-declared by the seam (M4.6 wave 2) so track W does not edit the workspace manifest.
-# W adds `starlark` (the pinned pure-Rust interpreter) to this file itself.
 marlowe-model.workspace = true
 marlowe-proto.workspace = true
 serde.workspace = true
@@ -16,3 +14,15 @@ thiserror.workspace = true
 crossbeam-channel.workspace = true
 blake3.workspace = true
 regex.workspace = true
+# Meta's pure-Rust Starlark interpreter (9.0: workflow scripts are Starlark). Exact pin: 0.13.0 is
+# the last release that neither turns on serde_json's `arbitrary_precision` workspace-wide (0.14
+# does, which breaks numbers inside internally tagged enums) nor pins blake3 exactly. No C, so
+# ARM64 builds without extra toolchains.
+starlark = "=0.13.0"
+# Its lexer, for the checks that run before a script does (META is a pure literal, no recursion,
+# no late-bound lambdas in comprehensions).
+starlark_syntax = "=0.13.0"
+# Held at the release starlark 0.13 was built against (hashbrown 0.14); 0.3.6 moved to a newer
+# hashbrown and starlark_map 0.13 stops compiling. Only constrains resolution.
+allocative = "=0.3.4"
+anyhow = "1"

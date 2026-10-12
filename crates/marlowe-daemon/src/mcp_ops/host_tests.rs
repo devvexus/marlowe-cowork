@@ -40,6 +40,10 @@ fn call(name: &str, args: Value) -> ToolCallReq {
 }
 
 fn host(extra_tools: usize, entry_extra: Value, window: Option<u32>) -> (McpTools, FakeHttp) {
+    host_over(Arc::new(Inner), extra_tools, entry_extra, window)
+}
+
+fn host_over(inner: Arc<dyn ToolHost>, extra_tools: usize, entry_extra: Value, window: Option<u32>) -> (McpTools, FakeHttp) {
     let server = FakeHttp::start(HttpOpts { mcp: FakeOpts { extra_tools, ..Default::default() }, ..Default::default() });
     let mut entry = json!({"type": "http", "url": server.url()});
     entry.as_object_mut().unwrap().extend(entry_extra.as_object().unwrap().clone());
@@ -49,7 +53,7 @@ fn host(extra_tools: usize, entry_extra: Value, window: Option<u32>) -> (McpTool
     opts.session = config::parse_session(&[json!({"mcpServers": {"web": entry}}).to_string()]).unwrap();
     let hub = Hub::start(opts);
     assert!(hub.wait_settled(Duration::from_secs(20)));
-    (McpTools::new(Arc::new(Inner), hub, window), server)
+    (McpTools::new(inner, hub, window), server)
 }
 
 fn tokens_of(specs: &[ToolSpec]) -> usize {
@@ -158,4 +162,92 @@ fn a_call_to_a_tool_that_is_gone_says_so() {
     let (h, _s) = host(0, json!({}), None);
     let out = h.call_scoped(&call("mcp__web__vanished", json!({})), &cx());
     assert!(out.is_error && out.content.contains("not an available MCP tool"), "{}", out.content);
+}
+
+/// A built-in host that defers its rarely used tools (T31) and lists its own `tool_search`.
+struct DeferringInner;
+
+impl ToolHost for DeferringInner {
+    fn specs(&self) -> Vec<ToolSpec> {
+        vec![
+            ToolSpec { name: "read".into(), description: "read".into(), input_schema: json!({"type": "object"}) },
+            ToolSpec {
+                name: TOOL_SEARCH.into(),
+                description: "Load tools that are not listed up front. Deferred: monitor, todo_add.".into(),
+                input_schema: json!({"type": "object"}),
+            },
+        ]
+    }
+    fn call(&self, call: &ToolCallReq, _: &ToolCtx) -> ToolOutcome {
+        if call.name == TOOL_SEARCH {
+            let q = call.args["query"].as_str().unwrap_or("");
+            return if q.contains("monitor") {
+                ToolOutcome::ok("Loaded 1 tool(s); call them by these names:\n\n- monitor: watch a command's output", "1 tools loaded")
+            } else {
+                ToolOutcome::ok("No deferred tool matches.", "no match")
+            };
+        }
+        ToolOutcome::ok(format!("inner {}", call.name), "ok")
+    }
+    fn consequence(&self, _: &ToolCallReq) -> Consequence {
+        Consequence::Free
+    }
+}
+
+#[test]
+fn parity_t31_built_in_and_mcp_deferral_share_one_tool_search_that_stays_in_place() {
+    // Few MCP tools: the built-in host's tool_search is the only one, untouched, and a search
+    // goes to it alone.
+    let (h, _s) = host_over(Arc::new(DeferringInner), 0, json!({}), Some(200_000));
+    let names: Vec<String> = h.specs().iter().map(|s| s.name.clone()).collect();
+    assert_eq!(names.iter().filter(|n| n.as_str() == TOOL_SEARCH).count(), 1, "{names:?}");
+    let out = h.call_scoped(&call(TOOL_SEARCH, json!({"query": "select:monitor"})), &cx());
+    assert!(out.content.contains("- monitor: watch"), "{}", out.content);
+
+    // Many MCP tools: one merged tool_search, at the built-in one's position, naming both.
+    let (h, _s) = host_over(Arc::new(DeferringInner), 72, json!({"consequence": "inert"}), Some(32_768));
+    let specs = h.specs();
+    let searches: Vec<usize> = specs.iter().enumerate().filter(|(_, s)| s.name == TOOL_SEARCH).map(|(i, _)| i).collect();
+    assert_eq!(searches, [1], "one tool_search, where the built-in host put it");
+    assert!(specs[1].description.contains("web (80)") && specs[1].description.contains("Deferred: monitor, todo_add"), "{}", specs[1].description);
+
+    // A query that only the built-in side matches gets its answer; one that only MCP matches
+    // gets the MCP answer; one that both match gets both.
+    let builtin = h.call_scoped(&call(TOOL_SEARCH, json!({"query": "select:monitor"})), &cx());
+    assert!(builtin.content.contains("- monitor: watch") && !builtin.is_error, "{}", builtin.content);
+    let mcp = h.call_scoped(&call(TOOL_SEARCH, json!({"query": "select:echo"})), &cx());
+    assert!(mcp.content.contains("mcp__web__echo"), "{}", mcp.content);
+    let both = h.call_scoped(&call(TOOL_SEARCH, json!({"query": "select:monitor,echo"})), &cx());
+    assert!(both.content.contains("- monitor: watch") && both.content.contains("mcp__web__echo"), "{}", both.content);
+}
+
+#[test]
+fn parity_u18_an_image_a_tool_returns_becomes_an_image_part_with_a_blob() {
+    use marlowe_model::image::{BlobStore, MemoryBlobStore};
+    use marlowe_model::ResultPart;
+
+    let (h, _s) = host(0, json!({}), None);
+    let store = Arc::new(MemoryBlobStore::new());
+    let h = h.with_blobs(store.clone());
+    let out = h.call_scoped(&call("mcp__web__image", json!({})), &cx());
+    assert!(!out.is_error, "{}", out.content);
+    let [ResultPart::Image(img)] = out.parts.as_slice() else { panic!("one image part: {:?} / {}", out.parts, out.content) };
+    assert_eq!((img.mime.as_str(), img.w, img.h), ("image/png", 1, 1));
+    assert!(store.get(&img.blob).is_ok(), "the bytes are in the blob store, the message carries the reference");
+    assert!(out.content.contains("image/png image"), "the text still says there was a picture: {}", out.content);
+}
+
+#[test]
+fn an_image_that_cannot_be_decoded_is_named_not_dropped_and_without_a_store_it_is_text_only() {
+    use marlowe_model::image::MemoryBlobStore;
+
+    let (h, _s) = host(0, json!({}), None);
+    // No store: text only, no part.
+    let out = h.call_scoped(&call("mcp__web__image", json!({})), &cx());
+    assert!(out.parts.is_empty() && out.content.contains("image/png image"), "{out:?}");
+    // A store, but the "picture" is not one.
+    let h = h.with_blobs(Arc::new(MemoryBlobStore::new()));
+    let bad = h.attach_images(ToolOutcome::ok("x", "y"), &[("image/png".into(), "bm90IGEgcGljdHVyZQ==".into()), ("image/png".into(), "!!!".into())]);
+    assert!(bad.parts.is_empty());
+    assert!(bad.content.contains("image 1 (image/png) was not attached") && bad.content.contains("image 2") && bad.content.contains("base64"), "{}", bad.content);
 }

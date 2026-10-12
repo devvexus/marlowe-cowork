@@ -12,14 +12,15 @@ use marlowe_agent::{AgentEvent, ApprovalGate, ApprovalReq, Budget, MAX_STEPS};
 use marlowe_mind::{Kind, MemoryIn, ProfileQuery, Provenance, RecallQuery};
 use marlowe_model::{CancelToken, Message, Pricing, Usage};
 use marlowe_proto::{
-    ApprovalDecision, CostQuote, CrewRunStatus, CrewSpent, Dispatch, MemoryScope, PlanDecision, Playbook, ResearchPlan,
+    ApprovalDecision, CostQuote, CrewRunStatus, CrewSpent, Dispatch, MemoryScope, MemoryTrust, PlanDecision, Playbook, ResearchPlan,
     ResearchProgress, RunId, SandboxKind, SessionId,
 };
 
+use crate::playbook::build_v2::{BuildPlan, BuildQuote};
 use crate::playbook::research_v2::{Finding, Recalled};
 use crate::playbook::{
-    self, sandbox_shell, AgentRunner, PlaybookConfig, ResearchIo, ShellResult, StepFailure, StepHooks, StepModel,
-    StepResult, StepSpec,
+    self, sandbox_shell, AgentRunner, CallCheckpoint, PartialStep, PlaybookConfig, ResearchIo, ShellResult, StepFailure,
+    StepHooks, StepModel, StepResult, StepSpec,
 };
 use crate::role::RoleCard;
 use crate::run::{call_line, clip, Run, StepRecord};
@@ -69,7 +70,8 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
                 None => card.sandbox,
             };
             inner.update(id, |r| r.current_action = Some("preparing the sandbox".into()));
-            Sandbox::create(&inner.home, id, run.workspace.as_deref(), want)?
+            // A workflow works on the checkout as it is, uncommitted changes included.
+            Sandbox::create_with(&inner.home, id, run.workspace.as_deref(), want, run.workflow.is_some())?
         }
     };
     inner.update(id, |r| r.sandbox = Some(sandbox.clone()));
@@ -115,8 +117,29 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
         max_test_iterations: inner.cfg.max_test_iterations,
         test_command: None,
         research: inner.cfg.research.clone(),
+        build: inner.cfg.build.clone(),
     };
     hooks.check()?;
+    // A workflow script (track W): its agents are this run's steps.
+    if let Some(wf) = run.workflow.clone() {
+        let (sink, run_id, session) = (inner.clone(), id.clone(), run.session.clone());
+        let emit = move |ev: playbook::script::ScriptEvent| match ev {
+            playbook::script::ScriptEvent::Progress(info) => sink.emit(CrewEvent::Workflow(info)),
+            playbook::script::ScriptEvent::Log(line) => sink.emit(CrewEvent::WorkflowLog { run: run_id.clone(), line }),
+            playbook::script::ScriptEvent::Findings(findings) => {
+                sink.emit(CrewEvent::Findings { run: run_id.clone(), session: session.clone(), findings })
+            }
+        };
+        let job = playbook::script::ScriptJob {
+            home: &inner.home,
+            run: id,
+            session: run.session.as_ref(),
+            workspace: run.workspace.as_deref(),
+            workflow: &wf,
+            plugins: Vec::new(),
+        };
+        return playbook::script::run_workflow(&runner, job, &emit);
+    }
     let research = match (&run.playbook, &inner.deps.research) {
         (Some(Playbook::DeepResearch), Some(io)) => Some(RunResearch {
             hooks: hooks.clone(),
@@ -125,14 +148,12 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
         }),
         _ => None,
     };
-    playbook::run_with(
-        run.playbook,
-        &run.role,
-        &run.goal,
-        &runner,
-        &cfg,
-        research.as_ref().map(|r| r as &dyn playbook::ResearchHost),
-    )
+    let build = (run.playbook == Some(Playbook::Build)).then(|| RunBuild { hooks: hooks.clone(), created_ms: run.created_ms });
+    let hosts = playbook::Hosts {
+        research: research.as_ref().map(|r| r as &dyn playbook::ResearchHost),
+        build: build.as_ref().map(|b| b as &dyn playbook::BuildHost),
+    };
+    playbook::run_with(run.playbook, &run.role, &run.goal, &runner, &cfg, hosts)
 }
 
 /// Records how a run thread ended. A user's cancel wins over pause and shutdown; a stopped run
@@ -363,6 +384,15 @@ budget: {:?}
 spent: {:?}", self.id, run.goal, run.budget, spent),
         };
         let decision = self.inner.deps.approvals.ask(&self.id, self.session.as_ref(), req);
+        // A stop (shutdown, a closed window) beats the refusal that woke us: the run was working,
+        // not waiting on the user, so it stays `running` for the interrupted-run bookkeeping.
+        if self.ctl.stop.load(Ordering::SeqCst) && !self.ctl.user_cancel.load(Ordering::SeqCst) {
+            self.inner.update(&self.id, |r| {
+                r.status = CrewRunStatus::Running;
+                r.note = None;
+            });
+            return Err(CrewError::Stopped);
+        }
         if self.ctl.user_cancel.load(Ordering::SeqCst) || self.ctl.cancel.is_cancelled() {
             return Err(CrewError::Cancelled);
         }
@@ -529,6 +559,8 @@ impl StepHooks for Hooks {
             at_ms: crate::now_ms(),
         };
         let _ = self.inner.store().append_step(&rec);
+        // The step row holds the whole conversation now; its per-call checkpoints are done.
+        let _ = self.inner.store().clear_calls(&self.id, &spec.key);
         self.done.lock().unwrap_or_else(|e| e.into_inner()).insert(spec.key.clone(), result.clone());
         if result.tainted {
             self.inner.update(&self.id, |r| r.tainted = true);
@@ -569,6 +601,14 @@ impl StepHooks for Hooks {
     fn progress(&self, action: &str) {
         let action = clip(action, 120);
         self.inner.update(&self.id, |r| r.current_action = Some(action));
+    }
+
+    fn partial(&self, key: &str) -> PartialStep {
+        self.inner.store().calls(&self.id, key).unwrap_or_default()
+    }
+
+    fn checkpoint_call(&self, spec: &StepSpec, checkpoint: &CallCheckpoint<'_>) {
+        let _ = self.inner.store().append_call(&self.id, &spec.key, checkpoint);
     }
 }
 
@@ -746,6 +786,134 @@ impl playbook::ResearchHost for RunResearch {
         mind.remember_derived(memory, finding.derived_from.clone()).map(|r| r.id).map_err(|e| e.to_string())
     }
 }
+
+/// build_v2's view of its run: plan approval and questions through the run's approvals, data
+/// checkpoints, child worktrees, memory.
+struct RunBuild {
+    hooks: Arc<Hooks>,
+    created_ms: i64,
+}
+
+impl RunBuild {
+    /// Asks on the run's behalf; a cancel while waiting ends the run.
+    fn ask(&self, tool: &str, summary: String, detail: String) -> Result<bool, CrewError> {
+        let (inner, id) = (&self.hooks.inner, &self.hooks.id);
+        self.hooks.check()?;
+        let req = ApprovalReq {
+            session: crew_session(id),
+            call_id: format!("{tool}-{}-{}", id.short(), crate::now_ms()),
+            tool: tool.into(),
+            summary,
+            detail,
+        };
+        let decision = ask_for_run(inner, id, self.hooks.session.as_ref(), req);
+        if self.hooks.ctl.user_cancel.load(Ordering::SeqCst) || self.hooks.ctl.cancel.is_cancelled() {
+            return Err(CrewError::Cancelled);
+        }
+        Ok(decision.is_allowed())
+    }
+}
+
+impl playbook::BuildHost for RunBuild {
+    fn progress(&self, action: &str) {
+        self.hooks.progress(action);
+    }
+
+    fn check(&self) -> Result<(), CrewError> {
+        self.hooks.check()
+    }
+
+    fn propose_plan(&self, plan: &BuildPlan, quote: &BuildQuote) -> Result<bool, CrewError> {
+        let summary = format!(
+            "build plan: {} task{} in {} wave{}, about {} agent steps; approve it?",
+            plan.tasks.len(),
+            if plan.tasks.len() == 1 { "" } else { "s" },
+            quote.waves,
+            if quote.waves == 1 { "" } else { "s" },
+            quote.steps
+        );
+        self.ask("build_plan", summary, playbook::build_v2::render_plan(plan, quote))
+    }
+
+    /// Approving the plan approves its quote: the steps and tokens limits rise to cover it
+    /// (+25%), never fall, and an unlimited dimension stays unlimited.
+    fn plan_approved(&self, _plan: &BuildPlan, quote: &BuildQuote) {
+        let tokens = quote.model_tokens.saturating_add(quote.model_tokens / 4);
+        let steps = quote.steps.saturating_mul(12);
+        self.hooks.inner.update(&self.hooks.id, |r| {
+            if let Some(t) = r.budget.tokens.as_mut() {
+                *t = (*t).max(tokens);
+            }
+            if let Some(s) = r.budget.steps.as_mut() {
+                *s = (*s).max(steps);
+            }
+        });
+    }
+
+    fn ask_user(&self, summary: &str, detail: &str) -> Result<bool, CrewError> {
+        self.ask("build", summary.to_string(), detail.to_string())
+    }
+
+    fn dag(&self, report: &str) {
+        let step = self.hooks.run().map(|r| r.step).unwrap_or(0);
+        self.hooks.inner.emit(CrewEvent::Step { run: self.hooks.id.clone(), step, action: report.to_string(), text_delta: None });
+    }
+
+    fn load(&self, key: &str) -> Option<String> {
+        self.hooks.completed(key).map(|r| r.text)
+    }
+
+    fn save(&self, key: &str, label: &str, data: &str) {
+        self.hooks.save_data(key, label, data);
+    }
+
+    fn spawn_worktree(&self, parent: &Sandbox, task: &str, frozen: &[String]) -> Result<Sandbox, CrewError> {
+        parent.create_child(&self.hooks.inner.home, &self.hooks.id, task, frozen)
+    }
+
+    fn artifacts_dir(&self) -> Option<PathBuf> {
+        Some(self.hooks.inner.home.join("runs").join(self.hooks.id.as_str()))
+    }
+
+    fn elapsed(&self) -> Duration {
+        Duration::from_millis(crate::now_ms().saturating_sub(self.created_ms).max(0) as u64)
+    }
+
+    /// The memories the plan rests on, trust-labelled. An untrusted one taints the run (the lead
+    /// read it), and their ids are kept as the parents of the build's Result memory.
+    fn recall(&self, query: &str) -> Vec<String> {
+        let Some(mind) = self.hooks.inner.deps.mind.as_ref() else { return Vec::new() };
+        let scope = self.hooks.run().ok().and_then(|r| r.workspace).map(|w| MemoryScope::Project(w.display().to_string()));
+        let hits = mind.recall(RecallQuery { text: query.to_string(), scope, limit: 5 }).unwrap_or_default();
+        if hits.iter().any(|h| h.trust == MemoryTrust::Untrusted) && !self.hooks.tainted() {
+            self.hooks.inner.update(&self.hooks.id, |r| r.tainted = true);
+        }
+        let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
+        if let (false, Ok(json)) = (ids.is_empty(), serde_json::to_string(&ids)) {
+            self.hooks.save_data(RECALLED_KEY, &format!("{} memories recalled for the plan", ids.len()), &json);
+        }
+        hits.into_iter().map(|h| format!("- ({:?} trust) {}", h.trust, clip(&h.text, 300))).collect()
+    }
+
+    /// The build's outcome as a Result memory, at the run's trust (worst case over what it read)
+    /// and derived from the memories its plan recalled, so their trust caps it in the store.
+    fn remember(&self, text: &str) {
+        let Some(mind) = self.hooks.inner.deps.mind.as_ref() else { return };
+        let Ok(run) = self.hooks.run() else { return };
+        let parents: Vec<String> =
+            self.hooks.completed(RECALLED_KEY).and_then(|r| serde_json::from_str(&r.text).ok()).unwrap_or_default();
+        let memory = MemoryIn {
+            text: format!("Crew build run {}: {text}", run.id.short()),
+            kind: Kind::Result,
+            scope: run.workspace.as_ref().map(|w| MemoryScope::Project(w.display().to_string())).unwrap_or(MemoryScope::Global),
+            source: Provenance::Agent { session: format!("crew:{}", run.id), turn: run.step, tainted: run.tainted },
+        };
+        let _ = mind.remember_derived(memory, parents);
+    }
+}
+
+/// The data checkpoint holding the ids of the memories a build's plan recalled.
+const RECALLED_KEY: &str = "b2:recalled";
 
 /// Approvals from a run's tools: the run shows `NeedsYou` while the user decides.
 struct RunGate {

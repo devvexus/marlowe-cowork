@@ -172,6 +172,9 @@ pub(crate) struct Job {
     pub log: PathBuf,
     /// The user's own `!` command: never wakes the model.
     pub user: bool,
+    /// A monitor's process (track N): it is listed, announced and reported by the monitor, not as
+    /// a job, and its exit queues no notice.
+    pub hidden: bool,
     leftovers: Leftovers,
     deadline: Option<Instant>,
     announced: AtomicBool,
@@ -410,6 +413,10 @@ impl Job {
             // Kept until the host is dropped (`HostJobs::drop` kills the tree).
             Leftovers::KillWithHost => {}
         }
+        if self.hidden {
+            // The monitor that owns it reports the end.
+            return;
+        }
         // Queue the notice before announcing the exit: whoever hears of the exit finds it waiting.
         let (kind, text) = self.exit_text(code);
         self.notices.push(BgNotice { session: self.session.clone(), id: self.id.clone(), kind, text });
@@ -589,6 +596,8 @@ pub(crate) struct Launch {
     /// Output the job may write before it is stopped.
     pub cap: u64,
     pub user: bool,
+    /// A monitor's process: not listed, not announced, no exit notice (see [`Job::hidden`]).
+    pub hidden: bool,
     pub leftovers: Leftovers,
     /// A background job's own deadline (an explicit `timeout_ms`).
     pub timeout: Option<Duration>,
@@ -694,6 +703,11 @@ impl HostJobs {
         }
     }
 
+    /// The folder job logs are kept in (a monitor keeps its output file beside them).
+    pub(crate) fn dir(&self) -> PathBuf {
+        lock(&self.dir).clone()
+    }
+
     /// Drops the queued notices of one job (its result already told the model).
     pub(crate) fn forget_notices(&self, job: &str) {
         self.notices.forget(job);
@@ -742,6 +756,7 @@ impl HostJobs {
             started_ms,
             log,
             user: l.user,
+            hidden: l.hidden,
             leftovers: l.leftovers,
             deadline: l.timeout.map(|t| Instant::now() + t),
             announced: AtomicBool::new(false),
@@ -786,7 +801,7 @@ impl HostJobs {
                 });
             }
         }
-        if !l.foreground {
+        if !l.foreground && !l.hidden {
             job.announce();
         }
         Ok(job)
@@ -876,7 +891,7 @@ impl Drop for HostJobs {
 
 impl BgOwner for HostJobs {
     fn bg_list(&self, session: Option<&str>) -> Vec<BgInfo> {
-        self.all().iter().filter(|j| session.is_none_or(|s| j.session == s)).map(|j| j.info()).collect()
+        self.all().iter().filter(|j| !j.hidden && session.is_none_or(|s| j.session == s)).map(|j| j.info()).collect()
     }
 
     fn bg_kill(&self, id: &str) -> Option<bool> {
@@ -983,6 +998,7 @@ impl HostJobs {
                     foreground: false,
                     cap: BG_LOG_CAP,
                     user: true,
+                    hidden: false,
                     leftovers,
                     timeout: Some(Duration::from_millis(crate::shell::SHELL_TIMEOUT_MAX_MS)),
                 },

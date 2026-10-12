@@ -174,6 +174,13 @@ pub fn report(p: &dyn Probe, home: &Path, daemon: Option<u16>) -> Vec<Check> {
     out
 }
 
+/// The editor connection (U14) for `workspace`: which window would be connected, or why none.
+pub fn editor_check(home: &Path, workspace: Option<&Path>) -> Check {
+    let said = marlowe_mcp::ide::status(home, workspace);
+    let status = if said.contains(" connected as ") { Status::Ok } else { Status::Info };
+    check("editor", status, said)
+}
+
 pub fn render_text(home: &Path, checks: &[Check]) -> String {
     let mut s = String::new();
     for c in checks {
@@ -200,6 +207,7 @@ pub fn run(home: &Path, args: &[String]) -> i32 {
         Ok(d) => check("voice", Status::Ok, d),
         Err(e) => check("voice", Status::Info, format!("{e}; WinRT speaks instead")),
     });
+    checks.push(editor_check(home, std::env::current_dir().ok().as_deref()));
     if args.iter().any(|a| a == "--json") {
         println!("{}", serde_json::to_string_pretty(&render_json(&checks)).unwrap_or_default());
     } else {
@@ -309,6 +317,29 @@ mod tests {
         assert!(text.contains("ok   anthropic key") && text.contains("braille"), "{text}");
         let j = render_json(&c);
         assert!(j["checks"].as_array().unwrap().iter().any(|x| x["name"] == "anthropic key" && x["status"] == "ok"));
+    }
+
+    #[test]
+    fn parity_u14_the_editor_line_says_connected_or_how_to_connect() {
+        let home = std::env::temp_dir().join(format!("marlowe-doctor-ide-{}", std::process::id()));
+        std::fs::create_dir_all(home.join("ide")).unwrap();
+        let none = editor_check(&home, Some(Path::new("C:/work/proj")));
+        assert_eq!(none.status, Status::Info);
+        assert!(none.detail.contains("no editor running"), "{}", none.detail);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let lock = serde_json::json!({
+            "version": 1, "pid": 1, "ideName": "Visual Studio Code", "transport": "http",
+            "url": format!("http://127.0.0.1:{port}/mcp"), "authToken": "abc123",
+            "workspaceFolders": ["C:/work/proj"], "started": "2026-10-11T10:00:00Z",
+        });
+        std::fs::write(home.join("ide").join(format!("{port}.lock")), lock.to_string()).unwrap();
+        let on = editor_check(&home, Some(Path::new("C:/work/proj/src")));
+        assert_eq!(on.status, Status::Ok);
+        assert!(on.detail.contains("Visual Studio Code connected as `ide`"), "{}", on.detail);
+        let other = editor_check(&home, Some(Path::new("D:/elsewhere")));
+        assert_eq!(other.status, Status::Info);
+        assert!(other.detail.contains("none has"), "{}", other.detail);
     }
 
     #[test]

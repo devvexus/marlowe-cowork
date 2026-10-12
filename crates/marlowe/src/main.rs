@@ -64,7 +64,15 @@ marlowe export [status | enable <dir> | disable <dir> | good <session> [--upto N
                  [--no-thinking] [--since YYYY-MM-DD]]
                                           opt-in training data from your own sessions; nothing
                                           is uploaded (full help: marlowe export --help)
-marlowe bench | eval                      M4.6 coding bench and eval (not available yet)
+marlowe bench <model> [--suite tools|edits|memory|research|coding|all] [--n N] [--vs MODEL]
+                      [--apply] [--json FILE] [--scripted]
+                                          the report card: tool-call and edit reliability, remember
+                                          and recall across a restart, citation accuracy, coding
+                                          pass rates; --apply records the best edit formats
+marlowe eval [help | tools | where | run ... ]
+                                          the coding eval (eval/coding): own-repo, polyglot,
+                                          micro and iact suites, the arms, the Claude Code
+                                          head-to-head (marlowe eval help)
 
 ask streams the reply to stdout. A tool that needs approval prompts on stdin; --yes allows
 every approval in this turn; an empty answer or a closed stdin denies.
@@ -128,6 +136,10 @@ fn run_tui(home: &std::path::Path) -> Result<i32, String> {
 
 fn run_daemon(home: &std::path::Path) -> Result<i32, String> {
     std::fs::create_dir_all(home).map_err(|e| format!("cannot create {}: {e}", home.display()))?;
+    // The `guide` agent answers questions about flags and commands from this copy of `--help`
+    // (it reads only documentation folders; best effort).
+    let docs = home.join("docs");
+    let _ = std::fs::create_dir_all(&docs).and_then(|_| std::fs::write(docs.join("cli-help.txt"), USAGE));
     marlowe_daemon::run(wire::daemon_deps(home), home).map_err(|e| e.to_string())?;
     Ok(0)
 }

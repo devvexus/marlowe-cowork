@@ -36,6 +36,7 @@ pub const BUILTINS: &[Builtin] = &[
     b("hooks", &[], Args::None, "configured hooks and whether they are trusted"),
     b("agents", &[], Args::None, "agent types the agent tool can start"),
     b("mcp", &[], Args::None, "MCP servers: add, remove, status"),
+    b("ide", &[], Args::None, "the connected editor: which window, which folders"),
     b("memory", &[], Args::None, "open the instruction files in your editor and reload them"),
     b("model", &[], Args::Optional("model"), "switch the conductor's model, keeping the conversation"),
     b("effort", &["think"], Args::Optional("off|low|medium|high|max"), "reasoning effort for the next turns"),
@@ -54,7 +55,17 @@ pub const BUILTINS: &[Builtin] = &[
     b("loop", &[], Args::Optional("interval prompt"), "run a prompt on a schedule, e.g. /loop 10m check the build"),
     b("todos", &[], Args::None, "show or hide the todo list"),
     b("jobs", &[], Args::None, "background jobs"),
-    b("exit", &["quit"], Args::None, "leave Marlowe"),
+    b("tasks", &["bashes"], Args::None, "everything running in the background: stop it, read its output"),
+    b("workflows", &[], Args::None, "workflow progress, skip an agent, saved workflows"),
+    b("workflow", &[], Args::Optional("name [json args]"), "run a saved workflow and watch it"),
+    b("findings", &[], Args::None, "the last code review's findings"),
+    b("files", &[], Args::None, "files the agent sent you"),
+    b("messages", &["threads"], Args::None, "messages to crew runs and agents"),
+    b("bench", &["eval"], Args::None, "bench cards and coding-eval reports"),
+    b("fast", &[], Args::Optional("on|off"), "run the conductor on the Quick model; history kept"),
+    b("fewer-permission-prompts", &[], Args::None, "suggest allow rules from the calls you keep approving"),
+    b("keep-running", &[], Args::Optional("on|off|ask"), "keep Marlowe running after its window closes; ask forgets a remembered quit choice"),
+    b("exit", &["quit"], Args::None, "leave Marlowe: stop the agent, or close the window and keep it running"),
 ];
 
 /// `/name args` -> `(name, args)`. A line that starts with `/` but is a path or a sentence is not
@@ -202,6 +213,11 @@ impl State {
             self.flash(format!("/{} needs {hint}", b.name), NoteTone::Amber);
             return Outcome::Handled;
         }
+        // `/loop <prompt>` with no interval is self-paced (BG6): the daemon expands it, and the
+        // model re-arms itself with `schedule_wakeup` until it has nothing left to watch.
+        if b.name == "loop" && !args.is_empty() && !args.split_whitespace().next().is_some_and(|w| parse_interval(w).is_some()) {
+            return Outcome::Forward;
+        }
         match b.name {
             "help" => self.open_help(out),
             "config" => self.open_config(out),
@@ -210,6 +226,10 @@ impl State {
             "hooks" => self.open_hooks(out),
             "agents" => self.open_agents(out),
             "mcp" => self.open_mcp(out),
+            "ide" => {
+                self.code.expect_ide = true;
+                out.push(Request::McpList { workspace: self.ws() });
+            }
             "memory" => self.open_instructions(out),
             "model" => self.slash_model(&args, out),
             "effort" => self.slash_effort(&args, out),
@@ -275,7 +295,29 @@ impl State {
                 }
             }
             "jobs" => self.open_jobs(out),
-            "exit" => self.quit = true,
+            "tasks" => self.open_tasks(out),
+            "workflows" => self.open_workflows(out),
+            "workflow" => {
+                if args.is_empty() {
+                    self.open_workflows(out);
+                } else if args.split_whitespace().next().is_some_and(|w| w.eq_ignore_ascii_case("convert")) {
+                    return Outcome::Forward;
+                } else {
+                    self.slash_workflow(&args, out);
+                }
+            }
+            "findings" => self.slash_findings(out),
+            "files" => self.open_files(out),
+            "messages" => self.open_threads(None, out),
+            "bench" => self.open_bench(out),
+            "fast" => self.slash_fast(&args, out),
+            "fewer-permission-prompts" => {
+                self.bg.expect_suggestions = true;
+                out.push(Request::SuggestRules { workspace: self.ws() });
+                self.flash("reading this project's sessions...", NoteTone::Dim);
+            }
+            "keep-running" => self.slash_keep_running(&args, out),
+            "exit" => self.request_quit(),
             other => return Outcome::Unknown(other.to_string()),
         }
         Outcome::Handled
@@ -350,6 +392,46 @@ impl State {
             s.inherited = false;
         }
         self.flash(format!("thinking effort: {effort}"), NoteTone::Dim);
+    }
+
+    /// `/workflow <name|path> [json args]`: starts the run and opens its progress when it appears.
+    fn slash_workflow(&mut self, args: &str, out: &mut Vec<Request>) {
+        let (name, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
+        let rest = rest.trim();
+        let value = if rest.is_empty() {
+            serde_json::Value::Null
+        } else {
+            match serde_json::from_str::<serde_json::Value>(rest) {
+                Ok(v) => v,
+                Err(e) => {
+                    self.flash(format!("the arguments are JSON: {}", crate::text::clean(&e.to_string())), NoteTone::Amber);
+                    return;
+                }
+            }
+        };
+        let is_path = name.contains(['/', '\\']) || name.ends_with(".star");
+        let (name, script_path) = if is_path { (None, Some(name.to_string())) } else { (Some(name.to_string()), None) };
+        self.bg.expect_run = true;
+        out.push(Request::RunWorkflow { session: self.session.clone(), name, script_path, args: value, resume_from: None });
+        self.flash("starting the workflow...", NoteTone::Dim);
+    }
+
+    /// `/fast [on|off]`: the conductor on the Quick slot's model, or back.
+    fn slash_fast(&mut self, args: &str, out: &mut Vec<Request>) {
+        let Some(session) = self.session.clone() else {
+            self.flash("no session yet \u{2014} send a message first", NoteTone::Dim);
+            return;
+        };
+        let on = match args.trim().to_ascii_lowercase().as_str() {
+            "" => self.bg.fast_on(Some(&session)).is_none(),
+            "on" | "yes" | "true" => true,
+            "off" | "no" | "false" => false,
+            other => {
+                self.flash(format!("/fast takes on or off, not `{other}`"), NoteTone::Amber);
+                return;
+            }
+        };
+        out.push(Request::SetFast { session, on });
     }
 
     fn slash_loop(&mut self, args: &str, out: &mut Vec<Request>) {

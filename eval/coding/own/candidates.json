@@ -1,0 +1,2138 @@
+{
+  "about": "Draft of 40 own-repo tasks mined from this repository's git history by `marlowe eval own-mine` (M4.6 track L). Each is a past bug fix put back: the task starts from the fix commit's parent (history dropped, so the fix cannot be read from `git log`); the fix commit's tests for one crate are hidden and run after the agent finishes. Matthew has not approved them (design 9.2-h): `needs_review` stays true and `status` stays draft until he edits statements, drops tasks and sets status to approved. All are bug fixes; the design's 15/15/5/5 split (bugfix, feature, refactor, ML) cannot come from the history, which is mostly one milestone's work.",
+  "candidates": [
+    {
+      "added_files": [],
+      "added_tests": [
+        "a_rewind_leaves_alone_ignored_and_outside_files_edited_after_the_turn",
+        "a_rewind_keeps_an_ignored_file_edited_between_two_turns_and_goes_on_from_a_partial_rewind"
+      ],
+      "category": "bugfix",
+      "churn_lines": 144,
+      "crate": "marlowe-agent",
+      "date": "2026-10-10",
+      "fix_commit": "063e736680f9a5456eb120d2f7777a11c5eda296",
+      "id": "own-001-marlowe-agent-063e736",
+      "needs_review": true,
+      "parent": "7f1a3728f7f79ca44647d221d233ff906aba1b55",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-agent/src/checkpoint/preimage.rs",
+        "crates/marlowe-agent/src/checkpoint/shadow.rs"
+      ],
+      "statement": "A code review of the `marlowe-agent` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- a rewind leaves alone ignored and outside files edited after the turn\n- a rewind keeps an ignored file edited between two turns and goes on from a partial rewind\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 F2: review fixes",
+      "test_files": [
+        "crates/marlowe-agent/src/checkpoint/tests.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-agent",
+          "--lib",
+          "checkpoint::tests"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [],
+      "category": "bugfix",
+      "churn_lines": 20,
+      "crate": "marlowe-daemon",
+      "date": "2026-10-10",
+      "fix_commit": "063e736680f9a5456eb120d2f7777a11c5eda296",
+      "id": "own-002-marlowe-daemon-063e736",
+      "needs_review": true,
+      "parent": "7f1a3728f7f79ca44647d221d233ff906aba1b55",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-daemon/src/session_ops/mod.rs"
+      ],
+      "statement": "A code review of the `marlowe-daemon` crate found bugs.\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": true,
+      "status": "draft",
+      "subject": "M4.6 F2: review fixes",
+      "test_files": [
+        "crates/marlowe-daemon/tests/f2_sessions.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-daemon",
+          "--test",
+          "f2_sessions"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "parity_x13_a_hostile_authorization_endpoint_is_never_opened",
+        "parity_x13_an_https_authorization_page_is_allowed",
+        "parity_x12_a_session_entry_cannot_widen_the_environment_with_env_allow",
+        "parity_x12_strict_means_the_run_servers_alone"
+      ],
+      "category": "bugfix",
+      "churn_lines": 1171,
+      "crate": "marlowe-mcp",
+      "date": "2026-10-10",
+      "fix_commit": "09d46164f618f3f24df5155a9e20ccd99541eb64",
+      "id": "own-003-marlowe-mcp-09d4616",
+      "needs_review": true,
+      "parent": "cdb6cb14302ea6871a582f7f252dedf58edbb45c",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-mcp/src/config.rs",
+        "crates/marlowe-mcp/src/fake.rs",
+        "crates/marlowe-mcp/src/oauth.rs"
+      ],
+      "statement": "A code review of the `marlowe-mcp` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- parity x13 a hostile authorization endpoint is never opened\n- parity x13 an https authorization page is allowed\n- parity x12 a session entry cannot widen the environment with env allow\n- parity x12 strict means the run servers alone\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 K: review fixes",
+      "test_files": [
+        "crates/marlowe-mcp/tests/http_oauth.rs",
+        "crates/marlowe-mcp/tests/stdio_hub.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-mcp",
+          "--test",
+          "http_oauth"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-mcp",
+          "--test",
+          "stdio_hub"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "parity_x15_servers_are_added_listed_and_removed_over_the_wire",
+        "parity_x12_a_session_calls_an_mcp_tool_after_the_user_allows_it",
+        "parity_t31_eighty_tools_reach_the_model_as_one_search_tool",
+        "a_run_server_belongs_to_the_connection_that_added_it_and_goes_with_it"
+      ],
+      "category": "bugfix",
+      "churn_lines": 115,
+      "crate": "marlowe-daemon",
+      "date": "2026-10-10",
+      "fix_commit": "09d46164f618f3f24df5155a9e20ccd99541eb64",
+      "id": "own-004-marlowe-daemon-09d4616",
+      "needs_review": true,
+      "parent": "cdb6cb14302ea6871a582f7f252dedf58edbb45c",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-daemon/src/mcp_ops.rs",
+        "crates/marlowe-daemon/src/mcp_ops/host.rs"
+      ],
+      "statement": "A code review of the `marlowe-daemon` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- parity x15 servers are added listed and removed over the wire\n- parity x12 a session calls an mcp tool after the user allows it\n- parity t31 eighty tools reach the model as one search tool\n- a run server belongs to the connection that added it and goes with it\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 K: review fixes",
+      "test_files": [
+        "crates/marlowe-daemon/src/mcp_ops/host_tests.rs",
+        "crates/marlowe-daemon/tests/mcp.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-daemon",
+          "--lib",
+          "mcp_ops::host_tests"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-daemon",
+          "--test",
+          "mcp"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "a_tainted_caller_starts_no_server_and_stops_a_trusted_one",
+        "an_untrusted_start_is_refused_where_config_names_a_program"
+      ],
+      "category": "bugfix",
+      "churn_lines": 185,
+      "crate": "marlowe-code",
+      "date": "2026-10-10",
+      "fix_commit": "15eb324639f40a5b412b81bdbca1ed5c7afed2e2",
+      "id": "own-005-marlowe-code-15eb324",
+      "needs_review": true,
+      "parent": "b395f59647961f847abc525ec8851b53b32abc1d",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-code/src/lsp/fake.rs",
+        "crates/marlowe-code/src/lsp/intel.rs",
+        "crates/marlowe-code/src/lsp/manager.rs",
+        "crates/marlowe-code/src/lsp/mod.rs",
+        "crates/marlowe-code/src/lsp/servers.rs"
+      ],
+      "statement": "A code review of the `marlowe-code` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- a tainted caller starts no server and stops a trusted one\n- an untrusted start is refused where config names a program\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 C: review fixes",
+      "test_files": [
+        "crates/marlowe-code/src/lsp/tests.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-code",
+          "--lib",
+          "lsp::tests"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "diagnostics_with_no_path_list_only_this_workspace"
+      ],
+      "category": "bugfix",
+      "churn_lines": 95,
+      "crate": "marlowe-exec",
+      "date": "2026-10-10",
+      "fix_commit": "15eb324639f40a5b412b81bdbca1ed5c7afed2e2",
+      "id": "own-006-marlowe-exec-15eb324",
+      "needs_review": true,
+      "parent": "b395f59647961f847abc525ec8851b53b32abc1d",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-exec/src/specs/code.rs",
+        "crates/marlowe-exec/src/specs/code/diag.rs"
+      ],
+      "statement": "A code review of the `marlowe-exec` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- diagnostics with no path list only this workspace\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 C: review fixes",
+      "test_files": [
+        "crates/marlowe-exec/src/specs/code/tests.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--lib",
+          "specs::code::tests"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [
+        "crates/marlowe-tui/tests/snapshots/hooks_trust_confirm.txt"
+      ],
+      "added_tests": [
+        "parity_U6_esc_stops_the_model_and_the_queued_messages_come_back_into_the_box_unsent",
+        "parity_U6_a_queued_message_keeps_its_image_and_goes_up_with_it",
+        "parity_C9_the_daemons_breakdown_and_truncation_notices_replace_the_estimate_when_it_sends_them",
+        "parity_T23_keys_typed_ahead_of_the_question_are_not_answers",
+        "parity_T23_a_second_question_waits_behind_the_first_and_both_are_answered_in_order",
+        "parity_T23_a_question_does_not_discard_the_panel_it_covers",
+        "parity_U1_a_diff_the_daemon_never_sent_is_fetched_when_ctrl_o_opens_between_turns",
+        "parity_U1_a_turn_with_no_tool_calls_fetches_nothing"
+      ],
+      "category": "bugfix",
+      "churn_lines": 391,
+      "crate": "marlowe-tui",
+      "date": "2026-10-10",
+      "fix_commit": "2790e034fe845fcffddd23b3c00ba0d277dcc4bb",
+      "id": "own-007-marlowe-tui-2790e03",
+      "needs_review": true,
+      "parent": "bdb9e119ff27a137bbb9ca9831f986663a81c81d",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-tui/src/code_events.rs",
+        "crates/marlowe-tui/src/coding.rs",
+        "crates/marlowe-tui/src/compose.rs",
+        "crates/marlowe-tui/src/input.rs",
+        "crates/marlowe-tui/src/links.rs",
+        "crates/marlowe-tui/src/panel.rs",
+        "crates/marlowe-tui/src/render/conversation.rs",
+        "crates/marlowe-tui/src/render/panel.rs",
+        "crates/marlowe-tui/src/state.rs"
+      ],
+      "statement": "A code review of the `marlowe-tui` crate found bugs.\n\nTool details come from the stored transcript (live events carry one line), hook trust binds to a reviewed digest with a confirm line, queued messages keep their images and stay in the box after Esc, ask_user has a type-ahead guard and a FIFO, file links open only text, /context and /permissions show the daemon's breakdown and fired rule when present and label the estimate. Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- parity U6 esc stops the model and the queued messages come back into the box unsent\n- parity U6 a queued message keeps its image and goes up with it\n- parity C9 the daemons breakdown and truncation notices replace the estimate when it sends them\n- parity T23 keys typed ahead of the question are not answers\n- parity T23 a second question waits behind the first and both are answered in order\n- parity T23 a question does not discard the panel it covers\n- parity U1 a diff the daemon never sent is fetched when ctrl o opens between turns\n- parity U1 a turn with no tool calls fetches nothing\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 H: review fixes",
+      "test_files": [
+        "crates/marlowe-tui/tests/parity_input.rs",
+        "crates/marlowe-tui/tests/parity_panels.rs",
+        "crates/marlowe-tui/tests/parity_render.rs",
+        "crates/marlowe-tui/tests/snapshots/context_usage_panel.txt",
+        "crates/marlowe-tui/tests/snapshots/hooks_panel.txt",
+        "crates/marlowe-tui/tests/snapshots/hooks_trust_confirm.txt",
+        "crates/marlowe-tui/tests/snapshots/inline_diff.txt",
+        "crates/marlowe-tui/tests/snapshots/transcript_view.txt"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-tui",
+          "--test",
+          "parity_input"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-tui",
+          "--test",
+          "parity_panels"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-tui",
+          "--test",
+          "parity_render"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "rewinding_a_correction_brings_back_the_belief_it_replaced",
+        "a_belief_said_and_corrected_inside_the_rewound_turns_stays_gone"
+      ],
+      "category": "bugfix",
+      "churn_lines": 959,
+      "crate": "marlowe-memory",
+      "date": "2026-10-10",
+      "fix_commit": "457629542433242dba9e119bde78652ac3d91df1",
+      "id": "own-008-marlowe-memory-4576295",
+      "needs_review": true,
+      "parent": "80a989691ea038f3f6abcea5e53f230d9947a942",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-memory/src/store.rs"
+      ],
+      "statement": "A code review of the `marlowe-memory` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- rewinding a correction brings back the belief it replaced\n- a belief said and corrected inside the rewound turns stays gone\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 F2: review fixes",
+      "test_files": [
+        "crates/marlowe-memory/tests/retract.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-memory",
+          "--test",
+          "retract"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "a_session_asked_again_after_an_idle_eviction_records_each_turn_once"
+      ],
+      "category": "bugfix",
+      "churn_lines": 250,
+      "crate": "marlowe-daemon",
+      "date": "2026-10-10",
+      "fix_commit": "457629542433242dba9e119bde78652ac3d91df1",
+      "id": "own-009-marlowe-daemon-4576295",
+      "needs_review": true,
+      "parent": "80a989691ea038f3f6abcea5e53f230d9947a942",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-daemon/src/checkpoint/mod.rs",
+        "crates/marlowe-daemon/src/session.rs"
+      ],
+      "statement": "A code review of the `marlowe-daemon` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- a session asked again after an idle eviction records each turn once\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 F2: review fixes",
+      "test_files": [
+        "crates/marlowe-daemon/tests/f2_sessions.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-daemon",
+          "--test",
+          "f2_sessions"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [
+        "crates/marlowe-openrouter/tests/fixtures/sse_unknown_and_incomplete.sse"
+      ],
+      "added_tests": [
+        "unknown_tools_and_missing_required_arguments_are_not_counted_valid",
+        "parity_c14_openrouter_effort_is_in_the_request"
+      ],
+      "category": "bugfix",
+      "churn_lines": 1253,
+      "crate": "marlowe-openrouter",
+      "date": "2026-10-10",
+      "fix_commit": "47a943fc7eb1f2b8f14607606e62f20f78d61313",
+      "id": "own-010-marlowe-openrouter-47a943f",
+      "needs_review": true,
+      "parent": "a2b23f394e6bef4f7ac5e8f5c0d1fbfadc945a23",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-openrouter/src/request.rs",
+        "crates/marlowe-openrouter/src/stream.rs"
+      ],
+      "statement": "A code review of the `marlowe-openrouter` crate found bugs.\n\nInline code spans are display like fences, so a call quoted in backticks is not run (scan and LeakGuard). Anthropic cache breakpoints: one per cached system run, capped at four, and the conversation breakpoint moves to the last message of every request. valid_rate no longer counts a call missing a required argument (ArgsOutcome::Invalid) or to an unknown tool. Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- unknown tools and missing required arguments are not counted valid\n- parity c14 openrouter effort is in the request\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 G: review fixes",
+      "test_files": [
+        "crates/marlowe-openrouter/tests/fixtures/sse_unknown_and_incomplete.sse",
+        "crates/marlowe-openrouter/tests/vision_repair.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-openrouter",
+          "--test",
+          "vision_repair"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "a_cell_range_stops_at_whole_cells_under_the_cap"
+      ],
+      "category": "bugfix",
+      "churn_lines": 168,
+      "crate": "marlowe-code",
+      "date": "2026-10-10",
+      "fix_commit": "488c251c0df2442145e439748d63203d44fc1b41",
+      "id": "own-011-marlowe-code-488c251",
+      "needs_review": true,
+      "parent": "685d3ef57d65f729f244669b2efafab7b1be1151",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-code/src/notebook/mod.rs"
+      ],
+      "statement": "A code review of the `marlowe-code` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- a cell range stops at whole cells under the cap\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 A: review fixes",
+      "test_files": [
+        "crates/marlowe-code/src/notebook/tests.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-code",
+          "--lib",
+          "notebook::tests"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "parity_t1_a_6mb_file_reads_at_an_offset_past_4mb",
+        "a_huge_file_is_streamed_by_window",
+        "parity_t4_a_large_notebook_reads_in_cell_windows",
+        "parity_t7_a_change_between_turns_is_reported_when_the_next_turn_starts",
+        "parity_t5_a_unc_write_is_never_touched_before_approval",
+        "the_files_group_declares_the_reviewed_m46_schemas"
+      ],
+      "category": "bugfix",
+      "churn_lines": 662,
+      "crate": "marlowe-exec",
+      "date": "2026-10-10",
+      "fix_commit": "488c251c0df2442145e439748d63203d44fc1b41",
+      "id": "own-012-marlowe-exec-488c251",
+      "needs_review": true,
+      "parent": "685d3ef57d65f729f244669b2efafab7b1be1151",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-exec/src/specs/files.rs",
+        "crates/marlowe-exec/src/text.rs"
+      ],
+      "statement": "A code review of the `marlowe-exec` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- parity t1 a 6mb file reads at an offset past 4mb\n- a huge file is streamed by window\n- parity t4 a large notebook reads in cell windows\n- parity t7 a change between turns is reported when the next turn starts\n- parity t5 a unc write is never touched before approval\n- the files group declares the reviewed m46 schemas\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 A: review fixes",
+      "test_files": [
+        "crates/marlowe-exec/src/specs/files/tests.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--lib",
+          "specs::files::tests"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "a_plan_that_does_not_name_its_commit_is_not_pushed"
+      ],
+      "category": "bugfix",
+      "churn_lines": 6,
+      "crate": "marlowe-daemon",
+      "date": "2026-10-10",
+      "fix_commit": "619dad8d489a0990d2622ac1bf2ce64ede8889f6",
+      "id": "own-013-marlowe-daemon-619dad8",
+      "needs_review": true,
+      "parent": "4eb818c27f77b38ccf2d8750cc364cf4ebee6a42",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-daemon/src/pr_ops.rs"
+      ],
+      "statement": "A code review of the `marlowe-daemon` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- a plan that does not name its commit is not pushed\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 J: review fixes",
+      "test_files": [
+        "crates/marlowe-daemon/src/pr_ops/tests.rs",
+        "crates/marlowe-daemon/tests/open_pr.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-daemon",
+          "--lib",
+          "pr_ops::tests"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-daemon",
+          "--test",
+          "open_pr"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "a_push_sends_the_commit_the_user_approved",
+        "the_shell_guard_stands_alone_without_the_git_group"
+      ],
+      "category": "bugfix",
+      "churn_lines": 288,
+      "crate": "marlowe-exec",
+      "date": "2026-10-10",
+      "fix_commit": "619dad8d489a0990d2622ac1bf2ce64ede8889f6",
+      "id": "own-014-marlowe-exec-619dad8",
+      "needs_review": true,
+      "parent": "4eb818c27f77b38ccf2d8750cc364cf4ebee6a42",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-exec/src/git/git_tool.rs",
+        "crates/marlowe-exec/src/git/guard.rs",
+        "crates/marlowe-exec/src/git/mod.rs",
+        "crates/marlowe-exec/src/git/policy.rs",
+        "crates/marlowe-exec/src/git/pr.rs"
+      ],
+      "statement": "A code review of the `marlowe-exec` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- a push sends the commit the user approved\n- the shell guard stands alone without the git group\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 J: review fixes",
+      "test_files": [
+        "crates/marlowe-exec/src/git/policy/tests.rs",
+        "crates/marlowe-exec/tests/git_tools.rs",
+        "crates/marlowe-exec/tests/gitfix/mod.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--lib",
+          "git::policy::tests"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--test",
+          "git_tools"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [
+        "crates/marlowe-exec/src/summarize/window.rs"
+      ],
+      "added_tests": [
+        "parity_t16_a_line_printed_before_job_watch_still_matches",
+        "a_watch_started_mid_line_sees_the_whole_next_line",
+        "parity_t32_a_flood_of_output_is_summarised_from_a_bounded_window",
+        "two_unclaimed_hosts_in_one_workspace_are_not_guessed_between"
+      ],
+      "category": "bugfix",
+      "churn_lines": 341,
+      "crate": "marlowe-exec",
+      "date": "2026-10-10",
+      "fix_commit": "74502052bf1c78ab858e639c789c312f7f050146",
+      "id": "own-015-marlowe-exec-7450205",
+      "needs_review": true,
+      "parent": "9d3e0d60b3b7cc9652c8ccf603a7c155d278f355",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-exec/src/jobs/mod.rs",
+        "crates/marlowe-exec/src/jobs/tools.rs",
+        "crates/marlowe-exec/src/specs/shell.rs",
+        "crates/marlowe-exec/src/summarize/mod.rs",
+        "crates/marlowe-exec/src/summarize/window.rs"
+      ],
+      "statement": "A code review of the `marlowe-exec` crate found bugs.\n\njob_watch checks output the model has not read before installing a watch (a 'ready' line already printed is reported as matched) and carries the half line the log ends on. Shell results and background replies summarise a big log from a bounded window (head, tail and failure blocks streamed from the file; 2 MiB read whole) instead of loading up to 64 MiB; exit notices read a 2 MiB tail. BgHub::claim gives a fresh session a host only when exactly one unclaimed host matches its workspace. Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- parity t16 a line printed before job watch still matches\n- a watch started mid line sees the whole next line\n- parity t32 a flood of output is summarised from a bounded window\n- two unclaimed hosts in one workspace are not guessed between\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 B: review fixes",
+      "test_files": [
+        "crates/marlowe-exec/tests/jobs.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--test",
+          "jobs"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "parity_t7_a_change_not_shown_whole_needs_a_reread_before_a_write",
+        "parity_t7_an_appended_log_is_noted_once_per_turn"
+      ],
+      "category": "bugfix",
+      "churn_lines": 18,
+      "crate": "marlowe-exec",
+      "date": "2026-10-10",
+      "fix_commit": "76137a6a8bdd896188a325557fa8ea9b66386b2d",
+      "id": "own-016-marlowe-exec-76137a6",
+      "needs_review": true,
+      "parent": "488c251c0df2442145e439748d63203d44fc1b41",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-exec/src/specs/files.rs"
+      ],
+      "statement": "A code review of the `marlowe-exec` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- parity t7 a change not shown whole needs a reread before a write\n- parity t7 an appended log is noted once per turn\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 A: review fixes",
+      "test_files": [
+        "crates/marlowe-exec/src/specs/files/tests.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--lib",
+          "specs::files::tests"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "a_change_not_shown_whole_is_not_seen",
+        "an_appended_log_is_noted_once_per_turn",
+        "a_poll_does_not_read_files_above_its_ceiling"
+      ],
+      "category": "bugfix",
+      "churn_lines": 174,
+      "crate": "marlowe-code",
+      "date": "2026-10-10",
+      "fix_commit": "76137a6a8bdd896188a325557fa8ea9b66386b2d",
+      "id": "own-017-marlowe-code-76137a6",
+      "needs_review": true,
+      "parent": "488c251c0df2442145e439748d63203d44fc1b41",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-code/src/filestate/diff.rs",
+        "crates/marlowe-code/src/filestate/mod.rs"
+      ],
+      "statement": "A code review of the `marlowe-code` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- a change not shown whole is not seen\n- an appended log is noted once per turn\n- a poll does not read files above its ceiling\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 A: review fixes",
+      "test_files": [
+        "crates/marlowe-code/src/filestate/tests.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-code",
+          "--lib",
+          "filestate::tests"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "a_turn_that_drops_a_gitignore_line_cannot_make_a_rewind_delete_the_ignored_file",
+        "ignore_rules_follow_the_case_rules_git_detected_on_this_file_system",
+        "a_workspace_inside_a_repository_honours_the_ignore_files_above_it",
+        "a_rewind_leaves_alone_what_changed_outside_the_sessions_turns",
+        "after_a_conversation_rewind_the_dropped_turns_still_count_as_the_sessions_own",
+        "a_turn_without_an_end_is_all_the_sessions_own"
+      ],
+      "category": "bugfix",
+      "churn_lines": 381,
+      "crate": "marlowe-agent",
+      "date": "2026-10-10",
+      "fix_commit": "80a989691ea038f3f6abcea5e53f230d9947a942",
+      "id": "own-018-marlowe-agent-80a9896",
+      "needs_review": true,
+      "parent": "c214ac37babc293851a94faa7d8893d34bc428ee",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-agent/src/checkpoint/git.rs",
+        "crates/marlowe-agent/src/checkpoint/mod.rs",
+        "crates/marlowe-agent/src/checkpoint/preimage.rs",
+        "crates/marlowe-agent/src/checkpoint/shadow.rs"
+      ],
+      "statement": "A code review of the `marlowe-agent` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- a turn that drops a gitignore line cannot make a rewind delete the ignored file\n- ignore rules follow the case rules git detected on this file system\n- a workspace inside a repository honours the ignore files above it\n- a rewind leaves alone what changed outside the sessions turns\n- after a conversation rewind the dropped turns still count as the sessions own\n- a turn without an end is all the sessions own\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 F2: review fixes",
+      "test_files": [
+        "crates/marlowe-agent/src/checkpoint/tests.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-agent",
+          "--lib",
+          "checkpoint::tests"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "parity_s4_a_rewind_does_not_give_the_money_back_and_an_empty_answer_is_billed",
+        "a_reused_turn_number_restores_ignored_files_to_what_the_new_turn_found",
+        "a_code_rewind_leaves_the_users_own_edits_alone_and_says_so",
+        "a_code_rewind_refuses_while_another_session_is_running_in_the_workspace"
+      ],
+      "category": "bugfix",
+      "churn_lines": 214,
+      "crate": "marlowe-daemon",
+      "date": "2026-10-10",
+      "fix_commit": "80a989691ea038f3f6abcea5e53f230d9947a942",
+      "id": "own-019-marlowe-daemon-80a9896",
+      "needs_review": true,
+      "parent": "c214ac37babc293851a94faa7d8893d34bc428ee",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-daemon/src/checkpoint/mod.rs",
+        "crates/marlowe-daemon/src/checkpoint/recorder.rs",
+        "crates/marlowe-daemon/src/session.rs",
+        "crates/marlowe-daemon/src/session_ops/cost.rs",
+        "crates/marlowe-daemon/src/session_ops/export.rs",
+        "crates/marlowe-daemon/src/session_ops/mod.rs",
+        "crates/marlowe-daemon/src/store.rs"
+      ],
+      "statement": "A code review of the `marlowe-daemon` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- parity s4 a rewind does not give the money back and an empty answer is billed\n- a reused turn number restores ignored files to what the new turn found\n- a code rewind leaves the users own edits alone and says so\n- a code rewind refuses while another session is running in the workspace\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 F2: review fixes",
+      "test_files": [
+        "crates/marlowe-daemon/tests/f2_sessions.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-daemon",
+          "--test",
+          "f2_sessions"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "powershell_abbreviated_force_is_dangerous",
+        "permission_settings_files_are_guarded"
+      ],
+      "category": "bugfix",
+      "churn_lines": 773,
+      "crate": "marlowe-permission",
+      "date": "2026-10-10",
+      "fix_commit": "98c82403ee513789f74417c196fd733016c05c2b",
+      "id": "own-020-marlowe-permission-98c8240",
+      "needs_review": true,
+      "parent": "c60e3faf771d0aa4d2ba1f2213347565ec7c2fb3",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-permission/src/rules.rs",
+        "crates/marlowe-permission/src/shell/analyze.rs",
+        "crates/marlowe-permission/src/shell/danger.rs",
+        "crates/marlowe-permission/src/shell/git.rs",
+        "crates/marlowe-permission/src/shell/mod.rs",
+        "crates/marlowe-permission/src/shell/paths.rs",
+        "crates/marlowe-permission/src/shell/pwsh.rs"
+      ],
+      "statement": "A code review of the `marlowe-permission` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- powershell abbreviated force is dangerous\n- permission settings files are guarded\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 E: review fixes",
+      "test_files": [
+        "crates/marlowe-permission/src/shell/danger/tests.rs",
+        "crates/marlowe-permission/src/shell/tests.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-permission",
+          "--lib",
+          "shell::danger::tests"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-permission",
+          "--lib",
+          "shell::tests"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "parity_m7_home_rules_apply_through_decide",
+        "exit_plan_only_leaves_plan_and_another_mode_change_forgets_it",
+        "parity_a16_the_temp_dir_is_outside_and_only_the_session_scratch_is_free",
+        "settings_lift_a_tools_own_ask_for_allowed_hosts_and_added_roots",
+        "parity_m11_always_for_project_survives_restart_in_an_untrusted_project",
+        "a_link_out_of_the_workspace_is_seen_through",
+        "parity_m9_the_projects_permission_files_ask_in_every_mode",
+        "parity_x8_a_permission_request_allow_never_answers_a_tripwire",
+        "parity_x9_claude_code_argument_names_both_ways",
+        "a_hook_that_leaves_a_background_process_does_not_hold_the_turn",
+        "hook_context_reaches_the_model_but_never_the_memory_as_user_words"
+      ],
+      "category": "bugfix",
+      "churn_lines": 261,
+      "crate": "marlowe-agent",
+      "date": "2026-10-10",
+      "fix_commit": "98c82403ee513789f74417c196fd733016c05c2b",
+      "id": "own-021-marlowe-agent-98c8240",
+      "needs_review": true,
+      "parent": "c60e3faf771d0aa4d2ba1f2213347565ec7c2fb3",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-agent/src/approval.rs",
+        "crates/marlowe-agent/src/convo.rs",
+        "crates/marlowe-agent/src/hooks.rs",
+        "crates/marlowe-agent/src/run_tools.rs"
+      ],
+      "statement": "A code review of the `marlowe-agent` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- parity m7 home rules apply through decide\n- exit plan only leaves plan and another mode change forgets it\n- parity a16 the temp dir is outside and only the session scratch is free\n- settings lift a tools own ask for allowed hosts and added roots\n- parity m11 always for project survives restart in an untrusted project\n- a link out of the workspace is seen through\n- parity m9 the projects permission files ask in every mode\n- parity x8 a permission request allow never answers a tripwire\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 E: review fixes",
+      "test_files": [
+        "crates/marlowe-agent/src/approval/tests.rs",
+        "crates/marlowe-agent/src/hooks/tests.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-agent",
+          "--lib",
+          "approval::tests"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-agent",
+          "--lib",
+          "hooks::tests"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "the_exit_notice_reads_the_end_of_a_long_log_where_failures_print",
+        "a_background_job_that_passes_its_cap_is_stopped_and_the_notice_says_so",
+        "a_host_nobody_set_up_keeps_its_logs_in_the_sandbox_it_is_pinned_to",
+        "a_host_without_the_middleware_says_it_cannot_deliver_notices",
+        "parity_t32_a_long_line_in_short_output_comes_back_whole",
+        "a_clipped_line_in_over_budget_output_is_marked_as_cut",
+        "parity_t32_a_long_line_in_short_output_comes_back_whole_with_nothing_deleted",
+        "a_crew_host_reads_its_job_log_back_without_tainting_the_run",
+        "the_user_bang_shell_works_in_a_session_that_has_run_no_turn"
+      ],
+      "category": "bugfix",
+      "churn_lines": 218,
+      "crate": "marlowe-exec",
+      "date": "2026-10-10",
+      "fix_commit": "9d3e0d60b3b7cc9652c8ccf603a7c155d278f355",
+      "id": "own-022-marlowe-exec-9d3e0d6",
+      "needs_review": true,
+      "parent": "1e80580205f4fe37bcd87f132d3c55ce6dedad14",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-exec/src/jobs/mod.rs",
+        "crates/marlowe-exec/src/jobs/tools.rs",
+        "crates/marlowe-exec/src/specs/shell.rs",
+        "crates/marlowe-exec/src/summarize/mod.rs"
+      ],
+      "statement": "A code review of the `marlowe-exec` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- the exit notice reads the end of a long log where failures print\n- a background job that passes its cap is stopped and the notice says so\n- a host nobody set up keeps its logs in the sandbox it is pinned to\n- a host without the middleware says it cannot deliver notices\n- parity t32 a long line in short output comes back whole\n- a clipped line in over budget output is marked as cut\n- parity t32 a long line in short output comes back whole with nothing deleted\n- a crew host reads its job log back without tainting the run\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 B: review fixes",
+      "test_files": [
+        "crates/marlowe-exec/src/jobs/tests.rs",
+        "crates/marlowe-exec/src/summarize/tests.rs",
+        "crates/marlowe-exec/tests/jobs.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--lib",
+          "jobs::tests"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--lib",
+          "summarize::tests"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--test",
+          "jobs"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [],
+      "category": "bugfix",
+      "churn_lines": 122,
+      "crate": "marlowe-daemon",
+      "date": "2026-10-10",
+      "fix_commit": "9d3e0d60b3b7cc9652c8ccf603a7c155d278f355",
+      "id": "own-023-marlowe-daemon-9d3e0d6",
+      "needs_review": true,
+      "parent": "1e80580205f4fe37bcd87f132d3c55ce6dedad14",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-daemon/src/job_ops.rs"
+      ],
+      "statement": "A code review of the `marlowe-daemon` crate found bugs.\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": true,
+      "status": "draft",
+      "subject": "M4.6 B: review fixes",
+      "test_files": [
+        "crates/marlowe-daemon/tests/job_routes.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-daemon",
+          "--test",
+          "job_routes"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [
+        "crates/marlowe-openrouter/tests/fixtures/catalog_vision.json",
+        "crates/marlowe-openrouter/tests/fixtures/sse_cut_off_write.sse",
+        "crates/marlowe-openrouter/tests/fixtures/sse_hermes_leak.sse",
+        "crates/marlowe-openrouter/tests/fixtures/sse_python_dict_arguments.sse",
+        "crates/marlowe-openrouter/tests/fixtures/sse_qwen_function_leak.sse",
+        "crates/marlowe-openrouter/tests/fixtures/sse_text_ok.sse",
+        "crates/marlowe-openrouter/tests/vision_repair.rs"
+      ],
+      "added_tests": [
+        "parity_t2_png_in_the_openrouter_request_json",
+        "a_text_only_model_gets_a_note_and_never_the_bytes",
+        "an_unlisted_model_is_tried_with_the_image_and_no_store_is_a_note",
+        "parity_c10_openrouter_cache_breakpoints",
+        "reasoning_families_that_reject_a_temperature_are_not_sent_one",
+        "structured_arguments_are_repaired_and_counted",
+        "a_call_cut_off_by_the_output_limit_is_never_completed",
+        "calls_written_as_text_are_recovered_and_kept_off_the_screen",
+        "a_reply_that_only_quotes_markup_in_a_fence_is_left_alone",
+        "parity_c14_openrouter_effort_is_in_the_request"
+      ],
+      "category": "bugfix",
+      "churn_lines": 2446,
+      "crate": "marlowe-openrouter",
+      "date": "2026-10-10",
+      "fix_commit": "a2b23f394e6bef4f7ac5e8f5c0d1fbfadc945a23",
+      "id": "own-024-marlowe-openrouter-a2b23f3",
+      "needs_review": true,
+      "parent": "89f18e751f64a4833604b7863e8070c3351b81db",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-openrouter/src/catalog.rs",
+        "crates/marlowe-openrouter/src/provider.rs",
+        "crates/marlowe-openrouter/src/request.rs",
+        "crates/marlowe-openrouter/src/stream.rs"
+      ],
+      "statement": "There is a bug in the `marlowe-openrouter` crate of this repository: vision for Ollama and OpenRouter, window check, 100-case tool-call repair corpus.\n\n- marlowe-model/image.rs: blake3 blob store, ingest, per-provider downscale (1024/1568/2048). - Ollama: images in messages (vision from /api/show), supports_vision in the catalog, num_ctx plan check (A15), lenient argument repair against the request's schemas, text-call recovery (Qwen/Hermes/GLM/Mistral/fenced/bare) behind a streaming LeakGuard, RepairStats for A4. LeakGuard fixes found by the corpus: fences closed across pieces, a bracket mid-line, and an untagged json fence that is a call. - OpenRouter: image_url parts, vision read from the catalog, tool-result images after the batch, anthro\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- parity t2 png in the openrouter request json\n- a text only model gets a note and never the bytes\n- an unlisted model is tried with the image and no store is a note\n- parity c10 openrouter cache breakpoints\n- reasoning families that reject a temperature are not sent one\n- structured arguments are repaired and counted\n- a call cut off by the output limit is never completed\n- calls written as text are recovered and kept off the screen\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 G: vision for Ollama and OpenRouter, window check, 100-case tool-call repair corpus",
+      "test_files": [
+        "crates/marlowe-openrouter/tests/fixtures/catalog_vision.json",
+        "crates/marlowe-openrouter/tests/fixtures/sse_cut_off_write.sse",
+        "crates/marlowe-openrouter/tests/fixtures/sse_hermes_leak.sse",
+        "crates/marlowe-openrouter/tests/fixtures/sse_python_dict_arguments.sse",
+        "crates/marlowe-openrouter/tests/fixtures/sse_qwen_function_leak.sse",
+        "crates/marlowe-openrouter/tests/fixtures/sse_text_ok.sse",
+        "crates/marlowe-openrouter/tests/vision_repair.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-openrouter",
+          "--test",
+          "vision_repair"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "rename_resyncs_files_the_shell_changed_and_refuses_a_change_mid_rename",
+        "rename_refuses_a_dot_dot_uri_and_a_link_out_of_the_root",
+        "an_untrusted_caller_never_gets_a_trusted_server",
+        "symbols_under_a_folder_count_only_its_definitions"
+      ],
+      "category": "bugfix",
+      "churn_lines": 845,
+      "crate": "marlowe-code",
+      "date": "2026-10-10",
+      "fix_commit": "b395f59647961f847abc525ec8851b53b32abc1d",
+      "id": "own-025-marlowe-code-b395f59",
+      "needs_review": true,
+      "parent": "41bca1969b4b81d8a773ccc845a56eb4c8e6d96a",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-code/src/index/mod.rs",
+        "crates/marlowe-code/src/lsp/a8.rs",
+        "crates/marlowe-code/src/lsp/client.rs",
+        "crates/marlowe-code/src/lsp/fake.rs",
+        "crates/marlowe-code/src/lsp/intel.rs",
+        "crates/marlowe-code/src/lsp/manager.rs",
+        "crates/marlowe-code/src/lsp/servers.rs",
+        "crates/marlowe-code/src/lsp/transport.rs",
+        "crates/marlowe-code/src/lsp/uri.rs"
+      ],
+      "statement": "A code review of the `marlowe-code` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- rename resyncs files the shell changed and refuses a change mid rename\n- rename refuses a dot dot uri and a link out of the root\n- an untrusted caller never gets a trusted server\n- symbols under a folder count only its definitions\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 C: review fixes",
+      "test_files": [
+        "crates/marlowe-code/src/lsp/tests.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-code",
+          "--lib",
+          "lsp::tests"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "parity_t24_errors_the_server_reports_after_the_window_reach_the_model",
+        "a_tainted_session_starts_servers_without_workspace_code",
+        "text_from_outside_the_users_folders_is_withheld_not_shown"
+      ],
+      "category": "bugfix",
+      "churn_lines": 247,
+      "crate": "marlowe-exec",
+      "date": "2026-10-10",
+      "fix_commit": "b395f59647961f847abc525ec8851b53b32abc1d",
+      "id": "own-026-marlowe-exec-b395f59",
+      "needs_review": true,
+      "parent": "41bca1969b4b81d8a773ccc845a56eb4c8e6d96a",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-exec/src/specs/code.rs",
+        "crates/marlowe-exec/src/specs/code/diag.rs"
+      ],
+      "statement": "A code review of the `marlowe-exec` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- parity t24 errors the server reports after the window reach the model\n- a tainted session starts servers without workspace code\n- text from outside the users folders is withheld not shown\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 C: review fixes",
+      "test_files": [
+        "crates/marlowe-exec/src/specs/code/tests.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--lib",
+          "specs::code::tests"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "parity_a4_a_background_agent_lost_to_a_restart_is_reported_on_the_next_turn",
+        "an_interrupt_ends_a_pending_subagent_approval_at_once",
+        "parity_c15_a_switched_model_works_against_the_gated_window"
+      ],
+      "category": "bugfix",
+      "churn_lines": 303,
+      "crate": "marlowe-daemon",
+      "date": "2026-10-10",
+      "fix_commit": "b944e18a529f6a2993b0334c3628df10d86ef023",
+      "id": "own-027-marlowe-daemon-b944e18",
+      "needs_review": true,
+      "parent": "2232ecb61f7a77841b0a83e8696acdc6291fac3c",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-daemon/src/conductor_ops.rs",
+        "crates/marlowe-daemon/src/schedule_ops.rs"
+      ],
+      "statement": "A code review of the `marlowe-daemon` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- parity a4 a background agent lost to a restart is reported on the next turn\n- an interrupt ends a pending subagent approval at once\n- parity c15 a switched model works against the gated window\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 F: review fixes",
+      "test_files": [
+        "crates/marlowe-daemon/tests/conductor_f.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-daemon",
+          "--test",
+          "conductor_f"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [
+        "crates/marlowe-agent/src/instructions/trust.rs"
+      ],
+      "added_tests": [
+        "parity_a13_writes_land_in_the_worktree_and_dirty_work_is_never_removed_silently",
+        "parity_x10_memory_hears_the_users_words_not_the_expansion",
+        "parity_x11_skill_arguments_from_the_model_never_run_or_attach",
+        "parity_a2_a_subagents_untrusted_read_taints_the_caller",
+        "parity_a4_background_agents_are_recorded_and_stopped_at_shutdown",
+        "parity_a4_a_foreground_local_agent_does_not_wait_behind_a_background_one",
+        "parity_x10_the_users_command_wins_and_repository_commands_act_only_when_trusted",
+        "parity_c2_imports_from_outside_the_workspace_wait_for_the_users_trust",
+        "parity_a6_a_repository_explore_stays_read_only",
+        "parity_x11_a_skill_that_forks_a_writing_agent_is_a_run",
+        "parity_c10_reasoning_and_mid_turn_reminders_keep_requests_extending"
+      ],
+      "category": "bugfix",
+      "churn_lines": 1337,
+      "crate": "marlowe-agent",
+      "date": "2026-10-10",
+      "fix_commit": "b944e18a529f6a2993b0334c3628df10d86ef023",
+      "id": "own-028-marlowe-agent-b944e18",
+      "needs_review": true,
+      "parent": "2232ecb61f7a77841b0a83e8696acdc6291fac3c",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-agent/src/agent.rs",
+        "crates/marlowe-agent/src/agent/guard.rs",
+        "crates/marlowe-agent/src/commands.rs",
+        "crates/marlowe-agent/src/commands/plugin.rs",
+        "crates/marlowe-agent/src/context.rs",
+        "crates/marlowe-agent/src/instructions.rs",
+        "crates/marlowe-agent/src/instructions/trust.rs",
+        "crates/marlowe-agent/src/subagent.rs",
+        "crates/marlowe-agent/src/worktree.rs"
+      ],
+      "statement": "A code review of the `marlowe-agent` crate found bugs.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- parity a13 writes land in the worktree and dirty work is never removed silently\n- parity x10 memory hears the users words not the expansion\n- parity x11 skill arguments from the model never run or attach\n- parity a2 a subagents untrusted read taints the caller\n- parity a4 background agents are recorded and stopped at shutdown\n- parity a4 a foreground local agent does not wait behind a background one\n- parity x10 the users command wins and repository commands act only when trusted\n- parity c2 imports from outside the workspace wait for the users trust\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 F: review fixes",
+      "test_files": [
+        "crates/marlowe-agent/tests/parity_f.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-agent",
+          "--test",
+          "parity_f"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "secret_file_variants_are_recognised",
+        "grep_lines_from_secret_files_lose_their_text",
+        "quoted_passphrases_go_whole",
+        "sft_rows_carry_the_schema_of_every_tool_they_call",
+        "dpo_rows_carry_tools_too",
+        "secret_file_variants_and_grep_lines_are_redacted"
+      ],
+      "category": "bugfix",
+      "churn_lines": 193,
+      "crate": "marlowe",
+      "date": "2026-10-10",
+      "fix_commit": "c5c49460dc8ac093daf53958aa618f9074a0b8e1",
+      "id": "own-029-marlowe-c5c4946",
+      "needs_review": true,
+      "parent": "fa8062460544b2bc25d43a49dc2fc8c5c6113ebe",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe/src/export/hf.rs",
+        "crates/marlowe/src/export/machine.rs",
+        "crates/marlowe/src/export/scrub/mod.rs",
+        "crates/marlowe/src/export/scrub/rules.rs",
+        "crates/marlowe/src/export/trajectories.rs"
+      ],
+      "statement": "A code review of the `marlowe` crate found bugs.\n\n- Secret files: dotenv with any number of suffixes (.env.production.local, .env.local.bak) or a stem (prod.env), .envrc, ~/.kube/config, ~/.docker/config.json, ~/.aws/credentials|config; the template exemption reads the last segment only. grep/rg lines from a secret file inside an ordinary result keep their path:line: prefix and lose the text. A11 plants .env.production.local, prod.env and an rg result line. Scrub v2. - Known secrets: secret-named env values with '/', '+' or spaces are kept; only a clear path (_PATH/_DIR/_FILE/_SOCK name, or an existing absolute path) is left out. A quoted pas\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- secret file variants are recognised\n- grep lines from secret files lose their text\n- quoted passphrases go whole\n- sft rows carry the schema of every tool they call\n- dpo rows carry tools too\n- secret file variants and grep lines are redacted\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 M: review fixes",
+      "test_files": [
+        "crates/marlowe/src/export/scrub/tests.rs",
+        "crates/marlowe/src/export/tests.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe",
+          "--bin",
+          "marlowe",
+          "export::scrub::tests"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe",
+          "--bin",
+          "marlowe",
+          "export::tests"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "collapsing_reasoning_mid_stream_follows_the_new_tail",
+        "a_scrolled_up_view_keeps_its_place_through_a_paste_and_a_resize"
+      ],
+      "category": "bugfix",
+      "churn_lines": 38,
+      "crate": "marlowe-tui",
+      "date": "2026-10-10",
+      "fix_commit": "e3700bf062f0e3d9b83de088daf4dd34053e1182",
+      "id": "own-030-marlowe-tui-e3700bf",
+      "needs_review": true,
+      "parent": "39f99aa58cd7bc1a8a87ae047ff5be8c7d0a3682",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-tui/src/input.rs",
+        "crates/marlowe-tui/src/render/conversation.rs",
+        "crates/marlowe-tui/src/state.rs"
+      ],
+      "statement": "There is a bug in the `marlowe-tui` crate of this repository: tui: review fixes for steady streaming and pixel-snapped maths.\n\nThe follow hold absorbs only a loss of up to 3 lines, and Ctrl+T bumps the epoch, so collapsing reasoning mid-reply follows the new tail rather than leaving one line over a blank pane. Scrolled up, a pane that changes height (resize, a paste that grows the composer) keeps its top line; a width change keeps the same fraction of the transcript above it. The image cache is keyed on (markup, colour, rows), not the pane width: a resize reuses every image that still fits and re-renders only one it no longer fits. The worker renders newest first and skips jobs superseded at another width. The helper \n\nThe behaviour a regression test will check (the tests are not in the repository):\n- collapsing reasoning mid stream follows the new tail\n- a scrolled up view keeps its place through a paste and a resize\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "tui: review fixes for steady streaming and pixel-snapped maths",
+      "test_files": [
+        "crates/marlowe-tui/tests/stream_replay.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-tui",
+          "--test",
+          "stream_replay"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [],
+      "category": "bugfix",
+      "churn_lines": 6,
+      "crate": "marlowe-daemon",
+      "date": "2026-10-11",
+      "fix_commit": "57f6429d7fd6453684e7e4ee8c668e42b607e0a2",
+      "id": "own-031-marlowe-daemon-57f6429",
+      "needs_review": true,
+      "parent": "79e9d3ce6683cf0e3ed50287b684c95abf6b856d",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-daemon/src/session.rs"
+      ],
+      "statement": "There is a bug in the `marlowe-daemon` crate of this repository: M14 prefix rules only for flag-safe programs, create_agent validates and shows the real file, print mode runs agents in the foreground, handback ends the step after its batch.\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": true,
+      "status": "draft",
+      "subject": "M4.6 F3 review fixes: M14 prefix rules only for flag-safe programs, create_agent validates and shows the real file, print mode runs agents in the foreground, handback ends the step after its batch",
+      "test_files": [
+        "crates/marlowe-daemon/tests/f3.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-daemon",
+          "--test",
+          "f3"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "parity_a16_a_draft_with_a_newline_in_model_or_tools_is_refused_before_the_user_is_asked_to_save_it",
+        "parity_a17_a_handback_beside_other_calls_lets_them_finish_in_either_order",
+        "parity_a15_print_mode_makes_the_default_agent_call_wait_for_the_report"
+      ],
+      "category": "bugfix",
+      "churn_lines": 121,
+      "crate": "marlowe-agent",
+      "date": "2026-10-11",
+      "fix_commit": "57f6429d7fd6453684e7e4ee8c668e42b607e0a2",
+      "id": "own-032-marlowe-agent-57f6429",
+      "needs_review": true,
+      "parent": "79e9d3ce6683cf0e3ed50287b684c95abf6b856d",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-agent/src/agent.rs",
+        "crates/marlowe-agent/src/fork.rs",
+        "crates/marlowe-agent/src/run_tools.rs",
+        "crates/marlowe-agent/src/subagent.rs",
+        "crates/marlowe-agent/src/subagent_tools.rs",
+        "crates/marlowe-agent/src/tools.rs",
+        "crates/marlowe-agent/src/worktree.rs"
+      ],
+      "statement": "There is a bug in the `marlowe-agent` crate of this repository: M14 prefix rules only for flag-safe programs, create_agent validates and shows the real file, print mode runs agents in the foreground, handback ends the step after its batch.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- parity a16 a draft with a newline in model or tools is refused before the user is asked to save it\n- parity a17 a handback beside other calls lets them finish in either order\n- parity a15 print mode makes the default agent call wait for the report\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 F3 review fixes: M14 prefix rules only for flag-safe programs, create_agent validates and shows the real file, print mode runs agents in the foreground, handback ends the step after its batch",
+      "test_files": [
+        "crates/marlowe-agent/tests/parity_f3.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-agent",
+          "--test",
+          "parity_f3"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "a_migration_that_names_a_database_asks_and_a_crew_does_not_free_it",
+        "scripts_run_around_a_command_are_judged_with_it",
+        "an_install_in_a_crew_sandbox_is_free_only_for_a_known_registry_that_was_approved",
+        "a_browser_call_asks_for_every_host_its_steps_can_reach_and_for_script_on_a_remote_page",
+        "acting_on_the_dev_server_this_session_started_is_free",
+        "a_workspace_page_cannot_read_files_outside_the_workspace",
+        "a_page_cannot_change_state_on_a_local_service_it_does_not_own_and_a_remote_page_cannot_reach_this_machine"
+      ],
+      "category": "bugfix",
+      "churn_lines": 2388,
+      "crate": "marlowe-exec",
+      "date": "2026-10-11",
+      "fix_commit": "5fd138a35255849acb41bbe104f4e9594087c13c",
+      "id": "own-033-marlowe-exec-5fd138a",
+      "needs_review": true,
+      "parent": "2948f5f99c85d556f05f28949fde67a11a04baed",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-exec/src/render/browse.rs",
+        "crates/marlowe-exec/src/specs/verify.rs"
+      ],
+      "statement": "A code review of the `marlowe-exec` crate found bugs.\n\nbrowser: a call is judged for every host it can reach (the page and each absolute goto), a remote page cannot open local files and its eval always shows its text, a page on this machine asks before acting on a local service this session did not start, and the reach is enforced on every request through the browser's own interception (workspace files only, loopback writes only to owned ports, resolver rules as a second line). project: a migration that names a database in its env, arguments or config files asks and a crew does not free it, Django settings are wrapped so every alias is a throwaway\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- a migration that names a database asks and a crew does not free it\n- scripts run around a command are judged with it\n- an install in a crew sandbox is free only for a known registry that was approved\n- a browser call asks for every host its steps can reach and for script on a remote page\n- acting on the dev server this session started is free\n- a workspace page cannot read files outside the workspace\n- a page cannot change state on a local service it does not own and a remote page cannot reach this machine\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 D: review fixes",
+      "test_files": [
+        "crates/marlowe-exec/tests/verify.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--test",
+          "verify"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [],
+      "category": "bugfix",
+      "churn_lines": 61,
+      "crate": "marlowe-daemon",
+      "date": "2026-10-11",
+      "fix_commit": "ad34e0f66545995bd5f44448bb8ec933d5e3034a",
+      "id": "own-034-marlowe-daemon-ad34e0f",
+      "needs_review": true,
+      "parent": "92c744dfeabe56837367f8ada6e6277b0032cb7f",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-daemon/src/blob_ops.rs",
+        "crates/marlowe-daemon/src/conductor_ops.rs",
+        "crates/marlowe-daemon/src/job_ops.rs"
+      ],
+      "statement": "There is a bug in the `marlowe-daemon` crate of this repository: build fixes across tracks; PutBlob stores images, Ctrl+B detaches through the job table.\n\n- TurnOutcome.truncated (M4.5) on F's blocked turn; StepRecord.truncated in M's export test. - The verify browser maps the M4.5 renderer's Refused; D's spawn_edge keeps M4.5's cleared environment, and only the research renderer keeps its localhost resolver rules. - M4.5 tests send Ask with images/options. - blob_ops (G's stub): PutBlob decodes, caps and stores in <home>\\blobs, answers BlobStored. - DetachCall (F refused it naming B): job_ops::detach through marlowe_os::job::bg_hub. - seam_routes: only J2's ListExperiments is still a stub; PutBlob answers BlobStored. Co-Authored-By: Claude Opus\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 integ: build fixes across tracks; PutBlob stores images, Ctrl+B detaches through the job table",
+      "test_files": [
+        "crates/marlowe-daemon/tests/context.rs",
+        "crates/marlowe-daemon/tests/crew.rs",
+        "crates/marlowe-daemon/tests/daemon.rs",
+        "crates/marlowe-daemon/tests/seam_routes.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-daemon",
+          "--test",
+          "context"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-daemon",
+          "--test",
+          "crew"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-daemon",
+          "--test",
+          "daemon"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-daemon",
+          "--test",
+          "seam_routes"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "free_writes_in_one_message_run_in_call_order",
+        "a_session_allow_never_frees_a_fixed_ask"
+      ],
+      "category": "bugfix",
+      "churn_lines": 64,
+      "crate": "marlowe-agent",
+      "date": "2026-10-11",
+      "fix_commit": "b97b0618148660b8372b707d9a041e663d6af34c",
+      "id": "own-035-marlowe-agent-b97b061",
+      "needs_review": true,
+      "parent": "ad34e0f66545995bd5f44448bb8ec933d5e3034a",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-agent/src/approval.rs",
+        "crates/marlowe-agent/src/run_tools.rs",
+        "crates/marlowe-agent/src/tools.rs"
+      ],
+      "statement": "There is a bug in the `marlowe-agent` crate of this repository: AskEvery fixed approvals, ordered writers, seam tests for the merged groups.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- free writes in one message run in call order\n- a session allow never frees a fixed ask\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 integ: AskEvery fixed approvals, ordered writers, seam tests for the merged groups",
+      "test_files": [
+        "crates/marlowe-agent/src/tests_seam.rs",
+        "crates/marlowe-agent/tests/parity_f.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-agent",
+          "--lib",
+          "tests_seam"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-agent",
+          "--test",
+          "parity_f"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [],
+      "category": "bugfix",
+      "churn_lines": 625,
+      "crate": "marlowe-exec",
+      "date": "2026-10-11",
+      "fix_commit": "b97b0618148660b8372b707d9a041e663d6af34c",
+      "id": "own-036-marlowe-exec-b97b061",
+      "needs_review": true,
+      "parent": "ad34e0f66545995bd5f44448bb8ec933d5e3034a",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-exec/src/fs_tools.rs",
+        "crates/marlowe-exec/src/git/gh_tool.rs",
+        "crates/marlowe-exec/src/git/git_tool.rs",
+        "crates/marlowe-exec/src/lib.rs",
+        "crates/marlowe-exec/src/specs/agent.rs",
+        "crates/marlowe-exec/src/specs/files.rs",
+        "crates/marlowe-exec/src/specs/shell.rs"
+      ],
+      "statement": "There is a bug in the `marlowe-exec` crate of this repository: AskEvery fixed approvals, ordered writers, seam tests for the merged groups.\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": true,
+      "status": "draft",
+      "subject": "M4.6 integ: AskEvery fixed approvals, ordered writers, seam tests for the merged groups",
+      "test_files": [
+        "crates/marlowe-exec/src/specs/code/tests.rs",
+        "crates/marlowe-exec/src/specs/files/tests.rs",
+        "crates/marlowe-exec/src/specs/tests.rs",
+        "crates/marlowe-exec/tests/every_tool.rs",
+        "crates/marlowe-exec/tests/git_tools.rs",
+        "crates/marlowe-exec/tests/line_numbers.rs",
+        "crates/marlowe-exec/tests/read_bounds.rs",
+        "crates/marlowe-exec/tests/research.rs",
+        "crates/marlowe-exec/tests/table_specs.rs",
+        "crates/marlowe-exec/tests/verify.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--lib",
+          "specs::code::tests"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--lib",
+          "specs::files::tests"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--lib",
+          "specs::tests"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--test",
+          "every_tool"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--test",
+          "git_tools"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--test",
+          "line_numbers"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--test",
+          "read_bounds"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--test",
+          "research"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--test",
+          "table_specs"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--test",
+          "verify"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "parity_bg4_a_hundred_fast_monitors_lose_no_last_line"
+      ],
+      "category": "bugfix",
+      "churn_lines": 42,
+      "crate": "marlowe-exec",
+      "date": "2026-10-11",
+      "fix_commit": "c69fb049293f20b7a48251179a021e9cb316636d",
+      "id": "own-037-marlowe-exec-c69fb04",
+      "needs_review": true,
+      "parent": "53c088a99b80f13e6f81b1db57f1376e9a0c2574",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-exec/src/monitor.rs",
+        "crates/marlowe-exec/src/specs/tasks.rs"
+      ],
+      "statement": "There is a bug in the `marlowe-exec` crate of this repository: drain loses nothing, one window of two, monitor last lines, tainted messages, relative watch paths, open allowlist, interrupted approvals.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- parity bg4 a hundred fast monitors lose no last line\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 N: review fixes (drain loses nothing, one window of two, monitor last lines, tainted messages, relative watch paths, open allowlist, interrupted approvals)",
+      "test_files": [
+        "crates/marlowe-exec/tests/parity_n.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-exec",
+          "--test",
+          "parity_n"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "a_message_from_a_tainted_session_is_journalled_tainted_and_never_at_user_trust",
+        "closing_one_of_two_windows_changes_nothing_and_the_last_one_closing_stops_everything",
+        "a_run_parked_on_an_approval_when_the_window_closes_ends_interrupted_not_failed"
+      ],
+      "category": "bugfix",
+      "churn_lines": 167,
+      "crate": "marlowe-daemon",
+      "date": "2026-10-11",
+      "fix_commit": "c69fb049293f20b7a48251179a021e9cb316636d",
+      "id": "own-038-marlowe-daemon-c69fb04",
+      "needs_review": true,
+      "parent": "53c088a99b80f13e6f81b1db57f1376e9a0c2574",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-daemon/src/bg_ops.rs",
+        "crates/marlowe-daemon/src/close_ops.rs",
+        "crates/marlowe-daemon/src/daemon.rs",
+        "crates/marlowe-daemon/src/notify_ops.rs",
+        "crates/marlowe-daemon/src/tasks.rs"
+      ],
+      "statement": "There is a bug in the `marlowe-daemon` crate of this repository: drain loses nothing, one window of two, monitor last lines, tainted messages, relative watch paths, open allowlist, interrupted approvals.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- a message from a tainted session is journalled tainted and never at user trust\n- closing one of two windows changes nothing and the last one closing stops everything\n- a run parked on an approval when the window closes ends interrupted not failed\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 N: review fixes (drain loses nothing, one window of two, monitor last lines, tainted messages, relative watch paths, open allowlist, interrupted approvals)",
+      "test_files": [
+        "crates/marlowe-daemon/tests/parity_n.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-daemon",
+          "--test",
+          "parity_n"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "parity_x22_every_workflow_agent_fires_start_and_stop_hooks",
+        "parity_wf8_a_workflow_shares_the_sessions_token_pool"
+      ],
+      "category": "bugfix",
+      "churn_lines": 15,
+      "crate": "marlowe-crew",
+      "date": "2026-10-11",
+      "fix_commit": "dcf28c695c5d7e67b999a5a0cf1e859874164f27",
+      "id": "own-039-marlowe-crew-dcf28c6",
+      "needs_review": true,
+      "parent": "e83b47019a5aa600167d80ff867bb91040a40f76",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-crew/src/dispatch.rs",
+        "crates/marlowe-crew/src/playbook/script/host.rs"
+      ],
+      "statement": "There is a bug in the `marlowe-crew` crate of this repository: daemon e2e workflow test, authoring skill, docs; agent panics answer the engine; hide the workflow role from dispatch; fixes from the test run.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- parity x22 every workflow agent fires start and stop hooks\n- parity wf8 a workflow shares the sessions token pool\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 W: daemon e2e workflow test, authoring skill, docs; agent panics answer the engine; hide the workflow role from dispatch; fixes from the test run",
+      "test_files": [
+        "crates/marlowe-crew/src/playbook/script/tests.rs",
+        "crates/marlowe-crew/src/tests.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-crew",
+          "--lib",
+          "playbook::script::tests"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-crew",
+          "--lib",
+          "tests"
+        ]
+      ],
+      "validated": null
+    },
+    {
+      "added_files": [],
+      "added_tests": [
+        "parity_wf7_a_workflow_run_streams_progress_and_its_result_starts_a_turn"
+      ],
+      "category": "bugfix",
+      "churn_lines": 16,
+      "crate": "marlowe-daemon",
+      "date": "2026-10-11",
+      "fix_commit": "dcf28c695c5d7e67b999a5a0cf1e859874164f27",
+      "id": "own-040-marlowe-daemon-dcf28c6",
+      "needs_review": true,
+      "parent": "e83b47019a5aa600167d80ff867bb91040a40f76",
+      "repo": "C:\\Users\\matth\\Projects\\MarloweCowork",
+      "source": "git-history",
+      "src_files": [
+        "crates/marlowe-daemon/src/workflow_ops.rs"
+      ],
+      "statement": "There is a bug in the `marlowe-daemon` crate of this repository: daemon e2e workflow test, authoring skill, docs; agent panics answer the engine; hide the workflow role from dispatch; fixes from the test run.\n\nThe behaviour a regression test will check (the tests are not in the repository):\n- parity wf7 a workflow run streams progress and its result starts a turn\n\nFind and fix the bug in the source. Do not edit existing tests.",
+      "statement_weak": false,
+      "status": "draft",
+      "subject": "M4.6 W: daemon e2e workflow test, authoring skill, docs; agent panics answer the engine; hide the workflow role from dispatch; fixes from the test run",
+      "test_files": [
+        "crates/marlowe-daemon/tests/crew.rs",
+        "crates/marlowe-daemon/tests/wave2_routes.rs"
+      ],
+      "tests": [
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-daemon",
+          "--test",
+          "crew"
+        ],
+        [
+          "powershell",
+          "-NoProfile",
+          "-File",
+          "{cargo_idle}",
+          "test",
+          "-p",
+          "marlowe-daemon",
+          "--test",
+          "wave2_routes"
+        ]
+      ],
+      "validated": null
+    }
+  ]
+}

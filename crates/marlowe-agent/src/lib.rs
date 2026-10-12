@@ -8,11 +8,13 @@
 
 pub mod agent;
 pub mod approval;
+pub mod background;
 pub mod budget;
 pub mod checkpoint;
 pub mod commands;
 pub mod context;
 pub mod convo;
+pub mod cron;
 pub mod directive;
 mod events;
 pub mod fork;
@@ -25,14 +27,17 @@ pub mod planfile;
 mod run_tools;
 pub mod steer;
 pub mod subagent;
+pub mod subagent_tools;
 pub mod system;
 pub mod tasklist;
 pub mod tasks;
 pub mod todo;
 pub mod tools;
+pub mod workflow_prompts;
 pub mod worktree;
 
 pub use agent::{Agent, MAX_STEPS};
+pub use background::{Background, BackgroundOps};
 pub use approval::{ApprovalGate, ApprovalReq, AutoApprove, DenyAll};
 pub use budget::{Budget, Spent};
 pub use context::{Assembled, ContextConfig, COMPACTION_TRIGGER, KEEP_TOOL_RESULTS};

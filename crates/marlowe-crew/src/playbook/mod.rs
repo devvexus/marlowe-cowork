@@ -4,14 +4,19 @@
 
 mod agent;
 mod build;
+pub mod build_v2;
 mod research;
 pub mod research_v2;
+/// Workflow scripts as crew runs (track W).
+pub mod script;
 
 pub use agent::{
-    output_cap, sandbox_shell, tail_chars, AgentRunner, ModelResolver, NoHooks, ShellFn, StepFailure, StepHooks,
-    StepModel, CONTINUE_PROMPT, MAX_CONTINUES, MIN_OUTPUT, OUTPUT_MARGIN, SHELL_OUTPUT_CHARS, SHELL_TIMEOUT,
+    close_dangling, output_cap, sandbox_shell, tail_chars, AgentRunner, CallCheckpoint, ModelResolver, NoHooks, PartialStep,
+    ShellFn, StepFailure, StepHooks, StepModel, StepToolsFn, CONTINUE_PROMPT, INTERRUPTED_CALL, MAX_CONTINUES, MIN_OUTPUT,
+    OUTPUT_MARGIN, RESUME_PROMPT, SHELL_OUTPUT_CHARS, SHELL_TIMEOUT,
 };
 pub use build::{build, detect_test_command};
+pub use build_v2::{build_v2, review_diff, BuildHost, BuildV2Config, Finding, Lens, Severity};
 pub use research::{deep_research, first_paragraph, min_confidence, parse_verdicts, Verdict, REPORT_FILE};
 pub use research_v2::{deep_research_v2, ResearchHost, ResearchIo, ResearchV2Config};
 
@@ -83,6 +88,15 @@ pub trait StepRunner: Send + Sync {
     /// Runs a command in the sandbox (bounded, in a Job Object, crew environment).
     fn shell(&self, command: &str) -> Result<ShellResult, CrewError>;
 
+    /// [`StepRunner::shell`] in another sandbox of the run (a build_v2 child worktree), under the
+    /// same policy and controls.
+    fn shell_in(&self, sandbox: &Sandbox, command: &str) -> Result<ShellResult, CrewError> {
+        if sandbox == self.sandbox() {
+            return self.shell(command);
+        }
+        Err(CrewError::NotWired("this runner runs shells in its own sandbox only"))
+    }
+
     /// The run's sandbox.
     fn sandbox(&self) -> &Sandbox;
 
@@ -99,16 +113,24 @@ pub struct PlaybookConfig {
     pub test_command: Option<String>,
     /// Deep research v2 settings.
     pub research: ResearchV2Config,
+    /// build_v2 settings.
+    pub build: BuildV2Config,
 }
 
 impl Default for PlaybookConfig {
     fn default() -> Self {
-        Self { max_scouts: 6, max_test_iterations: 4, test_command: None, research: ResearchV2Config::default() }
+        Self {
+            max_scouts: 6,
+            max_test_iterations: 4,
+            test_command: None,
+            research: ResearchV2Config::default(),
+            build: BuildV2Config::default(),
+        }
     }
 }
 
 /// Runs `playbook` for `goal`, or a single role-prompt step with `role` when there is none.
-/// Deep research is v1 here; [`run_with`] runs v2 when the run has research channels.
+/// Deep research and build are v1 here; [`run_with`] runs v2 when the run has their hosts.
 pub fn run(
     playbook: Option<Playbook>,
     role: &str,
@@ -116,24 +138,39 @@ pub fn run(
     runner: &dyn StepRunner,
     cfg: &PlaybookConfig,
 ) -> Result<Dispatch, CrewError> {
-    run_with(playbook, role, goal, runner, cfg, None)
+    run_with(playbook, role, goal, runner, cfg, Hosts::default())
 }
 
-/// [`run`], with the research host that makes deep research v2. Without one (no channels wired)
-/// deep research falls back to v1, whose scouts search with their own tools.
+/// The hosts that make the v2 playbooks run.
+#[derive(Clone, Copy, Default)]
+pub struct Hosts<'a> {
+    /// Deep research v2. Without one (no channels wired) deep research falls back to v1, whose
+    /// scouts search with their own tools.
+    pub research: Option<&'a dyn ResearchHost>,
+    /// build_v2. Without one, or when the run has no git worktree (children need git), a build is
+    /// v1: one engineer, the test loop, one review.
+    pub build: Option<&'a dyn BuildHost>,
+}
+
+/// [`run`], with the hosts that make the v2 playbooks.
 pub fn run_with(
     playbook: Option<Playbook>,
     role: &str,
     goal: &str,
     runner: &dyn StepRunner,
     cfg: &PlaybookConfig,
-    research: Option<&dyn ResearchHost>,
+    hosts: Hosts<'_>,
 ) -> Result<Dispatch, CrewError> {
-    match (playbook, research) {
-        (Some(Playbook::DeepResearch), Some(host)) => deep_research_v2(runner, host, goal, &cfg.research),
-        (Some(Playbook::DeepResearch), None) => deep_research(runner, goal, cfg),
-        (Some(Playbook::Build), _) => build(runner, goal, cfg),
-        (None, _) => single(runner, role, goal),
+    match playbook {
+        Some(Playbook::DeepResearch) => match hosts.research {
+            Some(host) => deep_research_v2(runner, host, goal, &cfg.research),
+            None => deep_research(runner, goal, cfg),
+        },
+        Some(Playbook::Build) => match hosts.build {
+            Some(host) if runner.sandbox().kind == SandboxKind::Worktree => build_v2(runner, host, goal, &cfg.build),
+            _ => build(runner, goal, cfg),
+        },
+        None => single(runner, role, goal),
     }
 }
 

@@ -561,4 +561,24 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace: Option<String>,
     },
+
+    // N: closing the window (`close_ops.rs`). Closing the terminal stops everything; the daemon
+    // keeps running only when the user chose it.
+    /// The window closed (the TUI's console close handler). The daemon pauses all work, unloads
+    /// every model it loaded, saves, and exits. No reply: the client is going.
+    WindowClosed,
+    /// A clean goodbye from a screen client. `keep_running: false` stops everything like a closed
+    /// window; `true` is the in-app quit dialog's explicit opt-in to run on in the background.
+    Detach {
+        #[serde(default)]
+        keep_running: bool,
+    },
+    /// Answers `Interrupted`: resume the work a closed window stopped, or leave it paused.
+    ResumeInterrupted { resume: bool },
+    /// The `keep running after the window closes` setting (off by default); `None` queries.
+    /// Answered with `KeepRunning` (also broadcast on change).
+    KeepRunning {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on: Option<bool>,
+    },
 }

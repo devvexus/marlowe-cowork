@@ -18,12 +18,20 @@
 //! `isolation: worktree` runs it in a git worktree from the [`WorktreeProvider`]. A finished
 //! subagent's transcript is kept, so `send_message` continues it with its context. A subagent
 //! that read untrusted content taints its caller ([`ReportTainted`]).
+//!
+//! Per call (A15): `model` (an alias or a library ref), `effort` (`low` to `max`; `xhigh` is
+//! `Max`), `name` (addressable by `send_message`, also while the agent runs: the text reaches it
+//! at its next step) and `background` (the default, as in Claude Code; `false` waits for the
+//! result). `type: "fork"` (A14) inherits the caller's history ([`crate::fork`]). A subagent
+//! ends with `handback{message}` or, without it, its final text (A17). Three built-in helpers
+//! (A16): `guide` (answers from Marlowe's own documentation), `statusline` and `agent-creator`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use marlowe_model::{Effort, ModelInfo, Provider, ToolSpec};
 use marlowe_os::workspace::{WorktreeProvider, WorktreeRequest};
 use marlowe_proto::{AgentTypeInfo, SessionId, TurnStop};
@@ -32,23 +40,31 @@ use serde_json::Value;
 use crate::agent::Agent;
 use crate::approval::ApprovalGate;
 use crate::convo::Conversation;
+use crate::fork::{self, ForkBase, ForkRun, FORK_TYPE};
 use crate::instructions::yaml::{self, Yaml};
 use crate::instructions::{self, Sources};
 use crate::middleware::ToolMiddleware;
+use crate::steer::Steer;
+use crate::subagent_tools::{self, Handback, PathGuard, SubagentTool, HANDBACK};
 use crate::system::{Environment, PersonaBlock, PromptSections, SystemPrompt};
 use crate::tools::{
-    CallCtx, Consequence, Exposure, Mutation, SandboxView, ToolCallReq, ToolCtx, ToolHost, ToolManifest, ToolOutcome,
+    CallCtx, Consequence, Exposure, Mutation, SandboxView, Services, ToolCallReq, ToolCtx, ToolHost, ToolManifest,
+    ToolOutcome,
 };
 
 /// Tools a subagent never gets: no nesting (depth 1), no questions to the user, no session-level
-/// moves, no crew dispatch.
-pub const NEVER_FOR_SUBAGENTS: &[&str] =
-    &["agent", "send_message", "ask_user", "enter_worktree", "exit_worktree", "exit_plan", "dispatch"];
+/// moves (worktrees, plan mode), no crew dispatch, no workflows (WF2: only the conductor starts them).
+pub const NEVER_FOR_SUBAGENTS: &[&str] = &[
+    "agent", "send_message", "ask_user", "enter_worktree", "exit_worktree", "enter_plan", "exit_plan", "dispatch", "workflow",
+    // Background work and the user's attention belong to the session that conducts (track N).
+    "task_list", "task_output", "task_stop", "monitor", "cron_create", "cron_list", "cron_delete", "schedule_wakeup",
+    "list_agents", "watch", "notify", "send_file", "notices",
+];
 
 /// Read-only tools by name, for hosts that do not publish manifests.
 const READ_ONLY_NAMES: &[&str] = &[
     "read", "glob", "grep", "symbols", "definition", "references", "hover", "diagnostics", "web_fetch", "web_search",
-    "arxiv", "paper", "recall", "todo", "job_output",
+    "arxiv", "paper", "recall", "todo", "todo_add", "todo_update", "todo_get", "job_output",
 ];
 
 /// Tools a read-only agent never gets, whatever their manifest says: a skill can run its
@@ -126,7 +142,12 @@ pub fn map_tool(name: &str) -> Vec<String> {
         "KillShell" | "KillBash" | "TaskStop" => &["job_kill"],
         "WebFetch" => &["web_fetch"],
         "WebSearch" => &["web_search"],
-        "TodoWrite" | "TaskCreate" | "TaskUpdate" | "TaskList" | "TaskGet" => &["todo"],
+        "TodoWrite" => &["todo"],
+        "TaskCreate" => &["todo_add"],
+        "TaskUpdate" => &["todo_update"],
+        "TaskList" | "TaskGet" => &["todo_get"],
+        "EnterPlanMode" => &["enter_plan"],
+        "SendMessage" => &["send_message"],
         "Task" | "Agent" => &["agent"],
         "AskUserQuestion" => &["ask_user"],
         "Skill" | "SlashCommand" => &["skill"],
@@ -233,7 +254,7 @@ pub fn builtin_types() -> Vec<AgentType> {
         source: "builtin".into(),
         warnings: Vec::new(),
     };
-    vec![
+    let mut types = vec![
         mk(
             "explore",
             "Fast read-only search of the codebase: finds files, traces how something works, answers where/how questions. \
@@ -263,8 +284,37 @@ pub fn builtin_types() -> Vec<AgentType> {
             "You complete one task end to end with the tools you have. Verify what you change. Report what you did and \
              what you found, with file paths.",
         ),
-    ]
+        mk(
+            FORK_TYPE,
+            "A copy of you that starts from this whole conversation (a cache hit, so cheap) and does one task in the \
+             background. Use it for side work that needs the context you already have. It runs on your model with your \
+             tools, cannot start agents, and reports back.",
+            None,
+            None,
+            false,
+            "",
+        ),
+    ];
+    // The helper agents ship as role files (A16).
+    for (stem, text) in HELPER_AGENTS {
+        match parse_agent(text, stem, "builtin", None) {
+            Ok(t) => types.push(t),
+            Err(e) => eprintln!("marlowe: built-in agent {stem} not loaded: {e}"),
+        }
+    }
+    types
 }
+
+/// The built-in helper agents (`guide`, `statusline`, `agent-creator`), as the role files in
+/// `roles/` the binary ships.
+const HELPER_AGENTS: &[(&str, &str)] = &[
+    ("guide", include_str!("../../../roles/guide.md")),
+    ("statusline", include_str!("../../../roles/statusline.md")),
+    ("agent-creator", include_str!("../../../roles/agent-creator.md")),
+];
+
+/// The helper that may read only Marlowe's documentation.
+pub const GUIDE_TYPE: &str = "guide";
 
 /// Agent type directories for `src`, lowest precedence first: user (`<home>\agents`,
 /// `<home>\roles`, `~/.claude/agents`), then each root's `.claude/agents` and `.marlowe/agents`.
@@ -374,6 +424,10 @@ pub struct FilteredTools {
     allow: Option<HashSet<String>>,
     deny: HashSet<String>,
     read_only: bool,
+    /// Tools only a subagent has (`handback`; the helpers' `set_statusline`, `create_agent`).
+    extras: Vec<Arc<dyn SubagentTool>>,
+    /// Keeps `read`, `glob` and `grep` under these paths (the `guide` helper).
+    guard: Option<PathGuard>,
 }
 
 impl FilteredTools {
@@ -383,11 +437,37 @@ impl FilteredTools {
             allow: ty.tools.as_ref().map(|t| t.iter().cloned().collect()),
             deny: ty.disallowed_tools.iter().cloned().collect(),
             read_only: ty.read_only,
+            extras: vec![Arc::new(subagent_tools::HandbackTool)],
+            guard: None,
         }
+    }
+
+    /// The subagent's own tools (the helpers get theirs only when the type names them).
+    pub fn with_extras(mut self, extras: Vec<Arc<dyn SubagentTool>>) -> Self {
+        self.extras = extras;
+        self
+    }
+
+    pub fn with_guard(mut self, guard: PathGuard) -> Self {
+        self.guard = Some(guard);
+        self
+    }
+
+    fn extra(&self, name: &str) -> Option<&Arc<dyn SubagentTool>> {
+        if name != HANDBACK && !self.allow.as_ref().is_some_and(|a| a.contains(name)) {
+            return None;
+        }
+        if self.deny.contains(name) {
+            return None;
+        }
+        self.extras.iter().find(|e| e.spec().name == name)
     }
 
     /// Whether the subagent may use `name`.
     pub fn admits(&self, name: &str) -> bool {
+        if self.extra(name).is_some() {
+            return true;
+        }
         if NEVER_FOR_SUBAGENTS.contains(&name) || self.deny.contains(name) {
             return false;
         }
@@ -416,17 +496,22 @@ impl FilteredTools {
 
 impl ToolHost for FilteredTools {
     fn specs(&self) -> Vec<ToolSpec> {
-        self.inner.specs().into_iter().filter(|s| self.admits(&s.name)).collect()
+        let mut specs: Vec<ToolSpec> = self.inner.specs().into_iter().filter(|s| self.admits(&s.name)).collect();
+        specs.extend(self.extras.iter().map(|e| e.spec()).filter(|s| self.extra(&s.name).is_some()));
+        specs
     }
     fn call(&self, call: &ToolCallReq, ctx: &ToolCtx) -> ToolOutcome {
+        self.call_scoped(call, &CallCtx::detached(ctx.clone()))
+    }
+    fn call_scoped(&self, call: &ToolCallReq, cx: &CallCtx) -> ToolOutcome {
+        if let Some(extra) = self.extra(&call.name) {
+            return extra.call(&call.args, cx);
+        }
         if !self.admits(&call.name) {
             return Self::refuse(&call.name);
         }
-        self.inner.call(call, ctx)
-    }
-    fn call_scoped(&self, call: &ToolCallReq, cx: &CallCtx) -> ToolOutcome {
-        if !self.admits(&call.name) {
-            return Self::refuse(&call.name);
+        if let Err(why) = self.guarded(call) {
+            return ToolOutcome::error(why);
         }
         self.inner.call_scoped(call, cx)
     }
@@ -437,28 +522,69 @@ impl ToolHost for FilteredTools {
         Vec::new()
     }
     fn consequence(&self, call: &ToolCallReq) -> Consequence {
-        self.inner.consequence(call)
+        match self.extra(&call.name) {
+            Some(e) => e.consequence(&call.args),
+            None if self.guarded(call).is_err() => Consequence::Free,
+            None => self.inner.consequence(call),
+        }
     }
     fn consequence_exposed(&self, call: &ToolCallReq, exposure: &Exposure) -> Consequence {
-        self.inner.consequence_exposed(call, exposure)
+        match self.extra(&call.name) {
+            Some(e) => e.consequence(&call.args),
+            // A refused call is not asked about: it fails with its reason.
+            None if self.guarded(call).is_err() => Consequence::Free,
+            None => self.inner.consequence_exposed(call, exposure),
+        }
+    }
+    fn approval_detail(&self, call: &ToolCallReq) -> Option<String> {
+        match self.extra(&call.name) {
+            Some(e) => e.approval_detail(&call.args),
+            None => self.inner.approval_detail(call),
+        }
     }
     fn taints(&self, call: &ToolCallReq) -> bool {
-        self.inner.taints(call)
+        self.extra(&call.name).is_none() && self.inner.taints(call)
     }
     fn egress_host(&self, call: &ToolCallReq) -> Option<String> {
         self.inner.egress_host(call)
     }
     fn manifest(&self, name: &str) -> Option<ToolManifest> {
+        if let Some(e) = self.extra(name) {
+            return Some(ToolManifest {
+                group: crate::tools::ToolGroup::Agent,
+                profiles: crate::tools::Profiles::ALL,
+                effects: e.effects(),
+                path_args: &[],
+            });
+        }
         self.inner.manifest(name)
     }
     fn mutation(&self, call: &ToolCallReq, ctx: &ToolCtx) -> Mutation {
+        if self.extra(&call.name).is_some() {
+            return Mutation::None;
+        }
         self.inner.mutation(call, ctx)
     }
     fn consequence_in_sandbox(&self, call: &ToolCallReq, exposure: &Exposure, sandbox: &dyn SandboxView) -> Option<Consequence> {
         self.inner.consequence_in_sandbox(call, exposure, sandbox)
     }
     fn describe(&self, call: &ToolCallReq) -> String {
-        self.inner.describe(call)
+        match self.extra(&call.name) {
+            Some(_) => call.name.clone(),
+            None => self.inner.describe(call),
+        }
+    }
+}
+
+impl FilteredTools {
+    /// The documentation-only restriction, for the calls it covers.
+    fn guarded(&self, call: &ToolCallReq) -> Result<(), String> {
+        let Some(g) = &self.guard else { return Ok(()) };
+        if !matches!(call.name.as_str(), "read" | "glob" | "grep") {
+            return Ok(());
+        }
+        let args: Vec<&'static str> = self.inner.manifest(&call.name).map(|m| m.path_args.to_vec()).unwrap_or_default();
+        g.check(call, &args)
     }
 }
 
@@ -589,29 +715,63 @@ pub struct AgentRequest {
     pub description: String,
     pub prompt: String,
     pub isolation: Option<String>,
+    /// Returns an id at once (the default, as in Claude Code); `false` waits for the report.
     pub background: bool,
     /// Overrides the type's model.
     pub model: Option<String>,
+    /// Overrides the type's effort (`xhigh` is `Max`).
+    pub effort: Option<Effort>,
+    /// A name `send_message` can address the agent by.
+    pub name: Option<String>,
 }
+
+/// Left in a conversation's extensions for the turns of a print-mode run (`marlowe -p`): an `agent`
+/// call that does not say `background` runs in the foreground, since the process ends with the
+/// first answer and a background report would be lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForegroundAgents;
 
 impl AgentRequest {
     pub fn from_args(args: &Value) -> Result<Self, String> {
+        Self::from_args_default(args, true)
+    }
+
+    /// [`Self::from_args`] with the default for a call that names no `background`.
+    pub fn from_args_default(args: &Value, background: bool) -> Result<Self, String> {
         let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        let effort = match s("effort") {
+            None => None,
+            Some(e) => Some(parse_effort(&e).ok_or_else(|| format!("effort `{e}` is not low, medium, high, xhigh or max"))?),
+        };
+        let name = match s("name") {
+            None => None,
+            Some(n) if valid_call_name(&n) => Some(n),
+            Some(n) => return Err(format!("name `{n}` must be letters, digits, `-`, `_` or `.`, at most 40 characters")),
+        };
         Ok(Self {
             agent_type: s("type").or_else(|| s("subagent_type")).unwrap_or_else(|| "general".into()),
             description: s("description").unwrap_or_default(),
             prompt: s("prompt").ok_or("`prompt` is required: the full task, since the agent cannot see this conversation")?,
             isolation: s("isolation"),
-            background: args.get("background").or_else(|| args.get("run_in_background")).and_then(Value::as_bool).unwrap_or(false),
+            background: args.get("background").or_else(|| args.get("run_in_background")).and_then(Value::as_bool).unwrap_or(background),
             model: s("model"),
+            effort,
+            name,
         })
     }
+}
+
+fn valid_call_name(n: &str) -> bool {
+    !n.is_empty() && n.len() <= 40 && n.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 struct Finished {
     convo: Conversation,
     ty: AgentType,
     model: Option<String>,
+    effort: Option<Effort>,
+    /// A fork resumes on the parent's model and tool list, not a type's.
+    fork: Option<ForkRun>,
 }
 
 /// Which pool a run takes its slot from.
@@ -675,7 +835,41 @@ struct State {
     running: Mutex<HashSet<String>>,
     /// Background agents' cancel tokens, by id.
     background: Mutex<HashMap<String, marlowe_model::CancelToken>>,
+    /// Every agent this service started: id -> (label, started in the background).
+    labels: Mutex<HashMap<String, (String, bool)>>,
+    /// Where a running agent reads messages sent to it, by id.
+    inboxes: Mutex<HashMap<String, Sender<Steer>>>,
+    /// `name` to agent id.
+    names: Mutex<HashMap<String, String>>,
+    /// Subagent runs that ended with `handback`, and ones that ended on their final text.
+    with_handback: AtomicU64,
+    without_handback: AtomicU64,
     next: AtomicU64,
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// One subagent as `list_agents` and the task list show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSummary {
+    pub id: String,
+    pub label: String,
+    pub background: bool,
+    pub running: bool,
+}
+
+/// The names of this session's subagents, as a service for tools that attribute work to one
+/// (the shared task list's owner).
+#[derive(Clone)]
+pub struct AgentNames(Arc<State>);
+
+impl AgentNames {
+    /// The name given to agent `id` (`agent-3`), if it has one.
+    pub fn name_of(&self, id: &str) -> Option<String> {
+        lock(&self.0.names).iter().find(|(_, v)| v.as_str() == id).map(|(k, _)| k.clone())
+    }
 }
 
 /// The subagent service in `Services` (one per session).
@@ -688,12 +882,43 @@ pub struct Subagents {
 /// Appended to every subagent's system prompt.
 const SUBAGENT_FRAME: &str = "<subagent>\nYou are a subagent doing one task for the main agent. You cannot see its \
 conversation: everything you need is in the task. Work on your own; nobody can answer questions. When you are done, \
-reply with a concise report of what you found or did, with file paths and line numbers as evidence. Your final \
-message is returned to the main agent as it is.\n</subagent>";
+call `handback` with a concise report of what you found or did, with file paths and line numbers as evidence; that \
+message is returned to the main agent exactly as you write it. (If you answer without calling it, your final message is \
+the report.)\n</subagent>";
+
+/// Messages the main agent sends a running subagent begin with this.
+const MESSAGE_FRAME: &str = "[message from the main agent]";
 
 impl Subagents {
     pub fn new(cfg: SubagentConfig) -> Self {
         Self { cfg, state: Arc::new(State::default()) }
+    }
+
+    /// The agent names, for tools that need them.
+    pub fn names(&self) -> AgentNames {
+        AgentNames(self.state.clone())
+    }
+
+    /// The name given to agent `id`, if any.
+    pub fn name_of(&self, id: &str) -> Option<String> {
+        self.names().name_of(id)
+    }
+
+    /// The agent `name_or_id` addresses: a name given with `name`, or an id (`agent-3`) of an agent
+    /// that is running or finished.
+    pub fn resolve_id(&self, name_or_id: &str) -> Option<String> {
+        let key = name_or_id.trim();
+        if let Some(id) = lock(&self.state.names).get(key) {
+            return Some(id.clone());
+        }
+        let known = lock(&self.state.running).contains(key) || lock(&self.state.finished).contains_key(key);
+        known.then(|| key.to_string())
+    }
+
+    /// `(ended with handback, ended on final text)` over the subagent runs so far (A17: counted,
+    /// not repaired).
+    pub fn handback_counts(&self) -> (u64, u64) {
+        (self.state.with_handback.load(Ordering::SeqCst), self.state.without_handback.load(Ordering::SeqCst))
     }
 
     /// The agent types for `workspace`.
@@ -717,25 +942,60 @@ impl Subagents {
         s
     }
 
+    /// What a subagent's calls can reach of its caller's session: the permission layer (so its
+    /// calls obey the caller's mode and rules), the shared task list, the output-token pool, and
+    /// for a fork the cache-stable context policy.
+    fn child_services(&self, parent: &Services, fork: bool) -> Services {
+        let mut s = Services::new().with(self.names());
+        if let Some(p) = parent.get::<crate::approval::Permissions>() {
+            s = s.with(p.clone());
+        }
+        if let Some(t) = parent.get::<crate::tasklist::TaskLists>() {
+            s = s.with(t.clone());
+        }
+        if let Some(t) = parent.get::<crate::directive::TokenPool>() {
+            s = s.with(t.clone());
+        }
+        if fork {
+            if let Some(p) = parent.get::<crate::agent::ContextPolicy>() {
+                s = s.with(*p);
+            }
+        }
+        s
+    }
+
     fn build_agent(
         &self,
         ty: &AgentType,
         model: Option<&str>,
+        effort: Option<Effort>,
         workspace: Option<&Path>,
         cancel: &marlowe_model::CancelToken,
+        parent: &Services,
     ) -> Result<Agent, String> {
         let m = self.cfg.resolver.resolve(model.or(ty.model.as_deref()))?;
-        let host: Arc<dyn ToolHost> = Arc::new(FilteredTools::new((self.cfg.tools)(workspace), ty));
+        let home = self.cfg.sources.home.as_deref();
+        let mut tools = FilteredTools::new((self.cfg.tools)(workspace), ty).with_extras(subagent_tools::extras_for(home, workspace));
+        if ty.name == GUIDE_TYPE && ty.source == "builtin" {
+            tools = tools.with_guard(PathGuard::new(subagent_tools::docs_roots(home)));
+        }
+        let host: Arc<dyn ToolHost> = Arc::new(tools);
         let instructions = instructions::Instructions::load(&self.sources_for(workspace)).render();
         let core = format!("{}\n\n{SUBAGENT_FRAME}", ty.prompt.trim());
         let env = Environment::current(workspace.map(|w| w.display().to_string()), m.info.model_ref().to_string());
         let system = SystemPrompt::with_core(core).sections(PromptSections { instructions, ..Default::default() }).environment(env);
         let mut agent = Agent::new(m.provider, m.info, host, system);
-        agent.effort = ty.effort.unwrap_or(m.effort);
+        agent.effort = effort.or(ty.effort).unwrap_or(m.effort);
         agent.approvals = (self.cfg.approvals)(cancel);
         agent.budget.max_steps = ty.max_turns.unwrap_or(SUBAGENT_MAX_STEPS);
         agent.middleware.extend(self.cfg.middleware.iter().cloned());
+        agent.services = self.child_services(parent, false);
         Ok(agent)
+    }
+
+    /// A fork's agent: the parent's model, effort and tool list (see [`crate::fork`]).
+    fn build_fork_agent(&self, run: &ForkRun, cancel: &marlowe_model::CancelToken, parent: &Services) -> Agent {
+        fork::build_agent(run, self.child_services(parent, true), (self.cfg.approvals)(cancel), &self.cfg.middleware, None)
     }
 
     fn run_agent(
@@ -745,15 +1005,26 @@ impl Subagents {
         prompt: &str,
         cancel: &marlowe_model::CancelToken,
         background: bool,
+        inbox: &Receiver<Steer>,
     ) -> Result<String, String> {
         let lane = Lane::of(&agent.model, background);
         let c = cancel.clone();
         if !self.state.slots.acquire(lane, self.cfg.cloud_slots, &|| c.is_cancelled()) {
             return Err("interrupted before the agent started".into());
         }
-        let (_tx, rx) = crossbeam_channel::unbounded();
-        let out = agent.run_turn(convo, prompt, cancel, &rx, &mut |_| {});
+        let out = agent.run_turn(convo, prompt, cancel, inbox, &mut |_| {});
         self.state.slots.release(lane);
+        // A report handed back is the result as written; the handback ended the run by cancelling
+        // its own token, which is not an interrupt.
+        let handed = convo.ext.get::<Handback>().map(|h| h.0.clone());
+        if handed.is_some() {
+            convo.ext.remove::<Handback>();
+            self.state.with_handback.fetch_add(1, Ordering::SeqCst);
+            return Ok(handed.unwrap_or_default());
+        }
+        if out.stop == TurnStop::Done {
+            self.state.without_handback.fetch_add(1, Ordering::SeqCst);
+        }
         match out.stop {
             TurnStop::Done => Ok(out.text),
             TurnStop::StepLimit | TurnStop::Budget => Ok(format!("{}\n\n[the agent stopped at its step budget]", out.text.trim())),
@@ -769,12 +1040,33 @@ impl Subagents {
             let names: Vec<&str> = types.iter().map(|t| t.name.as_str()).collect();
             return ToolOutcome::error(format!("no agent type `{}`; available: {}", req.agent_type, names.join(", ")));
         };
+        let is_fork = ty.name == FORK_TYPE && ty.source == "builtin";
+        if let Some(name) = &req.name {
+            let taken = lock(&self.state.names).get(name).cloned();
+            if let Some(owner) = taken.filter(|o| lock(&self.state.running).contains(o)) {
+                return ToolOutcome::error(format!("the name `{name}` is in use by the running agent {owner}; pick another"));
+            }
+        }
+        let fork_base = if is_fork {
+            if cx.session.as_str().contains('/') {
+                return ToolOutcome::error(fork::FORK_REFUSAL);
+            }
+            if req.isolation.is_some() {
+                return ToolOutcome::error("a fork runs in the caller's workspace and history; it cannot take `isolation`");
+            }
+            match cx.scope.with_ext(|e| e.get::<ForkBase>().cloned()) {
+                Some(b) => Some(b),
+                None => return ToolOutcome::error("a fork needs the conversation it starts from, and this call has none; use `general` with a full brief"),
+            }
+        } else {
+            None
+        };
         let n = self.state.next.fetch_add(1, Ordering::SeqCst) + 1;
         let id = format!("agent-{n}");
         let isolation = req.isolation.clone().or_else(|| ty.isolation.clone());
         let mut workspace = cx.workspace.clone();
         let mut worktree_note = String::new();
-        if isolation.as_deref() == Some("worktree") {
+        if isolation.as_deref() == Some("worktree") && !is_fork {
             let Some(repo) = cx.workspace.clone() else {
                 return ToolOutcome::error("isolation `worktree` needs a workspace");
             };
@@ -787,41 +1079,65 @@ impl Subagents {
             }
         }
         // A background agent has its own token (the caller's turn ends at once); a foreground one
-        // stops with the caller's.
-        let cancel = if req.background { marlowe_model::CancelToken::new() } else { cx.cancel.clone() };
-        let mut agent = match self.build_agent(&ty, req.model.as_deref(), workspace.as_deref(), &cancel) {
-            Ok(a) => a,
-            Err(e) => return ToolOutcome::error(format!("could not start the {} agent: {e}", ty.name)),
+        // stops with the caller's. Either way the agent's own token is its own to cancel, which is
+        // how `handback` ends it without touching the caller.
+        let cancel = marlowe_model::CancelToken::new();
+        let _link = (!req.background).then(|| {
+            let c = cancel.clone();
+            cx.cancel.on_cancel(move || c.cancel())
+        });
+        let (mut agent, mut convo, mut prompt, fork_run) = match &fork_base {
+            Some(base) => {
+                let session = SessionId(format!("{}/{id}", cx.session));
+                let convo = base.conversation(session, cx.workspace.clone(), cx.tainted);
+                let agent = self.build_fork_agent(&base.run, &cancel, &cx.scope.services);
+                (agent, convo, fork::directive(&req.prompt), Some(base.run.clone()))
+            }
+            None => {
+                let agent = match self.build_agent(&ty, req.model.as_deref(), req.effort, workspace.as_deref(), &cancel, &cx.scope.services) {
+                    Ok(a) => a,
+                    Err(e) => return ToolOutcome::error(format!("could not start the {} agent: {e}", ty.name)),
+                };
+                let session = SessionId(format!("{}/{id}", cx.session));
+                let mut convo = Conversation::new(session, workspace.clone());
+                convo.exposure.tainted = cx.tainted;
+                (agent, convo, req.prompt.clone(), None)
+            }
         };
         // The caller's session decides the subagent's calls too (track E): its mode and rules
         // through the Permissions service; SubagentStart hooks (their context goes to the agent)
         // and SubagentStop through a hook middleware of the agent's own.
-        let mut prompt = req.prompt.clone();
-        if let Some(p) = cx.scope.services.get::<crate::approval::Permissions>() {
-            agent.services = agent.services.clone().with(p.clone());
-        }
         if let Some(runner) = cx.scope.services.get::<Arc<crate::hooks::HookRunner>>() {
             if let Some(c) = runner.subagent_start(&id, &ty.name).context_text() {
                 prompt = format!("{prompt}\n\n<system-reminder>\n{c}\n</system-reminder>");
             }
             agent.middleware.push(Arc::new(crate::hooks::HookMiddleware::for_subagent(runner.clone(), &id, &ty.name)));
         }
-        let session = SessionId(format!("{}/{id}", cx.session));
-        let mut convo = Conversation::new(session, workspace.clone());
-        convo.exposure.tainted = cx.tainted;
-        let label = if req.description.is_empty() { ty.name.clone() } else { format!("{}: {}", ty.name, req.description) };
+        let mut label = if req.description.is_empty() { ty.name.clone() } else { format!("{}: {}", ty.name, req.description) };
+        if let Some(name) = &req.name {
+            label = format!("{name} ({label})");
+        }
+        let named = req.name.as_deref().map(|n| format!(" (name: {n})")).unwrap_or_default();
+        let ignored = if is_fork && (req.model.is_some() || req.effort.is_some()) { " A fork always runs on your model at your effort; `model` and `effort` were ignored." } else { "" };
+
+        lock(&self.state.labels).insert(id.clone(), (label.clone(), req.background));
+        let (inbox_tx, inbox_rx) = unbounded::<Steer>();
+        lock(&self.state.inboxes).insert(id.clone(), inbox_tx);
+        lock(&self.state.running).insert(id.clone());
+        if let Some(name) = &req.name {
+            lock(&self.state.names).insert(name.clone(), id.clone());
+        }
+        let model = req.model.clone();
+        let effort = req.effort;
 
         if req.background {
             let me = self.clone();
             let parent = cx.session.clone();
-            let prompt = prompt.clone();
-            let model = req.model.clone();
             let ty2 = ty.clone();
             let id2 = id.clone();
             let label2 = label.clone();
             let note = worktree_note.clone();
-            self.state.running.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone());
-            self.state.background.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), cancel.clone());
+            lock(&self.state.background).insert(id.clone(), cancel.clone());
             if let Some(l) = &self.cfg.ledger {
                 l.started(&parent, &id, &label);
             }
@@ -840,12 +1156,13 @@ impl Subagents {
                         }
                     });
                 }
-                let result = me.run_agent(&agent, &mut convo, &prompt, &cancel, true);
+                let result = me.run_agent(&agent, &mut convo, &prompt, &cancel, true, &inbox_rx);
                 done.store(true, Ordering::SeqCst);
                 let tainted = convo.exposure.tainted;
-                me.state.background.lock().unwrap_or_else(|p| p.into_inner()).remove(&id2);
-                me.state.running.lock().unwrap_or_else(|p| p.into_inner()).remove(&id2);
-                me.state.finished.lock().unwrap_or_else(|p| p.into_inner()).insert(id2.clone(), Finished { convo, ty: ty2, model });
+                lock(&me.state.background).remove(&id2);
+                lock(&me.state.inboxes).remove(&id2);
+                lock(&me.state.running).remove(&id2);
+                lock(&me.state.finished).insert(id2.clone(), Finished { convo, ty: ty2, model, effort, fork: fork_run });
                 if me.cfg.ledger.as_ref().is_some_and(|l| l.stopping()) {
                     return;
                 }
@@ -861,50 +1178,82 @@ impl Subagents {
                 }
             });
             if let Err(e) = spawned {
-                self.state.running.lock().unwrap_or_else(|p| p.into_inner()).remove(&id);
-                self.state.background.lock().unwrap_or_else(|p| p.into_inner()).remove(&id);
+                lock(&self.state.running).remove(&id);
+                lock(&self.state.background).remove(&id);
+                lock(&self.state.inboxes).remove(&id);
                 if let Some(l) = &self.cfg.ledger {
                     l.finished(&cx.session, &id);
                 }
                 return ToolOutcome::error(format!("could not start the agent: {e}"));
             }
             return ToolOutcome::ok(
-                format!("Started {label} in the background as {id}. You will be told when it finishes; do not wait or poll for it."),
+                format!(
+                    "Started {label} in the background as {id}{named}. You will be told when it finishes; do not wait or poll \
+                     for it. `send_message` reaches it while it runs.{ignored}"
+                ),
                 format!("{id} started"),
             );
         }
 
-        let result = self.run_agent(&agent, &mut convo, &prompt, &cancel, false);
+        let result = self.run_agent(&agent, &mut convo, &prompt, &cancel, false, &inbox_rx);
         if convo.exposure.tainted {
             cx.scope.with_ext(|e| e.insert(ReportTainted));
         }
-        self.state.finished.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), Finished { convo, ty, model: req.model });
+        lock(&self.state.inboxes).remove(&id);
+        lock(&self.state.running).remove(&id);
+        lock(&self.state.finished).insert(id.clone(), Finished { convo, ty, model, effort, fork: fork_run });
         match result {
             Ok(text) => ToolOutcome::ok(
-                format!("{}{worktree_note}\n\n[agent_id: {id}; send_message continues this agent]", text.trim()),
+                format!("{}{worktree_note}\n\n[agent_id: {id}{named}; send_message continues this agent]", text.trim()),
                 format!("{label} done"),
             ),
             Err(e) => ToolOutcome::error(format!("the {label} agent did not finish: {e}")),
         }
     }
 
-    /// Continues a finished subagent with `text` (its earlier context included).
-    pub fn send(&self, agent_id: &str, text: &str, cx: &CallCtx) -> ToolOutcome {
-        if self.state.running.lock().unwrap_or_else(|p| p.into_inner()).contains(agent_id) {
-            return ToolOutcome::error(format!("{agent_id} is still running; you will be told when it finishes"));
+    /// Sends `text` to an agent by name or id: a running one reads it at its next step; a finished
+    /// one is continued with its earlier context.
+    pub fn send(&self, agent: &str, text: &str, cx: &CallCtx) -> ToolOutcome {
+        let Some(agent_id) = self.resolve_id(agent) else {
+            return ToolOutcome::error(format!("no agent `{}` in this session", agent.trim()));
+        };
+        let agent_id = agent_id.as_str();
+        if lock(&self.state.running).contains(agent_id) {
+            let tx = lock(&self.state.inboxes).get(agent_id).cloned();
+            let Some(tx) = tx else {
+                return ToolOutcome::error(format!("{agent_id} is still running and cannot take messages; you will be told when it finishes"));
+            };
+            return match Steer::admit(text) {
+                Ok(s) => match tx.send(Steer { text: format!("{MESSAGE_FRAME}\n{}", s.text) }) {
+                    Ok(()) => ToolOutcome::ok(format!("Delivered to {agent_id}; it reads the message at its next step."), format!("{agent_id} messaged")),
+                    Err(_) => ToolOutcome::error(format!("{agent_id} has just finished; send the message again to continue it")),
+                },
+                Err(e) => ToolOutcome::error(e.to_string()),
+            };
         }
-        let Some(mut f) = self.state.finished.lock().unwrap_or_else(|p| p.into_inner()).remove(agent_id) else {
+        let Some(mut f) = lock(&self.state.finished).remove(agent_id) else {
             return ToolOutcome::error(format!("no finished agent `{agent_id}` in this session"));
         };
         let workspace = f.convo.workspace.clone();
-        let result = match self.build_agent(&f.ty, f.model.as_deref(), workspace.as_deref(), &cx.cancel) {
-            Ok(agent) => self.run_agent(&agent, &mut f.convo, text, &cx.cancel, false),
+        // The resumed run stops with the caller's turn; its own token stays its own.
+        let cancel = marlowe_model::CancelToken::new();
+        let _link = {
+            let c = cancel.clone();
+            cx.cancel.on_cancel(move || c.cancel())
+        };
+        let built = match &f.fork {
+            Some(run) => Ok(self.build_fork_agent(run, &cancel, &cx.scope.services)),
+            None => self.build_agent(&f.ty, f.model.as_deref(), f.effort, workspace.as_deref(), &cancel, &cx.scope.services),
+        };
+        let (_tx, rx) = unbounded::<Steer>();
+        let result = match built {
+            Ok(agent) => self.run_agent(&agent, &mut f.convo, text, &cancel, false, &rx),
             Err(e) => Err(e),
         };
         if f.convo.exposure.tainted {
             cx.scope.with_ext(|e| e.insert(ReportTainted));
         }
-        self.state.finished.lock().unwrap_or_else(|p| p.into_inner()).insert(agent_id.to_string(), f);
+        lock(&self.state.finished).insert(agent_id.to_string(), f);
         match result {
             Ok(t) => ToolOutcome::ok(format!("{}\n\n[agent_id: {agent_id}]", t.trim()), format!("{agent_id} replied")),
             Err(e) => ToolOutcome::error(format!("{agent_id} did not finish: {e}")),
@@ -913,16 +1262,50 @@ impl Subagents {
 }
 
 impl Subagents {
+    /// Every agent this session started, in the order it started them.
+    pub fn agents(&self) -> Vec<AgentSummary> {
+        let running = self.state.running.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let labels = self.state.labels.lock().unwrap_or_else(|p| p.into_inner());
+        let mut out: Vec<AgentSummary> = labels
+            .iter()
+            .map(|(id, (label, background))| AgentSummary {
+                id: id.clone(),
+                label: label.clone(),
+                background: *background,
+                running: running.contains(id),
+            })
+            .collect();
+        out.sort_by_key(|a| a.id.trim_start_matches("agent-").parse::<u64>().unwrap_or(u64::MAX));
+        out
+    }
+
+    /// Whether `id` names an agent this service started (running or finished).
+    pub fn knows(&self, id: &str) -> bool {
+        lock(&self.state.labels).contains_key(id) || lock(&self.state.names).contains_key(id)
+    }
+
+    /// Cancels one running background agent; it still reports, as interrupted. False when `id`
+    /// is not a running background agent.
+    pub fn cancel_one(&self, id: &str) -> bool {
+        match self.state.background.lock().unwrap_or_else(|p| p.into_inner()).get(id) {
+            Some(c) => {
+                c.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The background agents still running.
     pub fn background_ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.state.background.lock().unwrap_or_else(|p| p.into_inner()).keys().cloned().collect();
+        let mut ids: Vec<String> = lock(&self.state.background).keys().cloned().collect();
         ids.sort();
         ids
     }
 
     /// Cancels every running background agent; each still reports, as interrupted.
     pub fn cancel_background(&self) -> usize {
-        let map = self.state.background.lock().unwrap_or_else(|p| p.into_inner());
+        let map = lock(&self.state.background);
         map.values().for_each(|c| c.cancel());
         map.len()
     }
@@ -930,7 +1313,8 @@ impl Subagents {
 
 /// The `agent` tool.
 pub fn agent_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
-    let req = match AgentRequest::from_args(args) {
+    let print = cx.scope.with_ext(|e| e.get::<ForegroundAgents>().is_some());
+    let req = match AgentRequest::from_args_default(args, !print) {
         Ok(r) => r,
         Err(e) => return ToolOutcome::error(e),
     };
@@ -947,9 +1331,21 @@ pub fn send_message_call(args: &Value, cx: &CallCtx) -> ToolOutcome {
     if id.is_empty() || text.trim().is_empty() {
         return ToolOutcome::error("`agent_id` and `text` are required");
     }
-    match cx.scope.services.get::<Subagents>() {
-        Some(s) => s.send(id, text, cx),
-        None => ToolOutcome::error("subagents are not available in this session"),
+    // A subagent this session started continues here; anything else (a crew run, a workflow
+    // agent, `session:<id>`) goes to the daemon's messenger (track N).
+    let subagents = cx.scope.services.get::<Subagents>();
+    if subagents.is_some_and(|s| s.knows(id)) || id.starts_with("agent-") {
+        return match subagents {
+            Some(s) => s.send(id, text, cx),
+            None => ToolOutcome::error("subagents are not available in this session"),
+        };
+    }
+    match cx.scope.services.get::<crate::background::Background>() {
+        Some(b) => match b.0.send_message(&cx.session, id, text, cx.tainted, &cx.cancel) {
+            Ok(said) => ToolOutcome::ok(said, format!("sent to {id}")),
+            Err(e) => ToolOutcome::error(e),
+        },
+        None => ToolOutcome::error("messages to other agents and sessions are not available here"),
     }
 }
 

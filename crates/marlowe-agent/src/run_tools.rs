@@ -197,11 +197,11 @@ pub(crate) fn run_calls(
                                     let _ = tx.send(Msg::Done { i, out, ran: false });
                                     continue;
                                 }
-                                _ => gate.ask_with(req(ctx, c, summary), (!proposal.is_empty()).then(|| proposal.join("\n"))),
+                                _ => gate.ask_with(req(host, ctx, c, summary), (!proposal.is_empty()).then(|| proposal.join("\n"))),
                             }
                         }
                         None if !tripwire && allowed.contains(&c.name) => ApprovalDecision::Allow,
-                        None => gate.ask(req(ctx, c, summary)),
+                        None => gate.ask(req(host, ctx, c, summary)),
                     };
                     if !decision.is_allowed() {
                         let denied = ToolOutcome { summary: "denied".into(), ..ToolOutcome::error(DENIED) };
@@ -271,13 +271,14 @@ pub(crate) fn run_calls(
         .collect()
 }
 
-fn req(cx: &CallCtx, c: &ToolCall, summary: String) -> ApprovalReq {
+fn req(host: &dyn ToolHost, cx: &CallCtx, c: &ToolCall, summary: String) -> ApprovalReq {
     ApprovalReq {
         session: cx.session.clone(),
         call_id: c.id.clone(),
         tool: c.name.clone(),
         summary,
-        detail: serde_json::to_string_pretty(&c.args).unwrap_or_else(|_| c.args.to_string()),
+        // What the tool will actually write, when it can say (a drafted agent file), else its arguments.
+        detail: host.approval_detail(c).unwrap_or_else(|| serde_json::to_string_pretty(&c.args).unwrap_or_else(|_| c.args.to_string())),
     }
 }
 

@@ -210,6 +210,8 @@ pub fn crew_tool_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> 
 fn crew_configure(tools: marlowe_exec::BuiltinTools, home: &Path, workspace: Option<&Path>) -> marlowe_exec::BuiltinTools {
     let setup = marlowe_exec::specs::HostSetup { home, workspace };
     let tools = marlowe_exec::specs::verify::configure(tools, &setup);
+    // `report_findings` stores under the profile home; no `workflow` for crew agents (track W).
+    let tools = marlowe_exec::specs::workflow::crew_configure(tools, &setup);
     tools.with_state(marlowe_exec::git::GitState::new(Some(home.to_path_buf())).without_gh())
 }
 
@@ -399,6 +401,8 @@ mod tests {
             branch: Some("crew/r1".into()),
             base: None,
             repo_digest: None,
+            frozen: Vec::new(),
+            target_dir: None,
         };
         let host = crew_host(&sb, None);
         let call = |name: &str, path: &std::path::Path| marlowe_model::ToolCall {
@@ -423,7 +427,7 @@ mod tests {
     #[test]
     fn a_crew_host_lists_git_and_not_gh_or_agents() {
         let root = std::env::temp_dir().join("marlowe-wire-test-crew-git");
-        let sb = Sandbox { kind: SandboxKind::Scratch, root: root.clone(), origin: None, branch: None, base: None, repo_digest: None };
+        let sb = Sandbox { kind: SandboxKind::Scratch, root: root.clone(), origin: None, branch: None, base: None, repo_digest: None, frozen: Vec::new(), target_dir: None };
         let home = std::env::temp_dir().join("marlowe-wire-test-crew-home");
         let host = crew_configure(crew_host(&sb, None), &home, None);
         let names: Vec<String> = host.specs().into_iter().map(|s| s.name).collect();

@@ -1,0 +1,40 @@
+ * marlowe — gate work                                                                                                  0 runs · 0 need you
+╭ Conversation · gate work ──────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ Claude Sonnet 4.5 ▾             medium │
+│                                                                                                ││ ctx ────────────┊──── 0 / 200k · cloud │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
+│                                                                                                │╭ Workspace ─────────────────────────────╮
+│                                                                                                ││ C:/work/valiance ▾                     │
+│                                                                                                │╰────────────────────────────────── (w) ─╯
+│                                                                                                │╭ Crew ──────────────────────────────────╮
+│                                                                                                ││ no runs                                │
+│                                                                                                │╰────────────────────────────────── (1) ─╯
+│                                           ⣿  MARLOWE                                           │╭ Watch ─────────────────────────────────╮
+│                                                                                                ││ nothing watched                        │
+│                                                                                                ││                                        │
+│                                         Good evening.                                          ││                                        │
+│                                                                                                ││                                        │
+│                ask anything  ·  ^o past sessions  ·  ^l library  ·  ^k palette                 ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│  background 4 running · /tasks                                                                 │╰────────────────────────────────── (2) ─╯
+│  ● agent_r7 engineer: fix the gate · step 4                                               1m20s│╭ Threads ───────────────────────────────╮
+│  ● wf_wf1 code-review · 1 of 3 agents                                                     1m00s││ no open threads                        │
+│  ◐ mon_m2 tail -f train.log · armed                                                         40s│╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰─ 3 tasks ──────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette       Friday 9 October · 21:40

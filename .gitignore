@@ -26,3 +26,6 @@ __pycache__/
 
 # Local profile roots written by tests or dev runs.
 /profile-*/
+
+# Coding-eval run folders (records, transcripts, workspaces).
+/eval/coding/results/

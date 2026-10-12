@@ -11,7 +11,10 @@ use std::net::SocketAddr;
 use marlowe_proto::DaemonInfo;
 
 pub mod attach;
+pub mod bg;
+pub mod bg_panels;
 pub mod client;
+pub mod closing;
 pub mod code_events;
 pub mod coding;
 pub mod compose;
@@ -31,6 +34,7 @@ pub mod onboard;
 mod osc;
 pub mod panel;
 pub mod render;
+pub mod report;
 pub mod slash;
 pub mod state;
 mod term;

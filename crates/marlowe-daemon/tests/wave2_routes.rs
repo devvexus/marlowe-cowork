@@ -197,32 +197,6 @@ fn every_wave2_request_reaches_its_tracks_stub() {
     let mut c = Client::connect(&r.info);
 
     let cases: Vec<(Request, &str, &str)> = vec![
-        (Request::ListTasks { session: None }, "list_tasks", "N"),
-        (Request::StopTask { id: "job_j1".into() }, "stop_task", "N"),
-        (Request::TaskOutput { id: "job_j1".into(), since: None, filter: None }, "task_output", "N"),
-        (
-            Request::CronCreate { session: Some(sid()), cron: Some("0 3 * * *".into()), once_at_ms: None, text: "eval".into(), durable: true },
-            "cron_create",
-            "N",
-        ),
-        (Request::NotifySettings { toast: Some(false), voice: None }, "notify_settings", "N"),
-        (Request::OpenFile { path: "C:/x".into(), reveal: false }, "open_file", "N"),
-        (Request::ListWorkflows, "list_workflows", "W"),
-        (Request::WatchWorkflow { run: run() }, "watch_workflow", "W"),
-        (
-            Request::RunWorkflow { session: Some(sid()), name: Some("code-review".into()), script_path: None, args: serde_json::Value::Null, resume_from: None },
-            "run_workflow",
-            "W",
-        ),
-        (Request::SkipWorkflowAgent { run: run(), agent: 2 }, "skip_workflow_agent", "W"),
-        (Request::ListFindings { run: Some(run()), session: None }, "list_findings", "W"),
-        (Request::SetFast { session: sid(), on: true }, "set_fast", "F3"),
-        (
-            Request::AnswerPlan { session: sid(), id: "p1".into(), decision: PlanFileDecision::Approve { mode: PermissionMode::Default } },
-            "answer_plan",
-            "F3",
-        ),
-        (Request::SuggestRules { workspace: None }, "suggest_rules", "F3"),
     ];
     for (req, op, track) in cases {
         c.send(&req);
@@ -232,6 +206,29 @@ fn every_wave2_request_reaches_its_tracks_stub() {
         let named = serde_json::to_value(&req).unwrap().get("session").is_some();
         assert_eq!(session.is_some(), named, "{op}: the error names the session exactly when the request does");
     }
+
+    // F3 filled its three in (`f3_ops.rs`): they answer for real now (`tests/f3.rs` covers the
+    // behaviour); here only that they no longer say "not available yet".
+    c.send(&Request::SetFast { session: sid(), on: true });
+    let e = c.until(|e| matches!(e, Event::Error { .. })).pop().unwrap().event;
+    assert!(matches!(&e, Event::Error { message, .. } if message.contains("unknown session")), "{e:?}");
+    c.send(&Request::AnswerPlan { session: sid(), id: "p1".into(), decision: PlanFileDecision::Approve { mode: PermissionMode::Default } });
+    let e = c.until(|e| matches!(e, Event::Error { .. })).pop().unwrap().event;
+    assert!(matches!(&e, Event::Error { message, .. } if message.contains("not waiting")), "{e:?}");
+    c.send(&Request::SuggestRules { workspace: None });
+    c.until(|e| matches!(e, Event::RuleSuggestions { .. }));
+
+    // Track W's requests are live: no crew in this daemon, so a run is refused with why, and the
+    // lists answer.
+    c.send(&Request::ListWorkflows);
+    let got = c.until(|e| matches!(e, Event::WorkflowList { .. })).pop().unwrap();
+    assert!(matches!(&got.event, Event::WorkflowList { saved, .. } if saved.iter().any(|s| s.name == "code-review")));
+    c.send(&Request::ListFindings { run: Some(run()), session: None });
+    c.until(|e| matches!(e, Event::Findings { findings, .. } if findings.is_empty()));
+    c.send(&Request::RunWorkflow { session: None, name: Some("code-review".into()), script_path: None, args: serde_json::Value::Null, resume_from: None });
+    c.until(|e| matches!(e, Event::Error { message, .. } if message.contains("crew is not running")));
+    c.send(&Request::SkipWorkflowAgent { run: run(), agent: 2 });
+    c.until(|e| matches!(e, Event::Error { message, .. } if message.contains("not running")));
 
     // The connection is still good.
     c.send(&Request::Status);

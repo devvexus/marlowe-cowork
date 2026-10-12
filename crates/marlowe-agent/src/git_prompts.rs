@@ -10,8 +10,33 @@ pub fn builtin(name: &str) -> Option<fn(&str) -> String> {
         "pr" => Some(open_pr),
         "pr-comments" => Some(pr_comments),
         "review" => Some(review),
+        "security-review" => Some(security_review),
         _ => None,
     }
+}
+
+/// What the security lens looks for: the one list `/security-review` and the crew's
+/// `review-security` reviewers (build_v2 stage 6) both use.
+pub const SECURITY_CHECKLIST: &str = "untrusted input (requests, files, environment, arguments, model output, anything from \
+     the network) reaching a shell, an eval or dynamic import, a file path, a SQL or template query, a URL fetch, a deserialiser \
+     or a permission decision without validation; injection of any kind; secrets in code, logs or errors; missing \
+     authorisation; unsafe file permissions or temporary files; anything that weakens an existing check; unexpected new \
+     dependencies";
+
+/// `/security-review [base]`: the security lens alone over the pending changes (design G6; the
+/// crew's `review-security` card reviews with the same [`SECURITY_CHECKLIST`] inside build_v2).
+pub fn security_review(arg: &str) -> String {
+    let how = match arg.trim() {
+        "" | "diff" => "git{op:\"diff\"}, git{op:\"diff\", staged:true} and git{op:\"status\"} (new files count too; read them)".to_string(),
+        base => format!("git{{op:\"diff\", base:\"{base}\"}}"),
+    };
+    format!(
+        "Security review of the pending changes. Read them with {how}, and the code around them where the diff alone is not enough.\n\
+         Look only through the security lens, tracing untrusted input to where it is used: {SECURITY_CHECKLIST}.\n\
+         Report only what you can point at. For each finding give severity (blocker: exploitable as shipped; major: fix before merging; \
+         minor; nit), file:line, the input that exploits it, why you are sure, and the smallest fix. Order by severity. If nothing is \
+         found, say so plainly. Do not change any code; this is a report."
+    )
 }
 
 /// `/commit [hint]`: commit what changed, in the repository's own style.
@@ -99,5 +124,8 @@ mod tests {
         assert!(review("34").contains("pr_diff") && review("34").contains("number:34"));
         assert!(review("").contains("pending changes") && review("diff").contains("git{op:\"diff\"}"));
         assert!(review("main...HEAD").contains("base:\"main...HEAD\""));
+        let sec = builtin("security-review").expect("a built-in")("");
+        assert!(sec.contains("security lens") && sec.contains("git{op:\"diff\", staged:true}") && sec.contains("blocker"));
+        assert!(security_review("main").contains("base:\"main\""));
     }
 }

@@ -59,8 +59,27 @@ pub fn run(effect: Effect) -> Option<LocalEvent> {
             LocalEvent::Written { path, result }
         }
         Effect::FindInstructions { workspace } => LocalEvent::Instructions(find_instructions(workspace.as_deref().map(Path::new))),
+        Effect::ReadFile { path } => {
+            let result = read_text(Path::new(&path), READ_CAP);
+            LocalEvent::FileText { path, result }
+        }
+        Effect::ListReports => LocalEvent::Reports(crate::report::find_reports(&crate::report::report_dirs())),
+        Effect::ReadReport { path } => {
+            let result = read_text(Path::new(&path), READ_CAP);
+            LocalEvent::ReportText { path, result }
+        }
         Effect::OpenEditor { .. } => return None,
     })
+}
+
+/// Largest text file the client reads for a panel.
+pub const READ_CAP: u64 = 2 * 1024 * 1024;
+
+/// A text file's contents, at most `cap` bytes (the rest is cut at a character).
+pub fn read_text(path: &Path, cap: u64) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).and_then(|f| f.take(cap).read_to_end(&mut bytes)).map_err(|e| e.to_string())?;
+    Ok(String::from_utf8_lossy(&bytes).trim_start_matches('\u{feff}').to_string())
 }
 
 // ---- status line -----------------------------------------------------------------------------------

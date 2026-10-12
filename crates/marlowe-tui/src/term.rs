@@ -34,6 +34,17 @@ use crate::TuiError;
 /// Set while an editor owns the terminal: the input thread leaves the console alone.
 static INPUT_PAUSED: AtomicBool = AtomicBool::new(false);
 
+/// What the console's close handler does first (track N): tell the daemon the window closed, so
+/// it pauses its work, frees the GPU and saves before it exits. The handler has a few seconds
+/// and no event loop, so this writes straight to the connection.
+static CLOSE_NOTICE: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
+
+fn notify_close() {
+    if let Some(f) = CLOSE_NOTICE.get() {
+        f();
+    }
+}
+
 /// What the input thread delivers.
 enum Input {
     Keys(Vec<KeyEvent>),
@@ -67,7 +78,10 @@ fn install_panic_hook(enhanced: bool) {
     std::panic::set_hook(osc::restoring_hook(move || restore(enhanced), previous));
     // Ctrl-Break, the window closing, logoff: the console ends the process without unwinding, so
     // the panic hook never runs. Off Windows (and on failure) raw mode makes ^C a key instead.
-    let _ = marlowe_os::console::on_interrupt(move || restore(enhanced));
+    let _ = marlowe_os::console::on_interrupt(move || {
+        notify_close();
+        restore(enhanced);
+    });
 }
 
 /// Whether the terminal can take escape sequences written as bytes. On Windows a console without
@@ -86,6 +100,13 @@ fn speaks_ansi() -> bool {
 /// Runs the UI until the user quits.
 pub fn run(client: Client, mut state: State, theme: Theme) -> Result<(), TuiError> {
     let enhanced = !cfg!(windows) && matches!(terminal::supports_keyboard_enhancement(), Ok(true));
+    let closer = client.closer();
+    let _ = CLOSE_NOTICE.set(Box::new({
+        let closer = closer.clone();
+        move || {
+            closer.goodbye(&marlowe_proto::Request::WindowClosed, std::time::Duration::from_millis(1_500));
+        }
+    }));
     install_panic_hook(enhanced);
     terminal::enable_raw_mode()?;
     let mut out = io::stdout();
@@ -104,6 +125,10 @@ pub fn run(client: Client, mut state: State, theme: Theme) -> Result<(), TuiErro
     let images = start_images();
     let result = event_loop(&client, &mut state, &theme, images, ansi);
     restore(enhanced);
+    if result.is_ok() {
+        // A clean goodbye: stop everything, or keep running if the user chose that.
+        closer.goodbye(&state.exit_request(), std::time::Duration::from_millis(1_500));
+    }
     result
 }
 

@@ -535,6 +535,12 @@ fn run_one(
     env.repo = workspace.as_deref().and_then(|w| repo_context(core, w));
     let mut system = system.user(core.user()).environment(env);
     let options = input.extras.options.clone().unwrap_or_default();
+    // `marlowe -p` waits for its subagents; any other ask in the session does not.
+    if options.print {
+        convo.ext.insert(marlowe_agent::subagent::ForegroundAgents);
+    } else {
+        convo.ext.remove::<marlowe_agent::subagent::ForegroundAgents>();
+    }
     if let Some(a) = &options.append_system_prompt {
         system = system.append(a.clone());
     }

@@ -295,6 +295,9 @@ impl ToolHost for Rerooted {
     fn consequence_exposed(&self, call: &ToolCallReq, exposure: &Exposure) -> Consequence {
         self.pick(call).consequence_exposed(call, exposure)
     }
+    fn approval_detail(&self, call: &ToolCallReq) -> Option<String> {
+        self.pick(call).approval_detail(call)
+    }
     fn taints(&self, call: &ToolCallReq) -> bool {
         self.pick(call).taints(call)
     }

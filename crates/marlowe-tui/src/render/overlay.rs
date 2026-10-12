@@ -354,6 +354,86 @@ pub fn import_offer(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &
     put(buf, inner.x, y, &Line::from(spans), inner.width);
 }
 
+/// A question with buttons: quitting with work running, or resuming what a close interrupted.
+pub fn choice(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut Buffer) {
+    let Some(dialog) = state.closing.dialog.as_ref() else { return };
+    if matches!(dialog, crate::closing::Dialog::Quit { .. }) {
+        quit_dialog(area, state, sel, theme, buf);
+        return;
+    }
+    let w: u16 = 70;
+    let body = text::wrap(&dialog.prompt(), (w - 4) as usize);
+    let r = centred(area, w, body.len() as u16 + 5, false);
+    let inner = panel(r, dialog.title(), ink(Ink::Accent, theme), false, buf);
+    for (i, l) in body.iter().enumerate() {
+        put(buf, inner.x, inner.y + i as u16, &Line::from(Span::styled(l.clone(), theme.normal())), inner.width);
+    }
+    let mut spans = Vec::new();
+    let y = inner.y + body.len() as u16 + 1;
+    let mut x = inner.x;
+    for (i, (key, label)) in dialog.choices().iter().enumerate() {
+        let on = i == sel;
+        let over = hovered(state, &Target::ChoiceButton(i));
+        let style = match (on, over) {
+            (true, _) => ink(Ink::Accent, theme).add_modifier(Modifier::BOLD),
+            (false, true) => theme.bright(),
+            (false, false) => theme.normal(),
+        };
+        spans.push(row_marker(on, over, theme));
+        spans.push(Span::styled(format!("{key} "), ink(Ink::Dimmer, theme)));
+        spans.push(Span::styled(*label, style));
+        spans.push(Span::raw("      "));
+        let w = (2 + key.len() + 1 + label.len()) as u16;
+        if y < inner.bottom() {
+            hit(state, Rect { x, y, width: w, height: 1 }.intersection(inner), Target::ChoiceButton(i));
+        }
+        x += w + 6;
+    }
+    put(buf, inner.x, y, &Line::from(spans), inner.width);
+}
+
+/// The quit modal: what is running, three buttons one under the other, and "Remember my choice".
+fn quit_dialog(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut Buffer) {
+    let Some(dialog) = state.closing.dialog.as_ref() else { return };
+    let w: u16 = 78;
+    let body = text::wrap(&dialog.prompt(), (w - 4) as usize);
+    let n = dialog.choices().len() as u16;
+    let r = centred(area, w, body.len() as u16 + n * 2 + 5, false);
+    let inner = panel(r, dialog.title(), ink(Ink::Accent, theme), false, buf);
+    panel_hints(r, &[("\u{21b5}", "choose"), ("r", "remember"), ("esc", "cancel")], theme, buf);
+    for (i, l) in body.iter().enumerate() {
+        put(buf, inner.x, inner.y + i as u16, &Line::from(Span::styled(l.clone(), theme.normal())), inner.width);
+    }
+    let mut y = inner.y + body.len() as u16 + 1;
+    for (i, (key, label)) in dialog.choices().iter().enumerate() {
+        let on = i == sel;
+        let over = hovered(state, &Target::ChoiceButton(i));
+        let style = match (on, over) {
+            (true, _) => ink(Ink::Accent, theme).add_modifier(Modifier::BOLD),
+            (false, true) => theme.bright(),
+            (false, false) => theme.normal(),
+        };
+        let line = Line::from(vec![row_marker(on, over, theme), Span::styled(format!("{key} "), ink(Ink::Dimmer, theme)), Span::styled(*label, style)]);
+        hit(state, Rect { x: inner.x, y, width: inner.width, height: 1 }, Target::ChoiceButton(i));
+        put(buf, inner.x, y, &line, inner.width);
+        if let Some(help) = crate::closing::QUIT_HELP.get(i) {
+            put(buf, inner.x + 6, y + 1, &Line::from(Span::styled(*help, ink(Ink::Dimmer, theme))), inner.width.saturating_sub(6));
+        }
+        y += 2;
+    }
+    let remember = state.closing.remember;
+    let over = hovered(state, &Target::Remember);
+    let st = if over { theme.bright() } else { theme.normal() };
+    let line = Line::from(vec![
+        Span::raw("  "),
+        Span::styled(if remember { "[x] " } else { "[ ] " }, ink(if remember { Ink::Accent } else { Ink::Dim }, theme)),
+        Span::styled("Remember my choice", st),
+        Span::styled("  (the window's X then does the same)", ink(Ink::Dimmer, theme)),
+    ]);
+    hit(state, Rect { x: inner.x, y, width: inner.width, height: 1 }, Target::Remember);
+    put(buf, inner.x, y, &line, inner.width);
+}
+
 /// First-run onboarding. Returns where the cursor goes on the name step.
 pub fn onboard(area: Rect, state: &State, theme: &Theme, buf: &mut Buffer) -> Option<(u16, u16)> {
     use crate::onboard::{address_choices, ItemKind, ItemState, Onboard, Step};

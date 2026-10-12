@@ -7,7 +7,7 @@ use crossterm::event::KeyCode;
 use marlowe_model::{Effort, Part, Role, ToolCall, ToolResult};
 use marlowe_proto::{ApprovalDecision, ApprovalId, Event, Request, SessionId, Slot, StoredTurn, TurnStop};
 use marlowe_tui::library::{LibFocus, LibStep};
-use marlowe_tui::state::{Activity, ToolStatus};
+use marlowe_tui::state::{Activity, Overlay, ToolStatus};
 use marlowe_tui::{ClientEvent, Conn, Entry, State, View};
 
 fn in_session() -> State {
@@ -329,6 +329,9 @@ fn palette_commands() {
 
     s.on_key(ctrl('l'));
     assert_eq!(s.view, View::Library);
+    // Quitting asks first; a second ^q is the answer "stop and close agent".
+    s.on_key(ctrl('q'));
+    assert!(!s.quit && matches!(s.overlay, Some(Overlay::Choice { .. })), "{:?}", s.overlay);
     s.on_key(ctrl('q'));
     assert!(s.quit);
 }
