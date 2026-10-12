@@ -23,11 +23,15 @@ use crate::shell_policy::Dialect;
 /// child process in a kill-on-close Job Object. Injected by the binary (marlowe-exec).
 pub type CrewToolFactory = Arc<dyn Fn(&Sandbox, Option<&Path>) -> Arc<dyn ToolHost> + Send + Sync>;
 
+/// The run's taint as it stands now (a message can reach the run's inbox mid-step).
+pub type LiveTaint = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// The host a crew agent sees.
 pub struct CrewTools {
     inner: Arc<dyn ToolHost>,
     allow: Vec<String>,
     sandbox: Sandbox,
+    live_taint: Option<LiveTaint>,
 }
 
 impl CrewTools {
@@ -35,7 +39,14 @@ impl CrewTools {
     /// dropped from it whatever it says.
     pub fn new(inner: Arc<dyn ToolHost>, allow: Vec<String>, sandbox: Sandbox) -> CrewTools {
         let allow = allow.into_iter().filter(|t| t != crate::DISPATCH_TOOL).collect();
-        CrewTools { inner, allow, sandbox }
+        CrewTools { inner, allow, sandbox, live_taint: None }
+    }
+
+    /// Classifies every call with the run's live taint ORed into the step's exposure, so a
+    /// shell after untrusted content arrived mid-step gets the tainted policy.
+    pub fn with_live_taint(mut self, taint: LiveTaint) -> CrewTools {
+        self.live_taint = Some(taint);
+        self
     }
 
     /// The tool names this host exposes.
@@ -48,12 +59,46 @@ impl CrewTools {
     }
 }
 
+/// Argument names file tools give their target in, for tools that declare no mutation.
+const PATH_ARGS: [&str; 4] = ["path", "file_path", "notebook_path", "file"];
+
+/// Tools that write the file their path argument names.
+const WRITERS: [&str; 6] = ["write", "edit", "multi_edit", "edit_lines", "notebook_edit", "apply_patch"];
+
 impl CrewTools {
-    /// The refusal for a call this host will not run: off the allowlist, or a shell command the
-    /// policy denies in every mode (force push, `--no-verify`, shared git config writes).
-    fn refusal(&self, call: &ToolCallReq) -> Option<ToolOutcome> {
+    /// The frozen hub file a file-writing call targets, if any: by the paths the tool says it
+    /// changes, else by its path argument when it is a writer. Shells are not read here; the
+    /// build puts back hub files a shell changed and tells the engineer.
+    fn frozen_target(&self, call: &ToolCallReq, ctx: &ToolCtx) -> Option<String> {
+        if self.sandbox.frozen.is_empty() || Dialect::of_tool(&call.name).is_some() {
+            return None;
+        }
+        let by_arg = || {
+            PATH_ARGS
+                .iter()
+                .filter_map(|k| call.args.get(*k).and_then(|v| v.as_str()))
+                .find_map(|p| self.sandbox.frozen_path(Path::new(p)))
+        };
+        match self.inner.mutation(call, ctx) {
+            Mutation::Paths(paths) => paths.iter().find_map(|p| self.sandbox.frozen_path(p)),
+            Mutation::Under(_) => None,
+            Mutation::None if WRITERS.contains(&call.name.as_str()) => by_arg(),
+            Mutation::None => None,
+        }
+    }
+
+    /// The refusal for a call this host will not run: off the allowlist, a write to a frozen hub
+    /// file, or a shell command the policy denies in every mode (force push, `--no-verify`,
+    /// shared git config writes).
+    fn refusal(&self, call: &ToolCallReq, ctx: &ToolCtx) -> Option<ToolOutcome> {
         if !self.allow.contains(&call.name) {
             return Some(ToolOutcome::error(format!("`{}` is not on this role's tool list", call.name)));
+        }
+        if let Some(hub) = self.frozen_target(call, ctx) {
+            return Some(ToolOutcome::error(format!(
+                "`{hub}` is a hub file, frozen after the build's contract stage. Do not change it; end your reply with \
+                 `NEED_HUB_CHANGE: {hub}: <what and why>` and the lead will make the change."
+            )));
         }
         let dialect = Dialect::of_tool(&call.name)?;
         let command = call.args.get("command").and_then(|v| v.as_str())?;
@@ -73,7 +118,7 @@ impl ToolHost for CrewTools {
 
     /// Refuses tools off the allowlist and denied shell commands; otherwise delegates.
     fn call(&self, call: &ToolCallReq, ctx: &ToolCtx) -> ToolOutcome {
-        match self.refusal(call) {
+        match self.refusal(call, ctx) {
             Some(out) => out,
             None => self.inner.call(call, ctx),
         }
@@ -82,7 +127,7 @@ impl ToolHost for CrewTools {
     /// [`ToolHost::call`] with the loop's session scope, which the inner host's tools need
     /// (jobs, file state, the todo list).
     fn call_scoped(&self, call: &ToolCallReq, cx: &CallCtx) -> ToolOutcome {
-        match self.refusal(call) {
+        match self.refusal(call, cx) {
             Some(out) => out,
             None => self.inner.call_scoped(call, cx),
         }
@@ -104,6 +149,14 @@ impl ToolHost for CrewTools {
     /// other tool answers from its table entry ([`ToolHost::consequence_in_sandbox`]), or from
     /// the inner host's plain consequence when it defines no crew one.
     fn consequence_exposed(&self, call: &ToolCallReq, exposure: &Exposure) -> Consequence {
+        let live;
+        let exposure = match &self.live_taint {
+            Some(taint) if !exposure.tainted && taint() => {
+                live = Exposure { tainted: true, ..exposure.clone() };
+                &live
+            }
+            _ => exposure,
+        };
         if let Some(dialect) = Dialect::of_tool(&call.name) {
             let command = call.args.get("command").and_then(|v| v.as_str()).unwrap_or("");
             return match self.sandbox.shell_verdict(dialect, command, exposure.tainted) {

@@ -12,6 +12,7 @@
 //! | `workflow_ops::on_boot` | W: resume workflow runs a killed daemon left running |
 //! | `notify_ops::on_boot` | N: load the notification switches |
 //! | `close_ops::on_boot` | N: load the `keep running` setting |
+//! | `crew::on_boot` | I: git worktrees for `agent{isolation:"worktree"}` and `enter_worktree` |
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
@@ -28,6 +29,7 @@ const HOOKS: &[fn(&Arc<Core>)] = &[
     crate::workflow_ops::on_boot,
     crate::notify_ops::on_boot,
     crate::close_ops::on_boot,
+    crate::crew::on_boot,
 ];
 
 /// Runs every boot hook. A panicking hook is reported in the daemon log and the daemon starts

@@ -20,6 +20,7 @@ pub mod shell_policy;
 mod store;
 mod supervisor;
 mod tools;
+mod worktrees;
 
 pub use dispatch::{DispatchArgs, DispatchReceipt, DispatchTools, Estimate, DISPATCH_TOOL};
 pub use marlowe_proto::{
@@ -34,6 +35,7 @@ pub use supervisor::{
     result_memory, CrewConfig, CrewDeps, CrewEvent, CrewSetup, GpuBusy, RunApprovals, RunNotice, Supervisor, INTERRUPTED,
 };
 pub use tools::{CrewToolFactory, CrewTools};
+pub use worktrees::GitWorktrees;
 
 /// A crew failure.
 #[derive(Debug, thiserror::Error)]

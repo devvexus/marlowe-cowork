@@ -95,6 +95,12 @@ pub(crate) fn start(core: &Arc<Core>, setup: CrewSetup) -> Result<JoinHandle<()>
         .map_err(|e| format!("crew forwarder: {e}"))
 }
 
+/// Boot hook: the conductor's worktrees (`agent{isolation:"worktree"}`, `enter_worktree`) are
+/// real git worktrees under `<home>\worktrees\agents`, made by the crew's daemon-side git.
+pub(crate) fn on_boot(core: &Arc<Core>) {
+    crate::conductor_ops::install_worktrees(core, Arc::new(marlowe_crew::GitWorktrees::new(&core.home)));
+}
+
 /// Stops run threads at their next step boundary; they stay resumable for the next start.
 pub(crate) fn shutdown(core: &Core) {
     if let Some(link) = core.crew.get() {

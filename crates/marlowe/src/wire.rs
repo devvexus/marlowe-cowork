@@ -401,6 +401,8 @@ mod tests {
             branch: Some("crew/r1".into()),
             base: None,
             repo_digest: None,
+            frozen: Vec::new(),
+            target_dir: None,
         };
         let host = crew_host(&sb, None);
         let call = |name: &str, path: &std::path::Path| marlowe_model::ToolCall {
@@ -425,7 +427,7 @@ mod tests {
     #[test]
     fn a_crew_host_lists_git_and_not_gh_or_agents() {
         let root = std::env::temp_dir().join("marlowe-wire-test-crew-git");
-        let sb = Sandbox { kind: SandboxKind::Scratch, root: root.clone(), origin: None, branch: None, base: None, repo_digest: None };
+        let sb = Sandbox { kind: SandboxKind::Scratch, root: root.clone(), origin: None, branch: None, base: None, repo_digest: None, frozen: Vec::new(), target_dir: None };
         let home = std::env::temp_dir().join("marlowe-wire-test-crew-home");
         let host = crew_configure(crew_host(&sb, None), &home, None);
         let names: Vec<String> = host.specs().into_iter().map(|s| s.name).collect();

@@ -3277,6 +3277,7 @@ dependencies = [
  "marlowe-proto",
  "marlowe-provider",
  "marlowe-research",
+ "marlowe-verify",
  "marlowe-workflow",
  "rusqlite",
  "serde",

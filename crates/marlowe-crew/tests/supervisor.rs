@@ -783,7 +783,11 @@ fn a_crew_shell_cannot_push() {
     let run = RunId::new_random();
     let sb = Sandbox::create(&home, &run, Some(&work), SandboxKind::Worktree).unwrap();
     let env = sb.child_env();
-    assert_eq!(env, no_push_git_env(&["origin".into()]));
+    let mut want = no_push_git_env(&["origin".into()]);
+    // The worktree's own build output dir, under its repository's.
+    let own = marlowe_crew::sandbox::target_dir(&home, sb.origin.as_ref().unwrap(), run.as_str());
+    want.push(("CARGO_TARGET_DIR".into(), own.display().to_string()));
+    assert_eq!(env, want);
 
     let crew_git = |args: &[&str]| {
         let mut cmd = Command::new("git");
@@ -818,6 +822,8 @@ fn dangerous_shell_commands_ask_and_writes_stay_in_the_sandbox() {
         branch: Some("crew/r1".into()),
         base: Some("abc".into()),
         repo_digest: None,
+        frozen: Vec::new(),
+        target_dir: None,
     };
     let asks = |c: &str| matches!(sb.classify_shell(c, false), ShellVerdict::Ask(_));
     for free in [
@@ -931,7 +937,7 @@ fn the_result_memory_carries_the_run_as_provenance() {
 }
 
 #[test]
-fn notify_run_is_a_stub_that_checks_the_run_and_never_injects_at_user_trust() {
+fn notify_run_checks_the_run_and_frames_the_message_as_another_agents() {
     let home = home("notify");
     let (release, gate) = crossbeam_channel::bounded::<()>(1);
     let provider = cloud(move |_, n, cancel| {
@@ -951,11 +957,14 @@ fn notify_run_is_a_stub_that_checks_the_run_and_never_injects_at_user_trust() {
     assert!(matches!(fx.sup.notify_run(&RunId::new_random(), notice.clone()), Err(CrewError::UnknownRun(_))));
     let id = fx.sup.dispatch(None, args("tester", "Evaluate the model", None, None)).unwrap().run_id;
     wait("the first model call", || provider.calls.load(Ordering::SeqCst) == 1);
-    assert!(matches!(fx.sup.notify_run(&id, notice), Err(CrewError::NotWired(_))));
+    fx.sup.notify_run(&id, notice).unwrap();
     release.send(()).unwrap();
     wait_status(&fx.sup, &id, CrewRunStatus::Done);
     let reqs = provider.requests();
-    assert!(!reqs.iter().any(|r| r.messages.iter().any(|m| m.joined_text().contains("the hub file moved"))));
+    let texts: Vec<String> = reqs.iter().flat_map(|r| r.messages.iter().map(|m| m.joined_text())).collect();
+    // Never the bare text, as if the user had said it: always framed with its sender.
+    assert!(!texts.iter().any(|t| t.trim() == "the hub file moved"));
+    assert!(texts.iter().any(|t| t.starts_with("[Message from session:other") && t.ends_with("the hub file moved")));
     finish(fx, &[&home]);
 }
 

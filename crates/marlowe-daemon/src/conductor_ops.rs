@@ -54,7 +54,6 @@ use crate::{lock, now_ms, HostRequest};
 pub(crate) struct WorktreeSlot(Mutex<Option<Arc<dyn WorktreeProvider>>>);
 
 /// Installs the provider for `agent{isolation:"worktree"}` and `enter_worktree`.
-#[allow(dead_code)]
 pub(crate) fn install_worktrees(core: &Core, provider: Arc<dyn WorktreeProvider>) {
     *lock(&core.ext.get_or_init(WorktreeSlot::default).0) = Some(provider);
 }
