@@ -1,0 +1,25 @@
+{
+  "id": "micro-moving-average",
+  "tier": "micro",
+  "language": "python",
+  "prompt": "`moving_average(values, window)` in stats.py should return the average of every full window of `window` consecutive values, but it drops the last window. Fix it. Run the tests to check your work.",
+  "setup": {
+    "kind": "dir",
+    "path": "repo"
+  },
+  "hidden": {
+    "test_hidden.py": "hidden/test_hidden.py"
+  },
+  "tests": [
+    [
+      "{python}",
+      "-m",
+      "pytest",
+      "-q",
+      "-p",
+      "no:cacheprovider"
+    ]
+  ],
+  "timeout": 600,
+  "test_timeout": 120
+}

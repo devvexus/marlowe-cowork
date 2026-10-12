@@ -23,6 +23,8 @@ marlowe-tui.workspace = true
 marlowe-provider.workspace = true
 marlowe-openrouter.workspace = true
 marlowe-exec.workspace = true
+# `marlowe bench`: the edit engines and the A5 harness (src/bench/edits.rs).
+marlowe-code.workspace = true
 # Deep research v2's channels and cache (src/research_wire.rs).
 marlowe-research.workspace = true
 serde.workspace = true

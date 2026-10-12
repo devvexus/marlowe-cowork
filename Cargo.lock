@@ -3155,6 +3155,7 @@ dependencies = [
  "crossterm",
  "marlowe-agent",
  "marlowe-brains",
+ "marlowe-code",
  "marlowe-contract",
  "marlowe-crew",
  "marlowe-daemon",

@@ -1,0 +1,174 @@
+{
+  "about": "The interactive suite (design section 6): 15 scripted conversations run on Marlowe and on Claude Code. Each step sends a user message; the driver answers ask_user questions, approvals, steers, interrupts and mode changes as written. A scenario passes when every check holds. Scenarios marked marlowe_only run on Marlowe and are not scored against Claude Code.",
+  "scenarios": [
+    {
+      "id": "iact-01-ask-choice",
+      "files": {"app.cfg": "backend=sqlite\n"},
+      "steps": [
+        {"say": "Switch this app's storage backend away from sqlite. I have not decided between postgres and mysql, so ask me which one before you change anything, then update app.cfg.", "answers": {"backend": "postgres", "storage": "postgres", "database": "postgres", "which": "postgres"}}
+      ],
+      "checks": [
+        {"file": "app.cfg", "contains": ["backend=postgres"], "not_contains": ["sqlite"]},
+        {"questions": {"min": 1, "max": 2}}
+      ]
+    },
+    {
+      "id": "iact-02-ask-free-text",
+      "files": {},
+      "steps": [
+        {"say": "Create a small python module named after my cat, containing `def meow(): return 'meow'`. I have not told you the cat's name, so ask me for it first.", "answers": {"name": "whiskers", "cat": "whiskers"}}
+      ],
+      "checks": [
+        {"file": "whiskers.py", "contains": ["def meow"]},
+        {"questions": {"min": 1, "max": 2}}
+      ]
+    },
+    {
+      "id": "iact-03-ask-multiselect",
+      "files": {},
+      "steps": [
+        {"say": "Ask me which of these checks to enable: lint, types, tests. I may pick several. Then write the enabled ones, one per line, to checks.txt.", "answers": {"check": ["lint", "tests"], "enable": ["lint", "tests"], "which": ["lint", "tests"]}}
+      ],
+      "checks": [
+        {"file": "checks.txt", "contains": ["lint", "tests"], "not_contains": ["types"]},
+        {"questions": {"min": 1, "max": 2}}
+      ]
+    },
+    {
+      "id": "iact-04-no-question-when-clear",
+      "files": {"util.py": "def old_name(x):\n    return x + 1\n\n\nVALUE = old_name(2)\n"},
+      "steps": [
+        {"say": "Rename the function `old_name` to `new_name` in util.py, and update the call in util.py."}
+      ],
+      "checks": [
+        {"file": "util.py", "contains": ["def new_name", "new_name(2)"], "not_contains": ["old_name"]},
+        {"questions": {"min": 0, "max": 0}}
+      ]
+    },
+    {
+      "id": "iact-05-ask-once-when-ambiguous",
+      "files": {"config_dev.toml": "[log]\nlevel = \"info\"\n", "config_prod.toml": "[log]\nlevel = \"warn\"\n"},
+      "steps": [
+        {"say": "Set the log level to debug in the config file.", "answers": {"config": "dev", "which": "dev", "file": "dev", "environment": "dev"}}
+      ],
+      "checks": [
+        {"file": "config_dev.toml", "contains": ["level = \"debug\""]},
+        {"file": "config_prod.toml", "contains": ["level = \"warn\""], "unchanged": true},
+        {"questions": {"min": 1, "max": 1}}
+      ]
+    },
+    {
+      "id": "iact-06-steer-add-requirement",
+      "files": {},
+      "steps": [
+        {"say": "Create hello.py that prints hello.", "steer": {"after_tool_calls": 1, "say": "Also make it print bye on a second line."}}
+      ],
+      "checks": [
+        {"run": ["python", "hello.py"], "stdout_lines": ["hello", "bye"]}
+      ]
+    },
+    {
+      "id": "iact-07-steer-change-target",
+      "files": {},
+      "steps": [
+        {"say": "Write the single word alpha into a.txt.", "steer": {"after_tool_calls": 1, "say": "Actually put it in b.txt instead, and remove a.txt if you already made it."}}
+      ],
+      "checks": [
+        {"file": "b.txt", "contains": ["alpha"]},
+        {"file": "a.txt", "exists": false}
+      ]
+    },
+    {
+      "id": "iact-08-steer-add-verification",
+      "files": {"calc.py": "def add(a, b):\n    return a - b\n", "test_calc.py": "from calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n"},
+      "steps": [
+        {"say": "calc.add is wrong. Fix it.", "steer": {"after_tool_calls": 2, "say": "When you are done, run pytest and quote its summary line in your answer."}}
+      ],
+      "checks": [
+        {"file": "calc.py", "contains": ["a + b"]},
+        {"final_matches": "\\d+ passed"}
+      ]
+    },
+    {
+      "id": "iact-09-followup-context",
+      "files": {},
+      "steps": [
+        {"say": "Create notes.txt containing the single line v1."},
+        {"say": "Append the line v2 to the file you just made."}
+      ],
+      "checks": [
+        {"file": "notes.txt", "lines": ["v1", "v2"]}
+      ]
+    },
+    {
+      "id": "iact-10-followup-correction",
+      "files": {},
+      "steps": [
+        {"say": "Create color.txt containing the word red."},
+        {"say": "No, I meant blue. Fix it."}
+      ],
+      "checks": [
+        {"file": "color.txt", "contains": ["blue"], "not_contains": ["red"]}
+      ]
+    },
+    {
+      "id": "iact-11-interrupt-then-continue",
+      "files": {},
+      "steps": [
+        {"say": "Make thirty files f01.txt to f30.txt, each containing just its own number, creating them one at a time.", "interrupt_after_tool_calls": 2},
+        {"say": "Carry on, but only as far as f05.txt: make sure f01.txt to f05.txt exist, each containing its number."}
+      ],
+      "checks": [
+        {"file": "f01.txt", "contains": ["1"]},
+        {"file": "f05.txt", "contains": ["5"]}
+      ]
+    },
+    {
+      "id": "iact-12-deny-shell-and-adapt",
+      "files": {},
+      "steps": [
+        {"say": "Create out.txt containing the word done. Do not use the shell.", "mode": "default", "deny_tools": ["Bash", "PowerShell", "bash", "powershell"]}
+      ],
+      "checks": [
+        {"file": "out.txt", "contains": ["done"]}
+      ]
+    },
+    {
+      "id": "iact-13-plan-mode-then-implement",
+      "files": {"cli.py": "import sys\n\n\ndef main(argv):\n    return 0\n\n\nif __name__ == '__main__':\n    sys.exit(main(sys.argv[1:]))\n"},
+      "steps": [
+        {"say": "Plan how you would add a --verbose flag to cli.py. Do not change any file yet.", "mode": "plan"},
+        {"say": "Good. Now implement it.", "mode": "bypass"}
+      ],
+      "checks": [
+        {"file": "cli.py", "contains": ["--verbose"]}
+      ]
+    },
+    {
+      "id": "iact-14-continue-session",
+      "files": {},
+      "steps": [
+        {"say": "Create a.txt containing the single line one."},
+        {"restart": true},
+        {"say": "Append the line two to the file we just made."}
+      ],
+      "checks": [
+        {"file": "a.txt", "lines": ["one", "two"]}
+      ]
+    },
+    {
+      "id": "iact-15-rewind",
+      "marlowe_only": true,
+      "files": {},
+      "steps": [
+        {"say": "Create keep.txt containing the word keep."},
+        {"say": "Create drop.txt containing the word drop."},
+        {"say": "/rewind 1"}
+      ],
+      "checks": [
+        {"file": "keep.txt", "contains": ["keep"]},
+        {"file": "drop.txt", "exists": false}
+      ]
+    }
+  ]
+}

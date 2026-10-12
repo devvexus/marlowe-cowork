@@ -464,3 +464,12 @@ fn every_group_file_registers_its_hooks() {
     }
     assert!(super::group(marlowe_agent::ToolGroup::Memory).is_none(), "memory tools are the daemon's");
 }
+
+#[test]
+fn the_group_override_names_known_groups_only() {
+    use marlowe_agent::ToolGroup;
+    assert_eq!(super::parse_group_list("shell").unwrap(), vec![ToolGroup::Shell]);
+    assert_eq!(super::parse_group_list(" files , shell,shell ").unwrap(), vec![ToolGroup::Files, ToolGroup::Shell]);
+    assert!(super::parse_group_list("shell,nonsense").unwrap_err().contains("nonsense"));
+    assert!(super::parse_group_list(" , ").is_err());
+}
