@@ -111,14 +111,15 @@ fn note_then_answer(text: &'static str) -> impl Fn(&ChatRequest, usize, &CancelT
 
 // ---------------------------------------------------------------- tools, approvals
 
-/// `note` (free, does nothing) and `write` (writes under the sandbox root).
+/// `note` (free, does nothing), `write` (writes under the sandbox root) and `git_diff` (`git diff`
+/// in the sandbox root, as a finder would run it).
 struct TestTools {
     root: PathBuf,
 }
 
 impl ToolHost for TestTools {
     fn specs(&self) -> Vec<ToolSpec> {
-        ["note", "write"]
+        ["note", "write", "git_diff"]
             .iter()
             .map(|n| ToolSpec { name: n.to_string(), description: n.to_string(), input_schema: json!({"type": "object"}) })
             .collect()
@@ -131,6 +132,10 @@ impl ToolHost for TestTools {
                 let path = self.root.join(call.args["path"].as_str().unwrap_or("out.txt"));
                 std::fs::write(&path, call.args["content"].as_str().unwrap_or("")).unwrap();
                 ToolOutcome::ok("wrote", "wrote")
+            }
+            "git_diff" => {
+                let out = Command::new("git").arg("-C").arg(&self.root).arg("diff").output().unwrap();
+                ToolOutcome::ok(format!("[diff]{}[/diff]", String::from_utf8_lossy(&out.stdout)), "diffed")
             }
             other => ToolOutcome::error(format!("unknown tool {other}")),
         }
@@ -952,4 +957,93 @@ fn notify_run_is_a_stub_that_checks_the_run_and_never_injects_at_user_trust() {
     let reqs = provider.requests();
     assert!(!reqs.iter().any(|r| r.messages.iter().any(|m| m.joined_text().contains("the hub file moved"))));
     finish(fx, &[&home]);
+}
+
+/// G11/G12: a workflow run (`/code-review`, `/simplify`) starts from the checkout as it is. Its
+/// agents' `git diff` sees the uncommitted changes, and its own edits merge back into the working
+/// tree, uncommitted, without touching the user's pending work or HEAD.
+#[test]
+fn a_workflow_run_sees_the_pending_changes_and_merges_into_the_working_tree() {
+    let home = home("wf-pending");
+    std::fs::write(
+        home.join("roles").join("workflow.md"),
+        format!(
+            "---
+name: workflow
+description: Test workflow agent.
+tools: [git_diff, write]
+             budget: {{tokens: 100000, steps: 20, usd: 1.0}}
+sandbox: worktree
+---
+{CARD_BODY}"
+        ),
+    )
+    .unwrap();
+    let (work, _bare) = repo("wf-pending");
+    let head = git(&work, &["rev-parse", "HEAD"]);
+    // Uncommitted: a planted bug in a tracked file, a staged new file, an untracked one.
+    std::fs::write(work.join("README.md"), "hello
+let last = items[n + 1]; // planted
+").unwrap();
+    std::fs::write(work.join("staged.txt"), "staged
+").unwrap();
+    git(&work, &["add", "staged.txt"]);
+    std::fs::write(work.join("notes.txt"), "untracked
+").unwrap();
+
+    let provider = cloud(|req, _, _| {
+        let prompt = req.messages.iter().find(|m| m.role == Role::User).map(|m| m.joined_text()).unwrap_or_default();
+        Ok(match (prompt.contains("Review"), after_tool(req)) {
+            (true, false) => call("git_diff", json!({})),
+            (true, true) => answer(&serde_json::to_string(req.messages.last().unwrap()).unwrap()),
+            (false, false) => call("write", json!({"path": "README.md", "content": "hello
+let last = items[n - 1]; // fixed
+"})),
+            (false, true) => answer("Fixed README.md."),
+        })
+    });
+    let fx = start(&home, &provider);
+    let source = "META = {\"description\": \"review then fix\"}
+def main(args):
+    seen = agent(\"Review the pending changes\")
+    fixed = agent(\"Fix the finding\")
+    return {\"seen\": seen, \"fixed\": fixed}
+";
+    let script = home.join("wf.star");
+    std::fs::write(&script, source).unwrap();
+    let receipt = fx
+        .sup
+        .dispatch_workflow(None, args("workflow", "workflow t: review then fix", None, Some(&work)), |_run| {
+            Ok(marlowe_proto::WorkflowRef {
+                name: Some("t".into()),
+                script_path: script.display().to_string(),
+                digest: marlowe_workflow::digest(source),
+                args: Value::Null,
+                foreground: false,
+                resumed_from: None,
+            })
+        })
+        .unwrap();
+    let run = wait_status(&fx.sup, &receipt.run_id, CrewRunStatus::NeedsYou);
+
+    // The finder's `git diff` in its sandbox had the uncommitted planted bug.
+    let journal = std::fs::read_to_string(home.join("workflows").join("runs").join(receipt.run_id.as_str()).join("journal.jsonl")).unwrap();
+    assert!(journal.contains("items[n + 1]"), "the finder saw the pending change: {journal}");
+    let root = PathBuf::from(run.sandbox.clone().unwrap().root);
+    assert!(root.join("notes.txt").is_file() && root.join("staged.txt").is_file(), "untracked and staged files came along");
+    assert!(git(&work, &["for-each-ref", "refs/marlowe-seed"]).contains(receipt.run_id.as_str()), "the snapshot is kept by its ref");
+    // The run's diff is its own change only, not the user's pending work.
+    let diff = run.result.as_ref().and_then(|d| d.diff.clone()).expect("the fix is a diff");
+    assert_eq!(diff.files, ["README.md"]);
+    assert_eq!(diff.insertions, 1);
+
+    let outcome = fx.sup.merge(&receipt.run_id).unwrap();
+    assert_eq!(outcome, MergeOutcome::Applied { files: vec!["README.md".into()] });
+    assert_eq!(std::fs::read_to_string(work.join("README.md")).unwrap(), "hello
+let last = items[n - 1]; // fixed
+");
+    assert_eq!(git(&work, &["rev-parse", "HEAD"]), head, "nothing committed to the user's branch");
+    assert!(work.join("notes.txt").is_file() && git(&work, &["diff", "--cached", "--name-only"]) == "staged.txt", "the user's pending work is as it was");
+    assert!(git(&work, &["for-each-ref", "refs/marlowe-seed"]).is_empty(), "the snapshot ref goes with the worktree");
+    finish(fx, &[&home, work.parent().unwrap()]);
 }

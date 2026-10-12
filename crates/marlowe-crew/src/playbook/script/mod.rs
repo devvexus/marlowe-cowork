@@ -39,11 +39,17 @@ pub trait RunObserver: Send + Sync {
     fn agent_stop(&self, _run: &RunId, _call: &AgentCall, _result: &AgentResult) {}
 }
 
+/// Builds the hooks of a run nobody registered an observer for (one started without a session's
+/// hooks, or resumed in place after a restart): `(run, session, workspace)`.
+pub type ObserverFactory = dyn Fn(&RunId, Option<&SessionId>, Option<&Path>) -> Option<Arc<dyn RunObserver>> + Send + Sync;
+
 #[derive(Default)]
 struct Registry {
     controls: HashMap<RunId, Sender<Control>>,
     progress: HashMap<RunId, WorkflowInfo>,
     observers: HashMap<RunId, Arc<dyn RunObserver>>,
+    /// By profile home, so daemons in one process (tests) never use each other's.
+    factories: HashMap<PathBuf, Arc<ObserverFactory>>,
 }
 
 fn registry() -> std::sync::MutexGuard<'static, Registry> {
@@ -54,6 +60,25 @@ fn registry() -> std::sync::MutexGuard<'static, Registry> {
 /// Sets the hooks for `run` (before it starts, or while it runs).
 pub fn set_observer(run: &RunId, observer: Arc<dyn RunObserver>) {
     registry().observers.insert(run.clone(), observer);
+}
+
+/// Sets how runs under `home` get their hooks when none were set for them ([`ObserverFactory`]).
+pub fn set_observer_factory(home: &Path, factory: Arc<ObserverFactory>) {
+    registry().factories.insert(home.to_path_buf(), factory);
+}
+
+/// The hooks for `job`'s run: the observer set for it, else the home's factory.
+fn observer_for(job: &ScriptJob<'_>) -> Option<Arc<dyn RunObserver>> {
+    let factory = {
+        let reg = registry();
+        if let Some(o) = reg.observers.get(job.run) {
+            return Some(o.clone());
+        }
+        reg.factories.get(job.home).cloned()?
+    };
+    let observer = factory(job.run, job.session, job.workspace)?;
+    registry().observers.insert(job.run.clone(), observer.clone());
+    Some(observer)
 }
 
 /// The control channel of a live workflow run.
@@ -100,6 +125,9 @@ pub struct ScriptJob<'a> {
     /// Plugin bundle roots for `workflow(name)` inside the script.
     pub plugins: Vec<PathBuf>,
 }
+
+/// Progress views of ended runs kept in memory (the rest are rebuilt from their journals).
+const KEPT_VIEWS: usize = 64;
 
 /// Longest return value the relay carries (the journal keeps it whole).
 const SUMMARY_CHARS: usize = 12_000;
@@ -173,12 +201,25 @@ pub fn run_workflow(runner: &AgentRunner, job: ScriptJob<'_>, emit: &dyn Fn(Scri
     let _stop_on_cancel = runner.cancel.on_cancel(move || {
         let _ = ctl_tx.send(Control::Stop);
     });
-    let observer = registry().observers.get(job.run).cloned();
+    let observer = observer_for(&job);
     let host = CrewAgentHost::new(runner.clone(), job.run.clone(), job.home.to_path_buf(), observer);
     let mut obs = JournalObserver { path: journal.clone(), progress: Progress::new(job.run.clone(), name.clone(), meta.phases.clone(), budget_total), run: job.run.clone(), emit };
     crate::playbook::StepRunner::progress(runner, &format!("workflow {name}"));
     let outcome = marlowe_workflow::run(&source, cfg, host, &mut obs, &ctl_rx);
-    registry().controls.remove(job.run);
+    {
+        // The run is over in this process: its live entries go. The last progress view stays for
+        // the most recent runs; older ones are read back from their journals.
+        let mut reg = registry();
+        reg.controls.remove(job.run);
+        reg.observers.remove(job.run);
+        if reg.progress.len() > KEPT_VIEWS {
+            let reg = &mut *reg;
+            let ended: Vec<RunId> = reg.progress.keys().filter(|r| *r != job.run && !reg.controls.contains_key(*r)).cloned().collect();
+            for r in ended.into_iter().take(reg.progress.len() - KEPT_VIEWS) {
+                reg.progress.remove(&r);
+            }
+        }
+    }
 
     match outcome {
         Ok(out) => {

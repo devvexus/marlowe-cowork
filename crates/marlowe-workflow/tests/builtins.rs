@@ -139,6 +139,35 @@ fn parity_wf6_project_shadows_user_and_builtins() {
     assert!(idx.len() <= 160 && idx.contains("more: /workflows"), "{idx}");
 }
 
+/// `workflow(name)` inside a running workflow: the parent's approval never showed the child, so
+/// only a built-in or a digest approved on its own runs; a relative path is in the workspace.
+#[test]
+fn a_child_workflow_runs_only_when_built_in_or_approved() {
+    use marlowe_workflow::service;
+    use marlowe_workflow::ScriptResolver;
+    let (ws, home) = (temp("child-ws"), temp("child-home"));
+    std::fs::create_dir_all(ws.join(".marlowe/workflows")).unwrap();
+    let src = "META = {\"description\": \"child\"}\ndef main(args):\n    return 1\n";
+    std::fs::write(ws.join(".marlowe/workflows/child.star"), src).unwrap();
+    let roots = service::roots(&home, Some(&ws), vec![]);
+    let child = |r: &Roots, n: &str| ScriptResolver::resolve(r, n);
+
+    assert!(child(&roots, "child").unwrap_err().contains("has not been approved"));
+    assert!(child(&roots, ".marlowe/workflows/child.star").unwrap_err().contains("has not been approved"));
+    assert!(child(&roots, "code-review").is_ok(), "built-ins always run");
+
+    service::trust(&home, &service::prepare(&roots, None, None, Some("child")).unwrap()).unwrap();
+    assert_eq!(child(&roots, "child").unwrap().1, src);
+    assert_eq!(child(&roots, ".marlowe/workflows/child.star").unwrap().1, src, "relative to the workspace");
+
+    // Edited after its approval: the new version is not approved.
+    std::fs::write(ws.join(".marlowe/workflows/child.star"), format!("{src}# changed\n")).unwrap();
+    assert!(child(&roots, "child").unwrap_err().contains("has not been approved"));
+    // A relative path with no workspace is not read from the daemon's directory.
+    let bare = service::roots(&home, None, vec![]);
+    assert!(child(&bare, ".marlowe/workflows/child.star").unwrap_err().contains("no workspace"));
+}
+
 #[test]
 fn parity_wf6_cc_javascript_is_listed_and_named_for_conversion() {
     let ws = temp("cc");

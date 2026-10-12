@@ -145,7 +145,8 @@ fn run_agent(
     let mut child_sandbox = None;
     if call.opts.isolation.as_deref() == Some("worktree") {
         let child_id = RunId(format!("{}-a{}", run.as_str(), call.index));
-        match Sandbox::create(home, &child_id, Some(&base.sandbox.root), SandboxKind::Worktree) {
+        // Seeded with the run's worktree as it is, so the agent sees what the run has so far.
+        match Sandbox::create_with(home, &child_id, Some(&base.sandbox.root), SandboxKind::Worktree, true) {
             Ok(sb) if sb.kind == SandboxKind::Worktree => child_sandbox = Some(sb),
             Ok(sb) => {
                 let _ = sb.remove();

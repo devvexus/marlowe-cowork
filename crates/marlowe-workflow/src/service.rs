@@ -32,6 +32,9 @@ pub struct LaunchRequest {
     pub resume_from: Option<String>,
     /// The calling conversation had read untrusted content.
     pub tainted: bool,
+    /// The digest the user approved (or that was trusted) when the call was checked. An untrusted
+    /// script runs only when it still has this digest, and only this digest is recorded as trusted.
+    pub approved_digest: Option<String>,
 }
 
 /// A started run.
@@ -150,9 +153,34 @@ fn trusted_map(home: &Path) -> BTreeMap<String, String> {
     std::fs::read_to_string(trusted_path(home)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
+/// A digest the user approved before.
+pub fn digest_trusted(home: &Path, digest: &str) -> bool {
+    trusted_map(home).contains_key(digest)
+}
+
 /// The digest ran before with the user's approval (built-ins always count).
 pub fn is_trusted(home: &Path, prepared: &Prepared) -> bool {
     prepared.builtin || trusted_map(home).contains_key(&prepared.digest)
+}
+
+/// Whether `prepared` may run: trusted, or exactly the digest that was approved.
+pub fn may_run(home: &Path, prepared: &Prepared, approved_digest: Option<&str>) -> Result<(), String> {
+    if is_trusted(home, prepared) || approved_digest == Some(prepared.digest.as_str()) {
+        return Ok(());
+    }
+    Err(format!(
+        "{} is not the script that was checked for approval (it changed, or appeared, after the check); nothing ran. Call `workflow` again to see and approve this version",
+        prepared.filename
+    ))
+}
+
+/// After a launch: records the digest when it is the one the user approved (never a script that
+/// only ran because it was already trusted, and never one nobody saw).
+pub fn trust_approved(home: &Path, prepared: &Prepared, approved_digest: Option<&str>) -> std::io::Result<()> {
+    if approved_digest == Some(prepared.digest.as_str()) {
+        trust(home, prepared)?;
+    }
+    Ok(())
 }
 
 /// Records an approved digest.

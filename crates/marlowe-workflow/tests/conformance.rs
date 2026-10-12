@@ -220,7 +220,25 @@ fn c13_nested_workflow_one_level() {
 #[test]
 fn c14_no_clock_randomness_or_files() {
     let e = invalid("14-forbidden.star");
-    assert!(e.contains("time") || e.contains("random") || e.contains("open"), "{e}");
+    assert!(e.contains("time"), "{e}");
+    // Each forbidden built-in on its own, so a regression in any one of them shows.
+    for (call, name) in [
+        ("time.now()", "time"),
+        ("random()", "random"),
+        ("open(\"notes.txt\")", "open"),
+        ("sleep(1)", "sleep"),
+        ("now()", "now"),
+        ("read_file(\"notes.txt\")", "read_file"),
+        ("os.getenv(\"HOME\")", "os"),
+        ("load(\"x\")", "load"),
+    ] {
+        let src = format!("META = {{\"description\": \"d\"}}\ndef main(args):\n    return {call}\n");
+        let e = match check("forbidden.star", &src) {
+            Ok(_) => panic!("{call} validated"),
+            Err(d) => marlowe_workflow::validate::render(&d),
+        };
+        assert!(e.contains(name), "{call}: {e}");
+    }
 }
 
 #[test]
@@ -442,4 +460,197 @@ fn c30_failed_agents_are_none_and_logged() {
     assert_eq!(r.value, json!([null, "x"]));
     assert!(logs(&events).iter().any(|l| l.contains("failed: the model call failed")));
     assert_eq!(r.tokens, 4);
+}
+
+/// The fatal message a fixture run ends with.
+fn script_error(r: Result<RunOutcome, WorkflowError>) -> String {
+    match r {
+        Err(WorkflowError::Script(d)) => d.message,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn c32_comprehension_iterations_count_like_statements() {
+    // Comprehensions run no statement; their iterations are counted all the same.
+    for kind in ["flat", "filtered", "nested", "dict"] {
+        let mut c = cfg("28", json!({kind: true}));
+        c.max_statements = 20_000;
+        let t = std::time::Instant::now();
+        let (r, _) = go("28-runaway-comprehension.star", c, ScriptedHost::echo());
+        let m = script_error(r);
+        assert!(m.contains("statements"), "{kind}: {m}");
+        assert!(t.elapsed() < Duration::from_secs(20), "{kind}: {:?}", t.elapsed());
+    }
+    // An ordinary comprehension is untouched.
+    let (r, _) = go("28-runaway-comprehension.star", cfg("28", json!({})), ScriptedHost::echo());
+    assert_eq!(r.unwrap().value, json!(5));
+}
+
+#[test]
+fn c33_huge_values_end_with_an_error_before_they_are_built() {
+    let cases = [
+        ("list", "MB"),
+        ("string", "MB"),
+        ("bigint-string", "MB"),
+        ("shift", "4096 bits"),
+        ("range", "range() gives at most"),
+        ("list-range", "range() gives at most"),
+        ("parallel", "range() gives at most"),
+        ("doubling", "MB of values"),
+        ("lambda-doubling", "`+` would build"),
+        ("list-concat", "`+` would build"),
+    ];
+    for (kind, says) in cases {
+        let mut c = cfg("29", json!({"kind": kind}));
+        // A small heap ceiling keeps the test itself small (the `+` cases stop on their own).
+        if !matches!(kind, "lambda-doubling" | "list-concat") {
+            c.max_heap_bytes = 8 << 20;
+        }
+        let (r, _) = go("29-huge-values.star", c, ScriptedHost::echo());
+        let m = script_error(r);
+        assert!(m.contains(says), "{kind}: {m}");
+    }
+    // Small repeats and shifts work as in Starlark.
+    let (r, _) = go("29-huge-values.star", cfg("29", json!({"kind": "small"})), ScriptedHost::echo());
+    assert_eq!(r.unwrap().value, json!(6 + 4 + 12));
+}
+
+#[test]
+fn c34_a_variable_the_loop_body_sets_is_late_bound_too() {
+    let e = invalid("30-late-binding-body.star");
+    assert!(e.contains("`p`") && e.contains("lambda p=p"), "{e}");
+    // Bound as a default, the same loop runs one agent per file.
+    let fixed = fixture("30-late-binding-body.star").replace("lambda: agent(p)", "lambda p=p: agent(p)");
+    let mut events = Vec::new();
+    let out = run(&fixed, cfg("30", json!({"files": ["a", "b"]})), ScriptedHost::echo(), &mut |e: &WfEvent| events.push(e.clone()), &no_control()).unwrap();
+    assert_eq!(out.value, json!(["done: Review a", "done: Review b"]));
+}
+
+#[test]
+fn c35_the_check_runs_nothing_and_the_run_is_bounded() {
+    // The check (before approval, on the conductor's thread) resolves names and runs nothing, so
+    // a runaway top level costs it nothing.
+    let t = std::time::Instant::now();
+    check("31-top-level-runaway.star", &fixture("31-top-level-runaway.star")).unwrap();
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    // Run, the top level is bounded like everything else.
+    let mut c = cfg("31", json!({}));
+    c.max_statements = 20_000;
+    let (r, _) = go("31-top-level-runaway.star", c, ScriptedHost::echo());
+    assert!(script_error(r).contains("statements"));
+}
+
+#[test]
+fn c37_nothing_in_a_script_runs_before_approval() {
+    // A top level that would fail, or build something huge, still validates: it never ran.
+    let src = "META = {\"description\": \"d\"}
+BIG = \"x\" * 1000000000
+STOP = fail(\"the top level ran\")
+def main(args):
+    return 1
+";
+    check("inline.star", src).unwrap();
+    // A misspelt name anywhere is still found, and so is a direct agent call at the top level.
+    let typo = "META = {\"description\": \"d\"}\nX = 1\ndef main(args):\n    return agnet(\"x\")\n";
+    assert!(matches!(check("inline.star", typo), Err(d) if d[0].message.contains("agnet")));
+    let early = "META = {\"description\": \"d\"}\nX = [parallel([])]\ndef main(args):\n    return X\n";
+    assert!(matches!(check("inline.star", early), Err(d) if d[0].message.contains("call parallel() from inside") && d[0].line == Some(2)));
+    // A lambda or a function at the top level may call agent: it runs later, from main.
+    let later = "META = {\"description\": \"d\"}\nASK = lambda q: agent(q)\ndef main(args):\n    return ASK(\"x\")\n";
+    check("inline.star", later).unwrap();
+    // The top level reads `args` like main does.
+    let topic = "META = {\"description\": \"d\"}\nTOPIC = args.get(\"topic\", \"none\")\ndef main(args):\n    return TOPIC\n";
+    check("inline.star", topic).unwrap();
+    let out = run(topic, cfg("inline", json!({"topic": "rust"})), ScriptedHost::echo(), &mut |_: &WfEvent| {}, &no_control()).unwrap();
+    assert_eq!(out.value, json!("rust"));
+}
+
+#[test]
+fn c38_lambda_calls_count_like_statements() {
+    // `map`, `filter` and `sorted(key=...)` loop inside the interpreter; the lambda is what ticks.
+    for (kind, src) in [
+        ("map", "len(map(lambda i: len(map(lambda j: 0, range(100000))), range(100000)))"),
+        ("filter", "len(filter(lambda i: len(filter(lambda j: False, range(100000))) > 0, range(100000)))"),
+        ("sorted", "len(sorted(range(100000), key = lambda i: len(sorted(range(100000), key = lambda j: -j))))"),
+    ] {
+        let source = format!("META = {{\"description\": \"d\"}}\ndef main(args):\n    return {src}\n");
+        let mut c = cfg("inline", json!({}));
+        c.max_statements = 20_000;
+        let t = std::time::Instant::now();
+        let r = run(&source, c, ScriptedHost::echo(), &mut |_: &WfEvent| {}, &no_control());
+        assert!(script_error(r).contains("statements"), "{kind}");
+        assert!(t.elapsed() < Duration::from_secs(20), "{kind}: {:?}", t.elapsed());
+    }
+    // An ordinary lambda is untouched.
+    let ok = "META = {\"description\": \"d\"}\ndef main(args):\n    return sorted(map(lambda x: x * 2, [3, 1, 2]), key = lambda y: -y)\n";
+    let out = run(ok, cfg("inline", json!({})), ScriptedHost::echo(), &mut |_: &WfEvent| {}, &no_control()).unwrap();
+    assert_eq!(out.value, json!([6, 4, 2]));
+}
+
+#[test]
+fn c39_a_pass_has_a_time_limit() {
+    let src = "META = {\"description\": \"d\"}\ndef main(args):\n    n = 0\n    for i in range(100000):\n        n = n + 1\n    return n\n";
+    let mut c = cfg("inline", json!({}));
+    c.max_pass_time = Duration::ZERO;
+    let r = run(src, c, ScriptedHost::echo(), &mut |_: &WfEvent| {}, &no_control());
+    assert!(script_error(r).contains("ran longer than"));
+}
+
+#[test]
+fn c40_prompts_and_log_lines_have_a_size_limit() {
+    let src = "META = {\"description\": \"d\"}
+def main(args):
+    log(\"y\" * 10000)
+    big = \"z\" * 2000000
+    return [agent(\"short\"), parallel([lambda: agent(big)])]
+";
+    let host = ScriptedHost::echo();
+    let mut events = Vec::new();
+    let out = run(src, cfg("inline", json!({})), host.clone(), &mut |e: &WfEvent| events.push(e.clone()), &no_control()).unwrap();
+    assert_eq!(out.value, json!(["done: short", [null]]));
+    assert_eq!(host.calls().len(), 1, "the oversized prompt never reached a model");
+    let l = logs(&events);
+    assert!(l.iter().any(|x| x.starts_with("yyy") && x.ends_with("[...]") && x.len() < 4100), "{:?}", l.iter().map(|x| x.len()).collect::<Vec<_>>());
+    assert!(l.iter().any(|x| x.contains("parallel item 0 failed") && x.contains("keep it under 1024 KB")), "{l:?}");
+}
+
+#[test]
+fn c41_each_failing_item_is_logged_once() {
+    // Item 0 fails on the second pass (after its agent finished), item 1 on every pass: each
+    // failure line appears exactly once, whatever order they fail in.
+    let src = "META = {\"description\": \"d\"}
+def main(args):
+    a = parallel([lambda: int(agent(\"a\")), lambda: int(\"b\"), lambda: agent(\"c\")])
+    b = pipeline([\"p\", \"q\"], lambda prev, item: agent(item), lambda prev: int(prev) if prev == \"done: p\" else int(\"x\" + prev))
+    return [a, b]
+";
+    let host = ScriptedHost::new(|c| Scripted::after(if c.prompt == "a" { 50 } else { 10 }, AgentResult::text(format!("done: {}", c.prompt), 1)));
+    let mut events = Vec::new();
+    let out = run(src, cfg("inline", json!({})), host, &mut |e: &WfEvent| events.push(e.clone()), &no_control()).unwrap();
+    assert_eq!(out.value, json!([[null, null, "done: c"], [null, null]]));
+    let l = logs(&events);
+    for item in ["parallel item 0 failed", "parallel item 1 failed", "pipeline item 0 stage 1 failed", "pipeline item 1 stage 1 failed"] {
+        assert_eq!(l.iter().filter(|x| x.contains(item)).count(), 1, "{item}: {l:#?}");
+    }
+}
+
+#[test]
+fn c36_guard_names_and_augmented_repeats_are_refused() {
+    let src = "META = {\"description\": \"d\"}
+_wf_tick = lambda x: x
+def main(args):
+    s = \"x\"
+    s *= 3
+    n = 1
+    n <<= 2
+    return s
+";
+    let e = match check("guards.star", src) {
+        Ok(_) => panic!("validated"),
+        Err(d) => marlowe_workflow::validate::render(&d),
+    };
+    assert!(e.contains("line 2") && e.contains("reserved"), "{e}");
+    assert!(e.contains("line 5") && e.contains("x = x * n"), "{e}");
+    assert!(e.contains("line 7") && e.contains("x = x << n"), "{e}");
 }

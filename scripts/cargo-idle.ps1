@@ -1,8 +1,8 @@
 (Get-Process -Id $PID).PriorityClass = 'Idle'
 # Machine guard (2026-10-10): Matthew's training jobs share this machine's RAM, and a -j 4 workspace
 # test build once took ~20 GB of commit and crashed them. So every cargo run here is one at a time
-# machine-wide, starts only with commit headroom to spare, and sizes its jobs and test threads to
-# the RAM that is free at that moment (2026-10-11). Any -j/--jobs argument is ignored. Set MARLOWE_CARGO_UNGUARDED=1 to bypass when the machine is free.
+# machine-wide, single-job, single test thread, and starts only with commit headroom to spare.
+# Any -j/--jobs argument is ignored. Set MARLOWE_CARGO_UNGUARDED=1 to bypass when the machine is free.
 $pass = @(); $skip = $false; $afterDashes = $false
 foreach ($a in $args) {
     if ($afterDashes) { $pass += $a; continue }
@@ -19,6 +19,8 @@ if (Test-Path $hold) {
     Write-Host "[cargo-idle] HOLD: all builds and tests are paused until the training session says go ($(Get-Content $hold -Raw)). Do not run cargo another way; stop and report."
     exit 75
 }
+$env:CARGO_BUILD_JOBS = '1'
+$env:RUST_TEST_THREADS = '1'
 $minFreeGb = 12
 $lock = New-Object System.Threading.Mutex($false, 'Global\MarloweCoworkCargo')
 $waited = $false
@@ -33,11 +35,6 @@ try {
         }
         Start-Sleep -Seconds 20
     }
-    # Jobs scale with free RAM (about 3 GB per rustc/link at peak), 1 to 6; one build at a time still.
-    $ramGb = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB
-    $jobs = [Math]::Max(1, [Math]::Min(6, [Math]::Floor($ramGb / 3)))
-    $env:CARGO_BUILD_JOBS = "$jobs"
-    $env:RUST_TEST_THREADS = "$jobs"
     & cargo @pass
     $code = $LASTEXITCODE
 } finally {

@@ -233,5 +233,6 @@ fn outcome_line(o: &MergeOutcome) -> String {
         MergeOutcome::MergeCommit { commit } => format!("merged as {commit}"),
         MergeOutcome::NothingToMerge => "nothing to merge".into(),
         MergeOutcome::ReportCopied { path } => format!("report copied to {}", path.display()),
+        MergeOutcome::Applied { files } => format!("applied to the working tree, uncommitted: {}", files.join(", ")),
     }
 }

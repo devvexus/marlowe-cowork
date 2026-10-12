@@ -146,7 +146,7 @@ fn parity_wf3_an_invalid_answer_is_retried_into_an_object() {
         }
         1 => {
             let r = last_tool_result(req).unwrap();
-            assert!(r.contains("/n: expected integer") && r.contains("attempts left"), "{r}");
+            assert!(r.contains("/n: expected integer") && r.contains("3 of 3 retries left"), "{r}");
             call(STRUCTURED_OUTPUT, json!({"n": 3}))
         }
         _ => answer("done"),
@@ -160,6 +160,39 @@ fn parity_wf3_an_invalid_answer_is_retried_into_an_object() {
     assert!(d.summary.contains("\"n\": 3"), "{}", d.summary);
     assert_eq!(model.requests().len(), 3);
     assert!(model.requests().iter().all(|q| q.format.is_none()), "no finalisation needed");
+}
+
+#[test]
+fn parity_wf3_three_retries_then_none() {
+    // Four invalid calls: the first three get the errors back and a retry, the fourth is refused.
+    let model = Model::new(false, |req, i| {
+        if req.format.is_some() {
+            return answer("still not a number");
+        }
+        match i {
+            0..=3 => {
+                if i > 0 {
+                    let r = last_tool_result(req).unwrap();
+                    assert!(r.contains(&format!("{} of 3 retries left", 4 - i)), "{i}: {r}");
+                }
+                call(STRUCTURED_OUTPUT, json!({"n": "three"}))
+            }
+            4 => {
+                let r = last_tool_result(req).unwrap();
+                assert!(r.contains("No more attempts"), "{r}");
+                answer("done")
+            }
+            _ => answer("done"),
+        }
+    });
+    let home = temp("wf3c");
+    let r = runner(model.clone(), &home);
+    let run = RunId::new_random();
+    let wf = job_script(&home, &run, SCHEMA_SCRIPT, json!({}), None);
+    let (out, _) = go(&r, &home, &run, &wf);
+    assert!(out.unwrap().summary.contains("null"));
+    let turns = model.requests().iter().filter(|q| q.format.is_none()).count();
+    assert_eq!(turns, 5, "four invalid calls, then the turn ends");
 }
 
 #[test]
@@ -281,6 +314,34 @@ fn parity_x22_every_workflow_agent_fires_start_and_stop_hooks() {
     let mut seen = rec.0.lock().unwrap().clone();
     seen.sort();
     assert_eq!(seen, ["start 0", "start 1", "stop 0 Done", "stop 1 Done"]);
+}
+
+/// A run nobody set hooks for (started from the TUI, or resumed in place after a restart) gets
+/// them from its home's factory, for its own session; the registry forgets them when it ends.
+#[test]
+fn parity_x22_a_run_without_hooks_gets_its_sessions_from_the_factory() {
+    let model = Model::new(false, |_, _| answer("ok"));
+    let home = temp("x22f");
+    let r = runner(model, &home);
+    let run = RunId::new_random();
+    let rec = Arc::new(Recording(Mutex::new(Vec::new())));
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let (given, seen) = (rec.clone(), asked.clone());
+    set_observer_factory(
+        &home,
+        Arc::new(move |run: &RunId, session: Option<&marlowe_proto::SessionId>, _ws: Option<&Path>| {
+            seen.lock().unwrap().push((run.clone(), session.cloned()));
+            Some(given.clone() as Arc<dyn RunObserver>)
+        }),
+    );
+    let src = "META = {\"description\": \"one\"}\ndef main(args):\n    return agent(\"a\")\n";
+    let wf = job_script(&home, &run, src, json!({}), None);
+    let session = marlowe_proto::SessionId("x22f-s".into());
+    let job = ScriptJob { home: &home, run: &run, session: Some(&session), workspace: None, workflow: &wf, plugins: vec![] };
+    run_workflow(&r, job, &|_| {}).unwrap();
+    assert_eq!(rec.0.lock().unwrap().as_slice(), ["start 0", "stop 0 Done"]);
+    assert_eq!(asked.lock().unwrap().as_slice(), [(run.clone(), Some(session))]);
+    assert!(!registry().observers.contains_key(&run) && !registry().controls.contains_key(&run), "pruned when the run ended");
 }
 
 #[test]

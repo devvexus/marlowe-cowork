@@ -9,7 +9,10 @@
 //! - no lambda or nested `def` inside a loop or comprehension reads the loop variable without
 //!   binding it (Starlark closures see the variable's last value, so every agent would get the
 //!   same prompt);
-//! - the top level compiles: every name it uses exists.
+//! - names starting with `_wf_` (the engine's guards) are not defined or used, and `*=`/`<<=`
+//!   are spelt out (`x = x * n`), so every repetition and shift goes through the engine's size check;
+//! - nothing at the top level calls `agent`, `parallel`, `pipeline` or `workflow`;
+//! - every name the script uses exists (the engine resolves them without running anything).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,6 +20,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use starlark_syntax::codemap::CodeMap;
 use starlark_syntax::lexer::{Lexer, Token};
+use starlark_syntax::syntax::ast::{AstExpr, AstNoPayload, AstStmt, ClauseP, ExprP, StmtP};
+use starlark_syntax::syntax::module::AstModuleFields;
+use starlark_syntax::syntax::uniplate::Visit;
 
 /// One problem, with the line it is on when known (1-based).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,16 +126,10 @@ pub fn from_starlark(e: &starlark::Error) -> Diagnostic {
 /// Parses and checks `source`; the compile check of the top level is done by the engine
 /// ([`crate::engine::check`]), which calls this first.
 pub fn static_checks(filename: &str, source: &str) -> Result<Validated, Vec<Diagnostic>> {
-    if let Err(e) = starlark::syntax::AstModule::parse(filename, source.to_owned(), &dialect()) {
-        let mut d = from_starlark(&e);
-        let src_line = d.line.and_then(|l| source.lines().nth(l as usize - 1)).unwrap_or("");
-        if looks_like_js(src_line) || looks_like_js(source) {
-            d.message.push_str(
-                " (workflow scripts are Starlark, Python-like: `def main(args):`, `x = agent(\"...\")`, `[f(x) for x in xs]`, no `const`, `await`, `=>`, `{ }` blocks or `;`)",
-            );
-        }
-        return Err(vec![d]);
-    }
+    let ast = match starlark::syntax::AstModule::parse(filename, source.to_owned(), &dialect()) {
+        Ok(ast) => ast,
+        Err(e) => return Err(vec![parse_error(&e, source)]),
+    };
     let toks = lex(filename, source);
     let mut diags = Vec::new();
     let meta = match meta_literal(&toks, source) {
@@ -158,10 +158,24 @@ pub fn static_checks(filename: &str, source: &str) -> Result<Validated, Vec<Diag
     };
     diags.extend(recursion(&toks, source));
     diags.extend(late_binding(&toks, source));
+    diags.extend(reserved(&toks, source));
+    diags.extend(top_level_host_calls(source, ast.statement()));
     match meta {
         Some(meta) if diags.is_empty() => Ok(Validated { meta, main_params }),
         _ => Err(diags),
     }
+}
+
+/// A parse error, with a hint when the script looks like JavaScript.
+fn parse_error(e: &starlark::Error, source: &str) -> Diagnostic {
+    let mut d = from_starlark(e);
+    let src_line = d.line.and_then(|l| source.lines().nth((l as usize).saturating_sub(1))).unwrap_or("");
+    if looks_like_js(src_line) || looks_like_js(source) {
+        d.message.push_str(
+            " (workflow scripts are Starlark, Python-like: `def main(args):`, `x = agent(\"...\")`, `[f(x) for x in xs]`, no `const`, `await`, `=>`, `{ }` blocks or `;`)",
+        );
+    }
+    d
 }
 
 fn looks_like_js(s: &str) -> bool {
@@ -511,8 +525,202 @@ fn reads_unbound(toks: &[Tok], from: usize, to: usize, vars: &BTreeSet<String>, 
 
 fn late_binding_message(var: &str) -> String {
     format!(
-        "a lambda inside a loop reads the loop variable `{var}`; Starlark closures see its last value, so every call would get the same `{var}`. Bind it as a default (`lambda {var}={var}: agent(...)`) or use `pipeline(items, lambda prev, item, index: agent(...))`"
+        "a lambda inside a loop reads the loop variable `{var}` (set on every pass of the loop); Starlark closures see its last value, so every call would get the same `{var}`. Bind it as a default (`lambda {var}={var}: agent(...)`) or use `pipeline(items, lambda prev, item, index: agent(...))`"
     )
+}
+
+/// Assignment operators (`=` and the augmented ones).
+fn assigns(t: &Token) -> bool {
+    matches!(
+        t,
+        Token::Equal
+            | Token::PlusEqual
+            | Token::MinusEqual
+            | Token::StarEqual
+            | Token::SlashEqual
+            | Token::SlashSlashEqual
+            | Token::PercentEqual
+            | Token::AmpersandEqual
+            | Token::PipeEqual
+            | Token::CaretEqual
+            | Token::LessLessEqual
+            | Token::GreaterGreaterEqual
+    )
+}
+
+/// Names a loop body (tokens `from..to`) binds: assignment targets (`p = ...`, `n += 1`,
+/// `a, b = ...`) and nested `for` targets. Not names inside a nested `def`'s own body, and not
+/// subscript or attribute targets (`d[k] = ...` mutates, it does not rebind).
+fn block_bindings(toks: &[Tok], source: &str, from: usize, to: usize) -> BTreeSet<String> {
+    let defs: Vec<(usize, usize)> = (from..to)
+        .filter(|&k| matches!(toks[k].tok, Token::Def))
+        .filter_map(|k| bodies(&toks[k..to], source).into_iter().next().map(|b| (k + b.from, k + b.to)))
+        .collect();
+    let mut out = BTreeSet::new();
+    for k in from..to {
+        if !starts_statement(toks, k) || defs.iter().any(|(a, b)| (*a..*b).contains(&k)) {
+            continue;
+        }
+        if matches!(toks[k].tok, Token::For) {
+            out.extend(loop_targets(toks, k).0);
+            continue;
+        }
+        let base = toks[k].depth;
+        let mut j = k;
+        let mut eq = None;
+        while j < to && !(toks[j].depth == base && matches!(toks[j].tok, Token::Newline)) {
+            if toks[j].depth == base && assigns(&toks[j].tok) {
+                eq = Some(j);
+                break;
+            }
+            j += 1;
+        }
+        let Some(eq) = eq else { continue };
+        let mut square = 0usize;
+        for i in k..eq {
+            match toks[i].tok {
+                Token::OpeningSquare => square += 1,
+                Token::ClosingSquare => square = square.saturating_sub(1),
+                _ => {}
+            }
+            let Some(id) = ident(&toks[i].tok) else { continue };
+            let attr = i > 0 && matches!(toks[i - 1].tok, Token::Dot);
+            let target_of = toks.get(i + 1).is_some_and(|t| matches!(t.tok, Token::OpeningSquare | Token::Dot));
+            if square == 0 && !attr && !target_of {
+                out.insert(id.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// The engine's guard names, and the augmented forms of the size-checked operators.
+fn reserved(toks: &[Tok], source: &str) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for t in toks {
+        let line = Some(line_of(source, t.start));
+        match &t.tok {
+            Token::Identifier(s) if s.starts_with(GUARD_PREFIX) => {
+                out.push(Diagnostic::new(line, format!("`{s}`: names starting with `{GUARD_PREFIX}` are reserved for the engine")));
+            }
+            Token::StarEqual => out.push(Diagnostic::new(line, "write `x = x * n`: `*=` is not available in workflow scripts")),
+            Token::LessLessEqual => out.push(Diagnostic::new(line, "write `x = x << n`: `<<=` is not available in workflow scripts")),
+            _ => {}
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------- guards
+
+/// Names the engine's guards are bound to in a script's globals.
+pub const GUARD_PREFIX: &str = "_wf_";
+/// Wraps an expression evaluated once per comprehension iteration or lambda call: counts it and
+/// checks the pass's limits.
+pub const TICK: &str = "_wf_tick";
+
+/// Byte ranges evaluated once per iteration that no statement marks: each comprehension's element
+/// (a dict comprehension's key), its `if` conditions and inner `for` iterables, and every lambda's
+/// body (a lambda runs no statement either, and `map`, `filter`, `sorted(key=...)` loop over one).
+fn tick_spans(v: Visit<'_, AstNoPayload>, out: &mut Vec<(usize, usize)>) {
+    let span = |x: &AstExpr| (x.span.begin().get() as usize, x.span.end().get() as usize);
+    if let Visit::Expr(e) = &v {
+        let clauses = match &e.node {
+            ExprP::Lambda(l) => {
+                out.push(span(&l.body));
+                None
+            }
+            ExprP::ListComprehension(elem, _, clauses) => {
+                out.push(span(elem));
+                Some(clauses)
+            }
+            ExprP::DictComprehension(kv, _, clauses) => {
+                out.push(span(&kv.0));
+                Some(clauses)
+            }
+            _ => None,
+        };
+        for c in clauses.into_iter().flatten() {
+            out.push(match c {
+                ClauseP::For(f) => span(&f.over),
+                ClauseP::If(cond) => span(cond),
+            });
+        }
+    }
+    v.visit_children(|c| tick_spans(c, out));
+}
+
+/// `source` with every comprehension iteration and lambda call made visible to the engine
+/// ([`tick_spans`] wrapped in [`TICK`]). Starlark's statement hook never sees those, so without
+/// this a comprehension or a `map` over a lambda could run without bound. Only text is inserted,
+/// never a newline, so line numbers stay the same. A source that does not parse is returned as it
+/// is (its parse error is reported from it).
+pub fn guarded_source(filename: &str, source: &str) -> String {
+    let Ok(ast) = starlark::syntax::AstModule::parse(filename, source.to_owned(), &dialect()) else {
+        return source.to_string();
+    };
+    let mut spans = Vec::new();
+    tick_spans(Visit::Stmt(ast.statement()), &mut spans);
+    // (offset, closing?, the other end). At one offset closings go first, then the widest opening.
+    let mut ins: Vec<(usize, bool, usize)> = Vec::with_capacity(spans.len() * 2);
+    for (b, e) in spans {
+        if b < e && e <= source.len() {
+            ins.push((b, false, e));
+            ins.push((e, true, b));
+        }
+    }
+    if ins.is_empty() {
+        return source.to_string();
+    }
+    ins.sort_by_key(|&(at, closing, other)| (at, !closing, if closing { 0 } else { usize::MAX - other }));
+    let mut out = String::with_capacity(source.len() + ins.len() * 10);
+    let mut at = 0;
+    for (pos, closing, _) in ins {
+        out.push_str(&source[at..pos]);
+        if closing {
+            out.push(')');
+        } else {
+            out.push_str(TICK);
+            out.push('(');
+        }
+        at = pos;
+    }
+    out.push_str(&source[at..]);
+    out
+}
+
+/// Host functions that only work while `main` runs.
+const HOST_CALLS: &[&str] = &["agent", "parallel", "pipeline", "workflow"];
+
+/// The host calls that need `main`, made directly at the top level: the top level is never run
+/// before approval, so this is where they are caught.
+fn top_level_host_calls(source: &str, stmt: &AstStmt) -> Vec<Diagnostic> {
+    fn walk(v: Visit<'_, AstNoPayload>, source: &str, out: &mut Vec<Diagnostic>) {
+        match &v {
+            // A function body or a lambda runs later, from wherever it is called.
+            Visit::Stmt(s) if matches!(s.node, StmtP::Def(_)) => return,
+            Visit::Expr(e) => match &e.node {
+                ExprP::Lambda(_) => return,
+                ExprP::Call(f, _) => {
+                    if let ExprP::Identifier(id) = &f.node {
+                        let name = id.node.ident.as_str();
+                        if HOST_CALLS.contains(&name) {
+                            out.push(Diagnostic::new(
+                                Some(line_of(source, e.span.begin().get() as usize)),
+                                format!("call {name}() from inside `def main(args):`, not at the top level of the script"),
+                            ));
+                        }
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        v.visit_children(|c| walk(c, source, out));
+    }
+    let mut out = Vec::new();
+    walk(Visit::Stmt(stmt), source, &mut out);
+    out
 }
 
 fn late_binding(toks: &[Tok], source: &str) -> Vec<Diagnostic> {
@@ -544,6 +752,9 @@ fn late_binding(toks: &[Tok], source: &str) -> Vec<Diagnostic> {
                     end += 1;
                 }
             }
+            // A name the body assigns is rebound every time round, exactly like the loop variable.
+            let mut vars = vars.clone();
+            vars.extend(block_bindings(toks, source, block_from, end));
             for k in block_from..end {
                 match toks[k].tok {
                     Token::Lambda => {

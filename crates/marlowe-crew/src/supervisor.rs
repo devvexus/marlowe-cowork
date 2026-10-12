@@ -936,6 +936,7 @@ impl Supervisor {
             MergeOutcome::MergeCommit { commit } => format!("merged: merge commit {}", short_sha(commit)),
             MergeOutcome::NothingToMerge => "nothing to merge; the worktree is removed".into(),
             MergeOutcome::ReportCopied { path } => format!("report saved to {}", path.display()),
+            MergeOutcome::Applied { files } => format!("applied to the working tree, uncommitted: {} file(s)", files.len()),
         });
         self.inner.save_detached(r)?;
         Ok(outcome)

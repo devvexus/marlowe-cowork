@@ -41,15 +41,20 @@ f-strings or arithmetic. The top level only defines constants and functions; age
 | `json.encode(x)`, `json.decode(s)` | JSON text |
 
 Limits: 1000 agents per run, 4096 items per `parallel`/`pipeline` call, at most 16 agents at once
-(fewer on a local model).
+(fewer on a local model). One pass of the script runs at most 5 million statements, comprehension
+iterations and lambda calls, for at most 120 s, and holds at most 256 MB; `range()` gives at most
+100000 numbers; `*` and `+` build at most 16 MB; a prompt is at most 1 MB; a `log` line is cut at 4000
+characters. The top level runs only once the run starts, never during the check.
 
 ## Rules the checker enforces
 
 - No `while`, no recursion: loop with `for i in range(n):` and `break`.
 - No clock, randomness, files, network or `load()`: agents do all the work.
 - No `try`/`except`: a failed agent returns `None`; check for it.
-- A lambda or nested `def` inside a loop or comprehension must not read the loop variable unbound:
-  write `[lambda f = f: agent(f) for f in files]`, or use `pipeline(files, lambda prev, f, i: agent(f))`.
+- A lambda or nested `def` inside a loop or comprehension must not read the loop variable, or a
+  variable the loop body sets, unbound: write `[lambda f = f: agent(f) for f in files]`,
+  `lambda p = p: agent(p)`, or use `pipeline(files, lambda prev, f, i: agent(f))`.
+- Write `x = x * n` and `x = x << n`: `*=` and `<<=` are not available. Names starting with `_wf_` are reserved.
 - Schemas: the root is `{"type": "object", ...}` and `required` names only declared properties.
   The subset understood: type, properties, required, items, enum, const, minimum/maximum,
   minLength/maxLength, minItems/maxItems, additionalProperties, anyOf, oneOf.

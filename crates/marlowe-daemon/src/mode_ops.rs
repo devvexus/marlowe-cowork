@@ -64,6 +64,19 @@ fn entry(core: &Arc<Core>, convo: &Conversation) -> Entry {
     e
 }
 
+/// `session`'s hook runner (built on first use, as a conversation's is): what a workflow run
+/// started outside a turn fires its SubagentStart/SubagentStop through.
+pub(crate) fn session_hooks(core: &Arc<Core>, session: &SessionId, workspace: Option<&Path>) -> Arc<HookRunner> {
+    let reg = registry(core);
+    let mut map = reg.sessions.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(e) = map.get(session) {
+        return e.runner.clone();
+    }
+    let e = build(core, &reg, session.clone(), workspace);
+    map.insert(session.clone(), e.clone());
+    e.runner
+}
+
 fn build(core: &Arc<Core>, reg: &Registry, session: SessionId, workspace: Option<&Path>) -> Entry {
     // The session's own scratch dir, not the whole temp dir (deletes there are outside).
     let name: String = session.0.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();

@@ -112,6 +112,94 @@ fn parity_wf2_workflow_is_the_conductors_only() {
     assert!(!names.contains(&"workflow".to_string()) && names.contains(&"report_findings".to_string()), "{names:?}");
     let conductor: Vec<String> = host(&home, &ws).specs().into_iter().map(|s| s.name).collect();
     assert!(conductor.contains(&"workflow".to_string()));
+    // A subagent the conductor spawns sees the conductor's host through its type's filter: never
+    // the workflow tool, whatever the type (CC gives subagents no Workflow tool either).
+    let conductor: Arc<dyn ToolHost> = Arc::new(host(&home, &ws));
+    for ty in marlowe_agent::subagent::builtin_types() {
+        let sub = marlowe_agent::subagent::FilteredTools::new(conductor.clone(), &ty);
+        assert!(!sub.admits("workflow"), "{} admits workflow", ty.name);
+        assert!(!sub.specs().iter().any(|s| s.name == "workflow"), "{} lists workflow", ty.name);
+    }
+}
+
+#[test]
+fn parity_wf4_a_waited_on_workflow_taints_the_conversation() {
+    let (home, ws) = (temp("home7"), temp("ws7"));
+    let t = host(&home, &ws);
+    // The returned value is built by agents that read the web and the repository.
+    assert!(t.taints(&req("workflow", json!({"name": "code-review", "background": false}))));
+    // In the background the result comes back through the relay, which carries its own taint.
+    assert!(!t.taints(&req("workflow", json!({"name": "code-review"}))));
+    assert!(!t.taints(&req("workflow", json!({"name": "code-review", "background": true}))));
+}
+
+/// The daemon's launch rule (`may_run`, then `trust_approved`) over the real resolver.
+struct BindingLauncher {
+    home: PathBuf,
+    ws: PathBuf,
+    ran: Mutex<Vec<String>>,
+}
+
+impl WorkflowLauncher for BindingLauncher {
+    fn launch(&self, req: LaunchRequest) -> Result<Launched, String> {
+        let roots = marlowe_workflow::service::roots(&self.home, Some(&self.ws), vec![]);
+        let p = marlowe_workflow::service::prepare(&roots, req.script.as_deref(), req.script_path.as_deref(), req.name.as_deref())?;
+        marlowe_workflow::service::may_run(&self.home, &p, req.approved_digest.as_deref())?;
+        self.ran.lock().unwrap().push(p.source.clone());
+        marlowe_workflow::service::trust_approved(&self.home, &p, req.approved_digest.as_deref()).unwrap();
+        Ok(Launched { run_id: "r1".into(), script_path: "wf.star".into(), name: p.name, meta: p.meta })
+    }
+
+    fn wait(&self, _run: &str, _cancel: &CancelToken) -> Waited {
+        Waited::Done { value: json!(null), tainted: false }
+    }
+}
+
+const OTHER: &str = "META = {\"name\": \"other\", \"description\": \"Something else\"}
+def main(args):
+    return agent(\"z\")
+";
+
+#[test]
+fn parity_wf1_the_launch_runs_the_approved_digest_or_nothing() {
+    let (home, ws) = (temp("home8"), temp("ws8"));
+    let t = host(&home, &ws);
+    let launcher = Arc::new(BindingLauncher { home: home.clone(), ws: ws.clone(), ran: Mutex::new(Vec::new()) });
+    let services = Services::new().with(Workflows(launcher.clone()));
+    let call = req("workflow", json!({"script_path": "wf.star"}));
+    let roots = marlowe_workflow::service::roots(&home, Some(&ws), vec![]);
+    let trusted = |src: &str| {
+        let p = marlowe_workflow::service::prepare(&roots, Some(src), None, None).unwrap();
+        marlowe_workflow::service::is_trusted(&home, &p)
+    };
+
+    // 1. A batch [write wf.star, workflow{script_path}]: the consequence finds no file (nothing to
+    //    approve), the write lands, and the launch refuses what nobody saw.
+    assert_eq!(t.consequence(&call), Consequence::Free);
+    std::fs::write(ws.join("wf.star"), SCRIPT).unwrap();
+    let out = t.call_scoped(&call, &cx(&ws, services.clone()));
+    assert!(out.is_error && out.content.contains("approve this version"), "{}", out.content);
+    assert!(launcher.ran.lock().unwrap().is_empty() && !trusted(SCRIPT));
+
+    // 2. The user approves the META of the file as it is; a write in the same batch replaces it.
+    assert!(matches!(t.consequence(&call), Consequence::Ask { .. }));
+    std::fs::write(ws.join("wf.star"), OTHER).unwrap();
+    let out = t.call_scoped(&call, &cx(&ws, services.clone()));
+    assert!(out.is_error, "{}", out.content);
+    assert!(launcher.ran.lock().unwrap().is_empty() && !trusted(OTHER) && !trusted(SCRIPT), "neither version is trusted");
+
+    // 3. Approved and unchanged: it runs, and that digest (only) is trusted from now on.
+    assert!(matches!(t.consequence(&call), Consequence::Ask { .. }));
+    let out = t.call_scoped(&call, &cx(&ws, services.clone()));
+    assert!(!out.is_error, "{}", out.content);
+    assert_eq!(launcher.ran.lock().unwrap().as_slice(), [OTHER.to_string()]);
+    assert!(trusted(OTHER) && !trusted(SCRIPT));
+    assert_eq!(t.consequence(&call), Consequence::Free);
+
+    // 4. A call that never went through the check has no approval at all.
+    std::fs::write(ws.join("wf.star"), SCRIPT).unwrap();
+    let out = t.call_scoped(&call, &cx(&ws, services));
+    assert!(out.is_error && launcher.ran.lock().unwrap().len() == 1, "{}", out.content);
 }
 
 #[test]

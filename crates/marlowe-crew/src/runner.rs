@@ -69,7 +69,8 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
                 None => card.sandbox,
             };
             inner.update(id, |r| r.current_action = Some("preparing the sandbox".into()));
-            Sandbox::create(&inner.home, id, run.workspace.as_deref(), want)?
+            // A workflow works on the checkout as it is, uncommitted changes included.
+            Sandbox::create_with(&inner.home, id, run.workspace.as_deref(), want, run.workflow.is_some())?
         }
     };
     inner.update(id, |r| r.sandbox = Some(sandbox.clone()));

@@ -11,11 +11,21 @@
 //!
 //! The same mechanism gives resume: a journal of finished calls seeds the results, so a resumed run
 //! replays to where the last one stopped without a model call.
+//!
+//! Every pass is bounded, so a script always ends and never exhausts the machine: statements,
+//! comprehension iterations and lambda calls share one count (neither of the last two runs a
+//! statement, so the source is rewritten to tick, [`validate::guarded_source`]); each tick checks
+//! the pass's heap ceiling and its time limit; `*`, `+` and `<<` go through a size check before
+//! they build anything; `range` is capped; a prompt and a log line have a size limit; and a panic
+//! inside the interpreter ends the run as an error. Nothing in a script runs before it is approved:
+//! [`check`] resolves every name without running a statement.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 use serde_json::Value as Json;
@@ -26,8 +36,8 @@ use starlark::environment::{Globals, GlobalsBuilder, LibraryExtension, Module};
 use starlark::eval::{BeforeStmtFuncDyn, Evaluator};
 use starlark::syntax::AstModule;
 use starlark::values::dict::AllocDict;
-use starlark::values::list::AllocList;
-use starlark::values::tuple::UnpackTuple;
+use starlark::values::list::{AllocList, ListRef};
+use starlark::values::tuple::{TupleRef, UnpackTuple};
 use starlark::values::{Heap, Value};
 
 use crate::host::{AgentCall, AgentHost, AgentOpts, AgentResult, AgentStatus, Completion, Control, Observer, WfEvent};
@@ -41,12 +51,30 @@ pub const MAX_AGENTS: u32 = 1000;
 pub const MAX_ITEMS: usize = 4096;
 /// At most this many concurrent agents, before the CPU and model-slot limits (WF2).
 pub const MAX_CONCURRENCY: usize = 16;
-/// Statements one pass of the script may execute (a loop bound: `for` over a huge range).
+/// Statements (and comprehension iterations and lambda calls) one pass of the script may execute.
 pub const MAX_STATEMENTS: u64 = 5_000_000;
+/// Bytes one pass's heap may hold.
+pub const MAX_HEAP_BYTES: usize = 256 << 20;
+/// How long one pass may run.
+pub const MAX_PASS_TIME: Duration = Duration::from_secs(120);
+/// The largest value `*` or `+` may build (string bytes, or 8 per list or tuple element).
+pub const MAX_VALUE_BYTES: u128 = 16 << 20;
+/// The longest prompt `agent()` takes (about 250k tokens, past any context window).
+pub const MAX_PROMPT_BYTES: usize = 1 << 20;
+/// The longest `log` line kept; longer ones are cut.
+const MAX_LOG_CHARS: usize = 4000;
+/// The most numbers `range()` gives.
+pub const MAX_RANGE: i64 = 100_000;
+/// The longest integer (in decimal digits) `*` and `<<` may work on.
+const MAX_INT_DIGITS: usize = 10_000;
+/// The largest shift `<<` takes.
+const MAX_SHIFT: i64 = 4096;
 /// Starlark call depth.
 const MAX_STACK: usize = 100;
 /// The message a waiting call unwinds the script with (never shown to the model).
 const WAITING: &str = "workflow: waiting for agents";
+/// What stops [`check`]'s pass once every name is resolved (never shown to the model).
+const COMPILED: &str = "workflow: compiled";
 
 /// The concurrency for this machine: `min(16, CPUs - 2, model slots)`, at least 1.
 pub fn default_concurrency(model_slots: usize) -> usize {
@@ -96,6 +124,8 @@ pub struct RunConfig {
     pub max_agents: u32,
     pub max_items: usize,
     pub max_statements: u64,
+    pub max_heap_bytes: usize,
+    pub max_pass_time: Duration,
     pub budget: Option<Arc<Budget>>,
     pub resume: Option<Resume>,
     pub resolver: Option<Arc<dyn ScriptResolver>>,
@@ -110,6 +140,8 @@ impl RunConfig {
             max_agents: MAX_AGENTS,
             max_items: MAX_ITEMS,
             max_statements: MAX_STATEMENTS,
+            max_heap_bytes: MAX_HEAP_BYTES,
+            max_pass_time: MAX_PASS_TIME,
             budget: None,
             resume: None,
             resolver: None,
@@ -196,11 +228,24 @@ struct Pass {
     in_main: bool,
     depth: u32,
     statements: u64,
+    started: Instant,
+    /// [`check`]: the module's names are resolved, then the first statement stops it.
+    compile_only: bool,
 }
 
 impl Pass {
     fn new() -> Pass {
-        Pass { frames: vec![Frame { prefix: String::new(), ops: 0, marks: 0 }], pending: false, fatal: None, phase: None, in_main: false, depth: 0, statements: 0 }
+        Pass {
+            frames: vec![Frame { prefix: String::new(), ops: 0, marks: 0 }],
+            pending: false,
+            fatal: None,
+            phase: None,
+            in_main: false,
+            depth: 0,
+            statements: 0,
+            started: Instant::now(),
+            compile_only: false,
+        }
     }
 
     fn next_op(&mut self) -> String {
@@ -265,6 +310,37 @@ impl Ctx {
                 anyhow::anyhow!(m)
             }
             Halt::Throw(m) => anyhow::anyhow!(m),
+        }
+    }
+
+    /// One statement, comprehension iteration or lambda call: counts it, then [`Ctx::limits`].
+    /// `Err` is fatal (the pass and the run end with it).
+    fn tick(&self, heap: &Heap) -> Result<(), String> {
+        {
+            let mut p = self.pass.borrow_mut();
+            p.statements += 1;
+            if p.statements > self.cfg.max_statements && p.fatal.is_none() {
+                p.fatal = Some(format!("the script ran more than {} statements in one pass; bound its loops", self.cfg.max_statements));
+            }
+        }
+        self.limits(heap)
+    }
+
+    /// The pass's heap ceiling and time limit (and [`check`]'s stop before the first statement).
+    fn limits(&self, heap: &Heap) -> Result<(), String> {
+        let mut p = self.pass.borrow_mut();
+        if p.fatal.is_none() {
+            if p.compile_only {
+                p.fatal = Some(COMPILED.into());
+            } else if heap.allocated_bytes() > self.cfg.max_heap_bytes {
+                p.fatal = Some(format!("the script holds more than {} MB of values; keep only what it needs", self.cfg.max_heap_bytes >> 20));
+            } else if p.statements % 256 == 0 && p.started.elapsed() > self.cfg.max_pass_time {
+                p.fatal = Some(format!("one pass of the script ran longer than {} s; bound its loops", self.cfg.max_pass_time.as_secs()));
+            }
+        }
+        match &p.fatal {
+            Some(f) => Err(f.clone()),
+            None => Ok(()),
         }
     }
 
@@ -397,21 +473,178 @@ fn arity(v: Value) -> Option<usize> {
 
 // ---------------------------------------------------------------- the host API
 
-/// Counts statements and stops a pass that runs away.
+/// Counts statements and stops a pass that runs away or fills its heap.
 struct StmtGuard;
 
 impl<'a, 'e: 'a> BeforeStmtFuncDyn<'a, 'e> for StmtGuard {
     fn call<'v>(&mut self, _span: FileSpanRef, eval: &mut Evaluator<'v, 'a, 'e>) -> starlark::Result<()> {
-        let c = ctx(eval);
-        let mut p = c.pass.borrow_mut();
-        p.statements += 1;
-        if p.statements > c.cfg.max_statements {
-            let m = format!("the script ran more than {} statements in one pass; bound its loops", c.cfg.max_statements);
-            p.fatal.get_or_insert(m.clone());
-            return Err(starlark::Error::new_other(anyhow::anyhow!(m)));
-        }
-        Ok(())
+        ctx(eval).tick(eval.heap()).map_err(|m| starlark::Error::new_other(anyhow::anyhow!(m)))
     }
+}
+
+/// Bytes a sequence `*` would repeat: string bytes, 8 per list or tuple element.
+fn seq_units(v: Value) -> Option<u128> {
+    if let Some(s) = v.unpack_str() {
+        return Some(s.len() as u128);
+    }
+    if let Some(l) = ListRef::from_value(v) {
+        return Some(l.len() as u128 * 8);
+    }
+    TupleRef::from_value(v).map(|t| t.len() as u128 * 8)
+}
+
+/// `Some(Ok(n))` for an int that fits 32 bits, `Some(Err(digits))` for a bigger one, `None` for
+/// anything else.
+fn int_of(v: Value) -> Option<Result<i64, usize>> {
+    if v.get_type() != "int" {
+        return None;
+    }
+    Some(match v.unpack_i32() {
+        Some(n) => Ok(n as i64),
+        None => Err(v.to_repr().len()),
+    })
+}
+
+/// Whether `a * b` stays within the limits, before anything is built.
+fn mul_fits<'v>(a: Value<'v>, b: Value<'v>) -> Result<(), String> {
+    for (x, y) in [(a, b), (b, a)] {
+        if let (Some(units), Some(n)) = (seq_units(x), int_of(y)) {
+            let n = match n {
+                Ok(n) => n.max(0) as u128,
+                Err(_) => u128::MAX,
+            };
+            if units.saturating_mul(n) > MAX_VALUE_BYTES {
+                return Err(too_big("*", x, units.saturating_mul(n)));
+            }
+        }
+    }
+    if let (Some(x), Some(y)) = (int_of(a), int_of(b)) {
+        let digits = |r: Result<i64, usize>| r.map(|n| n.unsigned_abs().to_string().len()).unwrap_or_else(|d| d);
+        if digits(x) + digits(y) > MAX_INT_DIGITS {
+            return Err(format!("`*` would build an integer of more than {MAX_INT_DIGITS} digits"));
+        }
+    }
+    Ok(())
+}
+
+/// The error for an operation that would build a value over [`MAX_VALUE_BYTES`].
+fn too_big(op: &str, v: Value, bytes: u128) -> String {
+    format!("`{op}` would build a {} of about {} MB; values in a workflow stay under {} MB", v.get_type(), bytes >> 20, MAX_VALUE_BYTES >> 20)
+}
+
+/// Whether `a + b` stays within the limits: two strings, lists or tuples joined.
+fn add_fits<'v>(a: Value<'v>, b: Value<'v>) -> Result<(), String> {
+    if a.get_type() != b.get_type() {
+        return Ok(());
+    }
+    if let (Some(x), Some(y)) = (seq_units(a), seq_units(b)) {
+        if x + y > MAX_VALUE_BYTES {
+            return Err(too_big("+", a, x + y));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `a << b` stays within the limits.
+fn shl_fits(a: Value, b: Value) -> Result<(), String> {
+    match int_of(b) {
+        Some(Ok(n)) if n <= MAX_SHIFT => {}
+        Some(_) => return Err(format!("`<<` shifts by at most {MAX_SHIFT} bits in a workflow")),
+        None => return Ok(()),
+    }
+    match int_of(a) {
+        Some(Err(d)) if d > MAX_INT_DIGITS => Err(format!("`<<` on an integer of more than {MAX_INT_DIGITS} digits")),
+        _ => Ok(()),
+    }
+}
+
+/// The engine's guards and the capped `range` (bound over the standard library's).
+#[starlark::starlark_module]
+fn guard_api(builder: &mut GlobalsBuilder) {
+    /// One comprehension iteration (inserted by the engine): counted like a statement.
+    fn _wf_tick<'v>(#[starlark(require = pos)] x: Value<'v>, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<Value<'v>> {
+        let c = ctx(eval);
+        c.tick(eval.heap()).map_err(|m| c.halt(Halt::Fatal(m)))?;
+        Ok(x)
+    }
+
+    /// `a + b`, size-checked first.
+    fn _wf_add<'v>(
+        #[starlark(require = pos)] a: Value<'v>,
+        #[starlark(require = pos)] b: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let c = ctx(eval);
+        c.limits(eval.heap()).and_then(|_| add_fits(a, b)).map_err(|m| c.halt(Halt::Fatal(m)))?;
+        a.add(b, eval.heap()).map_err(|e| e.into_anyhow())
+    }
+
+    /// `a * b`, size-checked first.
+    fn _wf_mul<'v>(
+        #[starlark(require = pos)] a: Value<'v>,
+        #[starlark(require = pos)] b: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let c = ctx(eval);
+        c.limits(eval.heap()).and_then(|_| mul_fits(a, b)).map_err(|m| c.halt(Halt::Fatal(m)))?;
+        a.mul(b, eval.heap()).map_err(|e| e.into_anyhow())
+    }
+
+    /// `a << b`, size-checked first.
+    fn _wf_shl<'v>(
+        #[starlark(require = pos)] a: Value<'v>,
+        #[starlark(require = pos)] b: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let c = ctx(eval);
+        c.limits(eval.heap()).and_then(|_| shl_fits(a, b)).map_err(|m| c.halt(Halt::Fatal(m)))?;
+        a.left_shift(b, eval.heap()).map_err(|e| e.into_anyhow())
+    }
+
+    /// `range(stop)`, `range(start, stop)`, `range(start, stop, step)` as a list, at most
+    /// 100000 numbers.
+    fn range<'v>(
+        #[starlark(require = pos)] a: i32,
+        #[starlark(require = pos)] b: Option<i32>,
+        #[starlark(require = pos)] step: Option<i32>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let (start, stop) = match b {
+            Some(b) => (a as i64, b as i64),
+            None => (0, a as i64),
+        };
+        let step = step.unwrap_or(1) as i64;
+        if step == 0 {
+            return Err(anyhow::anyhow!("range() step must not be zero"));
+        }
+        let n = if step > 0 {
+            if stop > start { (stop - start + step - 1) / step } else { 0 }
+        } else if start > stop {
+            (start - stop - step - 1) / -step
+        } else {
+            0
+        };
+        if n > MAX_RANGE {
+            let c = ctx(eval);
+            return Err(c.halt(Halt::Fatal(format!("range() gives at most {MAX_RANGE} numbers in a workflow; this one would give {n}"))));
+        }
+        let heap = eval.heap();
+        Ok(heap.alloc(AllocList((0..n).map(|i| heap.alloc(start + i * step)).collect::<Vec<_>>())))
+    }
+}
+
+/// Parses a script for running: the comprehension and lambda ticks inserted, and `*`, `+` and `<<`
+/// through the size-checked guards.
+fn parse_guarded(filename: &str, source: &str) -> starlark::Result<AstModule> {
+    let mut ast = AstModule::parse(filename, validate::guarded_source(filename, source), &validate::dialect())?;
+    let ops: HashMap<String, String> = [("*", "_wf_mul"), ("+", "_wf_add"), ("<<", "_wf_shl")].into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+    ast.replace_binary_operators(&ops);
+    Ok(ast)
+}
+
+/// A panic's message.
+fn panic_text(p: &Box<dyn std::any::Any + Send>) -> String {
+    p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into())
 }
 
 fn opt_str(v: Option<Value>, what: &str) -> anyhow::Result<Option<String>> {
@@ -420,6 +653,32 @@ fn opt_str(v: Option<Value>, what: &str) -> anyhow::Result<Option<String>> {
         Some(v) if v.is_none() => Ok(None),
         Some(v) => v.unpack_str().map(|s| Some(s.to_string())).ok_or_else(|| anyhow::anyhow!("agent({what}=...) takes a string")),
     }
+}
+
+/// A `log` line: the parts joined by spaces, cut at [`MAX_LOG_CHARS`].
+fn log_line(parts: &[Value]) -> String {
+    let mut line = String::new();
+    for (i, p) in parts.iter().enumerate() {
+        if i > 0 {
+            line.push(' ');
+        }
+        match p.unpack_str() {
+            Some(s) => line.push_str(s),
+            None => line.push_str(&p.to_str()),
+        }
+        if line.len() > MAX_LOG_CHARS {
+            break;
+        }
+    }
+    if line.len() > MAX_LOG_CHARS {
+        let mut end = MAX_LOG_CHARS;
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        line.truncate(end);
+        line.push_str(" [...]");
+    }
+    line
 }
 
 #[starlark::starlark_module]
@@ -445,6 +704,13 @@ fn host_api(builder: &mut GlobalsBuilder) {
             .to_string();
         if prompt.trim().is_empty() {
             return Err(anyhow::anyhow!("agent(prompt): the prompt is empty"));
+        }
+        if prompt.len() > MAX_PROMPT_BYTES {
+            return Err(anyhow::anyhow!(
+                "agent(prompt): the prompt is {} KB; keep it under {} KB (pass a summary or a file path, not whole results)",
+                prompt.len() >> 10,
+                MAX_PROMPT_BYTES >> 10
+            ));
         }
         let schema = match schema {
             Some(s) if !s.is_none() => {
@@ -490,6 +756,7 @@ fn host_api(builder: &mut GlobalsBuilder) {
         let items: Vec<Value<'v>> = thunks
             .iterate(eval.heap())
             .map_err(|_| anyhow::anyhow!("parallel() takes a list of functions: parallel([lambda: agent(...), ...])"))?
+            .take(c.cfg.max_items + 1)
             .collect();
         if items.len() > c.cfg.max_items {
             return Err(anyhow::anyhow!("parallel() takes at most {} items", c.cfg.max_items));
@@ -509,8 +776,14 @@ fn host_api(builder: &mut GlobalsBuilder) {
             c.pass.borrow_mut().push(format!("{id}.{i}/"));
             let r = eval.eval_function(t, &[], &[]);
             let pending = std::mem::take(&mut c.pass.borrow_mut().pending);
+            let fatal = c.pass.borrow().fatal.clone();
+            // The failure line is marked in the item's own frame, so its id names the item
+            // whatever else failed on this pass.
+            if let (Err(e), false, None) = (&r, pending, &fatal) {
+                c.emit_mark('E', WfEvent::Log(format!("parallel item {i} failed: {}", validate::from_starlark(e))));
+            }
             c.pass.borrow_mut().pop();
-            if let Some(f) = c.pass.borrow().fatal.clone() {
+            if let Some(f) = fatal {
                 return Err(anyhow::anyhow!(f));
             }
             match r {
@@ -519,10 +792,7 @@ fn host_api(builder: &mut GlobalsBuilder) {
                     out.push(Value::new_none());
                 }
                 Ok(v) => out.push(v),
-                Err(e) => {
-                    c.emit_mark('E', WfEvent::Log(format!("parallel item {i} failed: {}", validate::from_starlark(&e))));
-                    out.push(Value::new_none());
-                }
+                Err(_) => out.push(Value::new_none()),
             }
         }
         if waiting {
@@ -543,8 +813,11 @@ fn host_api(builder: &mut GlobalsBuilder) {
         let c = ctx(eval);
         c.require_main("pipeline")?;
         let stages = stages.items;
-        let items: Vec<Value<'v>> =
-            items.iterate(eval.heap()).map_err(|_| anyhow::anyhow!("pipeline(items, stage, ...): items is a list"))?.collect();
+        let items: Vec<Value<'v>> = items
+            .iterate(eval.heap())
+            .map_err(|_| anyhow::anyhow!("pipeline(items, stage, ...): items is a list"))?
+            .take(c.cfg.max_items + 1)
+            .collect();
         if items.len() > c.cfg.max_items {
             return Err(anyhow::anyhow!("pipeline() takes at most {} items", c.cfg.max_items));
         }
@@ -568,8 +841,12 @@ fn host_api(builder: &mut GlobalsBuilder) {
                 let n = arities[s].min(3);
                 let r = eval.eval_function(*stage, &all[..n], &[]);
                 let pending = std::mem::take(&mut c.pass.borrow_mut().pending);
+                let fatal = c.pass.borrow().fatal.clone();
+                if let (Err(e), false, None) = (&r, pending, &fatal) {
+                    c.emit_mark('E', WfEvent::Log(format!("pipeline item {i} stage {s} failed: {}", validate::from_starlark(e))));
+                }
                 c.pass.borrow_mut().pop();
-                if let Some(f) = c.pass.borrow().fatal.clone() {
+                if let Some(f) = fatal {
                     return Err(anyhow::anyhow!(f));
                 }
                 if pending {
@@ -579,8 +856,7 @@ fn host_api(builder: &mut GlobalsBuilder) {
                 }
                 match r {
                     Ok(v) => prev = v,
-                    Err(e) => {
-                        c.emit_mark('E', WfEvent::Log(format!("pipeline item {i} stage {s} failed: {}", validate::from_starlark(&e))));
+                    Err(_) => {
                         finished = false;
                         break;
                     }
@@ -607,15 +883,13 @@ fn host_api(builder: &mut GlobalsBuilder) {
 
     /// A progress line for the user (shown in the workflow view, kept in the journal).
     fn log<'v>(#[starlark(args)] parts: UnpackTuple<Value<'v>>, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<starlark::values::none::NoneType> {
-        let line = parts.items.iter().map(|p| p.unpack_str().map(str::to_string).unwrap_or_else(|| p.to_str())).collect::<Vec<_>>().join(" ");
-        ctx(eval).emit_mark('L', WfEvent::Log(line));
+        ctx(eval).emit_mark('L', WfEvent::Log(log_line(&parts.items)));
         Ok(starlark::values::none::NoneType)
     }
 
     /// The same as `log`.
     fn print<'v>(#[starlark(args)] parts: UnpackTuple<Value<'v>>, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<starlark::values::none::NoneType> {
-        let line = parts.items.iter().map(|p| p.unpack_str().map(str::to_string).unwrap_or_else(|| p.to_str())).collect::<Vec<_>>().join(" ");
-        ctx(eval).emit_mark('L', WfEvent::Log(line));
+        ctx(eval).emit_mark('L', WfEvent::Log(log_line(&parts.items)));
         Ok(starlark::values::none::NoneType)
     }
 
@@ -705,7 +979,7 @@ enum ChildErr {
 fn run_child(c: &Ctx, filename: &str, source: &str, args: &Json) -> Result<Json, ChildErr> {
     let globals = globals(&c.cfg);
     let module = Module::new();
-    let ast = AstModule::parse(filename, source.to_owned(), &validate::dialect()).map_err(|e| ChildErr::Throw(e.to_string()))?;
+    let ast = parse_guarded(filename, source).map_err(|e| ChildErr::Throw(e.to_string()))?;
     let args_v = to_value(module.heap(), args);
     module.set("args", args_v);
     let mut eval = Evaluator::new(&module);
@@ -740,6 +1014,7 @@ fn globals(cfg: &RunConfig) -> Globals {
     let total = cfg.budget.as_ref().and_then(|b| b.total);
     GlobalsBuilder::extended_by(&[LibraryExtension::Json, LibraryExtension::StructType, LibraryExtension::Map, LibraryExtension::Filter])
         .with(host_api)
+        .with(guard_api)
         .with_namespace("budget", move |b| {
             budget_api(b);
             match total {
@@ -759,9 +1034,17 @@ enum PassEnd {
     Failed(Diagnostic),
 }
 
-fn one_pass(ctx: &Ctx, source: &str, globals: &Globals, validation: bool) -> PassEnd {
-    *ctx.pass.borrow_mut() = Pass::new();
-    let ast = match AstModule::parse(&ctx.cfg.filename, source.to_owned(), &validate::dialect()) {
+/// One pass; a panic inside the interpreter (a size it asserts on) ends it as a fatal error.
+fn one_pass(ctx: &Ctx, source: &str, globals: &Globals, compile_only: bool) -> PassEnd {
+    match catch_unwind(AssertUnwindSafe(|| pass_inner(ctx, source, globals, compile_only))) {
+        Ok(end) => end,
+        Err(p) => PassEnd::Fatal(format!("the script stopped the interpreter: {}", panic_text(&p))),
+    }
+}
+
+fn pass_inner(ctx: &Ctx, source: &str, globals: &Globals, compile_only: bool) -> PassEnd {
+    *ctx.pass.borrow_mut() = Pass { compile_only, ..Pass::new() };
+    let ast = match parse_guarded(&ctx.cfg.filename, source) {
         Ok(a) => a,
         Err(e) => return PassEnd::Failed(validate::from_starlark(&e)),
     };
@@ -776,7 +1059,7 @@ fn one_pass(ctx: &Ctx, source: &str, globals: &Globals, validation: bool) -> Pas
     if let Err(e) = eval.eval_module(ast, globals) {
         return end_of(ctx, Err(e));
     }
-    if validation {
+    if compile_only {
         return PassEnd::Done(Json::Null);
     }
     let Some(main) = module.get("main") else {
@@ -805,14 +1088,17 @@ fn end_of(ctx: &Ctx, r: starlark::Result<Value>) -> PassEnd {
     }
 }
 
-/// Validates `source` completely before anything runs: the static checks, then a pass over the
-/// top level (every name it uses exists, nothing at the top level calls an agent).
+/// Validates `source` completely before anything runs: the static checks, then the module is
+/// compiled, which resolves every name it uses (a misspelt name is an error here). Nothing in the
+/// script runs: this is called before approval, on the conductor's thread, so the first statement
+/// stops the pass.
 pub fn check(filename: &str, source: &str) -> Result<Validated, Vec<Diagnostic>> {
     let v = validate::static_checks(filename, source)?;
-    let cfg = RunConfig::new(filename, Json::Null);
+    let cfg = RunConfig::new(filename, Json::Object(Default::default()));
     let ctx = Ctx { st: RefCell::new(State::default()), pass: RefCell::new(Pass::new()), cfg };
     match one_pass(&ctx, source, &globals(&ctx.cfg), true) {
         PassEnd::Done(_) => Ok(v),
+        PassEnd::Fatal(m) if m == COMPILED => Ok(v),
         PassEnd::Failed(d) => Err(vec![d]),
         PassEnd::Fatal(m) => Err(vec![Diagnostic::new(None, m)]),
         PassEnd::Waiting => Err(vec![Diagnostic::new(None, "the top level of the script must not wait on agents")]),

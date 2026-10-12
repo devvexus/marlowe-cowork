@@ -5,10 +5,15 @@
 //! the daemon's [`marlowe_workflow::Workflows`] service as a durable crew run, and returns the run
 //! id at once (non-negotiable 4); `background:false` waits for the result, and Esc detaches. The
 //! first run of a script digest asks, showing its META; built-ins and approved digests are free.
+//! The launch is bound to the digest the consequence saw: a script that changed in between (a
+//! write earlier in the same batch) is refused, never run or trusted unseen. A waited-on run's
+//! value is agent output, so `background:false` taints the conversation.
 //! `structured_output` is not in this table: the crew adds it to a workflow agent with a schema.
 //! `report_findings` is offered everywhere, crew agents included.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use marlowe_agent::{CallCtx, Consequence, Effects, ToolCallReq, ToolGroup, ToolOutcome};
 use marlowe_workflow::service::{self, LaunchRequest, Waited};
@@ -23,6 +28,20 @@ use crate::BuiltinTools;
 pub struct WorkflowGroup {
     pub home: Option<PathBuf>,
     pub conductor: bool,
+    /// The digest each pending call's consequence checked, by [`call_key`]: the launch runs that
+    /// script or nothing.
+    approved: Mutex<HashMap<String, String>>,
+}
+
+impl WorkflowGroup {
+    fn new(home: &Path, conductor: bool) -> WorkflowGroup {
+        WorkflowGroup { home: Some(home.to_path_buf()), conductor, approved: Mutex::default() }
+    }
+}
+
+/// What a call names, as the key the consequence and the call share.
+fn call_key(a: &Value) -> String {
+    json!([script(a), s(a, "script_path"), s(a, "name")]).to_string()
 }
 
 /// Longest result a waited-on workflow puts in the tool result (the journal has it whole).
@@ -115,6 +134,7 @@ fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
         background,
         resume_from: s(a, "resume_from").map(str::to_string),
         tainted: cx.tainted,
+        approved_digest: group(t).approved.lock().unwrap_or_else(|e| e.into_inner()).remove(&call_key(a)),
     };
     let launched = match launcher.launch(req) {
         Ok(l) => l,
@@ -132,7 +152,10 @@ fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
         );
     }
     match launcher.wait(&launched.run_id, &cx.cancel) {
-        Waited::Done { value, .. } => {
+        Waited::Done { value, tainted } => {
+            if tainted {
+                cx.scope.with_ext(|e| e.insert(marlowe_agent::subagent::ReportTainted));
+            }
             let text = serde_json::to_string_pretty(&value).unwrap_or_default();
             let shown = if text.len() > RESULT_CHARS {
                 let mut end = RESULT_CHARS;
@@ -162,11 +185,23 @@ fn workflow_consequence(t: &BuiltinTools, c: &ToolCallReq) -> Consequence {
     let (Some(home), Some(roots)) = (g.home.as_deref(), roots(t, None)) else {
         return Consequence::Ask { summary: "run a workflow".into() };
     };
+    let key = call_key(a);
+    let mut approved = g.approved.lock().unwrap_or_else(|e| e.into_inner());
     match service::prepare(&roots, script(a), s(a, "script_path"), s(a, "name")) {
-        // Nothing will run: the call returns the errors.
-        Err(_) => Consequence::Free,
-        Ok(p) if service::is_trusted(home, &p) => Consequence::Free,
-        Ok(p) => Consequence::Ask { summary: service::approval_summary(&p) },
+        // Nothing will run: the call returns the errors. A script that appears by the time the
+        // call runs (a write in the same batch) has no approved digest, so the launch refuses it.
+        Err(_) => {
+            approved.remove(&key);
+            Consequence::Free
+        }
+        Ok(p) => {
+            approved.insert(key, p.digest.clone());
+            if service::is_trusted(home, &p) {
+                Consequence::Free
+            } else {
+                Consequence::Ask { summary: service::approval_summary(&p) }
+            }
+        }
     }
 }
 
@@ -208,6 +243,8 @@ pub fn tools() -> Vec<ToolDef> {
     vec![
         ToolDef::new(workflow_spec(), ToolGroup::Workflow, Effects::RUN, workflow_call)
             .consequence(|t, c, _| workflow_consequence(t, c))
+            // A waited-on run puts agent output (web pages, repository text) into the result.
+            .taints(|_, c| c.args.get("background").and_then(Value::as_bool) == Some(false))
             .describe(describe_workflow)
             .enabled(|t| group(t).conductor),
         ToolDef::new(report_findings_spec(), ToolGroup::Workflow, Effects::NONE, report_findings_call)
@@ -233,13 +270,13 @@ pub fn persona_block() -> Option<&'static str> {
 
 /// The conductor's hosts: `workflow` is live and findings are stored under the profile home.
 pub fn configure(tools: crate::BuiltinTools, setup: &super::HostSetup<'_>) -> crate::BuiltinTools {
-    tools.with_state(WorkflowGroup { home: Some(setup.home.to_path_buf()), conductor: true })
+    tools.with_state(WorkflowGroup::new(setup.home, true))
 }
 
 /// A crew host: `report_findings` stores under the profile home; no `workflow` (agents never
 /// start workflows, WF2).
 pub fn crew_configure(tools: crate::BuiltinTools, setup: &super::HostSetup<'_>) -> crate::BuiltinTools {
-    tools.with_state(WorkflowGroup { home: Some(setup.home.to_path_buf()), conductor: false })
+    tools.with_state(WorkflowGroup::new(setup.home, false))
 }
 
 /// Whether a local model gets this group in `root`: every workspace (on a 32k context the tool is

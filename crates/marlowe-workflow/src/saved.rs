@@ -246,15 +246,31 @@ pub fn index(list: &[SavedWorkflow], budget: usize) -> String {
     out
 }
 
+/// A child a running workflow starts with `workflow(name)`: a saved name, or a `.star` path (a
+/// relative one is in the workspace). The parent's approval showed only the parent, so a child runs
+/// only when it is built in or its digest was approved on its own.
 impl crate::engine::ScriptResolver for Roots {
     fn resolve(&self, name_or_path: &str) -> Result<(String, String), String> {
         let p = Path::new(name_or_path);
-        if name_or_path.ends_with(".star") && (p.is_absolute() || name_or_path.contains(['/', '\\'])) {
-            let s = std::fs::read_to_string(p).map_err(|e| format!("cannot read {}: {e}", p.display()))?;
-            let file = p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| name_or_path.to_string());
-            return Ok((file, s));
+        let (file, source, builtin) = if name_or_path.ends_with(".star") && (p.is_absolute() || name_or_path.contains(['/', '\\'])) {
+            if !p.is_absolute() && self.workspaces.is_empty() {
+                return Err(format!("{name_or_path} is a relative path and this run has no workspace; give a saved name or an absolute path"));
+            }
+            let path = crate::service::resolve_path(self, name_or_path);
+            let s = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| name_or_path.to_string());
+            (file, s, false)
+        } else {
+            let f = Roots::resolve(self, name_or_path)?;
+            let builtin = matches!(f.origin, Origin::Builtin);
+            (f.filename(), f.source, builtin)
+        };
+        let approved = builtin || self.home.as_deref().is_some_and(|h| crate::service::digest_trusted(h, &crate::digest(&source)));
+        if !approved {
+            return Err(format!(
+                "{name_or_path} has not been approved to run (this version of it never ran on its own); start it once by itself to approve it, then run this workflow again"
+            ));
         }
-        let f = Roots::resolve(self, name_or_path)?;
-        Ok((f.filename(), f.source))
+        Ok((file, source))
     }
 }

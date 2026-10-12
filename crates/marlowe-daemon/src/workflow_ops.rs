@@ -8,7 +8,8 @@
 //!   and findings reach the bus through `crew.rs`, and its result reaches the session as a relay
 //!   (the same path as any crew run: an idle conductor starts a turn on it).
 //! - Hooks (X22): every workflow agent fires SubagentStart/SubagentStop with `agent_type:
-//!   "workflow"` through the session's hook runner.
+//!   "workflow"` through the session's hook runner, also for a run started from the TUI or resumed
+//!   after a restart ([`install_hooks`]).
 //! - Tasks (BG1-BG3): workflow runs are listed as `wf_<run>` tasks with their journal as the
 //!   output file, and `task_stop` stops them ([`on_boot`] adds the source).
 
@@ -48,6 +49,9 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
         Request::RunWorkflow { session, name, script_path, args, resume_from } => {
             let workspace = session.as_ref().and_then(|s| core.store.get(s).ok().flatten()).and_then(|s| s.workspace).map(PathBuf::from);
             let launcher = Launcher::new(core, session.clone(), None);
+            // The user asked for this run by name: what it resolves to now is what they approved.
+            let roots = service::roots(&core.home, workspace.as_deref(), Vec::new());
+            let approved_digest = service::prepare(&roots, None, script_path.as_deref(), name.as_deref()).ok().map(|p| p.digest);
             let req = LaunchRequest {
                 session,
                 workspace,
@@ -58,6 +62,7 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
                 background: true,
                 resume_from: resume_from.map(|r| r.0),
                 tainted: false,
+                approved_digest,
             };
             match launcher.launch(req) {
                 Ok(l) => match core.crew.get().and_then(|c| c.supervisor.get(&RunId(l.run_id.clone())).ok().flatten()) {
@@ -165,6 +170,20 @@ pub(crate) fn install_skill(home: &Path) {
     let _ = std::fs::write(&path, AUTHORING_SKILL);
 }
 
+/// Gives workflow runs under this home their session's hooks when none were set for them (a run
+/// started by RunWorkflow, or resumed in place after a restart). Called before the crew starts.
+pub(crate) fn install_hooks(core: &Arc<Core>) {
+    let weak = Arc::downgrade(core);
+    script::set_observer_factory(
+        &core.home,
+        Arc::new(move |_run: &RunId, session: Option<&SessionId>, workspace: Option<&Path>| {
+            let core = weak.upgrade()?;
+            let hooks = crate::mode_ops::session_hooks(&core, session?, workspace);
+            Some(Arc::new(HookObserver { hooks }) as Arc<dyn RunObserver>)
+        }),
+    );
+}
+
 // ---------------------------------------------------------------- the launcher
 
 struct Launcher {
@@ -197,6 +216,8 @@ impl WorkflowLauncher for Launcher {
         let link = core.crew.get().ok_or(NO_CREW)?;
         let roots = service::roots(&core.home, req.workspace.as_deref(), Vec::new());
         let prepared = service::prepare(&roots, req.script.as_deref(), req.script_path.as_deref(), req.name.as_deref())?;
+        // Bound to what the approval showed (WF1): a script that changed since runs nothing.
+        service::may_run(&core.home, &prepared, req.approved_digest.as_deref())?;
         let args = service::remembered_args(&core.home, req.workspace.as_deref(), &prepared.name, req.args.clone());
         let resumed_from = match req.resume_from.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
             None => None,
@@ -229,6 +250,10 @@ impl WorkflowLauncher for Launcher {
                 if let Some(h) = &self.hooks {
                     script::set_observer(run, Arc::new(HookObserver { hooks: h.clone() }));
                 }
+                if !req.background {
+                    // Before the run starts, so its end can never relay ahead of the waiter.
+                    crate::crew::wait_starts(&core, run);
+                }
                 Ok(WorkflowRef {
                     name: Some(prepared.name.clone()),
                     script_path: script_path.clone(),
@@ -239,30 +264,38 @@ impl WorkflowLauncher for Launcher {
                 })
             })
             .map_err(|e| e.to_string())?;
-        let _ = service::trust(&core.home, &prepared);
+        let _ = service::trust_approved(&core.home, &prepared, req.approved_digest.as_deref());
         Ok(Launched { run_id: receipt.run_id.0, script_path, name: prepared.name, meta: prepared.meta })
     }
 
     fn wait(&self, run: &str, cancel: &CancelToken) -> Waited {
         let Some(core) = self.core.upgrade() else { return Waited::Failed("the daemon is stopping".into()) };
-        let Some(link) = core.crew.get() else { return Waited::Failed(NO_CREW.into()) };
         let id = RunId(run.to_string());
-        loop {
-            if cancel.is_cancelled() {
-                return Waited::Detached;
-            }
-            match link.supervisor.get(&id) {
-                Ok(Some(info)) => {
-                    let finished = info.status.is_terminal() || (info.status == CrewRunStatus::NeedsYou && info.result.is_some());
-                    if finished {
-                        return outcome(&core.home, &info);
-                    }
-                }
-                Ok(None) => return Waited::Failed(format!("run {} is gone", id.short())),
-                Err(e) => return Waited::Failed(e.to_string()),
-            }
-            std::thread::sleep(Duration::from_millis(150));
+        let (waited, delivered) = wait_for(&core, &id, cancel);
+        // Exactly one delivery: the tool result, or (detached) the relay notice.
+        crate::crew::wait_ends(&core, &id, delivered);
+        waited
+    }
+}
+
+/// Polls the run until it ends or `cancel` fires; true when the run's end is what it returns.
+fn wait_for(core: &Arc<Core>, id: &RunId, cancel: &CancelToken) -> (Waited, bool) {
+    let Some(link) = core.crew.get() else { return (Waited::Failed(NO_CREW.into()), false) };
+    loop {
+        if cancel.is_cancelled() {
+            return (Waited::Detached, false);
         }
+        match link.supervisor.get(id) {
+            Ok(Some(info)) => {
+                let finished = info.status.is_terminal() || (info.status == CrewRunStatus::NeedsYou && info.result.is_some());
+                if finished {
+                    return (outcome(&core.home, &info), true);
+                }
+            }
+            Ok(None) => return (Waited::Failed(format!("run {} is gone", id.short())), false),
+            Err(e) => return (Waited::Failed(e.to_string()), false),
+        }
+        std::thread::sleep(Duration::from_millis(150));
     }
 }
 

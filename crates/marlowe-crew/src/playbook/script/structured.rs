@@ -1,6 +1,6 @@
 //! `structured_output` (WF3): the tool a workflow agent with a schema answers through. Its
 //! parameters are the schema; the call is validated here, at the tool layer, and a wrong answer
-//! gets the errors back to fix (at most [`MAX_ATTEMPTS`] tries). A valid answer is kept for the
+//! gets the errors back to fix (at most [`MAX_RETRIES`] retries). A valid answer is kept for the
 //! workflow; the agent's turn goes on to its natural end.
 
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -15,8 +15,9 @@ use serde_json::Value;
 
 /// The tool's name.
 pub const STRUCTURED_OUTPUT: &str = "structured_output";
-/// Invalid calls before the tool refuses more (the workflow then sees `None`).
-pub const MAX_ATTEMPTS: u32 = 3;
+/// Retries after an invalid call; the invalid call after the last retry is refused (the workflow
+/// then sees `None`).
+pub const MAX_RETRIES: u32 = 3;
 
 /// Where the valid answer lands.
 pub type Slot = Arc<Mutex<Option<Value>>>;
@@ -51,15 +52,15 @@ impl WithStructuredOutput {
             return ToolOutcome::ok("Recorded. That is your answer; end your turn now with a one-line summary.", "answer recorded");
         }
         let n = self.invalid.fetch_add(1, Ordering::SeqCst) + 1;
-        if n >= MAX_ATTEMPTS {
+        if n > MAX_RETRIES {
             return ToolOutcome::error(format!(
                 "The answer still does not match the schema ({}). No more attempts: end your turn.",
                 errors.join("; ")
             ));
         }
         ToolOutcome::error(format!(
-            "The answer does not match the schema; fix these and call structured_output again ({} of {MAX_ATTEMPTS} attempts left):\n- {}",
-            MAX_ATTEMPTS - n,
+            "The answer does not match the schema; fix these and call structured_output again ({} of {MAX_RETRIES} retries left):\n- {}",
+            MAX_RETRIES + 1 - n,
             errors.join("\n- ")
         ))
     }
