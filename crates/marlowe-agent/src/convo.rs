@@ -3,9 +3,10 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use marlowe_model::{Message, Part};
+use marlowe_model::{Message, Part, Role};
 use marlowe_proto::SessionId;
 
+use crate::middleware::Extensions;
 use crate::tools::{Exposure, ToolHost};
 
 /// The messages of one session plus loop bookkeeping.
@@ -23,6 +24,19 @@ pub struct Conversation {
     pub next_turn: u32,
     /// Untrusted reads and approved hosts; drives the approval gate.
     pub exposure: Exposure,
+    /// Per-session state owned by middleware and later tracks (one value per type).
+    pub ext: Extensions,
+    /// Context for the next user message that is not the user's words (hook output): [`push`]
+    /// attaches it to that message as parts of its own, after the text, so the model reads it
+    /// while the memory engine, given the user's text alone, never ingests it as theirs.
+    ///
+    /// [`push`]: Conversation::push
+    pub pending_context: Vec<String>,
+    /// Images attached to the next user message (pasted, dropped or `@img.png`, track H; stored
+    /// with `PutBlob`): [`push`] adds them to that message after its text.
+    ///
+    /// [`push`]: Conversation::push
+    pub pending_images: Vec<marlowe_model::ImageRef>,
 }
 
 impl Conversation {
@@ -36,6 +50,9 @@ impl Conversation {
             session_allows: HashSet::new(),
             next_turn: 0,
             exposure: Exposure::default(),
+            ext: Extensions::new(),
+            pending_context: Vec::new(),
+            pending_images: Vec::new(),
         }
     }
 
@@ -44,7 +61,14 @@ impl Conversation {
         Self { messages, next_turn, ..Self::new(session, workspace) }
     }
 
-    pub fn push(&mut self, m: Message) {
+    /// Appends `m`; a user message also takes the pending context ([`Conversation::pending_context`]).
+    pub fn push(&mut self, mut m: Message) {
+        if m.role == Role::User && !self.pending_images.is_empty() {
+            m.content.extend(self.pending_images.drain(..).map(Part::Image));
+        }
+        if m.role == Role::User && !self.pending_context.is_empty() {
+            m.content.extend(self.pending_context.drain(..).map(|text| Part::Text { text }));
+        }
         self.messages.push(m);
     }
 

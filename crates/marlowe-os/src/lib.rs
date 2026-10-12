@@ -11,11 +11,29 @@
 //! [`console::query`] asks the terminal a question (Device Attributes, background colour) and
 //! reads the reply, which on Windows needs virtual-terminal input switched on for the exchange.
 //!
+//! [`child`] is the one way the harness starts a child process: scrubbed environment (API keys
+//! only through a per-launch `env_allow`), Job Object, bounded runs. [`workspace`] is the
+//! filesystem-and-exec port the file, search and code tools go through ([`workspace::LocalFs`]
+//! here; `DockerExec` from track K), plus the [`workspace::WorktreeProvider`] seam the crew
+//! implements.
+//!
 //! Off Windows the types exist so dependents compile; jobs are unsupported there.
 
+/// Git Bash, never the WSL launcher: the one lookup every `bash` the harness runs goes through.
+pub mod bash;
+pub mod child;
 pub mod console;
-mod job;
+/// Job Object internals. Public as a module so B's additions are reachable as
+/// `marlowe_os::job::X` without editing this file. [`spawn_in_job`] and
+/// [`spawn_in_job_with_flags`] skip the credential scrub: harness code starts children through
+/// [`child`] (`tests/spawn_audit.rs` counts every direct call), and seam-crew makes them
+/// `pub(crate)` once the crew's last caller has moved.
+pub mod job;
+pub mod toast;
+pub mod tray;
+pub mod workspace;
 
+pub use child::{ChildProc, ChildSpec, Containment, RunLimits, RunOutput, SCRUBBED_ENV};
 pub use job::{spawn_in_job, spawn_in_job_with_flags, JobChild, JobObject};
 
 /// An OS wrapper failure.
@@ -28,6 +46,9 @@ pub enum OsError {
     Win32 { call: &'static str, code: u32 },
     #[error("{0} is not supported on this platform")]
     Unsupported(&'static str),
+    /// A launch tried to set a scrubbed credential variable it did not list in `env_allow`.
+    #[error("{0} is a credential variable; a launch passes it only by naming it in env_allow")]
+    EnvNotAllowed(String),
 }
 
 #[cfg(test)]

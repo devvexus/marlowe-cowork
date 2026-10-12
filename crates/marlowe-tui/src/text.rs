@@ -163,6 +163,15 @@ fn trim_point(v: f64, unit: &str) -> String {
     }
 }
 
+/// A byte count: `812 B`, `212 KB`, `3.4 MB`.
+pub fn bytes(n: u64) -> String {
+    match n {
+        0..=1_023 => format!("{n} B"),
+        1_024..=1_048_575 => format!("{} KB", n / 1_024),
+        _ => format!("{:.1} MB", n as f64 / 1_048_576.0),
+    }
+}
+
 /// A price per million tokens: `$3`, `$0.15`, `free`.
 pub fn price(v: f64) -> String {
     if v <= 0.0 {

@@ -277,6 +277,7 @@ fn approvals_take_the_keys_over_onboarding() {
             summary: "cargo test".into(),
             detail: "{}".into(),
             run: None,
+            proposed_rule: None,
         },
     );
     type_str(&mut s, "x");

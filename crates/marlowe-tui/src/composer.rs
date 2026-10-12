@@ -52,6 +52,14 @@ impl Composer {
         self.cursor += s.len();
     }
 
+    /// Replaces the bytes `[start, end)` with `s` and puts the cursor after it.
+    pub fn replace_range(&mut self, start: usize, end: usize, s: &str) {
+        let end = end.min(self.text.len());
+        let start = start.min(end);
+        self.text.replace_range(start..end, s);
+        self.cursor = start + s.len();
+    }
+
     pub fn backspace(&mut self) {
         if let Some(c) = self.text[..self.cursor].chars().next_back() {
             self.cursor -= c.len_utf8();

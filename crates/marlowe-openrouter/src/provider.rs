@@ -11,15 +11,17 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError};
+use marlowe_model::image::BlobStore;
 use marlowe_model::{
     CancelToken, ChatRequest, Completion, ModelInfo, Provider, ProviderError, ProviderErrorKind,
-    ProviderKind, StreamEvent,
+    ProviderKind, StreamEvent, ToolSpec,
 };
+use marlowe_provider::ollama::repair::RepairStats;
 use marlowe_provider::sse::{Frame, SseStream};
 use serde_json::Value;
 
 use crate::catalog::{self, CatalogEntry, ReasoningMeta};
-use crate::request::request_body;
+use crate::request::{request_body_with, BodyOptions};
 use crate::retry::{self, Disposition};
 use crate::secret::ApiKey;
 use crate::stream::Accumulator;
@@ -39,6 +41,11 @@ pub struct OpenRouterProvider {
     transport: Arc<dyn Transport>,
     key: Option<ApiKey>,
     reasoning: Mutex<HashMap<String, ReasoningMeta>>,
+    /// Which models take images, as far as the catalog said.
+    vision: Mutex<HashMap<String, bool>>,
+    /// Where image bytes live (`<home>\blobs`). Without one, images are sent as a text note.
+    blobs: Option<Arc<dyn BlobStore>>,
+    stats: Arc<RepairStats>,
 }
 
 impl OpenRouterProvider {
@@ -48,7 +55,31 @@ impl OpenRouterProvider {
     }
 
     pub fn with_transport(transport: Arc<dyn Transport>, key: Option<ApiKey>) -> Self {
-        Self { transport, key, reasoning: Mutex::new(HashMap::new()) }
+        Self {
+            transport,
+            key,
+            reasoning: Mutex::new(HashMap::new()),
+            vision: Mutex::new(HashMap::new()),
+            blobs: None,
+            stats: Arc::new(RepairStats::new()),
+        }
+    }
+
+    /// The blob store `Part::Image` bytes are read from (the one `read` and paste write to).
+    pub fn with_blobs(mut self, blobs: Arc<dyn BlobStore>) -> Self {
+        self.blobs = Some(blobs);
+        self
+    }
+
+    /// Counts repaired tool calls in `stats` instead of the provider's own counters.
+    pub fn with_repair_stats(mut self, stats: Arc<RepairStats>) -> Self {
+        self.stats = stats;
+        self
+    }
+
+    /// How many tool calls were clean, repaired, recovered from text or unusable (A4).
+    pub fn repair_stats(&self) -> Arc<RepairStats> {
+        self.stats.clone()
     }
 
     /// The stored credential if given, else `OPENROUTER_API_KEY`.
@@ -86,8 +117,12 @@ impl OpenRouterProvider {
         }
         let entries = catalog::parse_catalog(&body).map_err(|e| self.err(ProviderErrorKind::Server, e))?;
         let mut cache = self.reasoning.lock().unwrap_or_else(|e| e.into_inner());
+        let mut vision = self.vision.lock().unwrap_or_else(|e| e.into_inner());
         for e in &entries {
             cache.insert(e.info.id.clone(), e.reasoning.clone());
+            if let Some(v) = e.vision {
+                vision.insert(e.info.id.clone(), v);
+            }
         }
         Ok(entries)
     }
@@ -95,7 +130,12 @@ impl OpenRouterProvider {
     /// The body `stream` would send. Uses cached catalog metadata when present.
     pub fn build_body(&self, req: &ChatRequest) -> Value {
         let meta = self.reasoning.lock().unwrap_or_else(|e| e.into_inner()).get(&req.model).cloned();
-        request_body(req, catalog::reasoning_field(req.effort, meta.as_ref()))
+        let opts = BodyOptions {
+            vision: self.vision.lock().unwrap_or_else(|e| e.into_inner()).get(&req.model).copied(),
+            blobs: self.blobs.as_deref(),
+            ..BodyOptions::new(catalog::reasoning_field(req.effort, meta.as_ref()))
+        };
+        request_body_with(req, &opts)
     }
 
     fn headers(&self, key: &ApiKey) -> Vec<(&'static str, String)> {
@@ -273,7 +313,7 @@ impl Provider for OpenRouterProvider {
                         _ => return Err(e),
                     }
                 }
-                Msg::Status { .. } => return self.consume(&rx, cancel, on),
+                Msg::Status { .. } => return self.consume(&rx, cancel, &req.tools, on),
                 Msg::Data(_) | Msg::Done | Msg::Eof => {
                     return Err(ProviderError::server("the stream began without a status"))
                 }
@@ -291,9 +331,10 @@ impl OpenRouterProvider {
         &self,
         rx: &Receiver<Msg>,
         cancel: &CancelToken,
+        tools: &[ToolSpec],
         on: &mut dyn FnMut(StreamEvent),
     ) -> Result<Completion, ProviderError> {
-        let mut acc = Accumulator::new(on);
+        let mut acc = Accumulator::new(on).with_tools(tools).with_stats(self.stats.clone());
         let mut finished = false;
         loop {
             match recv(rx, cancel).ok_or_else(ProviderError::cancelled)? {

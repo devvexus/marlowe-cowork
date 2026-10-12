@@ -44,6 +44,9 @@ pub(crate) struct CrewLink {
     /// A relay turn found no model it could run without loading one: its run stays due, and
     /// the user's next turn delivers it.
     deferred: std::sync::atomic::AtomicBool,
+    /// Workflow runs a `workflow{background:false}` call is waiting on: their result goes back as
+    /// the tool result, so the relay holds off unless the waiter detaches.
+    waited: Mutex<HashSet<RunId>>,
 }
 
 impl CrewLink {
@@ -69,6 +72,8 @@ pub(crate) fn start(core: &Arc<Core>, setup: CrewSetup) -> Result<JoinHandle<()>
         research: setup.research,
     };
     let home = core.home.clone();
+    // Before the supervisor can start a requeued workflow run: its hooks come from its session.
+    crate::workflow_ops::install_hooks(core);
     let supervisor = catch_unwind(AssertUnwindSafe(|| Supervisor::start(&home, deps, setup.config, tx)))
         .map_err(|p| format!("the crew supervisor panicked: {}", panic_text(&p)))?
         .map_err(|e| format!("the crew is not running: {e}"))?;
@@ -78,6 +83,7 @@ pub(crate) fn start(core: &Arc<Core>, setup: CrewSetup) -> Result<JoinHandle<()>
         awaiting: Mutex::new(HashMap::new()),
         pending: Mutex::new(HashMap::new()),
         deferred: std::sync::atomic::AtomicBool::new(false),
+        waited: Mutex::new(HashSet::new()),
     };
     if core.crew.set(link).is_err() {
         return Err("the crew was already started".into());
@@ -87,6 +93,12 @@ pub(crate) fn start(core: &Arc<Core>, setup: CrewSetup) -> Result<JoinHandle<()>
         .name("marlowe-crew-fwd".into())
         .spawn(move || forward(fcore, rx))
         .map_err(|e| format!("crew forwarder: {e}"))
+}
+
+/// Boot hook: the conductor's worktrees (`agent{isolation:"worktree"}`, `enter_worktree`) are
+/// real git worktrees under `<home>\worktrees\agents`, made by the crew's daemon-side git.
+pub(crate) fn on_boot(core: &Arc<Core>) {
+    crate::conductor_ops::install_worktrees(core, Arc::new(marlowe_crew::GitWorktrees::new(&core.home)));
 }
 
 /// Stops run threads at their next step boundary; they stay resumable for the next start.
@@ -126,12 +138,14 @@ fn on_event(core: &Arc<Core>, ev: CrewEvent) {
         CrewEvent::Updated(info) => {
             let failed = info.status == CrewRunStatus::Failed;
             core.bus.publish(Event::RunUpdated(info.clone()));
+            crate::tasks::crew_changed(core, &info);
             if let (true, Some(session)) = (failed, info.session.clone()) {
                 let id = info.id.clone();
                 relay(core, &session, &id, None, Some(info));
             }
         }
         CrewEvent::Step { run, step, action, text_delta } => {
+            crate::tasks::crew_step(core, &run, step, &action, text_delta.as_deref());
             core.bus.publish(Event::RunStep { run, step, action, text_delta });
         }
         CrewEvent::Finished { run, session, dispatch } => {
@@ -147,6 +161,16 @@ fn on_event(core: &Arc<Core>, ev: CrewEvent) {
         }
         CrewEvent::Research { run, progress } => {
             core.bus.publish(Event::ResearchProgress { run, progress });
+        }
+        // Workflow runs (track W).
+        CrewEvent::Workflow(info) => {
+            core.bus.publish(Event::WorkflowUpdated(info));
+        }
+        CrewEvent::WorkflowLog { run, line } => {
+            core.bus.publish(Event::WorkflowLog { run, line });
+        }
+        CrewEvent::Findings { run, session, findings } => {
+            core.bus.publish(Event::Findings { session, run: Some(run), findings });
         }
     }
 }
@@ -187,13 +211,14 @@ pub(crate) fn relay_due(core: &Arc<Core>) {
 }
 
 /// A relay turn could not run (relays never load a model): its run stays due and is relayed
-/// again after the user's next turn, when the conductor's model is up.
-pub(crate) fn defer(core: &Core, text: &str) {
-    let Some(link) = core.crew.get() else { return };
-    if let Some(run) = lock(&link.awaiting).remove(text) {
-        lock(&link.relayed).remove(&run);
-        link.deferred.store(true, std::sync::atomic::Ordering::SeqCst);
-    }
+/// again after the user's next turn, when the conductor's model is up. False when `text` is not
+/// a crew run's relay (a job notice, an agent's report): the session holds those itself.
+pub(crate) fn defer(core: &Core, text: &str) -> bool {
+    let Some(link) = core.crew.get() else { return false };
+    let Some(run) = lock(&link.awaiting).remove(text) else { return false };
+    lock(&link.relayed).remove(&run);
+    link.deferred.store(true, std::sync::atomic::Ordering::SeqCst);
+    true
 }
 
 /// After a user's turn: relays deferred for want of a loaded model go out now.
@@ -212,9 +237,39 @@ pub(crate) fn delivered(core: &Core, text: &str) {
     }
 }
 
+/// A `workflow{background:false}` call waits on `run`: its end is the tool result, not a relay.
+pub(crate) fn wait_starts(core: &Core, run: &RunId) {
+    if let Some(link) = core.crew.get() {
+        lock(&link.waited).insert(run.clone());
+    }
+}
+
+/// The waiter is done. `delivered`: the run's end went back as the tool result, so it is never
+/// relayed as well. Otherwise (Esc detached, the wait broke) a result that came in meanwhile goes
+/// out as the usual notice now, and a later one when the run ends.
+pub(crate) fn wait_ends(core: &Arc<Core>, run: &RunId, delivered: bool) {
+    let Some(link) = core.crew.get() else { return };
+    if delivered {
+        lock(&link.relayed).insert(run.clone());
+        let _ = link.supervisor.mark_relayed(run);
+    }
+    lock(&link.waited).remove(run);
+    if !delivered {
+        for info in link.supervisor.relays_due().unwrap_or_default().into_iter().filter(|i| i.id == *run) {
+            if let Some(session) = info.session.clone() {
+                relay(core, &session, run, None, Some(info));
+            }
+        }
+    }
+}
+
 /// Posts a finished (or failed) run into its parent session, once per run.
 fn relay(core: &Arc<Core>, session: &SessionId, run: &RunId, dispatch: Option<Dispatch>, info: Option<CrewRunInfo>) {
     let Some(link) = core.crew.get() else { return };
+    // A waiting tool call takes the result itself (it stays due until then).
+    if lock(&link.waited).contains(run) {
+        return;
+    }
     if core.is_shutting_down() || !lock(&link.relayed).insert(run.clone()) {
         return;
     }
@@ -351,7 +406,7 @@ pub(crate) fn ask(core: &Core, run: &RunId, session: Option<&SessionId>, tool: S
         lock(&link.pending).entry(run.clone()).or_default().push(id);
     }
     let session = session.cloned().unwrap_or_else(|| orphan_session(run));
-    core.bus.publish(Event::ApprovalRequested { approval: id, session, tool, summary, detail, run: Some(run.clone()) });
+    core.bus.publish(Event::ApprovalRequested { approval: id, session, tool, summary, detail, run: Some(run.clone()), proposed_rule: None });
     let decision = rx.recv_timeout(core.cfg.approval_timeout).unwrap_or(ApprovalDecision::Deny);
     core.approvals.remove(id);
     if let Some(link) = core.crew.get() {
@@ -467,6 +522,22 @@ impl ToolHost for WithDispatch {
         }
     }
 
+    fn call_scoped(&self, call: &ToolCallReq, cx: &marlowe_agent::CallCtx) -> ToolOutcome {
+        if is_dispatch(call) {
+            self.call(call, cx)
+        } else {
+            self.inner.call_scoped(call, cx)
+        }
+    }
+
+    fn middleware(&self) -> Vec<Arc<dyn marlowe_agent::ToolMiddleware>> {
+        self.inner.middleware()
+    }
+
+    fn persona_blocks(&self) -> Vec<marlowe_agent::PersonaBlock> {
+        self.inner.persona_blocks()
+    }
+
     fn consequence(&self, call: &ToolCallReq) -> Consequence {
         if is_dispatch(call) {
             self.dispatch.consequence(call)
@@ -492,6 +563,40 @@ impl ToolHost for WithDispatch {
             None
         } else {
             self.inner.egress_host(call)
+        }
+    }
+
+    fn manifest(&self, name: &str) -> Option<marlowe_agent::ToolManifest> {
+        if name == DISPATCH_TOOL {
+            Some(marlowe_agent::ToolManifest {
+                group: marlowe_agent::ToolGroup::Crew,
+                profiles: marlowe_agent::Profiles::ALL,
+                effects: marlowe_agent::Effects::NONE,
+                path_args: &[],
+            })
+        } else {
+            self.inner.manifest(name)
+        }
+    }
+
+    fn mutation(&self, call: &ToolCallReq, ctx: &ToolCtx) -> marlowe_agent::Mutation {
+        if is_dispatch(call) {
+            marlowe_agent::Mutation::None
+        } else {
+            self.inner.mutation(call, ctx)
+        }
+    }
+
+    fn consequence_in_sandbox(
+        &self,
+        call: &ToolCallReq,
+        exposure: &Exposure,
+        sandbox: &dyn marlowe_agent::SandboxView,
+    ) -> Option<Consequence> {
+        if is_dispatch(call) {
+            None
+        } else {
+            self.inner.consequence_in_sandbox(call, exposure, sandbox)
         }
     }
 
@@ -530,6 +635,7 @@ mod tests {
             created_ms: 0,
             updated_ms: 0,
             result: None,
+            workflow: None,
         }
     }
 

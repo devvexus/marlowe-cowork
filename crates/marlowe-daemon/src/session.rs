@@ -16,43 +16,75 @@ use std::thread::JoinHandle;
 
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 use marlowe_agent::{
-    Agent, AgentEvent, ApprovalGate, ApprovalReq, Conversation, Environment, NoMemory, PersonaBlock, Steer,
-    SteerRefused, SystemPrompt, ToolHost, TurnOutcome, TurnStop,
+    Agent, AgentEvent, ApprovalGate, ApprovalReq, Conversation, Environment, NoMemory, Notification, NotificationKind,
+    PersonaBlock, Steer, SteerRefused, SystemPrompt, ToolHost, TurnObserver, TurnOutcome, TurnStop,
 };
 use marlowe_brains::{Admission, Priority};
 use marlowe_model::{CancelToken, Message, ModelRef, Usage};
-use marlowe_proto::{ApprovalDecision, Event, SessionId, Slot};
+use marlowe_model::ImageRef;
+use marlowe_proto::{ApprovalDecision, Event, HeadlessOptions, SessionId, Slot};
 
 use crate::daemon::Core;
 use crate::mind::{ComposedTools, MindMemory, MindTools, RecallSink};
-use crate::{lock, now_ms};
+use crate::checkpoint::SessionRecorder;
+use crate::stack::{self, Stack};
+use crate::{lock, HostRequest};
 
 /// Share of the effective context window the memory tier may use (capped at
 /// `marlowe_mind::MAX_INJECT_TOKENS`).
 const MEMORY_TIER_DIVISOR: u32 = 8;
 
+/// Work for the runner thread that is not a turn (a rewind): runs with the conversation while no
+/// turn does.
+pub(crate) type AdminJob = Box<dyn FnOnce(&mut Conversation) + Send>;
+
 pub(crate) enum RunnerCmd {
     Turn(TurnInput),
+    /// See [`SessionHandle::run_admin`].
+    Admin(AdminJob),
     Stop,
 }
 
+/// What an ask carries beside its words: attached images (U3) and `marlowe -p`'s per-run
+/// options (H4).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct AskExtras {
+    pub images: Vec<ImageRef>,
+    pub options: Option<HeadlessOptions>,
+}
+
+impl AskExtras {
+    fn is_empty(&self) -> bool {
+        self.images.is_empty() && self.options.is_none()
+    }
+
+    /// Folds a later ask's extras in: images add up, the later options win.
+    fn merge(&mut self, later: AskExtras) {
+        self.images.extend(later.images);
+        if later.options.is_some() {
+            self.options = later.options;
+        }
+    }
+}
+
 /// What one turn starts from: the user's words, or a crew result to relay.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TurnInput {
     pub text: String,
     /// A crew relay: not the user's words, so memory does not ingest it at user trust.
     pub relay: bool,
     /// The relayed result carries untrusted content; the conversation is tainted before the turn.
     pub tainted: bool,
+    pub extras: AskExtras,
 }
 
 impl TurnInput {
     pub fn user(text: String) -> Self {
-        Self { text, relay: false, tainted: false }
+        Self { text, relay: false, tainted: false, extras: AskExtras::default() }
     }
 
     pub fn relay(text: String, tainted: bool) -> Self {
-        Self { text, relay: true, tainted }
+        Self { text, relay: true, tainted, extras: AskExtras::default() }
     }
 }
 
@@ -70,8 +102,13 @@ struct RunState {
     cancel: CancelToken,
     /// Asks too long to be a steer; run after the current turn.
     queued: Vec<String>,
+    /// The queued asks' images and options, for the turn that runs them.
+    queued_extras: AskExtras,
     /// Crew results waiting for the current turn to end; each runs as a relay turn.
     relays: Vec<TurnInput>,
+    /// Job notices and background-agent reports whose relay turn could not run (relays never load
+    /// a model): they go out after the user's next turn, when the conductor's model is up.
+    held: Vec<TurnInput>,
     /// Set when the runner has exited or is about to; asks must reload the session.
     closed: bool,
 }
@@ -108,7 +145,15 @@ impl SessionHandle {
         let (cmd_tx, cmd_rx) = unbounded();
         let (inbox_tx, inbox_rx) = unbounded();
         let state =
-            RunState { busy: false, cancel: CancelToken::new(), queued: Vec::new(), relays: Vec::new(), closed: false };
+            RunState {
+                busy: false,
+                cancel: CancelToken::new(),
+                queued: Vec::new(),
+                queued_extras: AskExtras::default(),
+                relays: Vec::new(),
+                held: Vec::new(),
+                closed: false,
+            };
         let h = Self { id, workspace, title: Mutex::new(title), state: Mutex::new(state), cmd_tx, inbox_tx, inbox_rx };
         (h, cmd_rx)
     }
@@ -127,8 +172,37 @@ impl SessionHandle {
         Some(t.clone())
     }
 
+    /// Renames the session as far as the runner is concerned (the first message no longer titles
+    /// it).
+    pub fn set_title(&self, title: &str) {
+        *lock(&self.title) = title.to_string();
+    }
+
+    /// Runs `job` on the runner thread with the conversation, while the session is idle. The
+    /// session counts as busy until it returns, so asks that arrive meanwhile queue behind it.
+    /// Refused while a turn runs or after the runner has exited.
+    pub fn run_admin(&self, job: AdminJob) -> Result<(), Enqueue> {
+        let mut st = lock(&self.state);
+        if st.closed {
+            return Err(Enqueue::Closed);
+        }
+        if st.busy {
+            return Err(Enqueue::Refused("a turn is running; interrupt it first".into()));
+        }
+        st.busy = true;
+        st.cancel = CancelToken::new();
+        self.cmd_tx.send(RunnerCmd::Admin(job)).map_err(|_| Enqueue::Closed)
+    }
+
     /// Starts a turn, or queues `text` behind the running one.
+    #[cfg(test)]
     pub fn enqueue(&self, text: String) -> Result<(), Enqueue> {
+        self.enqueue_with(text, AskExtras::default())
+    }
+
+    /// [`Self::enqueue`] with images and options. An ask that carries them is never a steer: it
+    /// queues for a turn of its own.
+    pub fn enqueue_with(&self, text: String, extras: AskExtras) -> Result<(), Enqueue> {
         let mut st = lock(&self.state);
         if st.closed {
             return Err(Enqueue::Closed);
@@ -136,10 +210,12 @@ impl SessionHandle {
         if !st.busy {
             st.busy = true;
             st.cancel = CancelToken::new();
-            return self.cmd_tx.send(RunnerCmd::Turn(TurnInput::user(text))).map_err(|_| Enqueue::Closed);
+            let input = TurnInput { extras, ..TurnInput::user(text) };
+            return self.cmd_tx.send(RunnerCmd::Turn(input)).map_err(|_| Enqueue::Closed);
         }
-        if !st.queued.is_empty() {
+        if !st.queued.is_empty() || !extras.is_empty() {
             st.queued.push(text);
+            st.queued_extras.merge(extras);
             return Ok(());
         }
         match Steer::admit(&text) {
@@ -176,7 +252,8 @@ impl SessionHandle {
     /// Closes the handle if no turn is running or queued; true when it closed.
     pub fn close_if_idle(&self) -> bool {
         let mut st = lock(&self.state);
-        if st.busy {
+        // Held notices would be lost with the runner: the session stays until it delivers them.
+        if st.busy || !st.held.is_empty() {
             return false;
         }
         st.closed = true;
@@ -232,18 +309,34 @@ pub(crate) fn spawn_runner(core: Arc<Core>, handle: Arc<SessionHandle>, convo: C
 }
 
 fn runner(core: Arc<Core>, handle: Arc<SessionHandle>, convo: Conversation, cmd_rx: Receiver<RunnerCmd>) {
-    serve(&core, &handle, convo, &cmd_rx);
+    // This runner's own recorder, set once the stack is up. A later runner of the same session
+    // (after an idle eviction) has its own, so releasing must not take that one away.
+    let mut recorder = None;
+    serve(&core, &handle, convo, &cmd_rx, &mut recorder);
+    if let Some(r) = &recorder {
+        crate::checkpoint::release(&core, &handle.id, r);
+    }
     core.release(&handle);
 }
 
-fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation, cmd_rx: &Receiver<RunnerCmd>) {
-    let tools = match guard(|| (core.tools)(convo.workspace.as_deref())) {
+fn serve(
+    core: &Arc<Core>,
+    handle: &Arc<SessionHandle>,
+    mut convo: Conversation,
+    cmd_rx: &Receiver<RunnerCmd>,
+    mine: &mut Option<Arc<SessionRecorder>>,
+) {
+    // The tool set is fixed for the session from the conductor's model as of now (prompt cache).
+    let model = guard(|| conductor_model(core)).ok().flatten();
+    let request = HostRequest { workspace: convo.workspace.clone(), model, session: Some(convo.session.clone()) };
+    let tools = match guard(|| (core.tools)(&request)) {
         Ok(t) => t,
         Err(e) => {
             core.bus.publish(Event::Error { session: Some(handle.id.clone()), message: format!("tools unavailable: {e}") });
             return;
         }
     };
+    let tools = stack::tools(core, &convo, tools);
     let tools: Arc<dyn ToolHost> = match &core.mind {
         Some(mind) => {
             let memory = MindTools::new(mind.clone(), workspace_of(&convo)).with_events(publisher(core));
@@ -259,9 +352,28 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
     // A session loaded from the store keeps the taint of what it read before: the stored flag
     // (set by `Core::session`) plus anything its history shows.
     convo.recompute_exposure(tools.as_ref());
+    // A daemon killed while tools ran left an assistant message with calls and no results.
+    match crate::checkpoint::repair_dangling(&core.store, &mut convo) {
+        Ok(0) => {}
+        Ok(n) => {
+            let message = format!("{n} tool call(s) were running when the daemon last stopped; they are marked as not finished");
+            core.bus.publish(Event::Error { session: Some(handle.id.clone()), message });
+        }
+        Err(e) => {
+            core.bus.publish(Event::Error { session: Some(handle.id.clone()), message: format!("session not repaired: {e}") });
+        }
+    }
+    // Middleware, observers and services from every track, for this runner's lifetime.
+    let recorder = crate::checkpoint::start_runner(core, &convo);
+    *mine = Some(recorder.clone());
+    let stack = Stack::build(core, &convo);
+    for o in &stack.observers {
+        let _ = guard(|| o.on_session_start(&convo));
+    }
     loop {
-        let first = match cmd_rx.recv_timeout(core.cfg.session_idle) {
-            Ok(RunnerCmd::Turn(input)) => input,
+        let work = match cmd_rx.recv_timeout(core.cfg.session_idle) {
+            Ok(RunnerCmd::Turn(input)) => Work::Turn(input),
+            Ok(RunnerCmd::Admin(job)) => Work::Admin(job),
             Ok(RunnerCmd::Stop) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) if core.evict_if_idle(handle) => {
                 evicted = true;
@@ -269,38 +381,37 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
             }
             Err(RecvTimeoutError::Timeout) => continue,
         };
-        let mut next = VecDeque::from([first]);
+        let mut next = VecDeque::new();
+        match work {
+            Work::Turn(input) => next.push_back(input),
+            Work::Admin(job) => {
+                let _ = guard(|| job(&mut convo));
+                settle(core, handle, &mut next);
+            }
+        }
         while let Some(input) = next.pop_front() {
             if core.is_shutting_down() {
                 lock(&handle.state).busy = false;
                 break;
             }
             let cancel = lock(&handle.state).cancel.clone();
-            run_one(core, handle, &mut convo, &tools, &input, &cancel);
+            run_one(core, handle, &mut convo, &tools, &stack, &recorder, &input, &cancel);
             turns_run += 1;
+            // Hooks' systemMessage lines, failures and diagnostics (track E) reach the user.
+            if let Some(r) = stack.services.get::<Arc<marlowe_agent::hooks::HookRunner>>() {
+                for message in r.take_messages() {
+                    core.bus.publish(Event::Error { session: Some(handle.id.clone()), message: format!("hook: {message}") });
+                }
+            }
             // The user's turn brought the conductor's model up: crew results that could not
             // load it themselves go out now (this session's land in the queue read below).
             if !input.relay {
                 crate::crew::retry_deferred(core);
+                let mut st = lock(&handle.state);
+                let held = std::mem::take(&mut st.held);
+                st.relays.extend(held);
             }
-            // Decide under the lock so an ask arriving now either lands in `left` or starts a
-            // fresh turn through the command channel.
-            let mut st = lock(&handle.state);
-            let (relayed, mut left): (Vec<String>, Vec<String>) =
-                handle.inbox_rx.try_iter().map(|s| s.text).partition(|t| is_relay(t));
-            left.append(&mut st.queued);
-            let mut relays: Vec<TurnInput> = relayed.into_iter().map(|t| TurnInput::relay(t, false)).collect();
-            relays.append(&mut st.relays);
-            if !left.is_empty() {
-                next.push_back(TurnInput::user(left.join("\n\n")));
-            }
-            next.extend(relays);
-            if !next.is_empty() && !core.is_shutting_down() {
-                st.cancel = CancelToken::new();
-            } else {
-                next.clear();
-                st.busy = false;
-            }
+            settle(core, handle, &mut next);
         }
         if core.is_shutting_down() {
             break;
@@ -308,6 +419,36 @@ fn serve(core: &Arc<Core>, handle: &Arc<SessionHandle>, mut convo: Conversation,
     }
     if let (true, Some(mind)) = (evicted && turns_run > 0 && !core.is_shutting_down(), &core.mind) {
         let _ = guard(|| crate::mind_ops::write_episode(core, mind, &convo));
+    }
+    // SessionEnd hooks run, and the session's permissions and hook runner go (track E).
+    let _ = guard(|| crate::mode_ops::forget(core, &handle.id, "other"));
+}
+
+enum Work {
+    Turn(TurnInput),
+    Admin(AdminJob),
+}
+
+/// After a turn or an admin job: decides, under the state lock, what runs next. An ask arriving
+/// now either lands in `next` or starts a fresh turn through the command channel. The session
+/// stays busy while `next` is not empty.
+fn settle(core: &Arc<Core>, handle: &Arc<SessionHandle>, next: &mut VecDeque<TurnInput>) {
+    let mut st = lock(&handle.state);
+    let (relayed, mut left): (Vec<String>, Vec<String>) =
+        handle.inbox_rx.try_iter().map(|s| s.text).partition(|t| is_relay(t));
+    left.append(&mut st.queued);
+    let mut relays: Vec<TurnInput> = relayed.into_iter().map(|t| TurnInput::relay(t, false)).collect();
+    relays.append(&mut st.relays);
+    if !left.is_empty() {
+        let extras = std::mem::take(&mut st.queued_extras);
+        next.push_back(TurnInput { extras, ..TurnInput::user(left.join("\n\n")) });
+    }
+    next.extend(relays);
+    if !next.is_empty() && !core.is_shutting_down() {
+        st.cancel = CancelToken::new();
+    } else {
+        next.clear();
+        st.busy = false;
     }
 }
 
@@ -330,7 +471,23 @@ fn publisher(core: &Arc<Core>) -> RecallSink {
     })
 }
 
-fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, tools: &Arc<dyn ToolHost>, input: &TurnInput, cancel: &CancelToken) {
+/// The conductor slot's model, without building a provider.
+fn conductor_model(core: &Core) -> Option<marlowe_model::ModelInfo> {
+    let (model, _) = core.brains.resolve(&Slot::Conductor).ok()?;
+    core.brains.model_info(&model).ok()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_one(
+    core: &Arc<Core>,
+    handle: &SessionHandle,
+    convo: &mut Conversation,
+    tools: &Arc<dyn ToolHost>,
+    stack: &Stack,
+    recorder: &SessionRecorder,
+    input: &TurnInput,
+    cancel: &CancelToken,
+) {
     let text = input.text.as_str();
     if input.tainted {
         convo.exposure.tainted = true;
@@ -351,13 +508,17 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
     if let Err(message) = admit_conductor(core, &session, &model, cancel, who) {
         if input.relay {
             // The run stays due; the user's next turn delivers it on a loaded model.
-            eprintln!("marlowe: a crew result waits for the next turn: {message}");
-            crate::crew::defer(core, &input.text);
+            eprintln!("marlowe: a relay waits for the next turn: {message}");
+            if !crate::crew::defer(core, &input.text) {
+                // A job notice or an agent's report: held by the session, not dropped.
+                lock(&handle.state).held.push(input.clone());
+            }
         } else {
             core.bus.publish(Event::Error { session: Some(session), message });
         }
         return;
     }
+    let model_ref = model.clone();
     let workspace = workspace_of(convo);
     let mut system = SystemPrompt::new();
     // The memory block describes the profile and memory tools, so only when a Mind is attached.
@@ -368,11 +529,30 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
     if core.crew.get().is_some() {
         system = system.block(PersonaBlock::Crew);
     }
+    // Tool groups' blocks, only for groups this session exposes.
+    system = system.blocks_from(tools.persona_blocks());
     let mut env = Environment::current(workspace.clone(), info.display.clone());
     env.repo = workspace.as_deref().and_then(|w| repo_context(core, w));
-    let system = system.user(core.user()).environment(env);
+    let mut system = system.user(core.user()).environment(env);
+    let options = input.extras.options.clone().unwrap_or_default();
+    // `marlowe -p` waits for its subagents; any other ask in the session does not.
+    if options.print {
+        convo.ext.insert(marlowe_agent::subagent::ForegroundAgents);
+    } else {
+        convo.ext.remove::<marlowe_agent::subagent::ForegroundAgents>();
+    }
+    if let Some(a) = &options.append_system_prompt {
+        system = system.append(a.clone());
+    }
     let mut agent = Agent::new(provider, info, tools.clone(), system);
     agent.effort = effort;
+    // `marlowe -p`'s limits for this turn (H4).
+    if let Some(n) = options.max_steps {
+        agent.budget.max_steps = n;
+    }
+    if let Some(usd) = options.max_budget_usd {
+        agent.budget.max_cost_usd = Some(usd);
+    }
     agent.memory = match &core.mind {
         Some(mind) => {
             let budget = agent.context.effective_window() / MEMORY_TIER_DIVISOR;
@@ -381,12 +561,32 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
         }
         None => Arc::new(NoMemory),
     };
-    agent.approvals = Arc::new(Gate { core: core.clone(), cancel: cancel.clone() });
+    agent.approvals = Arc::new(Gate { core: core.clone(), cancel: cancel.clone(), observers: stack.observers.clone() });
+    // After the host's own middleware (seeded by `Agent::new`).
+    agent.middleware.extend(stack.middleware.iter().cloned());
+    agent.observers = stack.observers.clone();
+    agent.services = stack.services.clone();
+    // `marlowe -p`'s rules and mode (H4) go into the session's permission layer, so a denied
+    // tool is refused even where it would run unasked.
+    if let Some(p) = stack.services.get::<marlowe_agent::approval::Permissions>() {
+        if let Some(mode) = options.permission_mode {
+            p.set_mode(mode);
+            core.bus.publish(Event::ModeChanged { session: session.clone(), mode });
+        }
+        if let Err(e) = p.grant(&options.allowed_tools, marlowe_proto::SettingsScope::Session) {
+            core.bus.publish(Event::Error { session: Some(session.clone()), message: format!("allowed tools not applied: {e}") });
+        }
+        if let Err(e) = p.deny_for_session(&options.disallowed_tools) {
+            core.bus.publish(Event::Error { session: Some(session.clone()), message: format!("disallowed tools not applied: {e}") });
+        }
+    }
+    convo.pending_images = input.extras.images.clone();
     let window = agent.context.window_tokens;
 
     core.bus.publish(Event::TurnStarted { session: session.clone(), turn, model, user: text.to_string() });
     let before_len = convo.messages.len();
-    let before_summary = convo.summary.clone();
+    // Rows are written as the loop produces them; this turn's are told where it began.
+    recorder.begin_turn(convo, &model_ref);
     // Crew results folded in as steers during this turn; delivered once the turn is saved.
     let mut steered: Vec<String> = Vec::new();
     let mut sink = |ev: AgentEvent| {
@@ -405,46 +605,42 @@ fn run_one(core: &Arc<Core>, handle: &SessionHandle, convo: &mut Conversation, t
         steps: 0,
         text: String::new(),
         error: Some(format!("the turn failed: {e}")),
+        blocked: false,
         truncated: false,
     });
-    convo.next_turn = convo.next_turn.max(turn + 1);
-
-    let mut fresh = new_messages(convo, before_len, before_summary.as_deref(), text);
-    if fresh.is_empty() {
-        // Nothing was appended (the turn failed early): keep the user's words anyway.
-        let m = Message::user(text);
-        convo.push(m.clone());
-        fresh.push(m);
+    if outcome.blocked {
+        // A hook refused the prompt before anything ran: nothing to store, and it is not kept.
+        let message = outcome.error.clone().unwrap_or_else(|| "the prompt was blocked".into());
+        recorder.discard_turn(turn);
+        core.bus.publish(Event::Error { session: Some(session.clone()), message });
+        core.bus.publish(Event::TurnFinished { session, turn, usage: outcome.usage, stop: outcome.stop });
+        return;
     }
-    match core.store.append(&session, fresh, convo.next_turn, convo.exposure.tainted, now_ms()) {
+    convo.next_turn = convo.next_turn.max(turn + 1);
+    crate::checkpoint::end_turn(core, convo, turn);
+
+    if convo.messages.len() == before_len {
+        // Nothing was appended (the turn failed early): keep the user's words anyway.
+        convo.push(Message::user(text));
+    }
+    recorder.finish_turn(convo, text, before_len);
+    let saved = recorder.take_error().map_or(Ok(()), Err);
+    match saved {
         // The crew results this turn carried are in the session's history now: a restart must
         // not relay them again.
-        Ok(_) => {
+        Ok(()) => {
             for relay in input.relay.then_some(&input.text).into_iter().chain(&steered) {
                 crate::crew::delivered(core, relay);
             }
         }
         Err(e) => {
-            core.bus.publish(Event::Error { session: Some(session.clone()), message: format!("turn not saved: {e}") });
+            core.bus.publish(Event::Error { session: Some(session.clone()), message: e });
         }
     }
     if let Some(message) = outcome.error.clone().or_else(|| (outcome.stop == TurnStop::Error).then(|| "the turn failed".into())) {
         core.bus.publish(Event::Error { session: Some(session.clone()), message });
     }
     core.bus.publish(Event::TurnFinished { session, turn, usage: outcome.usage, stop: outcome.stop });
-}
-
-/// Messages appended during the turn. If history was compacted mid-turn the prefix shifted, so
-/// fall back to everything from the turn's user message (or all that remains).
-fn new_messages(convo: &Conversation, before_len: usize, before_summary: Option<&str>, user_text: &str) -> Vec<Message> {
-    if convo.summary.as_deref() == before_summary && convo.messages.len() >= before_len {
-        return convo.messages[before_len..].to_vec();
-    }
-    let user = Message::user(user_text);
-    match convo.messages.iter().rposition(|m| *m == user) {
-        Some(i) => convo.messages[i..].to_vec(),
-        None => std::iter::once(user).chain(convo.messages.iter().cloned()).collect(),
-    }
 }
 
 fn to_event(session: &SessionId, turn: u32, window: u32, ev: AgentEvent) -> Option<Event> {
@@ -494,7 +690,7 @@ fn admit_conductor(core: &Arc<Core>, session: &SessionId, model: &ModelRef, canc
     if lock(&core.approved_loads).contains(&key) {
         return Ok(());
     }
-    let gate = Gate { core: core.clone(), cancel: cancel.clone() };
+    let gate = Gate { core: core.clone(), cancel: cancel.clone(), observers: Vec::new() };
     let decision = gate.ask(ApprovalReq {
         session: session.clone(),
         call_id: format!("load-{}", model.model_id),
@@ -513,15 +709,26 @@ fn admit_conductor(core: &Arc<Core>, session: &SessionId, model: &ModelRef, canc
     }
 }
 
+/// Observers hear about each request (E's Notification hook).
 struct Gate {
     core: Arc<Core>,
     cancel: CancelToken,
+    observers: Vec<Arc<dyn TurnObserver>>,
 }
 
 impl ApprovalGate for Gate {
     fn ask(&self, req: ApprovalReq) -> ApprovalDecision {
+        self.ask_with(req, None)
+    }
+
+    /// The modal shows the rule "don't ask again" would add (track E).
+    fn ask_with(&self, req: ApprovalReq, proposed_rule: Option<String>) -> ApprovalDecision {
         if self.core.is_shutting_down() || self.cancel.is_cancelled() {
             return ApprovalDecision::Deny;
+        }
+        let note = Notification { kind: NotificationKind::PermissionPrompt, message: req.summary.clone() };
+        for o in &self.observers {
+            let _ = guard(|| o.on_notification(&req.session, &note));
         }
         let (id, tx, rx) = self.core.approvals.register();
         let _hook = self.cancel.on_cancel(move || {
@@ -534,6 +741,7 @@ impl ApprovalGate for Gate {
             summary: req.summary,
             detail: req.detail,
             run: None,
+            proposed_rule,
         });
         let decision = rx.recv_timeout(self.core.cfg.approval_timeout).unwrap_or(ApprovalDecision::Deny);
         self.core.approvals.remove(id);
@@ -551,22 +759,6 @@ mod tests {
         assert_eq!(title_from("\n  fix the build  \nplease", 60), "fix the build");
         assert_eq!(title_from("abcdefgh", 4), "abcd…");
         assert_eq!(title_from("", 4), "");
-    }
-
-    #[test]
-    fn new_messages_survive_compaction() {
-        let mut c = Conversation::new(SessionId("s".into()), None);
-        c.push(Message::user("old"));
-        c.push(Message::assistant("old reply"));
-        let before = c.messages.len();
-        c.push(Message::user("new"));
-        c.push(Message::assistant("new reply"));
-        assert_eq!(new_messages(&c, before, None, "new").len(), 2);
-        // Compaction dropped the prefix and set a summary.
-        c.messages.drain(..2);
-        c.summary = Some("sum".into());
-        let got = new_messages(&c, before, None, "new");
-        assert_eq!(got, vec![Message::user("new"), Message::assistant("new reply")]);
     }
 
     #[test]

@@ -15,15 +15,32 @@ marlowe-mind.workspace = true
 marlowe-sentinel.workspace = true
 marlowe-voice.workspace = true
 marlowe-crew.workspace = true
+# B: the background-job registry (`marlowe_os::job::bg_hub`) that `job_ops.rs` talks to.
+marlowe-os.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 crossbeam-channel.workspace = true
 rusqlite.workspace = true
 chrono.workspace = true
+# Pre-declared by the seam (M4.6) so wave-1 tracks do not edit this block or Cargo.lock's
+# dependency list for it; integ regenerates Cargo.lock rather than hand-merging it.
+# E (settings layers, mode_ops) and K (MCP registry, mcp_ops). Still no executor or provider
+# crate: those are injected through DaemonDeps.
+marlowe-settings.workspace = true
+marlowe-permission.workspace = true
+marlowe-mcp.workspace = true
+# Wave 2 (seam2): W's engine behind `workflow_ops.rs`; N and W's `regex` and `blake3`.
+marlowe-workflow.workspace = true
+regex.workspace = true
+blake3.workspace = true
 
 [dev-dependencies]
+# N: the real background tools run against the real daemon in `tests/parity_n.rs`.
+marlowe-exec.workspace = true
 marlowe-research.workspace = true
 marlowe-contract.workspace = true
 marlowe-journal.workspace = true
 marlowe-memory.workspace = true
+# K: the scripted MCP server the tests connect to.
+marlowe-mcp = { workspace = true, features = ["fake-server"] }

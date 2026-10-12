@@ -84,7 +84,7 @@ pub fn banner(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     put(buf, x, r.y, &Line::from(head), w);
 
     let items = [
-        ("^r", "review", Target::Plan(run.clone(), PlanAction::Review)),
+        ("alt-r", "review", Target::Plan(run.clone(), PlanAction::Review)),
         ("", "approve", Target::Plan(run.clone(), PlanAction::Approve)),
         ("", "edit", Target::Plan(run.clone(), PlanAction::Edit)),
         ("", "reject", Target::Plan(run.clone(), PlanAction::Reject)),

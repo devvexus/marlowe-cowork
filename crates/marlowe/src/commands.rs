@@ -57,6 +57,8 @@ pub fn ask(home: &Path, a: AskArgs) -> CmdResult {
             session: a.session.as_deref().map(SessionId::from),
             text: a.text,
             workspace: a.workspace,
+            images: Vec::new(),
+            options: None,
         },
     )?;
 
@@ -83,7 +85,7 @@ pub fn ask(home: &Path, a: AskArgs) -> CmdResult {
             }
             // Only this turn's approvals: a crew run's (`run` set) is answered in the TUI or with
             // `marlowe crew`, never by `--yes` or a closed stdin here.
-            Event::ApprovalRequested { approval, session, tool, summary, detail, run: None }
+            Event::ApprovalRequested { approval, session, tool, summary, detail, run: None, .. }
                 if Some(session) == mine.as_ref() =>
             {
                 let decision = if a.yes { ApprovalDecision::Allow } else { prompt(tool, summary, detail) };

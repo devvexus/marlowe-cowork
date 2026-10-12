@@ -1,0 +1,1773 @@
+{
+ "_about": "Tool-call repair corpus (A4, 50+ cases). 'args' cases run repair_args against the named tool; 'text' cases run the text scanner, then the whole text is fed through the Ollama stream folder in pieces of 1, 3 and 17 characters and must give the same calls with no markup on screen. Cases credited to flashagent@0b08afc (MIT, github.com/flashback7766/FlashAgent) are adapted from its crates/llm/src/repair.rs and parse.rs tests; the inputs are theirs, the expectations are Marlowe's (one deliberate difference: a call cut off mid-value is never completed).",
+ "tools": [
+  {
+   "name": "read",
+   "description": "Read a file",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "path": {
+      "type": "string"
+     },
+     "offset": {
+      "type": "integer"
+     },
+     "limit": {
+      "type": "integer"
+     },
+     "all": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "path"
+    ]
+   }
+  },
+  {
+   "name": "write",
+   "description": "Write a file",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "path": {
+      "type": "string"
+     },
+     "content": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "path",
+     "content"
+    ]
+   }
+  },
+  {
+   "name": "bash",
+   "description": "Run a command",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "command": {
+      "type": "string"
+     },
+     "timeout": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "command"
+    ]
+   }
+  },
+  {
+   "name": "grep",
+   "description": "Search",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "pattern": {
+      "type": "string"
+     },
+     "glob": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  {
+   "name": "ask_user",
+   "description": "Ask",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "question": {
+      "type": "string"
+     },
+     "options": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "multi_select": {
+      "type": "boolean"
+     }
+    }
+   }
+  },
+  {
+   "name": "edit",
+   "description": "Edit",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "file_path": {
+      "type": "string"
+     },
+     "old_string": {
+      "type": "string"
+     },
+     "new_string": {
+      "type": "string"
+     },
+     "replace_all": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "file_path",
+     "old_string",
+     "new_string"
+    ]
+   }
+  },
+  {
+   "name": "exit",
+   "description": "Stop",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "code": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "code"
+    ]
+   }
+  },
+  {
+   "name": "lines",
+   "description": "Read lines",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "path": {
+      "type": "string"
+     },
+     "count": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "path",
+     "count"
+    ]
+   }
+  },
+  {
+   "name": "batch",
+   "description": "Many reads",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "files": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "path": {
+         "type": "string"
+        },
+        "limit": {
+         "type": "integer"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "gateway",
+   "description": "Call a gateway tool",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "arguments": {
+      "type": "object"
+     }
+    }
+   }
+  }
+ ],
+ "args": [
+  {
+   "id": "valid_json",
+   "source": "flashagent@0b08afc valid_json_passes_through",
+   "tool": "read",
+   "raw": "{\"path\":\"a.rs\"}",
+   "expect": "clean",
+   "value": {
+    "path": "a.rs"
+   }
+  },
+  {
+   "id": "empty_string_is_no_arguments",
+   "source": "marlowe",
+   "tool": "grep",
+   "raw": "",
+   "expect": "clean",
+   "value": {}
+  },
+  {
+   "id": "whitespace_is_no_arguments",
+   "source": "marlowe",
+   "tool": "grep",
+   "raw": "   ",
+   "expect": "clean",
+   "value": {}
+  },
+  {
+   "id": "null_is_no_arguments",
+   "source": "marlowe",
+   "tool": "grep",
+   "raw": null,
+   "expect": "clean",
+   "value": {}
+  },
+  {
+   "id": "trailing_commas",
+   "source": "flashagent@0b08afc trailing_commas_removed",
+   "tool": "read",
+   "raw": "{\"path\": \"a\", \"limit\": 3,}",
+   "expect": "repaired",
+   "value": {
+    "path": "a",
+    "limit": 3
+   },
+   "fixes": [
+    "trailing_comma"
+   ]
+  },
+  {
+   "id": "trailing_comma_in_nested_array",
+   "source": "flashagent@0b08afc trailing_commas_removed",
+   "tool": "ask_user",
+   "raw": "{\"question\": \"q\", \"options\": [\"a\", \"b\",],}",
+   "expect": "repaired",
+   "value": {
+    "question": "q",
+    "options": [
+     "a",
+     "b"
+    ]
+   },
+   "fixes": [
+    "trailing_comma"
+   ]
+  },
+  {
+   "id": "truncated_mid_literal_is_not_completed",
+   "source": "flashagent@0b08afc truncated_object_closed",
+   "tool": "bash",
+   "raw": "{\"command\": \"cargo test\", \"timeout\": tru",
+   "expect": "truncated",
+   "note": "FlashAgent closes this; Marlowe never completes a cut-off value"
+  },
+  {
+   "id": "unterminated_string_is_not_completed",
+   "source": "flashagent@0b08afc unterminated_string_closed",
+   "tool": "read",
+   "raw": "{\"path\": \"/home/user/proj",
+   "expect": "truncated",
+   "note": "same rule: a cut-off path is not a path"
+  },
+  {
+   "id": "cut_off_file_content",
+   "source": "flashagent@0b08afc truncated_blocks_are_not_completed_by_repair",
+   "tool": "write",
+   "raw": "{\"path\": \"src/main.rs\", \"content\": \"fn main() {\\n let x = compute(",
+   "expect": "truncated"
+  },
+  {
+   "id": "cut_off_between_members",
+   "source": "marlowe",
+   "tool": "read",
+   "raw": "{\"path\": \"a.rs\", \"offs",
+   "expect": "truncated"
+  },
+  {
+   "id": "closers_missing_after_a_whole_string",
+   "source": "marlowe",
+   "tool": "read",
+   "raw": "{\"path\": \"a.rs\"",
+   "expect": "repaired",
+   "value": {
+    "path": "a.rs"
+   },
+   "fixes": [
+    "closed"
+   ]
+  },
+  {
+   "id": "a_number_at_the_cut_may_be_unfinished",
+   "source": "marlowe",
+   "tool": "read",
+   "raw": "{\"path\": \"a.rs\", \"limit\": 5",
+   "expect": "truncated",
+   "note": "5 could have been 50: not completed"
+  },
+  {
+   "id": "closers_missing_nested",
+   "source": "marlowe",
+   "tool": "batch",
+   "raw": "{\"files\": [{\"path\": \"a.rs\"}, {\"path\": \"b.rs\"}]",
+   "expect": "repaired",
+   "value": {
+    "files": [
+     {
+      "path": "a.rs"
+     },
+     {
+      "path": "b.rs"
+     }
+    ]
+   },
+   "fixes": [
+    "closed"
+   ]
+  },
+  {
+   "id": "smart_quotes_as_delimiters",
+   "source": "flashagent@0b08afc smart_quotes_normalized",
+   "tool": "bash",
+   "raw": "{\"command\": “ls -la”}",
+   "expect": "repaired",
+   "value": {
+    "command": "ls -la"
+   },
+   "fixes": [
+    "smart_quotes"
+   ]
+  },
+  {
+   "id": "unicode_survives",
+   "source": "flashagent@0b08afc unicode_values_survive",
+   "tool": "ask_user",
+   "raw": "{\"question\": \"build project\", \"options\": [\"unicode check: ✨ / café\"]}",
+   "expect": "clean",
+   "value": {
+    "question": "build project",
+    "options": [
+     "unicode check: ✨ / café"
+    ]
+   }
+  },
+  {
+   "id": "python_dict_and_literals",
+   "source": "flashagent@0b08afc python_dict_and_literals_repaired",
+   "tool": "ask_user",
+   "raw": "{'question': 'What language?', 'options': ['Python', 'Rust', 'Go'], 'multi_select': False}",
+   "expect": "repaired",
+   "value": {
+    "question": "What language?",
+    "options": [
+     "Python",
+     "Rust",
+     "Go"
+    ],
+    "multi_select": false
+   },
+   "fixes": [
+    "single_quotes",
+    "python_literals"
+   ]
+  },
+  {
+   "id": "python_none_and_true",
+   "source": "flashagent@0b08afc python_dict_and_literals_repaired",
+   "tool": "ask_user",
+   "raw": "{'question': None, 'multi_select': True}",
+   "expect": "repaired",
+   "value": {
+    "question": null,
+    "multi_select": true
+   },
+   "fixes": [
+    "single_quotes",
+    "python_literals"
+   ]
+  },
+  {
+   "id": "markdown_fence_around_json",
+   "source": "flashagent@0b08afc markdown_fences_stripped",
+   "tool": "read",
+   "raw": "```json\n{\"path\": \"a.rs\"}\n```",
+   "expect": "repaired",
+   "value": {
+    "path": "a.rs"
+   },
+   "fixes": [
+    "fence"
+   ]
+  },
+  {
+   "id": "json_inside_prose",
+   "source": "flashagent@0b08afc embedded_json_in_text_extracted",
+   "tool": "read",
+   "raw": "Sure! Here is the call: {\"path\": \"a.rs\"} Let me know!",
+   "expect": "repaired",
+   "value": {
+    "path": "a.rs"
+   },
+   "fixes": [
+    "prose"
+   ]
+  },
+  {
+   "id": "garbage_is_not_invented",
+   "source": "flashagent@0b08afc garbage_returns_none",
+   "tool": "read",
+   "raw": "not json at all without any structures",
+   "expect": "unusable"
+  },
+  {
+   "id": "a_bare_word_is_unusable",
+   "source": "marlowe",
+   "tool": "read",
+   "raw": "hello",
+   "expect": "unusable"
+  },
+  {
+   "id": "quoted_integer",
+   "source": "flashagent@0b08afc a_quoted_number_or_boolean_takes_the_type_the_schema_asks_for",
+   "tool": "read",
+   "raw": "{\"path\": \"a\", \"offset\": \" 20 \"}",
+   "expect": "repaired",
+   "value": {
+    "path": "a",
+    "offset": 20
+   },
+   "fixes": [
+    "coerced"
+   ]
+  },
+  {
+   "id": "quoted_boolean",
+   "source": "flashagent@0b08afc a_quoted_number_or_boolean_takes_the_type_the_schema_asks_for",
+   "tool": "read",
+   "raw": "{\"path\": \"a\", \"all\": \"True\"}",
+   "expect": "repaired",
+   "value": {
+    "path": "a",
+    "all": true
+   },
+   "fixes": [
+    "coerced"
+   ]
+  },
+  {
+   "id": "number_given_for_a_string",
+   "source": "flashagent@0b08afc a_quoted_number_or_boolean_takes_the_type_the_schema_asks_for",
+   "tool": "read",
+   "raw": "{\"path\": 42}",
+   "expect": "repaired",
+   "value": {
+    "path": "42"
+   },
+   "fixes": [
+    "coerced"
+   ]
+  },
+  {
+   "id": "whole_float_for_an_integer",
+   "source": "flashagent@0b08afc a_quoted_number_or_boolean_takes_the_type_the_schema_asks_for",
+   "tool": "read",
+   "raw": "{\"path\": \"a\", \"limit\": 20.0}",
+   "expect": "repaired",
+   "value": {
+    "path": "a",
+    "limit": 20
+   },
+   "fixes": [
+    "coerced"
+   ]
+  },
+  {
+   "id": "unconvertible_value_is_left_for_the_tool",
+   "source": "flashagent@0b08afc a_quoted_number_or_boolean_takes_the_type_the_schema_asks_for",
+   "tool": "read",
+   "raw": "{\"path\": \"a\", \"offset\": \"twenty\"}",
+   "expect": "clean",
+   "value": {
+    "path": "a",
+    "offset": "twenty"
+   }
+  },
+  {
+   "id": "array_sent_as_a_json_string",
+   "source": "flashagent@0b08afc a_quoted_number_or_boolean_takes_the_type_the_schema_asks_for",
+   "tool": "batch",
+   "raw": "{\"files\": \"[{\\\"path\\\": \\\"a\\\", \\\"limit\\\": \\\"3\\\"}]\"}",
+   "expect": "repaired",
+   "value": {
+    "files": [
+     {
+      "path": "a",
+      "limit": 3
+     }
+    ]
+   },
+   "fixes": [
+    "coerced"
+   ]
+  },
+  {
+   "id": "json_inside_a_json_string",
+   "source": "marlowe",
+   "tool": "read",
+   "raw": "\"{\\\"path\\\": \\\"a\\\"}\"",
+   "expect": "repaired",
+   "value": {
+    "path": "a"
+   },
+   "fixes": [
+    "stringified"
+   ]
+  },
+  {
+   "id": "one_misnamed_argument",
+   "source": "flashagent@0b08afc one_misnamed_argument_takes_the_one_required_name_left_out",
+   "tool": "exit",
+   "raw": "{\"status\": \"7\"}",
+   "expect": "repaired",
+   "value": {
+    "code": 7
+   },
+   "fixes": [
+    "renamed",
+    "coerced"
+   ]
+  },
+  {
+   "id": "misnamed_beside_a_good_one",
+   "source": "flashagent@0b08afc one_misnamed_argument_takes_the_one_required_name_left_out",
+   "tool": "lines",
+   "raw": "{\"path\": \"a.rs\", \"lines\": 5}",
+   "expect": "repaired",
+   "value": {
+    "path": "a.rs",
+    "count": 5
+   },
+   "fixes": [
+    "renamed"
+   ]
+  },
+  {
+   "id": "two_guesses_rename_nothing",
+   "source": "flashagent@0b08afc one_misnamed_argument_takes_the_one_required_name_left_out",
+   "tool": "lines",
+   "raw": "{\"file\": \"a.rs\", \"lines\": 5}",
+   "expect": "invalid",
+   "missing": ["path", "count"],
+   "value": {
+    "file": "a.rs",
+    "lines": 5
+   }
+  },
+  {
+   "id": "wrong_type_renames_nothing",
+   "source": "flashagent@0b08afc one_misnamed_argument_takes_the_one_required_name_left_out",
+   "tool": "lines",
+   "raw": "{\"path\": \"a.rs\", \"lines\": \"all\"}",
+   "expect": "invalid",
+   "missing": ["count"],
+   "value": {
+    "path": "a.rs",
+    "lines": "all"
+   }
+  },
+  {
+   "id": "camel_case_spelling",
+   "source": "flashagent@0b08afc other_agents_names_for_arguments_become_the_tools_own",
+   "tool": "edit",
+   "raw": "{\"filePath\": \"a.rs\", \"oldString\": \"x\", \"newString\": \"y\", \"replaceAll\": true}",
+   "expect": "repaired",
+   "value": {
+    "file_path": "a.rs",
+    "old_string": "x",
+    "new_string": "y",
+    "replace_all": true
+   },
+   "fixes": [
+    "renamed"
+   ]
+  },
+  {
+   "id": "a_correct_name_is_never_overwritten",
+   "source": "flashagent@0b08afc a_name_the_call_already_uses_correctly_is_never_overwritten",
+   "tool": "edit",
+   "raw": "{\"file_path\": \"a.rs\", \"filePath\": \"evil.rs\", \"old_string\": \"x\", \"new_string\": \"y\"}",
+   "expect": "clean",
+   "value": {
+    "file_path": "a.rs",
+    "filePath": "evil.rs",
+    "old_string": "x",
+    "new_string": "y"
+   }
+  },
+  {
+   "id": "filepath_for_the_one_required_name",
+   "source": "flashagent@0b08afc other_agents_names_for_arguments_become_the_tools_own",
+   "tool": "read",
+   "raw": "{\"filePath\": \"src/a.rs\"}",
+   "expect": "repaired",
+   "value": {
+    "path": "src/a.rs"
+   },
+   "fixes": [
+    "renamed"
+   ]
+  },
+  {
+   "id": "arguments_wrapper",
+   "source": "flashagent@0b08afc wrapped_arguments_in_other_names_are_unwrapped_and_renamed",
+   "tool": "bash",
+   "raw": "{\"arguments\": {\"command\": \"ls\"}}",
+   "expect": "repaired",
+   "value": {
+    "command": "ls"
+   },
+   "fixes": [
+    "unwrapped"
+   ]
+  },
+  {
+   "id": "name_and_arguments_wrapper",
+   "source": "flashagent@0b08afc effective_args_never_diverges_between_readers",
+   "tool": "bash",
+   "raw": "{\"name\": \"bash\", \"arguments\": {\"command\": \"ls\"}}",
+   "expect": "repaired",
+   "value": {
+    "command": "ls"
+   },
+   "fixes": [
+    "unwrapped"
+   ]
+  },
+  {
+   "id": "tool_named_wrapper",
+   "source": "flashagent@0b08afc wrapped_arguments_in_other_names_are_unwrapped_and_renamed",
+   "tool": "read",
+   "raw": "{\"read\": {\"path\": \"README.md\"}}",
+   "expect": "repaired",
+   "value": {
+    "path": "README.md"
+   },
+   "fixes": [
+    "unwrapped"
+   ]
+  },
+  {
+   "id": "wrapper_holding_a_string",
+   "source": "flashagent@0b08afc effective_args_never_diverges_between_readers",
+   "tool": "bash",
+   "raw": "{\"name\": \"bash\", \"arguments\": \"{\\\"command\\\": \\\"ls\\\"}\"}",
+   "expect": "repaired",
+   "value": {
+    "command": "ls"
+   },
+   "fixes": [
+    "unwrapped"
+   ]
+  },
+  {
+   "id": "top_level_fields_beat_a_smuggled_wrapper",
+   "source": "flashagent@0b08afc effective_args_never_diverges_between_readers",
+   "tool": "bash",
+   "raw": "{\"command\": \"echo SAFE\", \"arguments\": {\"command\": \"echo PWNED\"}}",
+   "expect": "clean",
+   "value": {
+    "command": "echo SAFE",
+    "arguments": {
+     "command": "echo PWNED"
+    }
+   }
+  },
+  {
+   "id": "array_holding_the_object",
+   "source": "marlowe",
+   "tool": "read",
+   "raw": "[{\"path\": \"a\"}]",
+   "expect": "repaired",
+   "value": {
+    "path": "a"
+   },
+   "fixes": [
+    "unwrapped"
+   ]
+  },
+  {
+   "id": "raw_newline_in_a_string",
+   "source": "marlowe",
+   "tool": "write",
+   "raw": "{\"path\": \"a.txt\", \"content\": \"line one\nline two\"}",
+   "expect": "repaired",
+   "value": {
+    "path": "a.txt",
+    "content": "line one\nline two"
+   },
+   "fixes": [
+    "raw_control"
+   ]
+  },
+  {
+   "id": "raw_tab_in_a_string",
+   "source": "marlowe",
+   "tool": "write",
+   "raw": "{\"path\": \"a.txt\", \"content\": \"a\tb\"}",
+   "expect": "repaired",
+   "value": {
+    "path": "a.txt",
+    "content": "a\tb"
+   },
+   "fixes": [
+    "raw_control"
+   ]
+  },
+  {
+   "id": "quotes_inside_code",
+   "source": "marlowe",
+   "tool": "write",
+   "raw": "{\"path\": \"a.py\", \"content\": \"print(\"hi\")\\n\"}",
+   "expect": "repaired",
+   "value": {
+    "path": "a.py",
+    "content": "print(\"hi\")\n"
+   },
+   "fixes": [
+    "inner_quote"
+   ]
+  },
+  {
+   "id": "windows_path_escapes",
+   "source": "marlowe",
+   "tool": "read",
+   "raw": "{\"path\": \"C:\\Users\\matth\\a.rs\"}",
+   "expect": "repaired",
+   "value": {
+    "path": "C:\\Users\\matth\\a.rs"
+   },
+   "fixes": [
+    "bad_escape"
+   ]
+  },
+  {
+   "id": "unquoted_keys",
+   "source": "marlowe",
+   "tool": "read",
+   "raw": "{path: \"a.rs\", limit: 5}",
+   "expect": "repaired",
+   "value": {
+    "path": "a.rs",
+    "limit": 5
+   },
+   "fixes": [
+    "unquoted_key"
+   ]
+  },
+  {
+   "id": "comments",
+   "source": "marlowe",
+   "tool": "read",
+   "raw": "{\"path\": \"a.rs\", // the file\n \"limit\": 5}",
+   "expect": "repaired",
+   "value": {
+    "path": "a.rs",
+    "limit": 5
+   },
+   "fixes": [
+    "comment"
+   ]
+  },
+  {
+   "id": "missing_comma_between_members",
+   "source": "marlowe",
+   "tool": "read",
+   "raw": "{\"path\": \"a.rs\"\n\"limit\": 5}",
+   "expect": "repaired",
+   "value": {
+    "path": "a.rs",
+    "limit": 5
+   },
+   "fixes": [
+    "missing_comma"
+   ]
+  },
+  {
+   "id": "triple_quoted_content",
+   "source": "marlowe",
+   "tool": "write",
+   "raw": "{\"path\": \"a.py\", \"content\": \"\"\"def f():\n    pass\n\"\"\"}",
+   "expect": "repaired",
+   "value": {
+    "path": "a.py",
+    "content": "def f():\n    pass\n"
+   },
+   "fixes": [
+    "triple_quote"
+   ]
+  },
+  {
+   "id": "bare_word_value",
+   "source": "marlowe",
+   "tool": "bash",
+   "raw": "{\"command\": ls}",
+   "expect": "repaired",
+   "value": {
+    "command": "ls"
+   },
+   "fixes": [
+    "bare_value"
+   ]
+  },
+  {
+   "id": "plus_sign_number",
+   "source": "marlowe",
+   "tool": "read",
+   "raw": "{\"path\": \"a\", \"limit\": +5}",
+   "expect": "repaired",
+   "value": {
+    "path": "a",
+    "limit": 5
+   },
+   "fixes": [
+    "number"
+   ]
+  },
+  {
+   "id": "tool_call_tags_around_json",
+   "source": "marlowe",
+   "tool": "read",
+   "raw": "<tool_call>{\"path\": \"a\"}</tool_call>",
+   "expect": "repaired",
+   "value": {
+    "path": "a"
+   },
+   "fixes": [
+    "fence"
+   ]
+  },
+  {
+   "id": "unknown_extras_are_kept",
+   "source": "marlowe",
+   "tool": "read",
+   "raw": "{\"path\": \"a\", \"note\": \"hi\"}",
+   "expect": "clean",
+   "value": {
+    "path": "a",
+    "note": "hi"
+   }
+  },
+  {
+   "id": "an_external_tool_keeps_wrapper_named_arguments",
+   "source": "flashagent@0b08afc an_external_tool_keeps_arguments_named_like_a_wrapper",
+   "tool": "gateway",
+   "raw": "{\"name\": \"search\", \"arguments\": {\"q\": \"x\"}}",
+   "expect": "clean",
+   "value": {
+    "name": "search",
+    "arguments": {
+     "q": "x"
+    }
+   },
+   "note": "a tool that owns arguments called name/arguments keeps them"
+  },
+  {
+   "id": "deep_nesting_does_not_overflow",
+   "source": "marlowe",
+   "tool": "read",
+   "raw": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+   "expect": "unusable"
+  },
+  {
+   "id": "a_leading_bom_and_spaces",
+   "source": "marlowe",
+   "tool": "read",
+   "raw": "﻿  {\"path\": \"a\"}",
+   "expect": "clean",
+   "value": {
+    "path": "a"
+   }
+  },
+  {
+   "id": "two_documents_take_the_first",
+   "source": "marlowe",
+   "tool": "read",
+   "raw": "{\"path\": \"a\"} {\"path\": \"b\"}",
+   "expect": "repaired",
+   "value": {
+    "path": "a"
+   },
+   "fixes": [
+    "prose"
+   ]
+  },
+  {
+   "id": "empty_object_misses_a_required_argument",
+   "source": "marlowe",
+   "tool": "read",
+   "raw": {},
+   "expect": "invalid",
+   "value": {},
+   "missing": [
+    "path"
+   ]
+  },
+  {
+   "id": "empty_string_misses_a_required_argument",
+   "source": "marlowe",
+   "tool": "bash",
+   "raw": "",
+   "expect": "invalid",
+   "value": {},
+   "missing": [
+    "command"
+   ]
+  },
+  {
+   "id": "write_without_content_is_invalid",
+   "source": "marlowe",
+   "tool": "write",
+   "raw": "{\"path\": \"a.rs\"}",
+   "expect": "invalid",
+   "value": {
+    "path": "a.rs"
+   },
+   "missing": [
+    "content"
+   ]
+  },
+  {
+   "id": "repaired_but_still_missing_is_invalid",
+   "source": "marlowe",
+   "tool": "edit",
+   "raw": "{'file_path': 'a', 'old_string': 'x',}",
+   "expect": "invalid",
+   "value": {
+    "file_path": "a",
+    "old_string": "x"
+   },
+   "missing": [
+    "new_string"
+   ]
+  }
+ ],
+ "text": [
+  {
+   "id": "hermes_with_prose",
+   "source": "flashagent@0b08afc scanner_hermes_format",
+   "text": "Thinking... <tool_call>{\"name\":\"bash\",\"arguments\":{\"command\":\"ls\"}}</tool_call> done",
+   "calls": [
+    {
+     "name": "bash",
+     "args": {
+      "command": "ls"
+     }
+    }
+   ],
+   "prose_has": [
+    "Thinking",
+    "done"
+   ],
+   "prose_lacks": [
+    "tool_call"
+   ]
+  },
+  {
+   "id": "hermes_broken_arguments",
+   "source": "flashagent@0b08afc scanner_broken_args_repaired",
+   "text": "<tool_call>{\"name\":\"bash\",\"arguments\":{\"command\":\"cargo test\",}}</tool_call>",
+   "calls": [
+    {
+     "name": "bash",
+     "args": {
+      "command": "cargo test"
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": [
+    "tool_call"
+   ]
+  },
+  {
+   "id": "hermes_two_blocks",
+   "source": "marlowe",
+   "text": "<tool_call>{\"name\":\"read\",\"arguments\":{\"path\":\"a\"}}</tool_call>\n<tool_call>{\"name\":\"read\",\"arguments\":{\"path\":\"b\"}}</tool_call>",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "a"
+     }
+    },
+    {
+     "name": "read",
+     "args": {
+      "path": "b"
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": [
+    "tool_call"
+   ]
+  },
+  {
+   "id": "hermes_arguments_as_a_string",
+   "source": "marlowe",
+   "text": "<tool_call>{\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"a\\\"}\"}</tool_call>",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "a"
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": []
+  },
+  {
+   "id": "hermes_name_in_the_wrong_case",
+   "source": "marlowe",
+   "text": "<tool_call>{\"name\":\"Read\",\"arguments\":{\"path\":\"a\"}}</tool_call>",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "a"
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": []
+  },
+  {
+   "id": "hermes_namespaced_name",
+   "source": "marlowe",
+   "text": "<tool_call>{\"name\":\"functions.read\",\"arguments\":{\"path\":\"a\"}}</tool_call>",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "a"
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": []
+  },
+  {
+   "id": "hermes_missing_only_its_close",
+   "source": "flashagent@0b08afc scanner_finish_recovers_unterminated_block_and_keeps_plain_text",
+   "text": "Let me look. <tool_call>{\"name\":\"read\",\"arguments\":{\"path\":\"a.rs\"}}</tool_",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "a.rs"
+     }
+    }
+   ],
+   "prose_has": [
+    "Let me look."
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "hermes_unknown_name_is_prose",
+   "source": "marlowe",
+   "text": "<tool_call>{\"name\":\"fetch\",\"arguments\":{}}</tool_call>",
+   "calls": [],
+   "prose_has": [
+    "fetch"
+   ],
+   "prose_lacks": [],
+   "rejected": 1
+  },
+  {
+   "id": "hermes_unparseable_block_stays_text",
+   "source": "flashagent@0b08afc scanner_unparseable_block_returns_raw_text",
+   "text": "<tool_call>@@@</tool_call> after",
+   "calls": [],
+   "prose_has": [
+    "<tool_call>@@@</tool_call> after"
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "hermes_open_tag_with_no_json_stays_text",
+   "source": "flashagent@0b08afc scanner_finish_recovers_unterminated_block_and_keeps_plain_text",
+   "text": "<tool_call>not json at all",
+   "calls": [],
+   "prose_has": [
+    "<tool_call>not json at all"
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "hermes_cut_off_write_is_not_run",
+   "source": "flashagent@0b08afc truncated_blocks_are_not_completed_by_repair",
+   "text": "<tool_call>{\"name\":\"write\",\"arguments\":{\"path\":\"src/main.rs\",\"content\":\"fn main() {\\n let x = compute(",
+   "calls": [],
+   "prose_has": [
+    "compute("
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "mistral_one_call",
+   "source": "flashagent@0b08afc scanner_mistral_format",
+   "text": "[TOOL_CALLS][{\"name\":\"edit\",\"arguments\":{\"file_path\":\"a.rs\",\"old_string\":\"x\",\"new_string\":\"y\"}}]",
+   "calls": [
+    {
+     "name": "edit",
+     "args": {
+      "file_path": "a.rs",
+      "old_string": "x",
+      "new_string": "y"
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": [
+    "TOOL_CALLS"
+   ]
+  },
+  {
+   "id": "mistral_every_call",
+   "source": "flashagent@0b08afc mistral_block_yields_every_call",
+   "text": "[TOOL_CALLS][{\"name\":\"read\",\"arguments\":{\"path\":\"a\"}},{\"name\":\"read\",\"arguments\":{\"path\":\"b\"}}]",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "a"
+     }
+    },
+    {
+     "name": "read",
+     "args": {
+      "path": "b"
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": []
+  },
+  {
+   "id": "mistral_older_args_form",
+   "source": "marlowe",
+   "text": "[TOOL_CALLS] read[ARGS]{\"path\": \"x\"}",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "x"
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": []
+  },
+  {
+   "id": "bare_object",
+   "source": "flashagent@0b08afc scanner_bare_json_object",
+   "text": "\n{\"name\": \"write\", \"arguments\": {\"path\": \"x.txt\", \"content\": \"hi\"}}",
+   "calls": [
+    {
+     "name": "write",
+     "args": {
+      "path": "x.txt",
+      "content": "hi"
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": [
+    "\"name\""
+   ]
+  },
+  {
+   "id": "bare_flat_arguments",
+   "source": "flashagent@0b08afc scanner_flat_arguments_handled",
+   "text": "\n{\"name\": \"ask_user\", \"question\": \"What language?\", \"options\": [\"Python\", \"Rust\"]}",
+   "calls": [
+    {
+     "name": "ask_user",
+     "args": {
+      "question": "What language?",
+      "options": [
+       "Python",
+       "Rust"
+      ]
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": []
+  },
+  {
+   "id": "bare_single_key_wrapper",
+   "source": "flashagent@0b08afc scanner_single_key_wrapper_handled",
+   "text": "\n{\"ask_user\": {\"question\": \"Pick one\", \"options\": [\"A\", \"B\"]}}",
+   "calls": [
+    {
+     "name": "ask_user",
+     "args": {
+      "question": "Pick one",
+      "options": [
+       "A",
+       "B"
+      ]
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": []
+  },
+  {
+   "id": "bare_python_dict",
+   "source": "flashagent@0b08afc scanner_python_single_quotes_repaired",
+   "text": "\n{'name': 'ask_user', 'arguments': {'question': 'Ready?', 'multi_select': False}}",
+   "calls": [
+    {
+     "name": "ask_user",
+     "args": {
+      "question": "Ready?",
+      "multi_select": false
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": []
+  },
+  {
+   "id": "bare_openai_shape",
+   "source": "marlowe",
+   "text": "\n{\"function\": {\"name\": \"read\", \"arguments\": \"{\\\"path\\\": \\\"a\\\"}\"}}",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "a"
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": []
+  },
+  {
+   "id": "bare_tool_calls_list",
+   "source": "marlowe",
+   "text": "\n{\"tool_calls\": [{\"type\": \"function\", \"id\": \"c1\", \"function\": {\"name\": \"read\", \"arguments\": {\"path\": \"a\"}}}]}",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "a"
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": []
+  },
+  {
+   "id": "bare_pretty_printed",
+   "source": "flashagent@0b08afc a_bare_call_split_across_deltas_is_still_found",
+   "text": "Reading.\n{\n  \"name\": \"read\",\n  \"arguments\": {\"path\": \"a.rs\"}\n}",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "a.rs"
+     }
+    }
+   ],
+   "prose_has": [
+    "Reading."
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "bare_name_then_args_array_form",
+   "source": "flashagent@0b08afc scanner_fenced_json_array_tool_call",
+   "text": "\n[\"read\", {\"path\": \"Cargo.toml\"}]",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "Cargo.toml"
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": []
+  },
+  {
+   "id": "bare_cut_off_is_not_run",
+   "source": "flashagent@0b08afc truncated_blocks_are_not_completed_by_repair",
+   "text": "\n{\"name\": \"read\"",
+   "calls": [],
+   "prose_has": [
+    "{\"name\": \"read\""
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "bare_prose_lookalike",
+   "source": "flashagent@0b08afc a_bare_call_split_across_deltas_is_still_found",
+   "text": "Here:\n{\"id\": 1}\n",
+   "calls": [],
+   "prose_has": [
+    "{\"id\": 1}"
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "bare_unknown_name_is_prose",
+   "source": "marlowe",
+   "text": "Here:\n{\"name\": \"Alice\", \"age\": 3}\n",
+   "calls": [],
+   "prose_has": [
+    "\"Alice\""
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "bare_array_of_numbers_is_prose",
+   "source": "marlowe",
+   "text": "[1, 2, 3]",
+   "calls": [],
+   "prose_has": [
+    "[1, 2, 3]"
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "markdown_link_is_prose",
+   "source": "marlowe",
+   "text": "See [the docs](https://x.y) for more.",
+   "calls": [],
+   "prose_has": [
+    "[the docs](https://x.y)"
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "fenced_json_example_is_not_run",
+   "source": "flashagent@0b08afc fenced_examples_are_never_calls_even_when_streamed_in_pieces",
+   "text": "Example:\n```json\n{\"name\": \"write\", \"arguments\": {\"path\": \"README.md\", \"content\": \"\"}}\n```\nDone.",
+   "calls": [],
+   "prose_has": [
+    "\"README.md\"",
+    "Done."
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "fenced_hermes_example_is_not_run",
+   "source": "flashagent@0b08afc fenced_examples_are_never_calls_even_when_streamed_in_pieces",
+   "text": "Format:\n```\n<tool_call>{\"name\":\"bash\",\"arguments\":{\"command\":\"rm -rf /\"}}</tool_call>\n```\n",
+   "calls": [],
+   "prose_has": [
+    "rm -rf /"
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "fenced_qwen_example_is_not_run",
+   "source": "marlowe",
+   "text": "```xml\n<function=bash><parameter=command>rm -rf /</parameter></function>\n```",
+   "calls": [],
+   "prose_has": [
+    "rm -rf /"
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "a_closed_fence_hides_nothing_after_it",
+   "source": "flashagent@0b08afc a_fence_that_arrives_in_its_own_delta_still_hides_its_example",
+   "text": "```\ncode\n```\n<tool_call>{\"name\":\"read\",\"arguments\":{\"path\":\"a.rs\"}}</tool_call>",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "a.rs"
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": [
+    "tool_call"
+   ]
+  },
+  {
+   "id": "plain_code_fence_with_json_is_not_a_call",
+   "source": "flashagent@0b08afc scanner_does_not_eat_plain_code_fences",
+   "text": "Look:\n```rust\n{\"name\": \"not_a_tool\", \"x\": 1}\n```\nend",
+   "calls": [],
+   "prose_has": [
+    "```rust",
+    "not_a_tool",
+    "end"
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "tagged_fence_is_a_call",
+   "source": "flashagent@0b08afc a_fence_tagged_as_a_call_is_one_and_leaves_no_fence_open",
+   "text": "Reading.\n```tool_call\n{\"name\": \"read\", \"arguments\": {\"path\": \"a.rs\"}}\n```\n<tool_call>{\"name\":\"read\",\"arguments\":{\"path\":\"b.rs\"}}</tool_call>",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "a.rs"
+     }
+    },
+    {
+     "name": "read",
+     "args": {
+      "path": "b.rs"
+     }
+    }
+   ],
+   "prose_has": [
+    "Reading."
+   ],
+   "prose_lacks": [
+    "```"
+   ]
+  },
+  {
+   "id": "tagged_fence_with_a_forgotten_brace",
+   "source": "flashagent@0b08afc a_fence_tagged_as_a_call_is_one_and_leaves_no_fence_open",
+   "text": "```tool_call\n{\"name\": \"read\", \"arguments\": {\"path\": \"a\"}\n```\nok",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "a"
+     }
+    }
+   ],
+   "prose_has": [
+    "ok"
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "tagged_fence_cut_after_the_json",
+   "source": "flashagent@0b08afc a_fence_tagged_as_a_call_is_one_and_leaves_no_fence_open",
+   "text": "```tool_call\n{\"name\": \"read\", \"arguments\": {}}",
+   "calls": [
+    {
+     "name": "read",
+     "args": {}
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": []
+  },
+  {
+   "id": "json_fence_as_the_last_thing_runs",
+   "source": "flashagent@0b08afc scanner_fenced_json_array_tool_call",
+   "text": "Reading Cargo.toml...\n```json\n[\n  \"read\",\n  {\n    \"path\": \"Cargo.toml\"\n  }\n]\n```",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "Cargo.toml"
+     }
+    }
+   ],
+   "prose_has": [
+    "Reading Cargo.toml..."
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "json_fence_with_text_after_is_an_example",
+   "source": "flashagent@0b08afc scanner_fenced_json_array_tool_call",
+   "text": "Reading Cargo.toml...\n```json\n[\"read\", {\"path\": \"Cargo.toml\"}]\n```\ndone",
+   "calls": [],
+   "prose_has": [
+    "done",
+    "Cargo.toml"
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "json_fence_after_a_colon_is_an_example",
+   "source": "flashagent@0b08afc a_fence_tagged_as_a_call_is_one_and_leaves_no_fence_open",
+   "text": "Here is the call:\n```json\n[\"read\", {\"path\": \"Cargo.toml\"}]\n```",
+   "calls": [],
+   "prose_has": [
+    "Here is the call:"
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "qwen_function_form",
+   "source": "marlowe",
+   "text": "Let me look.\n<function=read><parameter=path>notes.md</parameter><parameter=limit>40</parameter></function>",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "notes.md",
+      "limit": 40
+     }
+    }
+   ],
+   "prose_has": [
+    "Let me look."
+   ],
+   "prose_lacks": [
+    "<function",
+    "<parameter"
+   ]
+  },
+  {
+   "id": "qwen_a_string_stays_a_string",
+   "source": "marlowe",
+   "text": "<function=read><parameter=path>42</parameter></function>",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "42"
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": []
+  },
+  {
+   "id": "qwen_multiline_values",
+   "source": "marlowe",
+   "text": "<function=write>\n<parameter=path>\na.txt\n</parameter>\n<parameter=content>\nline one\nline two\n</parameter>\n</function>",
+   "calls": [
+    {
+     "name": "write",
+     "args": {
+      "path": "a.txt",
+      "content": "line one\nline two"
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": [
+    "<function"
+   ]
+  },
+  {
+   "id": "qwen_wrapped_in_tool_call",
+   "source": "marlowe",
+   "text": "<tool_call>\n<function=bash>\n<parameter=command>\nls -la\n</parameter>\n</function>\n</tool_call>",
+   "calls": [
+    {
+     "name": "bash",
+     "args": {
+      "command": "ls -la"
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": [
+    "<tool_call"
+   ]
+  },
+  {
+   "id": "qwen_cut_off_is_not_run",
+   "source": "marlowe",
+   "text": "<function=write><parameter=path>a.py</parameter><parameter=content>def f(",
+   "calls": [],
+   "prose_has": [
+    "def f("
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "qwen_unknown_tool_is_prose",
+   "source": "marlowe",
+   "text": "<function=launch_missiles><parameter=now>yes</parameter></function>",
+   "calls": [],
+   "prose_has": [
+    "launch_missiles"
+   ],
+   "prose_lacks": [],
+   "rejected": 1
+  },
+  {
+   "id": "glm_arg_key_form",
+   "source": "marlowe",
+   "text": "<tool_call>read\n<arg_key>path</arg_key>\n<arg_value>a.md</arg_value>\n</tool_call>",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "a.md"
+     }
+    }
+   ],
+   "prose_has": [],
+   "prose_lacks": [
+    "arg_key"
+   ]
+  },
+  {
+   "id": "markers_inside_a_string_are_data",
+   "source": "flashagent@0b08afc a_call_read_a_piece_at_a_time_is_the_call_read_whole",
+   "text": "Writing it.\n<tool_call>{\"name\":\"write\",\"arguments\":{\"path\":\"a.md\",\"content\":\"a <tool_call> in the text, [TOOL_CALLS] too, and a } or ] in a string\"}}</tool_call>\nDone.",
+   "calls": [
+    {
+     "name": "write",
+     "args": {
+      "path": "a.md",
+      "content": "a <tool_call> in the text, [TOOL_CALLS] too, and a } or ] in a string"
+     }
+    }
+   ],
+   "prose_has": [
+    "Writing it.",
+    "Done."
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "bare_with_a_brace_in_a_string",
+   "source": "flashagent@0b08afc a_call_read_a_piece_at_a_time_is_the_call_read_whole",
+   "text": "Now.\n{\"name\": \"write\", \"arguments\": {\"path\": \"a.md\", \"content\": \"} or ] ü\"}}\nDone.",
+   "calls": [
+    {
+     "name": "write",
+     "args": {
+      "path": "a.md",
+      "content": "} or ] ü"
+     }
+    }
+   ],
+   "prose_has": [
+    "Now.",
+    "Done."
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "prose_only",
+   "source": "marlowe",
+   "text": "The build is green; nothing to run.",
+   "calls": [],
+   "prose_has": [
+    "The build is green; nothing to run."
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "code_in_prose_with_braces",
+   "source": "marlowe",
+   "text": "Use `let m = {a: 1};` and `x[0]` here.",
+   "calls": [],
+   "prose_has": [
+    "`let m = {a: 1};`"
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "inline_qwen_example_is_not_run",
+   "source": "marlowe",
+   "text": "Qwen writes calls like `<function=bash><parameter=command>rm -rf build</parameter></function>` instead of JSON.",
+   "calls": [],
+   "prose_has": [
+    "`<function=bash><parameter=command>rm -rf build</parameter></function>`"
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "inline_hermes_example_is_not_run",
+   "source": "marlowe",
+   "text": "Hermes style is `<tool_call>{\"name\":\"bash\",\"arguments\":{\"command\":\"git push --force\"}}</tool_call>` on one line.",
+   "calls": [],
+   "prose_has": [
+    "`<tool_call>{\"name\":\"bash\""
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "double_backtick_example_is_not_run",
+   "source": "marlowe",
+   "text": "The form ``<tool_call>{\"name\":\"bash\",\"arguments\":{\"command\":\"ls\"}}</tool_call>`` is Hermes.",
+   "calls": [],
+   "prose_has": [
+    "``<tool_call>"
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "unclosed_backtick_does_not_hide_a_real_call",
+   "source": "marlowe",
+   "text": "It's a `quirk.\n<tool_call>{\"name\":\"bash\",\"arguments\":{\"command\":\"ls\"}}</tool_call>",
+   "calls": [
+    {
+     "name": "bash",
+     "args": {
+      "command": "ls"
+     }
+    }
+   ],
+   "prose_has": [
+    "quirk"
+   ],
+   "prose_lacks": [
+    "tool_call"
+   ]
+  },
+  {
+   "id": "inline_example_then_a_real_call",
+   "source": "marlowe",
+   "text": "Use `<tool_call>` tags.\n<tool_call>{\"name\":\"read\",\"arguments\":{\"path\":\"a\"}}</tool_call>",
+   "calls": [
+    {
+     "name": "read",
+     "args": {
+      "path": "a"
+     }
+    }
+   ],
+   "prose_has": [
+    "`<tool_call>` tags."
+   ],
+   "prose_lacks": []
+  },
+  {
+   "id": "unclosed_backtick_before_a_call_on_the_same_line",
+   "source": "marlowe",
+   "text": "A lone ` tick then <tool_call>{\"name\":\"bash\",\"arguments\":{\"command\":\"ls\"}}</tool_call> done",
+   "calls": [
+    {
+     "name": "bash",
+     "args": {
+      "command": "ls"
+     }
+    }
+   ],
+   "prose_has": [
+    "lone",
+    "done"
+   ],
+   "prose_lacks": [
+    "tool_call"
+   ]
+  }
+ ]
+}

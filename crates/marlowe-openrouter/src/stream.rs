@@ -11,12 +11,20 @@
 //! - `url_citation` annotations (server web search) whose URL the text does not already contain
 //!   are appended as a short `Sources:` list, since a completion has no field for them.
 //! - An `error` object or `finish_reason: "error"` inside a 200 stream is an error.
+//! - Tool calls: with the request's tools ([`Accumulator::with_tools`]) the finished calls have
+//!   their names and arguments repaired against the schemas (`marlowe_provider::ollama::repair`),
+//!   and a call the model wrote as text (Qwen, Hermes, Mistral forms behind OpenRouter) is
+//!   withheld from the screen while it streams and recovered at the end (`ollama::scan`). Every
+//!   repair is counted in [`RepairStats`] for the bench (A4).
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use marlowe_model::{
-    Completion, CompletionBuilder, ProviderError, ProviderErrorKind, StopReason, StreamEvent, Usage,
+    Completion, CompletionBuilder, ProviderError, ProviderErrorKind, StopReason, StreamEvent, ToolSpec, Usage,
 };
+use marlowe_provider::ollama::repair::{repair_call, RepairStats};
+use marlowe_provider::ollama::scan::{scan, LeakGuard, ToolSet};
 use marlowe_provider::think::{Segment, ThinkSplitter};
 use serde_json::{Map, Value};
 
@@ -45,6 +53,11 @@ pub struct Accumulator<'a> {
     speech_charged: u64,
     usage: Option<Usage>,
     stop: Option<StopReason>,
+    tools: Option<Vec<ToolSpec>>,
+    guard: LeakGuard,
+    stats: Option<Arc<RepairStats>>,
+    /// The calls in the completion were read from text (already repaired and counted).
+    text_calls: bool,
     /// Anything arrived (text, reasoning, calls). A retry after this would duplicate output.
     pub produced: bool,
 }
@@ -64,8 +77,26 @@ impl<'a> Accumulator<'a> {
             speech_charged: 0,
             usage: None,
             stop: None,
+            tools: None,
+            guard: LeakGuard::new(None),
+            stats: None,
+            text_calls: false,
             produced: false,
         }
+    }
+
+    /// The request's tools: call names and arguments are checked against them, and a call written
+    /// as text is accepted only for a tool in the list.
+    pub fn with_tools(mut self, tools: &[ToolSpec]) -> Self {
+        self.tools = Some(tools.to_vec());
+        self.guard = LeakGuard::new(self.tools.clone());
+        self
+    }
+
+    /// Counts every repaired call here.
+    pub fn with_stats(mut self, stats: Arc<RepairStats>) -> Self {
+        self.stats = Some(stats);
+        self
     }
 
     fn emit(&mut self, ev: StreamEvent) {
@@ -82,7 +113,15 @@ impl<'a> Accumulator<'a> {
     fn speech(&mut self, text: &str, tokens: u64) {
         self.produced = true;
         self.speech_charged += tokens;
-        self.emit(StreamEvent::TextDelta(text.to_string()));
+        let shown = self.guard.push(text);
+        self.speech_now(&shown);
+    }
+
+    /// Speech that has already been judged (no guard).
+    fn speech_now(&mut self, text: &str) {
+        if !text.is_empty() {
+            self.emit(StreamEvent::TextDelta(text.to_string()));
+        }
     }
 
     /// Applies one decoded SSE payload.
@@ -171,10 +210,17 @@ impl<'a> Accumulator<'a> {
 
     fn content(&mut self, c: &str, mut charge: u64) {
         let split = self.splitter.feed(c);
-        if split.retract_speech && !self.builder.text().is_empty() {
-            let owed = std::mem::take(&mut self.speech_charged);
-            self.reasoning_charged += owed;
-            self.emit(StreamEvent::Retract { tokens: owed });
+        if split.retract_speech {
+            // Text the guard was still holding was reasoning too.
+            let withheld = self.guard.reset();
+            if !withheld.is_empty() {
+                self.reasoning(&withheld, 0);
+            }
+            if !self.builder.text().is_empty() {
+                let owed = std::mem::take(&mut self.speech_charged);
+                self.reasoning_charged += owed;
+                self.emit(StreamEvent::Retract { tokens: owed });
+            }
         }
         for seg in split.segments {
             let owed = std::mem::take(&mut charge);
@@ -247,6 +293,31 @@ impl<'a> Accumulator<'a> {
                 Segment::Speech(t) => self.speech(&t, 0),
             }
         }
+        // What the guard withheld: a call written as text, or text that only looked like one.
+        let tail = self.guard.take_held();
+        if !tail.is_empty() {
+            let set = match &self.tools {
+                Some(t) => ToolSet::Known(t),
+                None => ToolSet::Any,
+            };
+            let found = if self.calls.is_empty() { scan(&tail, set) } else { Default::default() };
+            if found.calls.is_empty() {
+                self.speech_now(&tail);
+            } else {
+                self.speech_now(&found.prose);
+                for (index, c) in found.calls.into_iter().enumerate() {
+                    let index = index as u32;
+                    if let Some(stats) = &self.stats {
+                        stats.record(&c.outcome(), true);
+                    }
+                    self.produced = true;
+                    self.text_calls = true;
+                    self.calls.entry(index).or_default().started = true;
+                    self.emit(StreamEvent::ToolCallStart { index, id: String::new(), name: c.name });
+                    self.emit(StreamEvent::ToolArgsDelta { index, json: c.args.to_string() });
+                }
+            }
+        }
         let missing: Vec<(String, String)> = std::mem::take(&mut self.citations)
             .into_iter()
             .filter(|(url, _)| !self.builder.text().contains(url.as_str()))
@@ -260,7 +331,7 @@ Sources:");
                 list.push_str(&format!("
 - [{label}]({url})"));
             }
-            self.speech(&list, 0);
+            self.speech_now(&list);
         }
         let indices: Vec<u32> = self.calls.keys().copied().collect();
         for index in indices {
@@ -279,11 +350,29 @@ Sources:");
         let stop = self.stop.unwrap_or(StopReason::EndTurn);
         self.emit(StreamEvent::Stop(stop));
         let details = std::mem::take(&mut self.details);
+        let (tools, stats, text_calls) = (self.tools.take(), self.stats.take(), self.text_calls);
         let mut b = self.builder;
         if !details.is_empty() {
             b.set_details(Value::Array(details));
         }
-        b.finish()
+        let mut done = b.finish();
+        if !text_calls {
+            repair_calls(&mut done, tools.as_deref(), stats.as_deref());
+        }
+        done
+    }
+}
+
+/// Puts each structured call's name and arguments right against the request's tools and counts
+/// what had to change. Arguments that cannot be read stay as the raw string for the loop to report.
+fn repair_calls(done: &mut Completion, tools: Option<&[ToolSpec]>, stats: Option<&RepairStats>) {
+    if tools.is_none() && stats.is_none() {
+        return;
+    }
+    for call in &mut done.tool_calls {
+        let (name, outcome) = repair_call(&call.name, &call.args, tools, stats);
+        call.name = name;
+        call.args = outcome.into_value();
     }
 }
 

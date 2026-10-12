@@ -4,6 +4,7 @@
 
 use marlowe_model::SystemBlock;
 use marlowe_proto::GitInfo;
+use marlowe_tools::ToolGroup;
 
 /// The stable persona core.
 pub const PERSONA_CORE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../persona/v3.md"));
@@ -24,6 +25,10 @@ pub enum PersonaBlock {
     Memory,
     /// The reply will be spoken (M3+).
     Voice,
+    /// A tool group's block (`persona/blocks/<group>.md`), declared beside the group's tools in
+    /// `marlowe-exec/src/specs/<group>.rs` and handed over by [`crate::ToolHost::persona_blocks`]
+    /// only while the group is exposed.
+    Tool { group: ToolGroup, text: &'static str },
 }
 
 impl PersonaBlock {
@@ -33,6 +38,7 @@ impl PersonaBlock {
             PersonaBlock::Crew => BLOCK_CREW,
             PersonaBlock::Memory => BLOCK_MEMORY,
             PersonaBlock::Voice => BLOCK_VOICE,
+            PersonaBlock::Tool { text, .. } => text,
         }
     }
 }
@@ -92,6 +98,36 @@ fn os_name() -> String {
     format!("{os} ({})", std::env::consts::ARCH)
 }
 
+/// The project context that sits in the stable prefix after the persona (design 3.4 order:
+/// persona -> blocks -> [tools] -> instruction files -> project profile -> repo map -> skills
+/// index -> output style). Built per session (track F's instructions middleware keeps it in
+/// `Conversation::ext`), fitted to the prefix budget per model ([`crate::context::fit_prefix`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PromptSections {
+    /// `<instructions>` block (MARLOWE.md / AGENTS.md / CLAUDE.md, imports, always-on rules).
+    pub instructions: String,
+    /// The project profile (verify track's build/test commands), when known.
+    pub project_profile: String,
+    /// The ranked repo map (code track), when built.
+    pub repo_map: String,
+    /// Names and descriptions of model-invocable skills.
+    pub skills_index: String,
+    /// The active output style, appended last in the stable prefix.
+    pub output_style: String,
+    /// Loading problems and budget truncations, surfaced in `/context` and at session start.
+    pub warnings: Vec<String>,
+}
+
+impl PromptSections {
+    pub fn is_empty(&self) -> bool {
+        self.instructions.trim().is_empty()
+            && self.project_profile.trim().is_empty()
+            && self.repo_map.trim().is_empty()
+            && self.skills_index.trim().is_empty()
+            && self.output_style.trim().is_empty()
+    }
+}
+
 /// Builds the system blocks for a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemPrompt {
@@ -99,6 +135,9 @@ pub struct SystemPrompt {
     blocks: Vec<PersonaBlock>,
     user: Option<UserInfo>,
     env: Option<Environment>,
+    sections: PromptSections,
+    /// `--append-system-prompt` (H4): last in the stable tier.
+    appended: Option<String>,
 }
 
 impl Default for SystemPrompt {
@@ -115,13 +154,21 @@ impl SystemPrompt {
 
     /// A custom core (tests, crew role cards).
     pub fn with_core(core: impl Into<String>) -> Self {
-        Self { core: core.into(), blocks: Vec::new(), user: None, env: None }
+        Self { core: core.into(), blocks: Vec::new(), user: None, env: None, sections: PromptSections::default(), appended: None }
     }
 
     /// Appends a capability block (once).
     pub fn block(mut self, b: PersonaBlock) -> Self {
         if !self.blocks.contains(&b) {
             self.blocks.push(b);
+        }
+        self
+    }
+
+    /// Appends each of `blocks` (once), e.g. a tool host's [`crate::ToolHost::persona_blocks`].
+    pub fn blocks_from(mut self, blocks: impl IntoIterator<Item = PersonaBlock>) -> Self {
+        for b in blocks {
+            self = self.block(b);
         }
         self
     }
@@ -150,66 +197,94 @@ impl SystemPrompt {
         &self.blocks
     }
 
-    /// Renders to system blocks: [core + capability blocks] (cached), [user] (cached),
-    /// [environment] (not cached, last, since it changes every turn).
+    /// Sets the project sections (already fitted to the prefix budget).
+    pub fn sections(mut self, s: PromptSections) -> Self {
+        self.sections = s;
+        self
+    }
+
+    /// Replaces the project sections in place.
+    pub fn set_sections(&mut self, s: PromptSections) {
+        self.sections = s;
+    }
+
+    pub fn current_sections(&self) -> &PromptSections {
+        &self.sections
+    }
+
+    /// The core and capability blocks as one text (what the persona budget counts).
+    pub fn persona_text(&self) -> String {
+        let mut stable = self.core.trim_end().to_string();
+        for b in &self.blocks {
+            stable.push_str("\n\n");
+            stable.push_str(b.text().trim_end());
+        }
+        stable
+    }
+
+    /// Renders to system blocks: [core + capability blocks] (cached), project sections, [user]
+    /// (cached), output style (cached), [environment] (not cached, last: it changes every turn).
     pub fn render(&self) -> Vec<SystemBlock> {
         let mut out = self.render_stable();
         out.extend(self.render_environment());
         out
     }
 
-    /// The stable tier: core + capability blocks, then the user block if non-empty.
+    /// The stable tier: core + capability blocks, the project sections (instructions, profile,
+    /// repo map, skills index), the user block if non-empty, then the output style.
     pub(crate) fn render_stable(&self) -> Vec<SystemBlock> {
-        let mut out = Vec::new();
-        let mut stable = self.core.trim_end().to_string();
-        for b in &self.blocks {
-            stable.push_str("
-
-");
-            stable.push_str(b.text().trim_end());
+        let mut out = vec![SystemBlock { text: self.persona_text(), cache: true }];
+        let s = &self.sections;
+        for text in [&s.instructions, &s.project_profile, &s.repo_map, &s.skills_index] {
+            if !text.trim().is_empty() {
+                out.push(SystemBlock { text: text.trim().to_string(), cache: false });
+            }
         }
-        out.push(SystemBlock { text: stable, cache: true });
 
         if let Some(u) = &self.user {
-            let mut t = String::from("<user>
-");
+            let mut t = String::from("<user>\n");
             if let Some(n) = u.name.as_deref().filter(|s| !s.trim().is_empty()) {
-                t.push_str(&format!("Name: {}
-", n.trim()));
+                t.push_str(&format!("Name: {}\n", n.trim()));
             }
             if let Some(a) = u.address.as_deref().filter(|s| !s.trim().is_empty()) {
-                t.push_str(&format!("Formal address: {}
-", a.trim()));
+                t.push_str(&format!("Formal address: {}\n", a.trim()));
             }
             t.push_str("</user>");
-            if t != "<user>
-</user>" {
+            if t != "<user>\n</user>" {
                 out.push(SystemBlock { text: t, cache: true });
             }
         }
+        if !s.output_style.trim().is_empty() {
+            out.push(SystemBlock { text: s.output_style.trim().to_string(), cache: true });
+        }
+        if let Some(a) = &self.appended {
+            out.push(SystemBlock { text: a.trim().to_string(), cache: true });
+        }
         out
+    }
+
+    /// Appends `text` after everything else in the stable tier (`marlowe -p
+    /// --append-system-prompt`).
+    pub fn append(mut self, text: impl Into<String>) -> Self {
+        let text = text.into();
+        self.appended = (!text.trim().is_empty()).then_some(text);
+        self
     }
 
     /// The volatile environment block, if set. Never cached.
     pub(crate) fn render_environment(&self) -> Option<SystemBlock> {
         let e = self.env.as_ref()?;
-        let mut t = String::from("<environment>
-");
-        t.push_str(&format!("Now: {}
-", e.now));
-        t.push_str(&format!("OS: {}
-", e.os));
+        let mut t = String::from("<environment>\n");
+        t.push_str(&format!("Now: {}\n", e.now));
+        t.push_str(&format!("OS: {}\n", e.os));
         if let Some(w) = &e.workspace {
-            t.push_str(&format!("Workspace: {w}
-"));
+            t.push_str(&format!("Workspace: {w}\n"));
         }
         if let Some(g) = &e.repo {
-            t.push_str(&format!("Repo: {}
-", repo_line(g)));
+            t.push_str(&format!("Repo: {}\n", repo_line(g)));
         }
         if !e.model.is_empty() {
-            t.push_str(&format!("Model: {}
-", e.model));
+            t.push_str(&format!("Model: {}\n", e.model));
         }
         t.push_str("</environment>");
         Some(SystemBlock { text: t, cache: false })

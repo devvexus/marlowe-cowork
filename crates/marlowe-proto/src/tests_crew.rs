@@ -57,6 +57,7 @@ fn info(status: CrewRunStatus) -> CrewRunInfo {
         created_ms: 1,
         updated_ms: 2,
         result: Some(dispatch()),
+        workflow: None,
     }
 }
 
@@ -130,6 +131,7 @@ fn crew_events_round_trip_inside_an_envelope() {
             summary: "git push".into(),
             detail: "{}".into(),
             run: Some(rid()),
+            proposed_rule: None,
         },
     ];
     for (i, event) in events.into_iter().enumerate() {
@@ -151,6 +153,7 @@ fn an_approval_without_a_run_keeps_its_old_shape() {
         summary: "ls".into(),
         detail: "{}".into(),
         run: None,
+        proposed_rule: None,
     };
     let s = round_trip(&e);
     assert!(!s.contains("\"run\""), "{s}");

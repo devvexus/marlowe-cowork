@@ -9,6 +9,7 @@ description = "The Crew: role cards, durable sandboxed runs, the supervisor, and
 marlowe-model.workspace = true
 marlowe-proto.workspace = true
 marlowe-agent.workspace = true
+marlowe-permission.workspace = true
 marlowe-brains.workspace = true
 marlowe-mind.workspace = true
 marlowe-research.workspace = true
@@ -20,6 +21,10 @@ crossbeam-channel.workspace = true
 rusqlite.workspace = true
 marlowe-os.workspace = true
 sha2.workspace = true
+# Wave 2 (seam2): W's `playbook/script/` drives the engine on the supervisor's step runner.
+marlowe-workflow.workspace = true
+# Track I: build_v2 reads the project profile (commands, hubs, lockfiles) and test-output parsers.
+marlowe-verify.workspace = true
 
 [dev-dependencies]
 marlowe-provider.workspace = true

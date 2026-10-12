@@ -17,9 +17,19 @@ const PAD: u16 = 2;
 /// Width of the `you  ` label.
 const USER_LABEL: usize = 5;
 
-pub fn draw(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
-    if r.width < 10 || r.height == 0 {
+pub fn draw(full: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
+    if full.width < 10 || full.height == 0 {
         return;
+    }
+    // The pinned todo list takes the bottom of the pane while anything is open.
+    let todo_h = todo_height(state, full);
+    let strip_h = super::bg::strip_height(state, full);
+    let r = Rect { height: full.height.saturating_sub(todo_h + strip_h), ..full };
+    if strip_h > 0 {
+        super::bg::draw_strip(Rect { y: r.bottom(), height: strip_h, ..full }, state, theme, buf, PAD);
+    }
+    if todo_h > 0 {
+        draw_todos(Rect { y: r.bottom() + strip_h, height: todo_h, ..full }, state, theme, buf);
     }
     // Text column: padding on the left, one blank column and the scrollbar on the right.
     let tw = r.width.saturating_sub(PAD + 2) as usize;
@@ -234,7 +244,7 @@ fn typeset_images(
 
 /// The whole transcript as styled lines wrapped to `width`, the display formulas in Marlowe's
 /// replies that an image may replace, and where each foldable reasoning block's marker is.
-fn transcript(state: &State, width: usize, theme: &Theme) -> (Vec<Line<'static>>, Vec<MathBlock>, Vec<Mark>) {
+pub(super) fn transcript(state: &State, width: usize, theme: &Theme) -> (Vec<Line<'static>>, Vec<MathBlock>, Vec<Mark>) {
     let mut maths: Vec<MathBlock> = Vec::new();
     let mut marks: Vec<Mark> = Vec::new();
     let mut out: Vec<Line<'static>> = Vec::new();
@@ -283,6 +293,18 @@ fn transcript(state: &State, width: usize, theme: &Theme) -> (Vec<Line<'static>>
         }
         user_lines(p, "you", ink(Ink::Dim, theme), width, theme, &mut out);
     }
+    // Typed while the model works: held until it reaches a step boundary.
+    for q in state.code.queue.iter().map(|q| q.text.as_str()) {
+        if !out.is_empty() {
+            out.push(Line::default());
+        }
+        let first = q.lines().next().unwrap_or("");
+        let more = if q.lines().count() > 1 { " …" } else { "" };
+        out.push(Line::from(vec![
+            Span::styled(text::pad("queued", USER_LABEL + 1), ink(Ink::Dimmer, theme)),
+            Span::styled(format!("{}{more}", text::truncate(&text::clean(first), width.saturating_sub(USER_LABEL + 3))), ink(Ink::Dim, theme)),
+        ]));
+    }
     // Nothing has streamed yet: say so rather than sit still.
     let waiting = state.pending_user.is_some()
         || (state.live.is_some()
@@ -309,7 +331,7 @@ fn tool_ink(status: &ToolStatus) -> (Ink, Ink) {
     }
 }
 
-fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, theme: &Theme, live: bool, out: &mut Vec<Line<'static>>) {
+pub(super) fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, theme: &Theme, live: bool, out: &mut Vec<Line<'static>>) {
     match e {
         Entry::User { text, steer } => {
             let label = if *steer { "steer" } else { "you" };
@@ -390,7 +412,13 @@ fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, theme: &Theme
                 }
             }
             out.push(Line::from(spans));
+            if let Entry::Tool { call_id, .. } = e {
+                inline_diff(call_id, state, width, theme, out);
+            }
         }
+        Entry::Job { command, output, code, .. } => job_lines(command, output, *code, width, theme, out),
+        Entry::News { label, text } => super::bg::news_lines(label, text, width, theme, out),
+        Entry::File { file } => super::bg::file_lines(file, width, theme, out),
         Entry::Note { text: t, tone } => {
             for (i, l) in text::wrap(&text::clean(t), width.saturating_sub(2)).into_iter().enumerate() {
                 let lead = if i == 0 { "· " } else { "  " };
@@ -451,7 +479,115 @@ fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, theme: &Theme
     }
 }
 
-fn user_lines(t: &str, label: &str, style: Style, width: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
+/// Rows the pinned todo list takes: none unless something is open and the pane is tall enough to
+/// spare them.
+fn todo_height(state: &State, r: Rect) -> u16 {
+    if state.code.todos_hidden || state.code.open_todos() == 0 || r.height < 16 {
+        return 0;
+    }
+    (state.code.todos.len() as u16 + 1).min(TODO_ROWS + 1)
+}
+
+/// Most items the strip lists (the header is one more row).
+const TODO_ROWS: u16 = 6;
+
+fn draw_todos(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
+    use marlowe_proto::TodoStatus;
+    let todos = &state.code.todos;
+    let done = todos.iter().filter(|t| t.status == TodoStatus::Completed).count();
+    let head = Line::from(vec![
+        Span::styled("todos ", ink(Ink::Dim, theme)),
+        Span::styled(format!("{done} of {}", todos.len()), ink(Ink::Dimmer, theme)),
+    ]);
+    put(buf, r.x + PAD, r.y, &head, r.width.saturating_sub(PAD));
+    // Past the strip's height the oldest finished items go first.
+    let room = r.height.saturating_sub(1) as usize;
+    let skip = todos.len().saturating_sub(room).min(done);
+    let shown: Vec<_> = todos.iter().enumerate().filter(|(i, t)| !(t.status == TodoStatus::Completed && *i < skip)).take(room).collect();
+    for (row, (_, t)) in shown.into_iter().enumerate() {
+        // An item whose blocker is not completed cannot be started (T34).
+        let blockers: Vec<&str> = t
+            .blocked_by
+            .iter()
+            .filter(|b| todos.iter().any(|o| o.id.as_deref() == Some(b.as_str()) && o.status != TodoStatus::Completed))
+            .map(String::as_str)
+            .collect();
+        let blocked = t.status != TodoStatus::Completed && !blockers.is_empty();
+        let (glyph, gink, text_ink) = match t.status {
+            TodoStatus::Completed => ("✓", Ink::Green, Ink::Dimmer),
+            _ if blocked => ("⊘", Ink::Amber, Ink::Dim),
+            TodoStatus::InProgress => ("●", Ink::Accent, Ink::Body),
+            TodoStatus::Pending => ("○", Ink::Dim, Ink::Dim),
+        };
+        let label = match (t.status, &t.active_form) {
+            (TodoStatus::InProgress, Some(a)) if !a.trim().is_empty() => a.as_str(),
+            _ => t.content.as_str(),
+        };
+        // `#3` for a task-list item, `@name` for who has it, `needs #1` while it waits.
+        let mut tail = String::new();
+        if let Some(o) = t.owner.as_deref().filter(|o| !o.trim().is_empty()) {
+            tail.push_str(&format!("  @{}", text::clean(o)));
+        }
+        if blocked {
+            tail.push_str(&format!("  needs {}", blockers.iter().map(|b| format!("#{b}")).collect::<Vec<_>>().join(", ")));
+        }
+        let lead = t.id.as_deref().map(|i| format!("#{i} ")).unwrap_or_default();
+        let room = (r.width as usize).saturating_sub(PAD as usize + 4 + text::width(&tail) + text::width(&lead));
+        let line = Line::from(vec![
+            Span::styled(format!("{glyph} "), ink(gink, theme)),
+            Span::styled(lead, ink(Ink::Dimmer, theme)),
+            Span::styled(text::truncate(&text::clean(label), room), ink(text_ink, theme)),
+            Span::styled(tail, ink(if blocked { Ink::Amber } else { Ink::Dimmer }, theme)),
+        ]);
+        put(buf, r.x + PAD, r.y + 1 + row as u16, &line, r.width.saturating_sub(PAD));
+    }
+}
+
+/// The diff under an edit's tool line, indented, capped, with the way to the rest.
+fn inline_diff(call_id: &str, state: &State, width: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
+    let Some(d) = state.code.tool_detail.get(call_id).and_then(|d| d.diff.as_ref()) else { return };
+    let r = crate::diff::render(d, crate::diff::Layout::inline(width.saturating_sub(4)), theme);
+    for l in r.lines {
+        let mut spans = vec![Span::raw("    ")];
+        spans.extend(l.spans);
+        out.push(Line::from(spans));
+    }
+    if r.hidden > 0 {
+        out.push(Line::from(Span::styled(format!("    … {} more rows · ^o shows all", r.hidden), ink(Ink::Dimmer, theme))));
+    }
+}
+
+/// How many output rows a job shows under its command before the rest is for ^o.
+const JOB_ROWS: usize = 8;
+
+fn job_lines(command: &str, output: &str, code: Option<i32>, width: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
+    let (word, ik) = match code {
+        None => ("running".to_string(), Ink::Green),
+        Some(0) => ("done".to_string(), Ink::Dim),
+        Some(c) => (format!("exit {c}"), Ink::Red),
+    };
+    let head = text::truncate(&text::clean(command), width.saturating_sub(14).max(8));
+    out.push(Line::from(vec![
+        Span::styled(format!("{} ", chrome::TOOL_MARKER), ink(ik, theme)),
+        Span::styled("$ ", ink(Ink::Dimmer, theme)),
+        Span::styled(head, theme.normal()),
+        Span::styled(" · ", ink(Ink::Dimmer, theme)),
+        Span::styled(word, ink(ik, theme)),
+    ]));
+    let lines: Vec<&str> = output.lines().collect();
+    let skip = lines.len().saturating_sub(JOB_ROWS);
+    if skip > 0 {
+        out.push(Line::from(Span::styled(format!("  {} {skip} earlier rows", chrome::QUOTE_RULE), ink(Ink::Dimmer, theme))));
+    }
+    for l in lines.into_iter().skip(skip) {
+        out.push(Line::from(vec![
+            Span::styled(format!("  {} ", chrome::QUOTE_RULE), ink(Ink::Dimmer, theme)),
+            Span::styled(text::truncate(&text::clean(l), width.saturating_sub(4)), ink(Ink::Dim, theme)),
+        ]));
+    }
+}
+
+pub(super) fn user_lines(t: &str, label: &str, style: Style, width: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
     let body = width.saturating_sub(USER_LABEL);
     // The user's words are shown as typed. Only their maths is interpreted, so a `$\alpha$` reads
     // as a formula and `**` stays two asterisks.

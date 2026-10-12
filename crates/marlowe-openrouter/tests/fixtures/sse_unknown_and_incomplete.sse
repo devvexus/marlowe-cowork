@@ -1,0 +1,10 @@
+data: {"id":"gen-3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"teleport","arguments":"{\"to\":\"moon\"}"},"id":"call_1"}]}}]}
+
+data: {"id":"gen-3","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"type":"function","function":{"name":"read","arguments":"{}"},"id":"call_2"}]}}]}
+
+data: {"id":"gen-3","choices":[{"index":0,"delta":{"tool_calls":[{"index":2,"type":"function","function":{"name":"read","arguments":"{\"path\":\"a.rs\"}"},"id":"call_3"}]}}]}
+
+data: {"id":"gen-3","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+

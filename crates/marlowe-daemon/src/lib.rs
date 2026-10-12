@@ -13,36 +13,72 @@
 #![forbid(unsafe_code)]
 
 pub mod brief;
+mod bg_ops;
+mod blob_ops;
+mod boot;
 mod brief_ops;
 mod bus;
+mod checkpoint;
 mod client;
+mod close_ops;
+mod conductor_ops;
 mod context_ops;
 mod crew;
 mod crew_ops;
 mod daemon;
+mod exp_ops;
+mod f3_ops;
+mod job_ops;
 mod library;
+mod mcp_ops;
 mod mind;
 mod mind_ops;
+mod mode_ops;
+mod notify_ops;
+mod pr_ops;
+mod schedule_ops;
 mod session;
+mod session_ops;
+mod stack;
 mod store;
+mod task_ops;
+mod tasks;
 pub mod user;
 mod watch_ops;
+mod web_ops;
+mod workflow_ops;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use crossbeam_channel::Receiver;
 use marlowe_agent::{ToolHost, UserInfo};
 use marlowe_brains::{BrainsError, ProviderFactory};
+use marlowe_model::ModelInfo;
 use marlowe_sentinel::{Sentinel, SentinelEvent};
 use marlowe_voice::{Voice, VoiceEvent};
 
-pub use daemon::Daemon;
+pub use close_ops::{resume_prompt, CloseHooks, Unloader};
+pub use daemon::{Daemon, DaemonControl};
+pub use notify_ops::{NotifyHooks, Opener, ShellOpener, Speaker};
 pub use mind::{ComposedTools, MindMemory, MindTools, RecallSink, MEMORY_TOOLS};
 
-/// Builds the tool host for a session's workspace root (`None`: no workspace).
-pub type ToolHostFactory = Arc<dyn Fn(Option<&Path>) -> Arc<dyn ToolHost> + Send + Sync>;
+/// What the daemon knows when it builds a session's tool host.
+#[derive(Debug, Clone, Default)]
+pub struct HostRequest {
+    /// The session's workspace root (`None`: no workspace).
+    pub workspace: Option<PathBuf>,
+    /// The conductor's model when the session started, so the host fixes its tool set for the
+    /// session (`BuiltinTools::with_model_exposure`). `None` when no model is assigned yet.
+    pub model: Option<ModelInfo>,
+    /// The session the host is built for (its background jobs belong to it; track B). `None`
+    /// for hosts no session owns (a PR's dry run, a subagent's root).
+    pub session: Option<marlowe_proto::SessionId>,
+}
+
+/// Builds the tool host for a session.
+pub type ToolHostFactory = Arc<dyn Fn(&HostRequest) -> Arc<dyn ToolHost> + Send + Sync>;
 
 /// Everything the binary injects.
 pub struct DaemonDeps {
@@ -104,6 +140,9 @@ pub struct DaemonConfig {
     /// model onto the GPU the user's jobs use. Even when on, it waits for an idle GPU and no live
     /// run. `MARLOWE_BRIEF_LOCAL_POLISH=1` turns it on for `marlowe daemon`.
     pub local_polish: bool,
+    /// How long after the last window disconnects without saying goodbye the daemon waits for
+    /// one to reconnect before it stops everything (a closed window).
+    pub close_grace: Duration,
 }
 
 impl Default for DaemonConfig {
@@ -118,6 +157,7 @@ impl Default for DaemonConfig {
             session_idle: Duration::from_secs(30 * 60),
             legacy_offer: true,
             local_polish: false,
+            close_grace: Duration::from_secs(2),
         }
     }
 }

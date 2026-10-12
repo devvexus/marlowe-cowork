@@ -1,0 +1,40 @@
+ * marlowe — gate work                                                                                                   1 run · 0 need you
+╭ Run · code-review ╭ messages ────────────────────────────────────────────────────────────────────────────────────────╮───── ⣀⣀⣀⣀⣀⣀ idle ─╮
+│                   │ run aa11bb22 · code-review · running                                                             │                   │
+│  ● workflow · code│                                                                                                  │          running  │
+│  step 3 of 40 · $0│ conductor  › stop at the unit tests                                                              │                   │
+│  single dispatch ·│              delivered                                                                           │                   │
+│  goal  code-review│ you        › skip the e2e suite                                                                  │                   │
+│                   │              sent                                                                                │                   │
+│  TRANSCRIPT       │                                                                                                  │                   │
+│  loading the trans│                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│                   │                                                                                                  │                   │
+│  steer › s to stee╰────────────────────────────────────────────── ↵ write · tab next thread · ↑↓ scroll · esc close ─╯                   │
+│                                                                                                                                          │
+╰─────────────────────────────────────────────────────────── s steer  ·  t messages  ·  p pause  ·  c cancel  ·  ↑↓ scroll  ·  esc/⌫ runs ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette       Friday 9 October · 21:40

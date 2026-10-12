@@ -1,0 +1,14 @@
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}
+
+data: {"id":"gen-1","choices":[{"index":0,"delta":{"content":"It is "}}]}
+
+data: {"id":"gen-1","choices":[{"index":0,"delta":{"content":"a gradient."}}]}
+
+data: {"id":"gen-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"gen-1","choices":[],"usage":{"prompt_tokens":410,"completion_tokens":37,"cost":0.0,"prompt_tokens_details":{"cached_tokens":0}}}
+
+data: [DONE]
+

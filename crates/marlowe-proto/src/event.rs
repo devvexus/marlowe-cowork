@@ -3,6 +3,9 @@
 use marlowe_model::{Effort, ModelInfo, ModelRef, Part, ProviderKind, Role, Usage};
 use serde::{Deserialize, Serialize};
 
+use crate::background::{
+    FastState, Finding, InterruptedRun, NotifyState, RuleSuggestion, SavedWorkflow, SentFile, TaskInfo, Urgency, WorkflowInfo,
+};
 use crate::context::{ContextPlan, ContextPolicy, ModelContext, PlannedChange};
 use crate::crew::{CrewRunInfo, CrewStep, Dispatch, RoleInfo, RunId};
 use crate::ids::{ApprovalId, SessionId};
@@ -139,6 +142,10 @@ pub enum Event {
         /// Set when a crew run asks; `session` is then the run's parent session.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run: Option<RunId>,
+        /// The rule `ApprovalDecision::AllowPattern` would add (tool plus normalised prefix or
+        /// path glob, never a bare tool), when E's rules engine proposes one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        proposed_rule: Option<String>,
     },
     ApprovalResolved { approval: ApprovalId, decision: ApprovalDecision },
     LibraryState {
@@ -256,6 +263,125 @@ pub enum Event {
     /// The outcome of `ApplyOllamaServer` (broadcast): restarted, refused, or failed, with what
     /// to do by hand when it did not happen.
     ServerApplied { ok: bool, message: String },
+
+    // ---- M4.6 (types in `coding.rs`).
+    /// A session's permission mode changed (broadcast).
+    ModeChanged { session: SessionId, mode: crate::coding::PermissionMode },
+    /// Reply to `ListRules`, `AddRule`, `RemoveRule`.
+    Rules { rules: Vec<crate::coding::RuleInfo> },
+    /// Reply to `ListHooks`, `TrustHooks`.
+    Hooks {
+        hooks: Vec<crate::coding::HookInfo>,
+        /// The digest of what the project asks to be trusted with (its hooks, widening rules,
+        /// directories, commands, mode): `TrustHooks` must send it back unchanged.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        digest: String,
+    },
+    /// Reply to `GetSettings`, `SetSetting`.
+    Settings { layers: Vec<crate::coding::SettingsLayer> },
+    /// Reply to `ListCommands`.
+    Commands { list: Vec<crate::coding::CommandInfo> },
+    /// Reply to `ListAgentTypes`.
+    AgentTypes { list: Vec<crate::coding::AgentTypeInfo> },
+    /// `ask_user` is waiting; answered with `AnswerQuestion` (broadcast).
+    QuestionAsked { session: SessionId, id: String, questions: Vec<crate::coding::Question> },
+    /// The session's todo list changed (broadcast).
+    Todos { session: SessionId, items: Vec<crate::coding::TodoItem> },
+    /// Reply to `ListSchedules`, `AddSchedule`, `RemoveSchedule`.
+    Schedules { list: Vec<crate::coding::ScheduleInfo> },
+    /// A rewind finished (broadcast).
+    Rewound { session: SessionId, turn: u32, scope: crate::coding::RewindScope },
+    /// Reply to `ListCheckpoints`.
+    Checkpoints { session: SessionId, list: Vec<crate::coding::CheckpointInfo> },
+    /// Reply to `SessionDiff`: a unified diff.
+    SessionDiff {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn: Option<u32>,
+        diff: String,
+    },
+    /// Reply to `SessionCost`.
+    SessionCost { session: SessionId, report: crate::coding::CostReport },
+    /// Reply to `ExportSession`.
+    SessionExported { session: SessionId, format: crate::coding::ExportFormat, text: String },
+    /// A PR was opened for a run (broadcast).
+    PrOpened { run: RunId, url: String },
+    /// Reply to `ListExperiments`; also broadcast when one changes.
+    Experiments { list: Vec<crate::coding::ExperimentInfo> },
+    /// Reply to `McpList`, `McpAdd`, `McpRemove`.
+    McpServers { list: Vec<crate::coding::McpServerInfo> },
+    /// Reply to `PutBlob`: the reference an `Ask` carries in `images`.
+    BlobStored { blob: String, mime: String, w: u32, h: u32 },
+    /// Reply to `ListJobs`.
+    Jobs { list: Vec<crate::coding::JobInfo> },
+    /// A background job started (broadcast).
+    JobStarted { job: crate::coding::JobInfo },
+    /// New output from a watched job (`job_watch`, the `!` shell), in order.
+    JobOutput {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        id: String,
+        text: String,
+    },
+    /// A background job ended (broadcast).
+    JobExited {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        id: String,
+        code: i32,
+    },
+
+    // ---- M4.6 wave 2 (types in `background.rs`).
+    /// Reply to `ListTasks`.
+    Tasks { list: Vec<TaskInfo> },
+    /// A task started or changed state (broadcast).
+    TaskUpdated(TaskInfo),
+    /// Reply to `TaskOutput`: `next_since` is the offset to ask from next; `done` once the task
+    /// ended and nothing is left.
+    TaskOutput { id: String, text: String, next_since: u64, done: bool },
+    /// Reply to `ListWorkflows`.
+    WorkflowList { saved: Vec<SavedWorkflow>, runs: Vec<WorkflowInfo> },
+    /// A workflow run's phase, agents or budget changed (broadcast; also the reply to
+    /// `WatchWorkflow`).
+    WorkflowUpdated(WorkflowInfo),
+    /// One `log()` line of a workflow (broadcast).
+    WorkflowLog { run: RunId, line: String },
+    /// `report_findings` stored findings (broadcast), and the reply to `ListFindings`.
+    Findings {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run: Option<RunId>,
+        findings: Vec<Finding>,
+    },
+    /// `notify` raised a notification (broadcast); the toast and the spoken line are the daemon's.
+    Notified {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        title: String,
+        #[serde(default)]
+        body: String,
+        urgency: Urgency,
+    },
+    /// Reply to `NotifySettings` (also broadcast on change).
+    NotifyState(NotifyState),
+    /// `send_file` copied a file to the outbox (broadcast): the client shows a file card.
+    FileSent { session: SessionId, file: SentFile },
+    /// `exit_plan` wrote a plan file and waits for `AnswerPlan` (broadcast).
+    PlanReady { session: SessionId, id: String, path: String, text: String },
+    /// `/fast` changed (broadcast).
+    FastChanged { session: SessionId, state: FastState },
+    /// Reply to `SuggestRules`.
+    RuleSuggestions { list: Vec<RuleSuggestion> },
+    /// Work the last window close interrupted, offered at the next launch to a screen client
+    /// (`summary` is the tally, `2 crew runs, 1 workflow`). Answered with `ResumeInterrupted`.
+    Interrupted { runs: Vec<InterruptedRun>, summary: String },
+    /// Whether the daemon runs on after the window closes (broadcast on change; the reply to
+    /// `KeepRunning`).
+    KeepRunning { on: bool },
+    /// The daemon is closing everything (a closed window or a stop choice): work is paused, models
+    /// unloaded and state saved before it exits (broadcast, then `ShuttingDown`).
+    Closing { reason: String },
 }
 
 impl Event {
@@ -273,8 +399,25 @@ impl Event {
             | Event::TurnFinished { session, .. }
             | Event::ApprovalRequested { session, .. }
             | Event::Recalled { session, .. }
-            | Event::ContextUsage { session, .. } => Some(session),
-            Event::Error { session, .. } => session.as_ref(),
+            | Event::ContextUsage { session, .. }
+            | Event::ModeChanged { session, .. }
+            | Event::QuestionAsked { session, .. }
+            | Event::Todos { session, .. }
+            | Event::Rewound { session, .. }
+            | Event::Checkpoints { session, .. }
+            | Event::SessionDiff { session, .. }
+            | Event::SessionCost { session, .. }
+            | Event::SessionExported { session, .. }
+            | Event::FileSent { session, .. }
+            | Event::PlanReady { session, .. }
+            | Event::FastChanged { session, .. } => Some(session),
+            Event::Error { session, .. }
+            | Event::JobOutput { session, .. }
+            | Event::JobExited { session, .. }
+            | Event::Findings { session, .. }
+            | Event::Notified { session, .. } => session.as_ref(),
+            Event::JobStarted { job } => job.session.as_ref(),
+            Event::TaskUpdated(task) => task.session.as_ref(),
             _ => None,
         }
     }

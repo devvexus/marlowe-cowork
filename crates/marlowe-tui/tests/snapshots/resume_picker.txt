@@ -1,0 +1,40 @@
+ * marlowe — gate work                                                                                                  0 runs · 0 need you
+╭ Conversation · gate work ──────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ Claude Sonnet 4.5 ▾             medium │
+│                                                                                                ││ ctx ────────────┊──── 0 / 200k · cloud │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
+│                                                                                                │╭ Workspace ─────────────────────────────╮
+│                                                                                                ││ C:/work/valiance ▾                     │
+│                                                                                                │╰────────────────────────────────── (w) ─╯
+│                     ╭ sessions ────────────────────────────────────────────────────────────────────────────────────╮─────────────────────╮
+│                     │ › search sessions                                                                            │                     │
+│                     │                                                                                              │─────────────── (1) ─╯
+│                     │ › fix the gate threshold                        C:/work/valiance      1d ago     7 turns     │─────────────────────╮
+│                     │   paper outline                                 D:/papers             1d ago     7 turns     │                     │
+│                     │   gate eval rerun                               C:/work/valiance      1d ago     7 turns     │                     │
+│                     │                                                                                              │                     │
+│                     ╰──────────────────────────────────────────── type to search · ↑↓ select · ↵ open · esc close ─╯                     │
+│                                                                                                ││                                        │
+│                ask anything  ·  ^o past sessions  ·  ^l library  ·  ^k palette                 ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                                                                                                │╭ Threads ───────────────────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette       Friday 9 October · 21:40

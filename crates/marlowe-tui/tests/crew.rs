@@ -36,6 +36,7 @@ fn run(id: &str, role: &str, title: &str, status: CrewRunStatus) -> CrewRunInfo 
         created_ms: NOW - 20 * 60_000,
         updated_ms: NOW - 60_000,
         result: None,
+        workflow: None,
     }
 }
 
@@ -160,7 +161,7 @@ fn rail_shows_mixed_run_states_most_urgent_first() {
         "step 6 · $0.0213 · scout 2/4",
         "○ scout · find the wnr3",
         "queued",
-        "+2 more · ^r",
+        "+2 more · alt-r",
     ] {
         assert!(contains(&buf, want), "rail is missing {want:?}\n{}", dump(&buf));
     }
@@ -169,7 +170,7 @@ fn rail_shows_mixed_run_states_most_urgent_first() {
 
     // The list (esc out of a run view) shows every run with its status word.
     let mut s = s;
-    s.on_key(ctrl('r'));
+    s.on_key(alt('r'));
     assert_eq!(s.view, View::Crew);
     s.on_key(key(KeyCode::Esc));
     assert!(s.crew.open.is_none());
@@ -183,7 +184,7 @@ fn rail_shows_mixed_run_states_most_urgent_first() {
 #[test]
 fn ctrl_r_opens_the_most_urgent_run_and_streams_its_steps() {
     let mut s = with_runs(vec![research_run()]);
-    let reqs = s.on_key(ctrl('r'));
+    let reqs = s.on_key(alt('r'));
     let id = RunId::from("aa11bb22cc33dd44");
     assert_eq!(reqs, vec![Request::ListRuns { limit: RUN_LIMIT }, Request::WatchRun { run: id.clone() }]);
     assert_eq!(s.crew.open.as_ref().map(|v| &v.run), Some(&id));
@@ -245,7 +246,7 @@ fn research_run_view_renders_the_report() {
         diff: None,
     });
     let mut s = with_runs(vec![r.clone()]);
-    s.on_key(ctrl('r'));
+    s.on_key(alt('r'));
     feed(&mut s, 0, Event::RunTranscript { run: r.clone(), steps: vec![
         CrewStep { step: 1, role: "researcher".into(), action: "plan · 3 sub-questions".into(), text: String::new(), at_ms: NOW - 900_000 },
         CrewStep { step: 9, role: "researcher".into(), action: "synthesize · report.md".into(), text: "(written)".into(), at_ms: NOW - 60_000 },
@@ -276,7 +277,7 @@ fn research_run_view_renders_the_report() {
 #[test]
 fn build_run_view_shows_the_diff_and_merges_only_on_request() {
     let mut s = with_runs(vec![build_run()]);
-    s.on_key(ctrl('r'));
+    s.on_key(alt('r'));
     let id = build_run().id;
     feed(&mut s, 0, Event::RunTranscript { run: build_run(), steps: vec![
         CrewStep { step: 1, role: "engineer".into(), action: "plan".into(), text: "Off-by-one in the sweep bound.".into(), at_ms: NOW - 900_000 },
@@ -309,6 +310,7 @@ fn build_run_view_shows_the_diff_and_merges_only_on_request() {
         summary: "merge crew/ee55ff66 into main (fast-forward)".into(),
         detail: String::new(),
         run: Some(id.clone()),
+        proposed_rule: None,
     });
     let buf = render(&s, W, H);
     assert!(contains(&buf, "from the crew · engineer · fix the gate threshold off-by-one"));
@@ -390,7 +392,7 @@ fn a_run_that_needs_you_toasts_once() {
     // The same state again does not toast twice; opening the run clears its toast.
     feed(&mut s, 5, Event::RunUpdated(build_run()));
     assert_eq!(s.crew.toasts.len(), 1);
-    s.on_key(ctrl('r'));
+    s.on_key(alt('r'));
     assert!(s.crew.toasts.is_empty());
     // A finish toasts green; the result is kept when a later update carries none.
     let mut done = research_run();

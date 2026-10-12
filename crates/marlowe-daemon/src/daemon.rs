@@ -1,5 +1,6 @@
 //! Shared daemon state, startup and shutdown.
 
+use std::any::{Any, TypeId};
 use std::collections::hash_map::Entry as MapEntry;
 use std::collections::HashMap;
 use std::io::{BufReader, Write};
@@ -20,7 +21,7 @@ use marlowe_proto::{
 };
 
 use crate::bus::Bus;
-use crate::session::{self, Enqueue, SessionHandle};
+use crate::session::{self, AskExtras, Enqueue, SessionHandle};
 use crate::store::{self, Store};
 use crate::{lock, now_ms, DaemonConfig, DaemonDeps, DaemonError, ToolHostFactory};
 
@@ -66,6 +67,33 @@ impl Approvals {
     }
 }
 
+/// Daemon-lifetime state for later tracks, one value per type: E's per-session modes and rules,
+/// F's schedules, F2's checkpoint store, J2's experiments, K's MCP registry. Each track keeps its
+/// own type in its own file and reaches it with [`CoreExt::get_or_init`], so no track adds a field
+/// to [`Core`].
+// Unused until those tracks land.
+#[allow(dead_code)]
+#[derive(Default)]
+pub(crate) struct CoreExt {
+    map: Mutex<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
+}
+
+#[allow(dead_code)]
+impl CoreExt {
+    /// The value of type `T`, created by `init` on first use. `init` runs under the map's lock:
+    /// keep it cheap and start slow work on a thread.
+    pub fn get_or_init<T: Any + Send + Sync>(&self, init: impl FnOnce() -> T) -> Arc<T> {
+        let mut map = lock(&self.map);
+        let entry = map.entry(TypeId::of::<T>()).or_insert_with(|| Arc::new(init()));
+        Arc::clone(entry).downcast::<T>().unwrap_or_else(|_| unreachable!("keyed by TypeId"))
+    }
+
+    /// The value of type `T`, if one was created.
+    pub fn get<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        lock(&self.map).get(&TypeId::of::<T>()).cloned().and_then(|v| v.downcast::<T>().ok())
+    }
+}
+
 pub(crate) struct Core {
     pub home: PathBuf,
     pub cfg: DaemonConfig,
@@ -93,6 +121,9 @@ pub(crate) struct Core {
     /// Which interactive clients are here, for the brief's away rule.
     pub presence: crate::brief::Presence,
     pub approvals: Approvals,
+    /// State later tracks keep for the daemon's lifetime (see [`CoreExt`]).
+    #[allow(dead_code)]
+    pub ext: CoreExt,
     /// Cold loads the user approved this run, as `model|resident,…`: the same load beside the
     /// same models is not asked twice.
     pub approved_loads: Mutex<std::collections::HashSet<String>>,
@@ -134,6 +165,11 @@ impl Core {
             return true;
         }
         self.crew.get().is_some_and(|c| c.supervisor.running() > 0)
+    }
+
+    /// Whether the live session `id` has a turn running; `None` when it is not live.
+    pub fn live_busy(&self, id: &SessionId) -> Option<bool> {
+        lock(&self.sessions).get(id).map(|h| h.is_busy())
     }
 
     /// True while `id` has a running session runner (its conversation lives in memory).
@@ -228,6 +264,11 @@ impl Core {
     pub fn evict_if_idle(&self, handle: &Arc<SessionHandle>) -> bool {
         let mut map = lock(&self.sessions);
         let current = map.get(&handle.id).is_some_and(|h| Arc::ptr_eq(h, handle));
+        // A session with background jobs running or notices waiting keeps its tool host, which
+        // owns the jobs (track B).
+        if crate::job_ops::keeps_session(&handle.id) {
+            return false;
+        }
         if !current {
             return handle.close_if_idle();
         }
@@ -249,6 +290,18 @@ impl Core {
 
     /// Handles `Ask`: starts a turn, or queues the text when the session is busy.
     pub fn ask(self: &Arc<Self>, client: u64, session: Option<SessionId>, text: String, workspace: Option<String>) -> Result<(), Refusal> {
+        self.ask_with(client, session, text, workspace, AskExtras::default())
+    }
+
+    /// [`Self::ask`] with attached images and `marlowe -p`'s options.
+    pub(crate) fn ask_with(
+        self: &Arc<Self>,
+        client: u64,
+        session: Option<SessionId>,
+        text: String,
+        workspace: Option<String>,
+        extras: AskExtras,
+    ) -> Result<(), Refusal> {
         if text.trim().is_empty() {
             return Err((session, "nothing to send".into()));
         }
@@ -270,10 +323,10 @@ impl Core {
             });
         }
         let refuse = |m: String| (Some(handle.id.clone()), m);
-        match handle.enqueue(text.clone()) {
+        match handle.enqueue_with(text.clone(), extras.clone()) {
             Ok(()) => Ok(()),
             // The runner went idle and exited after we looked it up: load it again.
-            Err(Enqueue::Closed) => self.session(&handle.id)?.enqueue(text).map_err(|e| refuse(e.to_string())),
+            Err(Enqueue::Closed) => self.session(&handle.id)?.enqueue_with(text, extras).map_err(|e| refuse(e.to_string())),
             Err(e) => Err(refuse(e.to_string())),
         }
     }
@@ -293,6 +346,62 @@ impl Core {
         self.bus.reply(client, Event::SessionOpened { session: id.clone(), title: summary.title, workspace: summary.workspace });
         self.bus.reply(client, Event::Transcript { session: id.clone(), turns });
         Ok(())
+    }
+}
+
+/// What a test or the binary can reach of a running daemon beyond the wire: [`Daemon::wait`]
+/// consumes the daemon, this does not.
+#[derive(Clone)]
+pub struct DaemonControl {
+    core: Arc<Core>,
+}
+
+impl DaemonControl {
+    /// The background operations a session's tools reach (schedules, messages, notifications,
+    /// the outbox, notices, watches). The real tools get theirs from the session's services.
+    pub fn background(&self) -> Arc<dyn marlowe_agent::BackgroundOps> {
+        self.background_with(None, None)
+    }
+
+    /// The same, with the session's hook runner (the Notification hook fires on `notify`) and an
+    /// asker for the first-message-to-a-session question.
+    pub fn background_with(
+        &self,
+        hooks: Option<Arc<marlowe_agent::hooks::HookRunner>>,
+        questions: Option<marlowe_agent::todo::Questions>,
+    ) -> Arc<dyn marlowe_agent::BackgroundOps> {
+        Arc::new(crate::bg_ops::DaemonBackground { core: self.core.clone(), hooks, questions })
+    }
+
+    /// What replaces the toast, the voice and the file opener (tests).
+    pub fn notify_hooks(&self) -> crate::NotifyHooks {
+        crate::NotifyHooks(crate::notify_ops::notify_state(&self.core))
+    }
+
+    /// What replaces the tray icon and the model unloader, and the log of a close (tests).
+    pub fn close_hooks(&self) -> crate::CloseHooks {
+        crate::CloseHooks(crate::close_ops::close_state_of(&self.core))
+    }
+
+    /// The task registry.
+    pub fn tasks(&self) -> Arc<dyn marlowe_agent::TaskRegistry> {
+        crate::tasks::handle(&self.core)
+    }
+
+    /// The memory service, when the binary gave the daemon one.
+    pub fn mind(&self) -> Option<marlowe_mind::Mind> {
+        self.core.mind.clone()
+    }
+
+    /// Fires every schedule due at `now` (a fake clock for tests; the daemon's own thread uses
+    /// the real one).
+    pub fn tick_schedules_at(&self, now_ms: i64) {
+        crate::schedule_ops::tick_at(&self.core, now_ms);
+    }
+
+    /// Asks the daemon to stop, as `Request::Shutdown` does.
+    pub fn shutdown(&self) {
+        self.core.request_shutdown();
     }
 }
 
@@ -348,6 +457,7 @@ impl Daemon {
             crew: OnceLock::new(),
             presence: Default::default(),
             approvals: Approvals::default(),
+            ext: CoreExt::default(),
             approved_loads: Mutex::new(Default::default()),
             sessions: Mutex::new(HashMap::new()),
             started: Instant::now(),
@@ -374,6 +484,8 @@ impl Daemon {
                 Err(e) => eprintln!("marlowe: {e}"),
             }
         }
+        // Per-track start hooks (schedules, experiment deadlines, MCP servers).
+        crate::boot::run(&core);
         DaemonInfo { port: addr.port(), token, pid: std::process::id() }.write(home)?;
         let acore = core.clone();
         let acceptor = std::thread::Builder::new().name("marlowe-accept".into()).spawn(move || {
@@ -397,6 +509,18 @@ impl Daemon {
 
     pub fn addr(&self) -> SocketAddr {
         self.core.addr
+    }
+
+    /// The background task registry (design 3.12): what the `task_*` tools and the `/tasks` panel
+    /// list. The binary and tests register tasks through it.
+    pub fn tasks(&self) -> Arc<dyn marlowe_agent::TaskRegistry> {
+        crate::tasks::handle(&self.core)
+    }
+
+    /// A handle for tests and the binary: the daemon's background operations, notification and
+    /// close hooks, and a fake clock for schedules. It stays valid while `wait` runs.
+    pub fn control(&self) -> DaemonControl {
+        DaemonControl { core: self.core.clone() }
     }
 
     /// What `daemon.json` says.
@@ -424,16 +548,22 @@ impl Daemon {
         if let Some(a) = self.acceptor.take() {
             let _ = a.join();
         }
+        // 1. Pause: running turns and crew runs are told to stop where they are (in-flight model
+        // requests end now; every completed step stays checkpointed).
         let handles: Vec<Arc<SessionHandle>> = lock(&core.sessions).values().cloned().collect();
         for h in &handles {
             h.stop();
         }
-        // Before approvals are denied: a run waiting on one sees the stop, not a refusal.
-        crate::crew::shutdown(&core);
+        // `pause` sets every run's stop flag before approvals are denied, so a run waiting on one
+        // wakes to a stop (the runner reads the flag before the refusal), not a refusal; the wait
+        // for the threads is in `settle`, after the models are unloaded.
+        let in_flight = crate::close_ops::pause(&core);
         core.approvals.deny_all();
-        if let Some(v) = &core.voice {
-            v.shutdown();
-        }
+        // 2. Unload: the models Marlowe loaded and the voice sidecar go before anything is saved,
+        // so the GPU is free within seconds of the close.
+        crate::close_ops::unload(&core);
+        // 3. Save: the crew's runs, then the sessions, the journal and the memory snapshot.
+        crate::close_ops::settle(&core, &in_flight);
         if let Some(s) = &core.sentinel {
             s.shutdown();
         }
@@ -454,6 +584,8 @@ impl Daemon {
             let _ = s.join();
         }
         DaemonInfo::remove_if_ours(&core.home, std::process::id())?;
+        // 4. Exit.
+        crate::close_ops::finished(&core);
         Ok(())
     }
 }
@@ -488,4 +620,23 @@ fn probe(info: &DaemonInfo) -> bool {
     );
     let _ = s.flush();
     ok
+}
+
+#[cfg(test)]
+mod ext_tests {
+    use super::CoreExt;
+
+    #[derive(Default)]
+    struct Modes(std::sync::Mutex<Vec<String>>);
+
+    #[test]
+    fn core_ext_keeps_one_value_per_type_for_the_daemons_life() {
+        let ext = CoreExt::default();
+        assert!(ext.get::<Modes>().is_none());
+        ext.get_or_init(Modes::default).0.lock().unwrap().push("plan".into());
+        let again = ext.get_or_init(|| -> Modes { unreachable!("created once") });
+        assert_eq!(*again.0.lock().unwrap(), vec!["plan".to_string()]);
+        assert_eq!(*ext.get_or_init(|| 7u32), 7);
+        assert!(ext.get::<Modes>().is_some());
+    }
 }

@@ -27,6 +27,8 @@ pub enum ClientEvent {
     Disconnected { reason: String, attempt: u32 },
     /// The daemon refused the token.
     Refused(String),
+    /// A worker finished something the state asked for (see [`crate::coding::Effect`]).
+    Local(crate::coding::LocalEvent),
 }
 
 /// Connection status.
@@ -78,6 +80,13 @@ pub enum Entry {
     Recall { count: u32, summary: String },
     /// The Wake brief, with the directories it offers to watch.
     Brief { text: String, offers: Vec<marlowe_proto::WatchCandidate> },
+    /// A background job or the user's `!` shell: its command and what it has printed.
+    Job { id: String, command: String, output: String, code: Option<i32> },
+    /// News from background work (a monitor's lines, a job that ended, a schedule that fired, a
+    /// crew run's result, a message from another session): not the user's words.
+    News { label: String, text: String },
+    /// A file the agent sent with `send_file`.
+    File { file: marlowe_proto::SentFile },
 }
 
 /// A turn in flight in the open session.
@@ -168,6 +177,10 @@ pub struct Approval {
     pub detail: String,
     /// The crew run asking, when it is one; `session` is then the run's parent.
     pub run: Option<RunId>,
+    /// The rule "always allow" would add, when the daemon proposes one.
+    pub proposed_rule: Option<String>,
+    /// The edit this call makes, when the arguments are an edit, a multi-edit or a write.
+    pub diff: Option<crate::diff::Diff>,
 }
 
 /// Full-screen views.
@@ -178,7 +191,7 @@ pub enum View {
     Memory,
     /// Watch roots, runs, notices and discovery offers (^w).
     Watch,
-    /// Crew runs: the list, or one run's view (^r).
+    /// Crew runs: the list, or one run's view (alt-r).
     Crew,
 }
 
@@ -275,6 +288,8 @@ pub enum Target {
     AddModel,
     /// An approval button, left to right.
     Button(usize),
+    /// A button of the quit or resume modal. Not `Button`: an approval can sit under the modal.
+    ChoiceButton(usize),
     /// The Run view's steer line.
     Steer,
     /// The Model box's context meter: opens the planner.
@@ -287,6 +302,8 @@ pub enum Target {
     PlanField(crate::context::PlanField),
     /// A reasoning block's fold marker, by entry index: opens or closes it.
     Thought(usize),
+    /// "Remember my choice" in the quit dialog.
+    Remember,
     /// A control on a research plan that waits for the user: the main window's banner and the
     /// Run view's plan panel.
     Plan(RunId, crate::crew::PlanAction),
@@ -314,10 +331,35 @@ pub enum Command {
     ToggleThinking,
     Interrupt,
     Quit,
+    Transcript,
+    HistorySearch,
+    CycleMode,
+    CycleEffort,
+    Background,
+    Config,
+    Permissions,
+    Hooks,
+    Agents,
+    Mcp,
+    Instructions,
+    ContextUsage,
+    Cost,
+    Diff,
+    Rewind,
+    Jobs,
+    Todos,
+    Help,
+    Tasks,
+    Workflows,
+    Findings,
+    Files,
+    Messages,
+    Bench,
+    Fast,
 }
 
 impl Command {
-    pub const ALL: [Command; 17] = [
+    pub const ALL: [Command; 42] = [
         Command::NewSession,
         Command::Sessions,
         Command::Model,
@@ -335,6 +377,31 @@ impl Command {
         Command::ToggleThinking,
         Command::Interrupt,
         Command::Quit,
+        Command::Transcript,
+        Command::HistorySearch,
+        Command::CycleMode,
+        Command::CycleEffort,
+        Command::Background,
+        Command::Config,
+        Command::Permissions,
+        Command::Hooks,
+        Command::Agents,
+        Command::Mcp,
+        Command::Instructions,
+        Command::ContextUsage,
+        Command::Cost,
+        Command::Diff,
+        Command::Rewind,
+        Command::Jobs,
+        Command::Todos,
+        Command::Help,
+        Command::Tasks,
+        Command::Workflows,
+        Command::Findings,
+        Command::Files,
+        Command::Messages,
+        Command::Bench,
+        Command::Fast,
     ];
 
     pub fn label(self) -> &'static str {
@@ -356,20 +423,45 @@ impl Command {
             Command::ToggleThinking => "Show or hide thinking",
             Command::Interrupt => "Interrupt the running turn",
             Command::Quit => "Quit",
+            Command::Transcript => "Transcript — every tool call in full",
+            Command::HistorySearch => "Search your earlier prompts",
+            Command::CycleMode => "Permission mode — next",
+            Command::CycleEffort => "Thinking effort — next",
+            Command::Background => "Move the running command to the background",
+            Command::Config => "Config — settings",
+            Command::Permissions => "Permissions — allow, ask, deny rules",
+            Command::Hooks => "Hooks",
+            Command::Agents => "Agents — types the agent tool can start",
+            Command::Mcp => "MCP servers",
+            Command::Instructions => "Instructions — MARLOWE.md and friends, in your editor",
+            Command::ContextUsage => "Context usage — how full, and with what",
+            Command::Cost => "Cost — tokens and spend this session",
+            Command::Diff => "Diff — what this session changed",
+            Command::Rewind => "Rewind — back to an earlier turn",
+            Command::Jobs => "Background jobs",
+            Command::Todos => "Show or hide the todo list",
+            Command::Help => "Help — keys and commands",
+            Command::Tasks => "Tasks — everything running in the background",
+            Command::Workflows => "Workflows — progress, skip an agent, saved scripts",
+            Command::Findings => "Findings — the last code review",
+            Command::Files => "Files — what the agent sent you",
+            Command::Messages => "Messages — threads to crew runs and agents",
+            Command::Bench => "Bench and eval reports",
+            Command::Fast => "Fast — run the conductor on the Quick model",
         }
     }
 
     pub fn chord(self) -> &'static str {
         match self {
             Command::NewSession => "^n",
-            Command::Sessions => "^o",
+            Command::Sessions => "alt-s",
             Command::Model => "",
             Command::Workspace => "",
             Command::Library => "^l",
             Command::Context => "",
             Command::Memory => "^g",
             Command::Watch => "^w",
-            Command::Crew => "^r",
+            Command::Crew => "alt-r",
             Command::Dispatch => "^d",
             Command::Brief => "",
             Command::ToggleVoice => "alt-v",
@@ -378,6 +470,31 @@ impl Command {
             Command::ToggleThinking => "^t",
             Command::Interrupt => "esc",
             Command::Quit => "^q",
+            Command::Transcript => "^o",
+            Command::HistorySearch => "^r",
+            Command::CycleMode => "shift-tab",
+            Command::CycleEffort => "alt-t",
+            Command::Background => "^b",
+            Command::Config => "/config",
+            Command::Permissions => "/permissions",
+            Command::Hooks => "/hooks",
+            Command::Agents => "/agents",
+            Command::Mcp => "/mcp",
+            Command::Instructions => "/memory",
+            Command::ContextUsage => "/context",
+            Command::Cost => "/cost",
+            Command::Diff => "/diff",
+            Command::Rewind => "/rewind",
+            Command::Jobs => "/jobs",
+            Command::Todos => "/todos",
+            Command::Help => "/help",
+            Command::Tasks => "/tasks",
+            Command::Workflows => "/workflows",
+            Command::Findings => "/findings",
+            Command::Files => "/files",
+            Command::Messages => "/messages",
+            Command::Bench => "/bench",
+            Command::Fast => "/fast",
         }
     }
 }
@@ -396,6 +513,12 @@ pub enum Overlay {
     Onboard,
     /// The ^d dispatch prompt; its state is `State::crew.prompt`.
     Dispatch,
+    /// A coding panel (`/config`, the transcript, `ask_user`, ...); its state is
+    /// `State::code.panel`.
+    Panel,
+    /// A question with buttons: quit with work running, or resume what a close interrupted. What
+    /// it asks is `State::closing.dialog`.
+    Choice { sel: usize },
     /// The context and hardware planner for `model`: the field ←/→ adjust, the policy being
     /// edited (`None` until the plan arrives), and whether the review screen is up.
     ContextPlan {
@@ -428,12 +551,56 @@ pub const APPROVAL_DETAIL_WIDTH: usize = 72;
 impl Approval {
     /// The detail as the modal shows it: cleaned, `key  value` lines for JSON args, wrapped.
     pub fn detail_lines(&self) -> Vec<String> {
+        // A plan is prose: shown as written, not as a `plan  ...` argument row.
+        if self.tool == "exit_plan" {
+            if let Ok(serde_json::Value::Object(m)) = serde_json::from_str::<serde_json::Value>(self.detail.trim()) {
+                if let Some(plan) = m.get("plan").and_then(serde_json::Value::as_str) {
+                    return crate::text::wrap(&crate::text::clean(plan.trim()), APPROVAL_DETAIL_WIDTH);
+                }
+            }
+        }
         crate::text::wrap(&crate::text::clean(&readable_detail(&self.detail)), APPROVAL_DETAIL_WIDTH)
+    }
+
+    /// For an approval shown as a diff: the arguments the diff does not show (`replace_all`), so
+    /// the modal never says less than the call does.
+    pub fn extra_lines(&self) -> Vec<String> {
+        if self.diff.is_none() {
+            return Vec::new();
+        }
+        let Ok(args) = serde_json::from_str::<serde_json::Value>(self.detail.trim()) else { return Vec::new() };
+        crate::diff::unshown_args(&args).iter().flat_map(|l| crate::text::wrap(l, APPROVAL_DETAIL_WIDTH)).collect()
+    }
+
+    /// Rows the detail takes: the diff of an edit, else the wrapped arguments.
+    pub fn detail_len(&self) -> usize {
+        match &self.diff {
+            Some(d) => self.extra_lines().len() + crate::diff::render(d, crate::diff::Layout::full(APPROVAL_DETAIL_WIDTH), &marlowe_surface::Theme::default_truecolor()).lines.len(),
+            None => self.detail_lines().len(),
+        }
     }
 
     /// Largest useful detail scroll.
     pub fn detail_scroll_max(&self) -> usize {
-        self.detail_lines().len().saturating_sub(APPROVAL_DETAIL_ROWS)
+        self.detail_len().saturating_sub(APPROVAL_DETAIL_ROWS)
+    }
+
+    /// What the buttons are: allow, then (when the daemon proposed a rule) allow-this-rule for the
+    /// session and for the project, or (with none) allow-for-session, then deny.
+    pub fn choices(&self) -> Vec<ApprovalDecision> {
+        if self.tool == "exit_plan" {
+            // Leaving plan mode is approved or refused: there is nothing to remember.
+            vec![ApprovalDecision::Allow, ApprovalDecision::Deny]
+        } else if self.proposed_rule.is_some() {
+            vec![
+                ApprovalDecision::Allow,
+                ApprovalDecision::AllowPattern { scope: marlowe_proto::SettingsScope::Session },
+                ApprovalDecision::AllowPattern { scope: marlowe_proto::SettingsScope::Local },
+                ApprovalDecision::Deny,
+            ]
+        } else {
+            APPROVAL_CHOICES.to_vec()
+        }
     }
 }
 
@@ -481,7 +648,7 @@ pub struct State {
     /// Text sent with no session yet, shown until its TurnStarted arrives.
     pub pending_user: Option<String>,
     awaiting_new: bool,
-    pending_open: Option<SessionId>,
+    pub(crate) pending_open: Option<SessionId>,
 
     pub approvals: Vec<Approval>,
     pub approval_sel: usize,
@@ -506,8 +673,14 @@ pub struct State {
     pub wake: Wake,
     /// Crew runs, the Run view, the dispatch prompt.
     pub crew: Crew,
+    /// Modes, queued input, history, attachments, the coding panels (M4.6).
+    pub code: crate::coding::Coding,
     /// Context windows, the live meter, the planner's plan.
     pub context: crate::context::ContextUi,
+    /// Quitting, closing the window and resuming what a close interrupted (track N).
+    pub closing: crate::closing::Closing,
+    /// Background tasks, workflows, findings, files, plans, threads (M4.6 wave 2, track H3).
+    pub bg: crate::bg::Bg,
 
     pub view: View,
     /// Which box on the conversation screen has the keys.
@@ -596,7 +769,10 @@ impl State {
             onboard: Onboard::Idle,
             wake: Wake::default(),
             crew: Crew::default(),
+            code: crate::coding::Coding::default(),
             context: crate::context::ContextUi::default(),
+            closing: Default::default(),
+            bg: Default::default(),
             view: View::Conversation,
             focus: Focus::Message,
             board_tab: BoardTab::Crew,
@@ -717,7 +893,7 @@ impl State {
     /// Resets the modal for whatever approval is now at the front: Deny selected, detail at the
     /// top, the type-ahead guard restarted.
     pub(crate) fn front_approval_changed(&mut self) {
-        self.approval_sel = APPROVAL_DENY;
+        self.approval_sel = self.approvals.first().map_or(APPROVAL_DENY, |a| a.choices().len() - 1);
         self.approval_since_ms = self.now_ms;
         self.approval_scroll = 0;
         self.approval_read = self.approvals.first().is_some_and(|a| a.detail_scroll_max() == 0);
@@ -727,7 +903,7 @@ impl State {
         self.flash = Some(Flash { text: text.into(), tone });
     }
 
-    fn mine(&self, s: &SessionId) -> bool {
+    pub(crate) fn mine(&self, s: &SessionId) -> bool {
         self.session.as_ref() == Some(s)
     }
 
@@ -780,6 +956,7 @@ impl State {
         self.live = None;
         self.pending_user = None;
         self.awaiting_new = false;
+        self.bg.reset_session();
         self.follow_tail();
     }
 
@@ -805,6 +982,11 @@ impl State {
                 self.conn = Conn::Refused(msg);
                 Vec::new()
             }
+            ClientEvent::Local(ev) => {
+                let mut out = Vec::new();
+                self.local_event(ev, &mut out);
+                out
+            }
         }
     }
 
@@ -825,11 +1007,12 @@ impl State {
             }
             self.last_seq = env.seq;
         }
+        self.closing_observe(&env.event);
         self.event(&env.event, env.at_ms, env.seq == 0, &mut out);
         out
     }
 
-    fn reload(&mut self, out: &mut Vec<Request>) {
+    pub(crate) fn reload(&mut self, out: &mut Vec<Request>) {
         if let Some(s) = self.session.clone() {
             self.live = None;
             self.pending_open = Some(s.clone());
@@ -860,6 +1043,14 @@ impl State {
                 out.push(Request::LibraryState);
                 out.push(Request::ContextPolicies);
                 self.wake_probes(out);
+                self.code.bootstrapped = false;
+            }
+            Event::SessionOpened { session, .. } if reply && self.code.expect_fork && !self.mine(session) => {
+                // `/fork`: the copy opens here.
+                self.code.expect_fork = false;
+                self.reset_conversation();
+                self.expect_open(session.clone());
+                out.push(Request::OpenSession { session: session.clone() });
             }
             Event::SessionOpened { session, title, workspace } => {
                 // Only a seq-0 reply is the session our Ask created; a broadcast may be another
@@ -877,6 +1068,7 @@ impl State {
                     self.title = Some(title.clone()).filter(|t| !t.is_empty());
                     self.workspace = workspace.clone();
                     self.awaiting_new = false;
+                    self.session_adopted(out);
                 }
             }
             Event::SessionList { sessions } => {
@@ -885,6 +1077,14 @@ impl State {
                     *sel = (*sel).min(sessions.len().saturating_sub(1));
                 }
             }
+            // The details of this session's tool calls, asked for after a turn: only the details
+            // are taken; the conversation on screen is not rebuilt.
+            Event::Transcript { session, turns }
+                if self.pending_open.as_ref() != Some(session) && self.mine(session) && self.code.detail_refresh.as_ref() == Some(session) =>
+            {
+                self.code.detail_refresh = None;
+                self.merge_tool_details(turns);
+            }
             Event::Transcript { session, turns } => {
                 if self.pending_open.as_ref() == Some(session) || self.mine(session) {
                     self.pending_open = None;
@@ -892,6 +1092,7 @@ impl State {
                     self.entries = entries_from_transcript(turns);
                     self.forget_folds();
                     self.epoch = self.epoch.wrapping_add(1);
+                    self.code.tool_detail = transcript_details(turns);
                     self.live = None;
                     self.pending_user = None;
                     self.follow_tail();
@@ -900,16 +1101,17 @@ impl State {
             }
             Event::TurnStarted { session, turn, model, user } => {
                 if self.mine(session) {
-                    if self.title.is_none() {
+                    if self.title.is_none() && !crate::bg::is_news(user) {
                         self.title = Some(first_line(user));
                     }
                     self.close_thinking(at_ms);
                     self.pending_user = None;
+                    self.code.interrupting = false;
                     // A steer typed here is already on screen; do not show it twice.
                     let shown = matches!(self.entries.last(),
                         Some(Entry::User { text, .. }) if text == user);
                     if !shown {
-                        self.entries.push(Entry::User { text: user.clone(), steer: false });
+                        self.entries.push(user_entry(user.clone()));
                     }
                     self.live = Some(LiveTurn { turn: *turn, model: model.clone(), started_ms: at_ms });
                     self.follow_tail();
@@ -925,7 +1127,7 @@ impl State {
             // `tokens` counts this delta only. A provider may settle the count with an empty delta
             // after the answer began; that goes to this turn's last thinking line.
             Event::ReasoningDelta { session, text, tokens, .. } if self.mine(session) && text.is_empty() => {
-                let open = self.entries.iter_mut().rev().take_while(|e| !matches!(e, Entry::User { .. }));
+                let open = self.entries.iter_mut().rev().take_while(|e| !matches!(e, Entry::User { .. } | Entry::News { .. }));
                 for e in open {
                     if let Entry::Thinking { tokens: n, .. } = e {
                         *n += *tokens;
@@ -962,6 +1164,7 @@ impl State {
             }
             Event::ToolStarted { session, call_id, tool, summary, .. } if self.mine(session) => {
                 self.close_thinking(at_ms);
+                self.record_tool_start(call_id, tool, summary);
                 let summary = if summary.trim().is_empty() { tool.clone() } else { summary.clone() };
                 self.entries.push(Entry::Tool {
                     call_id: call_id.clone(),
@@ -970,10 +1173,13 @@ impl State {
                 });
             }
             Event::ToolFinished { session, call_id, ok, summary, .. } if self.mine(session) => {
+                // The first line is the tool line; any more is the call's output or its diff.
+                let (first, rest) = split_summary(summary);
+                self.record_tool_finish(call_id, *ok, &rest);
                 let status = if *ok {
-                    ToolStatus::Done(summary.clone())
+                    ToolStatus::Done(first)
                 } else {
-                    ToolStatus::Failed(summary.clone())
+                    ToolStatus::Failed(first)
                 };
                 let found = self.entries.iter_mut().rev().find_map(|e| match e {
                     Entry::Tool { call_id: c, status: s, .. } if c == call_id => Some(s),
@@ -987,6 +1193,8 @@ impl State {
                         status,
                     }),
                 }
+                // A step boundary: what the user queued while the model worked goes in now.
+                self.flush_queue(out);
             }
             Event::TurnFinished { session, usage, stop, .. } if self.mine(session) => {
                 self.close_thinking(at_ms);
@@ -1005,14 +1213,28 @@ impl State {
                     self.entries.push(Entry::Usage { usage: *usage });
                 }
                 self.live = None;
+                self.add_totals(usage);
+                self.code.interrupting = false;
+                if *stop == TurnStop::Interrupted {
+                    // The user stopped the model: what was queued is theirs to resend, not ours.
+                    self.queue_back_to_composer();
+                } else {
+                    // Nothing is left to steer: queued messages start the next turn.
+                    self.flush_queue(out);
+                }
+                self.refresh_tool_details(out);
                 // The runner may have loaded, reloaded or partly offloaded: refresh the meter.
                 if self.conn.is_online() {
                     out.push(Request::ContextPolicies);
                 }
             }
-            Event::ApprovalRequested { approval, session, tool, summary, detail, run } => {
+            Event::ApprovalRequested { approval, session, tool, summary, detail, run, proposed_rule } => {
                 if !self.approvals.iter().any(|a| a.id == *approval) {
                     let first = self.approvals.is_empty();
+                    let diff = serde_json::from_str::<serde_json::Value>(detail.trim())
+                        .ok()
+                        .and_then(|args| crate::diff::from_tool_call(tool, &args))
+                        .or_else(|| crate::diff::looks_like_diff(detail).then(|| crate::diff::parse_unified(detail)).flatten());
                     self.approvals.push(Approval {
                         id: *approval,
                         session: session.clone(),
@@ -1020,6 +1242,8 @@ impl State {
                         summary: summary.clone(),
                         detail: detail.clone(),
                         run: run.clone(),
+                        proposed_rule: proposed_rule.clone().filter(|r| !r.trim().is_empty()),
+                        diff,
                     });
                     if first {
                         self.front_approval_changed();
@@ -1112,6 +1336,7 @@ impl State {
                 }
             }
             Event::Status(_) => {}
+            Event::Interrupted { .. } | Event::KeepRunning { .. } | Event::Closing { .. } => self.closing_event(ev),
             Event::Brief { text, offers, .. } => self.on_brief(text, offers),
             Event::Notice(n) => self.on_notice(n),
             Event::Notices { list } => self.on_notices(list),
@@ -1134,7 +1359,18 @@ impl State {
             Event::Roles { list } => self.on_roles(list),
             Event::ResearchProgress { run, progress } => self.crew.on_research(run, progress),
             Event::PlanProposed { run, plan, quote } => self.on_plan_proposed(run, plan, quote),
+            Event::Error { message, .. } if reply && message.contains("is not available yet (M4.6") => self.unavailable(message),
             Event::Error { session: None, message } if self.absorb_absent(message) => {}
+            // The daemon refused a trust whose digest no longer matches the project's files: the
+            // message is shown, and the listing (with its new digest) is asked for again.
+            Event::Error { session: None, message } if message.contains("changed since you looked") => {
+                self.code.hooks_confirm = None;
+                self.code.hooks_digest = None;
+                self.flash(crate::text::clean(message), NoteTone::Amber);
+                if let Some(ws) = self.shown_workspace().map(str::to_string) {
+                    out.push(Request::ListHooks { workspace: Some(ws) });
+                }
+            }
             Event::Error { session: None, message } if self.context.loading.is_some() && message.starts_with("context plan") => {
                 self.context.loading = None;
                 self.context.error = Some(crate::text::clean(message));
@@ -1170,8 +1406,8 @@ impl State {
             Event::ShuttingDown => {
                 self.conn = Conn::Offline { reason: "the daemon is shutting down".into(), attempt: 0 };
             }
-            // Session events for other sessions.
-            _ => {}
+            // Session events for other sessions, and the M4.6 events.
+            other => self.coding_event(other, reply, out),
         }
     }
 
@@ -1212,7 +1448,7 @@ impl State {
                 Entry::Tool { status: ToolStatus::Running, .. } => return Activity::Running,
                 Entry::Thinking { live: true, .. } => return Activity::Thinking,
                 Entry::Prose { .. } => return Activity::Writing,
-                Entry::User { .. } => return Activity::Thinking,
+                Entry::User { .. } | Entry::News { .. } => return Activity::Thinking,
                 _ => {}
             }
         }
@@ -1253,6 +1489,14 @@ impl Activity {
     }
 }
 
+/// A user-role text as an entry: the user's words, or news from background work.
+pub fn user_entry(text: String) -> Entry {
+    match crate::bg::news_label(&text) {
+        Some(label) => Entry::News { label, text },
+        None => Entry::User { text, steer: false },
+    }
+}
+
 fn first_line(s: &str) -> String {
     crate::text::truncate(s.lines().next().unwrap_or("").trim(), 60)
 }
@@ -1273,7 +1517,7 @@ pub fn entries_from_transcript(turns: &[StoredTurn]) -> Vec<Entry> {
                     .collect::<Vec<_>>()
                     .join("\n");
                 if !text.is_empty() {
-                    out.push(Entry::User { text, steer: false });
+                    out.push(user_entry(text));
                 }
             }
             Role::Assistant => {
@@ -1335,11 +1579,62 @@ pub fn entries_from_transcript(turns: &[StoredTurn]) -> Vec<Entry> {
     out
 }
 
-/// `read src/main.rs` from a stored call: the tool name and its first string argument.
+/// `read src/main.rs` from a stored call: the tool name and the argument that says what it did
+/// (the command, the pattern or the path), else its first string argument.
 fn describe_call(name: &str, args: &serde_json::Value) -> String {
-    let first = args.as_object().and_then(|o| o.values().find_map(|v| v.as_str()));
-    match first {
+    let obj = args.as_object();
+    let pick = ["command", "pattern", "query", "url", "path", "file_path"]
+        .iter()
+        .find_map(|k| obj.and_then(|o| o.get(*k)).and_then(|v| v.as_str()))
+        .or_else(|| obj.and_then(|o| o.values().find_map(|v| v.as_str())));
+    match pick {
         Some(a) => format!("{name} {}", crate::text::truncate(a.lines().next().unwrap_or(""), 60)),
         None => name.to_string(),
     }
+}
+
+/// A tool summary as the tool line (its first line) and the rest (output or a diff).
+pub fn split_summary(summary: &str) -> (String, String) {
+    match summary.split_once('\n') {
+        Some((first, rest)) => (first.trim_end().to_string(), rest.trim_matches('\n').to_string()),
+        None => (summary.to_string(), String::new()),
+    }
+}
+
+/// What a stored transcript says about each tool call beyond its line: the arguments of an edit as
+/// a diff, and the result text for Ctrl+O.
+pub fn transcript_details(turns: &[StoredTurn]) -> std::collections::HashMap<String, crate::coding::ToolDetail> {
+    use crate::coding::ToolDetail;
+    let mut map: std::collections::HashMap<String, ToolDetail> = std::collections::HashMap::new();
+    for t in turns {
+        for p in &t.content {
+            match p {
+                Part::ToolCall(c) => {
+                    let args = serde_json::to_string_pretty(&c.args).unwrap_or_default();
+                    map.insert(
+                        c.id.clone(),
+                        ToolDetail {
+                            tool: c.name.clone(),
+                            started: format!("{}\n{args}", describe_call(&c.name, &c.args)),
+                            output: String::new(),
+                            diff: crate::diff::from_tool_call(&c.name, &c.args),
+                            ok: None,
+                            full: true,
+                        },
+                    );
+                }
+                Part::ToolResult(r) => {
+                    let d = map.entry(r.call_id.clone()).or_default();
+                    d.full = true;
+                    d.output = r.content.clone();
+                    d.ok = Some(!r.is_error);
+                    if d.diff.is_none() && crate::diff::looks_like_diff(&r.content) {
+                        d.diff = crate::diff::parse_unified(&r.content);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    map
 }

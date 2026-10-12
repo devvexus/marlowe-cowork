@@ -200,6 +200,8 @@ fn runner(crew: &Crew, root: &Path, hooks: Arc<Checkpoints>) -> AgentRunner {
         branch: None,
         base: None,
         repo_digest: None,
+        frozen: Vec::new(),
+        target_dir: None,
     };
     let mut r =
         AgentRunner::new(RunId::new_random(), Roles::builtin(), crew.resolver(), Arc::new(NoTools), sandbox, None);

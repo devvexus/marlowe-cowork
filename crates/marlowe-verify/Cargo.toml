@@ -1,0 +1,22 @@
+[package]
+name = "marlowe-verify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The verification harness: project profiles, services, http_check, browser checks. M4.6 track D."
+
+[dependencies]
+marlowe-os.workspace = true
+marlowe-model.workspace = true
+# https for `http_check` on a remote host; plain http is served by this crate, loopback only.
+marlowe-net.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+regex.workspace = true
+# `.marlowe/project.toml` override.
+toml = "0.8"
+# Screenshots go into the content-addressed blob store (`<home>\blobs\<blake3>`).
+blake3.workspace = true
+# Reads the throwaway database a migration wrote, to report its schema.
+rusqlite.workspace = true

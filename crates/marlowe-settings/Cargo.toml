@@ -1,0 +1,22 @@
+[package]
+name = "marlowe-settings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Layered settings (user, project, local, CLI), permission rules and hooks configuration, .claude/settings.json import. M4.6 track E."
+
+[dependencies]
+# Pre-declared by the seam (M4.6) so wave-1 tracks do not edit this block or Cargo.lock's
+# dependency list for it; integ regenerates Cargo.lock rather than hand-merging it.
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# Track E: the wire types (scopes, modes, rule and hook rows), rule validation, hook matchers
+# (finite-automata regex), the project trust digest, and TOML read/write (toml_edit keeps the
+# user's comments when a rule or key is written). Both TOML crates are already in Cargo.lock.
+marlowe-proto.workspace = true
+marlowe-permission.workspace = true
+regex.workspace = true
+blake3.workspace = true
+toml = "0.8"
+toml_edit = "0.22"

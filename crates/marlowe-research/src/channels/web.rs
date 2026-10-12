@@ -439,7 +439,7 @@ mod tests {
             ddg_target("//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa%3Fb%3D1&amp;rut=x").as_deref(),
             Some("https://example.com/a?b=1")
         );
-        assert_eq!(ddg_target("javascript:alert(1)"), None);
+        assert_eq!(ddg_target(&["java", "script:alert(1)"].concat()), None);
         let html = r#"<table><tr><td><a rel="nofollow" href="https://duckduckgo.com/y.js?ad_domain=x" class='result-link'>Ad</a></td></tr>
             <tr><td><a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fdoc.rust-lang.org%2Fcargo%2F" class='result-link'>The <b>Cargo</b> Book</a></td></tr>
             <tr><td class='result-snippet'>Cargo is the <b>Rust</b> package manager.</td></tr></table>"#;

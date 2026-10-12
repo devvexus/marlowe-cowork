@@ -70,6 +70,7 @@ fn crew_run(id: &str, role: &str, title: &str, status: CrewRunStatus) -> CrewRun
         created_ms: NOW - 20 * 60_000,
         updated_ms: NOW - 60_000,
         result: None,
+        workflow: None,
     }
 }
 
@@ -218,7 +219,7 @@ fn every_view_and_picker_goes_back_on_esc_and_on_backspace() {
             assert!(s.composer.text().is_empty());
         }
         // The crew: the run view, then the list, then the conversation.
-        s.on_key(ctrl('r'));
+        s.on_key(alt('r'));
         assert!(s.crew.open.is_some());
         s.on_key(key(k));
         assert!(s.crew.open.is_none(), "{k:?} leaves the run for the list");
@@ -226,7 +227,7 @@ fn every_view_and_picker_goes_back_on_esc_and_on_backspace() {
         s.on_key(key(k));
         assert_eq!(s.view, View::Conversation);
         // Pickers and panels close.
-        for open in [ctrl('o'), ctrl('k'), ctrl('d')] {
+        for open in [alt('s'), ctrl('k'), ctrl('d')] {
             s.on_key(open);
             assert!(s.overlay.is_some(), "{open:?}");
             s.on_key(key(k));
@@ -263,14 +264,14 @@ fn backspace_edits_what_is_typed_before_it_goes_back() {
 #[test]
 fn j_and_k_move_in_lists() {
     let mut s = busy();
-    s.on_key(ctrl('r'));
+    s.on_key(alt('r'));
     s.on_key(key(KeyCode::Esc));
     assert_eq!(s.crew.sel, 0);
     s.on_key(key(KeyCode::Char('j')));
     assert_eq!(s.crew.sel, 1);
     s.on_key(key(KeyCode::Char('k')));
     assert_eq!(s.crew.sel, 0);
-    s.on_key(ctrl('o'));
+    s.on_key(alt('s'));
     feed(&mut s, 0, Event::SessionList { sessions: vec![] });
     s.on_key(key(KeyCode::Char('j')));
     assert!(matches!(s.overlay, Some(Overlay::Sessions { sel: 0 })), "an empty list stays put");
@@ -387,7 +388,7 @@ fn clicks_open_runs_watch_items_views_and_chords() {
 #[test]
 fn the_crew_list_rows_open_their_runs() {
     let mut s = busy();
-    s.on_key(ctrl('r'));
+    s.on_key(alt('r'));
     s.on_key(key(KeyCode::Esc));
     let buf = frame(&s);
     let (x, y) = find(&buf, "LoRA rank ablations");
@@ -411,6 +412,7 @@ fn approval_buttons_answer_with_a_click() {
             summary: "run the eval".into(),
             detail: "python eval.py".into(),
             run: None,
+            proposed_rule: None,
         },
     );
     let buf = frame(&s);
@@ -592,8 +594,9 @@ fn a_waiting_plan_is_a_banner_in_the_main_window_whose_buttons_answer_it() {
     assert_eq!(s.view, View::Conversation);
     let buf = frame(&s);
     assert!(contains(&buf, "◐ research plan waiting for your approval · researcher · LoRA rank ablations for 22B gates"), "{}", dump(&buf));
-    assert!(contains(&buf, "1 sub-question · ~96k tokens · 12 fetches · 18 min"), "{}", dump(&buf));
-    for b in ["^r review", "approve", "edit", "reject"] {
+    // The quote shares its row with the buttons; at this width its tail is cut (the Run view shows it whole).
+    assert!(contains(&buf, "1 sub-question · ~96k tokens · 12 fetches · 18 m"), "{}", dump(&buf));
+    for b in ["alt-r review", "approve", "edit", "reject"] {
         find_below(&buf, "research plan waiting for your approval", b);
     }
     assert!(contains(&buf, "researcher research plan waiting"), "and a toast:\n{}", dump(&buf));
@@ -623,13 +626,13 @@ fn a_waiting_plan_is_a_banner_in_the_main_window_whose_buttons_answer_it() {
     assert!(geometry(area(), &s).plan_banner.is_none());
 }
 
-/// ^r opens the run whose plan waits (another run also needs the user), with the plan, its quote
+/// alt-r opens the run whose plan waits (another run also needs the user), with the plan, its quote
 /// and its buttons under the header, above the transcript; the buttons click.
 #[test]
 fn ctrl_r_opens_the_waiting_plan_with_its_quote_and_buttons_above_the_transcript() {
     use marlowe_proto::PlanDecision;
     let mut s = plan_waiting();
-    let out = s.on_key(ctrl('r'));
+    let out = s.on_key(alt('r'));
     assert!(out.contains(&Request::WatchRun { run: RunId::from("aa11bb22") }), "{out:?}");
     let info = s.crew.get(&RunId::from("aa11bb22")).unwrap().clone();
     let steps = vec![marlowe_proto::CrewStep { step: 1, role: "researcher".into(), action: "plan".into(), text: "drafted".into(), at_ms: NOW }];
@@ -664,7 +667,7 @@ fn ctrl_r_opens_the_waiting_plan_with_its_quote_and_buttons_above_the_transcript
 fn e_edits_the_plan_and_s_sends_it_as_edited() {
     use marlowe_proto::{ChannelId, PlanDecision};
     let mut s = plan_waiting();
-    s.on_key(ctrl('r'));
+    s.on_key(alt('r'));
     s.on_key(key(KeyCode::Char('e')));
     let buf = frame(&s);
     for want in ["Edit the research plan", "› 1. Which ranks hold accuracy on 7B models?", "+ add a question", "breadth", "‹   3 ›", "depth", "sources", "s send", "esc discard edits"] {
@@ -708,7 +711,7 @@ fn e_edits_the_plan_and_s_sends_it_as_edited() {
 fn the_plan_editor_clicks_and_refuses_a_plan_with_no_questions() {
     use marlowe_proto::PlanDecision;
     let mut s = plan_waiting();
-    s.on_key(ctrl('r'));
+    s.on_key(alt('r'));
     let buf = frame(&s);
     let (x, y) = find_below(&buf, "quote:", "e edit");
     s.on_mouse(click(x, y), area());

@@ -16,10 +16,11 @@ mod role;
 mod run;
 mod runner;
 pub mod sandbox;
-mod shell_policy;
+pub mod shell_policy;
 mod store;
 mod supervisor;
 mod tools;
+mod worktrees;
 
 pub use dispatch::{DispatchArgs, DispatchReceipt, DispatchTools, Estimate, DISPATCH_TOOL};
 pub use marlowe_proto::{
@@ -30,8 +31,11 @@ pub use role::{parse_role, RoleCard, RoleError, RoleSource, Roles, BUILTIN_ROLES
 pub use run::{title_from_goal, Run, StepRecord};
 pub use sandbox::{repo_digest, MergeOutcome, Sandbox, ShellVerdict};
 pub use store::RunStore;
-pub use supervisor::{result_memory, CrewConfig, CrewDeps, CrewEvent, CrewSetup, GpuBusy, RunApprovals, Supervisor};
+pub use supervisor::{
+    result_memory, CrewConfig, CrewDeps, CrewEvent, CrewSetup, GpuBusy, RunApprovals, RunNotice, Supervisor, INTERRUPTED,
+};
 pub use tools::{CrewToolFactory, CrewTools};
+pub use worktrees::GitWorktrees;
 
 /// A crew failure.
 #[derive(Debug, thiserror::Error)]
@@ -60,6 +64,9 @@ pub enum CrewError {
     Step { step: String, message: String },
     #[error("the crew supervisor has stopped")]
     Stopped,
+    /// The operation is declared but its implementation has not landed (a seam stub).
+    #[error("not wired yet: {0}")]
+    NotWired(&'static str),
 }
 
 /// Unix epoch milliseconds.

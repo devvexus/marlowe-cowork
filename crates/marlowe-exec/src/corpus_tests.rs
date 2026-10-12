@@ -82,6 +82,7 @@ fn cfg(robots: &[(&'static str, &'static str)]) -> (CorpusConfig, Arc<FakeRobots
         gate: HostGate::new(),
         robots_http: r.clone(),
         renderer: None,
+        same_host_redirects_only: false,
     };
     (cfg, r)
 }

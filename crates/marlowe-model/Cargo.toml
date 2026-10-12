@@ -3,9 +3,12 @@ name = "marlowe-model"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Provider-neutral chat types and the Provider trait. Serde only; no I/O."
+description = "Provider-neutral chat types and the Provider trait. Serde only, plus the image blob store."
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+blake3.workspace = true
+# In-memory decode, resize and encode for `image.rs` (no codecs beyond these four, no rayon).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }

@@ -733,3 +733,6 @@ fn an_output_cap_override_reaches_the_request() {
     assert_eq!(reqs[0].max_output_tokens, None);
     assert_eq!(reqs[1].max_output_tokens, Some(12_288));
 }
+// Seam extension points (middleware, observers, extensions), reusing the helpers above.
+#[path = "tests_seam.rs"]
+mod seam;

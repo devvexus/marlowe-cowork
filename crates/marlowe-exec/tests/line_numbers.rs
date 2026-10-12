@@ -41,7 +41,7 @@ fn a_read_returns_absolute_line_numbers_not_window_relative_ones() {
 fn a_grep_hit_can_be_turned_into_a_read_without_counting() {
     let ws = Ws::new("ln-grep");
     ws.put("src/a.rs", (1..=40).map(|i| if i == 33 { "NEEDLE here\n".into() } else { format!("filler {i}\n") }).collect::<String>());
-    let g = call(&ws.tools(), "grep", json!({"pattern": "NEEDLE"}));
+    let g = call(&ws.tools(), "grep", json!({"pattern": "NEEDLE", "output_mode": "content"}));
     assert_eq!(g.content.lines().next(), Some("src/a.rs:33:NEEDLE here"), "{}", g.content);
     let r = call(&ws.tools(), "read", json!({"path": "src/a.rs", "range": "33-33"}));
     assert!(r.content.starts_with(&format!("{}NEEDLE here", prefix(33))));
@@ -56,9 +56,9 @@ fn the_byte_ceiling_is_measured_on_the_numbered_body_and_the_notice_is_unnumbere
     assert!(body.len() <= READ_WINDOW_BYTES, "{} > {}", body.len(), READ_WINDOW_BYTES);
     assert!(body.ends_with("w
 "), "cut on a whole line");
-    assert!(notice.contains("Continue with range"));
     let last: usize = body.lines().last().unwrap().split('\t').next().unwrap().trim().parse().unwrap();
-    assert!(notice.contains(&format!("range \"{}-", last + 1)), "{notice}");
+    // A window continues by offset, as in Claude Code.
+    assert!(notice.contains(&format!("Continue with offset {}", last + 1)), "{notice}");
 }
 
 #[test]
@@ -123,8 +123,9 @@ fn a_crlf_file_survives_a_read_and_the_snippet_it_returns_still_edits() {
     let ws = Ws::new("ln-crlf");
     ws.put("c.txt", "one\r\ntwo\r\nthree\r\n");
     let r = call(&ws.tools(), "read", json!({"path": "c.txt"}));
+    // `read` shows CRLF as LF; the edit below still lands on the CRLF file.
     let snippet = strip_line_numbers(r.content.trim_end()).expect("numbered");
-    assert!(snippet.contains("\r\n"), "terminators preserved");
+    assert!(snippet.contains("two\nthree"), "{snippet}");
     let snippet = "two\r\nthree";
     let o = call(&ws.tools(), "edit", json!({"path": "c.txt", "replacing": snippet, "content": "2\r\n3"}));
     assert!(!o.is_error, "{}", o.content);
@@ -135,8 +136,11 @@ fn a_crlf_file_survives_a_read_and_the_snippet_it_returns_still_edits() {
 fn an_lf_snippet_against_a_crlf_file_is_diagnosed_as_line_endings() {
     let ws = Ws::new("ln-lf-vs-crlf");
     ws.put("c.txt", "one\r\ntwo\r\nthree\r\n");
+    // The line-ending tier applies it and says so; the file keeps its CRLF terminators.
     let o = call(&ws.tools(), "edit", json!({"path": "c.txt", "replacing": "one\ntwo", "content": "x"}));
-    assert!(o.is_error && o.content.contains("CRLF") && o.content.contains("line 1"), "{}", o.content);
+    assert!(!o.is_error, "{}", o.content);
+    assert!(o.content.contains("normalising line endings"), "{}", o.content);
+    assert_eq!(ws.get("c.txt"), "x\r\nthree\r\n");
 }
 
 #[test]

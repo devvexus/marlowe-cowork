@@ -41,6 +41,16 @@ pub enum NoticeSource {
     Gpu,
     /// A discovery candidate (offered, never auto-added).
     Discovery,
+    /// CI on a pushed branch (track J).
+    Ci,
+    /// The experiments bridge: metrics, plateaus, deadlines (track J2).
+    Experiment,
+    /// A background task ended or spoke: a job, monitor, cron, crew run or workflow (track N).
+    Task,
+    /// Another session's message to this one (track N).
+    Message,
+    /// A `notify` call by the model (track N).
+    Notify,
 }
 
 /// One observation worth telling the user. Deduplicated by `(source, subject, kind)`.

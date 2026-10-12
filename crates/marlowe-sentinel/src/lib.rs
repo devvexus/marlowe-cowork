@@ -21,13 +21,16 @@
 #![deny(unsafe_code)]
 
 pub mod discover;
+pub mod ci;
 mod engine;
+pub mod experiments;
 pub mod git;
 pub mod gpu;
 pub mod logs;
 pub mod metrics;
 pub mod notice;
 pub mod ollama;
+pub mod probe;
 pub mod process;
 pub mod run;
 pub mod store;
@@ -178,6 +181,17 @@ impl Sentinel {
     /// Notices, ranked (severity, then newest), with `seen` for `client`.
     pub fn notices(&self, client: &str, limit: usize, unseen_only: bool) -> Result<Vec<Notice>, SentinelError> {
         self.inner.store().notices(client, limit, unseen_only)
+    }
+
+    /// Records a notice raised by the daemon itself (a finished job, a monitor, a `notify` call,
+    /// a message). `None`: it duplicated one already recorded at the same severity. This only
+    /// records: the daemon broadcasts, speaks and toasts it.
+    pub fn raise(&self, draft: NoticeDraft) -> Result<Option<Notice>, SentinelError> {
+        let at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        self.inner.store().record(&draft, at_ms)
     }
 
     /// Notices raised or refreshed at or after `since_ms`, ranked. Feeds the brief.

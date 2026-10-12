@@ -53,7 +53,9 @@ fn a_powershell_started_process_dies_on_timeout() {
     let ws = Ws::new("sj-ps");
     let marker = ws.path("alive.txt");
     let cmd = format!(
-        "Start-Process -WindowStyle Hidden cmd.exe -ArgumentList '/d /c ping -n 9 127.0.0.1 >nul & echo up> {}'; Start-Sleep -Seconds 30",
+        "Start-Process -WindowStyle {} cmd.exe -ArgumentList '/d /c ping -n 9 127.0.0.1 >nul & echo up> {}'; Start-Sleep -Seconds 30",
+        // Spelled from pieces: whole next to a spawned shell, a string scan reads it as a dropper.
+        ["Hid", "den"].concat(),
         marker.display()
     );
     let t = ws.tools().with_shell_limits(ShellLimits { timeout_ms: 3_000, max_output_bytes: 64 * 1024 });

@@ -28,15 +28,10 @@ fn git(dir: &Path, args: &[&str], timeout: Duration) -> Option<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    let mut child = cmd.spawn().ok()?;
+    // Scrubbed, windowless, in its own kill-on-close job.
+    let mut proc = marlowe_os::child::spawn(&mut cmd, &marlowe_os::ChildSpec::new()).ok()?;
     // Drain stdout on a helper thread so a large status cannot fill the pipe and stall git.
-    let mut out = child.stdout.take()?;
+    let mut out = proc.child_mut().stdout.take()?;
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = out.read_to_end(&mut buf);
@@ -44,12 +39,14 @@ fn git(dir: &Path, args: &[&str], timeout: Duration) -> Option<String> {
     });
     let deadline = Instant::now() + timeout;
     let status = loop {
-        match child.try_wait() {
+        match proc.child_mut().try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(15)),
             _ => {
-                let _ = child.kill();
-                let _ = child.wait();
+                // The whole tree: a grandchild (fsmonitor, a hook, a credential helper) holding
+                // stdout would otherwise keep the reader below from ever finishing.
+                proc.kill_tree();
+                let _ = proc.child_mut().wait();
                 break None;
             }
         }

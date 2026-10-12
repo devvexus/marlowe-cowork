@@ -1,0 +1,61 @@
+{
+ "data": [
+  {
+   "id": "qwen/qwen3-vl-235b-a22b-instruct",
+   "name": "Qwen: Qwen3 VL 235B A22B Instruct",
+   "context_length": 262144,
+   "architecture": {
+    "input_modalities": [
+     "text",
+     "image"
+    ],
+    "output_modalities": [
+     "text"
+    ]
+   },
+   "pricing": {
+    "prompt": "0.0000002",
+    "completion": "0.0000012"
+   },
+   "supported_parameters": [
+    "tools",
+    "tool_choice",
+    "max_tokens",
+    "temperature"
+   ]
+  },
+  {
+   "id": "qwen/qwen3-coder",
+   "name": "Qwen: Qwen3 Coder 480B A35B",
+   "context_length": 262144,
+   "architecture": {
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ]
+   },
+   "pricing": {
+    "prompt": "0.0000002",
+    "completion": "0.0000008"
+   },
+   "supported_parameters": [
+    "tools",
+    "tool_choice",
+    "max_tokens",
+    "temperature"
+   ]
+  },
+  {
+   "id": "vendor/legacy",
+   "name": "Legacy",
+   "context_length": 8192,
+   "pricing": {
+    "prompt": "0.000001",
+    "completion": "0.000002"
+   },
+   "supported_parameters": []
+  }
+ ]
+}

@@ -29,6 +29,18 @@ pub struct TurnIn {
     pub at_ms: i64,
 }
 
+/// A `/rewind` dropped turns of a session: what the session recorded from them is retracted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Retraction {
+    pub session: String,
+    /// The rewound turn indices.
+    pub turns: Vec<u32>,
+    /// The journal seq when the first rewound turn began ([`crate::Mind::journal_seq`]).
+    pub after_seq: Option<u64>,
+    /// For a turn stored before its seq was recorded: the instant it began, Unix epoch ms.
+    pub from_ms: Option<i64>,
+}
+
 /// What kind of memory to write. `Decision` carries its reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {

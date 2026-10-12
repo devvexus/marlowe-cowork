@@ -37,6 +37,11 @@ CREATE TABLE IF NOT EXISTS hw_calibration (
     value       REAL NOT NULL,
     observed_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS edit_formats (
+    model_ref   TEXT PRIMARY KEY,
+    formats     TEXT NOT NULL,
+    measured_at INTEGER NOT NULL
+);
 ";
 
 /// The library over one sqlite connection. Not `Sync`; wrap in a `Mutex` to share.
@@ -111,6 +116,7 @@ impl Library {
         let key = model.to_string();
         self.conn.execute("UPDATE slots SET model_ref = NULL WHERE model_ref = ?1", [&key])?;
         self.conn.execute("DELETE FROM context_policy WHERE model_ref = ?1", [&key])?;
+        self.conn.execute("DELETE FROM edit_formats WHERE model_ref = ?1", [&key])?;
         Ok(self.conn.execute("DELETE FROM models WHERE ref = ?1", [&key])? > 0)
     }
 
@@ -253,6 +259,35 @@ impl Library {
         Ok(())
     }
 
+    /// The edit formats `marlowe bench --apply` measured for `model`, best first (`edit`,
+    /// `edit_lines`, `write`), or `None` when it was never benched (the session then uses the
+    /// model class's default, design 3.2).
+    pub fn edit_formats(&self, model: &ModelRef) -> Result<Option<Vec<String>>, BrainsError> {
+        let json: Option<String> = self
+            .conn
+            .query_row("SELECT formats FROM edit_formats WHERE model_ref = ?1", [model.to_string()], |r| r.get(0))
+            .optional()?;
+        Ok(json.and_then(|j| serde_json::from_str(&j).ok()))
+    }
+
+    /// Records the measured edit formats of `model`, best first. An empty list clears them.
+    pub fn set_edit_formats(&self, model: &ModelRef, formats: &[String]) -> Result<(), BrainsError> {
+        if formats.is_empty() {
+            self.conn.execute("DELETE FROM edit_formats WHERE model_ref = ?1", [model.to_string()])?;
+            return Ok(());
+        }
+        if self.get(model)?.is_none() {
+            return Err(BrainsError::UnknownModel(model.clone()));
+        }
+        let json = serde_json::to_string(formats).map_err(|e| BrainsError::Invalid(e.to_string()))?;
+        self.conn.execute(
+            "INSERT INTO edit_formats (model_ref, formats, measured_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(model_ref) DO UPDATE SET formats = excluded.formats, measured_at = excluded.measured_at",
+            params![model.to_string(), json, now_ms()],
+        )?;
+        Ok(())
+    }
+
     pub fn calibration(&self, key: &str) -> Result<Option<f64>, BrainsError> {
         Ok(self.conn.query_row("SELECT value FROM hw_calibration WHERE key = ?1", [key], |r| r.get(0)).optional()?)
     }
@@ -324,6 +359,25 @@ mod tests {
         }
         assert!(lib.slots().unwrap().iter().all(|a| a.model.as_ref() == Some(&small)));
         assert_eq!(lib.default_model().unwrap(), Some(big));
+    }
+
+    #[test]
+    fn edit_formats_are_measured_per_model_and_go_with_it() {
+        let lib = Library::open_in_memory().unwrap();
+        let a = lib.add(&info("a")).unwrap();
+        assert_eq!(lib.edit_formats(&a).unwrap(), None);
+        lib.set_edit_formats(&a, &["edit_lines".into(), "edit".into()]).unwrap();
+        assert_eq!(lib.edit_formats(&a).unwrap(), Some(vec!["edit_lines".to_string(), "edit".to_string()]));
+        lib.set_edit_formats(&a, &["edit".into()]).unwrap();
+        assert_eq!(lib.edit_formats(&a).unwrap(), Some(vec!["edit".to_string()]));
+        // A model the library does not hold cannot get formats, and an empty list clears.
+        let ghost = ModelRef::new(ProviderKind::Ollama, "ghost");
+        assert!(lib.set_edit_formats(&ghost, &["edit".into()]).is_err());
+        lib.set_edit_formats(&a, &[]).unwrap();
+        assert_eq!(lib.edit_formats(&a).unwrap(), None);
+        lib.set_edit_formats(&a, &["write".into()]).unwrap();
+        lib.remove(&a).unwrap();
+        assert_eq!(lib.edit_formats(&a).unwrap(), None);
     }
 
     #[test]

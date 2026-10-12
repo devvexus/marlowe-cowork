@@ -1,0 +1,2850 @@
+   Compiling c1 v0.1.0 (C:\work\c1)
+error[E0308]: mismatched types
+   --> src\main.rs:374:18
+    |
+374 |     let n: i32 = "not a number";
+    |            ---   ^^^^^^^^^^^^^^ expected `i32`, found `&str`
+    |            |
+    |            expected due to this
+
+error[E0308]: mismatched types
+   --> src\main.rs:375:5
+    |
+373 | fn broken_middle() -> String {
+    |                       ------ expected `String` because of return type
+374 |     let n: i32 = "not a number";
+375 |     n
+    |     ^ expected `String`, found `i32`
+    |
+help: try using a conversion method
+    |
+375 |     n.to_string()
+    |      ++++++++++++
+
+error[E0308]: mismatched types
+   --> src\main.rs:999:25
+    |
+999 |     let first: String = v[0];
+    |                ------   ^^^^ expected `String`, found `i32`
+    |                |
+    |                expected due to this
+    |
+help: try using a conversion method
+    |
+999 |     let first: String = v[0].to_string();
+    |                             ++++++++++++
+
+error[E0425]: cannot find function `missing_function` in this scope
+    --> src\main.rs:1000:5
+     |
+1000 |     missing_function(first);
+     |     ^^^^^^^^^^^^^^^^ not found in this scope
+
+warning: variable does not need to be mutable
+ --> src\main.rs:9:9
+  |
+9 |     let mut never_mutated_0 = input + 1;
+  |         ----^^^^^^^^^^^^^^^
+  |         |
+  |         help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `unused_0`
+ --> src\main.rs:8:9
+  |
+8 |     let unused_0 = input * 0;
+  |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_0`
+  |
+  = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `never_mutated_0`
+ --> src\main.rs:9:9
+  |
+9 |     let mut never_mutated_0 = input + 1;
+  |         ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_0`
+
+warning: variable does not need to be mutable
+  --> src\main.rs:15:9
+   |
+15 |     let mut never_mutated_1 = input + 1;
+   |         ----^^^^^^^^^^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: unused variable: `unused_1`
+  --> src\main.rs:14:9
+   |
+14 |     let unused_1 = input * 1;
+   |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_1`
+
+warning: unused variable: `never_mutated_1`
+  --> src\main.rs:15:9
+   |
+15 |     let mut never_mutated_1 = input + 1;
+   |         ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_1`
+
+warning: variable does not need to be mutable
+  --> src\main.rs:21:9
+   |
+21 |     let mut never_mutated_2 = input + 1;
+   |         ----^^^^^^^^^^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: unused variable: `unused_2`
+  --> src\main.rs:20:9
+   |
+20 |     let unused_2 = input * 2;
+   |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_2`
+
+warning: unused variable: `never_mutated_2`
+  --> src\main.rs:21:9
+   |
+21 |     let mut never_mutated_2 = input + 1;
+   |         ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_2`
+
+warning: variable does not need to be mutable
+  --> src\main.rs:27:9
+   |
+27 |     let mut never_mutated_3 = input + 1;
+   |         ----^^^^^^^^^^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: unused variable: `unused_3`
+  --> src\main.rs:26:9
+   |
+26 |     let unused_3 = input * 3;
+   |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_3`
+
+warning: unused variable: `never_mutated_3`
+  --> src\main.rs:27:9
+   |
+27 |     let mut never_mutated_3 = input + 1;
+   |         ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_3`
+
+warning: variable does not need to be mutable
+  --> src\main.rs:33:9
+   |
+33 |     let mut never_mutated_4 = input + 1;
+   |         ----^^^^^^^^^^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: unused variable: `unused_4`
+  --> src\main.rs:32:9
+   |
+32 |     let unused_4 = input * 4;
+   |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_4`
+
+warning: unused variable: `never_mutated_4`
+  --> src\main.rs:33:9
+   |
+33 |     let mut never_mutated_4 = input + 1;
+   |         ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_4`
+
+warning: variable does not need to be mutable
+  --> src\main.rs:39:9
+   |
+39 |     let mut never_mutated_5 = input + 1;
+   |         ----^^^^^^^^^^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: unused variable: `unused_5`
+  --> src\main.rs:38:9
+   |
+38 |     let unused_5 = input * 5;
+   |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_5`
+
+warning: unused variable: `never_mutated_5`
+  --> src\main.rs:39:9
+   |
+39 |     let mut never_mutated_5 = input + 1;
+   |         ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_5`
+
+warning: variable does not need to be mutable
+  --> src\main.rs:45:9
+   |
+45 |     let mut never_mutated_6 = input + 1;
+   |         ----^^^^^^^^^^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: unused variable: `unused_6`
+  --> src\main.rs:44:9
+   |
+44 |     let unused_6 = input * 6;
+   |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_6`
+
+warning: unused variable: `never_mutated_6`
+  --> src\main.rs:45:9
+   |
+45 |     let mut never_mutated_6 = input + 1;
+   |         ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_6`
+
+warning: variable does not need to be mutable
+  --> src\main.rs:51:9
+   |
+51 |     let mut never_mutated_7 = input + 1;
+   |         ----^^^^^^^^^^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: unused variable: `unused_7`
+  --> src\main.rs:50:9
+   |
+50 |     let unused_7 = input * 7;
+   |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_7`
+
+warning: unused variable: `never_mutated_7`
+  --> src\main.rs:51:9
+   |
+51 |     let mut never_mutated_7 = input + 1;
+   |         ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_7`
+
+warning: variable does not need to be mutable
+  --> src\main.rs:57:9
+   |
+57 |     let mut never_mutated_8 = input + 1;
+   |         ----^^^^^^^^^^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: unused variable: `unused_8`
+  --> src\main.rs:56:9
+   |
+56 |     let unused_8 = input * 8;
+   |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_8`
+
+warning: unused variable: `never_mutated_8`
+  --> src\main.rs:57:9
+   |
+57 |     let mut never_mutated_8 = input + 1;
+   |         ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_8`
+
+warning: variable does not need to be mutable
+  --> src\main.rs:63:9
+   |
+63 |     let mut never_mutated_9 = input + 1;
+   |         ----^^^^^^^^^^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: unused variable: `unused_9`
+  --> src\main.rs:62:9
+   |
+62 |     let unused_9 = input * 9;
+   |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_9`
+
+warning: unused variable: `never_mutated_9`
+  --> src\main.rs:63:9
+   |
+63 |     let mut never_mutated_9 = input + 1;
+   |         ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_9`
+
+warning: variable does not need to be mutable
+  --> src\main.rs:69:9
+   |
+69 |     let mut never_mutated_10 = input + 1;
+   |         ----^^^^^^^^^^^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: unused variable: `unused_10`
+  --> src\main.rs:68:9
+   |
+68 |     let unused_10 = input * 10;
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_10`
+
+warning: unused variable: `never_mutated_10`
+  --> src\main.rs:69:9
+   |
+69 |     let mut never_mutated_10 = input + 1;
+   |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_10`
+
+warning: variable does not need to be mutable
+  --> src\main.rs:75:9
+   |
+75 |     let mut never_mutated_11 = input + 1;
+   |         ----^^^^^^^^^^^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: unused variable: `unused_11`
+  --> src\main.rs:74:9
+   |
+74 |     let unused_11 = input * 11;
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_11`
+
+warning: unused variable: `never_mutated_11`
+  --> src\main.rs:75:9
+   |
+75 |     let mut never_mutated_11 = input + 1;
+   |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_11`
+
+warning: variable does not need to be mutable
+  --> src\main.rs:81:9
+   |
+81 |     let mut never_mutated_12 = input + 1;
+   |         ----^^^^^^^^^^^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: unused variable: `unused_12`
+  --> src\main.rs:80:9
+   |
+80 |     let unused_12 = input * 12;
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_12`
+
+warning: unused variable: `never_mutated_12`
+  --> src\main.rs:81:9
+   |
+81 |     let mut never_mutated_12 = input + 1;
+   |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_12`
+
+warning: variable does not need to be mutable
+  --> src\main.rs:87:9
+   |
+87 |     let mut never_mutated_13 = input + 1;
+   |         ----^^^^^^^^^^^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: unused variable: `unused_13`
+  --> src\main.rs:86:9
+   |
+86 |     let unused_13 = input * 13;
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_13`
+
+warning: unused variable: `never_mutated_13`
+  --> src\main.rs:87:9
+   |
+87 |     let mut never_mutated_13 = input + 1;
+   |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_13`
+
+warning: variable does not need to be mutable
+  --> src\main.rs:93:9
+   |
+93 |     let mut never_mutated_14 = input + 1;
+   |         ----^^^^^^^^^^^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: unused variable: `unused_14`
+  --> src\main.rs:92:9
+   |
+92 |     let unused_14 = input * 14;
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_14`
+
+warning: unused variable: `never_mutated_14`
+  --> src\main.rs:93:9
+   |
+93 |     let mut never_mutated_14 = input + 1;
+   |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_14`
+
+warning: variable does not need to be mutable
+  --> src\main.rs:99:9
+   |
+99 |     let mut never_mutated_15 = input + 1;
+   |         ----^^^^^^^^^^^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: unused variable: `unused_15`
+  --> src\main.rs:98:9
+   |
+98 |     let unused_15 = input * 15;
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_15`
+
+warning: unused variable: `never_mutated_15`
+  --> src\main.rs:99:9
+   |
+99 |     let mut never_mutated_15 = input + 1;
+   |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_15`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:105:9
+    |
+105 |     let mut never_mutated_16 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_16`
+   --> src\main.rs:104:9
+    |
+104 |     let unused_16 = input * 16;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_16`
+
+warning: unused variable: `never_mutated_16`
+   --> src\main.rs:105:9
+    |
+105 |     let mut never_mutated_16 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_16`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:111:9
+    |
+111 |     let mut never_mutated_17 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_17`
+   --> src\main.rs:110:9
+    |
+110 |     let unused_17 = input * 17;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_17`
+
+warning: unused variable: `never_mutated_17`
+   --> src\main.rs:111:9
+    |
+111 |     let mut never_mutated_17 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_17`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:117:9
+    |
+117 |     let mut never_mutated_18 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_18`
+   --> src\main.rs:116:9
+    |
+116 |     let unused_18 = input * 18;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_18`
+
+warning: unused variable: `never_mutated_18`
+   --> src\main.rs:117:9
+    |
+117 |     let mut never_mutated_18 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_18`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:123:9
+    |
+123 |     let mut never_mutated_19 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_19`
+   --> src\main.rs:122:9
+    |
+122 |     let unused_19 = input * 19;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_19`
+
+warning: unused variable: `never_mutated_19`
+   --> src\main.rs:123:9
+    |
+123 |     let mut never_mutated_19 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_19`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:129:9
+    |
+129 |     let mut never_mutated_20 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_20`
+   --> src\main.rs:128:9
+    |
+128 |     let unused_20 = input * 20;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_20`
+
+warning: unused variable: `never_mutated_20`
+   --> src\main.rs:129:9
+    |
+129 |     let mut never_mutated_20 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_20`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:135:9
+    |
+135 |     let mut never_mutated_21 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_21`
+   --> src\main.rs:134:9
+    |
+134 |     let unused_21 = input * 21;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_21`
+
+warning: unused variable: `never_mutated_21`
+   --> src\main.rs:135:9
+    |
+135 |     let mut never_mutated_21 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_21`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:141:9
+    |
+141 |     let mut never_mutated_22 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_22`
+   --> src\main.rs:140:9
+    |
+140 |     let unused_22 = input * 22;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_22`
+
+warning: unused variable: `never_mutated_22`
+   --> src\main.rs:141:9
+    |
+141 |     let mut never_mutated_22 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_22`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:147:9
+    |
+147 |     let mut never_mutated_23 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_23`
+   --> src\main.rs:146:9
+    |
+146 |     let unused_23 = input * 23;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_23`
+
+warning: unused variable: `never_mutated_23`
+   --> src\main.rs:147:9
+    |
+147 |     let mut never_mutated_23 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_23`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:153:9
+    |
+153 |     let mut never_mutated_24 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_24`
+   --> src\main.rs:152:9
+    |
+152 |     let unused_24 = input * 24;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_24`
+
+warning: unused variable: `never_mutated_24`
+   --> src\main.rs:153:9
+    |
+153 |     let mut never_mutated_24 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_24`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:159:9
+    |
+159 |     let mut never_mutated_25 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_25`
+   --> src\main.rs:158:9
+    |
+158 |     let unused_25 = input * 25;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_25`
+
+warning: unused variable: `never_mutated_25`
+   --> src\main.rs:159:9
+    |
+159 |     let mut never_mutated_25 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_25`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:165:9
+    |
+165 |     let mut never_mutated_26 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_26`
+   --> src\main.rs:164:9
+    |
+164 |     let unused_26 = input * 26;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_26`
+
+warning: unused variable: `never_mutated_26`
+   --> src\main.rs:165:9
+    |
+165 |     let mut never_mutated_26 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_26`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:171:9
+    |
+171 |     let mut never_mutated_27 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_27`
+   --> src\main.rs:170:9
+    |
+170 |     let unused_27 = input * 27;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_27`
+
+warning: unused variable: `never_mutated_27`
+   --> src\main.rs:171:9
+    |
+171 |     let mut never_mutated_27 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_27`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:177:9
+    |
+177 |     let mut never_mutated_28 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_28`
+   --> src\main.rs:176:9
+    |
+176 |     let unused_28 = input * 28;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_28`
+
+warning: unused variable: `never_mutated_28`
+   --> src\main.rs:177:9
+    |
+177 |     let mut never_mutated_28 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_28`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:183:9
+    |
+183 |     let mut never_mutated_29 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_29`
+   --> src\main.rs:182:9
+    |
+182 |     let unused_29 = input * 29;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_29`
+
+warning: unused variable: `never_mutated_29`
+   --> src\main.rs:183:9
+    |
+183 |     let mut never_mutated_29 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_29`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:189:9
+    |
+189 |     let mut never_mutated_30 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_30`
+   --> src\main.rs:188:9
+    |
+188 |     let unused_30 = input * 30;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_30`
+
+warning: unused variable: `never_mutated_30`
+   --> src\main.rs:189:9
+    |
+189 |     let mut never_mutated_30 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_30`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:195:9
+    |
+195 |     let mut never_mutated_31 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_31`
+   --> src\main.rs:194:9
+    |
+194 |     let unused_31 = input * 31;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_31`
+
+warning: unused variable: `never_mutated_31`
+   --> src\main.rs:195:9
+    |
+195 |     let mut never_mutated_31 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_31`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:201:9
+    |
+201 |     let mut never_mutated_32 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_32`
+   --> src\main.rs:200:9
+    |
+200 |     let unused_32 = input * 32;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_32`
+
+warning: unused variable: `never_mutated_32`
+   --> src\main.rs:201:9
+    |
+201 |     let mut never_mutated_32 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_32`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:207:9
+    |
+207 |     let mut never_mutated_33 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_33`
+   --> src\main.rs:206:9
+    |
+206 |     let unused_33 = input * 33;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_33`
+
+warning: unused variable: `never_mutated_33`
+   --> src\main.rs:207:9
+    |
+207 |     let mut never_mutated_33 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_33`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:213:9
+    |
+213 |     let mut never_mutated_34 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_34`
+   --> src\main.rs:212:9
+    |
+212 |     let unused_34 = input * 34;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_34`
+
+warning: unused variable: `never_mutated_34`
+   --> src\main.rs:213:9
+    |
+213 |     let mut never_mutated_34 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_34`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:219:9
+    |
+219 |     let mut never_mutated_35 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_35`
+   --> src\main.rs:218:9
+    |
+218 |     let unused_35 = input * 35;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_35`
+
+warning: unused variable: `never_mutated_35`
+   --> src\main.rs:219:9
+    |
+219 |     let mut never_mutated_35 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_35`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:225:9
+    |
+225 |     let mut never_mutated_36 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_36`
+   --> src\main.rs:224:9
+    |
+224 |     let unused_36 = input * 36;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_36`
+
+warning: unused variable: `never_mutated_36`
+   --> src\main.rs:225:9
+    |
+225 |     let mut never_mutated_36 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_36`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:231:9
+    |
+231 |     let mut never_mutated_37 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_37`
+   --> src\main.rs:230:9
+    |
+230 |     let unused_37 = input * 37;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_37`
+
+warning: unused variable: `never_mutated_37`
+   --> src\main.rs:231:9
+    |
+231 |     let mut never_mutated_37 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_37`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:237:9
+    |
+237 |     let mut never_mutated_38 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_38`
+   --> src\main.rs:236:9
+    |
+236 |     let unused_38 = input * 38;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_38`
+
+warning: unused variable: `never_mutated_38`
+   --> src\main.rs:237:9
+    |
+237 |     let mut never_mutated_38 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_38`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:243:9
+    |
+243 |     let mut never_mutated_39 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_39`
+   --> src\main.rs:242:9
+    |
+242 |     let unused_39 = input * 39;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_39`
+
+warning: unused variable: `never_mutated_39`
+   --> src\main.rs:243:9
+    |
+243 |     let mut never_mutated_39 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_39`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:249:9
+    |
+249 |     let mut never_mutated_40 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_40`
+   --> src\main.rs:248:9
+    |
+248 |     let unused_40 = input * 40;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_40`
+
+warning: unused variable: `never_mutated_40`
+   --> src\main.rs:249:9
+    |
+249 |     let mut never_mutated_40 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_40`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:255:9
+    |
+255 |     let mut never_mutated_41 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_41`
+   --> src\main.rs:254:9
+    |
+254 |     let unused_41 = input * 41;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_41`
+
+warning: unused variable: `never_mutated_41`
+   --> src\main.rs:255:9
+    |
+255 |     let mut never_mutated_41 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_41`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:261:9
+    |
+261 |     let mut never_mutated_42 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_42`
+   --> src\main.rs:260:9
+    |
+260 |     let unused_42 = input * 42;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_42`
+
+warning: unused variable: `never_mutated_42`
+   --> src\main.rs:261:9
+    |
+261 |     let mut never_mutated_42 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_42`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:267:9
+    |
+267 |     let mut never_mutated_43 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_43`
+   --> src\main.rs:266:9
+    |
+266 |     let unused_43 = input * 43;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_43`
+
+warning: unused variable: `never_mutated_43`
+   --> src\main.rs:267:9
+    |
+267 |     let mut never_mutated_43 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_43`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:273:9
+    |
+273 |     let mut never_mutated_44 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_44`
+   --> src\main.rs:272:9
+    |
+272 |     let unused_44 = input * 44;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_44`
+
+warning: unused variable: `never_mutated_44`
+   --> src\main.rs:273:9
+    |
+273 |     let mut never_mutated_44 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_44`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:279:9
+    |
+279 |     let mut never_mutated_45 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_45`
+   --> src\main.rs:278:9
+    |
+278 |     let unused_45 = input * 45;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_45`
+
+warning: unused variable: `never_mutated_45`
+   --> src\main.rs:279:9
+    |
+279 |     let mut never_mutated_45 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_45`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:285:9
+    |
+285 |     let mut never_mutated_46 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_46`
+   --> src\main.rs:284:9
+    |
+284 |     let unused_46 = input * 46;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_46`
+
+warning: unused variable: `never_mutated_46`
+   --> src\main.rs:285:9
+    |
+285 |     let mut never_mutated_46 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_46`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:291:9
+    |
+291 |     let mut never_mutated_47 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_47`
+   --> src\main.rs:290:9
+    |
+290 |     let unused_47 = input * 47;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_47`
+
+warning: unused variable: `never_mutated_47`
+   --> src\main.rs:291:9
+    |
+291 |     let mut never_mutated_47 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_47`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:297:9
+    |
+297 |     let mut never_mutated_48 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_48`
+   --> src\main.rs:296:9
+    |
+296 |     let unused_48 = input * 48;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_48`
+
+warning: unused variable: `never_mutated_48`
+   --> src\main.rs:297:9
+    |
+297 |     let mut never_mutated_48 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_48`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:303:9
+    |
+303 |     let mut never_mutated_49 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_49`
+   --> src\main.rs:302:9
+    |
+302 |     let unused_49 = input * 49;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_49`
+
+warning: unused variable: `never_mutated_49`
+   --> src\main.rs:303:9
+    |
+303 |     let mut never_mutated_49 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_49`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:309:9
+    |
+309 |     let mut never_mutated_50 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_50`
+   --> src\main.rs:308:9
+    |
+308 |     let unused_50 = input * 50;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_50`
+
+warning: unused variable: `never_mutated_50`
+   --> src\main.rs:309:9
+    |
+309 |     let mut never_mutated_50 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_50`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:315:9
+    |
+315 |     let mut never_mutated_51 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_51`
+   --> src\main.rs:314:9
+    |
+314 |     let unused_51 = input * 51;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_51`
+
+warning: unused variable: `never_mutated_51`
+   --> src\main.rs:315:9
+    |
+315 |     let mut never_mutated_51 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_51`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:321:9
+    |
+321 |     let mut never_mutated_52 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_52`
+   --> src\main.rs:320:9
+    |
+320 |     let unused_52 = input * 52;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_52`
+
+warning: unused variable: `never_mutated_52`
+   --> src\main.rs:321:9
+    |
+321 |     let mut never_mutated_52 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_52`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:327:9
+    |
+327 |     let mut never_mutated_53 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_53`
+   --> src\main.rs:326:9
+    |
+326 |     let unused_53 = input * 53;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_53`
+
+warning: unused variable: `never_mutated_53`
+   --> src\main.rs:327:9
+    |
+327 |     let mut never_mutated_53 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_53`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:333:9
+    |
+333 |     let mut never_mutated_54 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_54`
+   --> src\main.rs:332:9
+    |
+332 |     let unused_54 = input * 54;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_54`
+
+warning: unused variable: `never_mutated_54`
+   --> src\main.rs:333:9
+    |
+333 |     let mut never_mutated_54 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_54`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:339:9
+    |
+339 |     let mut never_mutated_55 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_55`
+   --> src\main.rs:338:9
+    |
+338 |     let unused_55 = input * 55;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_55`
+
+warning: unused variable: `never_mutated_55`
+   --> src\main.rs:339:9
+    |
+339 |     let mut never_mutated_55 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_55`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:345:9
+    |
+345 |     let mut never_mutated_56 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_56`
+   --> src\main.rs:344:9
+    |
+344 |     let unused_56 = input * 56;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_56`
+
+warning: unused variable: `never_mutated_56`
+   --> src\main.rs:345:9
+    |
+345 |     let mut never_mutated_56 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_56`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:351:9
+    |
+351 |     let mut never_mutated_57 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_57`
+   --> src\main.rs:350:9
+    |
+350 |     let unused_57 = input * 57;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_57`
+
+warning: unused variable: `never_mutated_57`
+   --> src\main.rs:351:9
+    |
+351 |     let mut never_mutated_57 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_57`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:357:9
+    |
+357 |     let mut never_mutated_58 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_58`
+   --> src\main.rs:356:9
+    |
+356 |     let unused_58 = input * 58;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_58`
+
+warning: unused variable: `never_mutated_58`
+   --> src\main.rs:357:9
+    |
+357 |     let mut never_mutated_58 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_58`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:363:9
+    |
+363 |     let mut never_mutated_59 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_59`
+   --> src\main.rs:362:9
+    |
+362 |     let unused_59 = input * 59;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_59`
+
+warning: unused variable: `never_mutated_59`
+   --> src\main.rs:363:9
+    |
+363 |     let mut never_mutated_59 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_59`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:369:9
+    |
+369 |     let mut never_mutated_60 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_60`
+   --> src\main.rs:368:9
+    |
+368 |     let unused_60 = input * 60;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_60`
+
+warning: unused variable: `never_mutated_60`
+   --> src\main.rs:369:9
+    |
+369 |     let mut never_mutated_60 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_60`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:380:9
+    |
+380 |     let mut never_mutated_61 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_61`
+   --> src\main.rs:379:9
+    |
+379 |     let unused_61 = input * 61;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_61`
+
+warning: unused variable: `never_mutated_61`
+   --> src\main.rs:380:9
+    |
+380 |     let mut never_mutated_61 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_61`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:386:9
+    |
+386 |     let mut never_mutated_62 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_62`
+   --> src\main.rs:385:9
+    |
+385 |     let unused_62 = input * 62;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_62`
+
+warning: unused variable: `never_mutated_62`
+   --> src\main.rs:386:9
+    |
+386 |     let mut never_mutated_62 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_62`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:392:9
+    |
+392 |     let mut never_mutated_63 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_63`
+   --> src\main.rs:391:9
+    |
+391 |     let unused_63 = input * 63;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_63`
+
+warning: unused variable: `never_mutated_63`
+   --> src\main.rs:392:9
+    |
+392 |     let mut never_mutated_63 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_63`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:398:9
+    |
+398 |     let mut never_mutated_64 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_64`
+   --> src\main.rs:397:9
+    |
+397 |     let unused_64 = input * 64;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_64`
+
+warning: unused variable: `never_mutated_64`
+   --> src\main.rs:398:9
+    |
+398 |     let mut never_mutated_64 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_64`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:404:9
+    |
+404 |     let mut never_mutated_65 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_65`
+   --> src\main.rs:403:9
+    |
+403 |     let unused_65 = input * 65;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_65`
+
+warning: unused variable: `never_mutated_65`
+   --> src\main.rs:404:9
+    |
+404 |     let mut never_mutated_65 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_65`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:410:9
+    |
+410 |     let mut never_mutated_66 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_66`
+   --> src\main.rs:409:9
+    |
+409 |     let unused_66 = input * 66;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_66`
+
+warning: unused variable: `never_mutated_66`
+   --> src\main.rs:410:9
+    |
+410 |     let mut never_mutated_66 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_66`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:416:9
+    |
+416 |     let mut never_mutated_67 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_67`
+   --> src\main.rs:415:9
+    |
+415 |     let unused_67 = input * 67;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_67`
+
+warning: unused variable: `never_mutated_67`
+   --> src\main.rs:416:9
+    |
+416 |     let mut never_mutated_67 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_67`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:422:9
+    |
+422 |     let mut never_mutated_68 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_68`
+   --> src\main.rs:421:9
+    |
+421 |     let unused_68 = input * 68;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_68`
+
+warning: unused variable: `never_mutated_68`
+   --> src\main.rs:422:9
+    |
+422 |     let mut never_mutated_68 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_68`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:428:9
+    |
+428 |     let mut never_mutated_69 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_69`
+   --> src\main.rs:427:9
+    |
+427 |     let unused_69 = input * 69;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_69`
+
+warning: unused variable: `never_mutated_69`
+   --> src\main.rs:428:9
+    |
+428 |     let mut never_mutated_69 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_69`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:434:9
+    |
+434 |     let mut never_mutated_70 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_70`
+   --> src\main.rs:433:9
+    |
+433 |     let unused_70 = input * 70;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_70`
+
+warning: unused variable: `never_mutated_70`
+   --> src\main.rs:434:9
+    |
+434 |     let mut never_mutated_70 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_70`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:440:9
+    |
+440 |     let mut never_mutated_71 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_71`
+   --> src\main.rs:439:9
+    |
+439 |     let unused_71 = input * 71;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_71`
+
+warning: unused variable: `never_mutated_71`
+   --> src\main.rs:440:9
+    |
+440 |     let mut never_mutated_71 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_71`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:446:9
+    |
+446 |     let mut never_mutated_72 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_72`
+   --> src\main.rs:445:9
+    |
+445 |     let unused_72 = input * 72;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_72`
+
+warning: unused variable: `never_mutated_72`
+   --> src\main.rs:446:9
+    |
+446 |     let mut never_mutated_72 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_72`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:452:9
+    |
+452 |     let mut never_mutated_73 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_73`
+   --> src\main.rs:451:9
+    |
+451 |     let unused_73 = input * 73;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_73`
+
+warning: unused variable: `never_mutated_73`
+   --> src\main.rs:452:9
+    |
+452 |     let mut never_mutated_73 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_73`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:458:9
+    |
+458 |     let mut never_mutated_74 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_74`
+   --> src\main.rs:457:9
+    |
+457 |     let unused_74 = input * 74;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_74`
+
+warning: unused variable: `never_mutated_74`
+   --> src\main.rs:458:9
+    |
+458 |     let mut never_mutated_74 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_74`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:464:9
+    |
+464 |     let mut never_mutated_75 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_75`
+   --> src\main.rs:463:9
+    |
+463 |     let unused_75 = input * 75;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_75`
+
+warning: unused variable: `never_mutated_75`
+   --> src\main.rs:464:9
+    |
+464 |     let mut never_mutated_75 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_75`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:470:9
+    |
+470 |     let mut never_mutated_76 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_76`
+   --> src\main.rs:469:9
+    |
+469 |     let unused_76 = input * 76;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_76`
+
+warning: unused variable: `never_mutated_76`
+   --> src\main.rs:470:9
+    |
+470 |     let mut never_mutated_76 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_76`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:476:9
+    |
+476 |     let mut never_mutated_77 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_77`
+   --> src\main.rs:475:9
+    |
+475 |     let unused_77 = input * 77;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_77`
+
+warning: unused variable: `never_mutated_77`
+   --> src\main.rs:476:9
+    |
+476 |     let mut never_mutated_77 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_77`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:482:9
+    |
+482 |     let mut never_mutated_78 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_78`
+   --> src\main.rs:481:9
+    |
+481 |     let unused_78 = input * 78;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_78`
+
+warning: unused variable: `never_mutated_78`
+   --> src\main.rs:482:9
+    |
+482 |     let mut never_mutated_78 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_78`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:488:9
+    |
+488 |     let mut never_mutated_79 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_79`
+   --> src\main.rs:487:9
+    |
+487 |     let unused_79 = input * 79;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_79`
+
+warning: unused variable: `never_mutated_79`
+   --> src\main.rs:488:9
+    |
+488 |     let mut never_mutated_79 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_79`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:494:9
+    |
+494 |     let mut never_mutated_80 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_80`
+   --> src\main.rs:493:9
+    |
+493 |     let unused_80 = input * 80;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_80`
+
+warning: unused variable: `never_mutated_80`
+   --> src\main.rs:494:9
+    |
+494 |     let mut never_mutated_80 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_80`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:500:9
+    |
+500 |     let mut never_mutated_81 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_81`
+   --> src\main.rs:499:9
+    |
+499 |     let unused_81 = input * 81;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_81`
+
+warning: unused variable: `never_mutated_81`
+   --> src\main.rs:500:9
+    |
+500 |     let mut never_mutated_81 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_81`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:506:9
+    |
+506 |     let mut never_mutated_82 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_82`
+   --> src\main.rs:505:9
+    |
+505 |     let unused_82 = input * 82;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_82`
+
+warning: unused variable: `never_mutated_82`
+   --> src\main.rs:506:9
+    |
+506 |     let mut never_mutated_82 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_82`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:512:9
+    |
+512 |     let mut never_mutated_83 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_83`
+   --> src\main.rs:511:9
+    |
+511 |     let unused_83 = input * 83;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_83`
+
+warning: unused variable: `never_mutated_83`
+   --> src\main.rs:512:9
+    |
+512 |     let mut never_mutated_83 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_83`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:518:9
+    |
+518 |     let mut never_mutated_84 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_84`
+   --> src\main.rs:517:9
+    |
+517 |     let unused_84 = input * 84;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_84`
+
+warning: unused variable: `never_mutated_84`
+   --> src\main.rs:518:9
+    |
+518 |     let mut never_mutated_84 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_84`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:524:9
+    |
+524 |     let mut never_mutated_85 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_85`
+   --> src\main.rs:523:9
+    |
+523 |     let unused_85 = input * 85;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_85`
+
+warning: unused variable: `never_mutated_85`
+   --> src\main.rs:524:9
+    |
+524 |     let mut never_mutated_85 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_85`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:530:9
+    |
+530 |     let mut never_mutated_86 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_86`
+   --> src\main.rs:529:9
+    |
+529 |     let unused_86 = input * 86;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_86`
+
+warning: unused variable: `never_mutated_86`
+   --> src\main.rs:530:9
+    |
+530 |     let mut never_mutated_86 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_86`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:536:9
+    |
+536 |     let mut never_mutated_87 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_87`
+   --> src\main.rs:535:9
+    |
+535 |     let unused_87 = input * 87;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_87`
+
+warning: unused variable: `never_mutated_87`
+   --> src\main.rs:536:9
+    |
+536 |     let mut never_mutated_87 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_87`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:542:9
+    |
+542 |     let mut never_mutated_88 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_88`
+   --> src\main.rs:541:9
+    |
+541 |     let unused_88 = input * 88;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_88`
+
+warning: unused variable: `never_mutated_88`
+   --> src\main.rs:542:9
+    |
+542 |     let mut never_mutated_88 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_88`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:548:9
+    |
+548 |     let mut never_mutated_89 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_89`
+   --> src\main.rs:547:9
+    |
+547 |     let unused_89 = input * 89;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_89`
+
+warning: unused variable: `never_mutated_89`
+   --> src\main.rs:548:9
+    |
+548 |     let mut never_mutated_89 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_89`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:554:9
+    |
+554 |     let mut never_mutated_90 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_90`
+   --> src\main.rs:553:9
+    |
+553 |     let unused_90 = input * 90;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_90`
+
+warning: unused variable: `never_mutated_90`
+   --> src\main.rs:554:9
+    |
+554 |     let mut never_mutated_90 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_90`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:560:9
+    |
+560 |     let mut never_mutated_91 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_91`
+   --> src\main.rs:559:9
+    |
+559 |     let unused_91 = input * 91;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_91`
+
+warning: unused variable: `never_mutated_91`
+   --> src\main.rs:560:9
+    |
+560 |     let mut never_mutated_91 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_91`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:566:9
+    |
+566 |     let mut never_mutated_92 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_92`
+   --> src\main.rs:565:9
+    |
+565 |     let unused_92 = input * 92;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_92`
+
+warning: unused variable: `never_mutated_92`
+   --> src\main.rs:566:9
+    |
+566 |     let mut never_mutated_92 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_92`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:572:9
+    |
+572 |     let mut never_mutated_93 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_93`
+   --> src\main.rs:571:9
+    |
+571 |     let unused_93 = input * 93;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_93`
+
+warning: unused variable: `never_mutated_93`
+   --> src\main.rs:572:9
+    |
+572 |     let mut never_mutated_93 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_93`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:578:9
+    |
+578 |     let mut never_mutated_94 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_94`
+   --> src\main.rs:577:9
+    |
+577 |     let unused_94 = input * 94;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_94`
+
+warning: unused variable: `never_mutated_94`
+   --> src\main.rs:578:9
+    |
+578 |     let mut never_mutated_94 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_94`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:584:9
+    |
+584 |     let mut never_mutated_95 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_95`
+   --> src\main.rs:583:9
+    |
+583 |     let unused_95 = input * 95;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_95`
+
+warning: unused variable: `never_mutated_95`
+   --> src\main.rs:584:9
+    |
+584 |     let mut never_mutated_95 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_95`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:590:9
+    |
+590 |     let mut never_mutated_96 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_96`
+   --> src\main.rs:589:9
+    |
+589 |     let unused_96 = input * 96;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_96`
+
+warning: unused variable: `never_mutated_96`
+   --> src\main.rs:590:9
+    |
+590 |     let mut never_mutated_96 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_96`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:596:9
+    |
+596 |     let mut never_mutated_97 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_97`
+   --> src\main.rs:595:9
+    |
+595 |     let unused_97 = input * 97;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_97`
+
+warning: unused variable: `never_mutated_97`
+   --> src\main.rs:596:9
+    |
+596 |     let mut never_mutated_97 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_97`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:602:9
+    |
+602 |     let mut never_mutated_98 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_98`
+   --> src\main.rs:601:9
+    |
+601 |     let unused_98 = input * 98;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_98`
+
+warning: unused variable: `never_mutated_98`
+   --> src\main.rs:602:9
+    |
+602 |     let mut never_mutated_98 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_98`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:608:9
+    |
+608 |     let mut never_mutated_99 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_99`
+   --> src\main.rs:607:9
+    |
+607 |     let unused_99 = input * 99;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_99`
+
+warning: unused variable: `never_mutated_99`
+   --> src\main.rs:608:9
+    |
+608 |     let mut never_mutated_99 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_99`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:614:9
+    |
+614 |     let mut never_mutated_100 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_100`
+   --> src\main.rs:613:9
+    |
+613 |     let unused_100 = input * 100;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_100`
+
+warning: unused variable: `never_mutated_100`
+   --> src\main.rs:614:9
+    |
+614 |     let mut never_mutated_100 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_100`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:620:9
+    |
+620 |     let mut never_mutated_101 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_101`
+   --> src\main.rs:619:9
+    |
+619 |     let unused_101 = input * 101;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_101`
+
+warning: unused variable: `never_mutated_101`
+   --> src\main.rs:620:9
+    |
+620 |     let mut never_mutated_101 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_101`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:626:9
+    |
+626 |     let mut never_mutated_102 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_102`
+   --> src\main.rs:625:9
+    |
+625 |     let unused_102 = input * 102;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_102`
+
+warning: unused variable: `never_mutated_102`
+   --> src\main.rs:626:9
+    |
+626 |     let mut never_mutated_102 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_102`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:632:9
+    |
+632 |     let mut never_mutated_103 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_103`
+   --> src\main.rs:631:9
+    |
+631 |     let unused_103 = input * 103;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_103`
+
+warning: unused variable: `never_mutated_103`
+   --> src\main.rs:632:9
+    |
+632 |     let mut never_mutated_103 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_103`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:638:9
+    |
+638 |     let mut never_mutated_104 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_104`
+   --> src\main.rs:637:9
+    |
+637 |     let unused_104 = input * 104;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_104`
+
+warning: unused variable: `never_mutated_104`
+   --> src\main.rs:638:9
+    |
+638 |     let mut never_mutated_104 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_104`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:644:9
+    |
+644 |     let mut never_mutated_105 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_105`
+   --> src\main.rs:643:9
+    |
+643 |     let unused_105 = input * 105;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_105`
+
+warning: unused variable: `never_mutated_105`
+   --> src\main.rs:644:9
+    |
+644 |     let mut never_mutated_105 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_105`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:650:9
+    |
+650 |     let mut never_mutated_106 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_106`
+   --> src\main.rs:649:9
+    |
+649 |     let unused_106 = input * 106;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_106`
+
+warning: unused variable: `never_mutated_106`
+   --> src\main.rs:650:9
+    |
+650 |     let mut never_mutated_106 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_106`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:656:9
+    |
+656 |     let mut never_mutated_107 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_107`
+   --> src\main.rs:655:9
+    |
+655 |     let unused_107 = input * 107;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_107`
+
+warning: unused variable: `never_mutated_107`
+   --> src\main.rs:656:9
+    |
+656 |     let mut never_mutated_107 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_107`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:662:9
+    |
+662 |     let mut never_mutated_108 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_108`
+   --> src\main.rs:661:9
+    |
+661 |     let unused_108 = input * 108;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_108`
+
+warning: unused variable: `never_mutated_108`
+   --> src\main.rs:662:9
+    |
+662 |     let mut never_mutated_108 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_108`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:668:9
+    |
+668 |     let mut never_mutated_109 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_109`
+   --> src\main.rs:667:9
+    |
+667 |     let unused_109 = input * 109;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_109`
+
+warning: unused variable: `never_mutated_109`
+   --> src\main.rs:668:9
+    |
+668 |     let mut never_mutated_109 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_109`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:674:9
+    |
+674 |     let mut never_mutated_110 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_110`
+   --> src\main.rs:673:9
+    |
+673 |     let unused_110 = input * 110;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_110`
+
+warning: unused variable: `never_mutated_110`
+   --> src\main.rs:674:9
+    |
+674 |     let mut never_mutated_110 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_110`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:680:9
+    |
+680 |     let mut never_mutated_111 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_111`
+   --> src\main.rs:679:9
+    |
+679 |     let unused_111 = input * 111;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_111`
+
+warning: unused variable: `never_mutated_111`
+   --> src\main.rs:680:9
+    |
+680 |     let mut never_mutated_111 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_111`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:686:9
+    |
+686 |     let mut never_mutated_112 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_112`
+   --> src\main.rs:685:9
+    |
+685 |     let unused_112 = input * 112;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_112`
+
+warning: unused variable: `never_mutated_112`
+   --> src\main.rs:686:9
+    |
+686 |     let mut never_mutated_112 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_112`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:692:9
+    |
+692 |     let mut never_mutated_113 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_113`
+   --> src\main.rs:691:9
+    |
+691 |     let unused_113 = input * 113;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_113`
+
+warning: unused variable: `never_mutated_113`
+   --> src\main.rs:692:9
+    |
+692 |     let mut never_mutated_113 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_113`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:698:9
+    |
+698 |     let mut never_mutated_114 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_114`
+   --> src\main.rs:697:9
+    |
+697 |     let unused_114 = input * 114;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_114`
+
+warning: unused variable: `never_mutated_114`
+   --> src\main.rs:698:9
+    |
+698 |     let mut never_mutated_114 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_114`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:704:9
+    |
+704 |     let mut never_mutated_115 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_115`
+   --> src\main.rs:703:9
+    |
+703 |     let unused_115 = input * 115;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_115`
+
+warning: unused variable: `never_mutated_115`
+   --> src\main.rs:704:9
+    |
+704 |     let mut never_mutated_115 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_115`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:710:9
+    |
+710 |     let mut never_mutated_116 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_116`
+   --> src\main.rs:709:9
+    |
+709 |     let unused_116 = input * 116;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_116`
+
+warning: unused variable: `never_mutated_116`
+   --> src\main.rs:710:9
+    |
+710 |     let mut never_mutated_116 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_116`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:716:9
+    |
+716 |     let mut never_mutated_117 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_117`
+   --> src\main.rs:715:9
+    |
+715 |     let unused_117 = input * 117;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_117`
+
+warning: unused variable: `never_mutated_117`
+   --> src\main.rs:716:9
+    |
+716 |     let mut never_mutated_117 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_117`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:722:9
+    |
+722 |     let mut never_mutated_118 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_118`
+   --> src\main.rs:721:9
+    |
+721 |     let unused_118 = input * 118;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_118`
+
+warning: unused variable: `never_mutated_118`
+   --> src\main.rs:722:9
+    |
+722 |     let mut never_mutated_118 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_118`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:728:9
+    |
+728 |     let mut never_mutated_119 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_119`
+   --> src\main.rs:727:9
+    |
+727 |     let unused_119 = input * 119;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_119`
+
+warning: unused variable: `never_mutated_119`
+   --> src\main.rs:728:9
+    |
+728 |     let mut never_mutated_119 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_119`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:734:9
+    |
+734 |     let mut never_mutated_120 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_120`
+   --> src\main.rs:733:9
+    |
+733 |     let unused_120 = input * 120;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_120`
+
+warning: unused variable: `never_mutated_120`
+   --> src\main.rs:734:9
+    |
+734 |     let mut never_mutated_120 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_120`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:740:9
+    |
+740 |     let mut never_mutated_121 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_121`
+   --> src\main.rs:739:9
+    |
+739 |     let unused_121 = input * 121;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_121`
+
+warning: unused variable: `never_mutated_121`
+   --> src\main.rs:740:9
+    |
+740 |     let mut never_mutated_121 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_121`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:746:9
+    |
+746 |     let mut never_mutated_122 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_122`
+   --> src\main.rs:745:9
+    |
+745 |     let unused_122 = input * 122;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_122`
+
+warning: unused variable: `never_mutated_122`
+   --> src\main.rs:746:9
+    |
+746 |     let mut never_mutated_122 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_122`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:752:9
+    |
+752 |     let mut never_mutated_123 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_123`
+   --> src\main.rs:751:9
+    |
+751 |     let unused_123 = input * 123;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_123`
+
+warning: unused variable: `never_mutated_123`
+   --> src\main.rs:752:9
+    |
+752 |     let mut never_mutated_123 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_123`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:758:9
+    |
+758 |     let mut never_mutated_124 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_124`
+   --> src\main.rs:757:9
+    |
+757 |     let unused_124 = input * 124;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_124`
+
+warning: unused variable: `never_mutated_124`
+   --> src\main.rs:758:9
+    |
+758 |     let mut never_mutated_124 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_124`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:764:9
+    |
+764 |     let mut never_mutated_125 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_125`
+   --> src\main.rs:763:9
+    |
+763 |     let unused_125 = input * 125;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_125`
+
+warning: unused variable: `never_mutated_125`
+   --> src\main.rs:764:9
+    |
+764 |     let mut never_mutated_125 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_125`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:770:9
+    |
+770 |     let mut never_mutated_126 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_126`
+   --> src\main.rs:769:9
+    |
+769 |     let unused_126 = input * 126;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_126`
+
+warning: unused variable: `never_mutated_126`
+   --> src\main.rs:770:9
+    |
+770 |     let mut never_mutated_126 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_126`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:776:9
+    |
+776 |     let mut never_mutated_127 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_127`
+   --> src\main.rs:775:9
+    |
+775 |     let unused_127 = input * 127;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_127`
+
+warning: unused variable: `never_mutated_127`
+   --> src\main.rs:776:9
+    |
+776 |     let mut never_mutated_127 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_127`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:782:9
+    |
+782 |     let mut never_mutated_128 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_128`
+   --> src\main.rs:781:9
+    |
+781 |     let unused_128 = input * 128;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_128`
+
+warning: unused variable: `never_mutated_128`
+   --> src\main.rs:782:9
+    |
+782 |     let mut never_mutated_128 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_128`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:788:9
+    |
+788 |     let mut never_mutated_129 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_129`
+   --> src\main.rs:787:9
+    |
+787 |     let unused_129 = input * 129;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_129`
+
+warning: unused variable: `never_mutated_129`
+   --> src\main.rs:788:9
+    |
+788 |     let mut never_mutated_129 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_129`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:794:9
+    |
+794 |     let mut never_mutated_130 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_130`
+   --> src\main.rs:793:9
+    |
+793 |     let unused_130 = input * 130;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_130`
+
+warning: unused variable: `never_mutated_130`
+   --> src\main.rs:794:9
+    |
+794 |     let mut never_mutated_130 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_130`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:800:9
+    |
+800 |     let mut never_mutated_131 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_131`
+   --> src\main.rs:799:9
+    |
+799 |     let unused_131 = input * 131;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_131`
+
+warning: unused variable: `never_mutated_131`
+   --> src\main.rs:800:9
+    |
+800 |     let mut never_mutated_131 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_131`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:806:9
+    |
+806 |     let mut never_mutated_132 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_132`
+   --> src\main.rs:805:9
+    |
+805 |     let unused_132 = input * 132;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_132`
+
+warning: unused variable: `never_mutated_132`
+   --> src\main.rs:806:9
+    |
+806 |     let mut never_mutated_132 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_132`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:812:9
+    |
+812 |     let mut never_mutated_133 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_133`
+   --> src\main.rs:811:9
+    |
+811 |     let unused_133 = input * 133;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_133`
+
+warning: unused variable: `never_mutated_133`
+   --> src\main.rs:812:9
+    |
+812 |     let mut never_mutated_133 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_133`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:818:9
+    |
+818 |     let mut never_mutated_134 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_134`
+   --> src\main.rs:817:9
+    |
+817 |     let unused_134 = input * 134;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_134`
+
+warning: unused variable: `never_mutated_134`
+   --> src\main.rs:818:9
+    |
+818 |     let mut never_mutated_134 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_134`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:824:9
+    |
+824 |     let mut never_mutated_135 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_135`
+   --> src\main.rs:823:9
+    |
+823 |     let unused_135 = input * 135;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_135`
+
+warning: unused variable: `never_mutated_135`
+   --> src\main.rs:824:9
+    |
+824 |     let mut never_mutated_135 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_135`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:830:9
+    |
+830 |     let mut never_mutated_136 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_136`
+   --> src\main.rs:829:9
+    |
+829 |     let unused_136 = input * 136;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_136`
+
+warning: unused variable: `never_mutated_136`
+   --> src\main.rs:830:9
+    |
+830 |     let mut never_mutated_136 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_136`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:836:9
+    |
+836 |     let mut never_mutated_137 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_137`
+   --> src\main.rs:835:9
+    |
+835 |     let unused_137 = input * 137;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_137`
+
+warning: unused variable: `never_mutated_137`
+   --> src\main.rs:836:9
+    |
+836 |     let mut never_mutated_137 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_137`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:842:9
+    |
+842 |     let mut never_mutated_138 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_138`
+   --> src\main.rs:841:9
+    |
+841 |     let unused_138 = input * 138;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_138`
+
+warning: unused variable: `never_mutated_138`
+   --> src\main.rs:842:9
+    |
+842 |     let mut never_mutated_138 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_138`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:848:9
+    |
+848 |     let mut never_mutated_139 = input + 1;
+    |         ----^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `unused_139`
+   --> src\main.rs:847:9
+    |
+847 |     let unused_139 = input * 139;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused_139`
+
+warning: unused variable: `never_mutated_139`
+   --> src\main.rs:848:9
+    |
+848 |     let mut never_mutated_139 = input + 1;
+    |         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_never_mutated_139`
+
+Some errors have detailed explanations: E0308, E0425.
+For more information about an error, try `rustc --explain E0308`.
+warning: `c1` (bin "c1") generated 420 warnings
+error: could not compile `c1` (bin "c1") due to 4 previous errors; 420 warnings emitted

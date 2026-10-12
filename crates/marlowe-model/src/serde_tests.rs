@@ -34,6 +34,7 @@ fn messages_round_trip_with_every_part() {
         call_id: "c1".into(),
         content: "fn main() {}".into(),
         is_error: false,
+        parts: Vec::new(),
     }]));
 }
 
@@ -87,6 +88,7 @@ fn model_info_and_refs_round_trip() {
         max_output: Some(64_000),
         supports_tools: true,
         supports_reasoning: true,
+        supports_vision: false,
         effort_levels: vec![Effort::Low, Effort::Medium, Effort::High],
         pricing: Some(Pricing { input_per_mtok: 3.0, output_per_mtok: 15.0 }),
         local: false,
@@ -141,4 +143,61 @@ fn usage_adds_across_calls() {
     assert_eq!(a.total(), 17);
     assert_eq!(a.cost_usd, Some(0.25));
     assert!((Pricing { input_per_mtok: 3.0, output_per_mtok: 15.0 }.cost(1_000_000, 0) - 3.0).abs() < 1e-9);
+}
+
+fn png() -> ImageRef {
+    ImageRef { mime: "image/png".into(), blob: "ab".repeat(32), w: 1024, h: 768 }
+}
+
+#[test]
+fn images_round_trip_in_messages_and_tool_results() {
+    let m = Message::with_images(Role::User, "what is this?", [png()]);
+    let s = round_trip(&m);
+    assert!(s.contains(r#"{"type":"image","mime":"image/png","#), "{s}");
+    assert_eq!(m.images().count(), 1);
+
+    let r = ToolResult { parts: vec![ResultPart::Image(png())], ..ToolResult::text("c1", "[image 1024x768]", false) };
+    let s = round_trip(&Message::tool_results([r.clone()]));
+    assert!(s.contains(r#""parts":[{"type":"image""#), "{s}");
+    assert_eq!(r.images().next(), Some(&png()));
+    assert_eq!(Part::from(ResultPart::Image(png())), Part::Image(png()));
+    // A text-only result serializes exactly as before the seam: no `parts` key.
+    let plain = serde_json::to_string(&ToolResult::text("c1", "ok", false)).unwrap();
+    assert_eq!(plain, r#"{"call_id":"c1","content":"ok","is_error":false}"#);
+}
+
+#[test]
+fn vision_support_defaults_to_false_and_round_trips() {
+    let mut info = ModelInfo::bare(ProviderKind::Anthropic, "claude-x");
+    assert!(!info.supports_vision);
+    info.supports_vision = true;
+    let s = round_trip(&info);
+    assert!(s.contains(r#""supports_vision":true"#), "{s}");
+}
+
+/// Turns and library rows written before M4.6 (no `parts`, no `supports_vision`) still load.
+/// The fixture is the stored format as of M4.5 and is never regenerated.
+#[test]
+fn pre_m46_stored_json_still_deserialises() {
+    let parts: Vec<Vec<Part>> = serde_json::from_str(include_str!("../tests/fixtures/turns_m45.json")).unwrap();
+    assert_eq!(parts.len(), 4);
+    let results: Vec<&ToolResult> = parts
+        .iter()
+        .flatten()
+        .filter_map(|p| match p {
+            Part::ToolResult(r) => Some(r),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.parts.is_empty()));
+    assert!(results[1].is_error);
+    // Re-serialising the loaded value reproduces the same JSON value (nothing gained or lost).
+    let again: serde_json::Value = serde_json::to_value(&parts).unwrap();
+    let original: serde_json::Value = serde_json::from_str(include_str!("../tests/fixtures/turns_m45.json")).unwrap();
+    assert_eq!(again, original);
+
+    let info: ModelInfo = serde_json::from_str(include_str!("../tests/fixtures/model_info_m45.json")).unwrap();
+    assert!(!info.supports_vision);
+    assert_eq!(info.context_window, Some(131_072));
 }

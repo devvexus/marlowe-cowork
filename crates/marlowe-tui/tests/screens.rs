@@ -237,6 +237,7 @@ fn approval_modal() {
         summary: "Remove-Item -Recurse build".into(),
         detail: "{\n  \"command\": \"Remove-Item -Recurse build\"\n}".into(),
         run: None,
+        proposed_rule: None,
     });
     let buf = render(&s, W, H);
     for want in ["approval", "powershell", "wants to act", "Remove-Item -Recurse build", "allow", "allow for session", "deny", "needs you"] {

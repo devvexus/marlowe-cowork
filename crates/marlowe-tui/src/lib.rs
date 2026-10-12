@@ -10,17 +10,32 @@ use std::net::SocketAddr;
 
 use marlowe_proto::DaemonInfo;
 
+pub mod attach;
+pub mod bg;
+pub mod bg_panels;
 pub mod client;
+pub mod closing;
+pub mod code_events;
+pub mod coding;
+pub mod compose;
 pub mod composer;
 pub mod context;
 pub mod crew;
+pub mod dag;
+pub mod diff;
+pub mod history;
 pub mod images;
 mod input;
-mod osc;
 pub mod library;
+pub mod links;
+pub mod local;
 pub mod memory;
 pub mod onboard;
+mod osc;
+pub mod panel;
 pub mod render;
+pub mod report;
+pub mod slash;
 pub mod state;
 mod term;
 pub mod text;
@@ -88,6 +103,7 @@ pub fn run_with(resolve: Resolver) -> Result<(), TuiError> {
     let mut state = State::new(workspace);
     state.now_ms = chrono::Local::now().timestamp_millis();
     state.start_boot(last_launch(state.now_ms));
+    state.code.history = history::History::load(&marlowe_proto::paths::cowork_home().join("tui-history.jsonl"));
     let client = Client::spawn(resolve);
     term::run(client, state, theme)
 }

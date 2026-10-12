@@ -8,8 +8,21 @@ description = "The lean agent loop: assemble, stream, run every tool call, repea
 [dependencies]
 marlowe-model.workspace = true
 marlowe-proto.workspace = true
+# ToolGroup / Profiles / ExposureProfile: the exposure vocabulary the registration table uses.
+marlowe-tools.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 crossbeam-channel.workspace = true
+# N: `task_output`'s `filter`.
+regex.workspace = true
 chrono.workspace = true
+# Pre-declared by the seam (M4.6) so wave-1 tracks do not edit this block or Cargo.lock's
+# dependency list for it; integ regenerates Cargo.lock rather than hand-merging it.
+# E (hooks start children through marlowe_os::child; rules from marlowe-settings, adjudicated by
+# marlowe-permission) and F (WorktreeProvider).
+marlowe-os.workspace = true
+marlowe-settings.workspace = true
+marlowe-permission.workspace = true
+# W: /workflow convert hands the model the converter's prompt.
+marlowe-workflow.workspace = true

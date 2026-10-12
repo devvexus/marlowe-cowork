@@ -10,6 +10,8 @@ models/
 # Benchmark corpora (LongMemEval etc.) are never vendored; eval/ fetches them by digest.
 data/
 corpora/
+# ...but the typeset fixtures the surface and typeset-helper tests `include!` are source.
+!crates/marlowe-surface/tests/data/
 
 # Python bytecode / caches from eval/.
 __pycache__/
@@ -24,3 +26,6 @@ __pycache__/
 
 # Local profile roots written by tests or dev runs.
 /profile-*/
+
+# Coding-eval run folders (records, transcripts, workspaces).
+/eval/coding/results/

@@ -1,0 +1,40 @@
+ * marlowe — gate work                                                                                                  0 runs · 0 need you
+╭ Conversation · gate work ──────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ Claude Sonnet 4.5 ▾             medium │
+│                                                                                                ││ ctx ────────────┊──── 0 / 200k · cloud │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
+│                                                                                                │╭ Workspace ─────────────────────────────╮
+│                                                                                                ││ C:/work/valiance ▾                     │
+│                                                                                                │╰────────────────────────────────── (w) ─╯
+│                                                                                                │╭ Crew ──────────────────────────────────╮
+│                                                                                                ││ no runs                                │
+│                                                                                                │╰────────────────────────────────── (1) ─╯
+│                                           ⣿  MARLOWE                                           │╭ Watch ─────────────────────────────────╮
+│                                                                                                ││ nothing watched                        │
+│                              ╭ quit ──────────────────────────────────────────────────────────────────────╮                              │
+│                              │ Still running: 2 agent runs, 1 job. Stop the agent, or close the window    │                              │
+│                              │ and leave the agent running?                                               │                              │
+│                ask anything  │                                                                            │                              │
+│                              │   s Stop and close agent                                                   │                              │
+│                              │       models unload, the GPU is freed, work is saved to resume later       │                              │
+│                              │   w Close window (keep agent running)                                      │                              │
+│                              │       the agent carries on in the background, with a tray icon             │                              │
+│                              │ › c Cancel                                                                 │                              │
+│                              │       stay here                                                            │                              │
+│                              │   [ ] Remember my choice  (the window's X then does the same)              │                              │
+│                              │                                                                            │                              │
+│                              ╰─────────────────────────────────────── ↵ choose · r remember · esc cancel ─╯                              │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│  background 3 running · /tasks                                                                 │╰────────────────────────────────── (2) ─╯
+│  ● job_j1 job_j1                                                                             0s│╭ Threads ───────────────────────────────╮
+│  ● agent_r1 agent_r1                                                                         0s││ no open threads                        │
+│  ● agent_r2 agent_r2                                                                         0s│╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰─ 2 tasks ──────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette       Friday 9 October · 21:40

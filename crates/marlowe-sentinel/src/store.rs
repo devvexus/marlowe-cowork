@@ -81,6 +81,11 @@ fn source_str(s: NoticeSource) -> &'static str {
         NoticeSource::Ollama => "ollama",
         NoticeSource::Gpu => "gpu",
         NoticeSource::Discovery => "discovery",
+        NoticeSource::Ci => "ci",
+        NoticeSource::Experiment => "experiment",
+        NoticeSource::Task => "task",
+        NoticeSource::Message => "message",
+        NoticeSource::Notify => "notify",
     }
 }
 
@@ -93,6 +98,11 @@ fn source_of(s: &str) -> NoticeSource {
         "git" => NoticeSource::Git,
         "ollama" => NoticeSource::Ollama,
         "gpu" => NoticeSource::Gpu,
+        "ci" => NoticeSource::Ci,
+        "experiment" => NoticeSource::Experiment,
+        "task" => NoticeSource::Task,
+        "message" => NoticeSource::Message,
+        "notify" => NoticeSource::Notify,
         _ => NoticeSource::Discovery,
     }
 }

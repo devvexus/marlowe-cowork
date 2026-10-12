@@ -1,0 +1,40 @@
+ * marlowe — gate work                                                                                                   1 run · 0 need you
+╭ Run · add the evals page ────────────────────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮
+│                                                                                                                                          │
+│  ● lead · add the evals page                                                                                                    running  │
+│  step 6 of 40 · $0.0213 of $0.50 · 41.2k tokens of 400k · build · implement · 2 of 4 tasks done · 1m ago                                 │
+│  build · C:/work/valiance · run bb11cc22                                                                                                 │
+│  ✓ scope → ✓ plan → ✓ contract → ● implement → ○ integrate → ○ verify → ○ review → ○ fix → ○ deliver                                     │
+│  2 of 4 tasks done                                                                                                                       │
+│   1  ✓ models   ✓ schema                                                                                                                 │
+│   2  ● api ← models,schema                                                                                                               │
+│   3  ○ ui ← api                                                                                                                          │
+│  frozen after the contract: Cargo.toml, src/lib.rs                                                                                       │
+│  goal  add the evals page                                                                                                                │
+│                                                                                                                                          │
+│  TRANSCRIPT                                                                                                                              │
+│  loading the transcript…                                                                                                                 │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│  steer › s to steer: a note the run reads at its next step                                                                               │
+│                                                                                                                                          │
+╰─────────────────────────────────────────────────────────── s steer  ·  t messages  ·  p pause  ·  c cancel  ·  ↑↓ scroll  ·  esc/⌫ runs ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette       Friday 9 October · 21:40

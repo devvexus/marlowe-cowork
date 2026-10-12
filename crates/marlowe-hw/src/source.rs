@@ -68,6 +68,11 @@ pub trait ModelSource: Send + Sync {
     fn resident(&self) -> Option<Vec<String>> {
         Some(self.loaded_models())
     }
+    /// Unloads `model_id` from the engine now (Ollama: `keep_alive: 0`), so its memory is free
+    /// before this returns. Used when the window closes. The default cannot.
+    fn unload(&self, _model_id: &str) -> Result<(), String> {
+        Err("this engine cannot unload a model".into())
+    }
 }
 
 /// The GPU and system memory now.

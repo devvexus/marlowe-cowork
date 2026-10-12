@@ -1,0 +1,17 @@
+# The eval profile (design 3.5, 9.2-l): Marlowe's network allowlist for eval runs. The harness copies
+# this to each arm's private profile home as settings.toml (marlowe -p's --settings takes no
+# network key). Package registries and GitHub only; any other host asks, and a headless run cannot
+# answer, so it is denied.
+[network]
+allow_hosts = [
+  "pypi.org",
+  "files.pythonhosted.org",
+  "registry.npmjs.org",
+  "crates.io",
+  "static.crates.io",
+  "index.crates.io",
+  "github.com",
+  "raw.githubusercontent.com",
+  "objects.githubusercontent.com",
+  "proxy.golang.org",
+]

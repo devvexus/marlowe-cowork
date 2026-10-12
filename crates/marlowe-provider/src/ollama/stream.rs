@@ -8,11 +8,19 @@
 //! Token counting: a frame is one token, charged once to the channel it fed. On the final frame
 //! the engine's `eval_count` settles the difference: anything counted but not streamed belongs to
 //! reasoning (Ollama merges whitespace tokens on the thinking channel).
+//!
+//! Tool calls: structured ones have their arguments repaired against the request's schemas
+//! (`repair.rs`). A call written as text is withheld from the screen while it streams
+//! ([`LeakGuard`]) and read at the end ([`scan`]); every repair is counted in [`RepairStats`].
 
-use marlowe_model::{Completion, CompletionBuilder, ProviderError, StopReason, StreamEvent, Usage};
+use std::sync::Arc;
+
+use marlowe_model::{Completion, CompletionBuilder, ProviderError, StopReason, StreamEvent, ToolSpec, Usage};
 use serde_json::Value;
 
-use super::leak::{defang_tool_markup, recover_leaked_call};
+use super::leak::defang_tool_markup;
+use super::repair::{repair_call, RepairStats};
+use super::scan::{scan, LeakGuard, ToolSet};
 use crate::think::{Segment, ThinkSplitter};
 
 pub struct Folder<'a> {
@@ -29,6 +37,9 @@ pub struct Folder<'a> {
     usage: Usage,
     stop: Option<StopReason>,
     done: bool,
+    tools: Option<Vec<ToolSpec>>,
+    guard: LeakGuard,
+    stats: Option<Arc<RepairStats>>,
 }
 
 impl<'a> Folder<'a> {
@@ -47,7 +58,25 @@ impl<'a> Folder<'a> {
             usage: Usage::default(),
             stop: None,
             done: false,
+            tools: None,
+            guard: LeakGuard::new(None),
+            stats: None,
         }
+    }
+
+    /// The request's tools: call names and arguments are checked against them, and a call
+    /// written as text is accepted only for a tool in the list. Without this, only the explicit
+    /// markup forms are recovered, under any name.
+    pub fn with_tools(mut self, tools: &[ToolSpec]) -> Self {
+        self.tools = Some(tools.to_vec());
+        self.guard = LeakGuard::new(self.tools.clone());
+        self
+    }
+
+    /// Counts every repaired call here.
+    pub fn with_stats(mut self, stats: Arc<RepairStats>) -> Self {
+        self.stats = Some(stats);
+        self
     }
 
     fn emit(&mut self, ev: StreamEvent) {
@@ -62,7 +91,17 @@ impl<'a> Folder<'a> {
 
     fn speech(&mut self, text: &str, tokens: u64) {
         self.speech_tokens += tokens;
-        self.emit(StreamEvent::TextDelta(text.to_string()));
+        let shown = self.guard.push(text);
+        if !shown.is_empty() {
+            self.emit(StreamEvent::TextDelta(shown));
+        }
+    }
+
+    /// Speech that has already been judged (no guard).
+    fn speech_now(&mut self, text: &str) {
+        if !text.is_empty() {
+            self.emit(StreamEvent::TextDelta(text.to_string()));
+        }
     }
 
     /// True once the final (`done`) frame has been seen.
@@ -121,6 +160,9 @@ impl<'a> Folder<'a> {
                 let owed = std::mem::take(&mut self.held_tokens);
                 self.reasoning(&held, owed);
             }
+            // Text the guard was still holding was reasoning too.
+            let withheld = self.guard.reset();
+            self.speech_now(&withheld);
             if !self.builder.text().is_empty() {
                 let owed = std::mem::take(&mut self.speech_tokens);
                 self.reasoning_tokens += owed;
@@ -160,10 +202,13 @@ impl<'a> Folder<'a> {
             return;
         }
         let id = call.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
-        let args = match function.and_then(|f| f.get("arguments")) {
-            Some(Value::String(s)) => s.clone(),
-            Some(v @ Value::Object(_)) => v.to_string(),
-            _ => "{}".to_string(),
+        let raw = function.and_then(|f| f.get("arguments")).cloned().unwrap_or(Value::Null);
+        // The tool's own spelling, then its schema: the model's `Read` and `"20"` are repaired
+        // and counted; an unreadable argument string is passed on raw for the loop to report.
+        let (name, outcome) = repair_call(&name, &raw, self.tools.as_deref(), self.stats.as_deref());
+        let args = match outcome.into_value() {
+            Value::String(s) => s,
+            v => v.to_string(),
         };
         let index = self.next_call;
         self.next_call += 1;
@@ -207,15 +252,28 @@ impl<'a> Folder<'a> {
             }
         }
 
-        if self.next_call == 0 {
-            if let Some((name, args, _prose)) = recover_leaked_call(self.builder.text()) {
-                let owed = std::mem::take(&mut self.speech_tokens);
-                self.reasoning_tokens += owed;
-                self.emit(StreamEvent::Retract { tokens: owed });
-                self.emit(StreamEvent::ToolCallStart { index: 0, id: String::new(), name });
-                self.emit(StreamEvent::ToolArgsDelta { index: 0, json: args.to_string() });
-                self.emit(StreamEvent::ToolCallEnd { index: 0 });
-                self.next_call = 1;
+        // What the guard withheld: a call written as text, or text that only looked like one.
+        let tail = self.guard.take_held();
+        if !tail.is_empty() {
+            let set = match &self.tools {
+                Some(t) => ToolSet::Known(t),
+                None => ToolSet::Any,
+            };
+            let found = if self.next_call == 0 { scan(&tail, set) } else { Default::default() };
+            if found.calls.is_empty() {
+                self.speech_now(&tail);
+            } else {
+                self.speech_now(&found.prose);
+                for c in found.calls {
+                    if let Some(stats) = &self.stats {
+                        stats.record(&c.outcome(), true);
+                    }
+                    let index = self.next_call;
+                    self.next_call += 1;
+                    self.emit(StreamEvent::ToolCallStart { index, id: String::new(), name: c.name });
+                    self.emit(StreamEvent::ToolArgsDelta { index, json: c.args.to_string() });
+                    self.emit(StreamEvent::ToolCallEnd { index });
+                }
             }
         }
 
@@ -368,7 +426,7 @@ mod tests {
         assert_eq!(c.tool_calls[0].name, "read");
         assert_eq!(c.tool_calls[0].args, json!({"path": "notes.md"}));
         assert!(c.text.is_empty());
-        assert!(!c.thinking.unwrap().text.contains("<function"));
+        assert!(c.thinking.is_none_or(|t| !t.text.contains("<function")));
     }
 
     #[test]

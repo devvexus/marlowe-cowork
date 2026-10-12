@@ -1,0 +1,10 @@
+[[services]]
+name = "dev"
+command = "python server.py"
+ready_log = 'serving on (?P<url>http://127\.0\.0\.1:(?P<port>\d+))'
+ready_url = "http://127.0.0.1:{port}/"
+
+[migrations]
+tool = "fixture"
+up = "python migrate.py up"
+down = "python migrate.py down"

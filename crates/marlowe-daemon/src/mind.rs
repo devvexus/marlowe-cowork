@@ -494,6 +494,26 @@ impl ToolHost for ComposedTools {
         }
     }
 
+    fn call_scoped(&self, call: &ToolCallReq, cx: &marlowe_agent::CallCtx) -> ToolOutcome {
+        if MindTools::is_memory_tool(&call.name) {
+            self.memory.call_scoped(call, cx)
+        } else {
+            self.inner.call_scoped(call, cx)
+        }
+    }
+
+    fn middleware(&self) -> Vec<Arc<dyn marlowe_agent::ToolMiddleware>> {
+        let mut m = self.inner.middleware();
+        m.extend(self.memory.middleware());
+        m
+    }
+
+    fn persona_blocks(&self) -> Vec<marlowe_agent::PersonaBlock> {
+        let mut b = self.inner.persona_blocks();
+        b.extend(self.memory.persona_blocks());
+        b
+    }
+
     fn consequence(&self, call: &ToolCallReq) -> Consequence {
         if MindTools::is_memory_tool(&call.name) {
             self.memory.consequence(call)
@@ -533,6 +553,41 @@ impl ToolHost for ComposedTools {
             self.memory.describe(call)
         } else {
             self.inner.describe(call)
+        }
+    }
+
+    fn manifest(&self, name: &str) -> Option<marlowe_agent::ToolManifest> {
+        if MindTools::is_memory_tool(name) {
+            let effects = if name == "recall" { marlowe_agent::Effects::READ } else { marlowe_agent::Effects::NONE };
+            Some(marlowe_agent::ToolManifest {
+                group: marlowe_agent::ToolGroup::Memory,
+                profiles: marlowe_agent::Profiles::ALL,
+                effects,
+                path_args: &[],
+            })
+        } else {
+            self.inner.manifest(name)
+        }
+    }
+
+    fn mutation(&self, call: &ToolCallReq, ctx: &ToolCtx) -> marlowe_agent::Mutation {
+        if MindTools::is_memory_tool(&call.name) {
+            marlowe_agent::Mutation::None
+        } else {
+            self.inner.mutation(call, ctx)
+        }
+    }
+
+    fn consequence_in_sandbox(
+        &self,
+        call: &ToolCallReq,
+        exposure: &Exposure,
+        sandbox: &dyn marlowe_agent::SandboxView,
+    ) -> Option<Consequence> {
+        if MindTools::is_memory_tool(&call.name) {
+            None
+        } else {
+            self.inner.consequence_in_sandbox(call, exposure, sandbox)
         }
     }
 }

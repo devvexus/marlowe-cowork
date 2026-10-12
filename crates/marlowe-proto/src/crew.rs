@@ -266,6 +266,9 @@ pub struct CrewRunInfo {
     pub updated_ms: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Dispatch>,
+    /// Set when the run executes a workflow script (design 3.11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<crate::background::WorkflowRef>,
 }
 
 /// One stored step of a run, for the Run view's transcript replay.

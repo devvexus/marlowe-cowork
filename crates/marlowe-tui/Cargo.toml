@@ -18,11 +18,16 @@ ratatui.workspace = true
 crossterm.workspace = true
 crossbeam-channel.workspace = true
 thiserror.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 # Wall-clock time for the title bar clock (local time zone).
 chrono.workspace = true
 # Display widths for wrapping (already in the lock via ratatui).
 unicode-width = "0.2.2"
+# `/config` reads the settings layers the daemon reports (TOML text).
+toml = "0.8"
+# The file walk behind `@`: gitignore-aware, the same crate the code tools use.
+ignore = "0.4.33"
 
 [dev-dependencies]
 # The planner tests build a real plan from the GGUF-header fixtures marlowe-hw keeps.

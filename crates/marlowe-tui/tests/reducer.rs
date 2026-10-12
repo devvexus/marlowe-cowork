@@ -7,7 +7,7 @@ use crossterm::event::KeyCode;
 use marlowe_model::{Effort, Part, Role, ToolCall, ToolResult};
 use marlowe_proto::{ApprovalDecision, ApprovalId, Event, Request, SessionId, Slot, StoredTurn, TurnStop};
 use marlowe_tui::library::{LibFocus, LibStep};
-use marlowe_tui::state::{Activity, ToolStatus};
+use marlowe_tui::state::{Activity, Overlay, ToolStatus};
 use marlowe_tui::{ClientEvent, Conn, Entry, State, View};
 
 fn in_session() -> State {
@@ -47,6 +47,8 @@ fn enter_sends_shift_enter_breaks_the_line() {
             session: None,
             text: "line one\nline two".into(),
             workspace: Some("C:/work/valiance".into()),
+            images: Vec::new(),
+            options: None,
         }]
     );
     assert!(s.composer.text().is_empty());
@@ -66,10 +68,12 @@ fn the_new_session_is_adopted_and_the_turn_streams() {
     assert_eq!(s.entries.last(), Some(&Entry::Prose { text: "Hi there.".into() }));
     assert_eq!(s.activity(), Activity::Writing);
 
-    // A later ask in a busy session is a steer, shown at once.
+    // A later message in a busy session is held, then goes in as a steer at the next step boundary.
     type_str(&mut s, "also check CI");
-    let reqs = s.on_key(key(KeyCode::Enter));
-    assert_eq!(reqs, vec![Request::Ask { session: Some(sid()), text: "also check CI".into(), workspace: None }]);
+    assert!(s.on_key(key(KeyCode::Enter)).is_empty());
+    feed(&mut s, 6, Event::ToolStarted { session: sid(), turn: 1, call_id: "c1".into(), tool: "read".into(), summary: "read a".into() });
+    let reqs = feed(&mut s, 7, Event::ToolFinished { session: sid(), turn: 1, call_id: "c1".into(), ok: true, summary: "ok".into() });
+    assert_eq!(reqs, vec![Request::Ask { session: Some(sid()), text: "also check CI".into(), workspace: None, images: Vec::new(), options: None }]);
     assert_eq!(s.entries.last(), Some(&Entry::User { text: "also check CI".into(), steer: true }));
 }
 
@@ -145,7 +149,7 @@ fn reasoning_tokens_sum_per_delta_and_a_late_settlement_lands_on_the_thinking_li
 }
 
 #[test]
-fn escape_interrupts_a_running_turn() {
+fn parity_u5_escape_interrupts_a_running_turn() {
     let mut s = in_session();
     assert_eq!(s.on_key(key(KeyCode::Esc)), vec![Request::Interrupt { session: sid() }]);
     feed(&mut s, 4, Event::TurnFinished { session: sid(), turn: 1, usage: Default::default(), stop: TurnStop::Interrupted });
@@ -206,7 +210,7 @@ fn a_restarted_daemon_reloads_and_drops_the_lost_turn() {
         StoredTurn {
             idx: 2,
             role: Role::Tool,
-            content: vec![Part::ToolResult(ToolResult { call_id: "c1".into(), content: "x\ny".into(), is_error: false })],
+            content: vec![Part::ToolResult(ToolResult { call_id: "c1".into(), content: "x\ny".into(), is_error: false, parts: Vec::new() })],
             at_ms: 0,
         },
     ];
@@ -254,6 +258,7 @@ fn approvals_queue_and_resolve_from_any_client() {
             summary: format!("cmd {id}"),
             detail: String::new(),
             run: None,
+            proposed_rule: None,
         });
     }
     assert_eq!(s.activity(), Activity::Awaiting);
@@ -275,6 +280,7 @@ fn ask_approval(s: &mut State, id: u64, detail: &str) {
         summary: "bash: echo hi".into(),
         detail: detail.into(),
         run: None,
+        proposed_rule: None,
     });
 }
 
@@ -323,6 +329,9 @@ fn palette_commands() {
 
     s.on_key(ctrl('l'));
     assert_eq!(s.view, View::Library);
+    // Quitting asks first; a second ^q is the answer "stop and close agent".
+    s.on_key(ctrl('q'));
+    assert!(!s.quit && matches!(s.overlay, Some(Overlay::Choice { .. })), "{:?}", s.overlay);
     s.on_key(ctrl('q'));
     assert!(s.quit);
 }

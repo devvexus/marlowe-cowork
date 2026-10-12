@@ -312,6 +312,8 @@ pub(crate) struct Engine {
     quiet: QuietHours,
     published: Option<WatchState>,
     minor_at: Instant,
+    /// The registered probes ([`crate::probe::PROBES`]), ticked on every poll.
+    probes: Vec<Box<dyn crate::probe::Probe>>,
 }
 
 impl Engine {
@@ -327,6 +329,7 @@ impl Engine {
         quiet: QuietHours,
     ) -> Self {
         let gpu = GpuReport { devices: Vec::new(), unavailable: Some("not sampled yet".into()) };
+        let probes = crate::probe::start_all(&crate::probe::ProbeContext { home: &home });
         Self {
             cfg,
             store,
@@ -349,6 +352,7 @@ impl Engine {
             quiet,
             published: None,
             minor_at: Instant::now(),
+            probes,
         }
     }
 
@@ -378,6 +382,7 @@ impl Engine {
                 let full = ticks.is_multiple_of(FULL_SCAN_EVERY) || self.roots.iter().any(|r| r.watcher.is_none());
                 self.restat_runs();
                 self.pass(full);
+                self.tick_probes();
                 next_poll = Instant::now() + self.cfg.poll_interval;
             }
         }
@@ -395,6 +400,17 @@ impl Engine {
         self.drain();
         self.refresh_runs();
         self.publish();
+    }
+
+    /// Ticks every registered probe and records what it raised.
+    fn tick_probes(&mut self) {
+        let roots: Vec<PathBuf> = self.roots.iter().map(|r| r.path.clone()).collect();
+        let now = now_ms();
+        for p in &mut self.probes {
+            for draft in p.tick(now, &roots) {
+                raise(&self.store, &self.sink, draft);
+            }
+        }
     }
 
     fn handle(&mut self, cmd: Cmd) {

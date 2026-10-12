@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 marlowe-agent.workspace = true
+# N: SessionId and the notice, schedule and sent-file types the background tools shape.
+marlowe-proto.workspace = true
 marlowe-model.workspace = true
 marlowe-brains.workspace = true
 marlowe-net.workspace = true
@@ -14,6 +16,12 @@ marlowe-extract.workspace = true
 # the corpus uses its host gate (robots.txt, per-host spacing) and DocRef.
 marlowe-research.workspace = true
 marlowe-os.workspace = true
+# Pre-declared by the seam (M4.6) so wave-1 tracks do not edit this block or Cargo.lock's
+# dependency list for it; integ regenerates Cargo.lock rather than hand-merging it.
+marlowe-code.workspace = true
+marlowe-verify.workspace = true
+# M4.6 W: the `workflow` tool checks scripts and reaches the launcher service.
+marlowe-workflow.workspace = true
 # Chrome DevTools Protocol over a synchronous websocket (tungstenite; no tokio), driving the system
 # Microsoft Edge for client-rendered pages. Default `offline` feature: the protocol bindings are
 # pre-generated, nothing is downloaded at build time; the `fetch` feature (downloads a Chromium)
@@ -23,6 +31,10 @@ thiserror.workspace = true
 regex.workspace = true
 sha2.workspace = true
 serde_json.workspace = true
+ignore = "0.4.33"
+grep-searcher = "0.1.17"
+grep-regex = "0.1.14"
+grep-matcher = "0.1.9"
 
 [dev-dependencies]
-marlowe-proto.workspace = true
+crossbeam-channel.workspace = true
