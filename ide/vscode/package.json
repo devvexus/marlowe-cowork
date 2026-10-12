@@ -1,0 +1,76 @@
+{
+  "name": "marlowe-vscode",
+  "displayName": "Marlowe",
+  "description": "Connects Marlowe to this editor: the selection and open files, diagnostics, diffs and a notebook kernel, over a loopback MCP server.",
+  "version": "0.1.0",
+  "publisher": "marlowe",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/src/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In an untrusted workspace Marlowe can read the selection, open files and diagnostics, but cannot open diffs against files or run code in a kernel."
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "marlowe.showConnection",
+        "title": "Marlowe: Show Connection"
+      },
+      {
+        "command": "marlowe.restart",
+        "title": "Marlowe: Restart Connection"
+      },
+      {
+        "command": "marlowe.closeDiffs",
+        "title": "Marlowe: Close Proposed Diffs"
+      }
+    ],
+    "configuration": {
+      "title": "Marlowe",
+      "properties": {
+        "marlowe.home": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Marlowe's profile folder. Empty means `$MARLOWE_HOME`, else `%LOCALAPPDATA%\\MarloweCowork`. The connection file goes in its `ide` folder.",
+          "scope": "machine"
+        },
+        "marlowe.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Offer this editor to Marlowe. Turning it off removes the connection file.",
+          "scope": "machine"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "test": "npm run build && node --test --test-reporter=spec \"out/test/unit/*.test.js\"",
+    "test:host": "npm run build && node out/test/host/runTest.js",
+    "package": "npm run build && node -e \"require('fs').mkdirSync('dist',{recursive:true})\" && vsce package --no-dependencies --skip-license --allow-missing-repository -o dist/marlowe-vscode.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/vscode": "1.90.0",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.0.0",
+    "typescript": "5.9.3"
+  }
+}

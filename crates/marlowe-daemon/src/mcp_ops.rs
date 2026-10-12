@@ -19,6 +19,7 @@
 mod host;
 #[cfg(test)]
 mod host_tests;
+mod ide_context;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -160,7 +161,8 @@ fn conductor_window(core: &Core) -> Option<u32> {
 pub(crate) fn compose(core: &Arc<Core>, convo: &Conversation, host: Arc<dyn ToolHost>) -> Arc<dyn ToolHost> {
     let hub = hub_for(core, convo.workspace.as_deref());
     hub.wait_settled(CONNECT_GRACE);
-    Arc::new(McpTools::new(host, hub, conductor_window(core)))
+    let blobs = Arc::new(marlowe_model::image::FsBlobStore::new(core.home.join("blobs")));
+    Arc::new(McpTools::new(host, hub, conductor_window(core)).with_blobs(blobs))
 }
 
 // ---------------------------------------------------------------- requests
@@ -200,7 +202,10 @@ fn server_list(core: &Arc<Core>, ws: Option<&Path>, viewer: u64) -> Vec<McpServe
             .statuses()
             .into_iter()
             .filter(|s| !is_hidden(&s.name, s.scope))
-            .map(|s| McpServerInfo { name: s.name, scope: from_scope(s.scope), transport: s.transport.to_string(), tools: s.tools, status: s.status.label() })
+            .map(|s| {
+                let detail = ide_detail(core, ws, &s.name, s.scope);
+                McpServerInfo { name: s.name, scope: from_scope(s.scope), transport: s.transport.to_string(), tools: s.tools, status: s.status.label(), detail }
+            })
             .collect();
     }
     let session = reg.session_servers(&ws_key(ws));
@@ -220,9 +225,20 @@ fn server_list(core: &Arc<Core>, ws: Option<&Path>, viewer: u64) -> Vec<McpServe
             } else {
                 "idle (connects with a session)"
             };
-            McpServerInfo { name: s.name.clone(), scope: from_scope(s.scope), transport: s.transport.name().to_string(), tools: 0, status: status.to_string() }
+            let detail = ide_detail(core, ws, &s.name, s.scope);
+            McpServerInfo { name: s.name.clone(), scope: from_scope(s.scope), transport: s.transport.name().to_string(), tools: 0, status: status.to_string(), detail }
         })
         .collect()
+}
+
+/// What `/ide` shows for the discovered editor server (session scope, named `ide`): the window
+/// and the folders it has open. Other servers have nothing to add.
+fn ide_detail(core: &Arc<Core>, ws: Option<&Path>, name: &str, scope: Scope) -> String {
+    if name == marlowe_mcp::ide::SERVER_NAME && scope == Scope::Session {
+        marlowe_mcp::ide::status(&core.home, ws)
+    } else {
+        String::new()
+    }
 }
 
 fn workspace_path(ws: &Option<String>) -> Option<PathBuf> {

@@ -171,6 +171,7 @@ fn every_m46_event_round_trips_inside_an_envelope() {
                 transport: "stdio".into(),
                 tools: 12,
                 status: "connected".into(),
+                detail: String::new(),
             }],
         },
     ];

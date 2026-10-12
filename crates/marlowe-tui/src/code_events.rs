@@ -284,6 +284,15 @@ impl State {
             Event::McpServers { list } => {
                 self.code.mcp = Some(list.clone());
                 self.clamp_panel();
+                if std::mem::take(&mut self.code.expect_ide) {
+                    let line = match list.iter().find(|s| s.name == "ide") {
+                        Some(s) if !s.detail.is_empty() => format!("editor: {} \u{b7} {} tools \u{b7} {}", s.status, s.tools, s.detail),
+                        Some(s) => format!("editor: `ide` server from your configuration \u{b7} {}", s.status),
+                        None => "editor: none connected. Install the Marlowe VS Code extension (ide/vscode) and open this folder in it; MARLOWE_NO_IDE=1 turns discovery off".to_string(),
+                    };
+                    let tone = if list.iter().any(|s| s.name == "ide" && s.status == "connected") { NoteTone::Dim } else { NoteTone::Amber };
+                    self.note(&line, tone);
+                }
             }
             Event::Checkpoints { session, list } if self.mine(session) => {
                 self.code.checkpoints = Some(list.clone());

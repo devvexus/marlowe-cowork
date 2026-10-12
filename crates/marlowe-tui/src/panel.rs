@@ -356,7 +356,7 @@ impl State {
         self.code.panel.as_ref()
     }
 
-    fn ws(&self) -> Option<String> {
+    pub(crate) fn ws(&self) -> Option<String> {
         self.shown_workspace().map(str::to_string)
     }
 

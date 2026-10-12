@@ -287,6 +287,8 @@ pub struct Coding {
     pub unavailable: std::collections::BTreeSet<String>,
     /// `/fork` was sent: the next session reply is the copy, to open.
     pub expect_fork: bool,
+    /// `/ide` was sent: the next server list is answered with a line about the editor.
+    pub expect_ide: bool,
     /// `/export` was sent for this session title and format, for the file name.
     pub export_name: Option<String>,
 }
