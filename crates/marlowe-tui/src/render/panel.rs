@@ -783,7 +783,7 @@ fn question(area: Rect, q: &QuestionUi, theme: &Theme, buf: &mut Buffer) -> Opti
     let preview_of = |i: usize| detail(i).and_then(|d| d.preview.as_deref()).filter(|p| !p.trim().is_empty());
     let has_previews = (0..cur.options.len()).any(|i| preview_of(i).is_some());
     // A preview sits beside the options when the window is wide enough, else under them.
-    let wide = has_previews && area.width >= 112;
+    let wide = has_previews && area.width >= 130;
     let w: u16 = if wide { area.width.saturating_sub(8).min(124) } else { 84 };
     let tw = (w - 4) as usize;
     let left_w = if wide { 48usize } else { tw };
@@ -795,9 +795,11 @@ fn question(area: Rect, q: &QuestionUi, theme: &Theme, buf: &mut Buffer) -> Opti
             .unwrap_or_default()
     };
     let option_rows: usize = (0..cur.options.len()).map(|i| 1 + desc_lines(i).len()).sum();
-    let preview_rows = if has_previews && !wide { PREVIEW_ROWS + 2 } else { 0 };
-    let h = (q_lines.len() + option_rows + preview_rows + 9) as u16;
-    let r = centred(area, w, h.max(if wide { PREVIEW_ROWS as u16 + 12 } else { 0 }), false);
+    // The tallest preview any option has, so the box does not jump as the focus moves.
+    let tallest = (0..cur.options.len()).filter_map(preview_of).map(|p| p.lines().count().min(PREVIEW_ROWS) + 2).max().unwrap_or(0);
+    let body_rows = if wide { option_rows.max(tallest) } else { option_rows + tallest };
+    let h = (q_lines.len() + body_rows + 9) as u16;
+    let r = centred(area, w, h, false);
     let amber = ink(Ink::Amber, theme);
     let inner = panel(r, "question", amber, true, buf);
     let hint: &[(&str, &str)] = if q.typing {

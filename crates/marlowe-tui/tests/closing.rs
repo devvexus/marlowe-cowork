@@ -349,3 +349,40 @@ fn the_palette_keeps_to_the_theme_with_the_dialogs_up() {
     }
     let _ = KeyCode::Esc;
 }
+
+#[test]
+fn the_quit_modal_answers_while_an_approval_waits_and_cancel_brings_a_covered_panel_back() {
+    // An approval is up: ^q still opens the modal on top of it, and its keys reach the modal.
+    let mut s = online();
+    feed(
+        &mut s,
+        3,
+        Event::ApprovalRequested {
+            approval: marlowe_proto::ApprovalId(1),
+            session: sid(),
+            tool: "bash".into(),
+            summary: "cargo test".into(),
+            detail: "cargo test".into(),
+            run: None,
+            proposed_rule: None,
+        },
+    );
+    keys(&mut s, "ctrl-q");
+    assert!(matches!(s.overlay, Some(Overlay::Choice { .. })));
+    let frame = render(&s, W, H);
+    assert_palette_only(&frame);
+    assert!(contains(&frame, "Stop and close agent") && contains(&frame, "cargo test"), "both are on screen:\n{}", dump(&frame));
+    keys(&mut s, "esc");
+    assert!(!s.quit && s.overlay.is_none() && s.current_approval().is_some(), "Esc cancels the quit, not the approval");
+    keys(&mut s, "ctrl-q w");
+    assert!(s.quit);
+
+    // A plan waiting for its answer is not lost behind the modal.
+    let mut s = online();
+    feed(&mut s, 3, Event::PlanReady { session: sid(), id: "p1".into(), path: "C:/plans/p.md".into(), text: "# Plan\n- step".into() });
+    keys(&mut s, "ctrl-q");
+    assert!(contains(&render(&s, W, H), "Stop and close agent"));
+    keys(&mut s, "c");
+    assert_eq!(s.overlay, Some(Overlay::Panel));
+    assert!(contains(&render(&s, W, H), "Yes, and accept edits"), "the plan is back");
+}

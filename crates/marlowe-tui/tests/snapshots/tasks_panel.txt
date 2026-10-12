@@ -1,0 +1,40 @@
+ * marlowe — gate work                                                                                                  0 runs · 0 need you
+╭ Conversation · gate work ──────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ Claude Sonnet 4.5 ▾             medium │
+│                                                                                                ││ ctx ────────────┊──── 0 / 200k · cloud │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
+│                                                                                                │╭ Workspace ─────────────────────────────╮
+│           ╭ tasks ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮           │
+│           │ kind all                                                                                                         │───── (w) ─╯
+│           │                                                                                                                  │───────────╮
+│           │ › monitor  mon_m2                waiting   40s      tail -f train.log · armed                                    │           │
+│           │   workflow wf_wf1                running   1m00s    code-review · 1 of 3 agents                                  │───── (1) ─╯
+│           │   agent    agent_r7              running   1m20s    engineer: fix the gate · step 4                              │───────────╮
+│           │   job      job_j1                running   1m35s    cargo test -p gate                                           │           │
+│           │   cron     cron_c1               waiting   30s      check the build · next 09:00                                 │           │
+│           │   job      job_j0                done      1m55s    npm run lint · exit 0                                        │           │
+│           │                                                                                                                  │           │
+│           │                                                                                                                  │           │
+│           │                                                                                                                  │           │
+│           ╰──────────────────────────────────────── ↵ output · x stop · tab kind · s this session · h hide done · esc close ─╯           │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│  background 4 running · /tasks                                                                 │╰────────────────────────────────── (2) ─╯
+│  ● agent_r7 engineer: fix the gate · step 4                                               1m20s│╭ Threads ───────────────────────────────╮
+│  ● wf_wf1 code-review · 1 of 3 agents                                                     1m00s││ no open threads                        │
+│  ◐ mon_m2 tail -f train.log · armed                                                         40s│╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰─ 3 tasks ──────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette       Friday 9 October · 21:40

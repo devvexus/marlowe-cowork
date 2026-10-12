@@ -954,6 +954,7 @@ impl State {
         self.live = None;
         self.pending_user = None;
         self.awaiting_new = false;
+        self.bg.reset_session();
         self.follow_tail();
     }
 

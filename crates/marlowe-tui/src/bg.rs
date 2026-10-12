@@ -123,6 +123,14 @@ pub struct Bg {
 }
 
 impl Bg {
+    /// A new conversation: its messages, findings and waiting plans are not the old one's.
+    pub fn reset_session(&mut self) {
+        self.thread.clear();
+        self.findings.clear();
+        self.plans.clear();
+        self.task_out = None;
+    }
+
     /// Inserts or replaces a task by id.
     pub fn upsert_task(&mut self, t: TaskInfo) {
         match self.tasks.iter_mut().find(|x| x.id == t.id) {
@@ -154,10 +162,12 @@ impl Bg {
         self.tasks.iter().find(|t| t.id == id)
     }
 
-    /// Running tasks first (newest first), then the finished (newest first).
+    /// Running work first (newest first), then schedules, then the finished (newest first).
     pub fn tasks_sorted(&self) -> Vec<&TaskInfo> {
         let mut v: Vec<&TaskInfo> = self.tasks.iter().collect();
-        v.sort_by_key(|t| (t.status.is_terminal(), std::cmp::Reverse(t.ended_ms.unwrap_or(t.started_ms).max(t.started_ms))));
+        v.sort_by_key(|t| {
+            (t.status.is_terminal(), t.kind == TaskKind::Cron, std::cmp::Reverse(t.ended_ms.unwrap_or(t.started_ms).max(t.started_ms)))
+        });
         v
     }
 
@@ -299,6 +309,7 @@ impl State {
                     Some(w) => *w = info.clone(),
                     None => self.bg.workflows.push(info.clone()),
                 }
+                self.bg.workflows_known = true;
                 if std::mem::take(&mut self.bg.expect_run) {
                     self.open_workflow_run(info.run.clone());
                 }

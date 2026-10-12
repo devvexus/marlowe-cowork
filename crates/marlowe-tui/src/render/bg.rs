@@ -498,7 +498,10 @@ const NEWS_ROWS: usize = 6;
 
 pub fn plan(area: Rect, state: &State, ui: &PlanUi, theme: &Theme, buf: &mut Buffer) -> Option<(u16, u16)> {
     let w = area.width.saturating_sub(8).clamp(60, 104);
-    let h = area.height.saturating_sub(2);
+    // The plan sets the height, up to the screen.
+    let foot = PLAN_CHOICES.len() as u16 + 3;
+    let text_rows = markdown::render_prose(&ui.ask.text, (w - 4) as usize, theme, Style::default()).len() as u16;
+    let h = (text_rows + foot + 2).clamp(14, area.height.saturating_sub(2));
     let r = centred(area, w, h, false);
     let title = format!("plan \u{b7} {}{}", text::short_path(&text::clean(&ui.ask.path)), if ui.edited { " \u{b7} edited" } else { "" });
     let inner = panel(r, &title, ink(Ink::Amber, theme), true, buf);
@@ -508,7 +511,6 @@ pub fn plan(area: Rect, state: &State, ui: &PlanUi, theme: &Theme, buf: &mut Buf
         &[("\u{21b5}", "choose"), ("1-3", "pick"), ("e", "edit the file"), ("j k", "scroll"), ("esc", "no")]
     };
     panel_hints(r, hints, theme, buf);
-    let foot = PLAN_CHOICES.len() as u16 + 3;
     let body = Rect { height: inner.height.saturating_sub(foot), ..inner };
     let lines = markdown::render_prose(&ui.ask.text, body.width as usize, theme, Style::default().fg(theme.speech()));
     let rows = body.height as usize;
@@ -655,7 +657,7 @@ pub fn thread(area: Rect, state: &State, ui: &ThreadUi, theme: &Theme, buf: &mut
     let name = if target.is_empty() {
         "no thread yet".to_string()
     } else if let Some(r) = state.crew.get(&marlowe_proto::RunId(target.clone())) {
-        format!("run \u{b7} {} \u{b7} {}", text::truncate(&text::clean(&r.title), 40), crate::crew::status_word(r.status))
+        format!("run {} \u{b7} {} \u{b7} {}", text::clean(target).chars().take(8).collect::<String>(), text::truncate(&text::clean(&r.title), 40), crate::crew::status_word(r.status))
     } else {
         text::clean(target)
     };

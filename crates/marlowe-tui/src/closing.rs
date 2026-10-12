@@ -91,6 +91,8 @@ pub struct Closing {
     pub keep_on_exit: bool,
     /// "Remember my choice" is ticked in the quit dialog.
     pub remember: bool,
+    /// The panel the quit modal covers (a plan waiting for an answer, say); Cancel brings it back.
+    pub(crate) hidden_panel: Option<crate::panel::Panel>,
     /// What is running and whether the daemon keeps running were asked for since the Welcome.
     asked: bool,
 }
@@ -230,6 +232,9 @@ impl State {
         }
         let summary = self.closing.running_summary();
         self.closing.remember = false;
+        if self.overlay == Some(Overlay::Panel) {
+            self.closing.hidden_panel = self.code.panel.take();
+        }
         self.closing.dialog = Some(Dialog::Quit { summary });
         self.overlay = Some(Overlay::Choice { sel: QUIT_DEFAULT });
     }
@@ -327,6 +332,10 @@ impl State {
     pub(crate) fn close_choice(&mut self) {
         self.closing.dialog = None;
         self.overlay = None;
+        if let Some(p) = self.closing.hidden_panel.take() {
+            self.code.panel = Some(p);
+            self.overlay = Some(Overlay::Panel);
+        }
     }
 
     /// `/keep-running [on|off]`.

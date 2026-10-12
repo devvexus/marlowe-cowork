@@ -21,10 +21,10 @@
 │                              │       the agent carries on in the background, with a tray icon             │                              │
 │                              │ › c Cancel                                                                 │                              │
 │                              │       stay here                                                            │                              │
-│                              │   [ ] Remember my choice  (closing the window with its X then does the sam │                              │
-│                              │                                                                            │                              │
+│                              │   [ ] Remember my choice  (the window's X then does the same)              │                              │
 │                              │                                                                            │                              │
 │                              ╰─────────────────────────────────────── ↵ choose · r remember · esc cancel ─╯                              │
+│                                                                                                ││                                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │

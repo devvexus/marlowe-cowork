@@ -285,6 +285,11 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
     if state.overlay.is_some() {
         state.hits.borrow_mut().clear();
     }
+    // The quit modal sits over an approval that is waiting: both are on screen, the modal on top.
+    let quit_over_approval = matches!(state.overlay, Some(Overlay::Choice { .. })) && state.current_approval().is_some();
+    if let (true, Some(a)) = (quit_over_approval, state.current_approval()) {
+        overlay::approval(area, state, a, theme, buf);
+    }
     let mut overlay_cursor = None;
     match &state.overlay {
         Some(Overlay::Palette { query, sel }) => overlay::palette(area, state, query, *sel, theme, buf),
@@ -310,7 +315,7 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
     if state.overlay.is_none() && !state.booting() {
         boot::toasts(&g, state, theme, buf);
     }
-    if let Some(a) = state.current_approval() {
+    if let (false, Some(a)) = (quit_over_approval, state.current_approval()) {
         state.hits.borrow_mut().clear();
         overlay::approval(area, state, a, theme, buf);
         return;

@@ -152,9 +152,9 @@ fn run_hints(v: &RunView, r: &CrewRunInfo) -> &'static [(&'static str, &'static 
         (true, false, true) => &[("d", "discard"), ("↑↓", "scroll"), ("esc/⌫", "runs")],
         (true, false, false) => &[("↑↓", "scroll"), ("esc/⌫", "runs")],
         (false, false, _) if r.status == CrewRunStatus::Paused => {
-            &[("s", "steer"), ("p", "resume"), ("c", "cancel"), ("↑↓", "scroll"), ("esc/⌫", "runs")]
+            &[("s", "steer"), ("t", "messages"), ("p", "resume"), ("c", "cancel"), ("↑↓", "scroll"), ("esc/⌫", "runs")]
         }
-        (false, false, _) => &[("s", "steer"), ("p", "pause"), ("c", "cancel"), ("↑↓", "scroll"), ("esc/⌫", "runs")],
+        (false, false, _) => &[("s", "steer"), ("t", "messages"), ("p", "pause"), ("c", "cancel"), ("↑↓", "scroll"), ("esc/⌫", "runs")],
     }
 }
 

@@ -47,7 +47,7 @@ impl State {
             self.request_quit();
             return out;
         }
-        if !self.approvals.is_empty() {
+        if !self.approvals.is_empty() && !matches!(self.overlay, Some(Overlay::Choice { .. })) {
             self.approval_key(k, &mut out);
             return out;
         }
@@ -265,7 +265,7 @@ impl State {
     }
 
     fn click(&mut self, area: Rect, at: Position, out: &mut Vec<Request>) {
-        if !self.approvals.is_empty() {
+        if !self.approvals.is_empty() && !matches!(self.overlay, Some(Overlay::Choice { .. })) {
             if let Some(Target::Button(i)) = self.target_at(at) {
                 if self.now_ms.saturating_sub(self.approval_since_ms) >= APPROVAL_GUARD_MS {
                     let n = self.approvals.first().map_or(APPROVAL_CHOICES.len(), |a| a.choices().len());
@@ -783,7 +783,8 @@ impl State {
                 self.legacy_dismissed = true;
             }
             if matches!(self.overlay, Some(Overlay::Choice { .. })) {
-                self.closing.dialog = None;
+                self.close_choice();
+                return;
             }
             if matches!(self.overlay, Some(Overlay::ModelPicker { .. } | Overlay::WorkspacePicker { .. })) {
                 self.focus = Focus::Message;

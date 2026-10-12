@@ -134,9 +134,11 @@ impl State {
         if !self.code.bootstrapped || self.code.boot_ws != ws {
             self.code.bootstrapped = true;
             self.code.boot_ws = ws.clone();
-            self.code.quiet_ops = 2;
+            self.code.quiet_ops = 3;
             out.push(Request::GetSettings { workspace: ws.clone() });
             out.push(Request::ListCommands { workspace: ws });
+            // The notification switches `/config` lists (a query: both None).
+            out.push(Request::NotifySettings { toast: None, voice: None });
         }
         self.statusline_tick();
         self.closing_tick(&mut out);
