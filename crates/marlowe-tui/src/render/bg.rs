@@ -270,6 +270,12 @@ fn workflow_run(area: Rect, state: &State, ui: &WorkflowsUi, info: &WorkflowInfo
     let dim = ink(Ink::Dim, theme);
     let dimmer = ink(Ink::Dimmer, theme);
     let mut y = inner.y;
+    let status = state.crew.get(&info.run).map(|r| r.status);
+    let show_stop = status.is_none_or(|s| !s.is_terminal()) && !ui.confirm_stop;
+    let stop_label = super::crew::STOP_LABEL;
+    let sw = text::width(stop_label) as u16;
+    // The first row keeps the stop control's width (and a gap) to itself.
+    let first_w = if show_stop { inner.width.saturating_sub(sw + 1) } else { inner.width };
     // The phase strip: the script's phases in order, the current one lit.
     if !info.phases.is_empty() {
         let mut spans = Vec::new();
@@ -280,14 +286,11 @@ fn workflow_run(area: Rect, state: &State, ui: &WorkflowsUi, info: &WorkflowInfo
             let current = info.phase.as_deref() == Some(p.as_str());
             spans.push(Span::styled(text::clean(p), if current { ink(Ink::Accent, theme).add_modifier(Modifier::BOLD) } else { dim }));
         }
-        put(buf, inner.x, y, &Line::from(spans), inner.width);
+        put(buf, inner.x, y, &Line::from(spans), first_w);
         y += 1;
     }
-    let status = state.crew.get(&info.run).map(|r| r.status);
-    if status.is_none_or(|s| !s.is_terminal()) && !ui.confirm_stop {
-        let label = super::crew::STOP_LABEL;
-        let sw = text::width(label) as u16;
-        let line = Line::from(Span::styled(label, ink(Ink::Red, theme)));
+    if show_stop {
+        let line = Line::from(Span::styled(stop_label, ink(Ink::Red, theme)));
         let line = if hovered(state, &Target::StopRun) { lit(line, theme) } else { line };
         let x = inner.right().saturating_sub(sw);
         put(buf, x, inner.y, &line, sw);
@@ -309,7 +312,7 @@ fn workflow_run(area: Rect, state: &State, ui: &WorkflowsUi, info: &WorkflowInfo
             ink(if hot { Ink::Amber } else { Ink::Dim }, theme),
         ));
     }
-    put(buf, inner.x, y, &Line::from(head), inner.width);
+    put(buf, inner.x, y, &Line::from(head), if y == inner.y { first_w } else { inner.width });
     y += 2;
     if ui.confirm_stop {
         put(buf, inner.x, y - 1, &Line::from(Span::styled("Stop this workflow? Running agents stop; finished agents\u{2019} results are kept for a resume. y / n", ink(Ink::Amber, theme))), inner.width);

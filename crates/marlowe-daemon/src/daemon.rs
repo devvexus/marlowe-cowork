@@ -79,9 +79,11 @@ impl Approvals {
 
     /// Hands the reason of denied approval `id` to the agent loop, which asks for it by the call.
     pub fn note_denial(&self, id: ApprovalId, call_id: &str) {
-        if let Some(r) = self.take_reason(id) {
-            lock(&self.denials).insert(call_id.to_string(), r);
-        }
+        // A reasonless outcome clears what an earlier ask under the same id left unread.
+        match self.take_reason(id) {
+            Some(r) => lock(&self.denials).insert(call_id.to_string(), r),
+            None => lock(&self.denials).remove(call_id),
+        };
     }
 
     /// What the user said when they denied call `call_id`, once.

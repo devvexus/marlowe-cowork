@@ -25,7 +25,7 @@ pub mod memory;
 pub mod middleware;
 pub mod planfile;
 pub mod session_prompts;
-mod run_tools;
+pub mod run_tools;
 pub mod steer;
 pub mod subagent;
 pub mod subagent_tools;

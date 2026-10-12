@@ -4,6 +4,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Review fixes
+
+- **Fixed.** The workflow view keeps the stop control's width clear on its first row; a denial reason left unread no longer outlives its ask (a reasonless outcome clears the id); crew shell denials word the reason the same way as agent tool denials.
+
 ### Deny, and tell Marlowe why
 
 - **Added.** The approval modal has a fourth-or-fifth option after Deny, `w deny, and tell Marlowe why` (key `w`, or select it and Enter, or click): it turns into a one-line input, Enter denies with the reason, Esc returns to the options, an empty reason is a plain deny. `Request::Approve` carries an optional `reason` (serde default, omitted when none, so old clients and stored data still parse); `ApprovalDecision` is unchanged. The daemon keeps it per approval, the asking gate hands it to the agent loop through `ApprovalGate::denial_reason` / `RunApprovals::denial_reason`, and the model gets `The user denied this call and said: "<reason>". Do what they said; do not retry the call unless they ask.` (clipped to 600 characters, whitespace folded; the text still opens with "The user denied this call", which the trajectory export and `permission_denials` match on). Works for the conductor, its subagents, and crew runs' tool calls and test commands. The Conversation shows `you told Marlowe why: ...` dim under the tool line.

@@ -999,8 +999,12 @@ fn guarded_shell(inner: Arc<Inner>, id: RunId, session: Option<SessionId>) -> pl
                 detail: command.to_string(),
             };
             if !ask_for_run(&inner, &id, session.as_ref(), req).is_allowed() {
-                let said = inner.deps.approvals.denial_reason(&call_id).map(|r| format!(" and said: \"{r}\"")).unwrap_or_default();
-                return Ok(ShellResult { ok: false, exit_code: None, output: format!("not run: the user declined ({summary}){said}") });
+                let said = inner.deps.approvals.denial_reason(&call_id);
+                let output = match said {
+                    Some(r) => format!("not run: ({summary}) {}", marlowe_agent::run_tools::denied_text(Some(&r))),
+                    None => format!("not run: the user declined ({summary})"),
+                };
+                return Ok(ShellResult { ok: false, exit_code: None, output });
             }
         }
         sandbox_shell(sandbox, command, cancel)
