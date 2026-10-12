@@ -205,12 +205,17 @@ impl State {
         }
     }
 
-    /// The quit choice the user asked to be remembered: `Some(true)` keeps the agent running.
+    /// The quit choice the user asked to be remembered: `Some(true)` keeps the agent running. The
+    /// daemon's `keep running` switch is the other half of it (the window's X follows it), so a
+    /// switch that is on decides, and a remembered "keep" that the switch no longer agrees with
+    /// is not a remembered choice any more.
     pub fn remembered_quit(&self) -> Option<bool> {
+        if self.closing.keep_setting {
+            return Some(true);
+        }
         match self.code.settings.as_ref().and_then(|s| s.user_str(QUIT_SETTING)) {
             Some("stop") => Some(false),
-            Some("keep") => Some(true),
-            _ => self.closing.keep_setting.then_some(true),
+            _ => None,
         }
     }
 

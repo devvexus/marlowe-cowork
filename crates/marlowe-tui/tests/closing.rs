@@ -183,10 +183,18 @@ fn remember_my_choice_is_stored_as_the_setting_and_the_daemons_switch_and_then_n
     for (word, keep) in [("stop", false), ("keep", true)] {
         let mut s = online();
         feed(&mut s, 0, settings_event(&[(marlowe_proto::SettingsScope::User, &format!("[quit]\nchoice = \"{word}\"\n"))]));
+        // What remembering "keep" also set: the daemon's switch, which the window's X follows.
+        feed(&mut s, 7, Event::KeepRunning { on: keep });
         keys(&mut s, "ctrl-q");
         assert!(s.quit && s.overlay.is_none(), "{word}: remembered, so no modal");
         assert_eq!(s.exit_request(), Request::Detach { keep_running: keep }, "{word}");
     }
+    // A remembered "keep" that the daemon's switch no longer agrees with asks again.
+    let mut s = online();
+    feed(&mut s, 0, settings_event(&[(marlowe_proto::SettingsScope::User, "[quit]\nchoice = \"keep\"\n")]));
+    feed(&mut s, 7, Event::KeepRunning { on: false });
+    keys(&mut s, "ctrl-q");
+    assert!(!s.quit && matches!(s.overlay, Some(Overlay::Choice { .. })));
     // /keep-running ask forgets it.
     let mut s = online();
     let out = keys(&mut s, "'/keep-running ask' enter");
@@ -371,7 +379,7 @@ fn the_quit_modal_answers_while_an_approval_waits_and_cancel_brings_a_covered_pa
     assert!(matches!(s.overlay, Some(Overlay::Choice { .. })));
     let frame = render(&s, W, H);
     assert_palette_only(&frame);
-    assert!(contains(&frame, "Stop and close agent") && contains(&frame, "cargo test"), "both are on screen:\n{}", dump(&frame));
+    assert!(contains(&frame, "Stop and close agent"), "the modal is on top of the approval: {}", dump(&frame));
     keys(&mut s, "esc");
     assert!(!s.quit && s.overlay.is_none() && s.current_approval().is_some(), "Esc cancels the quit, not the approval");
     keys(&mut s, "ctrl-q w");

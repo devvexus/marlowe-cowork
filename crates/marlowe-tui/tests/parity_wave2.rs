@@ -1029,3 +1029,84 @@ fn the_palette_and_help_list_what_wave_two_added() {
     let buf = render(&s, W, H);
     assert!(contains(&buf, "/workflow code-review") && contains(&buf, "/deploy <env>") && contains(&buf, "ship it to staging"), "{}", dump(&buf));
 }
+
+// ---- the palette, at every size -------------------------------------------------------------------
+
+fn sweep_states() -> Vec<(&'static str, State)> {
+    let mut out: Vec<(&'static str, State)> = Vec::new();
+    out.push(("tasks", tasks_open()));
+    let mut s = tasks_open();
+    keys(&mut s, "down down down enter");
+    feed(&mut s, 0, Event::TaskOutput { id: "job_j1".into(), text: (1..=80).map(|i| format!("line {i}\n")).collect(), next_since: 400, done: false });
+    out.push(("task output", s));
+    out.push(("workflows", workflows_open()));
+    let mut s = workflows_open();
+    keys(&mut s, "enter");
+    out.push(("workflow run", s));
+    let mut s = workflows_open();
+    keys(&mut s, "enter x");
+    out.push(("workflow stop", s));
+    let mut s = coding_session();
+    feed(&mut s, 5, review());
+    keys(&mut s, "'/findings' enter");
+    out.push(("findings", s));
+    let mut s = coding_session();
+    feed(&mut s, 5, Event::FileSent { session: sid(), file: sent("loss.html") });
+    out.push(("file card", s.clone()));
+    keys(&mut s, "'/files' enter");
+    out.push(("files", s));
+    let mut s = coding_session();
+    let long: String = (1..=120).map(|i| format!("- step {i}\n")).collect();
+    feed(&mut s, 3, plan_ready("p1", &format!("# A long plan\n{long}")));
+    out.push(("plan", s.clone()));
+    settle(&mut s);
+    keys(&mut s, "pgdn pgdn 3 'why'");
+    out.push(("plan feedback", s));
+    let mut s = coding_session();
+    keys(&mut s, "'/bench' enter");
+    local(&mut s, LocalEvent::Reports(vec![ReportFile { kind: ReportKind::Bench, path: "C:/b/x.json".into(), name: "x".into(), modified_ms: NOW }]));
+    out.push(("bench", s.clone()));
+    keys(&mut s, "enter");
+    local(&mut s, LocalEvent::ReportText { path: "C:/b/x.json".into(), result: Ok(CARD.into()) });
+    out.push(("bench card", s));
+    let mut s = coding_session();
+    keys(&mut s, "'/fewer-permission-prompts' enter");
+    feed(&mut s, 0, Event::RuleSuggestions { list: vec![RuleSuggestion { pattern: "bash(rg *)".into(), count: 4, example: "rg -n gate src".into() }] });
+    out.push(("suggestions", s));
+    let mut s = coding_session();
+    feed(&mut s, 0, Event::Runs { list: vec![run_info("aa11bb22cc33dd44", CrewRunStatus::Running)] });
+    s.bg.thread.push(marlowe_tui::bg::ThreadMsg {
+        target: "aa11bb22cc33dd44".into(),
+        from: marlowe_tui::bg::ThreadFrom::Conductor,
+        text: "stop at the unit tests ".repeat(12),
+        call_id: None,
+        at_ms: NOW,
+        delivery: marlowe_tui::bg::Delivery::Sent,
+    });
+    keys(&mut s, "'/messages' enter enter 'hello'");
+    out.push(("thread", s));
+    let mut s = coding_session();
+    feed(&mut s, 3, layout_question());
+    out.push(("question", s));
+    let mut s = coding_session();
+    keys(&mut s, "ctrl-q");
+    out.push(("quit", s));
+    let mut s = coding_session();
+    feed(&mut s, 6, Event::Tasks { list: all_kinds() });
+    feed(&mut s, 3, Event::Todos { session: sid(), items: vec![item("1", "a", TodoStatus::InProgress, Some("x"), &[]), item("2", "b", TodoStatus::Pending, None, &["1"])] });
+    feed(&mut s, 5, Event::TurnStarted { session: sid(), turn: 2, model: sonnet_ref(), user: "[monitor mon_m2 \u{b7} lines 1-2]\nepoch 1\nepoch 2".into() });
+    feed(&mut s, 6, Event::FileSent { session: sid(), file: sent("a.txt") });
+    out.push(("conversation", s));
+    out
+}
+
+#[test]
+fn every_wave2_surface_draws_at_every_size_inside_the_palette() {
+    for (name, s) in sweep_states() {
+        for (w, h) in [(120, 30), (132, 36), (140, 40), (200, 60)] {
+            let buf = render(&s, w, h);
+            assert_palette_only(&buf);
+            assert!(!dump(&buf).contains("needs a window"), "{name} at {w}x{h}");
+        }
+    }
+}

@@ -108,6 +108,7 @@ Parallel tracks (design `docs/research/m46-design.md` sections 7-8) plug in with
 ## Coding eval (track L)
 
 `eval/coding/` is the harness (Python, standard library, `marlowe eval ...`); `marlowe bench` is the model report card (`crates/marlowe/src/bench/`). Both harnesses speak Claude Code's stream-json, so one reader scores a run (steps, tokens, tool errors, repairs from `MARLOWE_EVAL_STATS`) and one driver runs the interactive suite. The head-to-head runs the VS Code extension's `claude.exe` isolated on the same local model (`mcoding/cc.py`, `cc-dry-run` shows the flags). Tasks are graded by hidden tests installed after the agent finishes; `own` tasks are past fixes of this repository put back. Nothing here loads a model unless Matthew runs it in a GPU window.
+- **Wave 2 (H3): the terminal client.** `marlowe-tui/src/bg.rs` holds what the daemon's wave-2 events say (tasks, workflow runs, findings, sent files, plans, `/fast`, message threads); panels are `Overlay::Panel` plus a `Panel` variant (`bg_panels.rs`) and draw in `render/bg.rs`. Background news is told from the user's words by its first line (`bg::news_label`), so a monitor line never becomes `you`. The quit modal (`closing.rs`) and the daemon's `keep running` switch are one choice: the setting `quit.choice` is the client's half, the switch is the window-close handler's. Reports are read from disk by `Effect`s (`report.rs`).
 
 ## M4.6 coding surface (wave 1)
 
