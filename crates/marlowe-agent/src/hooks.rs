@@ -385,7 +385,7 @@ impl HookRunner {
 fn default_shell(command: &str) -> std::io::Result<Command> {
     #[cfg(windows)]
     {
-        let bash = git_bash().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "hooks need Git Bash (or MARLOWE_BASH)"))?;
+        let bash = marlowe_os::bash::git_bash().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "hooks need Git Bash (or MARLOWE_BASH)"))?;
         let mut c = Command::new(bash);
         c.arg("-c").arg(command);
         Ok(c)
@@ -396,25 +396,6 @@ fn default_shell(command: &str) -> std::io::Result<Command> {
         c.arg("-c").arg(command);
         Ok(c)
     }
-}
-
-#[cfg(windows)]
-fn git_bash() -> Option<PathBuf> {
-    static FOUND: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
-    FOUND
-        .get_or_init(|| {
-            if let Some(p) = std::env::var_os("MARLOWE_BASH").map(PathBuf::from).filter(|p| p.is_file()) {
-                return Some(p);
-            }
-            ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
-                .iter()
-                .filter_map(std::env::var_os)
-                .flat_map(|v| [PathBuf::from(&v).join("Git"), PathBuf::from(&v).join("Programs").join("Git")])
-                .chain([PathBuf::from(r"C:\Program Files\Git")])
-                .flat_map(|root| [root.join(r"bin\bash.exe"), root.join(r"usr\bin\bash.exe")])
-                .find(|c| c.is_file())
-        })
-        .clone()
 }
 
 /// The hooks as loop middleware and session observer.

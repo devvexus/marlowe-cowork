@@ -24,6 +24,7 @@ pub mod instructions;
 pub mod memory;
 pub mod middleware;
 pub mod planfile;
+pub mod session_prompts;
 mod run_tools;
 pub mod steer;
 pub mod subagent;
@@ -33,6 +34,7 @@ pub mod tasklist;
 pub mod tasks;
 pub mod todo;
 pub mod tools;
+pub mod web_digest;
 pub mod workflow_prompts;
 pub mod worktree;
 
@@ -50,6 +52,7 @@ pub use tasks::{
     TaskSource, TaskStatus, Tasks,
 };
 pub use steer::{Steer, SteerRefused, MAX_STEER_CHARS};
+pub use web_digest::{DigestRequest, WebDigest};
 pub use system::{Environment, PersonaBlock, SystemPrompt, UserInfo, PERSONA_CORE};
 pub use middleware::{
     CallFlow, Extensions, FinalFlow, ModelCall, Notification, NotificationKind, StepInfo, ToolMiddleware, TurnFlow,

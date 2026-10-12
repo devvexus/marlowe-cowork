@@ -159,6 +159,8 @@ pub const BUILTINS: &[(&str, &str, Option<&str>)] = &[
     ("workflow", "Run a saved workflow, or convert a Claude Code one", Some("<name> [json args] | convert <name>")),
     ("workflows", "Workflow runs and saved workflows", None),
     ("todos", "Show the todo list", None),
+    ("recap", "Recap where this session stands", Some("[focus]")),
+    ("goal", "Set a goal and keep working until it is met", Some("<condition>")),
     ("help", "List commands", None),
 ];
 
@@ -834,25 +836,18 @@ fn attach_files(text: &str, workspace: Option<&Path>, roots: &[&Path]) -> String
     out
 }
 
-/// Git Bash on Windows (`MARLOWE_BASH` overrides), `bash` elsewhere.
-pub fn bash_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("MARLOWE_BASH") {
-        return PathBuf::from(p);
-    }
-    if cfg!(windows) {
-        for c in [r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files\Git\usr\bin\bash.exe", r"C:\Program Files (x86)\Git\bin\bash.exe"] {
-            if Path::new(c).is_file() {
-                return PathBuf::from(c);
-            }
-        }
-    }
-    PathBuf::from("bash")
+/// Git Bash on Windows (`MARLOWE_BASH` overrides), `bash` elsewhere: the same lookup as the
+/// `bash` tool and hooks ([`marlowe_os::bash::git_bash`]), so a `!cmd` line never reaches the WSL
+/// launcher. `None` when Git Bash is not installed.
+pub fn bash_path() -> Option<PathBuf> {
+    marlowe_os::bash::git_bash()
 }
 
 /// Runs `cmd` under Git Bash in `cwd` through `marlowe_os::child` (scrubbed environment, Job
 /// Object), 30 s, output capped.
 pub fn run_bash(cmd: &str, cwd: Option<&Path>) -> Result<String, String> {
-    let mut c = std::process::Command::new(bash_path());
+    let bash = bash_path().ok_or_else(|| "`!` commands need Git Bash: install Git for Windows, or set MARLOWE_BASH to a bash.exe".to_string())?;
+    let mut c = std::process::Command::new(bash);
     c.arg("-c").arg(cmd);
     let mut spec = marlowe_os::child::ChildSpec::new().with_creation_flags(marlowe_os::child::CREATE_NO_WINDOW);
     if let Some(d) = cwd.filter(|d| d.is_dir()) {
@@ -1104,7 +1099,7 @@ impl ToolMiddleware for CommandsMiddleware {
         let Some(found) = catalog.find(&name).filter(|c| c.user_invocable) else {
             // The built-in git commands (track J), unless a command file of that name exists.
             // The git commands (track J) and the workflow commands (track W).
-            if let Some(expand) = crate::git_prompts::builtin(&name).or_else(|| crate::workflow_prompts::builtin(&name)) {
+            if let Some(expand) = crate::git_prompts::builtin(&name).or_else(|| crate::workflow_prompts::builtin(&name)).or_else(|| crate::session_prompts::builtin(&name)) {
                 let mut out = format!("<command-name>/{name}</command-name>\n");
                 if !args.is_empty() {
                     out.push_str(&format!("<command-args>{args}</command-args>\n"));

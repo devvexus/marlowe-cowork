@@ -1,14 +1,15 @@
 //! Token pools per session (WF8): the `+500k` target the user sets is one pool shared by the
-//! conductor's main loop and every workflow the session starts. The conductor side (F3's
-//! directive parser) sets it with [`set`] and adds the main loop's output tokens with
-//! [`Budget::add`]; a workflow launched in the session reads it with [`get`].
+//! conductor's main loop and every workflow the session starts. The daemon [`link`]s each
+//! session's conductor pool (F3's `TokenPool`, armed by the directive parser) when it builds the
+//! session; a workflow launched in the session reads it with [`get`] and charges it through
+//! [`Budget::add`]. [`set`] is a standalone pool (tests, a session without a conductor).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use marlowe_proto::SessionId;
 
-use crate::engine::Budget;
+use crate::engine::{Budget, PoolLink};
 
 fn pools() -> &'static Mutex<HashMap<SessionId, Arc<Budget>>> {
     static POOLS: OnceLock<Mutex<HashMap<SessionId, Arc<Budget>>>> = OnceLock::new();
@@ -22,7 +23,14 @@ pub fn set(session: &SessionId, total: u64) -> Arc<Budget> {
     b
 }
 
-/// The session's pool, when the user set a target.
+/// Links the session to its conductor's pool: every reading and charge goes there.
+pub fn link(session: &SessionId, pool: Arc<dyn PoolLink>) -> Arc<Budget> {
+    let b = Budget::linked(pool);
+    pools().lock().unwrap_or_else(|e| e.into_inner()).insert(session.clone(), b.clone());
+    b
+}
+
+/// The session's pool, when the user set a target or the session is linked.
 pub fn get(session: &SessionId) -> Option<Arc<Budget>> {
     pools().lock().unwrap_or_else(|e| e.into_inner()).get(session).cloned()
 }

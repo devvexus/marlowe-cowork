@@ -19,6 +19,8 @@
 //!
 //! Off Windows the types exist so dependents compile; jobs are unsupported there.
 
+/// Git Bash, never the WSL launcher: the one lookup every `bash` the harness runs goes through.
+pub mod bash;
 pub mod child;
 pub mod console;
 /// Job Object internals. Public as a module so B's additions are reachable as

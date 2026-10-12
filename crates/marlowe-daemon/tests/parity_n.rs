@@ -1005,8 +1005,9 @@ fn parity_bg10_list_agents_lists_a_subagent_a_crew_run_and_another_session() {
     let p = Arc::new(Routed::default());
     let calls_rx = p.announce_crew_calls();
     // The conductor starts a subagent (which answers from the same queue), then a crew run that
-    // stays in flight.
-    p.conductor(calls(&[("agent", r#"{"type":"explore","description":"find the retry code","prompt":"where is the retry loop?"}"#)]));
+    // stays in flight. The subagent runs in the foreground: since F3 an agent runs in the
+    // background by default, and its completion would wake the session with a turn of its own.
+    p.conductor(calls(&[("agent", r#"{"type":"explore","description":"find the retry code","prompt":"where is the retry loop?","background":false}"#)]));
     p.conductor(reply("src/retry.rs (the subagent's report)"));
     p.conductor(reply("The subagent found it."));
     let d = start(&home, p.clone(), &Options { crew: true, ..Options::default() });
@@ -1107,7 +1108,11 @@ fn parity_bg11_a_message_reaches_a_crew_step_as_an_agents_words() {
     assert!(reqs.len() >= 2, "the message made the run take another step: {}", reqs.len());
     let second = shown(&reqs[1]);
     assert!(second.contains("use the smaller dataset"), "{second}");
-    assert!(second.contains("another agent, not the user"), "framed as an agent's words, never the user's: {second}");
+    // The run inbox's framing (track I's notify_run): named as another agent's information.
+    assert!(
+        second.contains("It is not from the user") && second.contains("information from another agent"),
+        "framed as an agent's words, never the user's: {second}"
+    );
     drop(a);
     stop(d);
 }
@@ -1369,6 +1374,31 @@ fn keep_running_is_an_explicit_choice_and_a_tray_icon_and_a_toast_with_stop_now_
     again.goodbye(&Request::WindowClosed);
     assert!(ended(d.join, 60), "the choice was for one quit");
     assert!(!tray.shown());
+}
+
+/// H3's quit modal with "Remember my choice" on "keep running" sends `KeepRunning { on: true }`;
+/// the window's own close button (the console handler's `WindowClosed`) must then keep the
+/// daemon too, and turning the setting off makes the next close stop everything (integ).
+#[test]
+fn a_remembered_keep_running_choice_holds_when_the_window_is_closed_with_its_x() {
+    let home = temp_home("close-remembered");
+    let d = start(&home, Arc::new(Routed::default()), &Options::default());
+    let hooks = d.control.close_hooks();
+    let tray = FakeTray::new();
+    hooks.set_tray(tray.clone());
+    let mut window = Client::connect(&d.info, "tui");
+    window.send(&Request::KeepRunning { on: Some(true) });
+    window.until(|e| matches!(e, Event::KeepRunning { on: true }));
+    window.goodbye(&Request::WindowClosed);
+    must(&hooks, "the tray icon after the X", || tray.shown());
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(!hooks.closing(), "the remembered choice keeps it running: {:#?}", hooks.log());
+    // Back in a window, the user forgets the choice; the next X stops everything.
+    let mut again = Client::connect(&d.info, "tui");
+    again.send(&Request::KeepRunning { on: Some(false) });
+    again.until(|e| matches!(e, Event::KeepRunning { on: false }));
+    again.goodbye(&Request::WindowClosed);
+    assert!(ended(d.join, 60), "with the setting off the X stops the daemon");
 }
 
 #[test]

@@ -9,6 +9,7 @@
 //! marlowe mcp remove NAME [-s SCOPE]
 //! marlowe mcp trust NAME | untrust NAME      (a workspace file's entry may start a program)
 //! marlowe mcp auth NAME | logout NAME        (OAuth for an http server; tokens in Credential Manager)
+//! marlowe mcp serve                          (Marlowe's tools for another MCP client over stdio; mcp_serve.rs)
 //! ```
 //!
 //! Everything here reads and writes files; only `list --check` and `auth` touch the network or
@@ -26,11 +27,14 @@ use marlowe_mcp::oauth::{KeyringTokens, OAuth, TokenStore};
 use serde_json::{json, Map, Value};
 
 const USAGE: &str = "usage: marlowe mcp list [--check] | get NAME | add [-s SCOPE] [-t TRANSPORT] [-e K=V] [-H \"K: V\"] NAME (URL | -- CMD ARGS...)\n\
-       | add-json [-s SCOPE] NAME JSON | remove NAME [-s SCOPE] | trust NAME | untrust NAME | auth NAME | logout NAME\n\
+       | add-json [-s SCOPE] NAME JSON | remove NAME [-s SCOPE] | trust NAME | untrust NAME | auth NAME | logout NAME | serve\n\
 scopes: local (default; this workspace, not shared), project (.mcp.json), user";
 
 pub fn run(home: &Path, args: &[String]) -> Result<i32, String> {
     let cwd = crate::strip_verbatim(std::env::current_dir().map_err(|e| e.to_string())?);
+    if args.first().map(String::as_str) == Some("serve") {
+        return crate::mcp_serve::run(home, workspace_root(&cwd));
+    }
     let cx = Cx {
         home: home.to_path_buf(),
         workspace: Some(workspace_root(&cwd)),

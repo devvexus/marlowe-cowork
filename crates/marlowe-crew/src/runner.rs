@@ -136,7 +136,7 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
             session: run.session.as_ref(),
             workspace: run.workspace.as_deref(),
             workflow: &wf,
-            plugins: Vec::new(),
+            plugins: marlowe_agent::commands::plugin::bundle_roots(Some(&inner.home), run.workspace.as_deref()),
         };
         return playbook::script::run_workflow(&runner, job, &emit);
     }

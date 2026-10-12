@@ -1152,7 +1152,7 @@ fn profile_block(req: &ChatRequest) -> Option<String> {
 }
 
 #[test]
-fn a_remembered_preference_is_in_the_first_request_of_the_next_session_after_a_restart() {
+fn parity_c5_c16_a_remembered_preference_is_in_the_first_request_of_the_next_session_after_a_restart() {
     let home = temp_home("profile-restart");
     seed_model(&home);
     let p = Arc::new(Scripted::default());

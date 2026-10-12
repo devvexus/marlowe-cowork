@@ -38,7 +38,7 @@ pub mod service;
 pub mod validate;
 
 pub use engine::{
-    call_key, check, default_concurrency, run, Budget, RunConfig, RunOutcome, ScriptResolver, WorkflowError, MAX_AGENTS,
+    call_key, check, default_concurrency, run, Budget, PoolLink, RunConfig, RunOutcome, ScriptResolver, WorkflowError, MAX_AGENTS,
     MAX_CONCURRENCY, MAX_ITEMS,
 };
 pub use host::{AgentCall, AgentHost, AgentOpts, AgentResult, AgentStatus, Completion, Control, NoObserver, Observer, WfEvent};

@@ -54,7 +54,8 @@ fn group(t: &BuiltinTools) -> std::sync::Arc<WorkflowGroup> {
 fn roots(t: &BuiltinTools, workspace: Option<&std::path::Path>) -> Option<marlowe_workflow::saved::Roots> {
     let g = group(t);
     let home = g.home.as_deref()?;
-    Some(service::roots(home, workspace.or(t.workspace()), Vec::new()))
+    let workspace = workspace.or(t.workspace());
+    Some(service::roots(home, workspace, marlowe_agent::commands::plugin::bundle_roots(Some(home), workspace)))
 }
 
 /// The tool's description carries the script API, so a deferred schema loaded through

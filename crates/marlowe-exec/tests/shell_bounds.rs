@@ -189,3 +189,19 @@ fn python_runs_snippets_and_scripts() {
     let o = call(&t, "python", json!({"code": "import time; time.sleep(30)", "timeout_ms": 700}));
     assert_eq!(o.summary, "timed out");
 }
+
+/// The `bash` tool runs Git Bash, never the WSL launcher first on a default PATH: `uname` says
+/// MINGW or MSYS, not Linux, and the process sees this machine's drive.
+#[cfg(windows)]
+#[test]
+fn the_bash_tool_is_git_bash_not_the_wsl_launcher() {
+    if marlowe_os::bash::git_bash().is_none() {
+        eprintln!("skipped: Git Bash is not installed here");
+        return;
+    }
+    let ws = Ws::new("sb-git-bash");
+    let o = call(&ws.tools(), "bash", json!({"command": "uname -s"}));
+    assert!(!o.is_error, "{}", o.content);
+    let os = o.content.trim().to_ascii_uppercase();
+    assert!(os.contains("MINGW") || os.contains("MSYS"), "bash ran outside Git Bash: {os}");
+}

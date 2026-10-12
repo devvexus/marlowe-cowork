@@ -102,7 +102,7 @@ fn quitting_with_work_running_asks_and_a_stray_enter_cancels() {
 }
 
 #[test]
-fn stop_close_window_and_cancel_each_do_what_they_say() {
+fn parity_u19_stop_close_window_and_cancel_each_do_what_they_say() {
     // s: stop and close agent.
     let mut s = online();
     with_work(&mut s);

@@ -82,28 +82,58 @@ pub fn default_concurrency(model_slots: usize) -> usize {
     MAX_CONCURRENCY.min(cpus.saturating_sub(2)).min(model_slots).max(1)
 }
 
+/// The conductor's own pool, which a linked [`Budget`] reads and charges (F3's `TokenPool`).
+pub trait PoolLink: Send + Sync + std::fmt::Debug {
+    /// The armed target; `None` when the user set none.
+    fn total(&self) -> Option<u64>;
+    fn spent(&self) -> u64;
+    fn charge(&self, tokens: u64);
+}
+
 /// One token pool shared by the main loop and every workflow of a session (WF8): `+500k`.
+/// Standalone ([`Budget::new`]) it counts on its own; linked ([`Budget::linked`]) every reading
+/// and charge goes to the conductor's pool, so the main loop and its workflows spend one total.
 #[derive(Debug, Default)]
 pub struct Budget {
-    pub total: Option<u64>,
+    total: Option<u64>,
     spent: AtomicU64,
+    link: Option<Arc<dyn PoolLink>>,
 }
 
 impl Budget {
     pub fn new(total: Option<u64>) -> Arc<Budget> {
-        Arc::new(Budget { total, spent: AtomicU64::new(0) })
+        Arc::new(Budget { total, spent: AtomicU64::new(0), link: None })
+    }
+
+    pub fn linked(link: Arc<dyn PoolLink>) -> Arc<Budget> {
+        Arc::new(Budget { total: None, spent: AtomicU64::new(0), link: Some(link) })
+    }
+
+    pub fn total(&self) -> Option<u64> {
+        match &self.link {
+            Some(l) => l.total(),
+            None => self.total,
+        }
     }
 
     pub fn spent(&self) -> u64 {
-        self.spent.load(Ordering::SeqCst)
+        match &self.link {
+            Some(l) => l.spent(),
+            None => self.spent.load(Ordering::SeqCst),
+        }
     }
 
     pub fn add(&self, tokens: u64) {
-        self.spent.fetch_add(tokens, Ordering::SeqCst);
+        match &self.link {
+            Some(l) => l.charge(tokens),
+            None => {
+                self.spent.fetch_add(tokens, Ordering::SeqCst);
+            }
+        }
     }
 
     pub fn remaining(&self) -> Option<u64> {
-        self.total.map(|t| t.saturating_sub(self.spent()))
+        self.total().map(|t| t.saturating_sub(self.spent()))
     }
 }
 
@@ -403,7 +433,7 @@ impl Ctx {
             return Err(Halt::Throw(format!("a workflow runs at most {} agents", self.cfg.max_agents)));
         }
         if let Some(b) = &self.cfg.budget {
-            if let Some(total) = b.total {
+            if let Some(total) = b.total() {
                 if b.spent() >= total {
                     return Err(Halt::Throw(format!(
                         "the token budget is spent ({} of {total} output tokens); check budget.remaining() before calling agent()",
@@ -1011,7 +1041,7 @@ fn run_child(c: &Ctx, filename: &str, source: &str, args: &Json) -> Result<Json,
 /// The globals every workflow script sees: the standard library, `json`, `struct`, `map`,
 /// `filter`, and the host API. No `print` to stdout, no `load`, no clock or randomness.
 fn globals(cfg: &RunConfig) -> Globals {
-    let total = cfg.budget.as_ref().and_then(|b| b.total);
+    let total = cfg.budget.as_ref().and_then(|b| b.total());
     GlobalsBuilder::extended_by(&[LibraryExtension::Json, LibraryExtension::StructType, LibraryExtension::Map, LibraryExtension::Filter])
         .with(host_api)
         .with(guard_api)

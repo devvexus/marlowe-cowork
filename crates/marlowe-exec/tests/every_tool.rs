@@ -381,10 +381,11 @@ fn web_search_goes_through_the_injected_backend() {
 }
 
 #[test]
-fn web_fetch_refuses_plain_http_and_bad_urls() {
+fn web_fetch_refuses_other_schemes_and_bad_urls() {
+    // Plain http:// is upgraded to https:// (T20); that path is covered offline in web_tests.rs.
     let ws = Ws::new("et-fetch");
     let t = ws.tools();
-    for url in ["http://example.com", "ftp://x", "example.com", "https://user@host/", ""] {
+    for url in ["ftp://x", "example.com", "https://user@host/", ""] {
         let o = call(&t, "web_fetch", json!({"url": url}));
         assert!(o.is_error, "{url}: {}", o.content);
     }

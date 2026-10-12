@@ -1033,7 +1033,11 @@ impl Supervisor {
     /// running. Does not wait; [`Supervisor::settle_interrupted`] does, after the models are
     /// unloaded.
     pub fn cancel_for_close(&self) -> Vec<RunId> {
-        let before: Vec<RunId> = self.inner.store().resumable().unwrap_or_default().into_iter().map(|r| r.id).collect();
+        // Queued and running runs, and runs parked on an approval: the window that would answer
+        // it is closing, so they end interrupted too, not stuck waiting.
+        let mut before: Vec<RunId> = self.inner.store().resumable().unwrap_or_default().into_iter().map(|r| r.id).collect();
+        let parked = self.inner.store().list(500).unwrap_or_default().into_iter().filter(|r| r.status == CrewRunStatus::NeedsYou);
+        before.extend(parked.map(|r| r.id).filter(|id| !before.contains(id)).collect::<Vec<_>>());
         let mut st = self.inner.state();
         st.stopping = true;
         for live in st.live.values().filter(|l| l.running) {
@@ -1058,7 +1062,7 @@ impl Supervisor {
         let mut out = Vec::new();
         for id in runs {
             let Ok(mut run) = self.inner.run(id) else { continue };
-            if run.status.is_terminal() || matches!(run.status, CrewRunStatus::NeedsYou | CrewRunStatus::Paused) {
+            if run.status.is_terminal() || run.status == CrewRunStatus::Paused {
                 continue;
             }
             let steps = run.step;

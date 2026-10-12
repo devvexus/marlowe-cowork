@@ -172,6 +172,12 @@ impl Plugin {
     }
 }
 
+/// The bundle roots a session's saved workflows resolve against (WF6, after project and user
+/// workflows): the bundles in `<home>/plugins` and the workspace's `.marlowe/plugins`.
+pub fn bundle_roots(home: Option<&Path>, workspace: Option<&Path>) -> Vec<PathBuf> {
+    discover(&Sources::for_session(home, workspace)).0.into_iter().map(|p| p.root).collect()
+}
+
 /// Bundles for a session: every subdirectory of `<home>/plugins` (user) and of each root's
 /// `.marlowe/plugins` (project), plus the explicit `plugin_roots` (user). A bundle that fails to
 /// load is a warning; a second bundle with a name already loaded is skipped with a warning.

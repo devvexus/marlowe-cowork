@@ -3172,6 +3172,7 @@ dependencies = [
  "marlowe-provider",
  "marlowe-research",
  "marlowe-sentinel",
+ "marlowe-settings",
  "marlowe-surface",
  "marlowe-tui",
  "marlowe-typeset",

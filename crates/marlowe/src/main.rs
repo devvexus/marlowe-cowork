@@ -17,6 +17,7 @@ mod headless;
 mod launcher;
 mod math_cmd;
 mod mcp_cmd;
+mod mcp_serve;
 mod me_cmd;
 mod memory_cmd;
 mod research_wire;
@@ -57,7 +58,7 @@ marlowe math [--grid | --images] [--width N]
                                           conversation pane draws them (grid, and Sixel images)
 marlowe status | shutdown | doctor [--json]
 marlowe -p [PROMPT] [flags]               one non-interactive run, like `claude -p` (marlowe -p --help)
-marlowe mcp [list | add | add-json | remove | get | trust | auth | logout]
+marlowe mcp [list | add | add-json | remove | get | trust | auth | logout | serve]
                                           MCP servers (.mcp.json and the settings layers)
 marlowe export [status | enable <dir> | disable <dir> | good <session> [--upto N] | ungood <session>
                | trajectories [--dry-run] [--out DIR] [--project DIR] [--include-tainted]

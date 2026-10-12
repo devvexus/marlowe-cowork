@@ -194,7 +194,7 @@ pub fn run_workflow(runner: &AgentRunner, job: ScriptJob<'_>, emit: &dyn Fn(Scri
     cfg.max_concurrency = marlowe_workflow::default_concurrency(if local { runner.per_local_provider.max(1) } else { marlowe_workflow::MAX_CONCURRENCY });
 
     let meta = marlowe_workflow::validate::static_checks(&cfg.filename, &source).map(|v| v.meta).unwrap_or_default();
-    let budget_total = cfg.budget.as_ref().and_then(|b| b.total);
+    let budget_total = cfg.budget.as_ref().and_then(|b| b.total());
     let (ctl_tx, ctl_rx) = crossbeam_channel::unbounded();
     registry().controls.insert(job.run.clone(), ctl_tx.clone());
     // The run's cancel (the user's stop, a pause, shutdown) stops the engine: no new agent starts.

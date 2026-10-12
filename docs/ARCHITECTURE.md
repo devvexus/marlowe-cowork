@@ -134,6 +134,14 @@ Parallel tracks (design `docs/research/m46-design.md` sections 7-8) plug in with
 - **`/fast`** wraps the `/model` switch: the `Quick` slot's model while on, the session's own after.
 - **Tool deferral (T31).** On a window of 40k or less the host lists the core tools and `tool_search`; the rarely used built-ins (`marlowe-exec/src/deferral.rs`) load by `select:name` or keywords and are appended at the tail of the tool list, so the bytes before them stay fixed. The MCP host merges its own `tool_search` with this one.
 
+## M4.6 integration (wave 2)
+
+- **Bash.** `marlowe_os::bash::git_bash` is the one lookup for every bash the harness runs (tool, jobs, monitors, hooks, `!cmd`, doctor): `MARLOWE_BASH`, the Git for Windows roots, a Git found through `git.exe` on PATH; never the WSL launcher.
+- **Web.** `web_fetch` stops at a redirect to another host (`CorpusConfig::same_host_redirects_only`), keeps a 15-minute process-wide page cache, and answers `prompt` through the session's `WebDigest` service (`web_ops.rs`: a hosted or loaded model only). `web_search` filters by domain after the backend.
+- **`marlowe mcp serve`.** Builtin tools for one workspace behind `Permissions` in `dont_ask`; refusals carry the reason; calls are logged at agent trust without arguments. Nothing reaches memory.
+- **One `+500k` pool.** `marlowe_workflow::Budget` can be linked (`PoolLink`) to the conductor's `TokenPool`; the daemon links each session's pool on creation.
+- **Inventory.** `crates/marlowe/tests/parity_inventory.rs` maps every name in the recorded Claude Code init (`tools/record_cc_init.py`) and diffs the documented hook events; re-record when the pinned version moves.
+
 ## Crew and sandbox model
 
 An agent is a role card (`roles/*.md`, overridden by `<home>\roles\*.md`: slot, effort, tool allowlist, budget, sandbox kind, instructions), and that is all. Depth 1: crew runs never get `dispatch`.

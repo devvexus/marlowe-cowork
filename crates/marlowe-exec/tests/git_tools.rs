@@ -913,7 +913,7 @@ fn parity_b6_secret_shaped_files_need_approval_even_where_git_is_free() {
 // ---------------------------------------------------------------- G8
 
 #[test]
-fn ci_status_reads_runs_logs_and_registers_a_watch() {
+fn parity_t29_ci_status_reads_runs_logs_and_registers_a_watch() {
     let fx = Fx::new("g8");
     fx.github_remote();
     fx.git(&["switch", "-q", "-c", "feat/ci"]);

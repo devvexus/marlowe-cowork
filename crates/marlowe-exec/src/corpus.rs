@@ -105,6 +105,10 @@ pub struct CorpusConfig {
     pub robots_http: Arc<dyn HttpGet>,
     /// Renders thin client-rendered pages; `None` reports them as read with a warning.
     pub renderer: Option<Arc<dyn Renderer>>,
+    /// Follow redirects only within the URL's host (`web_fetch`, T20): a redirect to another host
+    /// ends the read as [`Outcome::Redirect`] with `cross_host`, so the caller decides whether to
+    /// fetch it (a second egress destination). The research corpus follows them.
+    pub same_host_redirects_only: bool,
 }
 
 impl Default for CorpusConfig {
@@ -115,6 +119,7 @@ impl Default for CorpusConfig {
             gate: shared_gate(),
             robots_http: Arc::new(marlowe_research::NetHttp::new()),
             renderer: crate::render::EdgeRenderer::find().map(|r| Arc::new(r) as Arc<dyn Renderer>),
+            same_host_redirects_only: false,
         }
     }
 }
@@ -195,11 +200,13 @@ pub enum Outcome {
         url: String,
         reason: Refusal,
     },
-    /// The server sent a redirect that was not followed (not https, or too many hops).
+    /// The server sent a redirect that was not followed (not https, too many hops, or to another
+    /// host under [`CorpusConfig::same_host_redirects_only`], which sets `cross_host`).
     Redirect {
         url: String,
         status: u16,
         location: RedirectTo,
+        cross_host: bool,
     },
     /// HTTP status >= 400.
     Status {
@@ -317,6 +324,12 @@ pub fn sanitize_location(raw: &str) -> RedirectTo {
         }
         _ => RedirectTo::Unusable,
     }
+}
+
+/// Whether two https URLs name the same host (case aside, and `www.` aside).
+pub fn same_host(a: &str, b: &str) -> bool {
+    let host = |u: &str| Target::parse(u).ok().map(|t| t.host.to_ascii_lowercase().trim_start_matches("www.").to_string());
+    matches!((host(a), host(b)), (Some(x), Some(y)) if x == y)
 }
 
 /// `location` resolved against `current`; https only.
@@ -509,6 +522,14 @@ pub fn read_one(
             let Some(loc) = res.location.as_deref() else { break res };
             match next_hop(&current, loc) {
                 Some(next) if hops < MAX_REDIRECTS => {
+                    if cfg.same_host_redirects_only && !same_host(&current, &next) {
+                        return Outcome::Redirect {
+                            url: url.to_string(),
+                            status: res.status,
+                            location: sanitize_location(&next),
+                            cross_host: true,
+                        };
+                    }
                     hops += 1;
                     current = next;
                     continue;
@@ -518,6 +539,7 @@ pub fn read_one(
                         url: url.to_string(),
                         status: res.status,
                         location: sanitize_location(loc),
+                        cross_host: false,
                     }
                 }
             }

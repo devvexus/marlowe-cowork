@@ -178,6 +178,20 @@ impl TokenPool {
     }
 }
 
+/// The same pool, seen by the session's workflows (WF8): a linked `marlowe_workflow::Budget` reads
+/// this pool's target and spend, and charges what workflow agents generate here.
+impl marlowe_workflow::PoolLink for TokenPool {
+    fn total(&self) -> Option<u64> {
+        TokenPool::total(self)
+    }
+    fn spent(&self) -> u64 {
+        TokenPool::spent(self)
+    }
+    fn charge(&self, tokens: u64) {
+        TokenPool::charge(self, tokens)
+    }
+}
+
 /// Applies the directives of each user message: records `ultrathink` for the loop, arms or clears
 /// the [`TokenPool`], and keeps the conductor working toward a target.
 pub struct DirectiveMiddleware {
@@ -274,6 +288,23 @@ mod tests {
         assert_eq!(pool.total(), None);
         pool.charge(1_000);
         assert_eq!(pool.spent(), 0);
+    }
+
+    #[test]
+    fn parity_wf8_the_conductor_and_its_workflows_draw_on_one_pool() {
+        let session = SessionId("wf8-one-pool".into());
+        let pool = TokenPool::new();
+        let wf = marlowe_workflow::pools::link(&session, Arc::new(pool.clone()));
+        assert_eq!(marlowe_workflow::pools::get(&session).and_then(|b| b.total()), None, "no target yet");
+        let mw = DirectiveMiddleware::new(pool.clone());
+        let mut convo = Conversation::new(session.clone(), None);
+        mw.before_turn(&mut convo, &mut "migrate it +100k".to_string());
+        assert_eq!(wf.total(), Some(100_000), "the workflow sees the target the user just set");
+        pool.charge(30_000); // the main loop
+        wf.add(20_000); // a workflow agent
+        assert_eq!(pool.remaining(), Some(50_000));
+        assert_eq!(wf.remaining(), Some(50_000));
+        marlowe_workflow::pools::clear(&session);
     }
 
     #[test]

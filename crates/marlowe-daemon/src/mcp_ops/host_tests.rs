@@ -157,6 +157,20 @@ fn resources_and_prompts_are_reachable_through_the_host() {
     assert_eq!(got.content, "user: Say hello to Matthew.");
 }
 
+/// X20: `list_mcp_resources` lists a server's resources, `read_mcp_resource` returns one as text,
+/// and what it returns is untrusted (the read taints the session).
+#[test]
+fn parity_x20_resources_are_listed_read_as_text_and_taint() {
+    let (h, _s) = host(0, json!({}), None);
+    let list = h.call_scoped(&call(LIST_RESOURCES, json!({})), &cx());
+    assert!(!list.is_error, "{}", list.content);
+    assert!(list.content.contains("file:///notes.txt") && list.content.contains("file:///data.json"), "{}", list.content);
+    let read_call = call(READ_RESOURCE, json!({"server": "web", "uri": "file:///notes.txt"}));
+    let read = h.call_scoped(&read_call, &cx());
+    assert_eq!((read.content.as_str(), read.is_error), ("remember the milk", false));
+    assert!(h.taints(&read_call), "a resource is server-written content");
+}
+
 #[test]
 fn a_call_to_a_tool_that_is_gone_says_so() {
     let (h, _s) = host(0, json!({}), None);

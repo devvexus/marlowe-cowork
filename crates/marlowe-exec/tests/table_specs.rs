@@ -5,7 +5,8 @@
 //!
 //! The files group (track A) replaced `read`/`write`/`edit`: its surface is pinned in
 //! `src/specs/files/specs_m46_files.json` (`the_files_group_declares_the_reviewed_m46_schemas`), and
-//! here it must sit where the M4.5 file tools sat. The groups M4.6 added (code, verify, agent, git)
+//! here it must sit where the M4.5 file tools sat; `web_fetch` and `web_search` (T20/T21) are pinned
+//! in `src/specs/specs_m46_web.json` the same way. The groups M4.6 added (code, verify, agent, git)
 //! pin their own lists in their own tests.
 
 use std::sync::Arc;
@@ -56,6 +57,14 @@ fn expected(with_search: bool) -> Vec<ToolSpec> {
     let mut out: Vec<ToolSpec> = old.iter().take(at).cloned().collect();
     out.extend(files);
     out.extend(old.into_iter().skip(at).filter(|s| !M45_FILES.contains(&s.name.as_str())));
+    // T20/T21 (integ, M4.6): `web_fetch` gained `prompt`/`raw` and `web_search` its domain
+    // filters. The reviewed surface is pinned in `src/specs/specs_m46_web.json`, in place.
+    let web: Vec<ToolSpec> = serde_json::from_str(include_str!("../src/specs/specs_m46_web.json")).unwrap();
+    for s in out.iter_mut() {
+        if let Some(new) = web.iter().find(|w| w.name == s.name) {
+            *s = new.clone();
+        }
+    }
     out
 }
 

@@ -1024,7 +1024,7 @@ fn parity_bench_with_no_reports_says_how_to_make_one() {
 // ---- the palette and /help -----------------------------------------------------------------------
 
 #[test]
-fn the_palette_and_help_list_what_wave_two_added() {
+fn parity_u19_the_palette_and_help_list_what_wave_two_added() {
     let mut s = coding_session();
     keys(&mut s, "ctrl-k 'tasks' enter");
     assert_eq!(s.overlay, Some(Overlay::Panel));

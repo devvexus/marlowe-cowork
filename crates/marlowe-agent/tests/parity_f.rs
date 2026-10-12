@@ -1167,6 +1167,15 @@ fn parity_x17_local_plugin_bundles_load() {
     copy_dir(&cc().join("plugins/feature-dev"), &root.join("profile/plugins/feature-dev"));
     let cat = Catalog::load(&sources(&root, &root.join("repo")));
     assert!(cat.find("feature-dev:feature-dev").is_some());
+
+    // A bundle's saved workflows resolve by name, after project and user ones (WF6).
+    write(&root.join("profile/plugins/feature-dev/workflows/bundled-review.star"), "META = {\"description\": \"x\"}
+");
+    let bundles = plugin::bundle_roots(Some(&root.join("profile")), Some(&root.join("repo")));
+    assert_eq!(bundles, vec![root.join("profile/plugins/feature-dev")]);
+    let roots = marlowe_workflow::saved::Roots { plugins: bundles, ..Default::default() };
+    let found = roots.resolve("bundled-review").unwrap();
+    assert!(matches!(found.origin, marlowe_workflow::saved::Origin::Plugin(_)), "{:?}", found.origin);
 }
 
 #[test]

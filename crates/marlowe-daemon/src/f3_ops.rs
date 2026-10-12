@@ -95,8 +95,16 @@ fn lists(core: &Arc<Core>) -> TaskLists {
     .clone()
 }
 
+/// The session's `+500k` pool, linked on creation so the session's workflows spend from it too.
 fn pool_for(core: &Core, session: &SessionId) -> TokenPool {
-    lock(&state(core).pools).entry(session.clone()).or_default().clone()
+    lock(&state(core).pools)
+        .entry(session.clone())
+        .or_insert_with(|| {
+            let pool = TokenPool::new();
+            marlowe_workflow::pools::link(session, Arc::new(pool.clone()));
+            pool
+        })
+        .clone()
 }
 
 // ---------------------------------------------------------------- the plan file

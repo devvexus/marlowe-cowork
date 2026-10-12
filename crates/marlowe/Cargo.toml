@@ -51,6 +51,8 @@ sha2.workspace = true
 # tests/context_live.rs: the planner against the real store, runner log and GPU (ignored by default).
 # The scripted MCP servers the headless tests talk to.
 marlowe-mcp = { workspace = true, features = ["fake-server"] }
+# tests/parity_inventory.rs: the hook events Marlowe fires, for the X22 diff.
+marlowe-settings.workspace = true
 
 [features]
 # GPU rerank (CUDA, then DirectML, then CPU, only while the GPU is idle) and the six-graph cascade.

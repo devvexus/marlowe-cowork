@@ -95,7 +95,7 @@ impl Interpreter {
 /// The command for `bash -c <script>`.
 pub fn bash_command(script: &str) -> std::io::Result<Command> {
     #[cfg(windows)]
-    let program = git_bash().ok_or_else(|| {
+    let program = marlowe_os::bash::git_bash().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "the `bash` tool needs Git Bash and it is not installed. Install Git for Windows, or \
@@ -169,34 +169,6 @@ fn find_python() -> Option<PythonChoice> {
                 }
             }
             None
-        })
-        .clone()
-}
-
-/// Git Bash, never the WSL launcher that sits first on a default PATH.
-#[cfg(windows)]
-fn git_bash() -> Option<PathBuf> {
-    static FOUND: OnceLock<Option<PathBuf>> = OnceLock::new();
-    FOUND
-        .get_or_init(|| {
-            if let Some(explicit) = std::env::var_os("MARLOWE_BASH") {
-                let p = PathBuf::from(explicit);
-                return p.is_file().then_some(p);
-            }
-            let mut roots: Vec<PathBuf> = Vec::new();
-            for var in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
-                if let Some(v) = std::env::var_os(var) {
-                    roots.push(PathBuf::from(&v).join("Git"));
-                    roots.push(PathBuf::from(&v).join("Programs").join("Git"));
-                }
-            }
-            roots.push(PathBuf::from(r"C:\Program Files\Git"));
-            roots.into_iter().find_map(|root| {
-                [r"bin\bash.exe", r"usr\bin\bash.exe"]
-                    .iter()
-                    .map(|rel| root.join(rel))
-                    .find(|c| c.is_file())
-            })
         })
         .clone()
 }

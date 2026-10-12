@@ -64,6 +64,10 @@ pub trait Probe {
     fn key(&self, kind: ProviderKind) -> &'static str;
     fn terminal(&self) -> Option<(u16, u16)>;
     fn home_writable(&self, home: &Path) -> bool;
+    /// The bash the `bash` tool runs (Git Bash on Windows, never the WSL launcher).
+    fn bash(&self) -> Option<PathBuf> {
+        self.which(&["bash.exe", "bash"])
+    }
 }
 
 pub struct System;
@@ -94,6 +98,9 @@ impl Probe for System {
         let ok = std::fs::create_dir_all(home).is_ok() && std::fs::write(&f, b"x").is_ok();
         let _ = std::fs::remove_file(&f);
         ok
+    }
+    fn bash(&self) -> Option<PathBuf> {
+        marlowe_os::bash::git_bash()
     }
 }
 
@@ -155,7 +162,11 @@ pub fn report(p: &dyn Probe, home: &Path, daemon: Option<u16>) -> Vec<Check> {
         None => check("docker", Status::Info, "not installed (not needed)"),
     });
 
-    for (name, base) in [("powershell", "powershell"), ("pwsh", "pwsh"), ("bash", "bash"), ("python", "python"), ("node", "node")] {
+    out.push(match p.bash() {
+        Some(path) => check("bash", Status::Ok, path.display().to_string()),
+        None => check("bash", Status::Missing, "Git Bash not found (the `bash` tool and hooks need it; install Git for Windows or set MARLOWE_BASH)"),
+    });
+    for (name, base) in [("powershell", "powershell"), ("pwsh", "pwsh"), ("python", "python"), ("node", "node")] {
         let found = find(p, base).or_else(|| if base == "python" { find(p, "python3") } else { None });
         out.push(match found {
             Some(path) => check(name, Status::Ok, path.display().to_string()),

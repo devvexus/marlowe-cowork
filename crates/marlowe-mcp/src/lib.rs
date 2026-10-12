@@ -36,6 +36,7 @@ pub mod oauth;
 pub mod output;
 pub mod rpc;
 pub mod search;
+pub mod server;
 pub mod stdio;
 pub mod util;
 

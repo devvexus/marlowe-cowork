@@ -10,7 +10,7 @@ use crate::{first_line, research, research_input, str_arg, web, BuiltinTools};
 
 pub fn tools() -> Vec<ToolDef> {
     vec![
-        ToolDef::new(web_fetch_spec(), ToolGroup::Web, Effects::NETWORK, |_, a, c| web::web_fetch(a, &c.cancel))
+        ToolDef::new(web_fetch_spec(), ToolGroup::Web, Effects::NETWORK, |t, a, c| web::web_fetch(t, a, c))
             .consequence(fetch_consequence)
             .describe(|c| describe_by(c, "url"))
             .taints(always)
@@ -72,12 +72,15 @@ fn query_after_taint(call: &ToolCallReq, exposure: &Exposure) -> Consequence {
 fn web_fetch_spec() -> ToolSpec {
     spec(
         "web_fetch",
-        "Fetch an https URL and return its main content (HTML as markdown with links, headings, \
-         tables and code; PDF, Office, text). Honours robots.txt. Long documents come back in \
-         windows; continue with `offset`.",
+        "Fetch an https URL and return its main content as markdown (HTML, PDF, Office, text). \
+         Honours robots.txt. Long documents come back in windows; continue from the character \
+         `offset` given. With `prompt`, only its answer from the page comes back. A redirect to \
+         another host is returned, not followed.",
         json!({
-            "url": {"type": "string", "description": "A full https:// URL."},
-            "offset": {"type": "integer", "description": "Character offset to continue from."}
+            "url": {"type": "string"},
+            "prompt": {"type": "string"},
+            "raw": {"type": "boolean"},
+            "offset": {"type": "integer"}
         }),
         &["url"],
     )
@@ -117,7 +120,11 @@ fn web_search_spec() -> ToolSpec {
         "web_search",
         "Search the web. Returns a short answer and the sources it cites, with URLs; use \
          `web_fetch` to read a source in full.",
-        json!({"query": {"type": "string"}}),
+        json!({
+            "query": {"type": "string"},
+            "allowed_domains": {"type": "array", "items": {"type": "string"}},
+            "blocked_domains": {"type": "array", "items": {"type": "string"}}
+        }),
         &["query"],
     )
 }
@@ -133,9 +140,9 @@ pub fn persona_block() -> Option<&'static str> {
     None
 }
 
-/// Per-host setup from the profile home (state via `BuiltinTools::with_state`).
+/// Per-host setup from the profile home: `web_fetch{prompt}` saves pages under its cache.
 pub fn configure(tools: crate::BuiltinTools, setup: &super::HostSetup<'_>) -> crate::BuiltinTools {
-    super::no_configure(tools, setup)
+    tools.with_state(web::WebState { home: Some(setup.home.to_path_buf()) })
 }
 
 /// Whether a local model gets this group in `root`. Always exposed to local models (a core group).

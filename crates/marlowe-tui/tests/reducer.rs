@@ -149,7 +149,7 @@ fn reasoning_tokens_sum_per_delta_and_a_late_settlement_lands_on_the_thinking_li
 }
 
 #[test]
-fn escape_interrupts_a_running_turn() {
+fn parity_u5_escape_interrupts_a_running_turn() {
     let mut s = in_session();
     assert_eq!(s.on_key(key(KeyCode::Esc)), vec![Request::Interrupt { session: sid() }]);
     feed(&mut s, 4, Event::TurnFinished { session: sid(), turn: 1, usage: Default::default(), stop: TurnStop::Interrupted });

@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
+use marlowe_agent::commands::plugin::bundle_roots;
 use marlowe_agent::hooks::HookRunner;
 use marlowe_agent::{Conversation, Services, TaskChunk, TaskInfo, TaskKind, TaskRegistry, TaskSource, TaskStatus};
 use marlowe_crew::playbook::script::{self, RunObserver};
@@ -38,7 +39,7 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
     let fail = |message: String| reply(Event::Error { session: None, message });
     match req {
         Request::ListWorkflows => {
-            let roots = service::roots(&core.home, None, Vec::new());
+            let roots = service::roots(&core.home, None, bundle_roots(Some(&core.home), None));
             let saved = service::saved_list(&roots);
             reply(Event::WorkflowList { saved, runs: runs(core) })
         }
@@ -50,7 +51,7 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
             let workspace = session.as_ref().and_then(|s| core.store.get(s).ok().flatten()).and_then(|s| s.workspace).map(PathBuf::from);
             let launcher = Launcher::new(core, session.clone(), None);
             // The user asked for this run by name: what it resolves to now is what they approved.
-            let roots = service::roots(&core.home, workspace.as_deref(), Vec::new());
+            let roots = service::roots(&core.home, workspace.as_deref(), bundle_roots(Some(&core.home), workspace.as_deref()));
             let approved_digest = service::prepare(&roots, None, script_path.as_deref(), name.as_deref()).ok().map(|p| p.digest);
             let req = LaunchRequest {
                 session,
@@ -214,7 +215,7 @@ impl WorkflowLauncher for Launcher {
     fn launch(&self, req: LaunchRequest) -> Result<Launched, String> {
         let core = self.core.upgrade().ok_or("the daemon is stopping")?;
         let link = core.crew.get().ok_or(NO_CREW)?;
-        let roots = service::roots(&core.home, req.workspace.as_deref(), Vec::new());
+        let roots = service::roots(&core.home, req.workspace.as_deref(), bundle_roots(Some(&core.home), req.workspace.as_deref()));
         let prepared = service::prepare(&roots, req.script.as_deref(), req.script_path.as_deref(), req.name.as_deref())?;
         // Bound to what the approval showed (WF1): a script that changed since runs nothing.
         service::may_run(&core.home, &prepared, req.approved_digest.as_deref())?;
