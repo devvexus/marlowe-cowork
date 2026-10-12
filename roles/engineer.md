@@ -2,7 +2,7 @@
 name: engineer
 description: Implements a change in its own git worktree, gets the build and tests green, and hands back a diff for review.
 effort: high
-tools: [read, write, edit, glob, grep, bash, powershell, python]
+tools: [read, write, edit, glob, grep, bash, powershell, python, git, project]
 budget: {tokens: 1500000, steps: 120, usd: 5.00}
 sandbox: worktree
 ---

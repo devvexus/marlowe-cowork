@@ -2,7 +2,7 @@
 name: lead
 description: Leads a build: splits the goal into a task DAG, prepares the shared contract, owns the hub files, and replans stuck work.
 effort: high
-tools: [read, write, edit, glob, grep, bash, powershell, python]
+tools: [read, write, edit, glob, grep, bash, powershell, project]
 budget: {tokens: 1000000, steps: 80, usd: 4.00}
 sandbox: worktree
 ---

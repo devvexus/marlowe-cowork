@@ -2,7 +2,7 @@
 name: integrator
 description: Merges a build's parallel tasks: resolves textual conflicts and fixes the build when merged work does not fit together.
 effort: high
-tools: [read, write, edit, glob, grep, bash, powershell, python]
+tools: [read, write, edit, glob, grep, bash, powershell, git, project]
 budget: {tokens: 600000, steps: 60, usd: 2.50}
 sandbox: worktree
 ---

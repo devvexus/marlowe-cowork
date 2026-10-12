@@ -414,3 +414,71 @@ mod seam {
         assert_eq!(sb.shell_verdict(Dialect::Bash, "cargo build", false), direct);
     }
 }
+
+/// Each crew role and built-in subagent type, the tools it is given and what their specs cost
+/// (characters over three, the estimate the budgets use). A role gets only what its job needs;
+/// widening one changes this table on purpose.
+fn role_table() -> String {
+    let cost = |tools: &[String]| -> usize {
+        tools
+            .iter()
+            .map(|t| {
+                let s = marlowe_agent::compact_specs::spec(t);
+                format!("{}{}{}", s.name, s.description, s.input_schema).chars().count().div_ceil(3)
+            })
+            .sum()
+    };
+    let mut rows = Vec::new();
+    for card in Roles::builtin().cards() {
+        rows.push(format!("role {:<19} {:>5}  {}", card.name, cost(&card.tools), card.tools.join(" ")));
+    }
+    for ty in marlowe_agent::subagent::builtin_types() {
+        match &ty.tools {
+            Some(t) => rows.push(format!("type {:<19} {:>5}  {}", ty.name, cost(t), t.join(" "))),
+            None => rows.push(format!("type {:<19} {:>5}  (the caller's tools)", ty.name, "-")),
+        }
+    }
+    rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>().join("\n")
+}
+
+#[test]
+fn the_per_role_tool_table_is_pinned() {
+    let table = role_table();
+    println!("{table}");
+    assert_eq!(table, TABLE.trim());
+    // A tool a role is given must exist, and a read-only job gets nothing that writes.
+    for card in Roles::builtin().cards() {
+        for t in &card.tools {
+            marlowe_agent::compact_specs::spec(t);
+        }
+    }
+    let roles = Roles::builtin();
+    for name in ["scout", "reviewer", "review-correctness", "review-security", "review-performance"] {
+        let c = roles.get(name).unwrap();
+        assert!(!["write", "edit", "git"].iter().any(|t| c.allows(t)), "{name} does not change files");
+    }
+    assert!(!roles.get("researcher").unwrap().allows("edit") && roles.get("engineer").unwrap().allows("git"));
+}
+
+const TABLE: &str = "
+role analyst               813  read glob grep write edit python bash powershell
+role compressor              0
+role engineer             1494  read write edit glob grep bash powershell python git project
+role integrator           1406  read write edit glob grep bash powershell git project
+role lead                  956  read write edit glob grep bash powershell project
+role researcher            687  read glob grep write web_search web_fetch arxiv
+role review-correctness    564  read glob grep bash powershell
+role review-performance    564  read glob grep bash powershell
+role review-security       564  read glob grep bash powershell
+role reviewer              847  read glob grep bash powershell web_search web_fetch arxiv
+role scout                 626  web_search web_fetch arxiv read glob grep
+role verifier                0
+role workflow             1922  read write edit multi_edit notebook_edit glob grep bash powershell python web_fetch web_search git project
+type explore               745  read glob grep symbols definition references hover diagnostics
+type plan                  745  read glob grep symbols definition references hover diagnostics
+type general                 -  (the caller's tools)
+type fork                    -  (the caller's tools)
+type guide                 343  read glob grep
+type statusline            427  read glob grep set_statusline
+type agent-creator         519  read glob grep create_agent
+";

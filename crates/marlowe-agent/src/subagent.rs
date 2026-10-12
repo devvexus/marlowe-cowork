@@ -266,7 +266,7 @@ pub fn builtin_types() -> Vec<AgentType> {
         mk(
             "plan",
             "Read-only planner: studies the code and returns a step-by-step implementation plan with the files to change.",
-            None,
+            Some(&["read", "glob", "grep", "symbols", "definition", "references", "hover", "diagnostics"]),
             None,
             true,
             "You plan one change. You never change anything. Read the relevant code, then return: the approach in a few \

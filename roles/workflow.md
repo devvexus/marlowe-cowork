@@ -2,7 +2,7 @@
 name: workflow
 description: One agent of a workflow script: does the single task its prompt gives, with the coding tools, and answers in the shape asked.
 effort: medium
-tools: [read, write, edit, multi_edit, notebook_edit, glob, grep, bash, powershell, python, web_fetch, web_search, symbols, definition, references, hover, diagnostics, git, tool_search]
+tools: [read, write, edit, multi_edit, notebook_edit, glob, grep, bash, powershell, python, web_fetch, web_search, git, project]
 budget: {tokens: 20000000, steps: 20000, usd: 25.00}
 sandbox: worktree
 ---

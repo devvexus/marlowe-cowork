@@ -4,6 +4,11 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Tools per crew role and subagent type
+
+- **Changed.** Each role gets only what its job needs (`roles/*.md`): the researcher loses `edit`; the engineer gains `git` and `project`; the lead drops `python` and gains `project`; the integrator drops `python` and gains `git` and `project`; the workflow agent drops the language-server tools (a crew host has none) and `tool_search`, and gains `project`. The built-in `plan` type is now read-only code tools like `explore`. Scout, reviewers, analyst, compressor, verifier and the helper agents were already minimal. `general` and `fork` keep the caller's tools on purpose (fork's prefix cache).
+- **Tests.** `the_per_role_tool_table_is_pinned` prints and pins role, tools and spec tokens for every role and built-in type.
+
 ### Merged tools through their old names, `.star` validation
 
 - **Added.** A `.star` file written or edited by any file tool is run through the workflow validator after the call; its errors are appended to the tool result (`<workflow-errors>`), a valid one says so. The stop check ("you changed files, run checks") counts a validated script as checked and still reminds about one that fails. The `workflow` description already says: inline `script` first, save a `.star` only when asked.
