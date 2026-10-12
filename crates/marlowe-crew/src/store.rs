@@ -248,15 +248,19 @@ impl RunStore {
         Ok(out)
     }
 
-    /// The steps with per-call checkpoints and no step row yet, in order of their first
+    /// The steps with per-call checkpoints and no finished step row, in order of their first
     /// checkpoint: the ones still open, or interrupted before they finished, each with the
-    /// transcript row its latest checkpoint carries (none on a checkpoint from before rows).
+    /// transcript row its latest checkpoint carries (none on a checkpoint from before rows). A
+    /// failed step keeps its checkpoints; it counts as open again once a retry checkpoints after
+    /// its failed row.
     pub fn open_keys(&self, id: &RunId) -> Result<Vec<(String, Option<u32>)>, CrewError> {
         let mut st = self.conn.prepare(
             "SELECT key, (SELECT row FROM crew_run_calls c WHERE c.run = ?1 AND c.key = k.key ORDER BY seq DESC LIMIT 1)
              FROM crew_run_calls k WHERE run = ?1
-               AND k.key NOT IN (SELECT key FROM crew_run_steps WHERE run = ?1)
-             GROUP BY k.key ORDER BY MIN(at_ms), MIN(rowid)",
+               AND k.key NOT IN (SELECT key FROM crew_run_steps WHERE run = ?1 AND output IS NOT NULL)
+             GROUP BY k.key
+             HAVING MAX(k.at_ms) > COALESCE((SELECT MAX(s.at_ms) FROM crew_run_steps s WHERE s.run = ?1 AND s.key = k.key), -1)
+             ORDER BY MIN(at_ms), MIN(rowid)",
         )?;
         let keys = st
             .query_map([id.as_str()], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<u32>>(1)?)))?
@@ -376,6 +380,26 @@ mod tests {
         assert_eq!(store.calls(&run, "other").unwrap(), PartialStep::default());
         store.append_call(&run, "j", 4, &cp(last, false, None, false)).unwrap();
         assert_eq!(store.open_keys(&run).unwrap(), [("k".to_string(), Some(1)), ("j".to_string(), Some(4))]);
+        // A finished row closes its step; a failed one closes it until a retry checkpoints again.
+        let row = |step: u32, key: &str, output: Option<&str>| StepRecord {
+            run: run.clone(),
+            step,
+            key: key.into(),
+            role: "scout".into(),
+            action: "a".into(),
+            messages: Vec::new(),
+            output: output.map(str::to_string),
+            usage: Usage::default(),
+            tainted: false,
+            truncated: false,
+            at_ms: crate::now_ms() + 1,
+        };
+        store.append_step(&row(4, "j", Some("done"))).unwrap();
+        store.append_step(&row(1, "k", None)).unwrap();
+        assert_eq!(store.open_keys(&run).unwrap(), []);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        store.append_call(&run, "k", 5, &cp(last, false, None, false)).unwrap();
+        assert_eq!(store.open_keys(&run).unwrap(), [("k".to_string(), Some(5))]);
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -305,10 +305,12 @@ impl Hooks {
     fn tool_line(&self, spec: &StepSpec, line: String) {
         let lead = if self.mid_line.lock().unwrap_or_else(|e| e.into_inner()).remove(&spec.key) { "\n" } else { "" };
         let step = self.row(&spec.key);
+        // The event's action becomes the rail's current action: keep the tool summary in it.
+        let action = self.run().ok().and_then(|r| r.current_action).unwrap_or_else(|| spec.label.clone());
         self.inner.emit(CrewEvent::Step {
             run: self.id.clone(),
             step,
-            action: spec.label.clone(),
+            action,
             text_delta: Some(format!("{lead}{}\n", line.replace('\n', " "))),
         });
     }
@@ -571,6 +573,7 @@ impl StepHooks for Hooks {
     fn finished(&self, spec: &StepSpec, messages: &[Message], result: &StepResult) {
         let step = self.row(&spec.key);
         self.live_rows.lock().unwrap_or_else(|e| e.into_inner()).remove(&spec.key);
+        self.mid_line.lock().unwrap_or_else(|e| e.into_inner()).remove(&spec.key);
         let calls: Vec<String> = messages.iter().flat_map(|m| m.tool_calls()).map(call_line).take(4).collect();
         let action = if calls.is_empty() { spec.label.clone() } else { format!("{} · {}", spec.label, calls.join(" · ")) };
         let rec = StepRecord {
@@ -601,6 +604,7 @@ impl StepHooks for Hooks {
     fn failed(&self, spec: &StepSpec, messages: &[Message], f: &StepFailure) {
         let step = self.row(&spec.key);
         self.live_rows.lock().unwrap_or_else(|e| e.into_inner()).remove(&spec.key);
+        self.mid_line.lock().unwrap_or_else(|e| e.into_inner()).remove(&spec.key);
         let mut action = format!(
             "{} · {} ({} output tokens, {} of them reasoning",
             spec.label, f.why, f.usage.output, f.usage.reasoning
