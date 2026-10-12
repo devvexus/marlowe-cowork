@@ -40,8 +40,10 @@ pub struct Sandbox {
     /// worktree after the contract stage. Changes to them go through the lead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub frozen: Vec<String>,
-    /// `CARGO_TARGET_DIR` for every process the run spawns: one `<home>\targets\<repo-hash>` per
-    /// repository, shared by the run's worktree and its children (Cargo's lock serialises them).
+    /// `CARGO_TARGET_DIR` for every process spawned in this worktree: its own
+    /// `<home>\targets\<repo-hash>\<worktree>`, removed with the worktree. Never shared between
+    /// worktrees: Cargo keys path packages by their workspace-relative path and judges freshness
+    /// by mtime, so one worktree's newer artifacts would pass for another's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_dir: Option<PathBuf>,
 }
@@ -82,13 +84,13 @@ pub fn scratch_path(home: &Path, run: &RunId) -> PathBuf {
     home.join("scratch").join(run.as_str())
 }
 
-/// `<home>\targets\<repo-hash>`: the build output directory every crew process working on
-/// `origin` shares, so child worktrees do not each build from cold.
-pub fn target_dir(home: &Path, origin: &Path) -> PathBuf {
+/// `<home>\targets\<repo-hash>\<worktree>`: the build output directory of one worktree of
+/// `origin` (see [`Sandbox::target_dir`]).
+pub fn target_dir(home: &Path, origin: &Path, worktree: &str) -> PathBuf {
     let key = origin.display().to_string().replace('\\', "/");
     let key = if cfg!(windows) { key.to_lowercase() } else { key };
     let hash = format!("{:x}", Sha256::digest(key.trim_end_matches('/').as_bytes()));
-    home.join("targets").join(&hash[..16])
+    home.join("targets").join(&hash[..16]).join(worktree)
 }
 
 /// A branch- and directory-safe form of `name`: lower-case ASCII letters, digits, `-` and `_`,
@@ -320,7 +322,7 @@ impl Sandbox {
             base: Some(base),
             repo_digest: repo_digest(&origin),
             frozen: Vec::new(),
-            target_dir: Some(target_dir(home, &origin)),
+            target_dir: Some(target_dir(home, &origin, run.as_str())),
         };
         if root.join(".git").exists() && branch_exists {
             // Resumed: the base is where the branch left the checkout's history.
@@ -394,9 +396,9 @@ impl Sandbox {
     }
 
     /// A child worktree for one build_v2 task: `<home>\worktrees\<run-id>-<task>` on
-    /// `crew/<run-id>-<task>`, cut from this worktree's committed HEAD, sharing its origin, digest
-    /// and target dir, with `frozen` hub files it may not write. Idempotent: a resumed run finds
-    /// the child it made.
+    /// `crew/<run-id>-<task>`, cut from this worktree's committed HEAD, sharing its origin and
+    /// digest, with its own target dir and `frozen` hub files it may not write. Idempotent: a
+    /// resumed run finds the child it made.
     pub fn create_child(&self, home: &Path, run: &RunId, task: &str, frozen: &[String]) -> Result<Sandbox, CrewError> {
         let (origin, _, _) = self.worktree_parts()?;
         let origin = origin.to_path_buf();
@@ -421,6 +423,7 @@ impl Sandbox {
                 head
             }
         };
+        let target = target_dir(home, &origin, &name);
         Ok(Sandbox {
             kind: SandboxKind::Worktree,
             root,
@@ -429,7 +432,7 @@ impl Sandbox {
             base: Some(base),
             repo_digest: self.repo_digest.clone(),
             frozen: frozen.to_vec(),
-            target_dir: self.target_dir.clone(),
+            target_dir: Some(target),
         })
     }
 
@@ -519,14 +522,13 @@ impl Sandbox {
         }
     }
 
-    /// Removes the worktree (keeping the branch) or the scratch dir.
+    /// Removes the worktree (keeping the branch) and its build output, or the scratch dir.
     pub fn remove(&self) -> Result<(), CrewError> {
         if let (SandboxKind::Worktree, Some(origin)) = (self.kind, self.origin.as_deref()) {
-            let path = self.root.display().to_string();
-            if git(origin, &["worktree", "remove", "--force", &path]).is_err() && self.root.exists() {
-                std::fs::remove_dir_all(&self.root)?;
+            remove_worktree(origin, &self.root)?;
+            if let Some(dir) = &self.target_dir {
+                let _ = std::fs::remove_dir_all(dir);
             }
-            let _ = git(origin, &["worktree", "prune"]);
             return Ok(());
         }
         match std::fs::remove_dir_all(&self.root) {
@@ -535,16 +537,54 @@ impl Sandbox {
         }
     }
 
-    /// Removes the worktree and deletes its branch, or removes the scratch dir.
+    /// Removes the worktree and deletes its branch, or removes the scratch dir. Child worktrees
+    /// of a build (on `<branch>-<task>`) go with it, kept failed-task branches included.
     pub fn discard(&self) -> Result<(), CrewError> {
         self.remove()?;
         if let (SandboxKind::Worktree, Some(origin), Some(branch)) = (self.kind, self.origin.as_deref(), self.branch.as_deref()) {
             if git(origin, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_ok() {
                 git(origin, &["branch", "-D", branch])?;
             }
+            self.discard_children(origin, branch)?;
         }
         Ok(())
     }
+
+    /// Removes every worktree on a `<branch>-*` branch with its build output, then deletes those
+    /// branches. Read from git, so children of a run that stopped mid-wave are found too.
+    fn discard_children(&self, origin: &Path, branch: &str) -> Result<(), CrewError> {
+        let prefix = format!("refs/heads/{branch}-");
+        let listing = git(origin, &["worktree", "list", "--porcelain"])?;
+        let mut path: Option<PathBuf> = None;
+        for line in listing.lines() {
+            if let Some(p) = line.strip_prefix("worktree ") {
+                path = Some(PathBuf::from(p));
+            } else if let (Some(b), Some(p)) = (line.strip_prefix("branch "), path.as_ref()) {
+                if b.starts_with(&prefix) {
+                    remove_worktree(origin, p)?;
+                    let target = self.target_dir.as_deref().and_then(Path::parent).zip(p.file_name());
+                    if let Some((targets, name)) = target {
+                        let _ = std::fs::remove_dir_all(targets.join(name));
+                    }
+                }
+            }
+        }
+        let refs = git(origin, &["for-each-ref", "--format=%(refname:short)", &format!("{prefix}*")])?;
+        for b in refs.lines().map(str::trim).filter(|b| !b.is_empty()) {
+            git(origin, &["branch", "-D", b])?;
+        }
+        Ok(())
+    }
+}
+
+/// `git worktree remove --force`, falling back to deleting the directory, then a prune.
+fn remove_worktree(origin: &Path, root: &Path) -> Result<(), CrewError> {
+    let path = root.display().to_string();
+    if git(origin, &["worktree", "remove", "--force", &path]).is_err() && root.exists() {
+        std::fs::remove_dir_all(root)?;
+    }
+    let _ = git(origin, &["worktree", "prune"]);
+    Ok(())
 }
 
 /// Paths named by `git status --porcelain` (both sides of a rename).

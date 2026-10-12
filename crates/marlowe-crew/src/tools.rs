@@ -23,11 +23,15 @@ use crate::shell_policy::Dialect;
 /// child process in a kill-on-close Job Object. Injected by the binary (marlowe-exec).
 pub type CrewToolFactory = Arc<dyn Fn(&Sandbox, Option<&Path>) -> Arc<dyn ToolHost> + Send + Sync>;
 
+/// The run's taint as it stands now (a message can reach the run's inbox mid-step).
+pub type LiveTaint = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// The host a crew agent sees.
 pub struct CrewTools {
     inner: Arc<dyn ToolHost>,
     allow: Vec<String>,
     sandbox: Sandbox,
+    live_taint: Option<LiveTaint>,
 }
 
 impl CrewTools {
@@ -35,7 +39,14 @@ impl CrewTools {
     /// dropped from it whatever it says.
     pub fn new(inner: Arc<dyn ToolHost>, allow: Vec<String>, sandbox: Sandbox) -> CrewTools {
         let allow = allow.into_iter().filter(|t| t != crate::DISPATCH_TOOL).collect();
-        CrewTools { inner, allow, sandbox }
+        CrewTools { inner, allow, sandbox, live_taint: None }
+    }
+
+    /// Classifies every call with the run's live taint ORed into the step's exposure, so a
+    /// shell after untrusted content arrived mid-step gets the tainted policy.
+    pub fn with_live_taint(mut self, taint: LiveTaint) -> CrewTools {
+        self.live_taint = Some(taint);
+        self
     }
 
     /// The tool names this host exposes.
@@ -138,6 +149,14 @@ impl ToolHost for CrewTools {
     /// other tool answers from its table entry ([`ToolHost::consequence_in_sandbox`]), or from
     /// the inner host's plain consequence when it defines no crew one.
     fn consequence_exposed(&self, call: &ToolCallReq, exposure: &Exposure) -> Consequence {
+        let live;
+        let exposure = match &self.live_taint {
+            Some(taint) if !exposure.tainted && taint() => {
+                live = Exposure { tainted: true, ..exposure.clone() };
+                &live
+            }
+            _ => exposure,
+        };
         if let Some(dialect) = Dialect::of_tool(&call.name) {
             let command = call.args.get("command").and_then(|v| v.as_str()).unwrap_or("");
             return match self.sandbox.shell_verdict(dialect, command, exposure.tainted) {

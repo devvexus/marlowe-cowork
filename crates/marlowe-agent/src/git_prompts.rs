@@ -15,8 +15,16 @@ pub fn builtin(name: &str) -> Option<fn(&str) -> String> {
     }
 }
 
+/// What the security lens looks for: the one list `/security-review` and the crew's
+/// `review-security` reviewers (build_v2 stage 6) both use.
+pub const SECURITY_CHECKLIST: &str = "untrusted input (requests, files, environment, arguments, model output, anything from \
+     the network) reaching a shell, an eval or dynamic import, a file path, a SQL or template query, a URL fetch, a deserialiser \
+     or a permission decision without validation; injection of any kind; secrets in code, logs or errors; missing \
+     authorisation; unsafe file permissions or temporary files; anything that weakens an existing check; unexpected new \
+     dependencies";
+
 /// `/security-review [base]`: the security lens alone over the pending changes (design G6; the
-/// crew's `review-security` card reviews the same way inside build_v2).
+/// crew's `review-security` card reviews with the same [`SECURITY_CHECKLIST`] inside build_v2).
 pub fn security_review(arg: &str) -> String {
     let how = match arg.trim() {
         "" | "diff" => "git{op:\"diff\"}, git{op:\"diff\", staged:true} and git{op:\"status\"} (new files count too; read them)".to_string(),
@@ -24,10 +32,7 @@ pub fn security_review(arg: &str) -> String {
     };
     format!(
         "Security review of the pending changes. Read them with {how}, and the code around them where the diff alone is not enough.\n\
-         Look only through the security lens: trace untrusted input (requests, files, environment, arguments, model output, anything \
-         from the network) to where it is used, and report it when it reaches a shell, an eval or dynamic import, a file path, a SQL or \
-         template query, a URL fetch, a deserialiser or a permission decision without validation. Also: secrets in code, logs or errors; \
-         missing authorisation; unsafe file permissions or temporary files; weakened existing checks; unexpected new dependencies.\n\
+         Look only through the security lens, tracing untrusted input to where it is used: {SECURITY_CHECKLIST}.\n\
          Report only what you can point at. For each finding give severity (blocker: exploitable as shipped; major: fix before merging; \
          minor; nit), file:line, the input that exploits it, why you are sure, and the smallest fix. Order by severity. If nothing is \
          found, say so plainly. Do not change any code; this is a report."

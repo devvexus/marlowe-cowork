@@ -9,8 +9,8 @@ mod research;
 pub mod research_v2;
 
 pub use agent::{
-    close_dangling, output_cap, sandbox_shell, tail_chars, AgentRunner, ModelResolver, NoHooks, ShellFn, StepFailure,
-    StepHooks, StepModel, CONTINUE_PROMPT, INTERRUPTED_CALL, MAX_CONTINUES, MIN_OUTPUT, OUTPUT_MARGIN, RESUME_PROMPT,
+    close_dangling, output_cap, sandbox_shell, tail_chars, AgentRunner, CallCheckpoint, ModelResolver, NoHooks, PartialStep,
+    ShellFn, StepFailure, StepHooks, StepModel, CONTINUE_PROMPT, INTERRUPTED_CALL, MAX_CONTINUES, MIN_OUTPUT, OUTPUT_MARGIN, RESUME_PROMPT,
     SHELL_OUTPUT_CHARS, SHELL_TIMEOUT,
 };
 pub use build::{build, detect_test_command};

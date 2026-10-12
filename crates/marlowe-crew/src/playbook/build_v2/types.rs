@@ -101,8 +101,8 @@ impl Baseline {
 pub struct GateRun {
     /// Every command exited 0.
     pub ok: bool,
-    /// Failing ids: test ids where the runner names them, `<kind>` for a step that failed
-    /// without naming any.
+    /// Failing ids: test ids where the runner names them, else one per reported error, else
+    /// `<kind> #n` per error line ([`super::gate::failing_ids`]).
     pub failing: BTreeSet<String>,
     /// The tail of each failing step's output.
     pub evidence: String,

@@ -58,17 +58,49 @@ impl GateSpec {
     }
 }
 
-/// The ids a step's result fails with: the test ids the runner names, else `<kind>` when it
-/// failed without naming any.
+/// Error-count ids a failure with nothing parseable gets at most.
+const MAX_COUNTED: usize = 200;
+
+/// `marlowe_verify::output`'s diagnostic limit (`MAX_DIAGNOSTICS`).
+const DIAGNOSTIC_CAP: usize = 40;
+
+/// The ids a step's result fails with, so that "no new failures" compares like with like:
+/// - the test ids the runner names;
+/// - else one id per compiler, type checker or linter error it reported, by file, code and
+///   message (not line, which an unrelated edit moves), numbered when it repeats:
+///   `<lint> src/a.py F401: 'os' imported but unused #2`;
+/// - else `<kind> #1` .. `<kind> #n` for the n error lines it printed (at least one), so a
+///   baseline that already failed excuses that many and no more.
 pub fn failing_ids(kind: Kind, r: &ShellResult) -> BTreeSet<String> {
-    let mut ids: BTreeSet<String> = BTreeSet::new();
-    if kind == Kind::Test {
-        ids.extend(marlowe_verify::output::parse(&r.output, true).failing);
+    let parsed = marlowe_verify::output::parse(&r.output, kind == Kind::Test);
+    let mut ids: BTreeSet<String> = parsed.failing.into_iter().collect();
+    if r.ok || !ids.is_empty() {
+        return ids;
     }
-    if !r.ok && ids.is_empty() {
-        ids.insert(format!("<{}>", kind.name()));
+    let tag = format!("<{}>", kind.name());
+    let errors = parsed.diagnostics.iter().filter(|d| d.severity == marlowe_verify::output::Severity::Error);
+    for d in errors {
+        let code = d.code.as_deref().map(|c| format!(" {c}")).unwrap_or_default();
+        let key = format!("{tag} {}{code}: {}", d.file.replace('\\', "/"), d.message.trim());
+        let n = (1..).find(|n| !ids.contains(&format!("{key} #{n}"))).unwrap_or(1);
+        ids.insert(format!("{key} #{n}"));
+    }
+    // marlowe-verify keeps the first DIAGNOSTIC_CAP diagnostics only: past that, a new error
+    // could hide behind old ones, so the error-line count must not grow either.
+    if ids.is_empty() || parsed.diagnostics.len() >= DIAGNOSTIC_CAP {
+        let n = error_lines(&r.output).clamp(1, MAX_COUNTED);
+        ids.extend((1..=n).map(|i| format!("{tag} #{i}")));
     }
     ids
+}
+
+/// Lines that report a problem, in output no parser understood.
+fn error_lines(text: &str) -> usize {
+    const MARKS: [&str; 7] = ["error", "fail", "warning", "would reformat", "diff in", "traceback", "panicked"];
+    text.lines()
+        .map(str::to_ascii_lowercase)
+        .filter(|l| MARKS.iter().any(|m| l.contains(m)) && !l.contains(" 0 error") && !l.starts_with("0 error"))
+        .count()
 }
 
 /// Runs every step in `sandbox`. A failing build stops the run (the tests cannot mean anything).

@@ -316,13 +316,14 @@ fn serialise_overlaps(plan: &mut BuildPlan) {
 }
 
 /// Reads a reviewer's findings: a JSON array (or `{"findings": [...]}`). An empty array, or a
-/// reply that says plainly there is nothing, is no findings. `Err` when nothing parses.
+/// reply that is only a plain "nothing" sentence, is no findings. `Err` when nothing parses, so
+/// the reviewer is asked again: a reply that merely contains "no findings" somewhere may go on
+/// to name a blocker.
 pub fn parse_findings(text: &str, lens: Lens) -> Result<Vec<Finding>, String> {
     let v = match json_value(text) {
         Some(v) => v,
         None => {
-            let t = text.trim().to_ascii_lowercase();
-            if t.is_empty() || t.contains("no findings") || t.contains("no blocking issues") || t.contains("nothing to report") {
+            if says_nothing(text) {
                 return Ok(Vec::new());
             }
             return Err("no JSON array of findings found".into());
@@ -357,6 +358,16 @@ pub fn parse_findings(text: &str, lens: Lens) -> Result<Vec<Finding>, String> {
         });
     }
     Ok(out)
+}
+
+/// A short single-sentence reply that starts by saying there is nothing ("No findings through
+/// this lens."). Anything longer, or with a second clause, is not taken on trust.
+fn says_nothing(text: &str) -> bool {
+    const PHRASES: [&str; 4] = ["no findings", "no blocking issues", "nothing to report", "no issues"];
+    let t = text.trim().trim_end_matches(['.', '!']).trim().to_ascii_lowercase();
+    t.chars().count() <= 60
+        && !t.contains(['\n', '.', ',', ';', ':', '!', '?'])
+        && PHRASES.iter().any(|p| t.starts_with(p))
 }
 
 /// `NEED_HUB_CHANGE: <file>: <what>` lines in an engineer's reply.

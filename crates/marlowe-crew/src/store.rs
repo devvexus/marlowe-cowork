@@ -5,6 +5,7 @@ use std::path::Path;
 use marlowe_proto::RunId;
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::playbook::{CallCheckpoint, PartialStep};
 use crate::run::{Run, StepRecord};
 use crate::CrewError;
 
@@ -41,19 +42,32 @@ CREATE TABLE IF NOT EXISTS crew_run_calls (
     full      INTEGER NOT NULL,
     messages  TEXT NOT NULL,
     at_ms     INTEGER NOT NULL,
+    summary   TEXT,
+    pinned    TEXT,
+    tainted   INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (run, key, seq)
 );
 ";
 
-/// Columns added after a table first shipped: `ALTER TABLE` on an older `cowork.db`.
-const MIGRATIONS: [&str; 1] = ["ALTER TABLE crew_run_steps ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0"];
+/// Columns added after a table first shipped: `ALTER TABLE` on an older `cowork.db`, each with
+/// the probe that says whether it is there.
+const MIGRATIONS: [(&str, &str); 2] = [
+    ("SELECT truncated FROM crew_run_steps LIMIT 0", "ALTER TABLE crew_run_steps ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0"),
+    (
+        "SELECT summary, pinned, tainted FROM crew_run_calls LIMIT 0",
+        "ALTER TABLE crew_run_calls ADD COLUMN summary TEXT;
+         ALTER TABLE crew_run_calls ADD COLUMN pinned TEXT;
+         ALTER TABLE crew_run_calls ADD COLUMN tainted INTEGER NOT NULL DEFAULT 0;",
+    ),
+];
 
 /// Applies [`SCHEMA`], then each migration whose column is missing.
 fn apply_schema(conn: &Connection) -> Result<(), CrewError> {
     conn.execute_batch(SCHEMA)?;
-    let has_truncated = conn.prepare("SELECT truncated FROM crew_run_steps LIMIT 0").is_ok();
-    if !has_truncated {
-        conn.execute_batch(MIGRATIONS[0])?;
+    for (probe, alter) in MIGRATIONS {
+        if conn.prepare(probe).is_err() {
+            conn.execute_batch(alter)?;
+        }
     }
     Ok(())
 }
@@ -188,31 +202,46 @@ impl RunStore {
     }
 
     /// Appends a per-call checkpoint of the unfinished step `key` (design 3.7): the messages a
-    /// model call or a tool batch added, or (`full`) the whole conversation after it was
-    /// compacted.
-    pub fn append_call(&self, run: &RunId, key: &str, messages: &[marlowe_model::Message], full: bool) -> Result<(), CrewError> {
+    /// model call or a tool batch added, or (`full`) the whole conversation and its compaction
+    /// state after it was compacted.
+    pub fn append_call(&self, run: &RunId, key: &str, c: &CallCheckpoint<'_>) -> Result<(), CrewError> {
         self.conn.execute(
-            "INSERT INTO crew_run_calls (run, key, seq, full, messages, at_ms)
-             VALUES (?1, ?2, (SELECT COALESCE(MAX(seq), 0) + 1 FROM crew_run_calls WHERE run = ?1 AND key = ?2), ?3, ?4, ?5)",
-            params![run.as_str(), key, full, to_json(&messages)?, crate::now_ms()],
+            "INSERT INTO crew_run_calls (run, key, seq, full, messages, at_ms, summary, pinned, tainted)
+             VALUES (?1, ?2, (SELECT COALESCE(MAX(seq), 0) + 1 FROM crew_run_calls WHERE run = ?1 AND key = ?2),
+                     ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![run.as_str(), key, c.full, to_json(&c.messages)?, crate::now_ms(), c.summary, c.pinned, c.tainted],
         )?;
         Ok(())
     }
 
-    /// The conversation of the unfinished step `key`, rebuilt from its per-call checkpoints:
-    /// from the last full snapshot on. Empty when the step has none.
-    pub fn calls(&self, run: &RunId, key: &str) -> Result<Vec<marlowe_model::Message>, CrewError> {
-        let mut st = self.conn.prepare("SELECT full, messages FROM crew_run_calls WHERE run = ?1 AND key = ?2 ORDER BY seq")?;
-        let rows = st.query_map(params![run.as_str(), key], |r| Ok((r.get::<_, bool>(0)?, r.get::<_, String>(1)?)))?;
-        let mut out: Vec<marlowe_model::Message> = Vec::new();
+    /// The unfinished step `key`, rebuilt from its per-call checkpoints: the conversation and
+    /// compaction state from the last full snapshot on, tainted if any checkpoint was. Empty
+    /// when the step has none.
+    pub fn calls(&self, run: &RunId, key: &str) -> Result<PartialStep, CrewError> {
+        let mut st = self.conn.prepare(
+            "SELECT full, messages, summary, pinned, tainted FROM crew_run_calls WHERE run = ?1 AND key = ?2 ORDER BY seq",
+        )?;
+        let rows = st.query_map(params![run.as_str(), key], |r| {
+            Ok((
+                r.get::<_, bool>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, bool>(4)?,
+            ))
+        })?;
+        let mut out = PartialStep::default();
         for row in rows {
-            let (full, messages) = row?;
+            let (full, messages, summary, pinned, tainted) = row?;
             let messages: Vec<marlowe_model::Message> = from_json(&messages)?;
             if full {
-                out = messages;
+                out.messages = messages;
+                out.summary = summary;
+                out.pinned = pinned;
             } else {
-                out.extend(messages);
+                out.messages.extend(messages);
             }
+            out.tainted |= tainted;
         }
         Ok(out)
     }
@@ -283,6 +312,51 @@ mod tests {
         assert_eq!(steps.iter().map(|s| s.truncated).collect::<Vec<_>>(), [true, false]);
         drop(store);
         RunStore::open(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A resumed step gets back what compaction kept outside its messages, and its taint.
+    #[test]
+    fn call_checkpoints_keep_compaction_state_and_taint() {
+        use marlowe_model::Message;
+        let dir = std::env::temp_dir().join(format!("marlowe-crew-calls-{}", RunId::new_random().short()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cowork.db");
+        {
+            // A database from before the compaction and taint columns.
+            let old = Connection::open(&path).unwrap();
+            let schema = SCHEMA
+                .replace("    summary   TEXT,\n", "")
+                .replace("    pinned    TEXT,\n", "")
+                .replace("    tainted   INTEGER NOT NULL DEFAULT 0,\n    PRIMARY KEY (run, key, seq)", "    PRIMARY KEY (run, key, seq)");
+            old.execute_batch(&schema).unwrap();
+            assert!(old.prepare("SELECT summary FROM crew_run_calls LIMIT 0").is_err());
+        }
+        let store = RunStore::open(&path).unwrap();
+        let roles = crate::role::Roles::builtin();
+        let r = crate::run::Run::new(None, roles.get("scout").unwrap(), "g", None, None, Default::default());
+        let run = r.id.clone();
+        store.save(&r).unwrap();
+        let cp = |messages: &'static [Message], full: bool, summary: Option<&'static str>, tainted: bool| CallCheckpoint {
+            messages,
+            full,
+            summary,
+            pinned: summary.map(|_| "PINNED"),
+            tainted,
+        };
+        let early: &'static [Message] = Box::leak(Box::new([Message::user("one"), Message::assistant("two")]));
+        let tail: &'static [Message] = Box::leak(Box::new([Message::user("kept tail")]));
+        let last: &'static [Message] = Box::leak(Box::new([Message::assistant("four")]));
+        store.append_call(&run, "k", &cp(early, false, None, false)).unwrap();
+        store.append_call(&run, "k", &cp(&[], false, None, true)).unwrap();
+        store.append_call(&run, "k", &cp(tail, true, Some("SUMMARY"), false)).unwrap();
+        store.append_call(&run, "k", &cp(last, false, None, false)).unwrap();
+        let p = store.calls(&run, "k").unwrap();
+        assert_eq!(p.messages, [tail[0].clone(), last[0].clone()], "from the last full snapshot on");
+        assert_eq!((p.summary.as_deref(), p.pinned.as_deref()), (Some("SUMMARY"), Some("PINNED")));
+        assert!(p.tainted, "a tainted checkpoint before the snapshot still counts");
+        assert_eq!(store.calls(&run, "other").unwrap(), PartialStep::default());
+        drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

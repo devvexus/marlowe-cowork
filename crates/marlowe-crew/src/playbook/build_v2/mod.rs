@@ -182,6 +182,16 @@ fn is_stop(e: &CrewError) -> bool {
     matches!(e, CrewError::Cancelled | CrewError::Stopped)
 }
 
+/// A step's result with cancel and stop split off: `Err` only for those (they end the run);
+/// any other failure is the `Ok(Err)` the stage handles (one reviewer or integrator that gave no
+/// answer must not throw away the build).
+fn soft<T>(r: Result<T, CrewError>) -> Result<Result<T, CrewError>, CrewError> {
+    match r {
+        Err(e) if is_stop(&e) => Err(e),
+        r => Ok(r),
+    }
+}
+
 fn step(key: String, role: &str, label: String, prompt: String, tools: Option<&[&str]>, sandbox: Option<Sandbox>) -> StepSpec {
     StepSpec {
         key,
@@ -213,6 +223,8 @@ struct Build<'a> {
     /// the contract (the other tasks' acceptance tests fail until those tasks land). Verify
     /// compares against the original again.
     work: Mutex<Baseline>,
+    /// Held across a hub change: the lead's step, its commit, and the asking child's merge.
+    hubs: Mutex<()>,
 }
 
 /// What the DAG strip shows.
@@ -342,6 +354,7 @@ pub fn build_v2(runner: &dyn StepRunner, host: &dyn BuildHost, goal: &str, cfg: 
         events: Mutex::new(Vec::new()),
         dag: Mutex::new(Dag { stage: "scope".into(), ..Default::default() }),
         work: Mutex::new(Baseline::default()),
+        hubs: Mutex::new(()),
     };
     *b.work.lock().unwrap_or_else(|e| e.into_inner()) = b.baseline.clone();
     b.report();
@@ -535,12 +548,15 @@ fn plan_stage(b: &Build<'_>, profile: &ProjectProfile, known_hubs: &[String]) ->
         }
     };
     let quote = quote(&plan);
-    let approved = b.cfg.auto_approve_plan || b.host.propose_plan(&plan, &quote)?;
-    if !approved {
-        b.host.save("b2:plan:rejected", "plan rejected", "rejected");
-        return Ok(None);
+    // Only the user's approval raises the budget to the quote: an auto-approved plan keeps the
+    // run's limits, so an overrun still asks (non-negotiable 5).
+    if !b.cfg.auto_approve_plan {
+        if !b.host.propose_plan(&plan, &quote)? {
+            b.host.save("b2:plan:rejected", "plan rejected", "rejected");
+            return Ok(None);
+        }
+        b.host.plan_approved(&plan, &quote);
     }
-    b.host.plan_approved(&plan, &quote);
     save_json(b.host, "b2:plan:approved", &format!("plan approved: {} tasks in {} waves", plan.tasks.len(), plan.waves().len()), &plan);
     Ok(Some(plan))
 }
@@ -767,6 +783,7 @@ fn implement_task(b: &Build<'_>, plan: &BuildPlan, task: &Task, child: &Sandbox,
         return Ok((child, o));
     }
     let base = child.base.clone().unwrap_or_default();
+    let run_branch = b.run.branch.clone().unwrap_or_default();
     b.task_state(id, "running");
     let mut o = TaskOutcome { id: id.clone(), status: "failed".into(), rounds: 0, replans: 0, hub_requests: 0, note: String::new() };
     let mut feedback = String::new();
@@ -793,13 +810,17 @@ fn implement_task(b: &Build<'_>, plan: &BuildPlan, task: &Task, child: &Sandbox,
         };
         git::commit(&child.root, &format!("task {id}: round {round}"))?;
         feedback.clear();
-        // Hub files changed anyway (a shell can write them): put back, and say how to ask.
-        let touched: Vec<String> = git::changed_since(&child.root, &base)?
+        // Hub files changed anyway (a shell can write them): put back, and say how to ask. The
+        // hubs as they stand are the run branch's at the last point this worktree took it in
+        // (its base, or the lead's hub change it merged), never the base alone: the lead's
+        // change must not read as the engineer's.
+        let hubs_at = git::merge_base(&child.root, &run_branch).unwrap_or_else(|_| base.clone());
+        let touched: Vec<String> = git::changed_since(&child.root, &hubs_at)?
             .into_iter()
             .filter(|f| frozen.iter().any(|h| h.eq_ignore_ascii_case(f)))
             .collect();
         if !touched.is_empty() {
-            git::restore(&child.root, &base, &touched, &format!("task {id}: put frozen hub files back"))?;
+            git::restore(&child.root, &hubs_at, &touched, &format!("task {id}: put frozen hub files back"))?;
             feedback.push_str(&format!(
                 "You changed frozen hub files ({}); those changes were undone. Ask the lead with NEED_HUB_CHANGE instead.\n",
                 touched.join(", ")
@@ -809,20 +830,34 @@ fn implement_task(b: &Build<'_>, plan: &BuildPlan, task: &Task, child: &Sandbox,
         if !requests.is_empty() {
             o.hub_requests += 1;
             b.task_state(id, "blocked");
-            amend_hubs(b, plan, task, round, &requests)?;
+            // One hub change at a time, through the child's merge of it: two leads editing the
+            // run's worktree at once would commit each other's half-done edits.
+            let _hubs = b.hubs.lock().unwrap_or_else(|e| e.into_inner());
+            let made = amend_hubs(b, plan, task, round, &requests);
             b.task_state(id, "running");
-            let run_branch = b.run.branch.clone().unwrap_or_default();
-            match git::merge(&child.root, &run_branch, &format!("task {id}: take the lead's hub change"))? {
-                git::Merged::Clean => {}
-                git::Merged::Conflicts(files) => {
-                    git::abort(&child.root);
-                    feedback.push_str(&format!("The lead's hub change conflicts with your work in {}; adapt to it.\n", files.join(", ")));
+            match made {
+                Ok(()) => match git::merge(&child.root, &run_branch, &format!("task {id}: take the lead's hub change"))? {
+                    git::Merged::Clean => feedback.push_str(&format!(
+                        "The lead changed the hub files you asked for ({}); they are in your worktree now.\n",
+                        requests.iter().map(|(f, _)| f.as_str()).collect::<Vec<_>>().join(", ")
+                    )),
+                    git::Merged::Conflicts(files) => {
+                        git::abort(&child.root);
+                        feedback.push_str(&format!(
+                            "The lead changed the hub files you asked for, but that change conflicts with your work in {} \
+                             and was not taken in; change your work so it no longer conflicts, then ask again.\n",
+                            files.join(", ")
+                        ));
+                    }
+                },
+                Err(e) if is_stop(&e) => return Err(e),
+                Err(e) => {
+                    b.event(format!("task {id}: the lead could not make the hub change ({e})"));
+                    feedback.push_str(&format!(
+                        "The lead could not make the hub change you asked for ({e}); work with the hub files as they are.\n"
+                    ));
                 }
             }
-            feedback.push_str(&format!(
-                "The lead changed the hub files you asked for ({}); they are in your worktree now.\n",
-                requests.iter().map(|(f, _)| f.as_str()).collect::<Vec<_>>().join(", ")
-            ));
             continue;
         }
         let (accept_ok, accept_ids, accept_out) = match &task.accept_cmd {
@@ -859,7 +894,7 @@ fn implement_task(b: &Build<'_>, plan: &BuildPlan, task: &Task, child: &Sandbox,
         // The same failures two rounds running: the approach is stuck, the lead replans it.
         if last.as_ref() == Some(&signature) && round < b.cfg.max_task_rounds {
             o.replans += 1;
-            let rp = b.runner.step(step(
+            let rp = soft(b.runner.step(step(
                 format!("b2:task:{id}:replan{}", o.replans),
                 "lead",
                 format!("replan task {id}"),
@@ -874,9 +909,14 @@ fn implement_task(b: &Build<'_>, plan: &BuildPlan, task: &Task, child: &Sandbox,
                 ),
                 Some(&LOOK[..]),
                 None,
-            ))?;
-            revised = Some(rp.text);
-            b.event(format!("task {id}: stalled on the same failures; the lead replanned it"));
+            )))?;
+            match rp {
+                Ok(rp) => {
+                    revised = Some(rp.text);
+                    b.event(format!("task {id}: stalled on the same failures; the lead replanned it"));
+                }
+                Err(e) => b.event(format!("task {id}: stalled, and the lead's replan failed ({e})")),
+            }
         }
         last = Some(signature);
     }
@@ -889,7 +929,8 @@ fn implement_task(b: &Build<'_>, plan: &BuildPlan, task: &Task, child: &Sandbox,
 /// The lead makes the hub changes an engineer asked for, on the run's branch.
 fn amend_hubs(b: &Build<'_>, plan: &BuildPlan, task: &Task, round: u32, requests: &[(String, String)]) -> Result<(), CrewError> {
     let asks: Vec<String> = requests.iter().map(|(f, w)| format!("- {f}: {w}")).collect();
-    b.runner.step(step(
+    let pre = git::head(&b.run.root)?;
+    let made = b.runner.step(step(
         format!("b2:hub:{}:r{round}", task.id),
         "lead",
         format!("hub change for {}", task.id),
@@ -905,7 +946,14 @@ fn amend_hubs(b: &Build<'_>, plan: &BuildPlan, task: &Task, round: u32, requests
         ),
         None,
         None,
-    ))?;
+    ));
+    if let Err(e) = made {
+        // Half an edit must not ride along with the next commit on the run branch.
+        if !is_stop(&e) {
+            git::reset_hard(&b.run.root, &pre)?;
+        }
+        return Err(e);
+    }
     git::commit(&b.run.root, &format!("build_v2: hub change for {}", task.id))?;
     b.event(format!("task {}: the lead changed hub files on request", task.id));
     Ok(())
@@ -940,7 +988,7 @@ fn integrate_task(b: &Build<'_>, task: &Task, child: &Sandbox, mut o: TaskOutcom
                     regen.insert(f.clone());
                 }
                 if !text.is_empty() {
-                    b.runner.step(step(
+                    let resolved = soft(b.runner.step(step(
                         format!("b2:integrate:{id}:conflicts"),
                         "integrator",
                         format!("integrate {id}: conflicts"),
@@ -954,8 +1002,14 @@ fn integrate_task(b: &Build<'_>, task: &Task, child: &Sandbox, mut o: TaskOutcom
                         ),
                         None,
                         None,
-                    ))?;
-                    let left = git::with_markers(root, &text);
+                    )))?;
+                    let left = match resolved {
+                        Ok(_) => git::with_markers(root, &text),
+                        Err(e) => {
+                            b.event(format!("task {id}: the integrator gave no answer on the conflicts ({e})"));
+                            text.clone()
+                        }
+                    };
                     if !left.is_empty() {
                         git::abort(root);
                         b.event(format!("task {id}: conflicts in {} were not resolved; serial fallback", left.join(", ")));
@@ -981,7 +1035,7 @@ fn integrate_task(b: &Build<'_>, task: &Task, child: &Sandbox, mut o: TaskOutcom
     b.event(format!("task {id}: merged build failed; re-implemented serially on the merged branch"));
     b.task_state(id, "serial");
     b.host.progress(&format!("build 4/8 integrate: serial fallback for {id}"));
-    b.runner.step(step(
+    let serial = soft(b.runner.step(step(
         format!("b2:serial:{id}"),
         "engineer",
         format!("serial {id}"),
@@ -998,7 +1052,14 @@ fn integrate_task(b: &Build<'_>, task: &Task, child: &Sandbox, mut o: TaskOutcom
         ),
         None,
         None,
-    ))?;
+    )))?;
+    if let Err(e) = serial {
+        git::reset_hard(root, &pre)?;
+        o.status = "failed".into();
+        o.note = format!("the serial re-implementation gave no answer ({e}); left out");
+        save_json(b.host, &key, &format!("task {id}: failed"), &o);
+        return Ok(o);
+    }
     git::commit(root, &format!("build_v2: task {id} (serial)"))?;
     let changed = git::changed_since(root, &pre).unwrap_or_default();
     let regen: BTreeSet<String> = changed.into_iter().filter(|f| b.is_lockfile(f)).collect();
@@ -1030,7 +1091,7 @@ fn build_green(b: &Build<'_>, task: &Task, o: &mut TaskOutcome) -> Result<bool, 
         if round == b.cfg.max_integrate_rounds {
             break;
         }
-        b.runner.step(step(
+        let fixed = soft(b.runner.step(step(
             format!("b2:integrate:{}:fix{}", task.id, round + 1),
             "integrator",
             format!("integrate {}: build fix {}", task.id, round + 1),
@@ -1045,7 +1106,12 @@ fn build_green(b: &Build<'_>, task: &Task, o: &mut TaskOutcome) -> Result<bool, 
             ),
             None,
             None,
-        ))?;
+        )))?;
+        if let Err(e) = fixed {
+            // The serial fallback starts from before the merge; nothing here is kept.
+            b.event(format!("task {}: integrator round {} gave no answer ({e})", task.id, round + 1));
+            break;
+        }
         git::commit(&b.run.root, &format!("build_v2: integrate {} (fix {})", task.id, round + 1))?;
         o.note = format!("integrator rounds: {}", round + 1);
     }
@@ -1139,7 +1205,7 @@ fn verify_review_fix(
                     return Ok((check, accept_fails, findings));
                 }
             } else {
-                let rp = b.runner.step(step(
+                let rp = soft(b.runner.step(step(
                     format!("b2:fixplan:{round}"),
                     "lead",
                     format!("replan fix {round}"),
@@ -1151,10 +1217,15 @@ fn verify_review_fix(
                     ),
                     Some(&LOOK[..]),
                     None,
-                ))?;
-                guidance = Some(rp.text);
+                )))?;
                 replanned_at = Some(round);
-                b.event(format!("fix round {round}: stalled on the same failures; the lead replanned the fix"));
+                match rp {
+                    Ok(rp) => {
+                        guidance = Some(rp.text);
+                        b.event(format!("fix round {round}: stalled on the same failures; the lead replanned the fix"));
+                    }
+                    Err(e) => b.event(format!("fix round {round}: stalled, and the lead's replan gave no answer ({e})")),
+                }
             }
         }
         last = Some(signature);
@@ -1169,7 +1240,11 @@ fn verify_review_fix(
             prompt.push_str(&format!("\nThe lead's instructions:\n{g}\n"));
         }
         prompt.push_str("\nFix each item or say why it is not a problem. Finish with what you changed and how you checked it.");
-        b.runner.step(step(format!("b2:fix:{round}"), "engineer", format!("fix {round}"), prompt, None, None))?;
+        if let Err(e) = soft(b.runner.step(step(format!("b2:fix:{round}"), "engineer", format!("fix {round}"), prompt, None, None)))? {
+            // What the fix step left half-done stays uncommitted on the branch for the user to see.
+            b.event(format!("fix round {round} gave no answer ({e}); delivering what there is"));
+            return Ok((check, accept_fails, findings));
+        }
         git::commit(&b.run.root, &format!("build_v2: fix round {round}"))?;
         // Re-review the lenses that had something blocking; the others keep their findings.
         lenses = Lens::ALL.into_iter().filter(|l| findings.get(l).is_some_and(|f| f.iter().any(|x| x.severity.blocks()))).collect();

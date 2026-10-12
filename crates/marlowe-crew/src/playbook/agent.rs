@@ -90,6 +90,31 @@ pub fn output_cap(want: u32, window: u32, prompt_tokens: u32) -> u32 {
     want.min(room).max(MIN_OUTPUT)
 }
 
+/// An unfinished step as its per-call checkpoints left it: the conversation, the compaction state
+/// that lives outside its messages, and whether it had read untrusted content.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PartialStep {
+    pub messages: Vec<Message>,
+    /// `Conversation::summary` after the last compaction.
+    pub summary: Option<String>,
+    /// The pinned working set kept beside the summary ([`marlowe_agent::context::PinnedSnapshot`]).
+    pub pinned: Option<String>,
+    pub tainted: bool,
+}
+
+/// One per-call checkpoint of a running step.
+#[derive(Debug, Clone, Copy)]
+pub struct CallCheckpoint<'a> {
+    pub messages: &'a [Message],
+    /// `messages` is the whole conversation (compaction rewrote it), not what one call added.
+    pub full: bool,
+    /// The compaction summary and pinned working set (stored with `full` rows).
+    pub summary: Option<&'a str>,
+    pub pinned: Option<&'a str>,
+    /// The conversation has read untrusted content.
+    pub tainted: bool,
+}
+
 /// What the supervisor wraps around each agent call. Every method has a do-nothing default.
 pub trait StepHooks: Send + Sync {
     /// The stored result of a completed step `key`; a resumed run skips the call.
@@ -132,16 +157,16 @@ pub trait StepHooks: Send + Sync {
     /// checkpointed, so a resumed run asks again.
     fn failed(&self, _spec: &StepSpec, _messages: &[Message], _failure: &StepFailure) {}
 
-    /// The conversation an unfinished step `key` had reached, from its per-call checkpoints
-    /// (design 3.7). A resumed step continues from it instead of starting over; empty when there
-    /// is none.
-    fn partial(&self, _key: &str) -> Vec<Message> {
-        Vec::new()
+    /// What an unfinished step `key` had reached, from its per-call checkpoints (design 3.7). A
+    /// resumed step continues from it instead of starting over; empty when there is none.
+    fn partial(&self, _key: &str) -> PartialStep {
+        PartialStep::default()
     }
 
     /// A per-call checkpoint: the messages one model call or one tool batch added to the step's
-    /// conversation, or (`full`) the whole conversation after compaction rewrote its history.
-    fn checkpoint_call(&self, _spec: &StepSpec, _messages: &[Message], _full: bool) {}
+    /// conversation, or (`full`) the whole conversation and its compaction state after
+    /// compaction rewrote its history.
+    fn checkpoint_call(&self, _spec: &StepSpec, _checkpoint: &CallCheckpoint<'_>) {}
 
     /// The run's one-line current action.
     fn progress(&self, _action: &str) {}
@@ -290,7 +315,10 @@ impl AgentRunner {
         let allow = Self::allowlist(card, spec.tools.as_deref());
         let model = (self.models)(card)?;
         let (sandbox, inner_tools) = self.step_sandbox(spec)?;
-        let tools = CrewTools::new(inner_tools, allow.clone(), sandbox.clone());
+        // The run's taint is read live: a message that reaches the run's inbox mid-step taints
+        // the shells that follow it, not only the next step's.
+        let hooks = self.hooks.clone();
+        let tools = Arc::new(CrewTools::new(inner_tools, allow.clone(), sandbox.clone()).with_live_taint(Arc::new(move || hooks.tainted())));
         let failed = Arc::new(Mutex::new(None));
         let metered = Metered {
             local: model.model.local || model.provider.kind().is_local(),
@@ -302,7 +330,7 @@ impl AgentRunner {
         let system = self.system(card, spec, &sandbox, &allow);
         let prompt_tokens = marlowe_agent::context::estimate_tokens(&system.render_text())
             + marlowe_agent::context::estimate_tokens(&spec.prompt);
-        let mut agent = Agent::new(Arc::new(metered), model.model, Arc::new(tools), system);
+        let mut agent = Agent::new(Arc::new(metered), model.model, tools.clone(), system);
         agent.effort = spec.effort.unwrap_or(card.effort);
         agent.approvals = self.approvals.clone();
         // A sized step gets the room its prompt leaves, not the provider's default (Ollama's is
@@ -319,16 +347,24 @@ impl AgentRunner {
         // A step the run stopped in continues from its per-call checkpoints: completed model
         // calls and tool batches are never repeated.
         let seeded = self.hooks.partial(&spec.key);
-        let resumed = !seeded.is_empty();
-        let stored = seeded.len();
+        let resumed = !seeded.messages.is_empty();
+        let stored = seeded.messages.len();
         if resumed {
-            convo.next_turn = seeded.iter().filter(|m| m.role == Role::User).count() as u32;
-            convo.messages = close_dangling(seeded);
+            convo.next_turn = seeded.messages.iter().filter(|m| m.role == Role::User).count() as u32;
+            convo.messages = close_dangling(seeded.messages);
+            convo.summary = seeded.summary.clone();
+            if let Some(p) = seeded.pinned {
+                convo.ext.insert(marlowe_agent::context::PinnedSnapshot(p));
+            }
+            // What the step read before the run stopped still counts: from its checkpoints, and
+            // from the calls in the history it resumes with.
+            convo.exposure.tainted |= seeded.tainted;
+            convo.recompute_exposure(tools.as_ref());
         }
         agent.observers.push(Arc::new(CallRecorder {
             hooks: self.hooks.clone(),
             spec: spec.clone(),
-            cursor: Mutex::new(stored),
+            state: Mutex::new(RecorderState { cursor: stored, summary: convo.summary.clone() }),
         }));
 
         self.hooks.progress(&spec.label);
@@ -403,25 +439,42 @@ pub fn close_dangling(mut messages: Vec<Message>) -> Vec<Message> {
 struct CallRecorder {
     hooks: Arc<dyn StepHooks>,
     spec: StepSpec,
+    state: Mutex<RecorderState>,
+}
+
+struct RecorderState {
     /// Messages of the conversation below this are stored.
-    cursor: Mutex<usize>,
+    cursor: usize,
+    /// The compaction summary as last stored; a change means compaction rewrote the history.
+    summary: Option<String>,
 }
 
 impl CallRecorder {
     /// Stores what the conversation gained since the last write, plus `next` (the message the
-    /// loop pushes right after the observer returns).
+    /// loop pushes right after the observer returns). After a compaction (the summary changed)
+    /// it stores the whole conversation with the summary and the pinned working set instead.
     fn write(&self, convo: &Conversation, next: Option<Message>) {
-        let mut cursor = self.cursor.lock().unwrap_or_else(|e| e.into_inner());
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let len = convo.messages.len();
-        // Compaction rewrote the history: store all of it as a snapshot.
-        let full = *cursor > len;
-        let mut messages: Vec<Message> = convo.messages[if full { 0 } else { *cursor }..].to_vec();
+        let full = convo.summary != st.summary || st.cursor > len;
+        let mut messages: Vec<Message> = convo.messages[if full { 0 } else { st.cursor }..].to_vec();
         let pushed = next.is_some();
         messages.extend(next);
-        if !messages.is_empty() {
-            self.hooks.checkpoint_call(&self.spec, &messages, full);
+        if !messages.is_empty() || full {
+            let pinned = convo.ext.get::<marlowe_agent::context::PinnedSnapshot>().map(|p| p.0.as_str());
+            self.hooks.checkpoint_call(
+                &self.spec,
+                &CallCheckpoint {
+                    messages: &messages,
+                    full,
+                    summary: convo.summary.as_deref(),
+                    pinned,
+                    tainted: convo.exposure.tainted,
+                },
+            );
         }
-        *cursor = len + usize::from(pushed);
+        st.cursor = len + usize::from(pushed);
+        st.summary = convo.summary.clone();
     }
 }
 

@@ -6,7 +6,8 @@
 //! taken from one side and regenerated mechanically; a merged build that fails, two integrator
 //! rounds, then the serial fallback; a pre-existing failing test that does not block; a flaky
 //! test caught by the baseline's retry; a task stuck on the same failure twice, replanned by the
-//! lead; a security blocker found in review and fixed; the diff waiting for merge approval.
+//! lead; an engineer's NEED_HUB_CHANGE made by the lead and kept; a security blocker found in
+//! review and fixed; the diff waiting for merge approval.
 
 mod common;
 
@@ -86,6 +87,8 @@ const ALPHA_SAFE: &str = "NAME = \"shared\"\n\ndef value():\n    return 1\n";
 #[derive(Default)]
 struct Seen {
     frozen_refusal: bool,
+    t2_took_hub: bool,
+    t2_hub_undone: bool,
     t3_rounds: Vec<bool>,
     security_reviews: Vec<bool>,
 }
@@ -121,8 +124,15 @@ fn script(seen: Arc<Mutex<Seen>>) -> impl Fn(&ChatRequest, usize, &CancelToken) 
                 calls(&[write("registry.txt", "alpha\n"), write("mods/alpha.py", ALPHA_UNSAFE), write("deps.lock", "t1 lock\n")])
             }
         } else if p.starts_with("## Task t2") {
-            if done {
-                answer("Implemented beta.")
+            if p.contains("You changed frozen hub files") {
+                seen.lock().unwrap().t2_hub_undone = true;
+            }
+            if p.contains("The lead changed the hub files you asked for (deps.txt); they are in your worktree now") {
+                // Round 2: the lead's change is in; nothing more to do.
+                seen.lock().unwrap().t2_took_hub = true;
+                answer("Implemented beta; it uses the extra dependency now.")
+            } else if done {
+                answer("Implemented beta.\nNEED_HUB_CHANGE: deps.txt: beta needs the extra dependency")
             } else {
                 calls(&[write("mods/beta.py", "NAME = \"shared\"\n\ndef value():\n    return 2\n"), write("deps.lock", "t2 lock\n")])
             }
@@ -134,6 +144,13 @@ fn script(seen: Arc<Mutex<Seen>>) -> impl Fn(&ChatRequest, usize, &CancelToken) 
                 seen.lock().unwrap().t3_rounds.push(revised);
                 let body = if revised { "import alpha\n\ndef value():\n    return alpha.value() + 2\n" } else { "def value():\n    return 0\n" };
                 calls(&[write("mods/gamma.py", body)])
+            }
+        } else if p.starts_with("## Hub change") {
+            assert!(p.contains("- deps.txt: beta needs the extra dependency"), "{p}");
+            if done {
+                answer("Added extra to deps.txt.")
+            } else {
+                calls(&[write("deps.txt", "base\nleft\nright\nextra\n")])
             }
         } else if p.starts_with("## Replan task t3") {
             answer("gamma.value() must return alpha.value() + 2; import alpha from mods.")
@@ -216,16 +233,19 @@ fn parity_a9_build_v2_runs_a_three_task_dag_end_to_end() {
 
     let seen = seen.lock().unwrap();
     assert!(seen.frozen_refusal, "the engineer's write to a hub file was refused");
+    assert!(seen.t2_took_hub, "the engineer was told the lead's hub change is in its worktree");
+    assert!(!seen.t2_hub_undone, "the lead's hub change never reads as the engineer's own edit");
     assert_eq!(seen.t3_rounds, [false, false, true], "two identical failures, a replan, then the revised round");
     assert_eq!(seen.security_reviews, [true, false], "the blocker was found, fixed, and re-reviewed clean");
 
     let (_, steps) = fx.sup.transcript(&id).unwrap();
     let actions: Vec<String> = steps.iter().map(|s| s.action.clone()).collect();
     let has = |a: &str| actions.iter().any(|x| x.starts_with(a));
-    for want in ["plan", "contract", "task t1 round 1", "task t2 round 1", "integrate t2: build fix 1", "integrate t2: build fix 2", "serial t2", "replan task t3", "review: security", "fix 1"] {
+    for want in ["plan", "contract", "task t1 round 1", "task t2 round 1", "hub change for t2", "task t2 round 2", "integrate t2: build fix 1", "integrate t2: build fix 2", "serial t2", "replan task t3", "review: security", "fix 1"] {
         assert!(has(want), "missing step {want}: {actions:#?}");
     }
     assert!(!has("integrate t2: build fix 3"), "at most two integrator rounds");
+    assert!(!has("task t2 round 3"), "the round after the hub change finishes the task");
 
     for want in ["3 of 3 tasks delivered", "| t2 | serial |", "Gate vs baseline: no new failures", "baseline: 1 failing, 1 flaky", "security 0 finding(s), 0 blocking", "deps.lock regenerated"] {
         assert!(summary.contains(want), "summary lacks {want}:\n{summary}");
@@ -238,7 +258,8 @@ fn parity_a9_build_v2_runs_a_three_task_dag_end_to_end() {
     assert!(matches!(outcome, MergeOutcome::FastForward { .. }), "{outcome:?}");
     let read = |f: &str| std::fs::read_to_string(work.join(f)).unwrap().replace("\r\n", "\n");
     assert_eq!(read("registry.txt"), "core\nalpha\nbeta\ngamma\n", "the contract's hub edit, untouched by the engineer");
-    assert_eq!(read("deps.lock"), "locked base\nlocked left\nlocked right\n", "regenerated, never merged by hand");
+    assert_eq!(read("deps.txt"), "base\nleft\nright\nextra\n", "the lead's hub change, kept");
+    assert_eq!(read("deps.lock"), "locked base\nlocked extra\nlocked left\nlocked right\n", "regenerated, never merged by hand");
     assert_eq!(read("mods/alpha.py"), ALPHA_SAFE);
     assert!(read("mods/beta.py").contains("NAME = \"beta\""), "the serial re-implementation");
     assert!(read("mods/gamma.py").contains("alpha.value() + 2"));

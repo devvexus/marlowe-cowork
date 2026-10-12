@@ -2,6 +2,7 @@
 //! clean context with the diff, each answering with structured findings. Used by build_v2's
 //! stage 6 and on its own for a pending diff (`/security-review` is the security lens alone).
 
+use super::is_stop;
 use super::parse::parse_findings;
 use super::types::{Finding, Lens, Severity};
 use crate::playbook::{StepRunner, StepSpec};
@@ -20,11 +21,8 @@ pub fn checklist(lens: Lens) -> &'static str {
             "wrong results, unhandled inputs and errors, off-by-one, races, broken contracts with callers, behaviour the \
              goal did not ask for, tests that do not test what they claim"
         }
-        Lens::Security => {
-            "untrusted input reaching a shell, an `eval`, a path, a query, a URL or a deserialiser; secrets in code or \
-             logs; missing authorisation; unsafe file permissions; injection of any kind; anything that weakens an \
-             existing check"
-        }
+        // One list with the conductor's `/security-review`.
+        Lens::Security => marlowe_agent::git_prompts::SECURITY_CHECKLIST,
         Lens::Performance => {
             "work that grows worse than the input needs (quadratic loops, repeated parsing, queries in loops), blocking \
              calls on hot paths, unbounded memory or output, needless copies of large data"
@@ -49,10 +47,24 @@ pub fn prompt(lens: Lens, goal: &str, diff: &str) -> String {
     )
 }
 
+/// The non-blocking note a lens leaves when its review cannot be used.
+fn unreadable(lens: Lens, claim: String, reply: String) -> Finding {
+    Finding {
+        lens,
+        severity: Severity::Minor,
+        file: String::new(),
+        line: 0,
+        claim,
+        evidence: reply.chars().take(400).collect(),
+        fix: "review this lens by hand".into(),
+    }
+}
+
 /// Reviews `diff` through each of `lenses` in parallel, step keys `<key>:<lens>`. A reply that
 /// does not parse goes back to its reviewer once with the reason; if it still does not, the
 /// result is one non-blocking note saying so (a review that cannot be read never blocks or
-/// passes silently).
+/// passes silently). A reviewer that fails outright leaves the same note; only a cancel or a
+/// stop is an `Err`.
 pub fn review_diff(
     runner: &dyn StepRunner,
     goal: &str,
@@ -74,7 +86,16 @@ pub fn review_diff(
     let results = runner.parallel(specs);
     let mut out = Vec::new();
     for (lens, r) in lenses.iter().zip(results) {
-        let text = r?.text;
+        // A reviewer that ends without an answer (step limit, provider error) costs its lens, not
+        // the build: it becomes a non-blocking note. Only a cancel or stop ends the run.
+        let text = match r {
+            Ok(r) => r.text,
+            Err(e) if is_stop(&e) => return Err(e),
+            Err(e) => {
+                out.push((*lens, vec![unreadable(*lens, format!("the {} review did not complete ({e})", lens.name()), String::new())]));
+                continue;
+            }
+        };
         let findings = match parse_findings(&text, *lens) {
             Ok(f) => f,
             Err(why) => {
@@ -87,18 +108,14 @@ pub fn review_diff(
                         prompt(*lens, goal, diff),
                         text.chars().take(4_000).collect::<String>()
                     ),
-                ))?;
-                parse_findings(&again.text, *lens).unwrap_or_else(|why| {
-                    vec![Finding {
-                        lens: *lens,
-                        severity: Severity::Minor,
-                        file: String::new(),
-                        line: 0,
-                        claim: format!("the {} review could not be read ({why})", lens.name()),
-                        evidence: again.text.chars().take(400).collect(),
-                        fix: "review this lens by hand".into(),
-                    }]
-                })
+                ));
+                match again {
+                    Err(e) if is_stop(&e) => return Err(e),
+                    Err(e) => vec![unreadable(*lens, format!("the {} review could not be read ({why}; repair: {e})", lens.name()), text)],
+                    Ok(again) => parse_findings(&again.text, *lens).unwrap_or_else(|why| {
+                        vec![unreadable(*lens, format!("the {} review could not be read ({why})", lens.name()), again.text)]
+                    }),
+                }
             }
         };
         out.push((*lens, findings));

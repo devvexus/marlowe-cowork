@@ -71,6 +71,15 @@ fn findings_parse_leniently_and_an_unreadable_reply_is_an_error() {
     assert_eq!(parse_findings(r#"{"findings": [{"severity": "nit", "file": "a", "claim": "c"}]}"#, Lens::Correctness).unwrap().len(), 1);
     assert!(parse_findings(r#"[{"severity": "awful", "claim": "c"}]"#, Lens::Correctness).unwrap_err().contains("severity"));
     assert!(parse_findings("I looked and it seems fine overall", Lens::Correctness).is_err());
+    // "Nothing" is taken on trust only as the whole reply, never from inside one that goes on.
+    assert!(parse_findings("Nothing to report.", Lens::Performance).unwrap().is_empty());
+    for hedged in [
+        "Nothing to report on perf, but the handler passes input to eval, a blocker",
+        "No findings. However the handler passes input to eval.",
+        "",
+    ] {
+        assert!(parse_findings(hedged, Lens::Security).is_err(), "{hedged}");
+    }
     // An array of objects is the array, not its first object.
     assert!(json_value("x [ {\"a\": 1}, {\"a\": 2} ] y").unwrap().is_array());
 }
@@ -185,6 +194,44 @@ fn the_check_excuses_the_baseline_and_retries_new_failures() {
     // A failing build stops the gate and fails without naming a test.
     let s = ShellScript::new(&[("build", &[(false, "error: nope")]), ("test", &[(true, "")])]);
     let c = gate::check(&s, &s.sandbox, &spec(), &Baseline::default()).unwrap();
-    assert_eq!(c.new_failures, ["<build>"]);
+    assert_eq!(c.new_failures, ["<build> #1"]);
     assert!(!s.runs.lock().unwrap().iter().any(|r| r == "test"));
+}
+
+fn lint_spec() -> GateSpec {
+    GateSpec { steps: vec![GateStep { kind: Kind::Lint, command: "lint".into() }] }
+}
+
+#[test]
+fn a_lint_that_already_failed_still_blocks_new_errors() {
+    const ONE: &str = "src/a.py:1:1: F401 'os' imported but unused
+Found 1 error.
+";
+    const TWO: &str = "src/a.py:1:1: F401 'os' imported but unused
+src/b.py:4:5: F821 undefined name 'x'
+Found 2 errors.
+";
+    let s = ShellScript::new(&[("lint", &[(false, ONE)])]);
+    let base = gate::baseline(&s, &s.sandbox, &lint_spec(), "abc").unwrap();
+    assert_eq!(base.failing.len(), 1, "{base:?}");
+    // The same error, moved by an unrelated edit, is still excused.
+    let s = ShellScript::new(&[("lint", &[(false, "src/a.py:3:1: F401 'os' imported but unused
+Found 1 error.
+")])]);
+    assert!(gate::check(&s, &s.sandbox, &lint_spec(), &base).unwrap().green());
+    // A second error is new, though the step failed at baseline too.
+    let s = ShellScript::new(&[("lint", &[(false, TWO)])]);
+    let c = gate::check(&s, &s.sandbox, &lint_spec(), &base).unwrap();
+    assert!(!c.green());
+    assert_eq!(c.new_failures.len(), 1, "{:?}", c.new_failures);
+    assert!(c.new_failures[0].contains("src/b.py F821"), "{:?}", c.new_failures);
+    // Output nothing parses is counted: one error line at baseline excuses one, not two.
+    let s = ShellScript::new(&[("lint", &[(false, "lint error: something odd
+")])]);
+    let base = gate::baseline(&s, &s.sandbox, &lint_spec(), "abc").unwrap();
+    assert_eq!(base.failing, ["<lint> #1"]);
+    let s = ShellScript::new(&[("lint", &[(false, "lint error: something odd
+lint error: another
+")])]);
+    assert_eq!(gate::check(&s, &s.sandbox, &lint_spec(), &base).unwrap().new_failures, ["<lint> #2"]);
 }

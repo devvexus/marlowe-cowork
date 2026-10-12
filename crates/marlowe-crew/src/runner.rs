@@ -12,15 +12,15 @@ use marlowe_agent::{AgentEvent, ApprovalGate, ApprovalReq, Budget, MAX_STEPS};
 use marlowe_mind::{Kind, MemoryIn, ProfileQuery, Provenance, RecallQuery};
 use marlowe_model::{CancelToken, Message, Pricing, Usage};
 use marlowe_proto::{
-    ApprovalDecision, CostQuote, CrewRunStatus, CrewSpent, Dispatch, MemoryScope, PlanDecision, Playbook, ResearchPlan,
+    ApprovalDecision, CostQuote, CrewRunStatus, CrewSpent, Dispatch, MemoryScope, MemoryTrust, PlanDecision, Playbook, ResearchPlan,
     ResearchProgress, RunId, SandboxKind, SessionId,
 };
 
 use crate::playbook::build_v2::{BuildPlan, BuildQuote};
 use crate::playbook::research_v2::{Finding, Recalled};
 use crate::playbook::{
-    self, sandbox_shell, AgentRunner, PlaybookConfig, ResearchIo, ShellResult, StepFailure, StepHooks, StepModel,
-    StepResult, StepSpec,
+    self, sandbox_shell, AgentRunner, CallCheckpoint, PartialStep, PlaybookConfig, ResearchIo, ShellResult, StepFailure,
+    StepHooks, StepModel, StepResult, StepSpec,
 };
 use crate::role::RoleCard;
 use crate::run::{call_line, clip, Run, StepRecord};
@@ -573,12 +573,12 @@ impl StepHooks for Hooks {
         self.inner.update(&self.id, |r| r.current_action = Some(action));
     }
 
-    fn partial(&self, key: &str) -> Vec<Message> {
+    fn partial(&self, key: &str) -> PartialStep {
         self.inner.store().calls(&self.id, key).unwrap_or_default()
     }
 
-    fn checkpoint_call(&self, spec: &StepSpec, messages: &[Message], full: bool) {
-        let _ = self.inner.store().append_call(&self.id, &spec.key, messages, full);
+    fn checkpoint_call(&self, spec: &StepSpec, checkpoint: &CallCheckpoint<'_>) {
+        let _ = self.inner.store().append_call(&self.id, &spec.key, checkpoint);
     }
 }
 
@@ -849,28 +849,41 @@ impl playbook::BuildHost for RunBuild {
         Duration::from_millis(crate::now_ms().saturating_sub(self.created_ms).max(0) as u64)
     }
 
+    /// The memories the plan rests on, trust-labelled. An untrusted one taints the run (the lead
+    /// read it), and their ids are kept as the parents of the build's Result memory.
     fn recall(&self, query: &str) -> Vec<String> {
         let Some(mind) = self.hooks.inner.deps.mind.as_ref() else { return Vec::new() };
         let scope = self.hooks.run().ok().and_then(|r| r.workspace).map(|w| MemoryScope::Project(w.display().to_string()));
-        mind.recall(RecallQuery { text: query.to_string(), scope, limit: 5 })
-            .unwrap_or_default()
-            .into_iter()
-            .map(|h| format!("- ({:?} trust) {}", h.trust, clip(&h.text, 300)))
-            .collect()
+        let hits = mind.recall(RecallQuery { text: query.to_string(), scope, limit: 5 }).unwrap_or_default();
+        if hits.iter().any(|h| h.trust == MemoryTrust::Untrusted) && !self.hooks.tainted() {
+            self.hooks.inner.update(&self.hooks.id, |r| r.tainted = true);
+        }
+        let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
+        if let (false, Ok(json)) = (ids.is_empty(), serde_json::to_string(&ids)) {
+            self.hooks.save_data(RECALLED_KEY, &format!("{} memories recalled for the plan", ids.len()), &json);
+        }
+        hits.into_iter().map(|h| format!("- ({:?} trust) {}", h.trust, clip(&h.text, 300))).collect()
     }
 
-    /// The build's outcome as a Result memory, at the run's trust (worst case over what it read).
+    /// The build's outcome as a Result memory, at the run's trust (worst case over what it read)
+    /// and derived from the memories its plan recalled, so their trust caps it in the store.
     fn remember(&self, text: &str) {
         let Some(mind) = self.hooks.inner.deps.mind.as_ref() else { return };
         let Ok(run) = self.hooks.run() else { return };
-        let _ = mind.remember(MemoryIn {
+        let parents: Vec<String> =
+            self.hooks.completed(RECALLED_KEY).and_then(|r| serde_json::from_str(&r.text).ok()).unwrap_or_default();
+        let memory = MemoryIn {
             text: format!("Crew build run {}: {text}", run.id.short()),
             kind: Kind::Result,
             scope: run.workspace.as_ref().map(|w| MemoryScope::Project(w.display().to_string())).unwrap_or(MemoryScope::Global),
             source: Provenance::Agent { session: format!("crew:{}", run.id), turn: run.step, tainted: run.tainted },
-        });
+        };
+        let _ = mind.remember_derived(memory, parents);
     }
 }
+
+/// The data checkpoint holding the ids of the memories a build's plan recalled.
+const RECALLED_KEY: &str = "b2:recalled";
 
 /// Approvals from a run's tools: the run shows `NeedsYou` while the user decides.
 struct RunGate {

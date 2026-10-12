@@ -126,7 +126,9 @@ pub fn tool_results(req: &ChatRequest) -> String {
 
 // ---------------------------------------------------------------- tools, approvals
 
-/// `read`, `write` (relative to the sandbox root) and `note`; counts every write.
+/// `read`, `write` (relative to the sandbox root) and `note`; counts every write. `bash` only
+/// says it ran (nothing executes; its consequence is the crew policy's), and `fetch` returns a
+/// page and taints the conversation like any untrusted read.
 pub struct FileTools {
     pub root: PathBuf,
     pub writes: Arc<AtomicUsize>,
@@ -134,7 +136,7 @@ pub struct FileTools {
 
 impl ToolHost for FileTools {
     fn specs(&self) -> Vec<ToolSpec> {
-        ["read", "write", "note"]
+        ["read", "write", "note", "bash", "fetch"]
             .iter()
             .map(|n| ToolSpec { name: n.to_string(), description: n.to_string(), input_schema: json!({"type": "object"}) })
             .collect()
@@ -144,6 +146,8 @@ impl ToolHost for FileTools {
         let path = self.root.join(call.args["path"].as_str().unwrap_or("out.txt"));
         match call.name.as_str() {
             "note" => ToolOutcome::ok("noted", "noted"),
+            "bash" => ToolOutcome::ok("ran", "ran"),
+            "fetch" => ToolOutcome::ok("A page from the web.", "fetched"),
             "read" => match std::fs::read_to_string(&path) {
                 Ok(t) => ToolOutcome::ok(t, "read"),
                 Err(e) => ToolOutcome::error(e.to_string()),
@@ -162,6 +166,10 @@ impl ToolHost for FileTools {
 
     fn consequence(&self, _call: &ToolCallReq) -> Consequence {
         Consequence::Free
+    }
+
+    fn taints(&self, call: &ToolCallReq) -> bool {
+        call.name == "fetch"
     }
 }
 
@@ -194,14 +202,14 @@ pub fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
-/// A home with a `tester` role (scratch, `note` and `write`).
+/// A home with a `tester` role (scratch, `note`, `write`, `bash` and `fetch`).
 pub fn home(name: &str) -> PathBuf {
     let home = temp_dir(name);
     let roles = home.join("roles");
     std::fs::create_dir_all(&roles).unwrap();
     std::fs::write(
         roles.join("tester.md"),
-        "---\nname: tester\ndescription: Test role.\ntools: [note, write]\nbudget: {tokens: 100000, steps: 20, usd: 1.0}\n\
+        "---\nname: tester\ndescription: Test role.\ntools: [note, write, bash, fetch]\nbudget: {tokens: 100000, steps: 20, usd: 1.0}\n\
          sandbox: scratch\n---\nDo the task you are given and answer in a few lines.\n",
     )
     .unwrap();

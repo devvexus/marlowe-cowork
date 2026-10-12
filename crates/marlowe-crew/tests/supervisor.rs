@@ -779,9 +779,9 @@ fn a_crew_shell_cannot_push() {
     let sb = Sandbox::create(&home, &run, Some(&work), SandboxKind::Worktree).unwrap();
     let env = sb.child_env();
     let mut want = no_push_git_env(&["origin".into()]);
-    // One build output dir per repository, shared by the run and its children.
-    let shared = marlowe_crew::sandbox::target_dir(&home, sb.origin.as_ref().unwrap());
-    want.push(("CARGO_TARGET_DIR".into(), shared.display().to_string()));
+    // The worktree's own build output dir, under its repository's.
+    let own = marlowe_crew::sandbox::target_dir(&home, sb.origin.as_ref().unwrap(), run.as_str());
+    want.push(("CARGO_TARGET_DIR".into(), own.display().to_string()));
     assert_eq!(env, want);
 
     let crew_git = |args: &[&str]| {

@@ -25,6 +25,11 @@ pub fn commit(dir: &Path, msg: &str) -> Result<bool, CrewError> {
     commit_all(dir, msg)
 }
 
+/// The best common ancestor of HEAD and `branch` at `dir`.
+pub fn merge_base(dir: &Path, branch: &str) -> Result<String, CrewError> {
+    git(dir, &["merge-base", "HEAD", branch])
+}
+
 /// Files changed between `base` and HEAD (committed work only; commit first).
 pub fn changed_since(dir: &Path, base: &str) -> Result<Vec<String>, CrewError> {
     let out = git(dir, &["diff", "--no-ext-diff", "--no-textconv", "--name-only", base, "HEAD"])?;
