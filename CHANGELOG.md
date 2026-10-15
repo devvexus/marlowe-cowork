@@ -4,6 +4,11 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Build disk cap
+
+- **Build folders can no longer grow without bound.** `target\debug` reached 300 GB (1,311 stale `.pdb` files of up to 800 MB) and one M4.6 worktree's build folders 590 GB; about 900 GB of stale build output was deleted. Dev and test builds now carry line tables only (dependencies none), so a test's `.pdb` is a few MB.
+- `scripts/cargo-idle.ps1` checks the build folder at most every 30 minutes: over 60 GB (`MARLOWE_TARGET_CAP_GB`) it drops the incremental caches and every artifact hash but the newest two per crate, and as a last resort the debug folder; worktree build folders (`MarloweCowork-*	arget*`) not built in two days are deleted. Cargo rebuilds anything missing, so a prune only costs build time.
+
 ### First-try probe on the GPU
 
 - **Ollama gets typed tool schemas by default.** The probe (62 cases, dawn:9b and dusk:27b-super, `eval/tool_probe/results/SUMMARY.md`) showed typeless schemas make dusk nest every value (`{"path": {"path": ..}}`): 10.5% strict against 54.8% typed; dawn was level (51.6% / 50.0%). Typed costs about 1,000 prompt tokens on the conductor surface (measured 1.25x chars/3; typeless 1.09x). `MARLOWE_OLLAMA_TYPED_TOOLS=0` sends typeless.

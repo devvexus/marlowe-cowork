@@ -164,6 +164,15 @@ windows-sys = { version = "=0.61.2", features = [
     "Win32_System_Threading",
 ] }
 
+# Disk (2026-10-14): full debug info let target\debug reach 300 GB (1,311 stale .pdb files of up to
+# 800 MB each). Line tables keep panics and backtraces readable; dependencies carry none.
+# scripts/cargo-idle.ps1 also caps target\ and prunes stale artifacts.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # The main-content candidates (marlowe-extract) stay optimised and quiet in dev and test builds:
 # unoptimised they run 10-30x slower and trip the selector's time cap on ordinary pages, and
 # rs-trafilatura prints DEBUG lines to stderr whenever debug assertions are on.
