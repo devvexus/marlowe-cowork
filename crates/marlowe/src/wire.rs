@@ -165,10 +165,11 @@ fn crew_configure(tools: marlowe_exec::BuiltinTools, home: &Path, workspace: Opt
 }
 
 /// The built-ins for a crew sandbox. A `None` sandbox has no writable root: its directory is a
-/// cwd only.
+/// cwd only, and its tools are rooted at the workspace it reads (a read-only workflow agent's
+/// relative paths are the workspace's), with every write asking.
 fn crew_host(sandbox: &Sandbox, workspace: Option<&Path>) -> marlowe_exec::BuiltinTools {
     let tools = match sandbox.kind {
-        SandboxKind::None => marlowe_exec::BuiltinTools::new(None),
+        SandboxKind::None => marlowe_exec::BuiltinTools::new(sandbox.origin.clone().or_else(|| workspace.map(Path::to_path_buf))),
         _ => marlowe_exec::BuiltinTools::new_sandbox(sandbox.root.clone()),
     };
     match workspace {
@@ -369,6 +370,26 @@ mod tests {
         let host = crew_host(&sb, Some(&ws));
         assert!(!host.taints(&call("read", &ws.join("notes.md"))));
         assert!(matches!(host.consequence(&call("write", &ws.join("notes.md"))), marlowe_agent::Consequence::Ask { .. }));
+    }
+
+    /// A read-only workflow agent's host (a `None` sandbox over the workspace): relative paths are
+    /// the workspace's, reads there do not taint, and a write asks.
+    #[test]
+    fn a_read_view_is_rooted_at_the_workspace_and_every_write_asks() {
+        let ws = std::env::temp_dir().join("marlowe-wire-test-read-view");
+        let scratch = std::env::temp_dir().join("marlowe-wire-test-read-view-scratch");
+        let sb = Sandbox { kind: SandboxKind::None, root: scratch.clone(), origin: Some(ws.clone()), branch: None, base: None, repo_digest: None, frozen: Vec::new(), target_dir: None };
+        let raw = crew_host(&sb, Some(&ws));
+        let call = |name: &str, path: &str| marlowe_model::ToolCall {
+            id: "c".into(),
+            name: name.into(),
+            args: serde_json::json!({"path": path, "content": "x"}),
+        };
+        assert!(!raw.taints(&call("read", "crates/lib.rs")), "a relative read is in the workspace");
+        // As a crew step sees it: the sandbox decides, and nothing is writable in this one.
+        let host = marlowe_crew::CrewTools::new(std::sync::Arc::new(raw), vec!["read".into(), "write".into()], sb.clone());
+        assert!(matches!(host.consequence(&call("write", "notes.md")), marlowe_agent::Consequence::Ask { .. }));
+        assert!(matches!(host.consequence(&call("write", &scratch.join("a.txt").display().to_string())), marlowe_agent::Consequence::Ask { .. }));
     }
 
     /// Track J's finding 7: a crew host offers `git` (its consequences are the crew's) and never

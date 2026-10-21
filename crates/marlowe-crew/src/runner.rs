@@ -66,19 +66,31 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
     let spin = |ev: PhaseEvent| inner.emit(CrewEvent::Phase(PhaseEvent { run: Some(id.clone()), ..ev }));
     spin(PhaseEvent::start(PhaseKind::Spinup).detail(run.role.as_str()));
     let began = Instant::now();
+    let want = match run.playbook {
+        Some(Playbook::Build) => SandboxKind::Worktree,
+        Some(Playbook::DeepResearch) => SandboxKind::Scratch,
+        None => card.sandbox,
+    };
+    // A workflow makes its worktree when its first agent that may write starts; until then (and
+    // for good, when its agents only read) it has a scratch directory and reads the workspace.
+    let deferred = run.workflow.is_some() && want == SandboxKind::Worktree;
     let sandbox = match run.sandbox.clone() {
         Some(sb) if sb.root.exists() => sb,
         _ => {
-            let want = match run.playbook {
-                Some(Playbook::Build) => SandboxKind::Worktree,
-                Some(Playbook::DeepResearch) => SandboxKind::Scratch,
-                None => card.sandbox,
-            };
             inner.update(id, |r| r.current_action = Some("preparing the sandbox".into()));
+            let now = if deferred { SandboxKind::Scratch } else { want };
             // A workflow works on the checkout as it is, uncommitted changes included.
-            Sandbox::create_with(&inner.home, id, run.workspace.as_deref(), want, run.workflow.is_some())?
+            Sandbox::create_with(&inner.home, id, run.workspace.as_deref(), now, run.workflow.is_some())?
         }
     };
+    let run_worktree = (deferred && sandbox.kind != SandboxKind::Worktree).then(|| {
+        let (inner, id, workspace) = (inner.clone(), id.clone(), run.workspace.clone());
+        playbook::script::RunWorktree::new(move || {
+            let sb = Sandbox::create_with(&inner.home, &id, workspace.as_deref(), SandboxKind::Worktree, true)?;
+            inner.update(&id, |r| r.sandbox = Some(sb.clone()));
+            Ok(sb)
+        })
+    });
     inner.update(id, |r| r.sandbox = Some(sandbox.clone()));
     spin(PhaseEvent::end(PhaseKind::Spinup, began.elapsed().as_millis() as u64).stage("sandbox"));
 
@@ -152,6 +164,7 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
             workspace: run.workspace.as_deref(),
             workflow: &wf,
             plugins: marlowe_agent::commands::plugin::bundle_roots(Some(&inner.home), run.workspace.as_deref()),
+            worktree: run_worktree,
         };
         return playbook::script::run_workflow(&runner, job, &emit);
     }

@@ -129,7 +129,7 @@ fn job_script(home: &Path, run: &RunId, source: &str, args: Value, resumed_from:
 
 fn go(r: &AgentRunner, home: &Path, run: &RunId, wf: &WorkflowRef) -> (Result<marlowe_proto::Dispatch, CrewError>, Vec<ScriptEvent>) {
     let events = Mutex::new(Vec::new());
-    let job = ScriptJob { home, run, session: None, workspace: None, workflow: wf, plugins: vec![] };
+    let job = ScriptJob { home, run, session: None, workspace: None, workflow: wf, plugins: vec![], worktree: None };
     let out = run_workflow(r, job, &|e| events.lock().unwrap().push(e));
     (out, events.into_inner().unwrap())
 }
@@ -361,7 +361,7 @@ fn parity_x22_a_run_without_hooks_gets_its_sessions_from_the_factory() {
     let src = "META = {\"description\": \"one\"}\ndef main(args):\n    return agent(\"a\")\n";
     let wf = job_script(&home, &run, src, json!({}), None);
     let session = marlowe_proto::SessionId("x22f-s".into());
-    let job = ScriptJob { home: &home, run: &run, session: Some(&session), workspace: None, workflow: &wf, plugins: vec![] };
+    let job = ScriptJob { home: &home, run: &run, session: Some(&session), workspace: None, workflow: &wf, plugins: vec![], worktree: None };
     run_workflow(&r, job, &|_| {}).unwrap();
     assert_eq!(rec.0.lock().unwrap().as_slice(), ["start 0", "stop 0 Done"]);
     assert_eq!(asked.lock().unwrap().as_slice(), [(run.clone(), Some(session))]);
@@ -386,7 +386,7 @@ fn parity_wf8_a_workflow_shares_the_sessions_token_pool() {
     let src = "META = {\"description\": \"loop\"}\ndef main(args):\n    n = 0\n    for i in range(10):\n        if budget.remaining() < 40:\n            break\n        agent(\"step\")\n        n += 1\n    return {\"n\": n, \"total\": budget.total}\n";
     let wf = job_script(&home, &run, src, json!({}), None);
     let events = Mutex::new(Vec::new());
-    let job = ScriptJob { home: &home, run: &run, session: Some(&session), workspace: None, workflow: &wf, plugins: vec![] };
+    let job = ScriptJob { home: &home, run: &run, session: Some(&session), workspace: None, workflow: &wf, plugins: vec![], worktree: None };
     let d = run_workflow(&r, job, &|e| events.lock().unwrap().push(e)).unwrap();
     assert!(d.summary.contains("\"n\": 1") && d.summary.contains("\"total\": 100"), "{}", d.summary);
     assert_eq!(pool.spent(), 70);

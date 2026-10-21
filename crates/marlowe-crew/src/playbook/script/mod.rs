@@ -23,7 +23,7 @@ use marlowe_proto::{Confidence, Dispatch, Finding, RunId, SandboxKind, SessionId
 use marlowe_workflow::journal::{self, AgentRecord, Line, Resume};
 use marlowe_workflow::{AgentCall, AgentResult, Control, Observer, Progress, RunConfig, WfEvent, WorkflowError};
 
-pub use host::{CrewAgentHost, WORKFLOW_ROLE};
+pub use host::{CrewAgentHost, RunWorktree, WORKFLOW_ROLE};
 pub use structured::{WithStructuredOutput, STRUCTURED_OUTPUT};
 
 use crate::playbook::AgentRunner;
@@ -124,6 +124,9 @@ pub struct ScriptJob<'a> {
     pub workflow: &'a WorkflowRef,
     /// Plugin bundle roots for `workflow(name)` inside the script.
     pub plugins: Vec<PathBuf>,
+    /// The run's worktree, made when its first writing agent starts ([`RunWorktree`]); `None`
+    /// when the runner's sandbox is where every agent works.
+    pub worktree: Option<Arc<RunWorktree>>,
 }
 
 /// Progress views of ended runs kept in memory (the rest are rebuilt from their journals).
@@ -205,7 +208,7 @@ pub fn run_workflow(runner: &AgentRunner, job: ScriptJob<'_>, emit: &dyn Fn(Scri
         let _ = ctl_tx.send(Control::Stop);
     });
     let observer = observer_for(&job);
-    let host = CrewAgentHost::new(runner.clone(), job.run.clone(), job.home.to_path_buf(), observer);
+    let host = CrewAgentHost::new(runner.clone(), job.run.clone(), job.home.to_path_buf(), observer, job.worktree.clone());
     let mut obs = JournalObserver { path: journal.clone(), progress: Progress::new(job.run.clone(), name.clone(), meta.phases.clone(), budget_total), run: job.run.clone(), emit };
     crate::playbook::StepRunner::progress(runner, &format!("workflow {name}"));
     let outcome = marlowe_workflow::run(&source, cfg, host, &mut obs, &ctl_rx);
@@ -244,7 +247,8 @@ pub fn run_workflow(runner: &AgentRunner, job: ScriptJob<'_>, emit: &dyn Fn(Scri
             if text.len() > shown.len() {
                 summary.push_str(&format!("\n(The whole value is in the journal: {}.)", journal.display()));
             }
-            let sandbox = crate::playbook::StepRunner::sandbox(runner);
+            let made = job.worktree.as_ref().and_then(|w| w.made());
+            let sandbox = made.as_ref().unwrap_or_else(|| crate::playbook::StepRunner::sandbox(runner));
             let diff = if sandbox.kind == SandboxKind::Worktree { sandbox.diff_summary().ok().filter(|d| !d.files.is_empty()) } else { None };
             Ok(Dispatch { summary, artifacts: vec![journal.display().to_string()], confidence: Confidence::Medium, citations: vec![], diff })
         }

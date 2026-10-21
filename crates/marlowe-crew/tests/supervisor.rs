@@ -111,15 +111,15 @@ fn note_then_answer(text: &'static str) -> impl Fn(&ChatRequest, usize, &CancelT
 
 // ---------------------------------------------------------------- tools, approvals
 
-/// `note` (free, does nothing), `write` (writes under the sandbox root) and `git_diff` (`git diff`
-/// in the sandbox root, as a finder would run it).
+/// `note` (free, does nothing), `write` (writes under the sandbox root), `git_diff` (`git diff`
+/// in the sandbox root, as a finder would run it) and `read` (a file under the root).
 struct TestTools {
     root: PathBuf,
 }
 
 impl ToolHost for TestTools {
     fn specs(&self) -> Vec<ToolSpec> {
-        ["note", "write", "git_diff"]
+        ["note", "write", "git_diff", "read"]
             .iter()
             .map(|n| ToolSpec { name: n.to_string(), description: n.to_string(), input_schema: json!({"type": "object"}) })
             .collect()
@@ -133,6 +133,10 @@ impl ToolHost for TestTools {
                 std::fs::write(&path, call.args["content"].as_str().unwrap_or("")).unwrap();
                 ToolOutcome::ok("wrote", "wrote")
             }
+            "read" => match std::fs::read_to_string(self.root.join(call.args["path"].as_str().unwrap_or(""))) {
+                Ok(text) => ToolOutcome::ok(text, "read"),
+                Err(e) => ToolOutcome::error(e.to_string()),
+            },
             "git_diff" => {
                 let out = Command::new("git").arg("-C").arg(&self.root).arg("diff").output().unwrap();
                 ToolOutcome::ok(format!("[diff]{}[/diff]", String::from_utf8_lossy(&out.stdout)), "diffed")
@@ -147,7 +151,14 @@ impl ToolHost for TestTools {
 }
 
 fn tool_factory() -> CrewToolFactory {
-    Arc::new(|sb: &Sandbox, _ws: Option<&Path>| Arc::new(TestTools { root: sb.root.clone() }) as Arc<dyn ToolHost>)
+    // As the daemon's: a `None` sandbox's tools are rooted at the workspace it reads.
+    Arc::new(|sb: &Sandbox, ws: Option<&Path>| {
+        let root = match sb.kind {
+            SandboxKind::None => sb.origin.clone().or_else(|| ws.map(Path::to_path_buf)).unwrap_or_else(|| sb.root.clone()),
+            _ => sb.root.clone(),
+        };
+        Arc::new(TestTools { root }) as Arc<dyn ToolHost>
+    })
 }
 
 #[derive(Default)]
@@ -1052,7 +1063,7 @@ fn discard_removes_the_worktree_and_its_branch() {
     let run = RunId::new_random();
     let sb = Sandbox::create(&home, &run, Some(&work), SandboxKind::Worktree).unwrap();
     assert_eq!(sb.kind, SandboxKind::Worktree);
-    assert_eq!(sb.root, home.join("worktrees").join(run.as_str()));
+    assert_eq!(sb.root, home.join("worktrees").join(&run.as_str()[..10]), "a short directory: the repository's deepest paths go under it");
     std::fs::write(sb.root.join("scratch.txt"), "x").unwrap();
     assert_eq!(sb.diff_summary().unwrap().files, ["scratch.txt"]);
     assert_eq!(Sandbox::create(&home, &run, Some(&work), SandboxKind::Worktree).unwrap(), sb, "idempotent");
@@ -1351,5 +1362,63 @@ let last = items[n - 1]; // fixed
     assert_eq!(git(&work, &["rev-parse", "HEAD"]), head, "nothing committed to the user's branch");
     assert!(work.join("notes.txt").is_file() && git(&work, &["diff", "--cached", "--name-only"]) == "staged.txt", "the user's pending work is as it was");
     assert!(git(&work, &["for-each-ref", "refs/marlowe-seed"]).is_empty(), "the snapshot ref goes with the worktree");
+    finish(fx, &[&home, work.parent().unwrap()]);
+}
+
+/// A workflow whose agents only read never makes a worktree (one in a git clone hit Windows' path
+/// limit on test fixtures): its agents read the workspace itself, relative paths included.
+#[test]
+fn a_read_only_workflow_in_a_git_repo_makes_no_worktree_and_reads_the_workspace() {
+    let home = home("wf-read-only");
+    std::fs::write(
+        home.join("roles").join("workflow.md"),
+        format!("---
+name: workflow
+description: Test workflow agent.
+tools: [read, write]
+budget: {{tokens: 100000, steps: 20, usd: 1.0}}
+sandbox: worktree
+---
+{CARD_BODY}"),
+    )
+    .unwrap();
+    let (work, _bare) = repo("wf-read-only");
+    let provider = cloud(|req, _, _| {
+        assert!(!req.tools.iter().any(|t| t.name == "write"), "a read-only agent has no write tool");
+        Ok(if after_tool(req) {
+            answer(&format!("read: {}", serde_json::to_string(req.messages.last().unwrap()).unwrap()))
+        } else {
+            call("read", json!({"path": "README.md"}))
+        })
+    });
+    let fx = start(&home, &provider);
+    let source = "META = {\"description\": \"read twice\"}
+def main(args):
+    return parallel([lambda: agent(\"Summarize\", agent_type = \"explore\"), lambda: agent(\"Again\", agent_type = \"explore\")])
+";
+    let script = home.join("wf.star");
+    std::fs::write(&script, source).unwrap();
+    let receipt = fx
+        .sup
+        .dispatch_workflow(None, args("workflow", "workflow t: read", None, Some(&work)), |_run| {
+            Ok(marlowe_proto::WorkflowRef {
+                name: Some("t".into()),
+                script_path: script.display().to_string(),
+                digest: marlowe_workflow::digest(source),
+                args: Value::Null,
+                foreground: false,
+                resumed_from: None,
+            })
+        })
+        .unwrap();
+    let run = wait_status(&fx.sup, &receipt.run_id, CrewRunStatus::Done);
+    assert_eq!(run.sandbox.as_ref().map(|s| s.kind), Some(SandboxKind::Scratch));
+    let journal = std::fs::read_to_string(home.join("workflows").join("runs").join(receipt.run_id.as_str()).join("journal.jsonl")).unwrap();
+    let agents: Vec<&str> = journal.lines().filter(|l| l.contains("\"type\":\"agent\"")).collect();
+    assert_eq!(agents.len(), 2, "{journal}");
+    assert!(agents.iter().all(|l| l.contains("hello")), "both read the workspace's README by its relative path: {journal}");
+    assert!(!home.join("worktrees").exists(), "no worktree");
+    assert!(git(&work, &["branch", "--list", "crew/*"]).is_empty() && git(&work, &["worktree", "list"]).lines().count() == 1);
+    assert!(run.result.and_then(|d| d.diff).is_none());
     finish(fx, &[&home, work.parent().unwrap()]);
 }

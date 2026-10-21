@@ -84,9 +84,21 @@ pub fn branch_name(run: &RunId) -> String {
     format!("crew/{run}")
 }
 
-/// `<home>\worktrees\<run-id>`.
+/// `<home>\worktrees\<short run id>` ([`short_dir`]).
 pub fn worktree_path(home: &Path, run: &RunId) -> PathBuf {
-    home.join("worktrees").join(run.as_str())
+    home.join("worktrees").join(short_dir(run.as_str()))
+}
+
+/// A worktree's directory name: a run id's first 10 hex digits and whatever follows the id
+/// (`-a3`, `-<task>`). A repository's deepest files sit under it, so every character here counts
+/// against Windows' 260-character path limit.
+pub fn short_dir(id: &str) -> String {
+    let hex = id.chars().take_while(char::is_ascii_hexdigit).count();
+    if hex >= 32 {
+        format!("{}{}", &id[..10], &id[32..])
+    } else {
+        id.to_string()
+    }
 }
 
 /// The ref that keeps a seeded worktree's snapshot commit (and marks the sandbox as seeded).
@@ -176,7 +188,8 @@ pub fn is_git_repo(path: &Path) -> bool {
 /// commands also pass `--no-ext-diff --no-textconv`.
 pub(crate) fn git_cmd(dir: &Path) -> Command {
     let mut cmd = Command::new("git");
-    cmd.args(["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]).arg("-C").arg(dir);
+    // `core.longpaths`: a worktree under the profile is deeper than the checkout it copies.
+    cmd.args(["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.longpaths=true"]).arg("-C").arg(dir);
     for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_EXTERNAL_DIFF", "GIT_SSH_COMMAND"] {
         cmd.env_remove(var);
     }
@@ -437,7 +450,7 @@ impl Sandbox {
         let (origin, _, _) = self.worktree_parts()?;
         let origin = origin.to_path_buf();
         let name = format!("{}-{}", run.as_str(), safe_name(task));
-        let root = home.join("worktrees").join(&name);
+        let root = home.join("worktrees").join(short_dir(&name));
         let branch = format!("crew/{name}");
         let branch_ref = format!("refs/heads/{branch}");
         let branch_exists = git(&origin, &["rev-parse", "--verify", "--quiet", &branch_ref]).is_ok();
@@ -457,7 +470,7 @@ impl Sandbox {
                 head
             }
         };
-        let target = target_dir(home, &origin, &name);
+        let target = target_dir(home, &origin, &short_dir(&name));
         Ok(Sandbox {
             kind: SandboxKind::Worktree,
             root,
