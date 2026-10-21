@@ -83,6 +83,12 @@ impl Emitter {
 
     /// The bytes for one frame. Separate from the I/O so it can be tested.
     pub fn frame(&mut self, buf: &Buffer, plan: Vec<Placed>) -> Vec<u8> {
+        // No image on screen and none to place (almost every frame): nothing to remember, and
+        // the whole buffer is not copied.
+        if plan.is_empty() && self.shown.is_empty() {
+            self.prev = None;
+            return Vec::new();
+        }
         // A resize clears the terminal: nothing is on screen any more.
         if self.prev.as_ref().is_some_and(|p| p.area != buf.area) {
             self.shown.clear();
@@ -174,6 +180,31 @@ mod tests {
         assert_eq!(count(&e.frame(&buf2, vec![p]), b"\x1bPb"), 1);
     }
 
+    #[test]
+    fn a_live_row_changing_elsewhere_never_resends_a_strip() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 6));
+        let s = strip(b'd');
+        let mut e = Emitter::default();
+        let at = Placed { x: 2, y: 1, cols: 4, strip: Arc::clone(&s) };
+        assert_eq!(count(&e.frame(&buf, vec![at.clone()]), b"\x1bPd"), 1);
+        // A spinner and a timer on the live row, every frame: the strip stays where it is.
+        for i in 0..50 {
+            buf.set_string(2, 5, format!("working {i}"), ratatui::style::Style::default());
+            assert!(e.frame(&buf, vec![at.clone()]).is_empty(), "frame {i} resent the image");
+        }
+    }
+
+    #[test]
+    fn frames_without_images_keep_no_copy_of_the_screen() {
+        let buf = Buffer::empty(Rect::new(0, 0, 20, 5));
+        let mut e = Emitter::default();
+        assert!(e.frame(&buf, vec![]).is_empty());
+        assert!(e.prev.is_none());
+        // The first strip after that is still sent.
+        let p = Placed { x: 0, y: 0, cols: 2, strip: strip(b'e') };
+        assert_eq!(count(&e.frame(&buf, vec![p]), b"\x1bPe"), 1);
+        assert!(e.prev.is_some());
+    }
     #[test]
     fn a_resize_forgets_what_was_on_screen() {
         let mut e = Emitter::default();

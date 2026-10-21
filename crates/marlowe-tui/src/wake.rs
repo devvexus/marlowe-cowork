@@ -271,6 +271,25 @@ impl State {
         self.booting() || self.wake.speaking() || self.activity().moving()
     }
 
+    /// How fast the run loop redraws with no input: the boot at its own pace, anything live (a
+    /// turn, the voice) at the display's refresh rate, a still screen once a second.
+    pub fn cadence(&self) -> crate::pacing::Cadence {
+        use crate::pacing::Cadence;
+        if self.booting() {
+            Cadence::Boot
+        } else if self.animating() || self.live.is_some() {
+            Cadence::Live
+        } else {
+            Cadence::Idle
+        }
+    }
+
+    /// `max_fps` from the settings: the most frames a second to draw (unset: the display's rate).
+    pub fn max_fps(&self) -> Option<u32> {
+        let n = self.code.settings.as_ref()?.get("max_fps")?.as_u64()?;
+        Some(n.min(u64::from(u32::MAX)) as u32)
+    }
+
     /// Requests sent after every Welcome, for the boot lines, the rail and the meter.
     pub(crate) fn wake_probes(&mut self, out: &mut Vec<Request>) {
         self.wake.expected_errors = vec![NO_MEMORY, NO_SENTINEL, NO_SENTINEL, NO_VOICE, NO_CREW];

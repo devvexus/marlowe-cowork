@@ -148,6 +148,8 @@ Parallel tracks (design `docs/research/m46-design.md` sections 7-8) plug in with
 
 Between the request leaving and the engine's first frame (`Wire`): the provider emits `StreamEvent::Sent`; the loop opens `Prefill` (an estimate) and the daemon's `live::Watch` thread publishes ephemeral progress. A cold load is the runners' real GPU-memory growth against the planner's predicted bytes (`~` total), ended by the engine listing the model or the first frame; no per-process data means no bar. The prefill estimate uses the stored `prefill_tok_s:<model>` (updated from every call's engine timings), is capped at 99%, and is replaced by `prompt_eval_count` / `prompt_eval_duration` at `Usage`; no stored rate means elapsed only. A wait is named (`waiting for the GPU - crew run <id>`) only when a crew run is streaming on the same model. `Load`, `Prefill` and `Wire` stages nest under `Wire` in the spans.
 
+Frames: the TUI draws a frame the moment an event arrives, at most once per display refresh (`pacing.rs`; `display_refresh_hz` from the primary monitor, 60 in a classic console, `max_fps` lowers it), ticks at that rate while a turn or the voice is live, and once a second when still. The conversation's rows are cached per entry (`layout_cache.rs`, keyed on content, fold, gap, live flag, width, theme, diff), so a streaming frame lays out the last entry and copies out only the rows on screen; images are applied to that window afterwards and are never re-sent for a change elsewhere.
+
 ## Crew and sandbox model
 
 An agent is a role card (`roles/*.md`, overridden by `<home>\roles\*.md`: slot, effort, tool allowlist, budget, sandbox kind, instructions), and that is all. Depth 1: crew runs never get `dispatch`.

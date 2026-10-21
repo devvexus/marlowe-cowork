@@ -261,6 +261,8 @@ pub struct Coding {
     pub cost: Option<CostReport>,
     pub instructions: Option<Vec<crate::coding::InstructionFile>>,
     pub tool_detail: HashMap<String, ToolDetail>,
+    /// Bumped whenever a tool call's diff may have changed: the transcript's layout is keyed on it.
+    pub detail_gen: u64,
     /// The live events carry one line per call, so the arguments and results come from the stored
     /// transcript, asked for once a turn ends: the session whose details are on the way.
     pub detail_refresh: Option<marlowe_proto::SessionId>,

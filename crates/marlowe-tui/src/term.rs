@@ -27,6 +27,7 @@ use crate::images::Emitter;
 use crate::links::LinkEmitter;
 use crate::local;
 use crate::osc;
+use crate::pacing::Pacer;
 use crate::render;
 use crate::state::{ClientEvent, State};
 use crate::TuiError;
@@ -123,7 +124,10 @@ pub fn run(client: Client, mut state: State, theme: Theme) -> Result<(), TuiErro
     }
     // Before the input thread exists: the terminal's answers arrive as input.
     let images = start_images();
+    // Waits of a few milliseconds (a frame at 144 Hz) are real ones, not rounded to 15.6 ms.
+    let timer = marlowe_os::console::FineTimer::start();
     let result = event_loop(&client, &mut state, &theme, images, ansi);
+    drop(timer);
     restore(enhanced);
     if result.is_ok() {
         // A clean goodbye: stop everything, or keep running if the user chose that.
@@ -173,8 +177,10 @@ fn event_loop(
     let mut emitter = Emitter::default();
     let mut links = LinkEmitter::default();
     let mut title = String::new();
-    // Pointer motion that lands on the same target as before changes nothing on screen: it is
-    // applied without a frame. Anything else, or the frame interval running out, draws.
+    // A change is drawn the moment it arrives, at most once per display refresh: the first event
+    // after a quiet spell draws at once and a burst becomes one frame ([`crate::pacing`]). Pointer
+    // motion that lands on the same target as before changes nothing on screen and draws nothing.
+    let mut pacer = Pacer::detect();
     let mut dirty = true;
     let mut drawn = Instant::now();
     loop {
@@ -182,15 +188,9 @@ fn event_loop(
         send_all(client, state.on_tick());
         send_all(client, state.on_idle());
         run_effects(state, &local_tx, &mut term)?;
-        // The boot and the voice meter move at ~30 fps; a turn at ~11; otherwise once a second.
-        let wait = if state.booting() || state.wake.speaking() {
-            33
-        } else if state.animating() {
-            90
-        } else {
-            1_000
-        };
-        if dirty || drawn.elapsed() >= Duration::from_millis(wait) {
+        pacer.set_cap(state.max_fps());
+        let cadence = state.cadence();
+        if pacer.until_draw(drawn.elapsed(), dirty, cadence).is_zero() {
             draw(&mut term, state, theme, typeset, &mut emitter, &mut links, ansi)?;
             drawn = Instant::now();
             dirty = false;
@@ -205,7 +205,7 @@ fn event_loop(
         if state.quit {
             return Ok(());
         }
-        let left = Duration::from_millis(wait).saturating_sub(drawn.elapsed());
+        let left = pacer.until_draw(drawn.elapsed(), dirty, cadence);
         // The clock is re-read before anything is applied: the approval type-ahead guard compares
         // a key's arrival with the modal's.
         select! {

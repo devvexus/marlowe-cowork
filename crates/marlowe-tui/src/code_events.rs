@@ -26,6 +26,7 @@ impl State {
         d.started = summary.to_string();
         if diff.is_some() {
             d.diff = diff;
+            self.code.detail_gen += 1;
         }
     }
 
@@ -39,6 +40,7 @@ impl State {
         d.output = rest.to_string();
         if d.diff.is_none() && crate::diff::looks_like_diff(rest) {
             d.diff = crate::diff::parse_unified(rest);
+            self.code.detail_gen += 1;
         }
         // Past a session's worth of calls the oldest detail goes.
         if self.code.tool_detail.len() > 2_000 {
@@ -87,6 +89,7 @@ impl State {
             }
             self.code.tool_detail.insert(id, d);
         }
+        self.code.detail_gen += 1;
         let ids: Vec<String> = self
             .entries
             .iter()

@@ -166,3 +166,92 @@ pub fn on_interrupt(f: impl Fn() + Send + Sync + 'static) -> Result<(), OsError>
 pub fn query(_request: &[u8], _done: impl Fn(&str) -> bool, _timeout: Duration) -> Result<String, OsError> {
     Err(OsError::Unsupported("terminal queries"))
 }
+
+/// The refresh rate of the primary display, in Hz; 60 when it cannot be asked or says nothing
+/// useful (0 and 1 mean "hardware default" to the display driver).
+///
+/// The primary monitor's current mode (`EnumDisplaySettingsW`), not the one the terminal window is
+/// on: Windows Terminal hides the console window, so there is no window to ask about. A frame
+/// rate above what the window's own monitor shows is wasted, never wrong.
+pub fn display_refresh_hz() -> u32 {
+    #[cfg(windows)]
+    {
+        use windows::core::PCWSTR;
+        use windows::Win32::Graphics::Gdi::{EnumDisplaySettingsW, DEVMODEW, ENUM_CURRENT_SETTINGS};
+        let mut mode = DEVMODEW { dmSize: std::mem::size_of::<DEVMODEW>() as u16, ..Default::default() };
+        // SAFETY: a null device name means the current display; `mode` is a valid out pointer with
+        // `dmSize` set, as the call requires.
+        let ok = unsafe { EnumDisplaySettingsW(PCWSTR::null(), ENUM_CURRENT_SETTINGS, &mut mode) };
+        if ok.as_bool() {
+            return sane_refresh_hz(mode.dmDisplayFrequency);
+        }
+    }
+    FALLBACK_REFRESH_HZ
+}
+
+const FALLBACK_REFRESH_HZ: u32 = 60;
+
+/// A driver's reported rate made usable: 0 and 1 are "default", and nothing real is past 1 kHz.
+pub fn sane_refresh_hz(reported: u32) -> u32 {
+    match reported {
+        0 | 1 => FALLBACK_REFRESH_HZ,
+        hz => hz.min(1_000),
+    }
+}
+
+/// Asks Windows for 1 ms timer granularity while the guard lives, so a wait of a few milliseconds
+/// (one frame at 144 Hz) is not rounded up to the default 15.6 ms. Nothing off Windows.
+pub struct FineTimer {
+    #[cfg(windows)]
+    on: bool,
+}
+
+#[cfg(windows)]
+#[link(name = "winmm")]
+extern "system" {
+    fn timeBeginPeriod(period: u32) -> u32;
+    fn timeEndPeriod(period: u32) -> u32;
+}
+
+impl FineTimer {
+    pub fn start() -> FineTimer {
+        #[cfg(windows)]
+        {
+            // SAFETY: a plain call into winmm with a period the system supports; undone in `drop`.
+            let on = unsafe { timeBeginPeriod(1) } == 0;
+            FineTimer { on }
+        }
+        #[cfg(not(windows))]
+        FineTimer {}
+    }
+}
+
+#[cfg(windows)]
+impl Drop for FineTimer {
+    fn drop(&mut self) {
+        if self.on {
+            // SAFETY: pairs the successful `timeBeginPeriod(1)` in `start`.
+            unsafe {
+                timeEndPeriod(1);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_drivers_default_rate_is_sixty() {
+        assert_eq!(sane_refresh_hz(0), 60);
+        assert_eq!(sane_refresh_hz(1), 60);
+        assert_eq!(sane_refresh_hz(144), 144);
+        assert_eq!(sane_refresh_hz(100_000), 1_000);
+    }
+
+    #[test]
+    fn the_display_is_never_reported_as_zero() {
+        assert!(display_refresh_hz() >= 24);
+    }
+}

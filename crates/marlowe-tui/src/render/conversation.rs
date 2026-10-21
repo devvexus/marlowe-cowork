@@ -9,6 +9,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::{hit, hovered, ink, lit, note_style, put};
+use crate::layout_cache::TranscriptCache;
 use crate::state::{pick_thought, Conn, Entry, Focus, Mark, Pin, State, Target, ToolStatus, Viewport};
 use crate::text;
 
@@ -33,36 +34,49 @@ pub fn draw(full: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     }
     // Text column: padding on the left, one blank column and the scrollbar on the right.
     let tw = r.width.saturating_sub(PAD + 2) as usize;
-    let (mut lines, maths, marks) = transcript(state, tw, theme);
-    if lines.is_empty() {
+    // The entries' lines come from the layout cache (only what changed is laid out again); what
+    // follows them (the pending message, the queue, the wait) is a few lines, built each frame.
+    let mut cache = state.layout.borrow_mut();
+    sync(&mut cache, state, tw, theme);
+    let tail = tail_lines(state, tw, theme, cache.lines.is_empty());
+    let base = cache.lines.len();
+    let total = base + tail.len();
+    if total == 0 {
         state.marks.borrow_mut().clear();
         empty_state(r, state, theme, buf);
         return;
     }
     let h = r.height as usize;
-    let total = lines.len();
     let max = total.saturating_sub(h);
     // A fold toggled since the last frame: its marker's line now, and the row it was on.
     let anchor = state
         .anchor
         .take()
         .filter(|a| a.epoch == state.epoch)
-        .and_then(|a| marks.iter().find(|m| m.entry == a.entry).map(|m| (m.line, a.row)));
+        .and_then(|a| cache.marks.iter().find(|m| m.entry == a.entry).map(|m| (m.line, a.row)));
     let start = view_top(state, (r.width, r.height), total, max, anchor);
     // Past the tail the reader can still scroll up to the first line: the range runs from here.
     let past = state.viewport.get().pin == Pin::Tail;
     state.scroll_max.set(if past { start + state.scroll } else { max });
     let scroll = max.saturating_sub(start);
+    // Only the rows on screen are copied out of the cache.
+    let mut window: Vec<Line<'static>> = (start.min(total)..(start + h).min(total))
+        .map(|i| if i < base { cache.lines[i].clone() } else { tail[i - base].clone() })
+        .collect();
     if let Some(svc) = marlowe_typeset::installed() {
         let origin = (r.x + PAD, r.y);
-        typeset_images(&mut lines, &maths, svc, origin, start, h, tw, theme);
+        typeset_images(&mut window, &cache.maths, svc, (origin, start, total), h, tw, theme);
     }
     // The Conversation box's cursor: the fold marker Enter acts on.
     let keys = state.focus == Focus::Conversation && state.overlay.is_none() && state.approvals.is_empty();
+    let marks = cache.marks.clone();
+    drop(cache);
     let cursor = if keys { pick_thought(&marks, start, h, state.thought) } else { None };
-    for (i, l) in lines.iter().skip(start).take(h).enumerate() {
+    for (i, l) in window.iter().enumerate() {
         let y = r.y + i as u16;
-        match marks.iter().find(|m| m.line == start + i) {
+        // Marks are in line order.
+        let at = marks.partition_point(|m| m.line < start + i);
+        match marks.get(at).filter(|m| m.line == start + i) {
             Some(m) => {
                 let on = cursor == Some(m.entry);
                 marker_row(state, buf, (r.x + PAD, y, tw as u16), l.clone(), m.entry, on, theme)
@@ -180,21 +194,24 @@ fn scrollbar(r: Rect, total: usize, h: usize, start: usize, max: usize, theme: &
 
 /// Display formulas on screen that have a typeset image: the grid rows give way to it.
 ///
-/// The image fills exactly the rows the grid layout reserved, so nothing moves when it lands.
-/// Until it does, the block shows the held-maths placeholder over the same rows rather than the
-/// grid, so a formula appears once. One Typst refuses keeps its grid rows.
-#[allow(clippy::too_many_arguments)]
+/// `window` is the pane's rows; `at` is the pane's origin, the transcript line of its first row and
+/// the transcript's length. The image fills exactly the rows the grid layout reserved, so nothing
+/// moves when it lands. Until it does, the block shows the held-maths placeholder over the same
+/// rows rather than the grid, so a formula appears once. One Typst refuses keeps its grid rows.
 fn typeset_images(
-    lines: &mut [Line<'static>],
+    window: &mut [Line<'static>],
     maths: &[MathBlock],
     svc: &marlowe_typeset::Service,
-    origin: (u16, u16),
-    start: usize,
+    at: ((u16, u16), usize, usize),
     h: usize,
     tw: usize,
     theme: &Theme,
 ) {
     use marlowe_typeset::{Job, Slot};
+    let (origin, start, total) = at;
+    // The window's row for a transcript line, when it is on screen.
+    let rows = window.len();
+    let row = move |line: usize| line.checked_sub(start).filter(|r| *r < rows);
     for b in maths {
         let Some(markup) = &b.formula.typst else { continue };
         // The grid's colour: an explicit one, or the terminal's own foreground for the default.
@@ -204,7 +221,7 @@ fn typeset_images(
             _ => continue,
         };
         let end = b.line + b.rows;
-        if end <= start || b.line >= start + h || end > lines.len() {
+        if end <= start || b.line >= start + h || end > total {
             continue;
         }
         // The grid's rows, and the text column's width from the block's column: a display block
@@ -215,23 +232,27 @@ fn typeset_images(
         match svc.get(&job) {
             Slot::Failed => {}
             Slot::Pending => {
-                lines[b.line] = Line::from(vec![
-                    Span::raw(" ".repeat(b.col)),
-                    Span::styled(markdown::MATHS_PLACEHOLDER, Style::default().fg(theme.speech()).add_modifier(Modifier::DIM)),
-                ]);
-                for l in &mut lines[b.line + 1..end] {
-                    *l = Line::default();
+                for line in b.line..end {
+                    let Some(r) = row(line) else { continue };
+                    window[r] = if line == b.line {
+                        Line::from(vec![
+                            Span::raw(" ".repeat(b.col)),
+                            Span::styled(markdown::MATHS_PLACEHOLDER, Style::default().fg(theme.speech()).add_modifier(Modifier::DIM)),
+                        ])
+                    } else {
+                        Line::default()
+                    };
                 }
             }
             Slot::Ready(img) => {
-                for (k, l) in lines[b.line..end].iter_mut().enumerate() {
-                    *l = Line::default();
-                    let at = b.line + k;
+                for k in 0..b.rows {
+                    let Some(r) = row(b.line + k) else { continue };
+                    window[r] = Line::default();
                     let strip = &img.strips[k];
-                    if at >= start && at < start + h && !strip.is_empty() {
+                    if !strip.is_empty() {
                         crate::images::place(crate::images::Placed {
                             x: origin.0 + b.col as u16,
-                            y: origin.1 + (at - start) as u16,
+                            y: origin.1 + r as u16,
                             cols: img.cols.min(cols as u16),
                             strip: std::sync::Arc::clone(strip),
                         });
@@ -242,62 +263,76 @@ fn typeset_images(
     }
 }
 
-/// The whole transcript as styled lines wrapped to `width`, the display formulas in Marlowe's
-/// replies that an image may replace, and where each foldable reasoning block's marker is.
-pub(super) fn transcript(state: &State, width: usize, theme: &Theme) -> (Vec<Line<'static>>, Vec<MathBlock>, Vec<Mark>) {
-    let mut maths: Vec<MathBlock> = Vec::new();
-    let mut marks: Vec<Mark> = Vec::new();
-    let mut out: Vec<Line<'static>> = Vec::new();
-    let mut prev: Option<&Entry> = None;
-    // The entry still being written: its unclosed maths is held behind a placeholder.
-    let streaming = state.live.as_ref().map(|_| state.entries.len().saturating_sub(1));
-    for (idx, e) in state.entries.iter().enumerate() {
-        // An expanded reasoning block ends with a blank row, so the tool call under it does not
-        // read as one more line of it.
-        let after_open_thought = idx > 0
-            && matches!(prev, Some(Entry::Thinking { text, .. }) if !text.trim().is_empty())
-            && state.thought_open(idx - 1);
-        let gap = match (prev, e) {
-            (None, _) => false,
-            (Some(_), Entry::User { .. }) => true,
-            (Some(Entry::User { .. }), _) => false,
-            _ if after_open_thought => true,
-            (Some(Entry::Tool { .. } | Entry::Thinking { .. }), Entry::Prose { .. }) => true,
-            (Some(Entry::Prose { .. }), Entry::Tool { .. } | Entry::Thinking { .. }) => true,
-            _ => false,
-        };
-        if gap {
-            out.push(Line::default());
-        }
-        if let Entry::Prose { text } = e {
-            // Marlowe's prose, with the position of each display formula kept.
-            let base = Style::default().fg(theme.speech());
-            let (lines, found) = markdown::render_prose_blocks(text, width, theme, base, streaming == Some(idx));
-            let at = out.len();
-            maths.extend(found.into_iter().map(|mut b| {
-                b.line += at;
-                b
-            }));
-            out.extend(lines);
-        } else {
-            if matches!(e, Entry::Thinking { text, .. } if !text.trim().is_empty()) {
-                marks.push(Mark { entry: idx, line: out.len() });
-            }
-            entry_lines(e, idx, state, width, theme, streaming == Some(idx), &mut out);
-        }
-        prev = Some(e);
+/// Whether a blank row goes before entry `idx`.
+fn gap_before(state: &State, idx: usize, prev: Option<&Entry>, e: &Entry) -> bool {
+    // An expanded reasoning block ends with a blank row, so the tool call under it does not
+    // read as one more line of it.
+    let after_open_thought = idx > 0
+        && matches!(prev, Some(Entry::Thinking { text, .. }) if !text.trim().is_empty())
+        && state.thought_open(idx - 1);
+    match (prev, e) {
+        (None, _) => false,
+        (Some(_), Entry::User { .. }) => true,
+        (Some(Entry::User { .. }), _) => false,
+        _ if after_open_thought => true,
+        (Some(Entry::Tool { .. } | Entry::Thinking { .. }), Entry::Prose { .. }) => true,
+        (Some(Entry::Prose { .. }), Entry::Tool { .. } | Entry::Thinking { .. }) => true,
+        _ => false,
     }
-    if let Some(p) = &state.pending_user {
-        if !out.is_empty() {
+}
+
+/// One entry's rows (its gap first), with the display formulas and fold markers in them. `live`
+/// is the entry still being written: its unclosed maths is held behind a placeholder.
+#[allow(clippy::too_many_arguments)]
+fn render_entry(
+    state: &State,
+    idx: usize,
+    e: &Entry,
+    gap: bool,
+    live: bool,
+    width: usize,
+    theme: &Theme,
+    out: &mut Vec<Line<'static>>,
+    maths: &mut Vec<MathBlock>,
+    marks: &mut Vec<Mark>,
+) {
+    if gap {
+        out.push(Line::default());
+    }
+    if let Entry::Prose { text } = e {
+        // Marlowe's prose, with the position of each display formula kept.
+        let base = Style::default().fg(theme.speech());
+        let (lines, found) = markdown::render_prose_blocks(text, width, theme, base, live);
+        let at = out.len();
+        maths.extend(found.into_iter().map(|mut b| {
+            b.line += at;
+            b
+        }));
+        out.extend(lines);
+    } else {
+        if matches!(e, Entry::Thinking { text, .. } if !text.trim().is_empty()) {
+            marks.push(Mark { entry: idx, line: out.len() });
+        }
+        entry_lines(e, idx, state, width, theme, live, out);
+    }
+}
+
+/// The rows after the entries: the message just sent, what is queued behind the turn, and the
+/// wait for the first word. `empty` is whether nothing is above them.
+fn tail_lines(state: &State, width: usize, theme: &Theme, empty: bool) -> Vec<Line<'static>> {
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let gap = |out: &mut Vec<Line<'static>>| {
+        if !(empty && out.is_empty()) {
             out.push(Line::default());
         }
+    };
+    if let Some(p) = &state.pending_user {
+        gap(&mut out);
         user_lines(p, "you", ink(Ink::Dim, theme), width, theme, &mut out);
     }
     // Typed while the model works: held until it reaches a step boundary.
     for q in state.code.queue.iter().map(|q| q.text.as_str()) {
-        if !out.is_empty() {
-            out.push(Line::default());
-        }
+        gap(&mut out);
         let first = q.lines().next().unwrap_or("");
         let more = if q.lines().count() > 1 { " …" } else { "" };
         out.push(Line::from(vec![
@@ -318,6 +353,72 @@ pub(super) fn transcript(state: &State, width: usize, theme: &Theme) -> (Vec<Lin
             Span::styled("thinking…", ink(Ink::Dim, theme)),
         ]));
     }
+    out
+}
+
+/// Brings the cache up to date with the entries. Every entry whose key is unchanged keeps its
+/// rows; from the first one that changed, the rest are laid out again (their positions moved).
+/// Streaming changes the last entry, so a streaming frame lays out one entry.
+fn sync(cache: &mut TranscriptCache, state: &State, width: usize, theme: &Theme) {
+    cache.reset_unless(width, theme, state.no_layout_cache);
+    let streaming = state.live.as_ref().map(|_| state.entries.len().saturating_sub(1));
+    let mut prev: Option<&Entry> = None;
+    let mut same = true;
+    let mut laid = 0;
+    for (idx, e) in state.entries.iter().enumerate() {
+        let gap = gap_before(state, idx, prev, e);
+        let live = streaming == Some(idx);
+        let key = entry_key(state, idx, e, gap, live);
+        prev = Some(e);
+        if same && cache.key_at(idx) == Some(key) {
+            continue;
+        }
+        if same {
+            same = false;
+            cache.cut(idx);
+        }
+        let (lines, maths, marks) = cache.parts();
+        render_entry(state, idx, e, gap, live, width, theme, lines, maths, marks);
+        cache.seal(key);
+        laid += 1;
+    }
+    if same {
+        cache.cut(state.entries.len());
+    }
+    cache.laid = laid;
+}
+
+/// What an entry's rows depend on besides the width and the theme (a change of either clears the
+/// cache): its content, its place (fold state, the blank row before it, whether it is still being
+/// written) and an edit's diff.
+fn entry_key(state: &State, idx: usize, e: &Entry, gap: bool, live: bool) -> u64 {
+    let mut h = crate::layout_cache::Hasher::default();
+    h.entry(e);
+    h.u64(u64::from(gap) | u64::from(live) << 1 | u64::from(state.thought_open(idx)) << 2);
+    h.u64(idx as u64);
+    if let Entry::Tool { call_id, .. } = e {
+        if state.code.tool_detail.get(call_id).is_some_and(|d| d.diff.is_some()) {
+            h.u64(state.code.detail_gen);
+        }
+    }
+    h.finish()
+}
+
+/// The whole transcript laid out from scratch: the reference the cache must equal.
+#[cfg(test)]
+fn transcript(state: &State, width: usize, theme: &Theme) -> (Vec<Line<'static>>, Vec<MathBlock>, Vec<Mark>) {
+    let mut maths: Vec<MathBlock> = Vec::new();
+    let mut marks: Vec<Mark> = Vec::new();
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut prev: Option<&Entry> = None;
+    let streaming = state.live.as_ref().map(|_| state.entries.len().saturating_sub(1));
+    for (idx, e) in state.entries.iter().enumerate() {
+        let gap = gap_before(state, idx, prev, e);
+        render_entry(state, idx, e, gap, streaming == Some(idx), width, theme, &mut out, &mut maths, &mut marks);
+        prev = Some(e);
+    }
+    let tail = tail_lines(state, width, theme, out.is_empty());
+    out.extend(tail);
     (out, maths, marks)
 }
 
@@ -686,5 +787,188 @@ fn greeting(clock: &str, address: Option<&str>) -> String {
     match address.map(crate::text::clean).filter(|a| !a.trim().is_empty()) {
         Some(a) => format!("{head}, {}.", a.trim()),
         None => format!("{head}."),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{LiveTurn, NoteTone, ToolStatus};
+
+    fn theme() -> Theme {
+        Theme::default_truecolor()
+    }
+
+    fn live_turn() -> LiveTurn {
+        LiveTurn {
+            turn: 1,
+            model: marlowe_model::ModelRef::new(marlowe_model::ProviderKind::Ollama, "m"),
+            started_ms: 0,
+        }
+    }
+
+    /// A small deterministic generator, so a failure replays.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self, n: usize) -> usize {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((self.0 >> 33) as usize) % n
+        }
+    }
+
+    const PROSE: [&str; 6] = [
+        "A plain sentence that is long enough to wrap at narrow widths, with `inline code` in it.",
+        "## A heading\n\nThen a list:\n\n- one\n- two with $x^2$ inline\n- three",
+        "Display maths:\n\n$$\n\\frac{\\partial s_i}{\\partial z_j} = s_i(\\delta_{ij} - s_j)\n$$\n\nafter it.",
+        "```rust\nfn main() {\n    println!(\"hi\");\n}\n```",
+        "> a quote\n\n| a | b |\n|---|---|\n| 1 | 2 |",
+        "An unclosed display: $$\\begin{pmatrix} a & b \\\\",
+    ];
+
+    fn entry(r: &mut Lcg, n: usize) -> Entry {
+        match r.next(9) {
+            0 => Entry::User { text: format!("question {n} about the thing"), steer: r.next(5) == 0 },
+            1 | 2 => Entry::Prose { text: PROSE[r.next(PROSE.len())].to_string() },
+            3 => Entry::Thinking { text: format!("considering option {n}\nand then $\\alpha_{n}$"), tokens: 40, live: false, ms: 1200 },
+            4 => Entry::Tool { call_id: format!("c{n}"), summary: format!("bash cargo test {n}"), status: ToolStatus::Done("ok".into()) },
+            5 => Entry::Note { text: format!("a note {n}"), tone: NoteTone::Amber },
+            6 => Entry::Recall { count: 3, summary: "valiance - eval".into() },
+            7 => Entry::Job { id: "j".into(), command: "cargo build".into(), output: "a\nb\nc".into(), code: Some(0) },
+            _ => Entry::News { label: "monitor".into(), text: format!("line {n}") },
+        }
+    }
+
+    /// The cache brought up to date, compared with the transcript laid out from scratch.
+    fn same_as_scratch(cache: &mut TranscriptCache, state: &State, width: usize, th: &Theme) {
+        sync(cache, state, width, th);
+        let (want, maths, marks) = transcript(state, width, th);
+        let mut got = cache.lines.clone();
+        got.extend(tail_lines(state, width, th, cache.lines.is_empty()));
+        assert_eq!(got.len(), want.len(), "row count at width {width}");
+        assert!(got == want, "rows differ at width {width}");
+        assert_eq!(cache.marks, marks, "fold markers differ at width {width}");
+        assert_eq!(cache.maths.len(), maths.len());
+        for (a, b) in cache.maths.iter().zip(&maths) {
+            assert_eq!((a.line, a.col, a.rows, a.cols, a.fg), (b.line, b.col, b.rows, b.cols, b.fg));
+        }
+    }
+
+    #[test]
+    fn the_cache_equals_laying_everything_out_again_through_random_sessions() {
+        let th = theme();
+        for seed in 0..12u64 {
+            let mut r = Lcg(seed + 1);
+            let mut state = State::new(None);
+            let mut cache = TranscriptCache::default();
+            let mut width = 60;
+            for step in 0..60 {
+                match r.next(8) {
+                    0 | 1 => {
+                        let e = entry(&mut r, step);
+                        state.entries.push(e);
+                    }
+                    2 => match state.entries.last_mut() {
+                        // Streaming: the last prose grows.
+                        Some(Entry::Prose { text }) => text.push_str(" and more words arrive"),
+                        _ => state.entries.push(Entry::Prose { text: "fresh".into() }),
+                    },
+                    3 => {
+                        let len = state.entries.len();
+                        if len > 0 {
+                            let i = r.next(len);
+                            let open = state.thought_open(i);
+                            state.folds.insert(i, !open);
+                        }
+                    }
+                    4 => width = [30, 44, 60, 80, 120][r.next(5)],
+                    5 => state.show_thinking = !state.show_thinking,
+                    6 => state.live = if state.live.is_some() { None } else { Some(live_turn()) },
+                    _ => {
+                        if let Some(Entry::Tool { status, .. }) = state.entries.iter_mut().rev().find(|e| matches!(e, Entry::Tool { .. })) {
+                            *status = ToolStatus::Failed("exit 1".into());
+                        }
+                        if r.next(4) == 0 {
+                            state.pending_user = Some("typed while waiting".into());
+                        }
+                    }
+                }
+                same_as_scratch(&mut cache, &state, width, &th);
+            }
+        }
+    }
+
+    fn session(n: usize) -> State {
+        let mut state = State::new(None);
+        for i in 0..n {
+            state.entries.push(Entry::User { text: format!("question {i}"), steer: false });
+            state.entries.push(Entry::Thinking { text: "hmm".into(), tokens: 3, live: false, ms: 0 });
+            state.entries.push(Entry::Prose { text: PROSE[i % PROSE.len()].to_string() });
+        }
+        state
+    }
+
+    fn laid(cache: &mut TranscriptCache, state: &State, width: usize, th: &Theme) -> usize {
+        sync(cache, state, width, th);
+        cache.laid
+    }
+
+    #[test]
+    fn a_streaming_frame_lays_out_one_entry_and_a_still_frame_none() {
+        let th = theme();
+        let mut state = session(30);
+        let mut cache = TranscriptCache::default();
+        assert_eq!(laid(&mut cache, &state, 80, &th), 90, "the first frame lays out everything");
+        assert_eq!(laid(&mut cache, &state, 80, &th), 0, "a still frame reuses everything");
+        if let Some(Entry::Prose { text }) = state.entries.last_mut() {
+            text.push_str(" streamed words");
+        }
+        assert_eq!(laid(&mut cache, &state, 80, &th), 1);
+    }
+
+    #[test]
+    fn each_thing_a_layout_depends_on_lays_it_out_again() {
+        let th = theme();
+        let mut state = session(10);
+        let mut cache = TranscriptCache::default();
+        laid(&mut cache, &state, 80, &th);
+        // Width: everything.
+        assert_eq!(laid(&mut cache, &state, 70, &th), 30);
+        // A fold toggled: from that entry on (rows below it moved).
+        state.folds.insert(10, !state.thought_open(10));
+        assert_eq!(laid(&mut cache, &state, 70, &th), 20);
+        assert_eq!(laid(&mut cache, &state, 70, &th), 0);
+        // Reasoning shown for all (^t): the blocks and what follows them.
+        state.show_thinking = !state.show_thinking;
+        state.folds.clear();
+        assert!(laid(&mut cache, &state, 70, &th) >= 20);
+        // The theme.
+        let other = Theme::resolve(|k| (k == "MARLOWE_ACCENT").then(|| "#445566".to_string()), Some("truecolor")).unwrap();
+        assert_eq!(laid(&mut cache, &state, 70, &other), 30);
+        // The transcript replaced (a reopened session): different entries, different keys.
+        state = session(4);
+        state.epoch += 1;
+        assert_eq!(laid(&mut cache, &state, 70, &other), 12);
+        // A turn starting or ending flips the last entry's live flag.
+        state.live = Some(live_turn());
+        assert_eq!(laid(&mut cache, &state, 70, &other), 1);
+        state.live = None;
+        assert_eq!(laid(&mut cache, &state, 70, &other), 1);
+    }
+
+    #[test]
+    fn an_edits_diff_arriving_lays_its_tool_line_out_again() {
+        let th = theme();
+        let mut state = State::new(None);
+        state.entries.push(Entry::Tool { call_id: "e1".into(), summary: "edit a.rs".into(), status: ToolStatus::Done(String::new()) });
+        state.entries.push(Entry::Prose { text: "done".into() });
+        let mut cache = TranscriptCache::default();
+        laid(&mut cache, &state, 80, &th);
+        let before = cache.lines.len();
+        let diff = "--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,2 @@\n-old\n+new\n+newer\n";
+        state.record_tool_finish("e1", true, diff);
+        assert_eq!(laid(&mut cache, &state, 80, &th), 2, "the diff's rows move what follows");
+        assert!(cache.lines.len() > before);
+        same_as_scratch(&mut cache, &state, 80, &th);
     }
 }

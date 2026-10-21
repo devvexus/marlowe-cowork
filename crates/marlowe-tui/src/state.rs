@@ -718,6 +718,10 @@ pub struct State {
     pub scroll: usize,
     /// Largest useful scroll, written back by the renderer.
     pub scroll_max: Cell<usize>,
+    /// The transcript's rows between frames ([`crate::layout_cache`]).
+    pub layout: RefCell<crate::layout_cache::TranscriptCache>,
+    /// Lay every entry out again every frame: the reference the cache is tested against.
+    pub no_layout_cache: bool,
     /// The conversation pane as last drawn, written back by the renderer.
     pub viewport: Cell<Viewport>,
     /// Bumped whenever the transcript is replaced wholesale (a new or reopened session) or laid
@@ -796,6 +800,8 @@ impl State {
             thinking_since: None,
             scroll: 0,
             scroll_max: Cell::new(0),
+            layout: RefCell::new(crate::layout_cache::TranscriptCache::default()),
+            no_layout_cache: false,
             viewport: Cell::new(Viewport::default()),
             epoch: 0,
             flash: None,
@@ -1104,6 +1110,7 @@ impl State {
                     self.forget_folds();
                     self.epoch = self.epoch.wrapping_add(1);
                     self.code.tool_detail = transcript_details(turns);
+                    self.code.detail_gen += 1;
                     self.live = None;
                     self.pending_user = None;
                     self.follow_tail();
