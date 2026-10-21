@@ -156,6 +156,7 @@ windows = { version = "=0.62.2", features = [
 
 # M4. Job Objects for marlowe-os (kill-on-close process trees). Same family as `windows` above.
 windows-sys = { version = "=0.61.2", features = [
+    "Wdk_System_Threading",
     "Win32_Foundation",
     "Win32_Security",
     "Win32_System_Console",

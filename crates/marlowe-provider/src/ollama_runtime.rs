@@ -221,7 +221,16 @@ impl ModelSource for OllamaHw {
         let ps = http::get_json(&self.endpoint, "/api/ps", QUICK).map(|v| parse_ps(&v)).unwrap_or_default();
         let entry = ps.iter().find(|p| p.name == model_id);
         let blocks = self.logs();
-        let load = blob.and_then(|b| log::last_for_blob(&blocks, b)).cloned();
+        let live = live_launches();
+        let mine = blob.and_then(|b| live.iter().find(|l| l.model.as_deref().is_some_and(|m| same_file(m, b)))).cloned();
+        let load = match (blob.and_then(|b| log::last_for_blob(&blocks, b)).cloned(), mine) {
+            // The log describes the runner that is running: it has the buffers too.
+            (Some(logged), Some(l)) if logged.launch.port == l.port => Some(logged),
+            // A server started from a console logs there, not to server.log: the log's launch is
+            // an older one, and the runner's own argv is the truth.
+            (_, Some(l)) => Some(LoadBlock { launch: l, ..LoadBlock::default() }),
+            (logged, None) => logged,
+        };
         let slots = match (entry, load.as_ref().and_then(|l| l.launch.port)) {
             (Some(_), Some(port)) => LocalEndpoint::new("127.0.0.1", port)
                 .and_then(|ep| http::get_json(&ep, "/slots", QUICK).ok())
@@ -232,7 +241,9 @@ impl ModelSource for OllamaHw {
         RunnerObservation {
             // The server-wide settings of the last launch of any model stand for the running
             // server when this model has not loaded since it started.
-            load: load.or_else(|| blocks.last().map(|b| LoadBlock { launch: b.launch.clone(), ..LoadBlock::default() })),
+            load: load
+                .or_else(|| live.first().map(|l| LoadBlock { launch: l.clone(), ..LoadBlock::default() }))
+                .or_else(|| blocks.last().map(|b| LoadBlock { launch: b.launch.clone(), ..LoadBlock::default() })),
             loaded: entry.is_some(),
             ps_context: entry.and_then(|e| e.context_length),
             slots,
@@ -259,6 +270,20 @@ impl ModelSource for OllamaHw {
             .map(|_| ())
             .map_err(|e| format!("could not unload {model_id}: {e}"))
     }
+}
+
+/// The launches of the runners running now, read from their own command lines: `llama-server.exe`,
+/// and `ollama.exe runner` from older Ollama.
+fn live_launches() -> Vec<log::Launch> {
+    let servers = marlowe_os::process::command_lines("llama-server.exe").into_iter();
+    let runners = marlowe_os::process::command_lines("ollama.exe").into_iter().filter(|(_, c)| c.split_whitespace().any(|w| w == "runner"));
+    servers.chain(runners).map(|(_, c)| log::launch_from_command_line(&c)).collect()
+}
+
+/// Whether two paths name the same blob file (`...\blobs\sha256-17c3...`).
+fn same_file(a: &str, b: &str) -> bool {
+    let name = |p: &str| p.rsplit(['\\', '/']).next().unwrap_or(p).to_ascii_lowercase();
+    name(a) == name(b)
 }
 
 /// The request that unloads `model` from Ollama.

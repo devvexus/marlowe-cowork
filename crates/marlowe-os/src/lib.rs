@@ -31,6 +31,8 @@ pub mod console;
 pub mod job;
 /// Commit memory and the allocator that waits for it ([`memory::Patient`]).
 pub mod memory;
+/// Other processes' command lines ([`process::command_lines`]).
+pub mod process;
 pub mod toast;
 pub mod tray;
 pub mod workspace;

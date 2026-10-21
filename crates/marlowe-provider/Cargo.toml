@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 marlowe-model.workspace = true
 marlowe-hw.workspace = true
+marlowe-os.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 

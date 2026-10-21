@@ -50,7 +50,12 @@ pub(crate) struct ContextState {
     pub analyzed: Mutex<HashMap<String, Arc<Analyzed>>>,
     /// The engine as last observed, per model (for defaults between plans).
     pub seen: Mutex<HashMap<ModelRef, EngineSettings>>,
+    /// When [`Brains::serving`] last looked at each model's runner.
+    pub looked: Mutex<HashMap<ModelRef, Instant>>,
 }
+
+/// How long what a runner serves is taken as known before it is looked at again.
+const SERVING_TTL: Duration = Duration::from_secs(15);
 
 /// A held agent slot on one model; released on drop.
 pub struct SlotLease {
@@ -104,9 +109,20 @@ impl ContextGate<'_> {
         Ok(requested.map_or(max, |r| r.min(max)))
     }
 
-    /// Concurrent agents on this model's runner, the conductor included when it shares it.
+    /// Concurrent agents on this model's runner, the conductor included when it shares it: the
+    /// policy's parallel count, or what the loaded runner really serves when that is fewer (an
+    /// Ollama started before `OLLAMA_NUM_PARALLEL` changed; more agents would only queue there).
     pub fn slots(&self, model: &ModelRef) -> Result<u16, BrainsError> {
-        Ok(self.policy(model)?.parallel.max(1))
+        let planned = self.policy(model)?.parallel.max(1);
+        Ok(self.b.serving(model).map_or(planned, |s| planned.min(s.max(1))))
+    }
+
+    /// Why this model runs fewer agents at once than its policy plans, said plainly
+    /// ([`EngineSettings::parallel_shortfall`]); `None` when it runs what it plans, or is not loaded.
+    pub fn slots_note(&self, model: &ModelRef) -> Option<String> {
+        let planned = self.policy(model).ok()?.parallel.max(1);
+        self.b.serving(model)?;
+        self.b.ctx.seen.lock().unwrap_or_else(|e| e.into_inner()).get(model)?.parallel_shortfall(planned)
     }
 
     /// Agents the crew may run on `model` at once: its slots, less the one the conductor keeps
@@ -289,6 +305,20 @@ impl Brains {
         e
     }
 
+    /// Requests `model`'s loaded runner serves at once, looked at again after [`SERVING_TTL`].
+    /// `None` for a hosted model, one not loaded, or no hardware probe.
+    pub(crate) fn serving(&self, model: &ModelRef) -> Option<u16> {
+        if !self.is_local_ollama(model) {
+            return None;
+        }
+        let stale = self.ctx.looked.lock().unwrap_or_else(|e| e.into_inner()).get(model).is_none_or(|t| t.elapsed() >= SERVING_TTL);
+        if stale {
+            self.ctx.looked.lock().unwrap_or_else(|e| e.into_inner()).insert(model.clone(), Instant::now());
+            self.engine_now(model);
+        }
+        self.ctx.seen.lock().unwrap_or_else(|e| e.into_inner()).get(model).and_then(EngineSettings::serving_parallel)
+    }
+
     /// The context and hardware plan for `model`.
     pub fn context_plan(&self, model: &ModelRef) -> Result<ContextPlan, BrainsError> {
         let info = self.model_info(model)?;
@@ -417,6 +447,9 @@ impl Brains {
                 ));
             }
         }
+        if let Some(note) = in_effect.parallel_shortfall(policy.parallel.max(1)) {
+            warnings.push(note);
+        }
         if kv != KvType::F16 && !a.main.quantizable() {
             warnings.push("this model's head size is not a multiple of 32: a quantized KV cache falls back to f16".into());
         }
@@ -539,6 +572,7 @@ impl Brains {
         let hw = self.factory().hardware().ok_or_else(|| BrainsError::Invalid("no server control in this build".into()))?;
         let r = hw.server.apply(&change).map_err(BrainsError::Invalid);
         self.ctx.seen.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.ctx.looked.lock().unwrap_or_else(|e| e.into_inner()).clear();
         r
     }
 }

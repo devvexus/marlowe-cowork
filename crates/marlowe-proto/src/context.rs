@@ -115,6 +115,26 @@ impl EngineSettings {
         self.saved_parallel.or(self.parallel)
     }
 
+    /// Requests the loaded runner serves at once: its `/slots`, else its launch's `-np`. `None`
+    /// while the model is not loaded (the next load decides).
+    pub fn serving_parallel(&self) -> Option<u16> {
+        if !self.loaded {
+            return None;
+        }
+        if !self.slots.is_empty() {
+            return Some(self.slots.len() as u16);
+        }
+        self.parallel
+    }
+
+    /// `planned 6 parallel, Ollama is serving 1 — restart Ollama to apply`, when the loaded runner
+    /// serves fewer requests at once than `planned`. Agents past what it serves only queue in
+    /// Ollama, so the crew runs at most what it serves.
+    pub fn parallel_shortfall(&self, planned: u16) -> Option<String> {
+        let serving = self.serving_parallel()?;
+        (serving < planned).then(|| format!("planned {planned} parallel, Ollama is serving {serving} — restart Ollama to apply"))
+    }
+
     pub fn partial(&self) -> bool {
         self.gpu_layers.is_some_and(|(n, m)| n < m)
     }

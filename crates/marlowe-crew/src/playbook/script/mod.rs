@@ -199,6 +199,9 @@ pub fn run_workflow(runner: &AgentRunner, job: ScriptJob<'_>, emit: &dyn Fn(Scri
         None => marlowe_workflow::MAX_CONCURRENCY,
     });
 
+    if let Some(note) = local.as_ref().and_then(|m| (runner.slots_note)(m)) {
+        emit(ScriptEvent::Log(format!("{note}; agents run {} at a time", cfg.max_concurrency)));
+    }
     let meta = marlowe_workflow::validate::static_checks(&cfg.filename, &source).map(|v| v.meta).unwrap_or_default();
     let budget_total = cfg.budget.as_ref().and_then(|b| b.total());
     let (ctl_tx, ctl_rx) = crossbeam_channel::unbounded();

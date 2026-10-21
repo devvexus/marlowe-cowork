@@ -347,6 +347,33 @@ fn split_argv(cmd: &str) -> Vec<String> {
     cmd.split_whitespace().map(str::to_string).collect()
 }
 
+/// A runner's launch read from its live command line (Windows quoting: `"C:\Program Files\…"`), for
+/// when the log does not have it: a server started from a console logs there, not to
+/// `server.log`.
+pub fn launch_from_command_line(cmd: &str) -> Launch {
+    let mut argv = Vec::new();
+    let (mut cur, mut quoted, mut any) = (String::new(), false, false);
+    for c in cmd.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                any = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if any || !cur.is_empty() {
+                    argv.push(std::mem::take(&mut cur));
+                }
+                any = false;
+            }
+            c => cur.push(c),
+        }
+    }
+    if any || !cur.is_empty() {
+        argv.push(cur);
+    }
+    parse_argv(&argv)
+}
+
 fn parse_argv(argv: &[String]) -> Launch {
     let mut l = Launch { argv: argv.to_vec(), ..Launch::default() };
     let mut i = 1;
@@ -391,6 +418,18 @@ mod tests {
     use super::*;
 
     const LAUNCH: &str = r#"time=2026-10-09T12:50:51.885-05:00 level=INFO source=llama_server.go:442 msg="starting llama-server" cmd="C:\\Ollama\\llama-server.exe --model C:\\m\\blobs\\sha256-17c3 --port 61916 --host 127.0.0.1 -c 32768 -np 1 --spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-model C:\\m\\blobs\\sha256-50d9 --no-mmap --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on -b 512 -ub 512 --context-shift --keep 4""#;
+
+    #[test]
+    fn a_live_command_line_is_read_with_its_quotes() {
+        // The runner of 2026-10-21: OLLAMA_NUM_PARALLEL=6 saved, but this server serves one.
+        let l = launch_from_command_line(
+            r#""C:\Users\m\AppData\Local\Programs\Ollama\lib\ollama\llama-server.exe" --model C:\Users\m\.ollama\models\blobs\sha256-5842 --port 62968 -c 32768 -np 1 --cache-type-k q8_0 --flash-attn on --context-shift"#,
+        );
+        assert_eq!(l.argv[0], r"C:\Users\m\AppData\Local\Programs\Ollama\lib\ollama\llama-server.exe");
+        assert_eq!((l.port, l.ctx, l.parallel), (Some(62968), Some(32768), Some(1)));
+        assert_eq!(l.model.as_deref(), Some(r"C:\Users\m\.ollama\models\blobs\sha256-5842"));
+        assert!(l.context_shift && l.cache_k.as_deref() == Some("q8_0"));
+    }
 
     #[test]
     fn launch_argv_is_read_with_go_escapes_undone() {

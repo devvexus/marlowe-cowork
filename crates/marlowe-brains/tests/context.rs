@@ -262,8 +262,9 @@ fn saved_policies_reach_the_provider_at_start() {
 #[test]
 fn leases_cap_concurrent_agents_and_release_on_drop() {
     let b = Arc::new(brains(Arc::default()));
-    let m = dusk();
-    b.context().set_policy(&m, user(16_384, KvType::Q8_0, 2)).unwrap();
+    // Not loaded, so the policy's two decide (a loaded runner serving fewer would cap it).
+    let m: ModelRef = "ollama/dolphin-llama3:8b".parse().unwrap();
+    b.context().set_policy(&m, user(8_192, KvType::Q8_0, 2)).unwrap();
     let one = b.context().lease(&m, Duration::from_millis(10)).unwrap();
     let _two = b.context().lease(&m, Duration::from_millis(10)).unwrap();
     assert!(b.context().lease(&m, Duration::from_millis(30)).is_err(), "a third waits, then gives up");
@@ -282,10 +283,50 @@ fn crew_slots_leave_the_conductor_one() {
     assert_eq!(b.resolve(&Slot::Conductor).unwrap().0, dusk);
     b.context().set_policy(&dusk, user(16_384, KvType::Q8_0, 6)).unwrap();
     b.context().set_policy(&dolphin, user(8_192, KvType::Q8_0, 6)).unwrap();
-    assert_eq!(b.context().crew_slots(&dusk), 5, "six slots shared with the conductor");
-    assert_eq!(b.context().crew_slots(&dolphin), 6, "six slots, the conductor is elsewhere");
+    // dusk's loaded runner serves one request at a time (one slot): planning six changes nothing.
+    assert_eq!(b.context().crew_slots(&dusk), 1, "what the runner serves, not the plan");
+    assert_eq!(b.context().crew_slots(&dolphin), 6, "six slots, the conductor is elsewhere, nothing loaded to say less");
     b.context().set_policy(&dusk, user(16_384, KvType::Q8_0, 1)).unwrap();
     assert_eq!(b.context().crew_slots(&dusk), 1, "never below one");
+}
+
+/// Ollama serves six slots: the plan's six stand, one kept for the conductor.
+struct SixSlots;
+impl ModelSource for SixSlots {
+    fn files(&self, model_id: &str) -> Result<ModelFiles, String> {
+        FakeModels.files(model_id)
+    }
+    fn runtime(&self, model_id: &str, blob: Option<&str>) -> RunnerObservation {
+        let mut rt = FakeModels.runtime(model_id, blob);
+        if rt.loaded {
+            rt.slots = (0..6).map(|id| SlotObservation { id, n_ctx: 32_768, n_prompt_tokens: 0, is_processing: false }).collect();
+        }
+        rt
+    }
+}
+
+/// 2026-10-21: Matthew planned 6 parallel; the running Ollama was started with one slot, so
+/// workflow agents never overlapped and nothing said why.
+#[test]
+fn slots_are_what_the_runner_serves_and_a_shortfall_is_said_plainly() {
+    let b = brains(Arc::default());
+    let m = dusk();
+    b.context().set_policy(&m, user(32_768, KvType::Q8_0, 6)).unwrap();
+    assert_eq!(b.context().slots(&m).unwrap(), 1);
+    let note = b.context().slots_note(&m).expect("a shortfall");
+    assert_eq!(note, "planned 6 parallel, Ollama is serving 1 — restart Ollama to apply");
+    let plan = b.context_plan(&m).unwrap();
+    assert!(plan.warnings.contains(&note), "the context planner says it too: {:?}", plan.warnings);
+    assert_eq!(b.context().slots_note(&"ollama/dolphin-llama3:8b".parse().unwrap()), None, "not loaded: the next load decides");
+
+    let mut f = ProviderFactory::new(Arc::new(MemoryStore::new()));
+    f.register(ProviderKind::Ollama, |_| Ok(Arc::new(NoChat)));
+    f.set_hardware(Hardware { models: Arc::new(SixSlots), gpu: Arc::new(FakeGpu), server: Arc::<RecordingServer>::default() });
+    let b = Brains::new(Library::open_in_memory().unwrap(), f);
+    b.add_model(ProviderKind::Ollama, "marlowe-dusk:27b-super").unwrap();
+    b.context().set_policy(&m, user(32_768, KvType::Q8_0, 6)).unwrap();
+    assert_eq!((b.context().slots(&m).unwrap(), b.context().crew_slots(&m)), (6, 5));
+    assert_eq!(b.context().slots_note(&m), None);
 }
 
 #[test]

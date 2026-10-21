@@ -138,6 +138,10 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
         let brains = inner.deps.brains.clone();
         Arc::new(move |model| brains.context().crew_slots(model))
     };
+    runner.slots_note = {
+        let brains = inner.deps.brains.clone();
+        Arc::new(move |model| brains.context().slots_note(model))
+    };
 
     let cfg = PlaybookConfig {
         max_scouts: inner.cfg.max_scouts,
@@ -497,11 +501,22 @@ spent: {:?}", self.id, run.goal, run.budget, spent),
         self.room_for_a_call(model)?;
         let limit = self.inner.deps.brains.context().crew_slots(model);
         let mut n = self.inner.local_streams.lock().unwrap_or_else(|e| e.into_inner());
+        let mut said = false;
         loop {
             let held = n.entry(model.to_string()).or_default();
             if *held < limit {
                 *held += 1;
                 return Ok(());
+            }
+            if !said {
+                said = true;
+                // Waiting behind a runner that serves fewer than planned: say why, once.
+                if let Some(note) = self.inner.deps.brains.context().slots_note(model) {
+                    drop(n);
+                    self.progress(&format!("waiting for a model slot: {note}"));
+                    n = self.inner.local_streams.lock().unwrap_or_else(|e| e.into_inner());
+                    continue;
+                }
             }
             self.check()?;
             n = self

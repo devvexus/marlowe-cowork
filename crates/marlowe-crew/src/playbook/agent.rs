@@ -208,6 +208,9 @@ pub struct AgentRunner {
     pub per_provider: usize,
     /// Concurrent steps on a local model: the crew's share of its slots.
     pub local_slots: Arc<dyn Fn(&ModelRef) -> usize + Send + Sync>,
+    /// Why a local model runs fewer agents at once than planned, said plainly (the context
+    /// planner's `slots_note`); `None` when it runs what it plans.
+    pub slots_note: Arc<dyn Fn(&ModelRef) -> Option<String> + Send + Sync>,
     /// Wraps each step's tool host; `None` keeps it.
     pub step_tools: Option<StepToolsFn>,
 }
@@ -238,6 +241,7 @@ impl AgentRunner {
             shell: Arc::new(sandbox_shell),
             per_provider: 2,
             local_slots: Arc::new(|_| 1),
+            slots_note: Arc::new(|_| None),
             step_tools: None,
         }
     }
