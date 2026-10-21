@@ -8,13 +8,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use marlowe_agent::{ToolHost, UserInfo};
-use marlowe_brains::{api_key, CredentialStore, KeyringStore, MemoryStore, ProviderConfig, ProviderFactory};
+use marlowe_brains::{CredentialStore, KeyringStore, MemoryStore, ProviderConfig, ProviderFactory};
 use marlowe_crew::{CrewConfig, CrewSetup, CrewToolFactory, Sandbox, SandboxKind};
 use marlowe_daemon::{DaemonDeps, HostRequest, SentinelLink, ToolHostFactory, VoiceLink};
-use marlowe_exec::{Leftovers, ResearchConfig, SearchBackend, SearchResponse, SearchResult};
+use marlowe_exec::{Leftovers, ResearchConfig, SearchBackend, SearchResponse};
 use marlowe_model::image::{BlobStore, FsBlobStore};
 use marlowe_model::{
-    CancelToken, ChatRequest, Effort, Message, Provider, ProviderError, ProviderKind, ToolSpec,
+    CancelToken, Provider, ProviderError, ProviderKind,
 };
 use marlowe_provider::ollama::repair::RepairStats;
 
@@ -22,11 +22,6 @@ use marlowe_provider::ollama::repair::RepairStats;
 const SENTINEL_QUEUE: usize = 1024;
 /// Voice events (envelope chunks at 30 Hz) queued for the forwarder.
 const VOICE_QUEUE: usize = 256;
-
-/// Small model that runs the OpenRouter server-side search tool.
-const SEARCH_MODEL_DEFAULT: &str = "google/gemini-2.5-flash";
-const SEARCH_MODEL_ENV: &str = "MARLOWE_SEARCH_MODEL";
-const SEARCH_TOOL: &str = "openrouter:web_search";
 
 /// Tool-call repair counts across every provider this process builds (A4; `marlowe bench`).
 pub fn repair_stats() -> Arc<RepairStats> {
@@ -98,62 +93,14 @@ fn scripted() -> bool {
     false
 }
 
-/// Web search through OpenRouter's server tool; errors when no key exists.
-pub(crate) fn web_search(
-    credentials: &dyn CredentialStore,
-    query: &str,
-    cancel: &CancelToken,
-) -> Result<SearchResponse, String> {
-    let key = api_key(ProviderKind::OpenRouter, credentials)
-        .ok_or("web_search needs an OpenRouter key (OPENROUTER_API_KEY or the Library)")?;
-    let provider = marlowe_openrouter::OpenRouterProvider::from_key(Some(&key));
-    let model = std::env::var(SEARCH_MODEL_ENV).unwrap_or_else(|_| SEARCH_MODEL_DEFAULT.to_string());
-    let mut req = ChatRequest::new(model, vec![Message::user(query)]);
-    req.effort = Effort::Off;
-    req.max_output_tokens = Some(1500);
-    req.system = vec![marlowe_model::SystemBlock {
-        text: "Search the web for the user's query. Answer briefly and list each source as a \
-               markdown link with its URL."
-            .into(),
-        cache: false,
-    }];
-    req.tools = vec![ToolSpec {
-        name: SEARCH_TOOL.into(),
-        description: "Server-side web search".into(),
-        input_schema: serde_json::json!({ "type": "object", "properties": {} }),
-    }];
-    let done = provider.stream(&req, cancel, &mut |_| {}).map_err(|e| e.to_string())?;
-    Ok(SearchResponse { results: cited_links(&done.text), answer: done.text })
-}
-
-/// Markdown links `[title](https://..)` in order, deduplicated by URL.
-fn cited_links(text: &str) -> Vec<SearchResult> {
-    let mut out: Vec<SearchResult> = Vec::new();
-    let mut rest = text;
-    while let Some(open) = rest.find('[') {
-        let after = &rest[open + 1..];
-        let Some(close) = after.find("](") else { break };
-        let title = &after[..close];
-        let tail = &after[close + 2..];
-        let Some(end) = tail.find(')') else { break };
-        let url = tail[..end].trim();
-        if (url.starts_with("https://") || url.starts_with("http://"))
-            && !title.contains('[')
-            && !out.iter().any(|r| r.url == url)
-        {
-            out.push(SearchResult { title: title.trim().to_string(), url: url.to_string(), snippet: String::new() });
-        }
-        rest = &tail[end..];
-    }
-    out
-}
-
-fn search_backend(credentials: &Arc<dyn CredentialStore>) -> Arc<dyn SearchBackend> {
+/// `web_search` over the keyless web channel deep research uses (SearXNG, else DuckDuckGo lite),
+/// configured by `<home>\research.json`. One registry per factory, so a resting backend stays rested.
+fn search_backend(home: &Path) -> Arc<dyn SearchBackend> {
     if scripted() {
         return Arc::new(|_: &str, _: &CancelToken| Err::<SearchResponse, String>("web_search is off under the scripted provider".into()));
     }
-    let creds = credentials.clone();
-    Arc::new(move |q: &str, cancel: &CancelToken| web_search(creds.as_ref(), q, cancel))
+    let settings = crate::research_wire::ResearchSettings::load(home);
+    Arc::new(crate::research_wire::KeylessSearch::new(home, &settings))
 }
 
 /// arXiv and paper settings: the on-disk cache under `<home>\cache`, the global rate limit.
@@ -164,11 +111,12 @@ fn research(home: &Path) -> ResearchConfig {
 /// Tool host factory: builtin tools rooted at the session workspace, exposing the groups the
 /// session's model gets, configured by every group's `configure`. With no workspace every write
 /// asks.
-pub fn tool_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> ToolHostFactory {
+pub fn tool_factory(home: &Path) -> ToolHostFactory {
     let home = home.to_path_buf();
+    let search = search_backend(&home);
     Arc::new(move |req: &HostRequest| {
         let mut tools = marlowe_exec::BuiltinTools::new(req.workspace.clone())
-            .with_search(search_backend(&credentials))
+            .with_search(search.clone())
             .with_research(research(&home));
         if let Some(model) = &req.model {
             tools = tools.with_model_exposure(model);
@@ -190,11 +138,12 @@ pub fn tool_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> ToolH
 /// The sandbox lives under the profile in app data, which the broad-root rule refuses, so it is
 /// trusted explicitly: writes inside are free and reads inside (or in the original workspace) do
 /// not taint the run.
-pub fn crew_tool_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> CrewToolFactory {
+pub fn crew_tool_factory(home: &Path) -> CrewToolFactory {
     let home = home.to_path_buf();
+    let search = search_backend(&home);
     Arc::new(move |sandbox: &Sandbox, workspace: Option<&Path>| {
         let tools = crew_host(sandbox, workspace)
-            .with_search(search_backend(&credentials))
+            .with_search(search.clone())
             .with_research(research(&home))
             .with_child_env(sandbox.child_env())
             .with_shell_dir(sandbox.root.clone())
@@ -245,14 +194,14 @@ pub fn daemon_deps(home: &Path) -> DaemonDeps {
         if scripted() { Arc::new(MemoryStore::new()) } else { Arc::new(KeyringStore::new()) };
     DaemonDeps {
         providers: provider_factory(credentials.clone(), home),
-        tools: tool_factory(credentials.clone(), home),
+        tools: tool_factory(home),
         user: user_info(home),
         mind: open_mind(home, sentinel.as_ref().map(|s| s.sentinel.clone())),
         sentinel,
         voice: start_voice(home),
         // The daemon starts the supervisor with its models, approvals, memory and GPU state; deep
         // research runs v2 over the keyless channels and the corpus fetcher.
-        crew: Some(crew_setup(credentials, home)),
+        crew: Some(crew_setup(home)),
     }
 }
 
@@ -263,7 +212,7 @@ pub fn standalone_deps(home: &Path, memory: bool) -> DaemonDeps {
         if scripted() { Arc::new(MemoryStore::new()) } else { Arc::new(KeyringStore::new()) };
     DaemonDeps {
         providers: provider_factory(credentials.clone(), home),
-        tools: tool_factory(credentials, home),
+        tools: tool_factory(home),
         user: user_info(home),
         mind: if memory { open_mind(home, None) } else { None },
         sentinel: None,
@@ -274,11 +223,11 @@ pub fn standalone_deps(home: &Path, memory: bool) -> DaemonDeps {
 
 /// The crew: tools, config, and deep research v2's I/O with `<home>\research.json` applied. A
 /// scripted run has no network, so it keeps deep research on v1.
-fn crew_setup(credentials: Arc<dyn CredentialStore>, home: &Path) -> CrewSetup {
+fn crew_setup(home: &Path) -> CrewSetup {
     let settings = crate::research_wire::ResearchSettings::load(home);
     let config = CrewConfig { research: settings.v2(), ..CrewConfig::default() };
-    let research = (!scripted()).then(|| crate::research_wire::research_io(home, &settings, credentials.clone()));
-    CrewSetup { tools: crew_tool_factory(credentials, home), config, research }
+    let research = (!scripted()).then(|| crate::research_wire::research_io(home, &settings));
+    CrewSetup { tools: crew_tool_factory(home), config, research }
 }
 
 /// The watchers over the persisted roots. A Sentinel that fails to start (or panics doing so)
@@ -382,7 +331,7 @@ pub fn gpu_verdict(state: &marlowe_proto::WatchState, compute: &ComputeLists) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{cited_links, crew_configure, crew_host};
+    use super::{crew_configure, crew_host};
     use marlowe_agent::ToolHost;
     use marlowe_crew::{Sandbox, SandboxKind};
 
@@ -451,15 +400,5 @@ mod tests {
         assert!(matches!(super::gpu_verdict(&st, &Err("nvml.dll not found".into())), GpuVerdict::Unknown(_)));
         st.gpu.devices[0].util_pct = 37;
         assert!(matches!(super::gpu_verdict(&st, &Ok(vec![(0, Some(vec![]))])), GpuVerdict::Busy(_)));
-    }
-
-    #[test]
-    fn cited_links_are_parsed_in_order_and_deduplicated() {
-        let text = "See [Rust](https://rust-lang.org) and [docs](https://doc.rust-lang.org/).\n\
-                    Again [Rust](https://rust-lang.org); not [this](ftp://x) or [broken](https://y";
-        let links = cited_links(text);
-        let urls: Vec<_> = links.iter().map(|l| l.url.as_str()).collect();
-        assert_eq!(urls, ["https://rust-lang.org", "https://doc.rust-lang.org/"]);
-        assert_eq!(links[1].title, "docs");
     }
 }

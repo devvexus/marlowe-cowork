@@ -163,7 +163,7 @@ pub fn run(_home: &Path, raw: &[String]) -> Result<i32, String> {
     factory.allocations().set(&model_ref.model_id, num_ctx);
     let provider = factory.provider(ProviderKind::Ollama).map_err(|e| format!("ollama: {e}"))?;
     let info = ModelInfo { context_window: Some(num_ctx), supports_tools: true, local: true, ..ModelInfo::bare(ProviderKind::Ollama, model_ref.model_id.clone()) };
-    let tools_factory = crate::wire::tool_factory(credentials, &home);
+    let tools_factory = crate::wire::tool_factory(&home);
     let tools = Arc::new(move |root: &Path, model: &ModelInfo| {
         tools_factory(&marlowe_daemon::HostRequest { workspace: Some(root.to_path_buf()), model: Some(model.clone()), session: None })
     });
@@ -535,7 +535,7 @@ mod tests {
         let home = dir.join("home");
         std::fs::create_dir_all(&home).unwrap();
         let seq = Arc::new(Seq { replies: Mutex::new(replies.into()), temps: Mutex::new(Vec::new()), tools: Mutex::new(Vec::new()) });
-        let factory = crate::wire::tool_factory(Arc::new(MemoryStore::new()), &home);
+        let factory = crate::wire::tool_factory(&home);
         let tools = Arc::new(move |root: &Path, model: &ModelInfo| {
             factory(&marlowe_daemon::HostRequest { workspace: Some(root.to_path_buf()), model: Some(model.clone()), session: None })
         });

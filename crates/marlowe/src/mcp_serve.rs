@@ -28,9 +28,8 @@ const SERVED_GROUPS: [ToolGroup; 7] =
 
 /// `marlowe mcp serve`: serves until the client closes stdin.
 pub fn run(home: &Path, workspace: PathBuf) -> Result<i32, String> {
-    let credentials: Arc<dyn marlowe_brains::CredentialStore> = Arc::new(marlowe_brains::KeyringStore::new());
     let session = SessionId(format!("mcp-client-{}", std::process::id()));
-    let factory = crate::wire::tool_factory(credentials, home);
+    let factory = crate::wire::tool_factory(home);
     let host = factory(&marlowe_daemon::HostRequest { workspace: Some(workspace.clone()), model: None, session: Some(session.clone()) });
     let served = Served::new(home, &workspace, host, session);
     let info = ServerInfo {

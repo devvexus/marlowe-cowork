@@ -2,7 +2,7 @@
 //! research cache, and the user's settings in `<home>\research.json`.
 //!
 //! ```json
-//! { "searxng_url": "http://127.0.0.1:8080", "duckduckgo": true, "hosted_search": true,
+//! { "searxng_url": "http://127.0.0.1:8080", "duckduckgo": true,
 //!   "auto_approve_under_tokens": null, "fetch_concurrency": 16,
 //!   "feeds": [], "wikipedia_lang": "en", "stackexchange_site": "stackoverflow" }
 //! ```
@@ -13,12 +13,13 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use marlowe_brains::CredentialStore;
 use marlowe_crew::playbook::research_v2::{ChannelIo, FetchedPage, PageFetcher, ResearchIo, ResearchV2Config};
 use marlowe_exec::corpus::{Corpus, Outcome};
+use marlowe_exec::{SearchBackend, SearchResponse, SearchResult};
 use marlowe_model::CancelToken;
 use marlowe_research::{
-    ChannelId, ChannelRegistry, HostedSearch, KeylessConfig, NetHttp, ResearchCache, SourceRef, WebConfig,
+    ChannelCtx, ChannelError, ChannelId, ChannelQuery, ChannelRegistry, HttpGet, KeylessConfig, NetHttp, ResearchCache,
+    WebConfig,
 };
 use serde::Deserialize;
 
@@ -32,7 +33,7 @@ pub struct ResearchSettings {
     pub searxng_url: Option<String>,
     /// DuckDuckGo HTML lite as the second web backend (default on).
     pub duckduckgo: Option<bool>,
-    /// OpenRouter's server-side search as the last web backend, when a key works (default on).
+    /// Ignored: accepted so an old research.json still parses. Web search never uses a paid API.
     pub hosted_search: Option<bool>,
     /// Plans quoted under this many model tokens start without asking (default off).
     pub auto_approve_under_tokens: Option<u64>,
@@ -135,40 +136,73 @@ pub fn page_of(o: Outcome) -> FetchedPage {
     }
 }
 
-/// OpenRouter's server-side web search as the last web backend. The key stays in the binary.
-struct OpenRouterSearch {
-    credentials: Arc<dyn CredentialStore>,
-}
-
-impl HostedSearch for OpenRouterSearch {
-    fn name(&self) -> &str {
-        "openrouter"
-    }
-
-    fn search(&self, query: &str, limit: usize, cancel: &CancelToken) -> Result<Vec<SourceRef>, String> {
-        let r = crate::wire::web_search(self.credentials.as_ref(), query, cancel)?;
-        Ok(r.results
-            .into_iter()
-            .take(limit.max(1))
-            .map(|s| {
-                let mut src = SourceRef::new(ChannelId::Web, &s.url, &s.title);
-                src.snippet = s.snippet;
-                src
-            })
-            .collect())
-    }
-}
-
-/// The product [`ResearchIo`] for `home`.
-pub fn research_io(home: &Path, settings: &ResearchSettings, credentials: Arc<dyn CredentialStore>) -> Arc<dyn ResearchIo> {
-    let hosted: Option<Arc<dyn HostedSearch>> =
-        settings.hosted_search.unwrap_or(true).then(|| Arc::new(OpenRouterSearch { credentials }) as Arc<dyn HostedSearch>);
+/// The product [`ResearchIo`] for `home`. Web search is keyless: SearXNG, then DuckDuckGo lite.
+pub fn research_io(home: &Path, settings: &ResearchSettings) -> Arc<dyn ResearchIo> {
     Arc::new(ChannelIo {
-        registry: Arc::new(ChannelRegistry::keyless_with(&settings.keyless(), hosted)),
+        registry: Arc::new(ChannelRegistry::keyless_with(&settings.keyless(), None)),
         http: Arc::new(NetHttp::new()),
         cache: Some(Arc::new(ResearchCache::at_home(home))),
         pages: Arc::new(CorpusPages(Corpus::product())),
     })
+}
+
+/// The `web_search` tool's backend: the same keyless web channel deep research uses (SearXNG
+/// when it answers, else DuckDuckGo HTML lite), under `<home>\research.json`. No key, no paid API.
+pub struct KeylessSearch {
+    registry: ChannelRegistry,
+    http: Arc<dyn HttpGet>,
+    cache: Option<ResearchCache>,
+    searxng: Option<String>,
+}
+
+/// Results a `web_search` call returns.
+const SEARCH_RESULTS: usize = 10;
+
+impl KeylessSearch {
+    pub fn new(home: &Path, settings: &ResearchSettings) -> Self {
+        Self::with_http(home, settings, Arc::new(NetHttp::new()))
+    }
+
+    pub fn with_http(home: &Path, settings: &ResearchSettings, http: Arc<dyn HttpGet>) -> Self {
+        let keyless = settings.keyless();
+        Self {
+            searxng: keyless.web.searxng_url.clone(),
+            registry: ChannelRegistry::keyless_with(&keyless, None),
+            http,
+            cache: Some(ResearchCache::at_home(home)),
+        }
+    }
+
+    pub fn registry(&self) -> &ChannelRegistry {
+        &self.registry
+    }
+
+    fn no_backend(&self, detail: &str) -> String {
+        let url = self.searxng.as_deref().unwrap_or(marlowe_research::DEFAULT_SEARXNG);
+        format!(
+            "no web search backend answered ({detail}): run SearXNG at {url} or enable duckduckgo in research.json"
+        )
+    }
+}
+
+impl SearchBackend for KeylessSearch {
+    fn search(&self, query: &str, cancel: &CancelToken) -> Result<SearchResponse, String> {
+        let ctx = ChannelCtx { http: self.http.as_ref(), cache: self.cache.as_ref(), cancel };
+        let q = ChannelQuery::new(query, SEARCH_RESULTS);
+        match self.registry.search(ChannelId::Web, &q, &ctx) {
+            Ok(found) => Ok(SearchResponse {
+                answer: String::new(),
+                results: found
+                    .into_iter()
+                    .take(SEARCH_RESULTS)
+                    .map(|s| SearchResult { title: s.title, url: s.url, snippet: s.snippet })
+                    .collect(),
+            }),
+            Err(ChannelError::NoBackend { detail, .. }) => Err(self.no_backend(&detail)),
+            Err(ChannelError::NotRegistered(_)) => Err(self.no_backend("the web channel is not registered")),
+            Err(e) => Err(e.to_string()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -218,5 +252,85 @@ mod tests {
         let p = page_of(o);
         assert_eq!(p.error.as_deref(), Some("HTTP 403"));
         assert!(p.text.is_empty() && p.links.is_empty());
+    }
+
+    /// Answers SearXNG's JSON for any URL, or refuses every connection.
+    struct FakeHttp {
+        up: bool,
+        urls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl HttpGet for FakeHttp {
+        fn get(&self, r: &marlowe_research::HttpRequest, _: &CancelToken) -> Result<marlowe_research::HttpResponse, String> {
+            self.urls.lock().unwrap().push(r.url.clone());
+            if !self.up {
+                return Err(format!("connection refused: {}", r.url));
+            }
+            let body = r#"{"results":[{"url":"https://doc.rust-lang.org/cargo/","title":"The Cargo Book","content":"Cargo is the <b>Rust</b> package manager."}]}"#;
+            Ok(marlowe_research::HttpResponse {
+                status: 200,
+                content_type: Some("application/json".into()),
+                bytes: body.as_bytes().to_vec(),
+                final_url: r.url.clone(),
+                retry_after: None,
+            })
+        }
+    }
+
+    fn scratch_home(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("marlowe-keyless-search-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn web_search_goes_through_the_keyless_backend() {
+        let home = scratch_home("up");
+        let http = Arc::new(FakeHttp { up: true, urls: Default::default() });
+        let s = KeylessSearch::with_http(&home, &ResearchSettings::default(), http.clone());
+        let r = s.search("cargo book", &CancelToken::new()).unwrap();
+        assert_eq!(r.results.len(), 1);
+        assert_eq!(r.results[0].url, "https://doc.rust-lang.org/cargo/");
+        assert_eq!(r.results[0].title, "The Cargo Book");
+        assert!(r.results[0].snippet.contains("package manager"));
+        let urls = http.urls.lock().unwrap().clone();
+        assert!(urls.iter().all(|u| u.starts_with("http://127.0.0.1:8080/")), "{urls:?}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn no_backend_says_what_to_do_and_never_names_openrouter() {
+        let home = scratch_home("down");
+        let http = Arc::new(FakeHttp { up: false, urls: Default::default() });
+        let settings: ResearchSettings = serde_json::from_str(r#"{"duckduckgo": false}"#).unwrap();
+        let s = KeylessSearch::with_http(&home, &settings, http);
+        let e = s.search("anything", &CancelToken::new()).unwrap_err();
+        assert!(e.contains("no web search backend answered"), "{e}");
+        assert!(e.contains("run SearXNG at http://127.0.0.1:8080 or enable duckduckgo in research.json"), "{e}");
+        assert!(!e.to_ascii_lowercase().contains("openrouter"), "{e}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Web search never reaches a paid API: the registry's web channel has no hosted backend and
+    /// the binary's wiring builds no OpenRouter search request.
+    #[test]
+    fn no_code_path_builds_an_openrouter_search() {
+        let r = KeylessSearch::new(&scratch_home("reg"), &ResearchSettings::default());
+        let web = r.registry().get(ChannelId::Web).expect("web channel");
+        assert_eq!(web.spec().id, ChannelId::Web);
+        let w = marlowe_research::WebChannel::new(ResearchSettings::default().keyless().web, None);
+        assert!(w.backends().iter().all(|b| !matches!(b, marlowe_research::WebBackend::Hosted(_))), "{:?}", w.backends());
+        for src in [include_str!("wire.rs"), include_str!("research_wire.rs")] {
+            let search_tool = ["openrouter", ":web_search"].concat();
+            let hits = src.matches(search_tool.as_str()).count();
+            assert_eq!(hits, 0, "an OpenRouter server-tool search is built in the binary");
+        }
+    }
+
+    #[test]
+    fn an_old_research_json_with_hosted_search_still_parses_and_is_ignored() {
+        let s: ResearchSettings = serde_json::from_str(r#"{"duckduckgo": true, "hosted_search": true}"#).unwrap();
+        assert_eq!(s.hosted_search, Some(true));
+        assert_eq!(s.keyless().web, WebConfig::default());
     }
 }

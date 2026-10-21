@@ -55,7 +55,7 @@ pub struct SearchResponse {
     pub results: Vec<SearchResult>,
 }
 
-/// The search port. The M1 backend is an OpenRouter server tool wired by the bin; closures of the
+/// The search port. The bin wires the keyless web channel (SearXNG, DuckDuckGo lite); closures of the
 /// right shape implement it.
 pub trait SearchBackend: Send + Sync {
     fn search(&self, query: &str, cancel: &CancelToken) -> Result<SearchResponse, String>;

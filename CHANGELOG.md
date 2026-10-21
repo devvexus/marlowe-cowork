@@ -4,6 +4,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Web search off OpenRouter
+
+- **`web_search` and deep research never use a paid API.** The tool searches through the keyless web channel research uses (SearXNG at `research.json` `searxng_url`, else DuckDuckGo lite) and says plainly what to run when none answers; the OpenRouter search backend, its model setting and `HostedSearch` hookup are gone. `hosted_search` in an old `research.json` still parses and is ignored.
+
 ### Build disk cap
 
 - **Build folders can no longer grow without bound.** `target\debug` reached 300 GB (1,311 stale `.pdb` files of up to 800 MB) and one M4.6 worktree's build folders 590 GB; about 900 GB of stale build output was deleted. Dev and test builds now carry line tables only (dependencies none), so a test's `.pdb` is a few MB.
