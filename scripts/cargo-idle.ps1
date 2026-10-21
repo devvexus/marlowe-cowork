@@ -99,8 +99,15 @@ try {
         $os = Get-CimInstance Win32_OperatingSystem
         $free = $os.FreeVirtualMemory / 1MB
         $ram = $os.FreePhysicalMemory / 1MB
+        # A quiet file (another session's CPU benchmarks need an idle machine) makes builds wait
+        # rather than refuse: the build starts by itself once the file is gone.
+        $quiet = Test-Path 'C:\Users\matth\Projects\MarloweCowork\target\cargo-quiet'
         # Enough commit, or (the page file can grow again now that the disk has room) plenty of free RAM.
-        if ($free -ge $minFreeGb -or ($ram -ge 8 -and $free -ge 4)) { break }
+        if (-not $quiet -and ($free -ge $minFreeGb -or ($ram -ge 8 -and $free -ge 4))) { break }
+        if ($quiet -and -not $waited) {
+            Write-Host "[cargo-idle] waiting: the machine is reserved for a quiet benchmark window (target\cargo-quiet); this is expected, keep waiting"
+            $waited = $true
+        }
         if (-not $waited) {
             # A marker the lead watches so Matthew gets a push when builds are stuck waiting on his machine.
             try { Set-Content -Path 'C:\Users\matth\Projects\MarloweCowork\target\cargo-waiting.txt' -Value ("{0} free commit {1:N1} GB, free RAM {2:N1} GB" -f (Get-Date -Format 'HH:mm'), $free, $ram) -ErrorAction Stop } catch { }
