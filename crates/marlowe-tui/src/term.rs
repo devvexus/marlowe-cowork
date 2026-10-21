@@ -129,7 +129,11 @@ pub fn run(client: Client, mut state: State, theme: Theme) -> Result<(), TuiErro
     let result = event_loop(&client, &mut state, &theme, images, ansi);
     drop(timer);
     restore(enhanced);
-    if result.is_ok() {
+    if result.is_ok() && state.farewell_shut() {
+        // The daemon closed while it was on screen; the alternate screen is gone, so the last
+        // word goes to the shell.
+        println!("{}", state.goodnight());
+    } else if result.is_ok() {
         // A clean goodbye: stop everything, or keep running if the user chose that.
         closer.goodbye(&state.exit_request(), std::time::Duration::from_millis(1_500));
     }
@@ -203,7 +207,13 @@ fn event_loop(
             }
         }
         if state.quit {
-            return Ok(());
+            // Stopping the daemon: keep showing its shutdown until it is done (or a key, or time).
+            if let Some(r) = state.begin_farewell() {
+                client.send(r);
+            }
+            if state.farewell_done() {
+                return Ok(());
+            }
         }
         let left = pacer.until_draw(drawn.elapsed(), dirty, cadence);
         // The clock is re-read before anything is applied: the approval type-ahead guard compares

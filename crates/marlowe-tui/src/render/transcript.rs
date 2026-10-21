@@ -25,7 +25,7 @@ pub fn lines(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let mut prev: Option<&Entry> = None;
     for (idx, e) in state.entries.iter().enumerate() {
         let gap = !matches!((prev, e), (None, _) | (Some(Entry::User { .. }), _) | (Some(Entry::Tool { .. }), Entry::Tool { .. }))
-            && !matches!(e, Entry::Usage { .. } | Entry::Recall { .. } | Entry::Note { .. } | Entry::Job { .. } | Entry::Timings(_));
+            && !matches!(e, Entry::Usage { .. } | Entry::Recall { .. } | Entry::Note { .. } | Entry::Job { .. } | Entry::Timings(_) | Entry::Seq(_));
         if gap || matches!(e, Entry::User { .. }) && prev.is_some() {
             out.push(Line::default());
         }

@@ -262,6 +262,52 @@ impl State {
         self.quit = true;
     }
 
+    /// A quit that stops the daemon: asks it to, and starts showing its shutdown. `Some` the first
+    /// time only (the request to send); `None` when nothing is to wait for (keeping it running, or
+    /// offline) or the shutdown is already showing.
+    pub fn begin_farewell(&mut self) -> Option<Request> {
+        if self.farewell.is_some() || self.closing.keep_on_exit || !matches!(self.conn, crate::state::Conn::Online { .. }) {
+            return None;
+        }
+        self.farewell = Some(crate::seq::Farewell::new(self.now_ms));
+        Some(self.exit_request())
+    }
+
+    /// The shutdown has finished, or has nothing more to show: the terminal can be given back.
+    pub fn farewell_done(&self) -> bool {
+        self.farewell.as_ref().is_none_or(|f| f.done(self.now_ms))
+    }
+
+    /// The daemon finished closing (as opposed to a skip or a timeout).
+    pub fn farewell_shut(&self) -> bool {
+        self.farewell.as_ref().is_some_and(|f| f.shut())
+    }
+
+    /// `Goodnight, sir.`, from the profile's address.
+    pub fn goodnight(&self) -> String {
+        crate::seq::goodnight(self.user.as_ref().and_then(|u| u.address.as_deref()))
+    }
+
+    /// A research channel or crew spin-up phase: the run's sequence in the transcript, started on
+    /// its first phase and updated in place after.
+    pub(crate) fn seq_phase(&mut self, p: &marlowe_proto::PhaseEvent) {
+        let Some(run) = p.run.as_ref().map(|r| r.as_str().to_string()) else { return };
+        let at = self.entries.iter().rposition(|e| matches!(e, crate::state::Entry::Seq(b) if b.takes(&run, p)));
+        match at {
+            Some(i) => {
+                if let crate::state::Entry::Seq(b) = &mut self.entries[i] {
+                    b.apply(p);
+                }
+            }
+            None => {
+                if let Some(mut b) = crate::seq::Block::open(&run, p) {
+                    b.apply(p);
+                    self.entries.push(crate::state::Entry::Seq(Box::new(b)));
+                }
+            }
+        }
+    }
+
     /// What the client says to the daemon as it leaves.
     pub fn exit_request(&self) -> Request {
         Request::Detach { keep_running: self.closing.keep_on_exit }

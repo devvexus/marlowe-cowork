@@ -83,6 +83,8 @@ pub enum Entry {
     Recall { count: u32, summary: String, timing: Option<Box<RecallTiming>> },
     /// A turn's measured phases, shown with reasoning open (^t).
     Timings(Box<Timings>),
+    /// A crew run spinning up or research channels coming online, updated in place.
+    Seq(Box<crate::seq::Block>),
     /// The Wake brief, with the directories it offers to watch.
     Brief { text: String, offers: Vec<marlowe_proto::WatchCandidate> },
     /// A background job or the user's `!` shell: its command and what it has printed.
@@ -769,6 +771,8 @@ pub struct State {
     /// Unix ms, for relative times and the meter. Set by the run loop.
     pub now_ms: i64,
     pub quit: bool,
+    /// The daemon's shutdown in progress after a quit that stops it (see [`crate::seq::Farewell`]).
+    pub farewell: Option<crate::seq::Farewell>,
 }
 
 impl Default for State {
@@ -839,6 +843,7 @@ impl State {
             date: String::new(),
             now_ms: 0,
             quit: false,
+            farewell: None,
         }
     }
 
@@ -1027,6 +1032,9 @@ impl State {
         match ev {
             ClientEvent::Envelope(env) => self.apply(&env),
             ClientEvent::Disconnected { reason, attempt } => {
+                if let Some(f) = &mut self.farewell {
+                    f.disconnected();
+                }
                 self.conn = Conn::Offline { reason, attempt };
                 Vec::new()
             }
@@ -1060,6 +1068,9 @@ impl State {
             self.last_seq = env.seq;
         }
         self.closing_observe(&env.event);
+        if let Some(f) = &mut self.farewell {
+            f.on_event(&env.event);
+        }
         self.event(&env.event, env.at_ms, env.seq == 0, &mut out);
         out
     }
@@ -1381,6 +1392,7 @@ impl State {
                     }
                 }
             }
+            Event::Phase(p) if crate::seq::BlockKind::of(p).is_some() => self.seq_phase(p),
             Event::TurnTimings { session, spans, numbers, .. } if self.mine(session) => {
                 let screen_ms = self.strip.screen_us().map(|us| us.div_ceil(1000));
                 self.entries.push(Entry::Timings(Box::new(Timings { spans: spans.clone(), numbers: numbers.clone(), screen_ms })));

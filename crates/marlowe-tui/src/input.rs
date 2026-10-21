@@ -23,6 +23,11 @@ impl State {
         if k.kind == KeyEventKind::Release {
             return out;
         }
+        // While Marlowe shuts down any key leaves at once.
+        if let Some(f) = &mut self.farewell {
+            f.skip();
+            return out;
+        }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let alt = k.modifiers.contains(KeyModifiers::ALT);
 

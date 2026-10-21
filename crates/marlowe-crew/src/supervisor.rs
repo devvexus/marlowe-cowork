@@ -148,6 +148,9 @@ pub enum CrewEvent {
     PlanProposed { run: RunId, session: Option<SessionId>, plan: ResearchPlan, quote: CostQuote },
     /// A deep research run's stage moved.
     Research { run: RunId, progress: ResearchProgress },
+    /// A run's setup or a research channel moved (`Spinup` / `Channel` phases, `run` set): the
+    /// daemon forwards it as a live phase.
+    Phase(marlowe_proto::PhaseEvent),
     /// A workflow run's progress view changed (track W).
     Workflow(marlowe_proto::WorkflowInfo),
     /// One `log()` line of a workflow run.

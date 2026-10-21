@@ -16,7 +16,7 @@ use marlowe_agent::{Conversation, UserInfo};
 use marlowe_brains::Brains;
 use marlowe_model::Message;
 use marlowe_proto::{
-    auth, paths, ApprovalDecision, ApprovalId, DaemonInfo, Envelope, Event, LineReader, Request, SessionId,
+    auth, paths, ApprovalDecision, ApprovalId, DaemonInfo, Envelope, Event, LineReader, PhaseEvent, PhaseKind, Request, SessionId,
     SessionSummary, StatusReport,
 };
 
@@ -587,6 +587,8 @@ impl Daemon {
         }
         // 1. Pause: running turns and crew runs are told to stop where they are (in-flight model
         // requests end now; every completed step stays checkpointed).
+        let paused = Instant::now();
+        crate::close_ops::publish(&core, PhaseEvent::start(PhaseKind::Shutdown).stage("pause"));
         let handles: Vec<Arc<SessionHandle>> = lock(&core.sessions).values().cloned().collect();
         for h in &handles {
             h.stop();
@@ -596,21 +598,35 @@ impl Daemon {
         // for the threads is in `settle`, after the models are unloaded.
         let in_flight = crate::close_ops::pause(&core);
         core.approvals.deny_all();
+        let end = PhaseEvent::end(PhaseKind::Shutdown, paused.elapsed().as_millis() as u64).stage("pause");
+        crate::close_ops::publish(&core, end.with_done(in_flight.len() as u64).unit("runs"));
         // 2. Unload: the models Marlowe loaded and the voice sidecar go before anything is saved,
         // so the GPU is free within seconds of the close.
         crate::close_ops::unload(&core);
         // 3. Save: the crew's runs, then the sessions, the journal and the memory snapshot.
+        let saving = Instant::now();
+        crate::close_ops::publish(&core, PhaseEvent::start(PhaseKind::Shutdown).stage("save"));
         crate::close_ops::settle(&core, &in_flight);
         if let Some(s) = &core.sentinel {
             s.shutdown();
         }
         let runners: Vec<JoinHandle<()>> = lock(&core.runners).drain(..).collect();
         join_within(runners, core.cfg.drain_timeout);
+        let end = PhaseEvent::end(PhaseKind::Shutdown, saving.elapsed().as_millis() as u64).stage("save");
+        crate::close_ops::publish(&core, end.with_done(handles.len() as u64).unit("sessions"));
         // After the runners: their last turns are ingested before the final snapshot.
         if let Some(mind) = &core.mind {
-            if let Err(e) = mind.shutdown() {
+            let sealing = Instant::now();
+            crate::close_ops::publish(&core, PhaseEvent::start(PhaseKind::Shutdown).stage("journal"));
+            let failed = mind.shutdown().err();
+            if let Some(e) = &failed {
                 core.bus.publish(Event::Error { session: None, message: format!("memory did not shut down cleanly: {e}") });
             }
+            let mut end = PhaseEvent::end(PhaseKind::Shutdown, sealing.elapsed().as_millis() as u64).stage("journal");
+            if failed.is_some() {
+                end = end.detail("failed to seal");
+            }
+            crate::close_ops::publish(&core, end);
         }
         core.bus.publish(Event::ShuttingDown);
         core.bus.close_all();

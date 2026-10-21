@@ -31,6 +31,13 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - The reasoning header keeps the read (`▸ read 8.2k · 1.9s  ›  thought 4.1s · 312 tok · 76 tok/s`, one row, shortened to `8.2k/1.9s` then dropped by width); the recall line keeps its stage timings (dim labels, amber numbers; `0 memories · abstained` when the gate declined); with reasoning open (^t) each recall stage and the turn's measured phases (with `enter→wire` and `token→screen ~`) get rows. A reopened session shows the stored read and timings.
 - Tools are green, not blue: the theme has no blue, and `theme.rs` is locked. Snapshots changed only where the old `▸ thinking…` row became the strip, and the optimistic message appeared. `frame_cost` now measures the strip busy.
 
+### Live phases (init moments)
+
+- **Shutdown as the boot in reverse.** The daemon publishes `Phase{Shutdown}` steps as they happen (`pause` with the runs in flight, `unload` per model with MiB freed from a before/after runner-memory reading and no byte count without one, `save`, `journal`), then `ShuttingDown`. A quit that stops the daemon now sends `Detach` and stays connected: the TUI shows each step, then `Goodnight, <address>.` from the profile (never hard-coded), and prints that line to the shell. Any key skips; a daemon that announces no close within 1.5 s (another window, keep running) or none within 20 s does not trap the user. The window-close handler path is unchanged.
+- **Research channels.** `ChannelRegistry::search_observed` reports `ChannelEvent::{Retrying, Done, Failed}` (the playbook adds `Online` at the start of a wave) through `ResearchIo::search_observed` and `ResearchHost::channel`; the supervisor forwards `Phase{Channel}`. `arXiv ··· 14 ✓`, `Semantic Scholar ··· 429 retrying ⟳`. Results are unchanged by the observer.
+- **Crew spin-up.** A run emits `Phase{Spinup}` as sandbox, tools (the role's count), budget and model (first resolve) really end; the transcript shows one line, `spinning up analyst ··· sandbox ✓ · 14 tools ✓ · budget 600k ✓ · model ✓`.
+- One line shape, `SeqLine` (`render/seq.rs`), shared by the boot, the shutdown and these in-transcript sequences; a test pins the boot's lines cell for cell. The boot's pacing and look are untouched.
+
 ### Web search off OpenRouter
 
 - **`web_search` and deep research never use a paid API.** The tool searches through the keyless web channel research uses (SearXNG at `research.json` `searxng_url`, else DuckDuckGo lite) and says plainly what to run when none answers; the OpenRouter search backend, its model setting and `HostedSearch` hookup are gone. `hosted_search` in an old `research.json` still parses and is ignored.

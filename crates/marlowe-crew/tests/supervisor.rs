@@ -351,6 +351,41 @@ fn a_run_completes_and_its_steps_are_stored() {
 }
 
 #[test]
+fn a_run_reports_its_spin_up_as_each_step_really_ends() {
+    use marlowe_proto::{PhaseKind, PhaseState};
+    let home = home("spinup");
+    let provider = cloud(note_then_answer("done.
+Confidence: high"));
+    let fx = start(&home, &provider);
+    let receipt = fx.sup.dispatch(None, args("tester", "Compare the configs", None, None)).unwrap();
+    wait_status(&fx.sup, &receipt.run_id, CrewRunStatus::Done);
+    let phases: Vec<_> = drain(&fx.events)
+        .into_iter()
+        .filter_map(|e| match e {
+            CrewEvent::Phase(p) if p.kind == PhaseKind::Spinup => Some(p),
+            _ => None,
+        })
+        .collect();
+    assert!(phases.iter().all(|p| p.run.as_ref() == Some(&receipt.run_id)));
+    let names: Vec<(PhaseState, Option<&str>)> = phases.iter().map(|p| (p.state, p.stage.as_deref())).collect();
+    assert_eq!(
+        names,
+        [
+            (PhaseState::Start, None),
+            (PhaseState::End, Some("sandbox")),
+            (PhaseState::End, Some("tools")),
+            (PhaseState::End, Some("budget")),
+            (PhaseState::End, Some("model")),
+        ]
+    );
+    assert_eq!(phases[0].detail.as_deref(), Some("tester"), "the opening names the role");
+    assert!(phases[2].done.is_some_and(|n| n > 0), "the tool count is the role's, measured");
+    assert!(phases[3].detail.as_deref().is_some_and(|d| !d.is_empty()), "the budget echo");
+    assert!(phases[4].detail.is_some(), "the model that was resolved");
+    finish(fx, &[&home]);
+}
+
+#[test]
 fn a_run_killed_mid_way_resumes_at_its_next_step_after_a_restart() {
     let home = home("resume");
     let first = cloud(|req, _, cancel| {

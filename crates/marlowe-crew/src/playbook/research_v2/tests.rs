@@ -253,6 +253,19 @@ impl ResearchIo for World {
         Ok(self.results.get(&channel).cloned().unwrap_or_default())
     }
 
+    /// Like the registry: the result count of each search goes to the observer.
+    fn search_observed(
+        &self,
+        channel: ChannelId,
+        query: &ChannelQuery,
+        cancel: &CancelToken,
+        obs: &dyn Fn(&marlowe_research::ChannelEvent),
+    ) -> Result<Vec<SourceRef>, ChannelError> {
+        let out = self.search(channel, query, cancel)?;
+        obs(&marlowe_research::ChannelEvent::Done { channel, n: out.len() });
+        Ok(out)
+    }
+
     fn unavailable(&self, _cancel: &CancelToken) -> Vec<(ChannelId, String)> {
         self.down.clone()
     }
@@ -291,6 +304,7 @@ struct Host {
     profile: Option<String>,
     tainted: AtomicBool,
     remembered: Mutex<Vec<(Finding, bool)>>,
+    channel_events: Mutex<Vec<marlowe_research::ChannelEvent>>,
 }
 
 impl Host {
@@ -308,6 +322,7 @@ impl Host {
             profile: None,
             tainted: AtomicBool::new(false),
             remembered: Mutex::new(Vec::new()),
+            channel_events: Mutex::new(Vec::new()),
         }
     }
 
@@ -335,6 +350,10 @@ impl ResearchHost for Host {
 
     fn progress(&self, progress: &ResearchProgress) {
         self.progress.lock().unwrap().push(progress.clone());
+    }
+
+    fn channel(&self, event: &marlowe_research::ChannelEvent) {
+        self.channel_events.lock().unwrap().push(event.clone());
     }
 
     fn propose_plan(&self, plan: &ResearchPlan, quote: &CostQuote) -> Result<PlanDecision, CrewError> {
@@ -753,6 +772,14 @@ fn the_full_run_plans_explores_by_selection_verifies_and_writes_a_checked_report
         "{searches:?}"
     );
     assert!(searches.iter().all(|(c, _)| *c != ChannelId::Memory));
+    // The channels announced themselves as they came online, before any search ran, and each
+    // search reported its count.
+    use marlowe_research::ChannelEvent as Ev;
+    let events = host.channel_events.lock().unwrap().clone();
+    let online: Vec<ChannelId> = events.iter().filter_map(|e| if let Ev::Online(c) = e { Some(*c) } else { None }).collect();
+    assert!(online.contains(&ChannelId::Arxiv) && !online.contains(&ChannelId::Memory), "{events:?}");
+    assert!(matches!(events[0], Ev::Online(_)), "online comes first: {events:?}");
+    assert!(events.iter().any(|e| matches!(e, Ev::Done { channel: ChannelId::Arxiv, n } if *n > 0)), "{events:?}");
     let fetches = world.fetches.lock().unwrap().clone();
     assert_eq!(fetches[0].0, [A_URL, B_URL, C_URL, E_URL, D_URL]);
     assert_eq!(fetches[1].0, [Q_URL], "the follow-up picked the QLoRA link off the LoRA page");

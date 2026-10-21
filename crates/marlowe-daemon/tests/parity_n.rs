@@ -1259,6 +1259,43 @@ fn closing_the_window_pauses_unloads_saves_and_exits_in_that_order() {
     assert!(stored.note.as_deref().is_some_and(|n| n.starts_with("interrupted: stopped after step")), "{:?}", stored.note);
 }
 
+/// What the terminal shows while it quits: it asks with `Detach` and stays connected, so the daemon's
+/// close arrives as events, in the order the steps happen.
+#[test]
+fn a_window_that_stays_connected_sees_the_close_step_by_step() {
+    let home = temp_home("close-live");
+    let p = Arc::new(Routed::default());
+    let calls_rx = p.announce_crew_calls();
+    p.crew(vec![Step::WaitCancel]);
+    let d = start(&home, p.clone(), &Options { crew: true, ..Options::default() });
+    let mut window = Client::connect(&d.info, "tui");
+    dispatch_tester(&mut window, "a long evaluation");
+    calls_rx.recv_timeout(WAIT).expect("the crew step started");
+
+    window.send(&Request::Detach { keep_running: false });
+    let seen = window.until(|e| matches!(e, Event::ShuttingDown));
+    let closing = seen.iter().position(|e| matches!(e.event, Event::Closing { .. })).expect("the close is announced");
+    let steps: Vec<(usize, String, marlowe_proto::PhaseState, Option<u64>)> = seen
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| match &e.event {
+            Event::Phase(ph) if ph.kind == marlowe_proto::PhaseKind::Shutdown => {
+                Some((i, ph.stage.clone().unwrap_or_default(), ph.state, ph.done))
+            }
+            _ => None,
+        })
+        .collect();
+    use marlowe_proto::PhaseState::{End, Start};
+    let order: Vec<(&str, marlowe_proto::PhaseState)> = steps.iter().map(|(_, s, st, _)| (s.as_str(), *st)).collect();
+    let pos = |what: (&str, marlowe_proto::PhaseState)| order.iter().position(|o| *o == what).unwrap_or_else(|| panic!("no {what:?} in {order:?}"));
+    assert!(pos(("pause", Start)) < pos(("pause", End)) && pos(("pause", End)) < pos(("unload", Start)), "{order:?}");
+    assert!(pos(("unload", End)) < pos(("save", Start)) && pos(("save", Start)) < pos(("save", End)), "{order:?}");
+    assert!(steps[0].0 > closing, "Closing comes first");
+    let paused = steps.iter().find(|(_, s, st, _)| s == "pause" && *st == End).unwrap();
+    assert_eq!(paused.3, Some(1), "one crew run was in flight");
+    assert!(ended(d.join, 60));
+}
+
 #[test]
 fn a_plain_shutdown_still_unloads_first_but_leaves_runs_to_resume_by_themselves() {
     let home = temp_home("close-plain");

@@ -11,6 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Widget};
 
 use super::{ink, meter, put, Geometry};
+use crate::seq::SeqLine;
 use crate::state::State;
 use crate::text;
 use crate::wake::{notice_glyph, Health, BOOT_LINES};
@@ -49,26 +50,8 @@ pub fn draw(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
             lines.push(Line::from(""));
             continue;
         }
-        let (glyph, gstyle) = match s.health {
-            Health::Pending => ("○", ink(Ink::Dimmer, theme)),
-            Health::Ok => ("●", ink(Ink::Green, theme)),
-            Health::Degraded => ("●", ink(Ink::Amber, theme)),
-            Health::Down => ("●", ink(Ink::Red, theme)),
-        };
-        let dots = "·".repeat(LABEL_W.saturating_sub(s.label.len() + 2));
-        let value = if s.value.is_empty() { "…".to_string() } else { s.value.clone() };
-        let vstyle = match s.health {
-            Health::Pending => ink(Ink::Dimmer, theme),
-            Health::Ok => theme.normal(),
-            Health::Degraded => ink(Ink::Amber, theme),
-            Health::Down => ink(Ink::Red, theme),
-        };
-        lines.push(Line::from(vec![
-            Span::styled(format!("{glyph}  "), gstyle),
-            Span::styled(format!("{} ", s.label), ink(Ink::Dim, theme)),
-            Span::styled(format!("{dots} "), ink(Ink::Dimmer, theme)),
-            Span::styled(text::truncate(&value, r.width.saturating_sub(20) as usize), vstyle),
-        ]));
+        let sl = SeqLine { health: s.health, label: s.label.to_string(), value: s.value.clone(), done: s.health != Health::Pending };
+        lines.push(super::seq::line(&sl, LABEL_W, r.width.saturating_sub(20) as usize, theme));
     }
     lines.push(Line::from(""));
     let hint = if shown >= BOOT_LINES { "any key to begin" } else { "any key skips" };

@@ -32,6 +32,7 @@ mod board;
 mod boot;
 mod context;
 mod conversation;
+mod farewell;
 mod crew;
 mod library;
 mod memory;
@@ -39,6 +40,7 @@ mod overlay;
 mod plan;
 mod panel;
 mod popup;
+mod seq;
 mod strip;
 mod transcript;
 mod watch;
@@ -263,6 +265,8 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
             draw_conversation_box(&g, state, theme, buf);
             if state.booting() {
                 boot::draw(g.conversation, state, theme, buf);
+            } else if state.farewell.is_some() {
+                farewell::draw(g.conversation, state, theme, buf);
             } else {
                 conversation::draw(g.conversation, state, theme, buf);
                 if let Some(r) = g.plan_banner {
@@ -285,7 +289,7 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
     draw_header(g.header, state, theme, buf);
     draw_footer(g.footer, state, theme, buf);
     let cursor = g.composer.and_then(|r| draw_composer(r, state, theme, buf));
-    if state.overlay.is_none() && state.view == View::Conversation && state.approvals.is_empty() && !state.booting() {
+    if state.overlay.is_none() && state.view == View::Conversation && state.approvals.is_empty() && !state.booting() && state.farewell.is_none() {
         popup::draw(&g, state, theme, buf);
     }
 
@@ -320,7 +324,7 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
         }
         None => {}
     }
-    if state.overlay.is_none() && !state.booting() {
+    if state.overlay.is_none() && !state.booting() && state.farewell.is_none() {
         boot::toasts(&g, state, theme, buf);
     }
     if let (false, Some(a)) = (quit_over_approval, state.current_approval()) {

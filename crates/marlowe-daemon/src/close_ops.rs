@@ -25,11 +25,12 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use marlowe_crew::{Run, RunId, INTERRUPTED};
 use marlowe_os::toast::{Toast, ToastAction, Toaster};
 use marlowe_os::tray::{Tray, WindowsTray, STOP};
-use marlowe_proto::{Event, InterruptedRun, Request};
+use marlowe_proto::{Event, InterruptedRun, PhaseEvent, PhaseKind, Request};
 
 use crate::daemon::Core;
 use crate::lock;
@@ -122,6 +123,11 @@ impl CloseHooks {
 
 fn background(c: &Close) -> bool {
     c.setting.load(Ordering::SeqCst) || c.choice.load(Ordering::SeqCst)
+}
+
+/// A shutdown step on the bus, for a window that is showing the close.
+pub(crate) fn publish(core: &Core, ev: PhaseEvent) {
+    core.bus.publish(Event::Phase(ev));
 }
 
 fn note(c: &Close, line: impl Into<String>) {
@@ -317,9 +323,37 @@ pub(crate) fn unload(core: &Arc<Core>) {
     let c = close_state(core);
     let unloader = lock(&c.unloader).clone();
     let unloaded = match unloader {
-        Some(u) => u(),
+        Some(u) => {
+            let names = u();
+            for m in &names {
+                publish(core, PhaseEvent::start(PhaseKind::Shutdown).stage("unload").detail(m.as_str()));
+                publish(core, PhaseEvent::end(PhaseKind::Shutdown, 0).stage("unload").detail(m.as_str()));
+            }
+            names
+        }
         None => {
-            let (done, failed) = core.brains.unload_local_models();
+            // The runners' memory before and after each unload is what it freed; with no GPU
+            // reading the line says unloaded and no byte count.
+            let gpu = core.brains.factory().hardware().map(|h| h.gpu.clone());
+            let mut began: Option<(Instant, Option<f64>)> = None;
+            let (done, failed) = core.brains.unload_local_models_observed(&mut |name, after| match after {
+                None => {
+                    let before = gpu.as_deref().and_then(crate::live::runners_mib);
+                    began = Some((Instant::now(), before));
+                    publish(core, PhaseEvent::start(PhaseKind::Shutdown).stage("unload").detail(name));
+                }
+                Some(ok) => {
+                    let (t, before) = began.take().unwrap_or((Instant::now(), None));
+                    let after = gpu.as_deref().and_then(crate::live::runners_mib);
+                    let mut end = PhaseEvent::end(PhaseKind::Shutdown, t.elapsed().as_millis() as u64).stage("unload").detail(name);
+                    if !ok {
+                        end = end.detail("failed to unload");
+                    } else if let Some(mib) = crate::live::freed_mib(before, after) {
+                        end = end.with_done(mib.round() as u64).unit("MiB");
+                    }
+                    publish(core, end);
+                }
+            });
             for f in failed {
                 note(&c, format!("unload failed: {f}"));
             }

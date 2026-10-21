@@ -56,7 +56,7 @@ pub use net::NetHttp;
 pub use page_identity::{is_identity_meta, page_route};
 pub use politeness::{HostGate, Refusal, Robots};
 pub use registry::{
-    classify, route, ChannelRegistry, QuestionType, RegistryError, DEFAULT_BACKOFF, MAX_RETRY_WAIT, RATE_LIMIT_RETRIES,
+    classify, route, ChannelEvent, ChannelRegistry, QuestionType, RegistryError, DEFAULT_BACKOFF, MAX_RETRY_WAIT, RATE_LIMIT_RETRIES,
 };
 pub use source::{
     canonical_url, normalize_arxiv, normalize_doi, normalize_title, Identity, Namespace, RepoAt, SourceRef, TrustBucket,

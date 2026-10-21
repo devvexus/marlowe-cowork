@@ -268,7 +268,7 @@ impl State {
 
     /// Something on screen moves with the clock: redraw often.
     pub fn animating(&self) -> bool {
-        self.booting() || self.wake.speaking() || self.activity().moving() || self.strip_up()
+        self.booting() || self.farewell.is_some() || self.wake.speaking() || self.activity().moving() || self.strip_up()
     }
 
     /// How fast the run loop redraws with no input: the boot at its own pace, anything live (a

@@ -484,6 +484,12 @@ impl Brains {
     /// before anything else shuts down (the window closed). A model the library does not list is
     /// someone else's and stays. Returns what was unloaded and what could not be.
     pub fn unload_local_models(&self) -> (Vec<String>, Vec<String>) {
+        self.unload_local_models_observed(&mut |_, _| {})
+    }
+
+    /// [`Brains::unload_local_models`], telling `step` about each model: `(name, None)` just
+    /// before it is unloaded and `(name, Some(ok))` just after.
+    pub fn unload_local_models_observed(&self, step: &mut dyn FnMut(&str, Option<bool>)) -> (Vec<String>, Vec<String>) {
         let Some(hw) = self.factory().hardware() else { return (Vec::new(), Vec::new()) };
         let ours: Vec<String> = self
             .with_library(|l| l.models())
@@ -494,7 +500,10 @@ impl Brains {
             if !ours.iter().any(|o| same_model(o, &name)) {
                 continue;
             }
-            match hw.models.unload(&name) {
+            step(&name, None);
+            let r = hw.models.unload(&name);
+            step(&name, Some(r.is_ok()));
+            match r {
                 Ok(()) => done.push(name),
                 Err(e) => failed.push(e),
             }

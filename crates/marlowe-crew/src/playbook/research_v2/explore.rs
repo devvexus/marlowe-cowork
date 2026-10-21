@@ -133,6 +133,9 @@ pub(super) fn explore(ctx: &Ctx<'_>, plan: &ResearchPlan) -> Result<Explored, Cr
     // Live channels: what the io offers minus what cannot answer now (probed once per run).
     let down: Vec<ChannelId> = ctx.host.io().unavailable(ctx.host.cancel()).into_iter().map(|(c, _)| c).collect();
     let live: Vec<ChannelId> = ctx.host.io().channels().into_iter().filter(|c| !down.contains(c)).collect();
+    for c in &live {
+        ctx.host.channel(&marlowe_research::ChannelEvent::Online(*c));
+    }
 
     let total = plan.depth + 1;
     for depth in ex.state.waves_done..=plan.depth {
@@ -483,7 +486,7 @@ fn run_jobs(ctx: &Ctx<'_>, jobs: &[Job], out: &mut [Found]) {
                 let label = describe_query(query);
                 // A channel that panics on one query is one failed query, not a failed run.
                 let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    ctx.host.io().search(*channel, query, ctx.host.cancel())
+                    ctx.host.io().search_observed(*channel, query, ctx.host.cancel(), &|ev| ctx.host.channel(ev))
                 }));
                 let entry = match r {
                     Ok(Ok(refs)) => (i, refs, None),

@@ -169,7 +169,7 @@ impl Hasher {
                 self.str(text);
             }
             // Rare and small: their debug text is every field.
-            Entry::Usage { .. } | Entry::Brief { .. } | Entry::File { .. } | Entry::Timings(_) => {
+            Entry::Usage { .. } | Entry::Brief { .. } | Entry::File { .. } | Entry::Timings(_) | Entry::Seq(_) => {
                 self.u64(9);
                 self.str(&format!("{e:?}"));
             }

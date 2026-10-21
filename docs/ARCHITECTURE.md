@@ -152,6 +152,8 @@ Frames: the TUI draws a frame the moment an event arrives, at most once per disp
 
 The live strip (`marlowe-tui/src/live.rs`, `render/strip.rs`): `Strip` folds phase events and the stream into the turn's current call (read, thinking, writing, tools, waits), recall stages, load, compaction and the memory tail; the renderer only reads it. It is two rows, reserved by state alone while a turn is up (Enter to `TurnFinished`, plus a brief linger for the tail), drawn right under the last transcript line; `view_top` treats its coming and going as a strip change, not a resize, so a scrolled-up reader keeps their rows and the text does not slide when it leaves. Stages and short phases go through `Flip` queues that give each one frame; `Strip::begin_frame` advances them whether or not the strip is drawn. Every figure is a daemon measurement or carries `~` until one replaces it.
 
+Init moments (`seq.rs`, `render/seq.rs`, `render/farewell.rs`): `SeqLine` is the one "initializing mainframe" line (glyph, label, leader dots, value) the boot, the shutdown and in-transcript sequences share. Quitting sends `Detach` and keeps the connection: `Farewell` folds the daemon's `Phase{Shutdown}` steps (`close_ops`/`Daemon::wait` publish them as pause, unload, save and journal really end) until `ShuttingDown`, EOF, a key or a timeout. `Entry::Seq` holds a run's research channels (`Phase{Channel}`) or crew spin-up (`Phase{Spinup}`), updated in place by run id.
+
 ## Crew and sandbox model
 
 An agent is a role card (`roles/*.md`, overridden by `<home>\roles\*.md`: slot, effort, tool allowlist, budget, sandbox kind, instructions), and that is all. Depth 1: crew runs never get `dispatch`.

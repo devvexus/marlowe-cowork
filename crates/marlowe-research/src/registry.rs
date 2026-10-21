@@ -156,6 +156,20 @@ pub enum RegistryError {
     Endpoint(ChannelId, String),
 }
 
+/// What a channel is doing, as a search runs: for a client that shows channels coming online.
+/// An observer only observes; it cannot change what a search returns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChannelEvent {
+    /// The channel can answer (the host emits this at the start of a wave).
+    Online(ChannelId),
+    /// The server answered 429; the call waits `after` and asks again.
+    Retrying { channel: ChannelId, status: u16, after: Duration },
+    /// A search returned `n` results.
+    Done { channel: ChannelId, n: usize },
+    /// A search failed for good.
+    Failed { channel: ChannelId, why: String },
+}
+
 struct Entry {
     channel: Arc<dyn Channel>,
     limiter: Arc<Limiter>,
@@ -285,13 +299,32 @@ impl ChannelRegistry {
         query: &ChannelQuery,
         ctx: &ChannelCtx<'_>,
     ) -> Result<Vec<SourceRef>, ChannelError> {
+        self.search_observed(id, query, ctx, &|_| {})
+    }
+
+    /// [`ChannelRegistry::search`], telling `obs` about a retry, the result count and a failure.
+    pub fn search_observed(
+        &self,
+        id: ChannelId,
+        query: &ChannelQuery,
+        ctx: &ChannelCtx<'_>,
+        obs: &dyn Fn(&ChannelEvent),
+    ) -> Result<Vec<SourceRef>, ChannelError> {
         let e = self.entries.get(&id).ok_or(ChannelError::NotRegistered(id))?;
         let key = CacheKey::of(&query.cache_parts(id));
         let ttl = e.channel.spec().cache_ttl;
         if let Some(hit) = ctx.cache.and_then(|c| c.get_json::<Vec<SourceRef>>(id, &key, ttl)) {
+            obs(&ChannelEvent::Done { channel: id, n: hit.len() });
             return Ok(hit);
         }
-        let out = self.paced(e, ctx, |c| e.channel.search(query, c))?;
+        let out = match self.paced(e, ctx, obs, |c| e.channel.search(query, c)) {
+            Ok(out) => out,
+            Err(err) => {
+                obs(&ChannelEvent::Failed { channel: id, why: err.to_string() });
+                return Err(err);
+            }
+        };
+        obs(&ChannelEvent::Done { channel: id, n: out.len() });
         if let Some(c) = ctx.cache {
             let _ = c.put_json(id, &key, &out);
         }
@@ -312,7 +345,7 @@ impl ChannelRegistry {
         if let Some(hit) = ctx.cache.and_then(|c| c.get_json::<Option<SourceRef>>(id, &key, ttl)) {
             return Ok(hit);
         }
-        let out = self.paced(e, ctx, |c| e.channel.lookup(ns, value, c))?;
+        let out = self.paced(e, ctx, &|_| {}, |c| e.channel.lookup(ns, value, c))?;
         if let Some(c) = ctx.cache {
             let _ = c.put_json(id, &key, &out);
         }
@@ -327,6 +360,7 @@ impl ChannelRegistry {
         &self,
         e: &Entry,
         ctx: &ChannelCtx<'_>,
+        obs: &dyn Fn(&ChannelEvent),
         f: impl Fn(&ChannelCtx<'_>) -> Result<T, ChannelError>,
     ) -> Result<T, ChannelError> {
         let mut attempt = 0;
@@ -345,6 +379,7 @@ impl ChannelRegistry {
                 return out;
             }
             attempt += 1;
+            obs(&ChannelEvent::Retrying { channel: e.channel.spec().id, status: 429, after: hold });
         }
     }
 }
@@ -513,6 +548,57 @@ mod tests {
         assert!(t.elapsed() < Duration::from_secs(5));
         assert_eq!(http.0.lock().unwrap().len(), 1, "no retry inside the server's hold");
         assert!(r.limiter(ChannelId::Rss).unwrap().reserve() > Duration::from_secs(3_000), "the hold stands");
+    }
+
+    /// 429 once, then results: what the observer is told, with no network.
+    struct Throttled(ChannelSpec, std::sync::atomic::AtomicU32);
+    impl Channel for Throttled {
+        fn spec(&self) -> &ChannelSpec {
+            &self.0
+        }
+        fn search(&self, q: &ChannelQuery, _: &ChannelCtx<'_>) -> Result<Vec<SourceRef>, ChannelError> {
+            if self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                return Err(ChannelError::RateLimited { channel: ChannelId::Rss, retry_after: Some(Duration::from_millis(2)) });
+            }
+            Ok(vec![SourceRef::new(ChannelId::Rss, "https://e.org/a", &q.text), SourceRef::new(ChannelId::Rss, "https://e.org/b", &q.text)])
+        }
+    }
+
+    #[test]
+    fn an_observer_hears_the_retry_then_the_count_and_the_results_are_unchanged() {
+        let mut r = ChannelRegistry::empty().with_max_retry_wait(Duration::from_secs(1));
+        r.register(Arc::new(Throttled(spec(ChannelId::Rss, "https://e.org"), Default::default()))).unwrap();
+        let cancel = CancelToken::new();
+        let ctx = ChannelCtx { http: &NoNet, cache: None, cancel: &cancel };
+        let seen = std::sync::Mutex::new(Vec::new());
+        let q = ChannelQuery::new("x", 2);
+        let watched = r.search_observed(ChannelId::Rss, &q, &ctx, &|e| seen.lock().unwrap().push(e.clone())).unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                ChannelEvent::Retrying { channel: ChannelId::Rss, status: 429, after: Duration::from_millis(2) },
+                ChannelEvent::Done { channel: ChannelId::Rss, n: 2 },
+            ]
+        );
+        // The same search with nobody watching returns the same results.
+        let mut r2 = ChannelRegistry::empty().with_max_retry_wait(Duration::from_secs(1));
+        r2.register(Arc::new(Throttled(spec(ChannelId::Rss, "https://e.org"), Default::default()))).unwrap();
+        let plain = r2.search(ChannelId::Rss, &q, &ctx).unwrap();
+        assert_eq!(watched, plain);
+    }
+
+    #[test]
+    fn a_failed_search_is_reported_once_as_failed() {
+        let mut r = ChannelRegistry::empty().with_max_retry_wait(Duration::ZERO);
+        r.register(Arc::new(Throttled(spec(ChannelId::Rss, "https://e.org"), Default::default()))).unwrap();
+        let cancel = CancelToken::new();
+        let ctx = ChannelCtx { http: &NoNet, cache: None, cancel: &cancel };
+        let seen = std::sync::Mutex::new(Vec::new());
+        let e = r.search_observed(ChannelId::Rss, &ChannelQuery::new("x", 1), &ctx, &|e| seen.lock().unwrap().push(e.clone()));
+        assert!(e.is_err());
+        let seen = seen.into_inner().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(matches!(&seen[0], ChannelEvent::Failed { channel: ChannelId::Rss, .. }), "{seen:?}");
     }
 
     #[test]

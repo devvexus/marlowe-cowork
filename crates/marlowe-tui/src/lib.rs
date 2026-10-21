@@ -38,6 +38,7 @@ pub mod pacing;
 pub mod panel;
 pub mod render;
 pub mod report;
+pub mod seq;
 pub mod slash;
 pub mod state;
 mod term;

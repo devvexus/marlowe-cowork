@@ -67,6 +67,25 @@ impl ChannelId {
         }
     }
 
+    /// The name a person reads: `Semantic Scholar`, `arXiv`.
+    pub fn label(self) -> &'static str {
+        match self {
+            ChannelId::Arxiv => "arXiv",
+            ChannelId::OpenAlex => "OpenAlex",
+            ChannelId::Crossref => "Crossref",
+            ChannelId::SemanticScholar => "Semantic Scholar",
+            ChannelId::Wikipedia => "Wikipedia",
+            ChannelId::Wikidata => "Wikidata",
+            ChannelId::Github => "GitHub",
+            ChannelId::HackerNews => "Hacker News",
+            ChannelId::StackExchange => "Stack Exchange",
+            ChannelId::Pubmed => "PubMed",
+            ChannelId::Rss => "RSS",
+            ChannelId::Web => "Web",
+            ChannelId::Memory => "Memory",
+        }
+    }
+
     /// False only for `Memory`, which is read through the Mind, never the network.
     pub fn is_network(self) -> bool {
         self != ChannelId::Memory

@@ -227,7 +227,6 @@ pub(crate) fn runners_mib(gpu: &dyn GpuSource) -> Option<f64> {
 }
 
 /// What an unload freed, MiB: runner memory before less after. `None` unless both readings exist.
-#[allow(dead_code)]
 pub(crate) fn freed_mib(before: Option<f64>, after: Option<f64>) -> Option<f64> {
     Some((before? - after?).max(0.0))
 }

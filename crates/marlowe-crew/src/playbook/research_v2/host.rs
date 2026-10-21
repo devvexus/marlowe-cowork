@@ -7,7 +7,7 @@ use std::sync::Arc;
 use marlowe_extract::Link;
 use marlowe_model::CancelToken;
 use marlowe_proto::{ChannelId, CostQuote, MemoryTrust, PlanDecision, ResearchPlan, ResearchProgress, RunId};
-use marlowe_research::{ChannelCtx, ChannelError, ChannelQuery, ChannelRegistry, HttpGet, ResearchCache, SourceRef};
+use marlowe_research::{ChannelCtx, ChannelError, ChannelEvent, ChannelQuery, ChannelRegistry, HttpGet, ResearchCache, SourceRef};
 
 use super::types::Finding;
 use crate::CrewError;
@@ -51,6 +51,18 @@ pub trait ResearchIo: Send + Sync {
         cancel: &CancelToken,
     ) -> Result<Vec<SourceRef>, ChannelError>;
 
+    /// [`ResearchIo::search`], telling `obs` about a rate-limit retry, the result count and a
+    /// failure. An io with nothing to report just searches.
+    fn search_observed(
+        &self,
+        channel: ChannelId,
+        query: &ChannelQuery,
+        cancel: &CancelToken,
+        _obs: &dyn Fn(&ChannelEvent),
+    ) -> Result<Vec<SourceRef>, ChannelError> {
+        self.search(channel, query, cancel)
+    }
+
     /// One result per url, in order (see [`PageFetcher::fetch`]).
     fn fetch(&self, urls: &[String], concurrency: usize, cancel: &CancelToken) -> Vec<FetchedPage>;
 
@@ -83,6 +95,17 @@ impl ResearchIo for ChannelIo {
     ) -> Result<Vec<SourceRef>, ChannelError> {
         let ctx = ChannelCtx { http: self.http.as_ref(), cache: self.cache.as_deref(), cancel };
         self.registry.search(channel, query, &ctx)
+    }
+
+    fn search_observed(
+        &self,
+        channel: ChannelId,
+        query: &ChannelQuery,
+        cancel: &CancelToken,
+        obs: &dyn Fn(&ChannelEvent),
+    ) -> Result<Vec<SourceRef>, ChannelError> {
+        let ctx = ChannelCtx { http: self.http.as_ref(), cache: self.cache.as_deref(), cancel };
+        self.registry.search_observed(channel, query, &ctx, obs)
     }
 
     fn fetch(&self, urls: &[String], concurrency: usize, cancel: &CancelToken) -> Vec<FetchedPage> {
@@ -141,6 +164,9 @@ pub trait ResearchHost: Send + Sync {
 
     /// A stage moved.
     fn progress(&self, progress: &ResearchProgress);
+
+    /// A channel came online, retried, returned results or failed (for a client's live view).
+    fn channel(&self, _event: &ChannelEvent) {}
 
     /// Shows the plan and its quote and returns the user's decision. The supervisor's host does
     /// not wait for it: it parks the run (`Err(Stopped)`) and the answer, given later, is returned

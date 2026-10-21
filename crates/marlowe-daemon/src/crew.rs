@@ -162,6 +162,9 @@ fn on_event(core: &Arc<Core>, ev: CrewEvent) {
         CrewEvent::Research { run, progress } => {
             core.bus.publish(Event::ResearchProgress { run, progress });
         }
+        CrewEvent::Phase(p) => {
+            core.bus.publish(Event::Phase(p));
+        }
         // Workflow runs (track W).
         CrewEvent::Workflow(info) => {
             core.bus.publish(Event::WorkflowUpdated(info));

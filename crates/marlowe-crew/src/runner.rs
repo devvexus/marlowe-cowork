@@ -6,14 +6,14 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use marlowe_agent::{AgentEvent, ApprovalGate, ApprovalReq, Budget, MAX_STEPS};
+use marlowe_agent::{AgentEvent, ApprovalGate, ApprovalReq, Budget, ToolHost, MAX_STEPS};
 use marlowe_mind::{Kind, MemoryIn, ProfileQuery, Provenance, RecallQuery};
 use marlowe_model::{CancelToken, Message, Pricing, Usage};
 use marlowe_proto::{
     ApprovalDecision, CostQuote, CrewRunStatus, CrewSpent, Dispatch, MemoryScope, MemoryTrust, PlanDecision, Playbook, ResearchPlan,
-    ResearchProgress, RunId, SandboxKind, SessionId,
+    PhaseEvent, PhaseKind, ResearchProgress, RunId, SandboxKind, SessionId,
 };
 
 use crate::playbook::build_v2::{BuildPlan, BuildQuote};
@@ -26,6 +26,7 @@ use crate::role::RoleCard;
 use crate::run::{call_line, clip, Run, StepRecord};
 use crate::sandbox::{Sandbox, ShellVerdict};
 use crate::shell_policy::{Dialect, Verdict};
+use crate::tools::CrewTools;
 use crate::supervisor::{extend_budget, result_memory, Control, CrewEvent, Inner, PendingPlan};
 use crate::CrewError;
 
@@ -61,6 +62,10 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
     let roles = inner.roles.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let card = roles.get(&run.role).ok_or_else(|| CrewError::UnknownRole(run.role.clone()))?;
 
+    // The run spinning up, step by step as each really ends (a client shows them as they land).
+    let spin = |ev: PhaseEvent| inner.emit(CrewEvent::Phase(PhaseEvent { run: Some(id.clone()), ..ev }));
+    spin(PhaseEvent::start(PhaseKind::Spinup).detail(run.role.as_str()));
+    let began = Instant::now();
     let sandbox = match run.sandbox.clone() {
         Some(sb) if sb.root.exists() => sb,
         _ => {
@@ -75,6 +80,7 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
         }
     };
     inner.update(id, |r| r.sandbox = Some(sandbox.clone()));
+    spin(PhaseEvent::end(PhaseKind::Spinup, began.elapsed().as_millis() as u64).stage("sandbox"));
 
     let done: HashMap<String, StepResult> = inner
         .store()
@@ -98,11 +104,16 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
         budget_gate: Mutex::new(()),
         in_flight: Mutex::new(0),
         pricing: Mutex::new(HashMap::new()),
+        model_spun: std::sync::atomic::AtomicBool::new(false),
     });
 
     let resolver = hooks.clone();
     let models: playbook::ModelResolver = Arc::new(move |card| resolver.resolve(card));
     let tools = (inner.deps.tools)(&sandbox, run.workspace.as_deref());
+    let begun = Instant::now();
+    let n_tools = CrewTools::new(tools.clone(), card.tools.clone(), sandbox.clone()).specs().len() as u64;
+    spin(PhaseEvent::end(PhaseKind::Spinup, begun.elapsed().as_millis() as u64).stage("tools").with_done(n_tools));
+    spin(PhaseEvent::end(PhaseKind::Spinup, 0).stage("budget").detail(budget_echo(&run.budget)));
     let mut runner = AgentRunner::new(id.clone(), roles.clone(), models, tools, sandbox, run.workspace.clone());
     runner.tool_factory = Some(inner.deps.tools.clone());
     runner.approvals = Arc::new(RunGate { inner: inner.clone(), id: id.clone(), session: run.session.clone() });
@@ -286,6 +297,20 @@ struct Hooks {
     in_flight: Mutex<u32>,
     /// Price per role, for providers that report no cost.
     pricing: Mutex<HashMap<String, Option<Pricing>>>,
+    /// The spin-up's model step has been reported (the first step's model resolved).
+    model_spun: std::sync::atomic::AtomicBool,
+}
+
+/// The run's budget in a few characters for the spin-up line: `600k` tokens, else steps or dollars.
+fn budget_echo(b: &marlowe_proto::CrewBudget) -> String {
+    match (b.tokens, b.steps, b.usd) {
+        (Some(t), _, _) if t >= 1_000_000 => format!("{:.1}M", t as f64 / 1e6),
+        (Some(t), _, _) if t >= 1_000 => format!("{}k", t / 1_000),
+        (Some(t), _, _) => t.to_string(),
+        (None, Some(s), _) => format!("{s} steps"),
+        (None, None, Some(u)) => format!("${u:.2}"),
+        _ => "uncapped".into(),
+    }
 }
 
 impl Hooks {
@@ -434,6 +459,10 @@ spent: {:?}", self.id, run.goal, run.budget, spent),
         loop {
             let choice = self.inner.choose(card)?;
             if !choice.waits_for_gpu {
+                if !self.model_spun.swap(true, Ordering::SeqCst) {
+                    let ev = PhaseEvent::end(PhaseKind::Spinup, 0).stage("model").detail(choice.model.model.id.as_str());
+                    self.inner.emit(CrewEvent::Phase(PhaseEvent { run: Some(self.id.clone()), ..ev }));
+                }
                 return Ok(choice.model);
             }
             if !waiting {
@@ -704,6 +733,32 @@ impl playbook::ResearchHost for RunResearch {
 
     fn check(&self) -> Result<(), CrewError> {
         self.hooks.check()
+    }
+
+    fn channel(&self, ev: &marlowe_research::ChannelEvent) {
+        use marlowe_research::ChannelEvent as C;
+        let phase = |c: marlowe_proto::ChannelId| {
+            marlowe_proto::PhaseEvent { run: Some(self.hooks.id.clone()), ..marlowe_proto::PhaseEvent::start(marlowe_proto::PhaseKind::Channel) }.stage(c.label())
+        };
+        let ev = match ev {
+            C::Online(c) => phase(*c),
+            C::Retrying { channel, status, .. } => {
+                let mut p = phase(*channel).detail(format!("{status} retrying"));
+                p.state = marlowe_proto::PhaseState::Progress;
+                p
+            }
+            C::Done { channel, n } => {
+                let mut p = phase(*channel).with_done(*n as u64);
+                p.state = marlowe_proto::PhaseState::End;
+                p
+            }
+            C::Failed { channel, why } => {
+                let mut p = phase(*channel).detail(format!("failed: {why}"));
+                p.state = marlowe_proto::PhaseState::End;
+                p
+            }
+        };
+        self.hooks.inner.emit(CrewEvent::Phase(ev));
     }
 
     fn progress(&self, p: &ResearchProgress) {

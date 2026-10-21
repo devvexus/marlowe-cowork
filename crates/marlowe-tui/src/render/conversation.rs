@@ -17,6 +17,8 @@ use crate::text;
 const PAD: u16 = 2;
 /// Width of the `you  ` label.
 const USER_LABEL: usize = 5;
+/// The label column of an in-transcript sequence line (`Semantic Scholar ····`).
+const SEQ_LABEL_W: usize = 22;
 
 pub fn draw(full: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     if full.width < 10 || full.height == 0 {
@@ -538,6 +540,11 @@ pub(super) fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, th
             }
         }
         Entry::Recall { count, summary, timing: Some(t) } => recall_timed(*count, summary, t, state.show_thinking, width, theme, out),
+        Entry::Seq(b) => {
+            for l in &b.lines {
+                out.push(super::seq::line(l, SEQ_LABEL_W, width.saturating_sub(SEQ_LABEL_W + 4), theme));
+            }
+        }
         Entry::Timings(t) => timings_lines(t, state.show_thinking, width, theme, out),
         Entry::Recall { count, summary, timing: None } => {
             let n = format!("{count} memor{}", if *count == 1 { "y" } else { "ies" });
