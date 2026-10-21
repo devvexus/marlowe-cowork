@@ -30,6 +30,9 @@ pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Longest session title taken from the first user message.
 const TITLE_CHARS: usize = 60;
 
+/// Why a pending request was denied when the user sent a message instead of answering it.
+pub(crate) const USER_MOVED_ON: &str = "the user sent a new message instead of answering this request";
+
 /// Pending approvals, daemon-wide.
 #[derive(Default)]
 pub(crate) struct Approvals {
@@ -39,6 +42,8 @@ pub(crate) struct Approvals {
     reasons: Mutex<HashMap<ApprovalId, String>>,
     /// The same, by tool call id, until the agent loop takes it for the call's result.
     denials: Mutex<HashMap<String, String>>,
+    /// The session whose turn waits on each conductor approval ([`Approvals::deny_session`]).
+    sessions: Mutex<HashMap<ApprovalId, SessionId>>,
 }
 
 /// Characters of a denial reason kept.
@@ -94,6 +99,18 @@ impl Approvals {
     pub fn remove(&self, id: ApprovalId) {
         lock(&self.pending).remove(&id);
         lock(&self.reasons).remove(&id);
+        lock(&self.sessions).remove(&id);
+    }
+
+    /// Marks `id` as one a turn of `session` waits on.
+    pub fn waits(&self, id: ApprovalId, session: &SessionId) {
+        lock(&self.sessions).insert(id, session.clone());
+    }
+
+    /// Denies, with `reason`, every approval a turn of `session` waits on; how many there were.
+    pub fn deny_session(&self, session: &SessionId, reason: &str) -> usize {
+        let ids: Vec<ApprovalId> = lock(&self.sessions).iter().filter(|(_, s)| *s == session).map(|(id, _)| *id).collect();
+        ids.into_iter().filter(|id| self.resolve_with(*id, ApprovalDecision::Deny, Some(reason.to_string()))).count()
     }
 
     pub fn deny_all(&self) {
@@ -359,6 +376,11 @@ impl Core {
             });
         }
         let refuse = |m: String| (Some(handle.id.clone()), m);
+        // A request the turn is waiting on is answered by the user moving on: it is denied, so the
+        // turn reaches its next step and takes this message, instead of holding it (and the
+        // user) until the request times out. An unanswered request in a turn a notice started
+        // held a follow-up for ten minutes (2026-10-21).
+        self.approvals.deny_session(&handle.id, USER_MOVED_ON);
         match handle.enqueue_with(text.clone(), extras.clone()) {
             Ok(()) => Ok(()),
             // The runner went idle and exited after we looked it up: load it again.

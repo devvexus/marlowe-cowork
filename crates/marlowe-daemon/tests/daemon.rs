@@ -551,6 +551,39 @@ fn approvals_round_trip_and_time_out_to_deny() {
     stop(d, &home);
 }
 
+/// 2026-10-21: a turn a workflow notice started asked to run a tool nobody was there to answer;
+/// the user's follow-up waited behind it for the ten-minute timeout (589 s wall, 10 s of model
+/// time). A message from the user now answers the request: it is denied and the turn takes the
+/// message at its next step.
+#[test]
+fn a_new_message_denies_the_request_the_turn_waits_on_instead_of_queueing_behind_it() {
+    let home = temp_home("moved-on");
+    seed_model(&home);
+    let p = Arc::new(Scripted::default());
+    p.push(tool_call("c1", "danger", "{}"));
+    p.push(vec![text("It found three folders.")]);
+    let cfg = DaemonConfig { approval_timeout: Duration::from_secs(120), ..DaemonConfig::default() };
+    let d = start(&home, p.clone(), cfg);
+    let mut a = Client::connect(&d.info, None);
+    a.send(&Request::Ask { session: None, text: "run the workflow".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
+    let asked = a.until(|e| matches!(e, Event::ApprovalRequested { .. }));
+    let sid = match &asked.last().unwrap().event {
+        Event::ApprovalRequested { session, .. } => session.clone(),
+        _ => unreachable!(),
+    };
+    let began = std::time::Instant::now();
+    let mut b = Client::connect(&d.info, None);
+    b.send(&Request::Ask { session: Some(sid), text: "What did the workflow find?".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
+    let log = a.until(is_finished);
+    assert!(began.elapsed() < Duration::from_secs(30), "not held until the timeout: {:?}", began.elapsed());
+    assert!(log.iter().any(|e| matches!(e.event, Event::ApprovalResolved { decision: ApprovalDecision::Deny, .. })));
+    let next = &p.requests()[1];
+    let results: Vec<String> = next.messages.iter().flat_map(|m| m.tool_results_iter().map(|r| r.content.clone()).collect::<Vec<_>>()).collect();
+    assert!(results.iter().any(|r| r.contains("new message")), "the model is told why: {results:?}");
+    assert!(next.messages.iter().any(|m| m.joined_text().contains("What did the workflow find?")), "and it gets the message in the same turn");
+    stop(d, &home);
+}
+
 #[test]
 fn library_ops_reply_or_broadcast() {
     let home = temp_home("library");

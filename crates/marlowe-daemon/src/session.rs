@@ -771,6 +771,7 @@ impl ApprovalGate for Gate {
         }
         let call_id = req.call_id.clone();
         let (id, tx, rx) = self.core.approvals.register();
+        self.core.approvals.waits(id, &req.session);
         let _hook = self.cancel.on_cancel(move || {
             let _ = tx.try_send(ApprovalDecision::Deny);
         });
