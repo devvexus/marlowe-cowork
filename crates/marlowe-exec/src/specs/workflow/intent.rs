@@ -91,6 +91,11 @@ const STOPPING: [&str; 8] = ["cancel", "stop", "kill", "abort", "pause", "resume
 pub fn detect(text: &str) -> Option<Over> {
     let raw = text.to_lowercase();
     // The user already names the call, or a slash command expanded into instructions.
+    // A harness message to the model (`[crew ... failed]` notices), not the user speaking.
+    let head = raw.trim_start();
+    if head.starts_with('[') && head.lines().next().is_some_and(|l| l.trim_end().ends_with(']')) {
+        return None;
+    }
     if raw.trim_start().starts_with('/')
         || ["workflow{", "workflow {", "workflow(", "workflow tool", "`workflow`", "dispatch"].iter().any(|k| raw.contains(k))
     {

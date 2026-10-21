@@ -46,6 +46,7 @@ fn detection_table() {
         "Dispatch three agents in parallel.",
         "Call the `workflow` tool with items_from folders.",
         "/code-review the last commit",
+        "[crew run 470dc512 workflow failed]\nOutcome: the run failed.\nGoal was: workflow fanout: One agent per item in parallel, then one agent combines their answers",
         "Explain fan-out to me.",
         "Here is the log:\n```\nstart workflow run x\nspawn workflow a\n```\nWhat went wrong?",
         "An example only: ```run a workflow``` and nothing else.",
