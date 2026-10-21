@@ -1,0 +1,162 @@
+{
+ "cases": 12,
+ "arms": {
+  "marlowe-dawn:9b-super|C": {
+   "runs": 36,
+   "strict": 31,
+   "lenient": 31,
+   "first_try": 29,
+   "rescued": 2,
+   "strict_pct": 86.1,
+   "lenient_pct": 86.1,
+   "scenarios_strict": "1/3",
+   "scenarios_all_pass": false,
+   "meets": {
+    "strict": true,
+    "lenient": false
+   },
+   "errors": 0,
+   "dawn_flagged": [
+    "workflow",
+    "workflow-run-as"
+   ]
+  }
+ },
+ "rows": {
+  "workflow": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "1/3",
+    "lenient": "1/3",
+    "first_try": "1/3",
+    "rescued": 0,
+    "wrong_first_call": "workflow",
+    "why": "no_call",
+    "rewrite": null
+   }
+  },
+  "workflow-summarize-repo": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-per-crate": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": "enter_plan",
+    "why": "wrong_tool(enter_plan)",
+    "rewrite": null
+   }
+  },
+  "workflow-research-three": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "2/3",
+    "rescued": 1,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-review-commits": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-use-a": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-fanout-words": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-run-as": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "1/3",
+    "lenient": "1/3",
+    "first_try": "1/3",
+    "rescued": 0,
+    "wrong_first_call": "glob",
+    "why": "no_second_call",
+    "rewrite": null
+   }
+  },
+  "workflow-kick-off": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "2/3",
+    "rescued": 1,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-session-repeat": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-question": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-why-failed": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  }
+ },
+ "calibration": {
+  "marlowe-dawn:9b-super|C": []
+ }
+}

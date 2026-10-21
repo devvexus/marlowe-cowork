@@ -472,7 +472,17 @@ impl Probe {
             .get::<ArgRewrites>()
             .map(|r| r.0.iter().map(|w| if w.coerced { format!("{}: {} coerced", w.tool, w.from) } else { format!("{}: {} -> {}", w.tool, w.from, w.to) }).collect())
             .unwrap_or_default();
+        // What the harness said to the model after the request (nudges, notes): user messages past the first.
+        let nudges: Vec<String> = convo
+            .messages
+            .iter()
+            .skip(1)
+            .filter(|m| m.role == Role::User)
+            .map(|m| clip(&m.joined_text(), 300))
+            .filter(|t| !t.is_empty())
+            .collect();
         let mut line = json!({
+            "nudges": nudges,
             "kind": "run", "case": case.id, "tool": case.tool, "host": case.host, "run": run, "temperature": temp,
             "model": self.model.id, "calls": calls, "steps": log.raw.len(), "ms": ms,
             "text": log.text.first().map(|t| clip(t, 600)).unwrap_or_default(),

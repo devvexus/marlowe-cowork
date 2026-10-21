@@ -52,6 +52,7 @@ pub fn resolve(selector: &str, workspace: &Path) -> Result<Items, String> {
         let found = Items { items: list, note: Some("`items_from` was a list, so it is read as `items`".into()) };
         return capped(raw, found);
     }
+    let raw = raw.strip_prefix("glob:").map(str::trim).unwrap_or(raw);
     let found = match low.as_str() {
         "folders" | "folder" | "dirs" | "dir" | "directories" | "directory" | "subfolders" | "top-level folders" | "top level folders" | "top-level directories"
         | "top level directories" | "top-level" | "toplevel" => folders(workspace)?,
@@ -85,7 +86,13 @@ pub fn as_list(raw: &str, workspace: &Path) -> Option<Items> {
         let p = Path::new(t);
         if p.is_absolute() { p.exists() } else { workspace.join(p).exists() }
     };
-    if tokens.len() >= 2 && tokens.iter().all(|t| exists(t)) {
+    // Paths that are there are the items; one that is not (a model's guess) is named and dropped.
+    let (there, missing): (Vec<&str>, Vec<&str>) = tokens.iter().copied().partition(|t| exists(t));
+    if there.len() >= 2 && tokens.iter().all(|t| t.contains(['/', '.'])) {
+        let dropped = if missing.is_empty() { String::new() } else { format!("; not in the workspace, so dropped: {}", missing.join(", ")) };
+        return Some(Items { items: there.iter().map(|t| t.to_string()).collect(), note: Some(format!("`items_from` was a list of paths, so it is read as `items`{dropped}")) });
+    }
+    if tokens.len() >= 2 && missing.is_empty() {
         return Some(Items { items: tokens.iter().map(|t| t.to_string()).collect(), note: Some("`items_from` was a list of paths, so it is read as `items`".into()) });
     }
     None
@@ -423,7 +430,8 @@ fn glob(spec: &str, workspace: &Path) -> Result<Items, String> {
         }
     }
     if found.is_empty() {
-        return Err(format!("No files match `{spec}`. {}", there(workspace)));
+        let hint = if spec.contains('/') { " One agent per folder: a pattern such as crates/* names the folders." } else { "" };
+        return Err(format!("No files match `{spec}`.{hint} {}", there(workspace)));
     }
     Ok(items(found))
 }

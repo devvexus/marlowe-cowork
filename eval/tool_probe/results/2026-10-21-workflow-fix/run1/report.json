@@ -1,0 +1,165 @@
+{
+ "cases": 12,
+ "arms": {
+  "marlowe-dawn:9b-super|C": {
+   "runs": 36,
+   "strict": 21,
+   "lenient": 21,
+   "first_try": 20,
+   "rescued": 1,
+   "strict_pct": 58.3,
+   "lenient_pct": 58.3,
+   "scenarios_strict": "0/3",
+   "scenarios_all_pass": false,
+   "meets": {
+    "strict": false,
+    "lenient": false
+   },
+   "errors": 1,
+   "dawn_flagged": [
+    "workflow",
+    "workflow-per-crate",
+    "workflow-research-three",
+    "workflow-run-as",
+    "workflow-kick-off"
+   ]
+  }
+ },
+ "rows": {
+  "workflow": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "first_try": "0/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   }
+  },
+  "workflow-summarize-repo": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-per-crate": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "first_try": "0/3",
+    "rescued": 0,
+    "wrong_first_call": "workflow",
+    "why": "bad_script",
+    "rewrite": null
+   }
+  },
+  "workflow-research-three": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "1/3",
+    "lenient": "1/3",
+    "first_try": "1/3",
+    "rescued": 0,
+    "wrong_first_call": "workflow",
+    "why": "bad_script",
+    "rewrite": null
+   }
+  },
+  "workflow-review-commits": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-use-a": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-fanout-words": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": "workflow",
+    "why": "bad_script",
+    "rewrite": null
+   }
+  },
+  "workflow-run-as": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "first_try": "0/3",
+    "rescued": 0,
+    "wrong_first_call": "workflow",
+    "why": "bad_script",
+    "rewrite": null
+   }
+  },
+  "workflow-kick-off": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "first_try": "0/3",
+    "rescued": 0,
+    "wrong_first_call": "workflow",
+    "why": "bad_script",
+    "rewrite": null
+   }
+  },
+  "workflow-session-repeat": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "2/3",
+    "rescued": 1,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-question": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-why-failed": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  }
+ },
+ "calibration": {
+  "marlowe-dawn:9b-super|C": []
+ }
+}

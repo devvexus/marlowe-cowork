@@ -214,6 +214,9 @@ fn free_text_in_items_from_is_read_as_a_list_when_it_is_one() {
     put(&ws, "services/worker/worker.py", "");
     assert_eq!(as_list("min-p, top-k, nucleus", &ws).unwrap().items, ["min-p", "top-k", "nucleus"]);
     assert_eq!(as_list("services/api/main.py services/worker/worker.py", &ws).unwrap().items.len(), 2);
+    let guessed = as_list("services/api/main.py services/worker/worker.rs services/worker/worker.py", &ws).unwrap();
+    assert_eq!(guessed.items, ["services/api/main.py", "services/worker/worker.py"]);
+    assert!(guessed.note.unwrap().contains("dropped: services/worker/worker.rs"));
     assert!(as_list("min-p top-k nucleus", &ws).is_none(), "words that are not paths are not a list");
     assert!(as_list("folders", &ws).is_none());
 }

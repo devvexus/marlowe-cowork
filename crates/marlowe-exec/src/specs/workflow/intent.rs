@@ -176,7 +176,7 @@ fn call_text(over: &Over, prompt: &str) -> String {
 /// The reminder for a reminded turn.
 pub fn reminder(over: &Over, workspace: Option<&Path>) -> String {
     let mut s = String::from(
-        "<system-reminder>\nThe user asked for a workflow. Call the `workflow` tool now, once, in its short form (not `agent`, not `dispatch`, no script):\n",
+        "<system-reminder>\nThe user asked for a workflow. Call the `workflow` tool now, once, in its short form (not `agent`, not `dispatch`, no script, nothing to look up first):\n",
     );
     match over {
         Over::From(_) => {
@@ -189,7 +189,7 @@ pub fn reminder(over: &Over, workspace: Option<&Path>) -> String {
         }
         Over::Topic => {
             s.push_str(&call_text(over, "<one agent's task on {item}>"));
-            s.push_str("\nitems: the angles or topics, one agent each.");
+            s.push_str("\nitems: the angles or topics, one agent each; pick them yourself, do not ask the user for them.");
         }
     }
     s.push_str("\n</system-reminder>");
