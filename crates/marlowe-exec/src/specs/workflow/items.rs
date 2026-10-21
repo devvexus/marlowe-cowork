@@ -9,6 +9,9 @@
 //! - `commits:N` (commits, last N commits): `git log`, default 5, at most 20.
 //! - a glob (`files:<glob>`, anything with `*`): the files under the same skip rules.
 //!
+//! What models send instead is read, not refused: a folder path (the workspace or one inside it) is
+//! its subfolders, a JSON list of strings is the list itself, and a `git log ...` line is commits.
+//!
 //! At most [`MAX_ITEMS`] items (a combining step has to fit them in a small window); more, or none,
 //! is an error that says what is there.
 
@@ -45,12 +48,17 @@ pub fn resolve(selector: &str, workspace: &Path) -> Result<Items, String> {
     let raw = selector.trim();
     let low = raw.to_lowercase();
     let low = low.trim_matches(|c: char| c == '`' || c == '"' || c == '\'').trim().to_string();
+    if let Some(list) = json_list(raw) {
+        let found = Items { items: list, note: Some("`items_from` was a list, so it is read as `items`".into()) };
+        return capped(raw, found);
+    }
     let found = match low.as_str() {
         "folders" | "folder" | "dirs" | "dir" | "directories" | "directory" | "subfolders" | "top-level folders" | "top level folders" | "top-level directories"
         | "top level directories" | "top-level" | "toplevel" => folders(workspace)?,
         "packages" | "package" | "crates" | "crate" | "modules" | "module" | "projects" | "project" | "workspace members" => packages(workspace)?,
         l if is_commits(l) => commits(l, workspace)?,
         _ if raw.starts_with("files:") || raw.contains(['*', '?', '{']) => glob(raw.strip_prefix("files:").unwrap_or(raw).trim(), workspace)?,
+        _ if folder_in(raw, workspace).is_some() => folders_in(workspace, &folder_in(raw, workspace).unwrap_or_default())?,
         _ => {
             return Err(format!(
                 "`items_from` \"{raw}\" is not one of: folders | packages | commits:N | a glob such as src/**/*.rs. {}",
@@ -58,14 +66,41 @@ pub fn resolve(selector: &str, workspace: &Path) -> Result<Items, String> {
             ))
         }
     };
+    capped(raw, found)
+}
+
+fn capped(raw: &str, found: Items) -> Result<Items, String> {
     if found.items.len() > MAX_ITEMS {
         return Err(format!(
-            "`{raw}` gives {} items; at most {MAX_ITEMS} (each answer has to fit one combining step). Narrow it: a glob such as {}, or commits:N.",
+            "`{}` gives {} items; at most {MAX_ITEMS} (each answer has to fit one combining step). Narrow it: a glob such as {}, or commits:N.",
+            raw.chars().take(60).collect::<String>(),
             found.items.len(),
             found.items.first().map(|f| narrow_example(f)).unwrap_or_else(|| "src/*".into())
         ));
     }
     Ok(found)
+}
+
+/// `["a", "b"]`: a JSON list of non-empty strings.
+fn json_list(raw: &str) -> Option<Vec<String>> {
+    if !raw.starts_with('[') {
+        return None;
+    }
+    let v: Vec<serde_json::Value> = serde_json::from_str(raw).ok()?;
+    let items: Vec<String> = v.iter().filter_map(|x| x.as_str().map(|t| t.trim().to_string())).filter(|t| !t.is_empty()).collect();
+    (!items.is_empty() && items.len() == v.len()).then_some(items)
+}
+
+/// The workspace-relative path of `raw` when it names an existing folder inside `workspace`
+/// (an empty string for the workspace itself).
+fn folder_in(raw: &str, workspace: &Path) -> Option<String> {
+    let p = Path::new(raw.trim_matches(|c| c == '"' || c == '\''));
+    let abs = if p.is_absolute() { p.to_path_buf() } else { workspace.join(p) };
+    if !abs.is_dir() {
+        return None;
+    }
+    let (abs, root) = (abs.canonicalize().ok()?, workspace.canonicalize().ok()?);
+    abs.strip_prefix(&root).ok().map(slashed)
 }
 
 fn narrow_example(first: &str) -> String {
@@ -76,7 +111,7 @@ fn narrow_example(first: &str) -> String {
 }
 
 fn is_commits(l: &str) -> bool {
-    l.starts_with("commits") || l.starts_with("commit") || l.contains(" commit") || l.starts_with("git log") || l.starts_with("recent commit")
+    l.starts_with("commit") || l.contains(" commit") || (l.starts_with("git ") && l.contains("log")) || l.starts_with("recent commit")
 }
 
 // ---------------------------------------------------------------- what is there
@@ -108,9 +143,14 @@ fn list(names: &[String], max: usize) -> String {
 
 /// The top-level directories and files, sorted, skipping VCS data, build output and ignored paths.
 pub fn top_level(workspace: &Path) -> (Vec<String>, Vec<String>) {
+    children(workspace)
+}
+
+/// The directories and files directly under `dir`, sorted.
+fn children(dir: &Path) -> (Vec<String>, Vec<String>) {
     let mut dirs = Vec::new();
     let mut files = Vec::new();
-    for e in walker(workspace, 1).build().flatten() {
+    for e in walker(dir, 1).build().flatten() {
         if e.depth() != 1 {
             continue;
         }
@@ -138,13 +178,22 @@ fn walker(workspace: &Path, depth: usize) -> WalkBuilder {
 // ---------------------------------------------------------------- folders
 
 fn folders(workspace: &Path) -> Result<Items, String> {
-    let (dirs, files) = top_level(workspace);
-    let mut out = dirs;
+    folders_in(workspace, "")
+}
+
+/// The folders under `rel` (workspace-relative, empty for the root); under two, the files too.
+fn folders_in(workspace: &Path, rel: &str) -> Result<Items, String> {
+    let rel = rel.trim_matches('/');
+    let dir = if rel.is_empty() { workspace.to_path_buf() } else { workspace.join(rel) };
+    let (dirs, files) = children(&dir);
+    let prefix = if rel.is_empty() { String::new() } else { format!("{rel}/") };
+    let mut out: Vec<String> = dirs.into_iter().map(|d| format!("{prefix}{d}")).collect();
     if out.len() < 2 && !files.is_empty() {
-        out.push(format!("the top-level files ({})", list(&files, 10)));
+        let what = if rel.is_empty() { "the top-level files".to_string() } else { format!("the files in {rel}") };
+        out.push(format!("{what} ({})", list(&files, 10)));
     }
     if out.is_empty() {
-        return Err(format!("There are no folders or files to read. {}", there(workspace)));
+        return Err(format!("There are no folders or files to read in {}. {}", dir.display(), there(workspace)));
     }
     Ok(items(out))
 }

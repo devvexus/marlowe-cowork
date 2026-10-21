@@ -161,3 +161,35 @@ fn wild_matches_stars() {
     assert!(wild("*", "x") && wild("a*", "abc") && wild("*c", "abc") && wild("a*c", "abc") && wild("a*b*c", "aXbYc"));
     assert!(!wild("a*c", "ab") && !wild("a*c", "ac!") && !wild("abc", "abd"));
 }
+
+#[test]
+fn what_models_send_instead_is_read_not_refused() {
+    let ws = temp("lenient");
+    put(&ws, "services/api/main.py", "");
+    put(&ws, "services/worker/main.py", "");
+    put(&ws, "ml/train.py", "");
+    // The workspace path itself, absolute or `.`: its folders.
+    assert_eq!(resolve(&ws.display().to_string(), &ws).unwrap().items, ["ml", "services"]);
+    assert_eq!(resolve(".", &ws).unwrap().items, ["ml", "services"]);
+    // A folder inside it: its subfolders, named from the workspace.
+    assert_eq!(resolve("services", &ws).unwrap().items, ["services/api", "services/worker"]);
+    // A folder outside the workspace is not a source.
+    let other = temp("lenient-other");
+    assert!(resolve(&other.display().to_string(), &ws).is_err());
+    // A JSON list is the list.
+    let got = resolve(r#"["alpha", "beta"]"#, &ws).unwrap();
+    assert_eq!(got.items, ["alpha", "beta"]);
+    assert!(got.note.unwrap().contains("read as `items`"));
+    assert!(resolve("[1, 2]", &ws).is_err(), "a list of numbers is nothing");
+    // The cap holds for a list too.
+    let long = serde_json::to_string(&(0..30).map(|i| format!("i{i}")).collect::<Vec<_>>()).unwrap();
+    assert!(resolve(&long, &ws).unwrap_err().contains("at most 24"));
+    // A git command line is commits.
+    let repo = temp("lenient-git");
+    git(&repo, &["init", "-q"]);
+    put(&repo, "a.txt", "1");
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-q", "-m", "one"]);
+    assert_eq!(resolve("git log -3 --format=%H", &repo).unwrap().items.len(), 1);
+    assert_eq!(resolve("git -c core.pager=cat log --oneline", &repo).unwrap().items.len(), 1);
+}
