@@ -22,6 +22,14 @@ use crate::CrewError;
 /// The role card a workflow agent runs with when the script names none.
 pub const WORKFLOW_ROLE: &str = "workflow";
 
+/// What a read-only agent (`agent_type` explore / read-only) may call.
+pub const READ_ONLY_TOOLS: [&str; 4] = ["read", "glob", "grep", "git"];
+
+/// Whether `agent_type` asks for a read-only agent.
+fn read_only(agent_type: Option<&str>) -> bool {
+    matches!(agent_type.map(str::trim), Some("explore" | "Explore" | "read-only" | "read_only" | "readonly"))
+}
+
 /// Runs workflow agents as crew steps.
 pub struct CrewAgentHost {
     pub runner: AgentRunner,
@@ -45,7 +53,8 @@ impl CrewAgentHost {
         }
         let mapped = match t {
             "general" | "general-purpose" | "workflow" => WORKFLOW_ROLE,
-            "explore" | "Explore" => "scout",
+            // Read-only: the workflow role, narrowed to [`READ_ONLY_TOOLS`] by `run_agent`.
+            "explore" | "Explore" | "read-only" | "read_only" | "readonly" => WORKFLOW_ROLE,
             "plan" | "Plan" => "analyst",
             "review" | "reviewer" => "reviewer",
             other => return Err(format!("no agent type `{other}` (a crew role card of that name)")),
@@ -159,7 +168,7 @@ fn run_agent(
         role: role.to_string(),
         label: call.display_label(),
         prompt,
-        tools: None,
+        tools: read_only(call.opts.agent_type.as_deref()).then(|| READ_ONLY_TOOLS.iter().map(|t| t.to_string()).collect()),
         effort: effort(call.opts.effort.as_deref()),
         max_output: None,
         sandbox: child_sandbox.clone(),

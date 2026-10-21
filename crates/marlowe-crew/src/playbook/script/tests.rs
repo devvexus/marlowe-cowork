@@ -418,3 +418,43 @@ fn findings_in_the_return_value_are_stored_and_reported() {
     assert!(events.iter().any(|e| matches!(e, ScriptEvent::Findings(f) if f.len() == 1)));
     assert_eq!(marlowe_workflow::findings::load(&home, &format!("run-{}", run.as_str())).len(), 1);
 }
+
+/// Every tool a workflow agent could be given, to see which a read-only agent keeps.
+struct ManyTools;
+
+impl ToolHost for ManyTools {
+    fn specs(&self) -> Vec<ToolSpec> {
+        ["read", "write", "edit", "glob", "grep", "bash", "git", "web_fetch"]
+            .map(|n| ToolSpec { name: n.into(), description: n.into(), input_schema: json!({"type": "object"}) })
+            .to_vec()
+    }
+    fn call(&self, call: &ToolCallReq, _ctx: &ToolCtx) -> ToolOutcome {
+        ToolOutcome::ok(format!("{} ran", call.name), "ok")
+    }
+    fn consequence(&self, _call: &ToolCallReq) -> Consequence {
+        Consequence::Free
+    }
+}
+
+#[test]
+fn a_read_only_agent_is_the_workflow_role_with_read_tools_only() {
+    let tools_seen = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+    let seen = tools_seen.clone();
+    let model = Model::new(false, move |req, _| {
+        seen.lock().unwrap().push(req.tools.iter().map(|t| t.name.clone()).collect());
+        answer("ok")
+    });
+    let home = temp("readonly");
+    let mut r = runner(model, &home);
+    r.tools = Arc::new(ManyTools);
+    let run = RunId::new_random();
+    let src = "META = {\"description\": \"d\"}\ndef main(args):\n    return [agent(\"look\", agent_type = \"explore\"), agent(\"change\")]\n";
+    let wf = job_script(&home, &run, src, json!({}), None);
+    go(&r, &home, &run, &wf).0.unwrap();
+    let mut seen = tools_seen.lock().unwrap().clone();
+    seen.sort_by_key(|t| t.len());
+    let mut look = seen[0].clone();
+    look.sort();
+    assert_eq!(look, ["git", "glob", "grep", "read"], "explore is read-only: no write, edit, bash or web");
+    assert!(seen[1].contains(&"write".to_string()) && seen[1].contains(&"bash".to_string()), "a plain agent keeps the workflow role's tools: {:?}", seen[1]);
+}

@@ -169,6 +169,44 @@ def test_a_workflow_must_fan_out_and_look_ups_may_repeat():
     assert g.grade(c, dispatched, sur)["strict_why"] == "wrong_tool(dispatch)"
 
 
+def test_a_short_form_workflow_passes_when_it_validates_over_two_or_more_items():
+    c = case(first_ok=[{"name": "read"}],
+             accept=[{"name": "workflow", "validated": True, "fan_out": True}])
+    sur = {"conductor": {"specs": [SPECS["workflow"], SPECS["read"]]}}
+    short = {"prompt": "Summarise {item}", "items_from": "folders"}
+    three = "valid: workflow fanout over 3 items (api, web, worker), then 1 agent combines them"
+    ok = run(call(("workflow", short), validated={"ok": True, "text": three}))
+    assert g.grade(c, ok, sur)["strict"] is True
+    assert g.short_form_items(ok["calls"][0]) == 3
+    # One item is not a fan-out; an invalid or unvalidated call is not either.
+    one = run(call(("workflow", short), validated={"ok": True, "text": "valid: workflow fanout over 1 items (src), then 1 agent combines them"}))
+    assert g.grade(c, one, sur)["strict_why"] == "no_fan_out"
+    refused = run(call(("workflow", short), validated={"ok": False, "text": "No files match `*.py`"}))
+    assert g.grade(c, refused, sur)["strict_why"] == "bad_script"
+    # The prompt-only form is the three-angle default; the typed items are the model's own.
+    angles = run(call(("workflow", {"prompt": "What is min-p?"}), validated={"ok": True, "text": three}))
+    assert g.grade(c, angles, sur)["strict"] is True
+    typed = run(call(("workflow", {"prompt": "p", "items": ["a", "b"]}), validated={"ok": True, "text": "valid: workflow fanout over 2 items (a, b), then 1 agent combines them"}))
+    assert g.grade(c, typed, sur)["strict"] is True
+    # A schema-exact check still applies: items is an array, read_only a boolean.
+    wrong = run(call(("workflow", {"prompt": "p", "items": "a, b"}), validated={"ok": True, "text": three}))
+    assert g.grade(c, wrong, sur)["strict_why"] == "type(items)"
+    # A script and a saved name: the script must fan out, a saved name is not the short form.
+    named = run(call(("workflow", {"name": "code-review"}), validated={"ok": True, "text": "code-review.star is valid. META: {}"}))
+    assert g.grade(c, named, sur)["strict_why"] == "no_fan_out"
+
+
+def test_every_workflow_family_case_takes_either_form():
+    family = [c for c in CASES if c["tool"] == "workflow"]
+    assert len(family) >= 5
+    for c in family:
+        entry = c["accept"][0]
+        assert entry["name"] == "workflow" and entry.get("validated") is True and entry.get("fan_out") is True, c["id"]
+        assert "script" not in entry.get("required_keys", []), f"{c['id']}: the short form has no script"
+    review = next(c for c in family if c["id"] == "workflow-review-commits")
+    assert len(review["git"]) == 3
+
+
 # ---------------------------------------------------------------- the report
 
 def write_run(path, calibrated=True):

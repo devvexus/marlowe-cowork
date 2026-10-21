@@ -93,6 +93,10 @@ pub struct Case {
     /// `task_stop` / `task_output` resolve ids against.
     #[serde(default)]
     pub tasks: Vec<CaseTask>,
+    /// Commit messages, oldest first: the fixture becomes a real git repository with exactly these
+    /// commits (the first also holds the fixture's files), so `commits:N` resolves for real.
+    #[serde(default)]
+    pub git: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -345,8 +349,10 @@ impl ToolMiddleware for Answer {
         if self.host.tool_spec(&call.name).is_none() {
             return CallFlow::Done(ToolOutcome::error(format!("`{}` is not available to this agent", call.name)));
         }
-        // A workflow script is checked the way `workflow{validate_only}` checks it (nothing runs).
-        let checked = (call.name == "workflow" && call.args.get("script").is_some_and(Value::is_string)).then(|| {
+        // Every workflow call form (script, path, name, short form) is checked the way
+        // `workflow{validate_only}` checks it: nothing runs, and a short form's answer says how many
+        // items it would fan out over.
+        let checked = (call.name == "workflow").then(|| {
             let mut args = call.args.clone();
             args["validate_only"] = json!(true);
             let out = self.host.call_scoped(&ToolCallReq { id: call.id.clone(), name: call.name.clone(), args }, cx);
@@ -477,8 +483,11 @@ impl Probe {
 
     /// The host and prompt a case runs under, with its fixture written.
     fn surface(&self, case: &Case) -> Result<Surface, String> {
+        // Each case starts from its own fixture: what an earlier case wrote does not leak in.
+        let _ = std::fs::remove_dir_all(&self.root);
         std::fs::create_dir_all(&self.root).map_err(|e| e.to_string())?;
-        for (rel, body) in FIXTURE.iter().map(|(p, b)| (p.to_string(), b.to_string())).chain(case.files.clone()) {
+        let fixture = FIXTURE.iter().filter(|(p, _)| case.git.is_empty() || !p.starts_with(".git/"));
+        for (rel, body) in fixture.map(|(p, b)| (p.to_string(), b.to_string())).chain(case.files.clone()) {
             let path = self.root.join(&rel);
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -487,6 +496,7 @@ impl Probe {
                 std::fs::write(&path, body).map_err(|e| format!("{}: {e}", path.display()))?;
             }
         }
+        init_git(&self.root, &case.git).map_err(|e| format!("case {}: {e}", case.id))?;
         let (kind, name) = case.host.split_once(':').unwrap_or((case.host.as_str(), ""));
         let builtin = (self.tools)(&self.root, &self.model);
         let mut env = Environment::current(Some(self.root.display().to_string()), self.model.model_ref().to_string());
@@ -533,6 +543,33 @@ impl Probe {
         }
         Ok(Some(hub))
     }
+}
+
+/// A real repository in `root` with one commit per message, oldest first.
+fn init_git(root: &Path, messages: &[String]) -> Result<(), String> {
+    if messages.is_empty() {
+        return Ok(());
+    }
+    let git = |args: &[&str]| -> Result<(), String> {
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["-c", "user.name=probe", "-c", "user.email=probe@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"]).args(args);
+        let spec = marlowe_os::child::ChildSpec::new().with_creation_flags(marlowe_os::child::CREATE_NO_WINDOW).with_cwd(root);
+        let limits = marlowe_os::child::RunLimits { timeout: Duration::from_secs(30), max_output_bytes: 64 * 1024 };
+        let out = marlowe_os::child::run(cmd, &spec, limits, &|| false).map_err(|e| format!("git is not available ({e}); a case with `git` needs it"))?;
+        if out.timed_out || out.code() != 0 {
+            return Err(format!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).lines().next().unwrap_or("").trim()));
+        }
+        Ok(())
+    };
+    git(&["init", "-q"])?;
+    for (i, message) in messages.iter().enumerate() {
+        let note = root.join(".probe-history").join(format!("{i:02}.txt"));
+        std::fs::create_dir_all(note.parent().unwrap_or(root)).map_err(|e| e.to_string())?;
+        std::fs::write(&note, format!("{message}\n")).map_err(|e| e.to_string())?;
+        git(&["add", "-A"])?;
+        git(&["commit", "-q", "-m", message])?;
+    }
+    Ok(())
 }
 
 struct Surface {
@@ -748,6 +785,43 @@ def main(args):
         assert_eq!(runs[0]["calls"][0]["validated"]["ok"], true, "{}", runs[0]);
         assert_eq!(runs[1]["calls"][0]["validated"]["ok"], false, "{}", runs[1]);
         assert_eq!(runs[0]["calls"][0]["result"], "probe: not run");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn every_workflow_call_form_is_validated_and_a_short_form_says_how_many_items() {
+        let short = json!({"prompt": "Summarise {item}", "items_from": "folders"});
+        let named = json!({"name": "code-review"});
+        let replies = vec![vec![("workflow", short)], vec![("workflow", named)], vec![("workflow", json!({"prompt": "What is min-p?"}))]];
+        let (p, _seq, dir) = probe(replies, vec![None]);
+        let mut out = Vec::new();
+        let a = case(json!({"id": "short", "request": "spawn a workflow", "files": {"api/main.rs": "x", "web/main.rs": "x", "worker/main.rs": "x"}}));
+        let b = case(json!({"id": "named", "request": "spawn a workflow"}));
+        let c = case(json!({"id": "angles", "request": "spawn a workflow"}));
+        p.run_cases(&[a, b, c], &mut out).unwrap();
+        let runs = lines(out);
+        let text = |i: usize| runs[i]["calls"][0]["validated"]["text"].as_str().unwrap_or("").to_string();
+        assert_eq!(runs[0]["calls"][0]["validated"]["ok"], true, "{}", runs[0]);
+        assert!(text(0).contains("over 4 items (api, src, web, worker)"), "folders of the fixture, not invented ones: {}", text(0));
+        assert_eq!(runs[1]["calls"][0]["validated"]["ok"], true, "a saved name is validated too: {}", runs[1]);
+        assert!(text(2).contains("over 3 items"), "{}", text(2));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_case_starts_from_a_clean_fixture_and_git_builds_a_real_repository() {
+        let replies = vec![vec![("workflow", json!({"prompt": "Review {item}", "items_from": "commits:3", "validate_only": true}))], vec![("workflow", json!({"prompt": "x", "items_from": "folders"}))]];
+        let (p, _seq, dir) = probe(replies, vec![None]);
+        let mut out = Vec::new();
+        let a = case(json!({"id": "commits", "request": "review the commits", "git": ["one", "two", "three"], "files": {"leak.txt": "x"}}));
+        let b = case(json!({"id": "after", "request": "x"}));
+        p.run_cases(&[a, b], &mut out).unwrap();
+        let runs = lines(out);
+        let t = runs[0]["calls"][0]["validated"]["text"].as_str().unwrap().to_string();
+        assert!(t.contains("over 3 items") && t.contains(" three, ") && t.contains(" one"), "{t}");
+        assert!(!p.root.join("leak.txt").exists(), "the next case's fixture does not carry the last one's files");
+        let t = runs[1]["calls"][0]["validated"]["text"].as_str().unwrap().to_string();
+        assert!(!t.contains("leak"), "{t}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

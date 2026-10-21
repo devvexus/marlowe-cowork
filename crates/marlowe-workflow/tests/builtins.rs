@@ -132,7 +132,7 @@ fn parity_wf6_project_shadows_user_and_builtins() {
     assert!(roots.resolve("simplify").unwrap().origin == saved::Origin::Builtin);
     let list = roots.list();
     let names: Vec<&str> = list.iter().map(|(s, _)| s.name.as_str()).collect();
-    assert_eq!(names, ["code-review", "triage", "only-user", "simplify"]);
+    assert_eq!(names, ["code-review", "triage", "only-user", "simplify", "fanout"]);
     assert_eq!(list[1].0.description, "project triage");
     // The index for the prompt stays within its budget.
     let idx = saved::index(&list.iter().map(|(s, _)| s.clone()).collect::<Vec<_>>(), 120);
@@ -205,4 +205,59 @@ fn builtins_validate() {
     for (name, src) in saved::BUILTINS {
         marlowe_workflow::check(&format!("{name}.star"), src).unwrap_or_else(|d| panic!("{name}: {}", marlowe_workflow::validate::render(&d)));
     }
+}
+
+// ---------------------------------------------------------------- fanout (the workflow tool's short form)
+
+#[test]
+fn the_fanout_builtin_runs_the_items_together_then_one_combine() {
+    let host = ScriptedHost::new(|c| {
+        let label = c.opts.label.clone().unwrap_or_default();
+        Scripted::after(150, AgentResult::text(format!("answer for {label}"), 5))
+    });
+    let mut cfg = RunConfig::new("fanout.star", json!({"items": ["api", "web", "db", "docs"], "prompt": "Summarise {item}", "then": "Write one overview.", "workspace": "C:/w"}));
+    cfg.max_concurrency = 4;
+    let ctl = unbounded().1;
+    let out = run(&builtin("fanout"), cfg, host.clone(), &mut |_: &WfEvent| {}, &ctl).unwrap();
+    assert_eq!(out.value["summary"], "answer for combine", "{}", out.value);
+    let items = out.value["items"].as_array().unwrap();
+    assert_eq!(items.len(), 4);
+    assert_eq!(items[1]["item"], "web");
+    assert_eq!(items[1]["answer"], "answer for web");
+    let calls = host.calls();
+    assert_eq!(calls.len(), 5, "four item agents and one combine");
+    let (each, combine): (Vec<_>, Vec<_>) = calls.iter().partition(|c| c.call.opts.label.as_deref() != Some("combine"));
+    assert_eq!(combine.len(), 1);
+    // The item agents overlap in time: all started before the first finished.
+    let first_done = each.iter().filter_map(|c| c.finished).min().unwrap();
+    assert!(each.iter().all(|c| c.started < first_done), "item agents ran one at a time");
+    // The combine agent starts after every item agent finished, with every answer in its prompt.
+    assert!(each.iter().all(|c| c.finished.unwrap() <= combine[0].started));
+    assert!(combine[0].call.prompt.starts_with("Write one overview.") && combine[0].call.prompt.contains("answer for docs"));
+    // Each item agent is read-only, told the workspace and its item, and capped at 200 words.
+    let p = &each[0].call;
+    assert_eq!(p.opts.agent_type.as_deref(), Some("explore"));
+    assert!(p.prompt.contains("Workspace: C:/w. Your item: ") && p.prompt.contains("at most 200 words") && p.prompt.starts_with("Summarise "), "{}", p.prompt);
+}
+
+#[test]
+fn the_fanout_builtin_clips_answers_names_failures_and_writes_only_when_asked() {
+    let host = ScriptedHost::new(|c| {
+        let label = c.opts.label.clone().unwrap_or_default();
+        match label.as_str() {
+            "big" => Scripted::now(AgentResult::text("x".repeat(5000), 5)),
+            "bad" => Scripted::now(AgentResult::failed("boom", 0)),
+            _ => Scripted::now(AgentResult::text("fine", 5)),
+        }
+    });
+    let cfg = RunConfig::new("fanout.star", json!({"items": ["big", "bad"], "prompt": "Look at {item}", "read_only": false, "workspace": "w"}));
+    let ctl = unbounded().1;
+    let out = run(&builtin("fanout"), cfg, host.clone(), &mut |_: &WfEvent| {}, &ctl).unwrap();
+    let calls = host.calls();
+    let combine = calls.iter().find(|c| c.call.opts.label.as_deref() == Some("combine")).unwrap();
+    assert!(combine.call.prompt.contains("(no answer)") && combine.call.prompt.contains(" ..."), "failed agent named, long answer clipped");
+    assert!(combine.call.prompt.starts_with("Combine these reports into one answer for the user."), "default instruction");
+    assert!(!combine.call.prompt.contains(&"x".repeat(2600)));
+    assert!(calls.iter().all(|c| c.call.opts.agent_type.as_deref() == Some("workflow")), "read_only:false runs the workflow role");
+    assert_eq!(out.value["items"][1]["answer"], Value::Null);
 }

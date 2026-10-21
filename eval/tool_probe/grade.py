@@ -5,6 +5,9 @@ shown tool, every key in the schema, types exact (an untyped property is a strin
 no rewrite by the forgiving layer, the case's expected keys and values present.
 Lenient: the same after the forgiving layer (a legacy name or a spelling it fixes is a pass).
 
+A workflow passes when it validates and fans out: a script that `fans_out`, or the short form
+(`prompt`, `items` | `items_from`) whose validation reports "over N items" with N of 2 or more.
+
 A case's `first_ok` lists calls that may come first (read before edit, task_list before
 task_stop); the next call then has to be an accepted one. Only the accepted call is held to the
 strict rules: the look-up before it is not.
@@ -89,6 +92,21 @@ def fans_out(script):
     return n >= 2 or (n == 1 and bool(re.search(r"\bfor\b|\bpipeline\(", script)))
 
 
+def short_form_items(call):
+    """N of a short-form `workflow` call whose validation said "workflow fanout over N items", else 0."""
+    text = (call.get("validated") or {}).get("text") or ""
+    m = re.search(r"workflow fanout over (\d+) items", text)
+    return int(m.group(1)) if m else 0
+
+
+def fans_out_call(call, args):
+    """A workflow call can run more than one agent: its script `fans_out`, or its short form is over 2+ items
+    (no items at all is the three-angle default, which validation reports as "over 3 items")."""
+    if isinstance(args, dict) and args.get("script"):
+        return fans_out(args["script"])
+    return short_form_items(call) >= 2
+
+
 def _view(call, mode):
     """(name, args) of a call as the provider parsed it (raw) or as the layer left it (layer)."""
     if mode == "raw":
@@ -130,7 +148,7 @@ def _accepted_call(case, call, mode, surfaces, run):
         return problems[0]
     if entry.get("validated") and not (call.get("validated") or {}).get("ok"):
         return "bad_script"
-    if entry.get("fan_out") and not fans_out(args.get("script") if isinstance(args, dict) else None):
+    if entry.get("fan_out") and not fans_out_call(call, args):
         return "no_fan_out"
     return None
 

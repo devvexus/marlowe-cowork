@@ -182,6 +182,145 @@ fn looks_like_js(s: &str) -> bool {
     ["const ", "let ", "await ", "=>", "function ", "export ", "};", "===", "async ", "`"].iter().any(|k| s.contains(k))
 }
 
+// ---------------------------------------------------------------- hints for Python habits
+
+/// What a source line holds outside its string literals.
+#[derive(Default)]
+struct LineFacts {
+    /// Identifier-like words outside strings.
+    words: Vec<String>,
+    /// Two string literals with only blanks between them (Python joins them; Starlark does not).
+    adjacent: bool,
+    /// The line ends inside a single-quoted string.
+    unterminated: bool,
+    /// An f-string whose braces hold more than a name.
+    complex_fstring: bool,
+}
+
+fn scan_line(line: &str) -> LineFacts {
+    let mut f = LineFacts::default();
+    let c: Vec<char> = line.chars().collect();
+    let (mut i, mut word) = (0usize, String::new());
+    let mut last_string_end: Option<usize> = None;
+    while i < c.len() {
+        let ch = c[i];
+        if ch == '#' {
+            break;
+        }
+        if ch == '"' || ch == '\'' {
+            let prefixed_f = word == "f" || word == "rf" || word == "fr";
+            if !word.is_empty() && !prefixed_f && !matches!(word.as_str(), "r" | "b") {
+                f.words.push(std::mem::take(&mut word));
+            }
+            word.clear();
+            if let Some(end) = last_string_end {
+                if c[end..i].iter().all(|x| x.is_whitespace()) {
+                    f.adjacent = true;
+                }
+            }
+            let mut j = i + 1;
+            let mut body = String::new();
+            let mut closed = false;
+            while j < c.len() {
+                if c[j] == '\\' {
+                    j += 2;
+                    continue;
+                }
+                if c[j] == ch {
+                    closed = true;
+                    break;
+                }
+                body.push(c[j]);
+                j += 1;
+            }
+            if !closed {
+                f.unterminated = true;
+                break;
+            }
+            if prefixed_f {
+                let plain = body.replace("{{", "").replace("}}", "");
+                let mut rest = plain.as_str();
+                while let Some(open) = rest.find('{') {
+                    let after = &rest[open + 1..];
+                    let Some(close) = after.find('}') else { break };
+                    if after[..close].contains(['.', '[', '(', ' ', '+', '*', '-', '/']) {
+                        f.complex_fstring = true;
+                    }
+                    rest = &after[close + 1..];
+                }
+            }
+            i = j + 1;
+            last_string_end = Some(i);
+            continue;
+        }
+        if ch.is_alphanumeric() || ch == '_' {
+            word.push(ch);
+        } else {
+            if !word.is_empty() {
+                f.words.push(std::mem::take(&mut word));
+            }
+            if !ch.is_whitespace() {
+                last_string_end = None;
+            }
+        }
+        i += 1;
+    }
+    if !word.is_empty() {
+        f.words.push(word);
+    }
+    f
+}
+
+/// The hint for a Python habit on `line`, if it shows one.
+fn habit_hint(line: &str) -> Option<&'static str> {
+    let t = line.trim_start();
+    let triple = line.contains("\"\"\"") || line.contains("'''");
+    let f = scan_line(line);
+    let has = |w: &str| f.words.iter().any(|x| x == w);
+    if t.starts_with("import ") || (t.starts_with("from ") && has("import")) {
+        return Some("Starlark has no import: a script cannot read files or run commands. Pass the items in (items_from) or have an agent read them.");
+    }
+    if has("isinstance") {
+        return Some("Starlark has no isinstance: use `type(x) == \"list\"` (or \"dict\", \"string\", \"int\").");
+    }
+    if has("is") {
+        return Some("Starlark has no `is` or `is not`: use `==` and `!=` (`x == None`).");
+    }
+    if f.complex_fstring {
+        return Some("an f-string may hold only a plain name: assign the attribute, index or call to a variable first, or join with +.");
+    }
+    if f.unterminated && !triple {
+        return Some("a string cannot span lines: write \\n inside it, or use triple quotes.");
+    }
+    if f.adjacent && !triple {
+        return Some("Starlark does not join neighbouring strings: put + between them.");
+    }
+    None
+}
+
+/// Adds a hint, with the failing line quoted, to each diagnostic that shows a Python habit. The
+/// script is never rewritten.
+pub fn with_hints(source: &str, diags: Vec<Diagnostic>) -> Vec<Diagnostic> {
+    let lines: Vec<&str> = source.lines().collect();
+    diags
+        .into_iter()
+        .map(|mut d| {
+            let Some(n) = d.line.map(|l| l as usize).filter(|l| *l >= 1) else { return d };
+            // An unterminated string is reported where the parser gave up: this line or the next.
+            let hit = [n, n.saturating_sub(1)]
+                .into_iter()
+                .filter(|k| *k >= 1)
+                .filter_map(|k| lines.get(k - 1).map(|l| (k, *l)))
+                .find_map(|(k, l)| habit_hint(l).map(|h| (k, l, h)));
+            if let Some((k, line, hint)) = hit {
+                let shown: String = line.trim().chars().take(100).collect();
+                d.message = format!("{} [line {k}: `{shown}`] {hint}", d.message.trim_end());
+            }
+            d
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------- tokens
 
 struct Tok {

@@ -1123,6 +1123,10 @@ fn end_of(ctx: &Ctx, r: starlark::Result<Value>) -> PassEnd {
 /// script runs: this is called before approval, on the conductor's thread, so the first statement
 /// stops the pass.
 pub fn check(filename: &str, source: &str) -> Result<Validated, Vec<Diagnostic>> {
+    check_raw(filename, source).map_err(|d| validate::with_hints(source, d))
+}
+
+fn check_raw(filename: &str, source: &str) -> Result<Validated, Vec<Diagnostic>> {
     let v = validate::static_checks(filename, source)?;
     let cfg = RunConfig::new(filename, Json::Object(Default::default()));
     let ctx = Ctx { st: RefCell::new(State::default()), pass: RefCell::new(Pass::new()), cfg };

@@ -6,6 +6,13 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ### Green main and follow-ups
 
+- `workflow` has a no-code short form: `prompt`, `items` or `items_from` (folders, packages, commits:N or a glob, listed by the harness from the real workspace, at most 24), `then` and `read_only` (default true) run the built-in `fanout` workflow, one read-only agent per item and one that combines their answers; with no items, three fixed angles. `validate_only` answers "valid: workflow fanout over N items (...)".
+- `workflow` takes `script` over `path` over a saved `name` over the short form instead of refusing two of them; with a `script` the `name` is only its display label, and the result names every key it ignored. New aliases: each, over, task, combine, readonly.
+- Tool arguments can be listed as ignorable (`ArgRules.ignore`): they are dropped with one footer note instead of refusing the call. `workflow` ignores role, label, phase, description and title; `dispatch` ignores background and label.
+- Workflow script errors name the Python habit (import, is / is not, isinstance, f-string expressions, a string over two lines, neighbouring string literals) with the failing line quoted, and every script error from the `workflow` tool ends with the no-code form. Scripts are never rewritten.
+- Read-only workflow agents (`agent_type` explore or read-only) are the `workflow` role with `read`, `glob`, `grep` and `git`, not the web-research scout.
+- `agent` and `dispatch` descriptions say a workflow or fan-out the user asks for is `workflow`; `dispatch` says it returns an `agent_` task id.
+- First-try probe: every `workflow` call form is checked with `validate_only`, each case starts from a clean fixture, a case can build a real git repository (`git`), and a workflow passes when it validates and fans out (a script, or a short form over two or more items).
 - Crew capacity comes from the context planner: a local model runs `slots` minus one agents at once when the conductor shares it (never below 1), for run admission, model streams (now counted per model) and workflow concurrency; the leftover `per_local_provider: 1` is gone, so three dispatches on a six-slot model all run instead of two sitting queued.
 - `task_stop` and `task_output` accept a bare, short (6+ hex characters) or wrong-prefix run id and resolve it to the task (`agent_`/`wf_`); an ambiguous id lists the matches, an unknown one the nearest ids, and a `TaskIds` middleware shows the canonical id in the approval and the transcript.
 - `dispatch` and `workflow` receipts carry `task_id` (`agent_<run>`, `wf_<run>`) so the id to stop is the one the model was given.

@@ -18,7 +18,7 @@
 //! Never rewritten: free text (`command`, `code`, `content`, `old_string`, `new_string`, `text`,
 //! `prompt`, `body`...), a missing required value (never invented), units (never converted), a
 //! choice between two candidate keys, an ambiguous enum prefix, and a non-URL into `url`. Unknown
-//! keys are never dropped silently.
+//! keys are dropped only when the tool lists them in [`ArgRules::ignore`], and then with a note.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -44,6 +44,9 @@ pub struct ArgRules {
     pub split: &'static [&'static str],
     /// Keys the harness sets itself: dropped from model input.
     pub strip: &'static [&'static str],
+    /// Keys models send that the tool has no use for: dropped with a rewrite and a one-time note
+    /// ("ignored `k`: not a parameter of <tool>"), never refused.
+    pub ignore: &'static [&'static str],
     /// Keys the tool's own policy guard judges (a force switch the schema does not have): left as
     /// sent, so the guard's refusal, not "unknown key", is what the model reads.
     pub policy_keys: &'static [&'static str],
@@ -67,6 +70,7 @@ impl ArgRules {
         values: &[],
         split: &[],
         strip: &[],
+        ignore: &[],
         policy_keys: &[],
         example: None,
         see_also: None,
@@ -187,6 +191,7 @@ pub fn wired_rules(name: &str) -> Option<ArgRules> {
         },
         "dispatch" => ArgRules {
             aliases: &[("goal", "prompt"), ("task", "prompt"), ("instructions", "prompt"), ("workspace", "cwd"), ("path", "cwd"), ("type", "role"), ("agent", "role")],
+            ignore: &["background", "label"],
             see_also: Some("A helper inside this session: agent(type, prompt)."),
             ..ArgRules::NONE
         },
@@ -465,6 +470,12 @@ pub fn normalize(spec: &ToolSpec, rules: &ArgRules, args: &Value) -> Result<Norm
                 let v = obj.remove(one).unwrap_or(Value::Null);
                 obj.insert("url".into(), v);
                 moved(&mut rewrites, one, "url");
+            }
+        }
+        // Keys the tool lists as ignorable go, with a note; they are not strays.
+        for k in rules.ignore {
+            if !props.contains_key(*k) && obj.remove(*k).is_some() {
+                moved(&mut rewrites, k, "");
             }
         }
         // One-to-one rescue: one stray key, one missing required key, and the value fits it.
@@ -938,7 +949,13 @@ impl ArgsLayer {
             .iter()
             .filter(|r| !r.coerced && r.from != r.to)
             .filter(|r| told.insert((tool.to_string(), r.from.clone())))
-            .map(|r| format!("read `{}` as `{}`; the parameter is `{}`", r.from, r.to, r.to))
+            .map(|r| {
+                if r.to.is_empty() {
+                    format!("ignored `{}`: not a parameter of {tool}", r.from)
+                } else {
+                    format!("read `{}` as `{}`; the parameter is `{}`", r.from, r.to, r.to)
+                }
+            })
             .collect();
         if !lines.is_empty() {
             lock(&self.footers).insert(call_id.to_string(), format!("[args: {}]", lines.join("; ")));

@@ -603,3 +603,47 @@ fn a_host_without_specs_is_left_alone() {
     assert_eq!(l.before_approval(&mut c, &cx), CallFlow::Continue);
     assert_eq!(c.args, json!({"x": 1}));
 }
+
+// ---------------------------------------------------------------- ignored keys
+
+fn dispatch() -> (ToolSpec, ArgRules) {
+    (
+        spec("dispatch", json!({"role": {}, "prompt": {}, "playbook": {}, "cwd": {}}), &["role", "prompt"]),
+        wired_rules("dispatch").unwrap(),
+    )
+}
+
+#[test]
+fn ignored_keys_are_dropped_with_a_rewrite_not_refused() {
+    let (d, rules) = dispatch();
+    let n = ok(&d, &rules, json!({"role": "researcher", "prompt": "go", "background": true, "label": "x"}));
+    assert_eq!(n.args, json!({"role": "researcher", "prompt": "go"}));
+    let dropped: Vec<&str> = n.rewrites.iter().filter(|r| r.to.is_empty()).map(|r| r.from.as_str()).collect();
+    assert_eq!(dropped, ["background", "label"]);
+    // A key the tool does list is never dropped, and an alias wins over ignoring.
+    let w = spec("workflow", json!({"prompt": {}, "items": {"type": "array"}, "name": {}}), &[]);
+    let r = ArgRules { aliases: &[("each", "items")], ignore: &["role", "each", "name"], ..ArgRules::NONE };
+    let n = ok(&w, &r, json!({"prompt": "p", "each": ["a"], "role": "x", "name": "n"}));
+    assert_eq!(n.args, json!({"prompt": "p", "items": ["a"], "name": "n"}));
+    // Not listed: still an unknown key.
+    assert!(normalize(&d, &rules, &json!({"role": "r", "prompt": "p", "colour": 1})).is_err());
+}
+
+#[test]
+fn an_ignored_key_is_told_once_in_the_footer_and_the_call_runs() {
+    let (d, rules) = dispatch();
+    let host: Arc<dyn ToolHost> = Arc::new(Shown { specs: vec![(d, rules)], hidden: vec![] });
+    let cx = CallCtx::new(ToolCtx::new(SessionId("s".into()), 0, None, CancelToken::new(), false), SessionScope::default());
+    let l = ArgsLayer::new(host);
+    let run = |id: &str, args: Value| {
+        let mut c = call(id, "dispatch", args);
+        assert_eq!(l.before_approval(&mut c, &cx), CallFlow::Continue);
+        assert!(c.args.get("background").is_none());
+        let mut out = ToolOutcome::ok("started", "ok");
+        l.after_call(&c, &cx, &mut out);
+        out.content
+    };
+    let first = run("a", json!({"role": "researcher", "prompt": "p", "background": true}));
+    assert!(first.ends_with("[args: ignored `background`: not a parameter of dispatch]"), "{first}");
+    assert_eq!(run("b", json!({"role": "researcher", "prompt": "p", "background": false})), "started", "told once");
+}
