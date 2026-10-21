@@ -118,6 +118,24 @@ impl Models {
         Ok(&mut slot.0)
     }
 
+    /// Whether the embedder is loaded, so a recall can tell a cold load from a warm one.
+    pub fn embedder_resident(&self) -> bool {
+        self.embedder.is_some()
+    }
+
+    pub fn reranker_resident(&self) -> bool {
+        self.reranker.is_some()
+    }
+
+    /// Size of the embedder's weights on disk (what a cold load reads), 0 if unreadable.
+    pub fn embedder_bytes(&self) -> u64 {
+        std::fs::metadata(self.dir.join(EMBEDDER_DIR).join(embedder::MODEL_FILE)).map_or(0, |m| m.len())
+    }
+
+    pub fn reranker_bytes(&self) -> u64 {
+        std::fs::metadata(self.dir.join(RERANKER_DIR).join(rerank::MODEL_FILE)).map_or(0, |m| m.len())
+    }
+
     /// The GPU verdict now. No probe (tests, no Sentinel) is unknown, which keeps CPU.
     fn verdict(&self) -> GpuVerdict {
         self.gpu.as_ref().map_or_else(|| GpuVerdict::Unknown("no GPU probe".into()), GpuProbe::verdict)

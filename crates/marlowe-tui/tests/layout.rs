@@ -100,7 +100,7 @@ fn working() -> State {
     let ws = Some("C:/work/valiance".to_string());
     feed(&mut s, 0, Event::SessionOpened { session: sid(), title: "what changed in the gate overnight?".into(), workspace: ws.clone() });
     feed(&mut s, 2, Event::TurnStarted { session: sid(), turn: 1, model: sonnet_ref(), user: "what changed in the gate overnight?".into() });
-    feed(&mut s, 3, Event::Recalled { session: sid(), turn: 1, count: 3, summary: "valiance gate threshold history".into() });
+    feed(&mut s, 3, Event::Recalled { session: sid(), turn: 1, count: 3, summary: "valiance gate threshold history".into(), total_ms: 0, stages: Vec::new(), abstained: false });
     feed(&mut s, 4, Event::ToolStarted { session: sid(), turn: 1, call_id: "c1".into(), tool: "bash".into(), summary: "bash git log --since=yesterday".into() });
     feed(&mut s, 5, Event::ToolFinished { session: sid(), turn: 1, call_id: "c1".into(), ok: true, summary: "3 commits".into() });
     feed(&mut s, 6, Event::TextDelta { session: sid(), turn: 1, text: "Two commits touched the **gate**: the threshold moved to *0.42*, and the eval harness now pins the tokenizer.".into() });

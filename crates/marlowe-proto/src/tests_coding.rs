@@ -219,9 +219,11 @@ fn pre_m46_transcripts_still_load() {
             ..ToolResult::text("c2", "[image]", false)
         })],
         at_ms: 4,
+        phases: Vec::new(),
+        numbers: None,
     };
     round_trip(&Envelope { seq: 0, at_ms: 1, event: Event::Transcript { session: sid(), turns: vec![turn] } });
-    let user = StoredTurn { idx: 4, role: Role::User, content: vec![Part::Text { text: "see".into() }, Part::Image(img)], at_ms: 5 };
+    let user = StoredTurn { idx: 4, role: Role::User, content: vec![Part::Text { text: "see".into() }, Part::Image(img)], at_ms: 5, phases: Vec::new(), numbers: None };
     round_trip(&user);
 }
 
@@ -239,7 +241,7 @@ fn the_seam_review_additions_round_trip_and_old_json_still_loads() {
     };
     let requests = vec![
         (
-            Request::Ask { session: Some(sid()), text: "what is this?".into(), workspace: None, images: vec![img.clone()], options: Some(options) },
+            Request::Ask { session: Some(sid()), text: "what is this?".into(), workspace: None, images: vec![img.clone()], options: Some(options), client_ms: None },
             "ask",
         ),
         (Request::PutBlob { mime: "image/png".into(), base64: "iVBORw0KGgo=".into() }, "put_blob"),
@@ -259,7 +261,7 @@ fn the_seam_review_additions_round_trip_and_old_json_still_loads() {
 
     // An M4.5 ask has no images or options.
     let old: Request = serde_json::from_str(r#"{"op":"ask","text":"hi"}"#).unwrap();
-    assert_eq!(old, Request::Ask { session: None, text: "hi".into(), workspace: None, images: Vec::new(), options: None });
+    assert_eq!(old, Request::Ask { session: None, text: "hi".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     assert_eq!(serde_json::to_string(&old).unwrap(), r#"{"op":"ask","text":"hi"}"#, "old output unchanged");
     let old: Event = serde_json::from_str(
         r#"{"ev":"approval_requested","approval":1,"session":"s-1","tool":"bash","summary":"ls","detail":"{}"}"#,

@@ -156,6 +156,10 @@ pub enum Request {
         /// Headless overrides for this ask (H4). K.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         options: Option<HeadlessOptions>,
+        /// Unix ms when the client's user pressed Enter; the origin of the turn's harness-overhead
+        /// numbers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_ms: Option<i64>,
     },
     /// Cancels the session's running turn.
     Interrupt { session: SessionId },

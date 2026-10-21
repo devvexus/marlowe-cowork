@@ -121,7 +121,7 @@ fn one_ask(tag: &str, images: Vec<ImageRef>, options: Option<HeadlessOptions>) -
     let mut r = LineReader::new(BufReader::new(w.try_clone().unwrap()));
     let mut w = w;
     write_line(&mut w, &Request::Hello { token: info.token.clone(), client: "test".into(), since_seq: None }).unwrap();
-    write_line(&mut w, &Request::Ask { session: None, text: "look at this".into(), workspace: None, images, options }).unwrap();
+    write_line(&mut w, &Request::Ask { session: None, text: "look at this".into(), workspace: None, images, options, client_ms: None }).unwrap();
     loop {
         let env: Envelope = r.next().unwrap().expect("an event");
         if matches!(env.event, Event::TurnFinished { .. }) {

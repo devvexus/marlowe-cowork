@@ -102,8 +102,14 @@ fn dispatch(core: &Arc<Core>, client: u64, client_name: &str, req: Request) {
         Request::Hello { .. } => reply(Event::Error { session: None, message: "already greeted".into() }),
         // Images (stored first with `PutBlob`) join the user's message; `marlowe -p`'s options
         // apply to the turn.
-        Request::Ask { session, text, workspace, images, options } => {
-            let extras = crate::session::AskExtras { images, options };
+        Request::Ask { session, text, workspace, images, options, client_ms } => {
+            // The turn's clock starts at the client's Enter; this is the daemon's side of it.
+            let extras = crate::session::AskExtras {
+                images,
+                options,
+                received: Some(std::time::Instant::now()),
+                sending_ms: client_ms.map(|c| (crate::now_ms() - c).clamp(0, 10_000) as u64),
+            };
             if let Err(r) = core.ask_with(client, session, text, workspace, extras) {
                 refuse(r);
             }

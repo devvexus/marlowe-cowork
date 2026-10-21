@@ -2,16 +2,17 @@
 //! Memory requests, the legacy offer and episodes live in [`crate::mind_ops`].
 
 use std::collections::HashSet;
+use std::time::Instant;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use marlowe_agent::{Consequence, Exposure, MemoryHook, Recollection, ToolCallReq, ToolCtx, ToolHost, ToolOutcome};
 use marlowe_mind::{
-    InjectQuery, Kind, MemoryChange, MemoryIn, MemoryKind, Mind, ProfileQuery, Provenance, RecallHit, RecallQuery,
+    InjectQuery, Kind, LiveEvent, LiveSink, MemoryChange, MemoryIn, MemoryKind, Mind, ProfileQuery, Provenance, RecallHit, RecallQuery,
     Remembered, Scope, Trust, TurnIn, TurnRole,
 };
 use marlowe_model::ToolSpec;
-use marlowe_proto::{Event, SessionId};
+use marlowe_proto::{Event, PhaseEvent, PhaseKind, SessionId};
 use serde_json::Value;
 
 use crate::{lock, now_ms};
@@ -38,17 +39,36 @@ pub struct MindMemory {
     turn: u32,
     budget_tokens: u32,
     emit: RecallSink,
+    /// Where the Mind's write tail files its events.
+    tail: Option<Arc<crate::phases::TailTarget>>,
     /// A crew relay turn: the "user" text is a crew result, not the user's words, so it is not
     /// ingested at user trust (the run's own Result memory carries its provenance).
     relay: bool,
 }
 
 impl MindMemory {
+    /// Files the Mind's write-tail events under this session and turn.
+    fn mind_tail(&self, session: &SessionId) {
+        if let Some(t) = &self.tail {
+            t.set(session, self.turn);
+        }
+    }
+
+    fn phase(&self, session: &SessionId, ev: PhaseEvent) {
+        (self.emit)(Event::Phase(ev.on(session, self.turn)));
+    }
+
     /// `budget_tokens` (the whole memory tier) is capped at `marlowe_mind::MAX_INJECT_TOKENS`;
     /// the profile takes its share first, at most `marlowe_mind::DEFAULT_PROFILE_TOKENS`.
     pub fn new(mind: Mind, workspace: Option<String>, turn: u32, budget_tokens: u32, emit: RecallSink) -> Self {
         let budget_tokens = budget_tokens.min(marlowe_mind::MAX_INJECT_TOKENS);
-        Self { mind, workspace, turn, budget_tokens, emit, relay: false }
+        Self { mind, workspace, turn, budget_tokens, emit, tail: None, relay: false }
+    }
+
+    /// Files the Mind's write-tail events (embedded, indexed) under the turn that wrote them.
+    pub(crate) fn with_tail(mut self, tail: Arc<crate::phases::TailTarget>) -> Self {
+        self.tail = Some(tail);
+        self
     }
 
     /// For a relay turn: retrieval and the reply as usual, no user-trust ingest of the relay.
@@ -61,6 +81,8 @@ impl MindMemory {
         if text.trim().is_empty() {
             return;
         }
+        // The write tail's events (embedded, indexed) are filed under the turn that wrote.
+        self.mind_tail(session);
         let turn = TurnIn {
             session: session.to_string(),
             workspace: self.workspace.clone(),
@@ -76,31 +98,56 @@ impl MindMemory {
 
 impl MemoryHook for MindMemory {
     fn before_turn(&self, session: &SessionId, query: &str) -> Recollection {
+        let started = Instant::now();
         // A failed profile read leaves the turn with retrieval only.
+        self.phase(session, PhaseEvent::start(PhaseKind::Recall).stage("profile"));
+        let profile_started = Instant::now();
         let profile = self
             .mind
             .profile(ProfileQuery { workspace: self.workspace.clone(), ..ProfileQuery::default() })
             .unwrap_or_default();
-        let injection = self.mind.inject(InjectQuery {
+        self.phase(
+            session,
+            PhaseEvent::end(PhaseKind::Recall, profile_started.elapsed().as_millis() as u64).stage("profile"),
+        );
+        let query_in = InjectQuery {
             session: session.to_string(),
             workspace: self.workspace.clone(),
             text: query.to_string(),
             budget_tokens: self.budget_tokens.saturating_sub(profile.tokens),
             exclude: profile.ids,
+        };
+        // The Mind streams each retrieval stage as it runs; a thread forwards them to the bus
+        // while the actor works. The sink drops when the Mind is done, which ends the thread.
+        let (tx, rx) = crossbeam_channel::bounded::<LiveEvent>(256);
+        let injection = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for ev in rx.iter() {
+                    self.phase(session, crate::phases::recall_phase(ev));
+                }
+            });
+            self.mind.inject_live(query_in, LiveSink::new(tx))
         });
         // Ingested here rather than in `after_turn` (which a failed turn skips), and after the
         // inject so a statement is never recalled back to itself.
         if !self.relay {
+            self.phase(session, PhaseEvent::start(PhaseKind::Recall).stage("ingest"));
+            let ingest_started = Instant::now();
             self.ingest(session, TurnRole::User, query);
+            self.phase(
+                session,
+                PhaseEvent::end(PhaseKind::Recall, ingest_started.elapsed().as_millis() as u64).stage("ingest"),
+            );
         }
-        if !injection.recalled.is_empty() {
-            (self.emit)(Event::Recalled {
-                session: session.clone(),
-                turn: self.turn,
-                count: injection.recalled.len() as u32,
-                summary: recalled_summary(&injection.recalled),
-            });
-        }
+        (self.emit)(Event::Recalled {
+            session: session.clone(),
+            turn: self.turn,
+            count: injection.recalled.len() as u32,
+            summary: recalled_summary(&injection.recalled),
+            total_ms: started.elapsed().as_millis() as u64,
+            stages: injection.stages.clone(),
+            abstained: injection.abstained.is_some(),
+        });
         // Untrusted lineage in the context taints the run, as an untrusted `recall` does.
         let untrusted = injection.floor == Some(Trust::Untrusted);
         Recollection { profile: profile.block, blocks: injection.blocks, untrusted }

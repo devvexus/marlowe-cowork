@@ -92,6 +92,17 @@ impl Bus {
         seq
     }
 
+    /// Broadcasts a `seq: 0` event that is not kept in the replay ring and does not advance the
+    /// seq (live `Phase` progress). A client whose queue is full misses it; unlike `publish` this
+    /// never drops a client, so a progress flood cannot cost anyone their connection.
+    pub fn publish_ephemeral(&self, event: Event) {
+        let line = encode(0, event);
+        let g = lock(&self.inner);
+        for c in g.clients.values() {
+            let _ = c.tx.try_send(line.clone());
+        }
+    }
+
     /// Registers a client: queues the `Welcome` built from the current seq, then the replay of
     /// buffered events after `since`, atomically with respect to `publish`. On a replay gap only
     /// the Welcome and a gap `Error` are sent (the client reloads instead of replaying). Returns
@@ -223,6 +234,28 @@ mod tests {
         let (l, rx) = link(2, bus.min_client_queue());
         assert!(bus.attach(l, |_| Event::ShuttingDown, Some(12)));
         assert_eq!(rx.try_iter().count(), 1 + ring);
+    }
+
+    #[test]
+    fn ephemeral_events_skip_the_ring_and_the_seq_and_never_drop_a_client() {
+        let bus = Bus::new(4);
+        let (slow, slow_rx) = link(1, 2);
+        let dropped = slow.dropped.clone();
+        assert!(bus.attach(slow, |_| Event::ShuttingDown, None));
+        bus.publish(Event::ShuttingDown);
+        for _ in 0..50 {
+            bus.publish_ephemeral(Event::Phase(marlowe_proto::PhaseEvent::progress(marlowe_proto::PhaseKind::Recall, 1, 2)));
+        }
+        assert!(!dropped.load(Ordering::SeqCst), "a progress flood must not detach the client");
+        assert_eq!(bus.client_count(), 1);
+        assert_eq!(bus.seq(), 1, "ephemeral events do not advance the seq");
+        let seqs: Vec<u64> = slow_rx.try_iter().map(|l| seq_of(&l)).collect();
+        assert_eq!(seqs[0], 0, "welcome");
+        // A late joiner replays only the ring: the one numbered event, no progress.
+        let (late, late_rx) = link(2, 16);
+        assert!(bus.attach(late, |_| Event::ShuttingDown, Some(0)));
+        let got: Vec<u64> = late_rx.try_iter().map(|l| seq_of(&l)).collect();
+        assert_eq!(got, vec![0, 1]);
     }
 
     #[test]

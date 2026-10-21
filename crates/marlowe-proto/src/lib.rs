@@ -21,6 +21,7 @@ mod frame;
 mod ids;
 mod memory;
 pub mod paths;
+mod phase;
 mod request;
 mod research;
 mod user;
@@ -52,6 +53,7 @@ pub use frame::{write_line, FrameError, LineReader, MAX_LINE_BYTES};
 pub use ids::{ApprovalId, SessionId};
 pub use memory::{ImportReport, MemoryChange, MemoryHit, MemoryKind, MemoryScope, MemoryStatsReport, MemoryTrust};
 pub use paths::DaemonInfo;
+pub use phase::{PhaseEvent, PhaseKind, PhaseSpan, PhaseState, ReadStat, StageMs, TurnNumbers};
 pub use request::{ApprovalDecision, Request, Secret, Slot, SlotParseError};
 pub use research::{
     ChannelId, ChannelParseError, CostQuote, PlanDecision, PlanError, ResearchCounts, ResearchPlan, ResearchProgress,

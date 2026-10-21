@@ -49,6 +49,7 @@ fn enter_sends_shift_enter_breaks_the_line() {
             workspace: Some("C:/work/valiance".into()),
             images: Vec::new(),
             options: None,
+            client_ms: None,
         }]
     );
     assert!(s.composer.text().is_empty());
@@ -73,7 +74,7 @@ fn the_new_session_is_adopted_and_the_turn_streams() {
     assert!(s.on_key(key(KeyCode::Enter)).is_empty());
     feed(&mut s, 6, Event::ToolStarted { session: sid(), turn: 1, call_id: "c1".into(), tool: "read".into(), summary: "read a".into() });
     let reqs = feed(&mut s, 7, Event::ToolFinished { session: sid(), turn: 1, call_id: "c1".into(), ok: true, summary: "ok".into() });
-    assert_eq!(reqs, vec![Request::Ask { session: Some(sid()), text: "also check CI".into(), workspace: None, images: Vec::new(), options: None }]);
+    assert_eq!(reqs, vec![Request::Ask { session: Some(sid()), text: "also check CI".into(), workspace: None, images: Vec::new(), options: None, client_ms: None }]);
     assert_eq!(s.entries.last(), Some(&Entry::User { text: "also check CI".into(), steer: true }));
 }
 
@@ -197,7 +198,7 @@ fn a_restarted_daemon_reloads_and_drops_the_lost_turn() {
     assert_eq!(s.last_seq, 0);
     // The transcript replaces the view.
     let turns = vec![
-        StoredTurn { idx: 0, role: Role::User, content: vec![Part::Text { text: "hello".into() }], at_ms: 0 },
+        StoredTurn { idx: 0, role: Role::User, content: vec![Part::Text { text: "hello".into() }], at_ms: 0, phases: Vec::new(), numbers: None },
         StoredTurn {
             idx: 1,
             role: Role::Assistant,
@@ -206,12 +207,16 @@ fn a_restarted_daemon_reloads_and_drops_the_lost_turn() {
                 Part::ToolCall(ToolCall { id: "c1".into(), name: "read".into(), args: serde_json::json!({"path": "a.rs"}) }),
             ],
             at_ms: 0,
+            phases: Vec::new(),
+            numbers: None,
         },
         StoredTurn {
             idx: 2,
             role: Role::Tool,
             content: vec![Part::ToolResult(ToolResult { call_id: "c1".into(), content: "x\ny".into(), is_error: false, parts: Vec::new() })],
             at_ms: 0,
+            phases: Vec::new(),
+            numbers: None,
         },
     ];
     feed(&mut s, 0, Event::Transcript { session: sid(), turns });

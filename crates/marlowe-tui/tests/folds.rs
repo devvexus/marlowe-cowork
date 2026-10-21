@@ -145,7 +145,7 @@ fn a_finished_block_says_how_long_it_thought_and_a_stored_one_its_tokens() {
     welcome(&mut s, 0);
     s.session = Some(sid());
     let turns = vec![
-        StoredTurn { idx: 0, role: Role::User, content: vec![Part::Text { text: "hello".into() }], at_ms: 0 },
+        StoredTurn { idx: 0, role: Role::User, content: vec![Part::Text { text: "hello".into() }], at_ms: 0, phases: Vec::new(), numbers: None },
         StoredTurn {
             idx: 1,
             role: Role::Assistant,
@@ -154,6 +154,8 @@ fn a_finished_block_says_how_long_it_thought_and_a_stored_one_its_tokens() {
                 Part::Text { text: "Hello.".into() },
             ],
             at_ms: 0,
+            phases: Vec::new(),
+            numbers: None,
         },
     ];
     feed(&mut s, 0, Event::Transcript { session: sid(), turns });

@@ -142,6 +142,10 @@ Parallel tracks (design `docs/research/m46-design.md` sections 7-8) plug in with
 - **One `+500k` pool.** `marlowe_workflow::Budget` can be linked (`PoolLink`) to the conductor's `TokenPool`; the daemon links each session's pool on creation.
 - **Inventory.** `crates/marlowe/tests/parity_inventory.rs` maps every name in the recorded Claude Code init (`tools/record_cc_init.py`) and diffs the documented hook events; re-record when the pinned version moves.
 
+## Live phases
+
+`marlowe-proto/src/phase.rs` is the one event family for "what is the harness doing now": `Event::Phase` (Start/End ordered and replayed, Progress ephemeral via `Bus::publish_ephemeral`), `TurnTimings` and `Recalled.stages`. The daemon's `TurnClock` (`phases.rs`) zeroes at Enter (`Ask.client_ms`), turns End events into measured spans (recall stages nest under `Recall` via `parent`), and persists them in `turn_timings`. Observers only observe: `StageProbe::progress` is a no-op default in `marlowe-memory`; the clock is `marlowe-mind`'s `LiveProbe`.
+
 ## Crew and sandbox model
 
 An agent is a role card (`roles/*.md`, overridden by `<home>\roles\*.md`: slot, effort, tool allowlist, budget, sandbox kind, instructions), and that is all. Depth 1: crew runs never get `dispatch`.

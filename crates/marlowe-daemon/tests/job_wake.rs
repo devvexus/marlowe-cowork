@@ -197,7 +197,7 @@ fn parity_t16_an_idle_session_is_woken_by_a_job_exit_and_the_turn_carries_the_no
     // A first turn opens the session; the model answers and the session goes idle.
     write_line(
         &mut w,
-        &Request::Ask { session: None, text: "start the build in the background".into(), workspace: None, images: Vec::new(), options: None },
+        &Request::Ask { session: None, text: "start the build in the background".into(), workspace: None, images: Vec::new(), options: None, client_ms: None },
     )
     .unwrap();
     let mut session: Option<SessionId> = None;
@@ -290,7 +290,7 @@ fn a_notice_that_cannot_wake_the_session_waits_for_the_users_next_turn() {
         env.event
     };
     let ask = |w: &mut TcpStream, session: Option<SessionId>, text: &str| {
-        write_line(w, &Request::Ask { session, text: text.into(), workspace: None, images: Vec::new(), options: None }).unwrap();
+        write_line(w, &Request::Ask { session, text: text.into(), workspace: None, images: Vec::new(), options: None, client_ms: None }).unwrap();
     };
 
     // The user's first turn: the model is up while it runs (a foreground turn may load it).

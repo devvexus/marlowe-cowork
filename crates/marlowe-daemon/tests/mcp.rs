@@ -233,7 +233,7 @@ fn parity_x12_a_session_calls_an_mcp_tool_after_the_user_allows_it() {
     provider.scripts.lock().unwrap().push_back(say("done"));
     let (info, join) = start(&home, provider.clone());
     let mut c = Client::connect(&info);
-    c.send(&Request::Ask { session: None, text: "use the web server".into(), workspace: None, images: Vec::new(), options: None });
+    c.send(&Request::Ask { session: None, text: "use the web server".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let events = approve_all(&mut c);
 
     let asked = events.iter().find_map(|e| match &e.event {
@@ -266,7 +266,7 @@ fn parity_t31_eighty_tools_reach_the_model_as_one_search_tool() {
     provider.scripts.lock().unwrap().push_back(say("found it"));
     let (info, join) = start(&home, provider.clone());
     let mut c = Client::connect(&info);
-    c.send(&Request::Ask { session: None, text: "look something up".into(), workspace: None, images: Vec::new(), options: None });
+    c.send(&Request::Ask { session: None, text: "look something up".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let events = approve_all(&mut c);
     assert!(events.iter().any(|e| matches!(&e.event, Event::TurnFinished { stop: TurnStop::Done, .. })), "{events:#?}");
 
@@ -283,7 +283,7 @@ fn parity_t31_eighty_tools_reach_the_model_as_one_search_tool() {
     assert_eq!(finished, [true, true], "tool_search and the loaded tool both ran");
     provider.scripts.lock().unwrap().push_back(say("again"));
     let session = events.iter().find_map(|e| if let Event::TurnStarted { session, .. } = &e.event { Some(session.clone()) } else { None }).unwrap();
-    c.send(&Request::Ask { session: Some(session), text: "and again".into(), workspace: None, images: Vec::new(), options: None });
+    c.send(&Request::Ask { session: Some(session), text: "and again".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     approve_all(&mut c);
     let reqs = provider.requests.lock().unwrap();
     assert!(reqs[3].tools.iter().any(|t| t.name == "mcp__web__tool_003"), "the loaded tool is listed from the next turn");

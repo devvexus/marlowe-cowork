@@ -30,6 +30,7 @@ use crate::types::{
     SnapshotInfo, TurnIn, TurnRole,
 };
 use crate::workspaces::{is_user_request, Workspaces};
+use crate::live::MindEvent;
 use crate::{paths, vecfile, InjectQuery, Injection, RecallHit, RecallQuery, LEGACY_CONVERSATION_PROVENANCE, LEGACY_PROVENANCE};
 
 type Reply<T> = Sender<T>;
@@ -41,7 +42,9 @@ pub(crate) enum Cmd {
     Ingest(TurnIn, Reply<Result<(), MindError>>),
     /// The memory and the ids of memories it was derived from (its lineage).
     Remember(MemoryIn, Vec<String>, Reply<Result<Remembered, MindError>>),
-    Inject(InjectQuery, Reply<Injection>),
+    Inject(InjectQuery, Option<crate::live::LiveSink>, Reply<Injection>),
+    /// Replaces the write-tail listener.
+    SetSink(crate::live::MindSink, Reply<()>),
     Profile(ProfileQuery, Reply<UserProfile>),
     Recall(RecallQuery, Reply<Result<Vec<RecallHit>, MindError>>),
     Correct(String, String, Provenance, Reply<Result<Remembered, MindError>>),
@@ -119,6 +122,16 @@ pub(crate) struct Actor {
     pub embed_retry_at: Option<Instant>,
     pub snapshot_seq: u64,
     pub last_snapshot: Instant,
+    /// The embed run in progress (for the write tail's events).
+    pub embed_run: Option<EmbedRun>,
+}
+
+/// One pass of the embed queue from first chunk to empty.
+pub(crate) struct EmbedRun {
+    pub started: Instant,
+    pub total: u32,
+    pub done: u32,
+    pub installed: u32,
 }
 
 pub(crate) fn now_ms() -> i64 {
@@ -222,6 +235,7 @@ impl Actor {
             embed_retry_at: None,
             snapshot_seq,
             last_snapshot: Instant::now(),
+            embed_run: None,
         })
     }
 
@@ -248,7 +262,11 @@ impl Actor {
         match cmd {
             Cmd::Ingest(t, r) => drop(r.send(self.ingest(t))),
             Cmd::Remember(m, parents, r) => drop(r.send(self.remember(m, &parents))),
-            Cmd::Inject(q, r) => drop(r.send(self.inject(q))),
+            Cmd::Inject(q, live, r) => drop(r.send(self.inject(q, live.as_ref()))),
+            Cmd::SetSink(s, r) => {
+                self.cfg.on_event = Some(s);
+                let _ = r.send(());
+            }
             Cmd::Profile(q, r) => drop(r.send(profile::build(self.beliefs.entries(), &q, now_ms()))),
             Cmd::Recall(q, r) => drop(r.send(self.recall(q))),
             Cmd::Correct(id, text, src, r) => drop(r.send(self.correct(&id, &text, src))),
@@ -310,6 +328,13 @@ impl Actor {
         }
     }
 
+    /// Tells the write-tail listener, if any. Never blocks the actor.
+    pub(crate) fn tell(&self, e: MindEvent) {
+        if let Some(s) = &self.cfg.on_event {
+            s.emit(e);
+        }
+    }
+
     // ---- writes ------------------------------------------------------------------------
 
     /// Writes through the core and queues the new belief for embedding.
@@ -317,6 +342,7 @@ impl Actor {
         match write_belief(&mut self.journal, &mut self.beliefs, clock(), w)? {
             Ok(r) => {
                 self.queue.push(r.id.clone());
+                self.tell(MindEvent::Ingested);
                 Ok(r)
             }
             Err(rejected) => Err(MindError::Rejected(rejected.as_wire_string())),

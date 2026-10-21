@@ -21,7 +21,7 @@ fn local(s: &mut marlowe_tui::State, ev: LocalEvent) -> Vec<Request> {
 }
 
 fn ask(text: &str) -> Request {
-    Request::Ask { session: Some(sid()), text: text.into(), workspace: None, images: vec![], options: None }
+    Request::Ask { session: Some(sid()), text: text.into(), workspace: None, images: vec![], options: None, client_ms: None }
 }
 
 // ---- U9, M1 ----------------------------------------------------------------------------------------
@@ -224,6 +224,7 @@ fn parity_U6_a_queued_message_keeps_its_image_and_goes_up_with_it() {
             workspace: None,
             images: vec![ImageRef { mime: "image/png".into(), blob: "b1".into(), w: 640, h: 480 }],
             options: None,
+            client_ms: None,
         }]
     );
     // Taken back with Up, the image comes back with it.
@@ -371,6 +372,7 @@ fn parity_U3_ctrl_v_attaches_the_clipboard_image_and_the_ask_carries_it() {
             workspace: None,
             images: vec![ImageRef { mime: "image/png".into(), blob: "b1".into(), w: 640, h: 480 }],
             options: None,
+            client_ms: None,
         }]
     );
     assert!(!contains(&palette_frame(&s), "1 image"));

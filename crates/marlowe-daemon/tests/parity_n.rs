@@ -448,6 +448,7 @@ impl Client {
             workspace: workspace.map(|w| w.display().to_string()),
             images: Vec::new(),
             options: None,
+            client_ms: None,
         });
         self.until(|e| matches!(e, Event::TurnFinished { .. }))
     }
@@ -1128,7 +1129,7 @@ fn parity_bg11_a_message_to_another_session_is_agent_trust_with_lineage_asks_onc
     let (release, gate) = crossbeam_channel::bounded(1);
     p.conductor(vec![Step::Gate(gate), text("Finished the long thinking."), usage(), end()]);
     let mut b = Client::connect(&d.info, "test");
-    b.send(&Request::Ask { session: None, text: "think for a while".into(), workspace: None, images: Vec::new(), options: None });
+    b.send(&Request::Ask { session: None, text: "think for a while".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let target = session_of(&b.until(|e| matches!(e, Event::TurnStarted { .. })));
     p.wait_conductor(2);
 

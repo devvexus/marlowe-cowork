@@ -309,6 +309,7 @@ impl Client {
             workspace: workspace.map(|w| w.display().to_string()),
             images: Vec::new(),
             options: None,
+            client_ms: None,
         });
         let envs = self.until(|e| matches!(e, Event::TurnFinished { .. }));
         let id = envs
@@ -676,7 +677,7 @@ fn a_running_turn_refuses_a_rewind() {
     // The second turn's model call waits at a gate, so the session is busy.
     let (gate_tx, gate_rx) = crossbeam_channel::bounded::<()>(1);
     p.push(vec![Step::Gate(gate_rx), text("late answer"), Step::Ev(StreamEvent::Stop(StopReason::EndTurn))]);
-    c.send(&Request::Ask { session: Some(id.clone()), text: "second".into(), workspace: None, images: Vec::new(), options: None });
+    c.send(&Request::Ask { session: Some(id.clone()), text: "second".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     c.until(|e| matches!(e, Event::TurnStarted { .. }));
     let msg = c.refused(&Request::Rewind { session: id.clone(), turn: 0, scope: RewindScope::Conversation });
     assert!(msg.contains("a turn is running"), "{msg}");
@@ -851,6 +852,7 @@ fn child_entry() {
         workspace: None,
         images: Vec::new(),
         options: None,
+        client_ms: None,
     });
     // The daemon dies before this wait ends.
     let _ = c.until(|e| matches!(e, Event::ShuttingDown));
@@ -1218,7 +1220,7 @@ fn a_code_rewind_refuses_while_another_session_is_running_in_the_workspace() {
     // Session b is mid-turn (its model call waits at a gate) in the same workspace.
     let (gate_tx, gate_rx) = crossbeam_channel::bounded::<()>(1);
     p.push(vec![Step::Gate(gate_rx), text("late"), Step::Ev(StreamEvent::Stop(StopReason::EndTurn))]);
-    c.send(&Request::Ask { session: Some(b.clone()), text: "b again".into(), workspace: None, images: Vec::new(), options: None });
+    c.send(&Request::Ask { session: Some(b.clone()), text: "b again".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     c.until(|e| matches!(e, Event::TurnStarted { .. }));
     let msg = c.refused(&Request::Rewind { session: a.clone(), turn: 0, scope: RewindScope::Code });
     assert!(msg.contains("running a turn in this workspace"), "{msg}");

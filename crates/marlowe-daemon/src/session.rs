@@ -10,6 +10,7 @@
 //! conductor acts on it). A relay is never ingested into memory at user trust.
 
 use std::collections::VecDeque;
+use std::time::Instant;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -19,13 +20,14 @@ use marlowe_agent::{
     Agent, AgentEvent, ApprovalGate, ApprovalReq, Conversation, Environment, NoMemory, Notification, NotificationKind,
     PersonaBlock, Steer, SteerRefused, SystemPrompt, ToolHost, TurnObserver, TurnOutcome, TurnStop,
 };
-use marlowe_brains::{Admission, Priority};
+use marlowe_brains::{Admission, LoadCost, Priority};
 use marlowe_model::{CancelToken, Message, ModelRef, Usage};
 use marlowe_model::ImageRef;
-use marlowe_proto::{ApprovalDecision, Event, HeadlessOptions, SessionId, Slot};
+use marlowe_proto::{ApprovalDecision, Event, HeadlessOptions, PhaseEvent, PhaseKind, SessionId, Slot};
 
 use crate::daemon::Core;
 use crate::mind::{ComposedTools, MindMemory, MindTools, RecallSink};
+use crate::phases::TurnClock;
 use crate::checkpoint::SessionRecorder;
 use crate::stack::{self, Stack};
 use crate::{lock, HostRequest};
@@ -51,6 +53,11 @@ pub(crate) enum RunnerCmd {
 pub(crate) struct AskExtras {
     pub images: Vec<ImageRef>,
     pub options: Option<HeadlessOptions>,
+    /// When the daemon took the ask, and how long it spent since the user's Enter (the client's
+    /// stamp against the daemon's). Only an ask that starts a turn at once carries them: one that
+    /// queued behind a running turn starts its clock when it runs.
+    pub received: Option<std::time::Instant>,
+    pub sending_ms: Option<u64>,
 }
 
 impl AskExtras {
@@ -60,6 +67,7 @@ impl AskExtras {
 
     /// Folds a later ask's extras in: images add up, the later options win.
     fn merge(&mut self, later: AskExtras) {
+        // A queued ask's clock starts when it runs, not when it was typed.
         self.images.extend(later.images);
         if later.options.is_some() {
             self.options = later.options;
@@ -494,6 +502,9 @@ fn run_one(
     }
     let session = convo.session.clone();
     let turn = convo.next_turn;
+    let clock = TurnClock::start(core, &session, turn, input.extras.received, input.extras.sending_ms);
+    clock.emit(PhaseEvent::start(PhaseKind::Admit));
+    let admit_started = Instant::now();
     let parts = guard(|| core.brains.agent_parts(&Slot::Conductor)).and_then(|r| r.map_err(|e| e.to_string()));
     let (provider, info, effort) = match parts {
         Ok(p) => p,
@@ -505,7 +516,9 @@ fn run_one(
     let model = info.model_ref();
     // A relay turn runs with nobody waiting on it (at start, at 3am): it never loads a model.
     let who = if input.relay { Priority::Background } else { Priority::Foreground };
-    if let Err(message) = admit_conductor(core, &session, &model, cancel, who) {
+    let admitted = admit_conductor(core, &session, &model, cancel, who);
+    if let Err(message) = &admitted {
+        let message = message.clone();
         if input.relay {
             // The run stays due; the user's next turn delivers it on a loaded model.
             eprintln!("marlowe: a relay waits for the next turn: {message}");
@@ -518,7 +531,12 @@ fn run_one(
         }
         return;
     }
+    clock.emit(PhaseEvent::end(PhaseKind::Admit, admit_started.elapsed().as_millis() as u64));
+    // A cold load's predicted cost, for the load line.
+    clock.set_load(admitted.ok().flatten());
     let model_ref = model.clone();
+    clock.emit(PhaseEvent::start(PhaseKind::Prompt));
+    let prompt_started = Instant::now();
     let workspace = workspace_of(convo);
     let mut system = SystemPrompt::new();
     // The memory block describes the profile and memory tools, so only when a Mind is attached.
@@ -557,7 +575,8 @@ fn run_one(
     agent.memory = match &core.mind {
         Some(mind) => {
             let budget = agent.context.effective_window() / MEMORY_TIER_DIVISOR;
-            let memory = MindMemory::new(mind.clone(), workspace, turn, budget, publisher(core));
+            let memory = MindMemory::new(mind.clone(), workspace, turn, budget, clock.sink())
+                .with_tail(core.ext.get_or_init(crate::phases::TailTarget::default));
             Arc::new(if input.relay { memory.relay() } else { memory })
         }
         None => Arc::new(NoMemory),
@@ -590,14 +609,20 @@ fn run_one(
     recorder.begin_turn(convo, &model_ref);
     // Crew results folded in as steers during this turn; delivered once the turn is saved.
     let mut steered: Vec<String> = Vec::new();
+    clock.emit(PhaseEvent::end(PhaseKind::Prompt, prompt_started.elapsed().as_millis() as u64));
     let mut sink = |ev: AgentEvent| {
         if let AgentEvent::SteerApplied { text } = &ev {
             if is_relay(text) {
                 steered.push(text.clone());
             }
         }
+        clock.on_agent(&ev);
+        let token = matches!(ev, AgentEvent::TextDelta(_) | AgentEvent::ReasoningDelta { .. });
         if let Some(e) = to_event(&session, turn, window, ev) {
             core.bus.publish(e);
+            if token {
+                clock.token_published();
+            }
         }
     };
     let outcome = guard(|| agent.run_turn(convo, text, cancel, &handle.inbox_rx, &mut sink)).unwrap_or_else(|e| TurnOutcome {
@@ -625,6 +650,11 @@ fn run_one(
         convo.push(Message::user(text));
     }
     recorder.finish_turn(convo, text, before_len);
+    let (spans, numbers) = clock.finish();
+    if let Err(e) = core.store.put_timings(&session, turn, spans.clone(), numbers.clone()) {
+        eprintln!("marlowe: turn timings not saved: {e}");
+    }
+    core.bus.publish(Event::TurnTimings { session: session.clone(), turn, spans, numbers });
     let saved = recorder.take_error().map_or(Ok(()), Err);
     match saved {
         // The crew results this turn carried are in the session's history now: a restart must
@@ -656,7 +686,11 @@ fn to_event(session: &SessionId, turn: u32, window: u32, ev: AgentEvent) -> Opti
         AgentEvent::TextRetracted { tokens } => Event::TextRetracted { session, turn, tokens },
         AgentEvent::ToolStarted { call_id, tool, summary } => Event::ToolStarted { session, turn, call_id, tool, summary },
         AgentEvent::ToolFinished { call_id, ok, summary } => Event::ToolFinished { session, turn, call_id, ok, summary },
-        AgentEvent::SteerApplied { .. } => return None,
+        // Phases, the wire mark and the first-token stamp go through the turn's clock.
+        AgentEvent::SteerApplied { .. }
+        | AgentEvent::Phase(_)
+        | AgentEvent::CallStarted { .. }
+        | AgentEvent::FirstToken { .. } => return None,
     })
 }
 
@@ -674,13 +708,16 @@ fn guard<T>(f: impl FnOnce() -> T) -> Result<T, String> {
 /// The conductor's model may be used for this turn: hosted, already loaded, or a cold load the
 /// planner says fits. A load that does not fit beside what is resident asks, with its cost (once
 /// per model and resident set).
-fn admit_conductor(core: &Arc<Core>, session: &SessionId, model: &ModelRef, cancel: &CancelToken, who: Priority) -> Result<(), String> {
+///
+/// A cold load that goes ahead returns its [`LoadCost`] (the planner's predicted bytes, for the
+/// load line); a model that is hosted or already resident returns `None`.
+fn admit_conductor(core: &Arc<Core>, session: &SessionId, model: &ModelRef, cancel: &CancelToken, who: Priority) -> Result<Option<LoadCost>, String> {
     let admission = guard(|| core.brains.admit(model, who))?;
     let cost = match admission {
-        Admission::Hosted | Admission::Resident => return Ok(()),
+        Admission::Hosted | Admission::Resident => return Ok(None),
         Admission::Load(cost) => {
             eprintln!("marlowe: loading {model} for the conductor: {}", cost.describe());
-            return Ok(());
+            return Ok(Some(cost));
         }
         Admission::Refused(why) | Admission::Wait(why) => return Err(format!("not loading {model}: {why}")),
         // Only the user's own turn asks, and only it counts loads approved earlier.
@@ -689,7 +726,7 @@ fn admit_conductor(core: &Arc<Core>, session: &SessionId, model: &ModelRef, canc
     };
     let key = format!("{model}|{}", cost.resident.join(","));
     if lock(&core.approved_loads).contains(&key) {
-        return Ok(());
+        return Ok(Some(cost));
     }
     let gate = Gate { core: core.clone(), cancel: cancel.clone(), observers: Vec::new() };
     let decision = gate.ask(ApprovalReq {
@@ -704,7 +741,7 @@ fn admit_conductor(core: &Arc<Core>, session: &SessionId, model: &ModelRef, canc
     });
     if decision.is_allowed() {
         lock(&core.approved_loads).insert(key);
-        Ok(())
+        Ok(Some(cost))
     } else {
         Err(format!("not loading {model}: {}", cost.describe()))
     }

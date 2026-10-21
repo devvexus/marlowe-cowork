@@ -17,7 +17,7 @@ use std::thread::JoinHandle;
 
 use crossbeam_channel::{bounded, unbounded, Sender};
 use marlowe_model::{Message, Part, Role, Usage};
-use marlowe_proto::{SessionId, SessionSummary, StoredTurn};
+use marlowe_proto::{PhaseSpan, SessionId, SessionSummary, StoredTurn, TurnNumbers};
 use rusqlite::{params, Connection, OptionalExtension};
 
 pub const SCHEMA: &str = "
@@ -60,6 +60,13 @@ CREATE TABLE IF NOT EXISTS extra_calls (
     model      TEXT NOT NULL,
     usage      TEXT NOT NULL,
     latency_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS turn_timings (
+    session TEXT NOT NULL,
+    turn    INTEGER NOT NULL,
+    spans   TEXT NOT NULL,
+    numbers TEXT NOT NULL,
+    PRIMARY KEY (session, turn)
 );
 CREATE TABLE IF NOT EXISTS rewound_turns (
     session     TEXT NOT NULL,
@@ -178,6 +185,7 @@ enum Cmd {
     GetKv(String, Sender<StoreResult<Option<String>>>),
     SetKv(String, String, Sender<StoreResult<()>>),
     LastActivity(Sender<StoreResult<Option<i64>>>),
+    PutTimings { session: SessionId, turn: u32, spans: Vec<PhaseSpan>, numbers: TurnNumbers, reply: Sender<StoreResult<()>> },
     Close,
 }
 
@@ -335,6 +343,19 @@ fn serve(conn: &mut Connection, cmd: Cmd) -> bool {
         }
         Cmd::LastActivity(reply) => {
             let r = conn.query_row("SELECT MAX(updated) FROM sessions", [], |r| r.get::<_, Option<i64>>(0)).map_err(e);
+            let _ = reply.send(r);
+        }
+        Cmd::PutTimings { session, turn, spans, numbers, reply } => {
+            let spans = serde_json::to_string(&spans).unwrap_or_else(|_| "[]".into());
+            let numbers = serde_json::to_string(&numbers).unwrap_or_else(|_| "{}".into());
+            let r = conn
+                .execute(
+                    "INSERT INTO turn_timings (session, turn, spans, numbers) VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(session, turn) DO UPDATE SET spans = excluded.spans, numbers = excluded.numbers",
+                    params![session.as_str(), turn, spans, numbers],
+                )
+                .map(|_| ())
+                .map_err(e);
             let _ = reply.send(r);
         }
         Cmd::Close => return false,
@@ -521,6 +542,7 @@ fn drop_from(conn: &mut Connection, session: &SessionId, turn: u32, at: i64) -> 
         tx.execute("DELETE FROM turns WHERE session = ?1 AND idx >= ?2", params![session.as_str(), first_idx])?;
     }
     tx.execute("DELETE FROM call_results WHERE session = ?1", [session.as_str()])?;
+    tx.execute("DELETE FROM turn_timings WHERE session = ?1 AND turn >= ?2", params![session.as_str(), turn])?;
     tx.execute(
         "UPDATE sessions SET next_turn = MIN(next_turn, ?2), updated = ?3 WHERE id = ?1",
         params![session.as_str(), turn, at],
@@ -574,25 +596,50 @@ fn fork(conn: &mut Connection, from: &SessionId, to: SessionSummary, before_turn
             .map_err(|e| e.to_string())?;
         }
     }
+    tx.execute(
+        "INSERT INTO turn_timings (session, turn, spans, numbers)
+         SELECT ?1, turn, spans, numbers FROM turn_timings WHERE session = ?2 AND turn < ?3",
+        params![to.id.as_str(), from.as_str(), next_turn],
+    )
+    .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(SessionSummary { turns: next_turn, ..to })
 }
 
 fn load(conn: &Connection, id: &SessionId) -> StoreResult<Vec<StoredTurn>> {
     let mut st = conn
-        .prepare("SELECT idx, role, content, at FROM turns WHERE session = ?1 ORDER BY idx")
+        .prepare("SELECT idx, role, content, at, COALESCE(turn, 0) FROM turns WHERE session = ?1 ORDER BY idx")
         .map_err(|e| e.to_string())?;
     let rows = st
         .query_map([id.as_str()], |r| {
-            Ok((r.get::<_, u32>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?))
+            Ok((r.get::<_, u32>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, u32>(4)?))
         })
         .map_err(|e| e.to_string())?;
+    let mut timings = timings(conn, id)?;
     let mut out = Vec::new();
     for row in rows {
-        let (idx, role, content, at_ms) = row.map_err(|e| e.to_string())?;
+        let (idx, role, content, at_ms, turn) = row.map_err(|e| e.to_string())?;
         let role = parse_role(&role).ok_or_else(|| format!("bad role '{role}' in turn {idx}"))?;
         let content: Vec<Part> = serde_json::from_str(&content).map_err(|e| format!("turn {idx}: {e}"))?;
-        out.push(StoredTurn { idx, role, content, at_ms });
+        // A turn's measured phases ride on its first message.
+        let (phases, numbers) = timings.remove(&turn).unwrap_or_default();
+        out.push(StoredTurn { idx, role, content, at_ms, phases, numbers });
+    }
+    Ok(out)
+}
+
+/// The stored spans and totals of each turn of a session.
+fn timings(conn: &Connection, id: &SessionId) -> StoreResult<std::collections::HashMap<u32, (Vec<PhaseSpan>, Option<TurnNumbers>)>> {
+    let mut st = conn.prepare("SELECT turn, spans, numbers FROM turn_timings WHERE session = ?1").map_err(|e| e.to_string())?;
+    let rows = st
+        .query_map([id.as_str()], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+        .map_err(|e| e.to_string())?;
+    let mut out = std::collections::HashMap::new();
+    for row in rows {
+        let (turn, spans, numbers) = row.map_err(|e| e.to_string())?;
+        // A row an older or newer build wrote that does not parse is a turn without timings.
+        let (Ok(spans), Ok(numbers)) = (serde_json::from_str(&spans), serde_json::from_str(&numbers)) else { continue };
+        out.insert(turn, (spans, Some(numbers)));
     }
     Ok(out)
 }
@@ -718,6 +765,11 @@ impl Store {
         self.call(Cmd::LastActivity)
     }
 
+    /// Keeps a turn's measured phases and totals.
+    pub fn put_timings(&self, session: &SessionId, turn: u32, spans: Vec<PhaseSpan>, numbers: TurnNumbers) -> StoreResult<()> {
+        self.call(|reply| Cmd::PutTimings { session: session.clone(), turn, spans, numbers, reply })
+    }
+
     /// Stops the store thread after pending commands.
     pub fn close(&self) {
         let _ = self.tx.send(Cmd::Close);
@@ -820,6 +872,46 @@ mod tests {
         // Dropping past the end removes nothing.
         assert_eq!(store.drop_from(&id, 9, 50).unwrap(), Dropped::default());
         assert_eq!(store.get(&id).unwrap().unwrap().turns, 2);
+        store.close();
+        handle.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn turn_timings_ride_on_the_turns_first_message_and_follow_rewinds_and_forks() {
+        use marlowe_proto::PhaseKind;
+        let dir = scratch("timings");
+        let (store, handle) = open(&dir.join("cowork.db")).unwrap();
+        let id = SessionId("t".into());
+        store.create(summary(&id, "C:/w")).unwrap();
+        let rows = (0..2)
+            .flat_map(|t| [row(Message::user(format!("q{t}")), t, 10 + t as i64), row(Message::assistant(format!("a{t}")), t, 11 + t as i64)])
+            .collect();
+        store.append_rows(&id, rows, 2, false, 20).unwrap();
+        let span = |ms| PhaseSpan { kind: PhaseKind::Wire, stage: None, start_ms: 3, ms, n: None, detail: None, parent: None, est: false };
+        let numbers = |ttft| TurnNumbers { ttft_ms: Some(ttft), ..TurnNumbers::default() };
+        store.put_timings(&id, 0, vec![span(40)], numbers(50)).unwrap();
+        store.put_timings(&id, 1, vec![span(80)], numbers(90)).unwrap();
+        // A second write for the same turn replaces the first.
+        store.put_timings(&id, 1, vec![span(81)], numbers(91)).unwrap();
+
+        let turns = store.load(&id).unwrap();
+        assert_eq!(turns[0].phases, vec![span(40)]);
+        assert_eq!(turns[0].numbers, Some(numbers(50)));
+        assert!(turns[1].phases.is_empty() && turns[1].numbers.is_none(), "only the first message of a turn");
+        assert_eq!(turns[2].phases, vec![span(81)]);
+
+        let copy = store.fork(&id, summary(&SessionId("c".into()), "C:/w"), Some(1)).unwrap();
+        let copied = store.load(&copy.id).unwrap();
+        assert_eq!(copied.len(), 2);
+        assert_eq!(copied[0].phases, vec![span(40)], "a fork keeps the timings of the turns it copies");
+
+        store.drop_from(&id, 1, 30).unwrap();
+        let kept = store.load(&id).unwrap();
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].phases, vec![span(40)]);
+        store.append_rows(&id, vec![row(Message::user("again"), 1, 40)], 2, false, 40).unwrap();
+        assert!(store.load(&id).unwrap()[2].phases.is_empty(), "a rewound turn's timings are gone");
         store.close();
         handle.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);

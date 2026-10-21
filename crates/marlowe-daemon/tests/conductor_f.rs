@@ -258,7 +258,7 @@ impl Client {
     /// Asks in `session` (a new one when `None`) and waits for the turn to finish; returns the
     /// session.
     fn ask(&mut self, session: Option<SessionId>, text: &str) -> SessionId {
-        self.send(&Request::Ask { session, text: text.into(), workspace: None, images: Vec::new(), options: None });
+        self.send(&Request::Ask { session, text: text.into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
         let envs = self.until(|e| matches!(e, Event::TurnFinished { .. }));
         envs.iter()
             .find_map(|e| match &e.event {
@@ -346,7 +346,7 @@ fn parity_t23_ask_user_round_trips_over_the_wire() {
     p.push(answer("Using sqlite."));
     let r = start(&home, p.clone());
     let mut c = Client::connect(&r.info);
-    c.send(&Request::Ask { session: None, text: "set up storage".into(), workspace: None, images: Vec::new(), options: None });
+    c.send(&Request::Ask { session: None, text: "set up storage".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let (session, id, questions) = match c.until(|e| matches!(e, Event::QuestionAsked { .. })).pop().unwrap().event {
         Event::QuestionAsked { session, id, questions } => (session, id, questions),
         _ => unreachable!(),
@@ -518,7 +518,7 @@ fn an_interrupt_ends_a_pending_subagent_approval_at_once() {
     p.push_sub(call("danger", serde_json::json!({})));
     let r = start(&home, p.clone());
     let mut c = Client::connect(&r.info);
-    c.send(&Request::Ask { session: None, text: "go".into(), workspace: None, images: Vec::new(), options: None });
+    c.send(&Request::Ask { session: None, text: "go".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let (session, summary) = match c.until(|e| matches!(e, Event::ApprovalRequested { .. })).pop().unwrap().event {
         Event::ApprovalRequested { session, summary, .. } => (session, summary),
         _ => unreachable!(),

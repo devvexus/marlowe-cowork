@@ -10,6 +10,7 @@ use crate::context::{ContextPlan, ContextPolicy, ModelContext, PlannedChange};
 use crate::crew::{CrewRunInfo, CrewStep, Dispatch, RoleInfo, RunId};
 use crate::ids::{ApprovalId, SessionId};
 use crate::memory::{ImportReport, MemoryChange, MemoryHit, MemoryStatsReport};
+use crate::phase::{PhaseEvent, PhaseSpan, StageMs, TurnNumbers};
 use crate::request::{ApprovalDecision, Slot};
 use crate::research::{CostQuote, ResearchPlan, ResearchProgress};
 use crate::watch::{BriefItem, Notice, VoiceStatus, WatchCandidate, WatchState};
@@ -61,6 +62,12 @@ pub struct StoredTurn {
     pub role: Role,
     pub content: Vec<Part>,
     pub at_ms: i64,
+    /// The measured phases of the turn this message began, for replay on open.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phases: Vec<PhaseSpan>,
+    /// The turn's measured totals; on the turn's first message, with `phases`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numbers: Option<TurnNumbers>,
 }
 
 /// A model in the library.
@@ -168,8 +175,33 @@ pub enum Event {
     MemoryChanged { id: String, change: MemoryChange },
     /// Reply to `MemoryStats`.
     MemoryStats(MemoryStatsReport),
-    /// Memories were auto-injected into a turn; drives the dim `recall · N memories` line.
-    Recalled { session: SessionId, turn: u32, count: u32, summary: String },
+    /// A recall finished for a turn (also when it found nothing); drives the dim
+    /// `recall · N memories · 84ms  embed 12 · ...` line.
+    Recalled {
+        session: SessionId,
+        turn: u32,
+        count: u32,
+        summary: String,
+        /// Whole recall, ms (0 from an older daemon).
+        #[serde(default)]
+        total_ms: u64,
+        /// Per-stage measured time, in pipeline order.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        stages: Vec<StageMs>,
+        /// The gate declined to inject anything.
+        #[serde(default)]
+        abstained: bool,
+    },
+    /// A step started, advanced or ended (see [`PhaseEvent`]). `Progress` is ephemeral.
+    Phase(PhaseEvent),
+    /// Every measured span of a turn, published just before `TurnFinished`.
+    TurnTimings {
+        session: SessionId,
+        turn: u32,
+        spans: Vec<PhaseSpan>,
+        #[serde(flatten)]
+        numbers: TurnNumbers,
+    },
     /// Legacy import progress (broadcast).
     ImportProgress { read: u64, imported: u64 },
     /// Legacy import finished (broadcast).
@@ -399,6 +431,7 @@ impl Event {
             | Event::TurnFinished { session, .. }
             | Event::ApprovalRequested { session, .. }
             | Event::Recalled { session, .. }
+            | Event::TurnTimings { session, .. }
             | Event::ContextUsage { session, .. }
             | Event::ModeChanged { session, .. }
             | Event::QuestionAsked { session, .. }
@@ -416,6 +449,7 @@ impl Event {
             | Event::JobExited { session, .. }
             | Event::Findings { session, .. }
             | Event::Notified { session, .. } => session.as_ref(),
+            Event::Phase(p) => p.session.as_ref(),
             Event::JobStarted { job } => job.session.as_ref(),
             Event::TaskUpdated(task) => task.session.as_ref(),
             _ => None,

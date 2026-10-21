@@ -247,7 +247,7 @@ fn recalled_turn() -> State {
 #[test]
 fn recall_line_appears_dim_before_the_answer() {
     let mut s = recalled_turn();
-    feed(&mut s, 4, Event::Recalled { session: sid(), turn: 1, count: 3, summary: "gate sweep, cue choice".into() });
+    feed(&mut s, 4, Event::Recalled { session: sid(), turn: 1, count: 3, summary: "gate sweep, cue choice".into(), total_ms: 0, stages: Vec::new(), abstained: false });
     assert!(matches!(s.entries.last(), Some(Entry::Recall { count: 3, .. })));
     // Still waiting for the model: the thinking line is not hidden by the recall line.
     let buf = render(&s, W, H);
@@ -263,10 +263,10 @@ fn recall_line_appears_dim_before_the_answer() {
 #[test]
 fn recall_of_nothing_or_another_session_shows_nothing() {
     let mut s = recalled_turn();
-    feed(&mut s, 4, Event::Recalled { session: sid(), turn: 1, count: 0, summary: String::new() });
-    feed(&mut s, 5, Event::Recalled { session: "other".into(), turn: 1, count: 2, summary: String::new() });
+    feed(&mut s, 4, Event::Recalled { session: sid(), turn: 1, count: 0, summary: String::new(), total_ms: 0, stages: Vec::new(), abstained: false });
+    feed(&mut s, 5, Event::Recalled { session: "other".into(), turn: 1, count: 2, summary: String::new(), total_ms: 0, stages: Vec::new(), abstained: false });
     assert!(!s.entries.iter().any(|e| matches!(e, Entry::Recall { .. })));
-    feed(&mut s, 6, Event::Recalled { session: sid(), turn: 1, count: 1, summary: String::new() });
+    feed(&mut s, 6, Event::Recalled { session: sid(), turn: 1, count: 1, summary: String::new(), total_ms: 0, stages: Vec::new(), abstained: false });
     assert!(contains(&render(&s, W, H), "recall \u{b7} 1 memory"));
 }
 

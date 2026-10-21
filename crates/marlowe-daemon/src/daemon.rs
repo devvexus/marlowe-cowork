@@ -503,6 +503,7 @@ impl Daemon {
             runners: Mutex::new(Vec::new()),
             writers: Mutex::new(Vec::new()),
         });
+        crate::phases::attach_mind(&core);
         if let Some(link) = deps.sentinel {
             core.add_writer(crate::watch_ops::forward_sentinel(core.clone(), link.events)?);
         }

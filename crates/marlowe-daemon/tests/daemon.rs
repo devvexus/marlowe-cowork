@@ -286,7 +286,7 @@ fn two_clients_see_one_identical_stream_and_late_clients_replay_it() {
 
     let mut a = Client::connect(&d.info, None);
     let mut b = Client::connect(&d.info, None);
-    a.send(&Request::Ask { session: None, text: "hello there\nsecond line".into(), workspace: Some("C:/ws".into()), images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: "hello there\nsecond line".into(), workspace: Some("C:/ws".into()), images: Vec::new(), options: None, client_ms: None });
     let got_a = a.until(is_finished);
     let got_b = b.until(is_finished);
 
@@ -348,10 +348,10 @@ fn a_second_ask_is_queued_and_interrupt_cancels() {
     let d = start(&home, p.clone(), DaemonConfig::default());
     let mut a = Client::connect(&d.info, None);
 
-    a.send(&Request::Ask { session: None, text: "one".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: "one".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let head = a.until(|e| matches!(e, Event::TextDelta { text, .. } if text == "first"));
     let sid = opened_session(&head);
-    a.send(&Request::Ask { session: Some(sid.clone()), text: "two".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: Some(sid.clone()), text: "two".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     match a.request(&Request::Status, |e| matches!(e, Event::Status(_))) {
         Event::Status(s) => assert_eq!(s.active_sessions, vec![sid.clone()]),
         _ => unreachable!(),
@@ -382,7 +382,7 @@ fn a_second_ask_is_queued_and_interrupt_cancels() {
 
     // Interrupt cancels a running turn promptly.
     p.push(vec![text("long"), Step::WaitCancel]);
-    a.send(&Request::Ask { session: Some(sid.clone()), text: "three".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: Some(sid.clone()), text: "three".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     a.until(|e| matches!(e, Event::TextDelta { text, .. } if text == "long"));
     let t0 = Instant::now();
     a.send(&Request::Interrupt { session: sid.clone() });
@@ -406,7 +406,7 @@ fn a_restart_preserves_sessions_and_turns() {
     p.push(vec![text("noted")]);
     let d = start(&home, p, DaemonConfig::default());
     let mut a = Client::connect(&d.info, None);
-    a.send(&Request::Ask { session: None, text: "remember me".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: "remember me".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let sid = opened_session(&a.until(is_finished));
     drop(a);
     stop(d, &home);
@@ -434,7 +434,7 @@ fn a_restart_preserves_sessions_and_turns() {
     }
 
     // The reloaded conversation continues where it left off.
-    a.send(&Request::Ask { session: Some(sid.clone()), text: "still there?".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: Some(sid.clone()), text: "still there?".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let log = a.until(is_finished);
     assert!(log.iter().any(|e| matches!(e.event, Event::TurnStarted { turn: 1, .. })));
     let req = &p2.requests()[0];
@@ -453,10 +453,10 @@ fn an_idle_session_is_evicted_and_reloads_on_the_next_ask() {
     let cfg = DaemonConfig { session_idle: Duration::from_millis(50), ..DaemonConfig::default() };
     let d = start(&home, p.clone(), cfg);
     let mut a = Client::connect(&d.info, None);
-    a.send(&Request::Ask { session: None, text: "one".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: "one".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let sid = opened_session(&a.until(is_finished));
     std::thread::sleep(Duration::from_millis(300));
-    a.send(&Request::Ask { session: Some(sid.clone()), text: "two".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: Some(sid.clone()), text: "two".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let log = a.until(is_finished);
     assert!(log.iter().any(|e| matches!(&e.event, Event::TurnStarted { session, turn: 1, .. } if *session == sid)));
     let reqs = p.requests();
@@ -491,7 +491,7 @@ fn a_slow_client_is_dropped_and_the_daemon_carries_on() {
     write_line(&mut slow, &Request::Hello { token: d.info.token.clone(), client: "slow".into(), since_seq: None }).unwrap();
 
     let mut fast = Client::connect(&d.info, None);
-    fast.send(&Request::Ask { session: None, text: "flood".into(), workspace: None, images: Vec::new(), options: None });
+    fast.send(&Request::Ask { session: None, text: "flood".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let log = fast.until(is_finished);
     let deltas = log.iter().filter(|e| matches!(e.event, Event::TextDelta { .. })).count();
     assert_eq!(deltas, 6_000, "the reading client got everything");
@@ -500,7 +500,7 @@ fn a_slow_client_is_dropped_and_the_daemon_carries_on() {
         _ => unreachable!(),
     }
     // Still serving.
-    fast.send(&Request::Ask { session: None, text: "after".into(), workspace: None, images: Vec::new(), options: None });
+    fast.send(&Request::Ask { session: None, text: "after".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     fast.until(is_finished);
     drop(slow);
     stop(d, &home);
@@ -520,7 +520,7 @@ fn approvals_round_trip_and_time_out_to_deny() {
     let mut a = Client::connect(&d.info, None);
     let mut b = Client::connect(&d.info, None);
 
-    a.send(&Request::Ask { session: None, text: "do it".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: "do it".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let asked = b.until(|e| matches!(e, Event::ApprovalRequested { .. }));
     let (approval, sid) = match &asked.last().unwrap().event {
         Event::ApprovalRequested { approval, session, tool, summary, .. } => {
@@ -544,7 +544,7 @@ fn approvals_round_trip_and_time_out_to_deny() {
     assert_eq!(results, vec!["danger ran"]);
 
     // Unanswered: denied after the timeout, and the turn still finishes.
-    a.send(&Request::Ask { session: Some(sid), text: "again".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: Some(sid), text: "again".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let log = a.until(is_finished);
     assert!(log.iter().any(|e| matches!(e.event, Event::ApprovalResolved { decision: ApprovalDecision::Deny, .. })));
     assert!(log.iter().any(|e| matches!(&e.event, Event::ToolFinished { ok: false, call_id, .. } if call_id == "c2")));
@@ -628,7 +628,7 @@ fn a_client_that_idles_past_the_hello_timeout_stays_connected() {
 
     let mut a = Client::connect(&d.info, None);
     std::thread::sleep(Duration::from_millis(800));
-    a.send(&Request::Ask { session: None, text: "after a pause".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: "after a pause".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let got = a.until(is_finished);
     assert!(matches!(got.last().map(|e| &e.event), Some(Event::TurnFinished { stop: TurnStop::Done, .. })));
     stop(d, &home);
@@ -740,7 +740,7 @@ fn set_user_persists_reaches_the_next_turn_and_the_next_brief_greets_with_the_ad
         }
         _ => unreachable!(),
     }
-    a.send(&Request::Ask { session: None, text: "hello".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: "hello".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     a.until(is_finished);
     let system = p.requests()[0].system_text();
     assert!(system.contains("Name: Matthew") && system.contains("Formal address: sir"), "{system}");
@@ -805,11 +805,11 @@ fn a_statement_in_one_session_is_recalled_in_another_after_a_restart() {
     let d = start_with(&home, p, mem_cfg(), Some(open_mind(&home, models_dir())));
     let mut a = Client::connect(&d.info, None);
     let statement = "My sister Ingrid lives in Tromsø and works as a marine biologist studying orcas.";
-    a.send(&Request::Ask { session: None, text: statement.into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: statement.into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let sid_a = opened_session(&a.until(is_finished));
     // The shipped gate needs a rank-2 candidate to take its margin from; one belief abstains.
     let other = "The training cluster is called Hyperion and has eight A100 GPUs.";
-    a.send(&Request::Ask { session: Some(sid_a.clone()), text: other.into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: Some(sid_a.clone()), text: other.into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     a.until(is_finished);
     drop(a);
     // The daemon shuts the mind down (final snapshot) and releases the profile.
@@ -818,7 +818,7 @@ fn a_statement_in_one_session_is_recalled_in_another_after_a_restart() {
     let p2 = Arc::new(Scripted::default());
     let d = start_with(&home, p2.clone(), mem_cfg(), Some(open_mind(&home, models_dir())));
     let mut b = Client::connect(&d.info, None);
-    b.send(&Request::Ask { session: None, text: "Where does my sister Ingrid live, and what is her job?".into(), workspace: None, images: Vec::new(), options: None });
+    b.send(&Request::Ask { session: None, text: "Where does my sister Ingrid live, and what is her job?".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let log = b.until(is_finished);
     let sid_b = opened_session(&log);
     assert_ne!(sid_a, sid_b, "a different session");
@@ -867,7 +867,7 @@ fn memory_tools_and_requests_work_without_models_and_say_so() {
         Event::MemoryStats(s) => assert!(s.degraded.is_some(), "degraded mode is reported"),
         _ => unreachable!(),
     }
-    a.send(&Request::Ask { session: None, text: "remember the cluster name".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: "remember the cluster name".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let log = a.until(is_finished);
     assert!(log.iter().any(|e| matches!(&e.event, Event::ToolFinished { ok: true, call_id, .. } if call_id == "m1")), "{log:#?}");
     let changed = log.iter().find_map(|e| match &e.event {
@@ -920,7 +920,7 @@ fn an_evicted_session_is_written_up_as_an_episode() {
     let cfg = DaemonConfig { session_idle: Duration::from_millis(100), ..mem_cfg() };
     let d = start_with(&home, p.clone(), cfg, Some(mind.clone()));
     let mut a = Client::connect(&d.info, None);
-    a.send(&Request::Ask { session: None, text: "plan the gate ablation".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: "plan the gate ablation".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let sid = opened_session(&a.until(is_finished));
 
     let deadline = Instant::now() + WAIT;
@@ -969,7 +969,7 @@ fn the_preview_library_never_calls_valiance_in_the_background() {
     let cfg = DaemonConfig { session_idle: Duration::from_millis(100), local_polish: true, ..mem_cfg() };
     let d = start_with(&home, p.clone(), cfg, Some(mind.clone()));
     let mut a = Client::connect(&d.info, None);
-    a.send(&Request::Ask { session: None, text: "plan the gate ablation".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: "plan the gate ablation".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let sid = opened_session(&a.until(is_finished));
     let deadline = Instant::now() + WAIT;
     while !mind.episodes(0..i64::MAX).unwrap().iter().any(|e| e.session == sid.as_str()) {
@@ -1050,7 +1050,7 @@ fn an_injected_untrusted_memory_taints_the_turn() {
     p.push(vec![text("Noted.")]);
     let d = start_with(&home, p, mem_cfg(), Some(open_mind(&home, models_dir())));
     let mut a = Client::connect(&d.info, None);
-    a.send(&Request::Ask { session: None, text: "Which text editor do I like best?".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: "Which text editor do I like best?".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let log = a.until(is_finished);
     let sid = opened_session(&log);
     let (_, summary) = recalled(&log, &sid).unwrap_or_else(|| panic!("no Recalled event; saw {log:#?}"));
@@ -1073,7 +1073,7 @@ fn an_untrusted_recall_keeps_the_session_tainted_across_a_restart() {
     p.push(vec![text("The page says the URL.")]);
     let d = start_with(&home, p, mem_cfg(), Some(mind));
     let mut a = Client::connect(&d.info, None);
-    a.send(&Request::Ask { session: None, text: "what did the vendor say about keys?".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: "what did the vendor say about keys?".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let sid = opened_session(&a.until(is_finished));
     drop(a);
     stop(d, &home);
@@ -1087,7 +1087,7 @@ fn an_untrusted_recall_keeps_the_session_tainted_across_a_restart() {
     let cfg = DaemonConfig { session_idle: Duration::from_millis(100), ..mem_cfg() };
     let d = start_with(&home, p, cfg, Some(mind.clone()));
     let mut a = Client::connect(&d.info, None);
-    a.send(&Request::Ask { session: Some(sid.clone()), text: "remember that".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: Some(sid.clone()), text: "remember that".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let log = a.until(is_finished);
     assert_eq!(tool_summary(&log, "m1").as_deref(), Some("remembered · untrusted"), "{log:#?}");
     let deadline = Instant::now() + WAIT;
@@ -1121,7 +1121,7 @@ fn forgetting_what_the_user_said_asks_the_user_first() {
     let mut a = Client::connect(&d.info, None);
 
     let ask_and_answer = |a: &mut Client, session: Option<SessionId>, decision: ApprovalDecision| {
-        a.send(&Request::Ask { session, text: "forget who my manager is".into(), workspace: None, images: Vec::new(), options: None });
+        a.send(&Request::Ask { session, text: "forget who my manager is".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
         let asked = a.until(|e| matches!(e, Event::ApprovalRequested { .. }));
         let sid = opened_session(&asked);
         match &asked.last().unwrap().event {
@@ -1156,7 +1156,7 @@ fn a_denial_with_a_reason_tells_the_model_what_the_user_said() {
     p.push(vec![text("Kept it.")]);
     let d = start_with(&home, p.clone(), mem_cfg(), Some(mind.clone()));
     let mut a = Client::connect(&d.info, None);
-    a.send(&Request::Ask { session: None, text: "forget who my manager is".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: "forget who my manager is".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let asked = a.until(|e| matches!(e, Event::ApprovalRequested { .. }));
     let Event::ApprovalRequested { approval, .. } = asked.last().unwrap().event.clone() else { unreachable!() };
     a.send(&Request::Approve { approval, decision: ApprovalDecision::Deny, reason: Some("keep it, I only asked what it was".into()) });
@@ -1187,7 +1187,7 @@ fn parity_c5_c16_a_remembered_preference_is_in_the_first_request_of_the_next_ses
     p.push(vec![text("Understood.")]);
     let d = start_with(&home, p.clone(), mem_cfg(), Some(open_mind(&home, no_models(&home))));
     let mut a = Client::connect(&d.info, None);
-    a.send(&Request::Ask { session: None, text: "I always use uv, never pip.".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: "I always use uv, never pip.".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let log = a.until(is_finished);
     let sid_a = opened_session(&log);
     assert_eq!(tool_summary(&log, "m1").as_deref(), Some("remembered · inferred"), "{log:#?}");
@@ -1204,7 +1204,7 @@ fn parity_c5_c16_a_remembered_preference_is_in_the_first_request_of_the_next_ses
     p2.push(vec![text("Still uv.")]);
     let d = start_with(&home, p2.clone(), mem_cfg(), Some(open_mind(&home, no_models(&home))));
     let mut b = Client::connect(&d.info, None);
-    b.send(&Request::Ask { session: None, text: "How should I install the deps?".into(), workspace: None, images: Vec::new(), options: None });
+    b.send(&Request::Ask { session: None, text: "How should I install the deps?".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let sid_b = opened_session(&b.until(is_finished));
     assert_ne!(sid_a, sid_b);
     let reqs = p2.requests();
@@ -1215,7 +1215,7 @@ fn parity_c5_c16_a_remembered_preference_is_in_the_first_request_of_the_next_ses
     assert!(reqs[0].system.iter().find(|s| s.text.starts_with("<profile>")).unwrap().cache, "the profile is cached");
 
     // A second turn with no memory change sends a byte-identical block.
-    b.send(&Request::Ask { session: Some(sid_b), text: "And for the tests?".into(), workspace: None, images: Vec::new(), options: None });
+    b.send(&Request::Ask { session: Some(sid_b), text: "And for the tests?".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     b.until(is_finished);
     let reqs = p2.requests();
     assert_eq!(reqs.len(), 2);
@@ -1248,11 +1248,11 @@ fn a_tainted_session_remember_stays_out_of_the_profile_and_no_mind_means_no_memo
     p.push(vec![text("Hello.")]);
     let d = start_with(&home, p.clone(), mem_cfg(), Some(mind.clone()));
     let mut a = Client::connect(&d.info, None);
-    a.send(&Request::Ask { session: None, text: "what does the forum say about numpy?".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: "what does the forum say about numpy?".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let log = a.until(is_finished);
     assert_eq!(tool_summary(&log, "m1").as_deref(), Some("remembered · untrusted"), "{log:#?}");
     // A new session: the tainted write is not in its context.
-    a.send(&Request::Ask { session: None, text: "hello".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: "hello".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     a.until(is_finished);
     let reqs = p.requests();
     let last = reqs.last().unwrap();
@@ -1268,7 +1268,7 @@ fn a_tainted_session_remember_stays_out_of_the_profile_and_no_mind_means_no_memo
     let p = Arc::new(Scripted::default());
     let d = start(&home, p.clone(), mem_cfg());
     let mut a = Client::connect(&d.info, None);
-    a.send(&Request::Ask { session: None, text: "hi".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: "hi".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     a.until(is_finished);
     let req = &p.requests()[0];
     assert!(!req.system_text().contains("<memory_tools>") && profile_block(req).is_none());
@@ -1296,10 +1296,10 @@ fn retrieval_in_a_turn_never_repeats_a_profile_item() {
     let d = start_with(&home, p.clone(), mem_cfg(), Some(mind.clone()));
     let mut a = Client::connect(&d.info, None);
     for said in ["I mostly edit code in Helix these days.", "My daughter's piano lesson is on Tuesdays."] {
-        a.send(&Request::Ask { session: None, text: said.into(), workspace: None, images: Vec::new(), options: None });
+        a.send(&Request::Ask { session: None, text: said.into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
         a.until(is_finished);
     }
-    a.send(&Request::Ask { session: None, text: "Which text editor do I like best?".into(), workspace: None, images: Vec::new(), options: None });
+    a.send(&Request::Ask { session: None, text: "Which text editor do I like best?".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     a.until(is_finished);
     let req = p.requests().pop().unwrap();
     let block = profile_block(&req).expect("the profile is in context");

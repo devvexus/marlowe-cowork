@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
+use marlowe_proto::PhaseKind;
 use marlowe_model::{
     CancelToken, ChatRequest, Completion, CompletionBuilder, Effort, Message, ModelInfo, Provider, ProviderError,
     StopReason, StreamEvent, ToolCall,
@@ -24,7 +25,7 @@ use crate::budget::{Budget, Spent};
 use crate::commands::CommandGrant;
 use crate::context::{self, ContextConfig, PrefixBudget, TailReminders};
 use crate::convo::Conversation;
-use crate::events::{AgentEvent, TurnOutcome};
+use crate::events::{AgentEvent, PhaseTimer, TurnOutcome};
 use crate::memory::{MemoryHook, NoMemory};
 use crate::middleware::{FinalFlow, ModelCall, StepInfo, ToolMiddleware, TurnFlow, TurnObserver};
 use crate::run_tools;
@@ -37,6 +38,9 @@ use crate::TurnStop;
 /// Model calls per turn before the loop stops with `TurnStop::StepLimit` (design 3: real
 /// refactors take hundreds of steps; tokens, cost and wall-clock bound a turn too).
 pub const MAX_STEPS: u32 = 400;
+
+/// Longest a streaming phase goes between two progress events.
+const PROGRESS_EVERY: Duration = Duration::from_millis(8);
 
 /// Waits before retrying a retriable provider error that arrived before any output.
 const RETRY_BACKOFF: [Duration; 2] = [Duration::from_millis(500), Duration::from_millis(2_000)];
@@ -212,6 +216,7 @@ impl Agent {
         sink: &mut dyn FnMut(AgentEvent),
     ) -> TurnOutcome {
         let started = Instant::now();
+        let prompt = PhaseTimer::start(PhaseKind::Prompt, sink);
         let mut text_in = user_text.to_string();
         for m in &self.middleware {
             if let TurnFlow::Block(reason) = m.before_turn(convo, &mut text_in) {
@@ -236,7 +241,11 @@ impl Agent {
         convo.push(Message::user(user_text));
         convo.ext.insert(context::TurnQuery(user_index));
 
+        prompt.end(sink);
+        let recall = PhaseTimer::start(PhaseKind::Recall, sink);
         let recollection = self.memory.before_turn(&convo.session, said);
+        recall.end(sink);
+        let mut prompt = Some(PhaseTimer::start(PhaseKind::Prompt, sink));
         // Untrusted text entering the context taints the run before any tool runs.
         if recollection.untrusted {
             convo.exposure.tainted = true;
@@ -321,8 +330,18 @@ impl Agent {
             }
             let cfg = live.context;
 
+            // The prompt-side work since recall (system, sections, steers) ends where fitting begins.
+            if let Some(p) = prompt.take() {
+                p.end(sink);
+            }
+            let fit = PhaseTimer::start(PhaseKind::Fit, sink);
             let mut asm = context::assemble_with(&system, &profile, &memory, convo, &cfg);
-            if forced_compact.is_some() || context::needs_compaction(asm.tokens + spec_tokens, &cfg) {
+            let compact_now = forced_compact.is_some() || context::needs_compaction(asm.tokens + spec_tokens, &cfg);
+            fit.end_with(sink, |e| e.unit("tok").with_done(u64::from(asm.tokens + spec_tokens)));
+            if compact_now {
+                let compacting = PhaseTimer::start(PhaseKind::Compact, sink);
+                let before_all = asm.tokens;
+                let mut failed = false;
                 let focus = forced_compact.clone().flatten();
                 for m in &self.middleware {
                     m.before_compact(convo, focus.as_deref());
@@ -339,7 +358,24 @@ impl Agent {
                 }
                 if forced_compact.is_some() || context::needs_compaction(asm.tokens + spec_tokens, &cfg) {
                     let pinned = crate::todo::pin_for_compaction(convo);
-                    let r = context::compact_with(convo, live.provider.as_ref(), &live.model.id, &cfg, cancel, focus.as_deref(), &pinned);
+                    // Progress counts the summary as it streams; the cap is an upper bound (est).
+                    let mut last: Option<Instant> = None;
+                    let mut on_progress = |written: u32, cap: u32| {
+                        if last.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
+                            last = Some(Instant::now());
+                            compacting.progress(u64::from(written), u64::from(cap), "tok", true, sink);
+                        }
+                    };
+                    let r = context::compact_observed(
+                        convo,
+                        live.provider.as_ref(),
+                        &live.model.id,
+                        &cfg,
+                        cancel,
+                        focus.as_deref(),
+                        &pinned,
+                        &mut on_progress,
+                    );
                     match r {
                         // Whatever the sizes, history changed when a summary was written: the
                         // request is assembled again from it.
@@ -353,14 +389,23 @@ impl Agent {
                                 let _ = r.post_compact(if focus.is_some() { "manual" } else { "auto" });
                             }
                         }
-                        Err(e) if e.is_cancelled() || cancel.is_cancelled() => break TurnStop::Interrupted,
+                        Err(e) if e.is_cancelled() || cancel.is_cancelled() => {
+                            compacting.end_with(sink, |e| e.detail("cancelled"));
+                            break TurnStop::Interrupted;
+                        }
                         // A failed summary leaves history as it was; the call below may still fit.
-                        Err(_) => {}
+                        Err(_) => failed = true,
                     }
                 }
+                let after_all = asm.tokens;
+                compacting.end_with(sink, |e| {
+                    let e = e.unit("tok").with_done(u64::from(before_all)).with_total(u64::from(after_all));
+                    if failed { e.detail("failed") } else { e }
+                });
             }
 
             let max_output_tokens = self.max_output.or(live.model.max_output.map(|_| cfg.reserve_output));
+            let est_prompt_tokens = asm.tokens + spec_tokens;
             let req = ChatRequest {
                 model: live.model.id.clone(),
                 effort: live.effort,
@@ -372,7 +417,14 @@ impl Agent {
                 format: None,
             };
             let call_started = Instant::now();
-            let mut c = match call_model(live.provider.as_ref(), &req, cancel, sink) {
+            sink(AgentEvent::CallStarted { step: spent.steps + 1, est_prompt_tokens });
+            let mut wire = Some(PhaseTimer::start(PhaseKind::Wire, sink));
+            let ended = call_model(live.provider.as_ref(), &req, cancel, &mut wire, sink);
+            // A call that never produced a frame (failed, cancelled) still closes its phase.
+            if let Some(w) = wire.take() {
+                w.end_with(sink, |e| e.detail("no frame"));
+            }
+            let mut c = match ended {
                 CallEnd::Done(c) => c,
                 CallEnd::Cancelled(partial) => {
                     spent.steps += 1;
@@ -522,7 +574,13 @@ impl Agent {
 /// One model call, forwarding deltas to `sink`. Retries a retriable error only when nothing
 /// was streamed yet, so the UI never sees duplicated text. A reply or reasoning that starts
 /// repeating itself is cut there ([`guard::RepetitionWatch`]).
-fn call_model(provider: &dyn Provider, req: &ChatRequest, cancel: &CancelToken, sink: &mut dyn FnMut(AgentEvent)) -> CallEnd {
+fn call_model(
+    provider: &dyn Provider,
+    req: &ChatRequest,
+    cancel: &CancelToken,
+    wire: &mut Option<PhaseTimer>,
+    sink: &mut dyn FnMut(AgentEvent),
+) -> CallEnd {
     let mut attempt = 0;
     loop {
         let mut partial = CompletionBuilder::new();
@@ -536,7 +594,14 @@ fn call_model(provider: &dyn Provider, req: &ChatRequest, cancel: &CancelToken, 
         let (mut text, mut reasoning) = (String::new(), String::new());
         let (mut text_watch, mut reasoning_watch) = (guard::RepetitionWatch::default(), guard::RepetitionWatch::for_reasoning());
         let mut looped: Option<String> = None;
+        let mut first_token = true;
         let result = provider.stream(req, &call_cancel, &mut |ev| {
+            let arrived = Instant::now();
+            // The first frame of any kind ends the wire phase; the first text or reasoning is the
+            // origin of the token-to-screen overhead.
+            if let Some(w) = wire.take() {
+                w.end(sink);
+            }
             if looped.is_some() {
                 return;
             }
@@ -560,6 +625,9 @@ fn call_model(provider: &dyn Provider, req: &ChatRequest, cancel: &CancelToken, 
             partial.push(&ev);
             if let Some(ae) = forward(ev) {
                 emitted = true;
+                if std::mem::take(&mut first_token) {
+                    sink(AgentEvent::FirstToken { at: arrived });
+                }
                 sink(ae);
             }
         });

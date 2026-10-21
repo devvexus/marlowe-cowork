@@ -771,7 +771,7 @@ fn parity_BG4_monitor_events_are_news_with_their_source_not_the_users_words() {
 }
 
 fn stored_default() -> marlowe_proto::StoredTurn {
-    marlowe_proto::StoredTurn { idx: 0, role: marlowe_model::Role::User, content: vec![], at_ms: 0 }
+    marlowe_proto::StoredTurn { idx: 0, role: marlowe_model::Role::User, content: vec![], at_ms: 0, phases: Vec::new(), numbers: None }
 }
 
 // ---- BG7 ----------------------------------------------------------------------------------------

@@ -99,6 +99,12 @@ pub trait StageProbe {
     fn enter(&mut self, stage: Stage);
     /// Close the open stage. Called once, on the way out.
     fn finish(&mut self);
+    /// `done` of `total` items of the open stage are finished. Called at chunk boundaries inside
+    /// the long loops (dense, gate, rerank), never per item; the default does nothing, so an
+    /// implementation that only wants boundaries ignores it. Like `enter`, observe-only: nothing
+    /// here may influence what the stage computes.
+    #[inline]
+    fn progress(&mut self, _done: u32, _total: u32) {}
 }
 
 /// The production probe: nothing.
@@ -132,6 +138,12 @@ impl<P: StageProbe> StageProbe for Option<&mut P> {
     fn finish(&mut self) {
         if let Some(probe) = self {
             probe.finish();
+        }
+    }
+    #[inline]
+    fn progress(&mut self, done: u32, total: u32) {
+        if let Some(probe) = self {
+            probe.progress(done, total);
         }
     }
 }

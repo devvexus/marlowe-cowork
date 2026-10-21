@@ -4,6 +4,13 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Live phases (protocol and instrumentation)
+
+- **One event family for every named step** (`marlowe_proto::phase`): `Event::Phase{kind, state, stage, done/total, rate, ms, est, detail}` for sending, setup, admit, prompt, recall (per stage), fit, compaction, wire and the memory-write tail. `Start`/`End` are ordered and replayed; `Progress` goes through `Bus::publish_ephemeral` (seq 0, not in the ring, never drops a client). Additive: no `PROTO_VERSION` bump, unknown events are skipped by old readers, unknown kinds decode as `Unknown`.
+- `Recalled` also carries `total_ms`, per-stage `stages` and `abstained`, and is sent when nothing was recalled. `Event::TurnTimings` (spans, TTFT, harness overhead `enter_to_wire_ms` / `token_to_bus_ms`) goes out just before `TurnFinished` and is stored per turn (`turn_timings` table), replayed on `StoredTurn.phases`/`numbers`. `Request::Ask` takes the client's `client_ms` (Enter).
+- **Retrieval observed, not changed.** `StageProbe::progress` (default no-op) is called at chunk boundaries in dense, gate and rerank; the Mind's `LiveProbe` times stages (the clock lives there, not in `marlowe-memory`) and streams them throttled to 8 ms. A test asserts the injected set, scores and order are identical with the live display on and off.
+- Agent loop: `AgentEvent::{Phase, CallStarted, FirstToken}`; compaction reports estimated progress and no longer fails silently (`End{detail:"failed"}`). The Mind's write tail (`MindEvent`) reports ingest, embed and index.
+
 ### Web search off OpenRouter
 
 - **`web_search` and deep research never use a paid API.** The tool searches through the keyless web channel research uses (SearXNG at `research.json` `searxng_url`, else DuckDuckGo lite) and says plainly what to run when none answers; the OpenRouter search backend, its model setting and `HostedSearch` hookup are gone. `hosted_search` in an old `research.json` still parses and is ignored.

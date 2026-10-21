@@ -27,7 +27,7 @@ fn mref() -> ModelRef {
 fn every_request_round_trips_and_is_tagged_by_op() {
     let reqs = vec![
         Request::Hello { token: "t".into(), client: "tui".into(), since_seq: Some(4) },
-        Request::Ask { session: None, text: "hi".into(), workspace: Some("C:/w".into()), images: Vec::new(), options: None },
+        Request::Ask { session: None, text: "hi".into(), workspace: Some("C:/w".into()), images: Vec::new(), options: None, client_ms: None },
         Request::Interrupt { session: sid() },
         Request::ListSessions { limit: 20 },
         Request::OpenSession { session: sid() },
@@ -66,7 +66,7 @@ fn a_secret_never_appears_in_debug_output() {
 #[test]
 fn minimal_requests_parse_with_defaults() {
     let r: Request = serde_json::from_str(r#"{"op":"ask","text":"hello"}"#).unwrap();
-    assert_eq!(r, Request::Ask { session: None, text: "hello".into(), workspace: None, images: Vec::new(), options: None });
+    assert_eq!(r, Request::Ask { session: None, text: "hello".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let r: Request = serde_json::from_str(r#"{"op":"set_slot","slot":"quick"}"#).unwrap();
     assert_eq!(r, Request::SetSlot { slot: Slot::Quick, model: None, effort: Effort::Medium });
     assert!(serde_json::from_str::<Request>(r#"{"op":"set_slot","slot":"chef"}"#).is_err());
@@ -101,7 +101,7 @@ fn every_event_round_trips_inside_an_envelope() {
         },
         Event::Transcript {
             session: sid(),
-            turns: vec![StoredTurn { idx: 0, role: Role::User, content: vec![Part::Text { text: "hi".into() }], at_ms: 5 }],
+            turns: vec![StoredTurn { idx: 0, role: Role::User, content: vec![Part::Text { text: "hi".into() }], at_ms: 5, phases: Vec::new(), numbers: None }],
         },
         Event::TurnStarted { session: sid(), turn: 1, model: mref(), user: "hi".into() },
         Event::TextDelta { session: sid(), turn: 1, text: "Hel".into() },
@@ -343,7 +343,7 @@ fn memory_events_round_trip_inside_an_envelope() {
             journal_seq: 44,
         }),
         Event::MemoryStats(MemoryStatsReport { degraded: Some("models missing".into()), ..Default::default() }),
-        Event::Recalled { session: sid(), turn: 2, count: 3, summary: "deploy on Fridays".into() },
+        Event::Recalled { session: sid(), turn: 2, count: 3, summary: "deploy on Fridays".into(), total_ms: 0, stages: Vec::new(), abstained: false },
         Event::ImportProgress { read: 50, imported: 40 },
         Event::ImportDone { report },
         Event::LegacyAvailable { path: "C:/old".into(), approx_entries: 1200, already_imported: false },
@@ -374,7 +374,7 @@ fn memory_events_round_trip_inside_an_envelope() {
 
 #[test]
 fn recalled_belongs_to_its_session_and_memory_events_to_none() {
-    assert_eq!(Event::Recalled { session: sid(), turn: 1, count: 1, summary: String::new() }.session(), Some(&sid()));
+    assert_eq!(Event::Recalled { session: sid(), turn: 1, count: 1, summary: String::new(), total_ms: 0, stages: Vec::new(), abstained: false }.session(), Some(&sid()));
     assert_eq!(Event::MemoryResults { hits: vec![hit()] }.session(), None);
 }
 
@@ -599,4 +599,66 @@ fn user_fields_are_trimmed_and_bounded() {
     assert!(clean_user_field("name", Some("Matt\nhew")).is_err());
     assert!(clean_user_field("name", Some(&"x".repeat(USER_FIELD_MAX + 1))).is_err());
     assert!(clean_user_field("name", Some(&"é".repeat(USER_FIELD_MAX))).is_ok());
+}
+
+// ---- phases (additive wire)
+
+fn span(kind: PhaseKind, start_ms: u64, ms: u64) -> PhaseSpan {
+    PhaseSpan { kind, stage: None, start_ms, ms, n: None, detail: None, parent: None, est: false }
+}
+
+#[test]
+fn phase_events_round_trip_and_stay_small() {
+    let evs = vec![
+        Event::Phase(PhaseEvent::start(PhaseKind::Recall).on(&sid(), 2).stage("embed")),
+        Event::Phase(PhaseEvent::progress(PhaseKind::Recall, 2940, 4198).on(&sid(), 2).stage("dense").unit("items")),
+        Event::Phase(PhaseEvent::end(PhaseKind::Recall, 12).on(&sid(), 2).stage("dense")),
+        Event::Phase(PhaseEvent { est: true, rate: Some(1900.0), ..PhaseEvent::progress(PhaseKind::Prefill, 5000, 8200) }),
+        Event::TurnTimings {
+            session: sid(),
+            turn: 2,
+            spans: vec![span(PhaseKind::Sending, 0, 1), PhaseSpan { stage: Some("embed".into()), n: Some(4), parent: Some(PhaseKind::Recall), ..span(PhaseKind::Recall, 5, 12) }],
+            numbers: TurnNumbers { ttft_ms: Some(80), enter_to_wire_ms: Some(6), token_to_bus_ms: Some(0), read: Some(ReadStat { new_tok: 8200, cached_tok: 0, ms: 1900 }) },
+        },
+        Event::Recalled {
+            session: sid(),
+            turn: 2,
+            count: 0,
+            summary: String::new(),
+            total_ms: 84,
+            stages: vec![StageMs { name: "embed".into(), ms: 12, n: None }, StageMs { name: "dense".into(), ms: 4, n: Some(4198) }],
+            abstained: true,
+        },
+    ];
+    for ev in evs {
+        let s = round_trip(&Envelope { seq: 7, at_ms: 1, event: ev });
+        assert!(!s.contains("null"), "absent fields are omitted, not null: {s}");
+    }
+    let s = serde_json::to_string(&Event::Phase(PhaseEvent::start(PhaseKind::Admit))).unwrap();
+    assert_eq!(s, r#"{"ev":"phase","turn":0,"kind":"admit","state":"start"}"#);
+    let t = Event::TurnTimings { session: sid(), turn: 1, spans: Vec::new(), numbers: TurnNumbers::default() };
+    assert_eq!(Some(&sid()), t.session());
+    assert_eq!(Some(&sid()), Event::Phase(PhaseEvent::start(PhaseKind::Recall).on(&sid(), 0)).session());
+}
+
+#[test]
+fn old_wire_shapes_still_decode_and_new_ones_are_skippable() {
+    // Recalled from before stages existed.
+    let ev: Event = serde_json::from_str(r#"{"ev":"recalled","session":"s1","turn":1,"count":2,"summary":"x"}"#).unwrap();
+    assert_eq!(
+        ev,
+        Event::Recalled { session: sid(), turn: 1, count: 2, summary: "x".into(), total_ms: 0, stages: Vec::new(), abstained: false }
+    );
+    // A stored turn and an Ask from before phases and client stamps.
+    let t: StoredTurn = serde_json::from_str(r#"{"idx":0,"role":"user","content":[],"at_ms":5}"#).unwrap();
+    assert!(t.phases.is_empty() && t.numbers.is_none());
+    let a: Request = serde_json::from_str(r#"{"op":"ask","text":"hi"}"#).unwrap();
+    assert!(matches!(a, Request::Ask { client_ms: None, .. }));
+    // A phase kind a newer daemon invents is Unknown, not an error.
+    let ev: Event = serde_json::from_str(r#"{"ev":"phase","kind":"warp_drive","state":"start"}"#).unwrap();
+    assert!(matches!(ev, Event::Phase(PhaseEvent { kind: PhaseKind::Unknown, .. })));
+    // An event this reader has never heard of fails to parse, which every client's line reader
+    // skips; that is what lets new events ship without a protocol bump.
+    assert!(serde_json::from_str::<Envelope>(r#"{"seq":1,"at_ms":1,"event":{"ev":"from_the_future"}}"#).is_err());
+    assert_eq!(PROTO_VERSION, 1);
 }

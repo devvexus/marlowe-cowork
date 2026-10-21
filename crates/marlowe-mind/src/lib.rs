@@ -19,6 +19,7 @@ mod capture;
 mod episode;
 mod error;
 mod legacy;
+mod live;
 mod models;
 mod paths;
 mod profile;
@@ -48,6 +49,7 @@ pub use paths::{
     MODELS_ENV, RERANKER_DIR,
 };
 pub use profile::{Profile, ProfileQuery, DEFAULT_PROFILE_TOKENS};
+pub use live::{LiveEvent, LiveKind, LiveSink, MindEvent, MindSink, PROGRESS_EVERY};
 pub use marlowe_memory::ep::{judge_gpu, GpuLoad, GpuVerdict};
 pub use types::{
     wire_trust, ConsolidateReport, Episode, GpuProbe, ImportProgress, InjectQuery, Injection, Kind,
@@ -188,8 +190,20 @@ impl Mind {
     /// Selects memories for a turn: Profile scope, dense cue, cross-encoder rerank, gate and
     /// declared operating point. Never fails the turn: errors become `abstained`.
     pub fn inject(&self, query: InjectQuery) -> Injection {
-        self.call(|r| Cmd::Inject(query, r))
+        self.call(|r| Cmd::Inject(query, None, r))
             .unwrap_or_else(|e| Injection { abstained: Some(e.to_string()), ..Injection::default() })
+    }
+
+    /// [`Mind::inject`], streaming each recall stage to `live` the moment it starts, advances and
+    /// ends. Selects exactly what `inject` would; the sink only observes.
+    pub fn inject_live(&self, query: InjectQuery, live: LiveSink) -> Injection {
+        self.call(|r| Cmd::Inject(query, Some(live), r))
+            .unwrap_or_else(|e| Injection { abstained: Some(e.to_string()), ..Injection::default() })
+    }
+
+    /// Sets who hears the write tail (ingest, embed, index) from now on.
+    pub fn set_event_sink(&self, sink: MindSink) {
+        let _ = self.call(|r| Cmd::SetSink(sink, r));
     }
 
     /// What was deliberately recorded about the user (Preference, Decision, Fact, Procedure from
@@ -355,6 +369,8 @@ impl Mind {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_live;
 #[cfg(test)]
 mod tests_profile;
 #[cfg(test)]

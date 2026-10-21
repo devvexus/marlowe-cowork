@@ -16,7 +16,8 @@
 use std::collections::HashSet;
 
 use marlowe_model::{
-    CancelToken, ChatRequest, Effort, Message, ModelInfo, Part, Provider, ProviderError, Role, SystemBlock, ToolSpec,
+    CancelToken, ChatRequest, Effort, Message, ModelInfo, Part, Provider, ProviderError, Role, StreamEvent, SystemBlock,
+    ToolSpec,
 };
 
 use crate::convo::Conversation;
@@ -350,6 +351,23 @@ pub fn compact_with(
     focus: Option<&str>,
     pinned: &str,
 ) -> Result<(u32, u32), ProviderError> {
+    compact_observed(convo, provider, model, cfg, cancel, focus, pinned, &mut |_, _| {})
+}
+
+/// [`compact_with`], telling `on_progress(written, cap)` as the summary streams: `written` is the
+/// estimated tokens so far and `cap` the most the summariser may write (the true length is only
+/// known when it finishes, so `cap` is an upper bound). Observe-only; the result is the same.
+#[allow(clippy::too_many_arguments)]
+pub fn compact_observed(
+    convo: &mut Conversation,
+    provider: &dyn Provider,
+    model: &str,
+    cfg: &ContextConfig,
+    cancel: &CancelToken,
+    focus: Option<&str>,
+    pinned: &str,
+    on_progress: &mut dyn FnMut(u32, u32),
+) -> Result<(u32, u32), ProviderError> {
     let before = history_tokens(convo);
     let keep = kept_indices(&convo.messages);
     if keep.is_empty() || keep.len() == convo.messages.len() {
@@ -376,10 +394,17 @@ pub fn compact_with(
 
     let mut req = ChatRequest::new(model, vec![Message::user(prompt)]);
     req.effort = Effort::Off;
-    req.max_output_tokens = Some(cfg.reserve_output.clamp(256, 4_096));
+    let cap = cfg.reserve_output.clamp(256, 4_096);
+    req.max_output_tokens = Some(cap);
     req.system =
         vec![SystemBlock { text: "You condense conversations into faithful working notes.".to_string(), cache: false }];
-    let completion = provider.stream(&req, cancel, &mut |_| {})?;
+    let mut chars = 0usize;
+    let completion = provider.stream(&req, cancel, &mut |ev| {
+        if let StreamEvent::TextDelta(t) = ev {
+            chars += t.chars().count();
+            on_progress(((chars + 2) / 3).min(cap as usize) as u32, cap);
+        }
+    })?;
     if cancel.is_cancelled() {
         return Err(ProviderError::cancelled());
     }

@@ -679,7 +679,7 @@ impl Driver {
             self.ask_pending = true;
         }
         self.settle_until = None;
-        let req = Request::Ask { session: Some(self.session.clone()), text: text.to_string(), workspace: None, images: Vec::new(), options: self.options.clone() };
+        let req = Request::Ask { session: Some(self.session.clone()), text: text.to_string(), workspace: None, images: Vec::new(), options: self.options.clone(), client_ms: None };
         if let Err(e) = self.send(&req) {
             self.fatal = Some(e);
         }

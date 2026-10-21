@@ -331,7 +331,7 @@ impl State {
         }
         match self.session.clone() {
             Some(s) => {
-                out.push(Request::Ask { session: Some(s), text, workspace: None, images: Vec::new(), options: None });
+                out.push(Request::Ask { session: Some(s), text, workspace: None, images: Vec::new(), options: None, client_ms: None });
             }
             None => {
                 self.expect_new_session(&text);
@@ -341,6 +341,7 @@ impl State {
                     workspace: self.default_workspace.clone(),
                     images: Vec::new(),
                     options: None,
+                    client_ms: None,
                 });
             }
         }

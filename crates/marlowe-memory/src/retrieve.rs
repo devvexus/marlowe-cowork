@@ -390,22 +390,31 @@ pub struct Selection<'a> {
 /// A run where vectors are systematically missing therefore reports a dense feature that is
 /// constant zero, which the fitter's own variance check catches and pins. That is a loud
 /// failure; a silently shrinking candidate set is not.
-fn dense_for(
+fn dense_for<P: StageProbe>(
     candidates: &[&MemoryEntry],
     query_vector: Option<&[f32]>,
     vectors: &VectorStore,
+    probe: &mut P,
 ) -> Vec<f32> {
     let Some(query) = query_vector else {
         return vec![0.0; candidates.len()];
     };
-    candidates
-        .iter()
-        .map(|entry| match vectors.get(&entry.id) {
+    // Chunked only so the probe can announce progress; same candidates, same order, same values.
+    let total = candidates.len();
+    let mut out = Vec::with_capacity(total);
+    for chunk in candidates.chunks(PROGRESS_CHUNK) {
+        probe.progress(out.len() as u32, total as u32);
+        out.extend(chunk.iter().map(|entry| match vectors.get(&entry.id) {
             Some(vector) => dense::cosine(query, vector),
             None => 0.0,
-        })
-        .collect()
+        }));
+    }
+    probe.progress(total as u32, total as u32);
+    out
 }
+
+/// Items between two progress announcements inside a long loop.
+const PROGRESS_CHUNK: usize = 256;
 
 /// The slate: the top `budget` pruning survivors under the EXISTING ranking key.
 ///
@@ -433,24 +442,27 @@ fn draw_slate<'a>(scored: &[ScoredCandidate<'a>], budget: usize) -> Vec<usize> {
 /// Errors are loud per pair or per chunk and leave that candidate's score unset â€” the same
 /// semantics the single-graph path has always had. A reranker that silently scored nothing would
 /// leave the stage looking present in the report and absent in the ranking.
-fn score_slate(
+fn score_slate<P: StageProbe>(
     encoder: &mut CrossEncoder,
     query_text: &str,
     scored: &mut [ScoredCandidate<'_>],
     slate: &[usize],
     batched: bool,
     write_back: bool,
+    probe: &mut P,
 ) -> Vec<Option<f32>> {
     let mut out = vec![None; slate.len()];
     if slate.is_empty() {
         return out;
     }
+    probe.progress(0, slate.len() as u32);
     if !batched {
-        for (slot, index) in out.iter_mut().zip(slate) {
+        for (done, (slot, index)) in out.iter_mut().zip(slate).enumerate() {
             match encoder.score(query_text, &scored[*index].entry.text) {
                 Ok(logit) => *slot = Some(logit),
                 Err(e) => eprintln!("marlowe: cross-encoder failed on {}: {e}", scored[*index].entry.id),
             }
+            probe.progress(done as u32 + 1, slate.len() as u32);
         }
     } else {
         for (chunk_no, chunk) in slate.chunks(crate::rerank::MAX_BATCH).enumerate() {
@@ -467,6 +479,7 @@ fn score_slate(
                     query_text
                 ),
             }
+            probe.progress(((chunk_no + 1) * crate::rerank::MAX_BATCH).min(slate.len()) as u32, slate.len() as u32);
         }
     }
     // Only the SHIPPED graph writes `rerank_score`: the dump, the offline reconstructions and the
@@ -485,15 +498,16 @@ fn score_slate(
 /// its logit (ties by candidate index, as the offline tool sorted), score the ten with each
 /// fusion member (never written back), and write the RRF order to `fusion_rank`. A member that
 /// fails on any of the ten is left out of this query's fusion rather than guessed at.
-fn run_cascade(
+fn run_cascade<P: StageProbe>(
     encoder: &mut CrossEncoder,
     fusion: &mut [CrossEncoder],
     query_text: &str,
     scored: &mut [ScoredCandidate<'_>],
     batched: bool,
+    probe: &mut P,
 ) {
     let slate = draw_slate(scored, crate::cascade::CASCADE_SLATE);
-    score_slate(encoder, query_text, scored, &slate, batched, true);
+    score_slate(encoder, query_text, scored, &slate, batched, true, probe);
     let mut narrowed: Vec<usize> = slate.iter().copied().filter(|i| scored[*i].rerank_score.is_some()).collect();
     narrowed.sort_by(|&a, &b| {
         let x = scored[a].rerank_score.unwrap_or(f32::NEG_INFINITY);
@@ -506,7 +520,7 @@ fn run_cascade(
     }
     let mut members: Vec<Vec<f32>> = Vec::with_capacity(fusion.len());
     for member in fusion.iter_mut() {
-        let logits = score_slate(member, query_text, scored, &narrowed, batched, false);
+        let logits = score_slate(member, query_text, scored, &narrowed, batched, false, probe);
         match logits.into_iter().collect::<Option<Vec<f32>>>() {
             Some(l) => members.push(l),
             None => eprintln!("marlowe: cascade member {} dropped from this query's fusion", member.graph()),
@@ -637,7 +651,7 @@ pub fn select_for_injection_filtered<'a, P: StageProbe>(
     // Cached term statistics; bit-identical to `lexical::score_all` (see its tests).
     let raw_scores = lexical::score_indexed(beliefs.lexicon(), &scoped, query_text);
     probe.enter(Stage::Dense);
-    let dense_scores = dense_for(&scoped, query_vector, vectors);
+    let dense_scores = dense_for(&scoped, query_vector, vectors, probe);
 
     // **Set-level, not per-candidate.** Rank, margin and z do not exist for a candidate in
     // isolation, and this is the call that makes the calibration's question query-local.
@@ -645,11 +659,16 @@ pub fn select_for_injection_filtered<'a, P: StageProbe>(
     let vectors = features::extract_all(&scoped, &raw_scores, &dense_scores);
 
     probe.enter(Stage::Gate);
+    let pool = scoped.len() as u32;
     let mut scored: Vec<ScoredCandidate<'a>> = scoped
         .iter()
         .zip(vectors.into_iter())
-        .map(|(entry, f)| match scoring {
+        .enumerate()
+        .map(|(i, (entry, f))| match scoring {
             Scoring::Gated { gate, .. } => {
+                if i % PROGRESS_CHUNK == 0 {
+                    probe.progress(i as u32, pool);
+                }
                 let v = gate.judge(&f);
                 ScoredCandidate {
                     entry,
@@ -702,10 +721,10 @@ pub fn select_for_injection_filtered<'a, P: StageProbe>(
             // with the key the reranker then replaces is what makes this a rerank stage rather than a
             // new cue â€” and it is what Q2's registered "fixed budget of 10 reranked pairs" costs.
             let slate = draw_slate(&scored, *budget);
-            score_slate(encoder, query_text, &mut scored, &slate, *batched, true);
+            score_slate(encoder, query_text, &mut scored, &slate, *batched, true, probe);
         }
         Rerank::Cascade { encoder, fusion, batched } => {
-            run_cascade(encoder, fusion, query_text, &mut scored, *batched);
+            run_cascade(encoder, fusion, query_text, &mut scored, *batched, probe);
         }
     }
 
@@ -1411,5 +1430,44 @@ mod tests {
         assert_eq!(narrowed.scoped, 2);
         assert_eq!(narrowed.considered, 3, "considered still counts the whole candidate set");
         assert!(narrowed.scored.iter().all(|c| c.entry.id != "m-b"));
+    }
+
+    /// Records everything it is told, to prove the probe only observes.
+    #[derive(Default)]
+    struct Recording {
+        stages: Vec<&'static str>,
+        progress: Vec<(&'static str, u32, u32)>,
+    }
+    impl StageProbe for Recording {
+        fn enter(&mut self, stage: Stage) {
+            self.stages.push(stage.name());
+        }
+        fn finish(&mut self) {}
+        fn progress(&mut self, done: u32, total: u32) {
+            self.progress.push((self.stages.last().copied().unwrap_or(""), done, total));
+        }
+    }
+
+    #[test]
+    fn a_recording_probe_changes_nothing_the_shipped_path_selects() {
+        let now = 3_000 + MATURATION_WINDOW_MS;
+        let gate = test_gate();
+        let point = op();
+        let scoring = Scoring::Gated { gate: &gate, operating_point: &point, coverage: Coverage::Declared };
+        let beliefs = store();
+        let q = "why is the ingest job timing out";
+        let query_vector = vec![0.1_f32; 8];
+        let off = select_for_injection_filtered(&beliefs, "s-1", q, now, 7000, &scoring, &VectorStore::default(), Some(&query_vector), &mut Rerank::Off, RetrievalScope::Profile, &|_| true, &mut ());
+        let mut rec = Recording::default();
+        let on = select_for_injection_filtered(&beliefs, "s-1", q, now, 7000, &scoring, &VectorStore::default(), Some(&query_vector), &mut Rerank::Off, RetrievalScope::Profile, &|_| true, &mut rec);
+        let key = |s: &Selection| {
+            let scored = s.scored.iter().map(|c| (c.entry.id.clone(), c.score.to_bits(), c.margin.to_bits(), c.passes, c.features.0.iter().map(|f| f.to_bits()).collect::<Vec<_>>())).collect::<Vec<_>>();
+            let injected = s.injected.iter().map(|m| (m.memory_id.clone(), m.score.to_bits())).collect::<Vec<_>>();
+            (scored, injected)
+        };
+        assert_eq!(key(&off), key(&on), "scores, order and injected set are identical with a probe");
+        assert_eq!(rec.stages, Stage::ALL.iter().map(|s| s.name()).collect::<Vec<_>>());
+        assert!(rec.progress.iter().any(|(s, d, t)| *s == "dense" && *d == *t), "dense reports completion: {:?}", rec.progress);
+        assert!(rec.progress.iter().all(|(_, d, t)| d <= t));
     }
 }

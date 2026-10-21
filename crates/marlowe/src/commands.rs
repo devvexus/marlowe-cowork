@@ -59,6 +59,7 @@ pub fn ask(home: &Path, a: AskArgs) -> CmdResult {
             workspace: a.workspace,
             images: Vec::new(),
             options: None,
+            client_ms: None,
         },
     )?;
 

@@ -176,6 +176,7 @@ impl Upload {
             workspace: self.workspace.take(),
             images: std::mem::take(&mut self.done),
             options: None,
+            client_ms: None,
         })
     }
 }

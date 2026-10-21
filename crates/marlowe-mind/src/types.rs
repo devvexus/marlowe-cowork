@@ -159,6 +159,8 @@ pub struct Injection {
     /// Why nothing was injected (gate abstained, degraded mode, error); `None` when `blocks` is non-empty.
     pub abstained: Option<String>,
     pub latency_ms: u64,
+    /// Measured time per recall stage, in pipeline order (also when it abstained part-way).
+    pub stages: Vec<marlowe_proto::StageMs>,
 }
 
 /// An explicit search.
@@ -248,6 +250,8 @@ pub struct MindConfig {
     pub snapshot_every: Duration,
     /// GPU idleness for the cross-encoder's provider choice. `None` keeps it on CPU.
     pub gpu: Option<GpuProbe>,
+    /// Hears the write tail (ingest, embed, index) as it happens; the daemon turns it into phases.
+    pub on_event: Option<crate::live::MindSink>,
 }
 
 impl Default for MindConfig {
@@ -258,6 +262,7 @@ impl Default for MindConfig {
             embed_queue: 1024,
             snapshot_every: Duration::from_secs(15 * 60),
             gpu: None,
+            on_event: None,
         }
     }
 }

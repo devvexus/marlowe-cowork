@@ -246,10 +246,19 @@ struct Run {
     events: Vec<AgentEvent>,
 }
 
+/// Phase, wire and first-token marks: the tests below about content leave them out.
+fn is_timing(e: &AgentEvent) -> bool {
+    matches!(e, AgentEvent::Phase(_) | AgentEvent::CallStarted { .. } | AgentEvent::FirstToken { .. })
+}
+
 fn run(a: &Agent, c: &mut Conversation, user: &str) -> Run {
     let (_tx, rx) = crossbeam_channel::unbounded();
     let mut events = Vec::new();
-    let outcome = a.run_turn(c, user, &CancelToken::new(), &rx, &mut |e| events.push(e));
+    let outcome = a.run_turn(c, user, &CancelToken::new(), &rx, &mut |e| {
+        if !is_timing(&e) {
+            events.push(e)
+        }
+    });
     Run { outcome, events }
 }
 
@@ -528,7 +537,9 @@ fn cancel_mid_stream_keeps_the_partial_text() {
         if matches!(e, AgentEvent::TextDelta(_)) {
             canceller.cancel();
         }
-        events.push(e);
+        if !is_timing(&e) {
+            events.push(e);
+        }
     });
     assert_eq!(out.stop, TurnStop::Interrupted);
     assert_eq!(out.text, "partial ");
@@ -772,6 +783,8 @@ fn an_output_cap_override_reaches_the_request() {
 // Seam extension points (middleware, observers, extensions), reusing the helpers above.
 #[path = "tests_seam.rs"]
 mod seam;
+#[path = "tests_phases.rs"]
+mod phases;
 
 // ---------------------------------------------------------------- the forgiving layer in the loop
 

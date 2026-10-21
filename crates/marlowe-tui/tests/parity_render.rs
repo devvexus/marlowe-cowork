@@ -78,14 +78,16 @@ fn parity_U1_a_write_approval_is_all_additions_and_a_long_one_scrolls_before_all
 /// `ToolFinished.summary` is the tool's one dim line, so a single line each. The arguments and the
 /// result reach the client in the stored transcript, which it asks for when the turn ends.
 fn stored(calls: &[(ToolCall, &str)]) -> Event {
-    let mut turns = vec![StoredTurn { idx: 0, role: Role::User, content: vec![Part::Text { text: "fix the gate".into() }], at_ms: 1 }];
+    let mut turns = vec![StoredTurn { idx: 0, role: Role::User, content: vec![Part::Text { text: "fix the gate".into() }], at_ms: 1, phases: Vec::new(), numbers: None }];
     for (i, (call, result)) in calls.iter().enumerate() {
-        turns.push(StoredTurn { idx: 1 + 2 * i as u32, role: Role::Assistant, content: vec![Part::ToolCall(call.clone())], at_ms: 2 });
+        turns.push(StoredTurn { idx: 1 + 2 * i as u32, role: Role::Assistant, content: vec![Part::ToolCall(call.clone())], at_ms: 2, phases: Vec::new(), numbers: None });
         turns.push(StoredTurn {
             idx: 2 + 2 * i as u32,
             role: Role::Tool,
             content: vec![Part::ToolResult(ToolResult { call_id: call.id.clone(), content: (*result).into(), is_error: false, parts: vec![] })],
             at_ms: 3,
+            phases: Vec::new(),
+            numbers: None,
         });
     }
     Event::Transcript { session: sid(), turns }
@@ -176,13 +178,15 @@ fn parity_U1_a_replayed_session_shows_the_diff_of_its_edits() {
         Event::Transcript {
             session: sid(),
             turns: vec![
-                StoredTurn { idx: 0, role: Role::User, content: vec![Part::Text { text: "raise the threshold".into() }], at_ms: 1 },
-                StoredTurn { idx: 1, role: Role::Assistant, content: vec![Part::ToolCall(call)], at_ms: 2 },
+                StoredTurn { idx: 0, role: Role::User, content: vec![Part::Text { text: "raise the threshold".into() }], at_ms: 1, phases: Vec::new(), numbers: None },
+                StoredTurn { idx: 1, role: Role::Assistant, content: vec![Part::ToolCall(call)], at_ms: 2, phases: Vec::new(), numbers: None },
                 StoredTurn {
                     idx: 2,
                     role: Role::Tool,
                     content: vec![Part::ToolResult(ToolResult { call_id: "t1".into(), content: "edited src/gate.rs".into(), is_error: false, parts: vec![] })],
                     at_ms: 3,
+                    phases: Vec::new(),
+                    numbers: None,
                 },
             ],
         },
@@ -346,13 +350,15 @@ fn parity_U11_a_replayed_session_keeps_its_tool_arguments_and_results() {
         Event::Transcript {
             session: sid(),
             turns: vec![
-                StoredTurn { idx: 0, role: Role::User, content: vec![Part::Text { text: "find it".into() }], at_ms: 1 },
-                StoredTurn { idx: 1, role: Role::Assistant, content: vec![Part::ToolCall(call)], at_ms: 2 },
+                StoredTurn { idx: 0, role: Role::User, content: vec![Part::Text { text: "find it".into() }], at_ms: 1, phases: Vec::new(), numbers: None },
+                StoredTurn { idx: 1, role: Role::Assistant, content: vec![Part::ToolCall(call)], at_ms: 2, phases: Vec::new(), numbers: None },
                 StoredTurn {
                     idx: 2,
                     role: Role::Tool,
                     content: vec![Part::ToolResult(ToolResult { call_id: "t1".into(), content: "src/gate.rs:10: threshold\nsrc/eval.rs:3: threshold".into(), is_error: false, parts: vec![] })],
                     at_ms: 3,
+                    phases: Vec::new(),
+                    numbers: None,
                 },
             ],
         },

@@ -272,7 +272,7 @@ impl Client {
     }
 
     fn ask_in(&mut self, session: Option<SessionId>, text: &str, workspace: Option<String>) -> SessionId {
-        self.send(&Request::Ask { session, text: text.into(), workspace, images: Vec::new(), options: None });
+        self.send(&Request::Ask { session, text: text.into(), workspace, images: Vec::new(), options: None, client_ms: None });
         let envs = self.until(|e| matches!(e, Event::TurnFinished { .. }));
         envs.iter()
             .find_map(|e| match &e.event {
@@ -351,7 +351,7 @@ fn parity_m13_the_plan_file_round_trip_pins_the_users_edit_and_applies_the_chose
 
     p.push(call("exit_plan", serde_json::json!({"plan": "# Migrate the store\n1. copy the data\n2. drop the old table"})));
     p.push(answer("plan approved, starting"));
-    c.send(&Request::Ask { session: Some(sid.clone()), text: "write the plan".into(), workspace: None, images: Vec::new(), options: None });
+    c.send(&Request::Ask { session: Some(sid.clone()), text: "write the plan".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let (id, path, text) = match c.until(|e| matches!(e, Event::PlanReady { .. })).pop().unwrap().event {
         Event::PlanReady { session, id, path, text } => {
             assert_eq!(session, sid);
@@ -379,7 +379,7 @@ fn parity_m13_the_plan_file_round_trip_pins_the_users_edit_and_applies_the_chose
     c.until(|e| matches!(e, Event::ModeChanged { mode: PermissionMode::Plan, .. }));
     p.push(call("exit_plan", serde_json::json!({"plan": "1. do everything at once"})));
     p.push(answer("revising"));
-    c.send(&Request::Ask { session: Some(sid.clone()), text: "again".into(), workspace: None, images: Vec::new(), options: None });
+    c.send(&Request::Ask { session: Some(sid.clone()), text: "again".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let id2 = match c.until(|e| matches!(e, Event::PlanReady { .. })).pop().unwrap().event {
         Event::PlanReady { id, .. } => id,
         other => panic!("{other:?}"),

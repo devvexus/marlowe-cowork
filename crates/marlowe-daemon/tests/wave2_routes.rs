@@ -250,7 +250,7 @@ fn parity_bg1_the_registry_is_a_session_service_and_its_changes_reach_every_clie
     let mut watcher = Client::connect(&r.info);
     let mut asker = Client::connect(&r.info);
 
-    asker.send(&Request::Ask { session: None, text: "start a job".into(), workspace: None, images: Vec::new(), options: None });
+    asker.send(&Request::Ask { session: None, text: "start a job".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let seen = asker.until(|e| matches!(e, Event::TurnFinished { .. }));
     let result = seen.iter().find_map(|e| match &e.event {
         Event::ToolFinished { ok, summary, .. } => Some((*ok, summary.clone())),

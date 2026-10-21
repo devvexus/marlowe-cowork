@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use marlowe_journal::{Actor as JournalActor, AppendRequest, EventKind, TraceId};
 use marlowe_memory::cue::{dense, lexical};
+use marlowe_memory::probe::StageProbe;
 use marlowe_memory::retrieve::{
     debug_assert_injection_valid, estimate_tokens, select_for_injection_filtered, Rerank, RetrievalScope, Scoring,
     Selection, ADMIT_TOP_K, RERANK_BUDGET,
@@ -12,8 +13,9 @@ use marlowe_memory::{Abstention, Coverage, MemoryEntry, GATE_VERSION};
 use marlowe_proto::MemoryHit;
 use serde::Serialize;
 
-use crate::actor::{is_live, now_ms, Actor};
+use crate::actor::{is_live, now_ms, Actor, EmbedRun};
 use crate::error::MindError;
+use crate::live::{LiveProbe, LiveSink, MindEvent};
 use crate::tags::{is_episode_summary, recall_admits, wire_kind, wire_scope};
 use crate::types::{wire_trust, InjectQuery, Injection, RecallQuery};
 use crate::workspaces::{self, Workspaces};
@@ -47,17 +49,21 @@ struct InjectedPayload<'a> {
 }
 
 impl Actor {
-    pub(crate) fn inject(&mut self, q: InjectQuery) -> Injection {
+    pub(crate) fn inject(&mut self, q: InjectQuery, live: Option<&LiveSink>) -> Injection {
         let started = Instant::now();
-        let mut out = match self.try_inject(&q) {
+        let mut probe = LiveProbe::new(live);
+        let mut out = match self.try_inject(&q, &mut probe) {
             Ok(i) => i,
             Err(reason) => Injection { abstained: Some(reason), ..Injection::default() },
         };
+        // An early abstention leaves its stage open.
+        probe.finish();
+        out.stages = std::mem::take(&mut probe.stages);
         out.latency_ms = started.elapsed().as_millis() as u64;
         out
     }
 
-    fn try_inject(&mut self, q: &InjectQuery) -> Result<Injection, String> {
+    fn try_inject(&mut self, q: &InjectQuery, probe: &mut LiveProbe<'_>) -> Result<Injection, String> {
         if q.text.trim().is_empty() {
             return Err("the query is empty".into());
         }
@@ -88,12 +94,30 @@ impl Actor {
         if missing.len() > INJECT_FLUSH_LIMIT {
             return Err(format!("memory index warming ({} of {total} embedded)", total - missing.len()));
         }
-        for chunk in missing.chunks(EMBED_CHUNK) {
-            self.embed_and_install(chunk.to_vec())?;
+        if !missing.is_empty() {
+            probe.begin("index", None);
+            for (i, chunk) in missing.chunks(EMBED_CHUNK).enumerate() {
+                probe.progress((i * EMBED_CHUNK) as u32, missing.len() as u32);
+                self.embed_and_install(chunk.to_vec())?;
+            }
         }
-        let query_vector =
-            self.models.embedder()?.embed(&q.text).map_err(|e| format!("query embedding failed: {e}"))?;
+        if !self.models.embedder_resident() {
+            let size = self.models.embedder_bytes();
+            probe.begin("load", Some(format!("embedder · {}", mb(size))));
+        }
+        let embedder = self.models.embedder()?;
+        probe.begin("embed", None);
+        let query_vector = embedder.embed(&q.text).map_err(|e| format!("query embedding failed: {e}"))?;
+        let cold_reranker = !self.models.reranker_resident();
+        if cold_reranker {
+            let size = self.models.reranker_bytes();
+            probe.begin("load", Some(format!("reranker · {}", mb(size))));
+        }
         let reranker = self.models.reranker()?;
+        if cold_reranker {
+            probe.end(Some(if reranker.choice.provider.is_gpu() { "gpu" } else { "cpu" }.into()));
+        }
+        probe.label("rerank", if reranker.choice.provider.is_gpu() { "gpu" } else { "cpu" }.into());
         let scoring = Scoring::Gated { gate: &self.gate, operating_point: &self.point, coverage: Coverage::Declared };
         // Batching follows the provider: off on CPU (measured slower at one thread), on for GPU.
         let batched = reranker.choice.provider.default_batching();
@@ -114,7 +138,7 @@ impl Actor {
             &mut rerank,
             RetrievalScope::Profile,
             &admit,
-            &mut (),
+            probe,
         );
         debug_assert_injection_valid(&selection.injected);
 
@@ -160,7 +184,7 @@ impl Actor {
             .append(marlowe_contract::Clock::new(now_ms()), event)
             .map_err(|e| format!("could not journal the injection: {e}"))?;
         let floor = recalled.iter().map(|h| h.trust).min();
-        Ok(Injection { blocks, recalled, floor, abstained: None, latency_ms: 0 })
+        Ok(Injection { blocks, recalled, floor, abstained: None, latency_ms: 0, stages: Vec::new() })
     }
 
     pub(crate) fn recall(&mut self, q: RecallQuery) -> Result<Vec<MemoryHit>, MindError> {
@@ -226,6 +250,11 @@ impl Actor {
             self.queue.clear();
             return Ok(0);
         }
+        if self.embed_run.is_none() {
+            let total = if self.queue.rebuild { self.vectors.pending(&self.beliefs).len() } else { self.queue.pending.len() } as u32;
+            self.embed_run = Some(EmbedRun { started: Instant::now(), total, done: 0, installed: 0 });
+            self.tell(MindEvent::EmbedStart { queued: total });
+        }
         let batch: Vec<(String, String)> = if self.queue.rebuild {
             let missing = self.vectors.pending(&self.beliefs);
             if missing.len() <= EMBED_CHUNK {
@@ -244,13 +273,34 @@ impl Actor {
             }
             out
         };
+        let taken = batch.len() as u32;
         match self.embed_and_install(batch) {
-            Ok(n) => Ok(n),
+            Ok(n) => {
+                self.note_embedded(taken, n as u32);
+                Ok(n)
+            }
             Err(e) => {
                 // The popped ids are recovered by a pass over everything still missing.
                 self.queue.pending.clear();
                 self.queue.rebuild = true;
+                self.embed_run = None;
                 Err(e)
+            }
+        }
+    }
+
+    /// Reports a finished chunk to the write-tail listener, and the run's end when the queue is empty.
+    fn note_embedded(&mut self, taken: u32, installed: u32) {
+        let Some(run) = &mut self.embed_run else { return };
+        run.done += taken;
+        run.installed += installed;
+        run.total = run.total.max(run.done);
+        let (done, total) = (run.done, run.total);
+        self.tell(MindEvent::EmbedProgress { done, total });
+        if self.queue.is_empty() {
+            if let Some(run) = self.embed_run.take() {
+                self.tell(MindEvent::EmbedDone { installed: run.installed, ms: run.started.elapsed().as_millis() as u64 });
+                self.tell(MindEvent::Indexed);
             }
         }
     }
@@ -269,6 +319,11 @@ impl Actor {
         self.vectors_dirty |= installed > 0;
         Ok(installed)
     }
+}
+
+/// `127 MB` for a byte count.
+fn mb(bytes: u64) -> String {
+    format!("{} MB", (bytes + 500_000) / 1_000_000)
 }
 
 /// A reranked candidate competing for a slot after rank 1.
