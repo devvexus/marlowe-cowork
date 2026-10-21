@@ -340,3 +340,40 @@ fn the_registry_is_a_session_service() {
     let id = tasks.0.register(NewTask::new(TaskKind::Job, "x"));
     assert!(tasks.0.get(&id).is_some());
 }
+
+#[test]
+fn resolve_id_maps_bare_short_and_wrong_prefix_ids() {
+    let reg = MemoryTaskRegistry::new();
+    let agent = reg.register(NewTask::new(TaskKind::Agent, "researcher").raw_id("a990e8f6f05e494c9827b944f6364dfa"));
+    let wf = reg.register(NewTask::new(TaskKind::Workflow, "fan out").raw_id("0b12c3d4e5f6478899aabbccddeeff00"));
+    let job = reg.register(NewTask::new(TaskKind::Job, "cargo test").raw_id("j7"));
+    assert_eq!(resolve_id(&reg, &agent).unwrap(), agent, "an exact id wins");
+    assert_eq!(resolve_id(&reg, "a990e8f6f05e494c9827b944f6364dfa").unwrap(), agent, "a bare full id");
+    assert_eq!(resolve_id(&reg, "a990e8f6").unwrap(), agent, "a unique 8-char prefix");
+    assert_eq!(resolve_id(&reg, "agent_a990e8").unwrap(), agent, "a short id under its prefix");
+    assert_eq!(resolve_id(&reg, "agent_0b12c3d4e5f6478899aabbccddeeff00").unwrap(), wf, "a workflow sent as agent_");
+    assert_eq!(resolve_id(&reg, "run a990e8f6").unwrap(), agent);
+    assert_eq!(resolve_id(&reg, "`wf_0b12c3d4`").unwrap(), wf, "quotes are dropped");
+    assert_eq!(resolve_id(&reg, "j7").unwrap(), job, "a short raw id matches only when equal");
+    assert!(resolve_id(&reg, "a99").unwrap_err().contains("no task"), "under 6 characters is no prefix");
+}
+
+#[test]
+fn resolve_id_lists_ambiguous_and_nearest() {
+    let reg = MemoryTaskRegistry::new();
+    let a = reg.register(NewTask::new(TaskKind::Agent, "one").raw_id("abc123000000"));
+    let b = reg.register(NewTask::new(TaskKind::Workflow, "two").raw_id("abc123ffffff"));
+    let e = resolve_id(&reg, "abc123").unwrap_err();
+    assert!(e.contains(&a) && e.contains(&b) && e.contains("matches 2"), "{e}");
+    let e = resolve_id(&reg, "agent_zzzzzz").unwrap_err();
+    assert!(e.contains("no task") && e.contains(&a) && e.contains("nearest"), "{e}");
+    let empty = MemoryTaskRegistry::new();
+    assert!(resolve_id(&empty, "x1").unwrap_err().contains("task_list"));
+}
+
+#[test]
+fn resolve_id_finds_a_subagent_by_its_own_id() {
+    let reg = MemoryTaskRegistry::new();
+    let id = reg.register(NewTask::new(TaskKind::Agent, "reader").raw_id("s-1.agent-3"));
+    assert_eq!(resolve_id(&reg, "agent-3").unwrap(), id);
+}

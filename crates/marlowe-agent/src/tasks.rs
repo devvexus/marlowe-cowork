@@ -562,5 +562,76 @@ fn read_chunk(path: &Path, since: u64, filter: Option<&regex::Regex>, finished: 
     Ok(TaskChunk { text, next_since, done: finished && next_since >= len })
 }
 
+/// Id prefixes a model may put on (or leave off) a run id.
+const ID_PREFIXES: [&str; 7] = ["agent_", "wf_", "job_", "mon_", "cron_", "run_", "run "];
+
+fn raw_part(id: &str) -> &str {
+    ID_PREFIXES.iter().find_map(|p| id.strip_prefix(p)).unwrap_or(id)
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cur = row[j + 1];
+            row[j + 1] = (prev + usize::from(ca != *cb)).min(row[j] + 1).min(cur + 1);
+            prev = cur;
+        }
+    }
+    row[b.len()]
+}
+
+/// The canonical task id `id` names. An exact id wins. Otherwise the prefix is dropped (a bare run
+/// id, a short one, or a workflow's sent as `agent_`) and the raw part must equal one task's, or be
+/// a unique prefix of at least 6 hex characters. Several matches list them; none gives the nearest.
+pub fn resolve_id(reg: &dyn TaskRegistry, id: &str) -> Result<String, String> {
+    let id = id.trim().trim_matches(['`', '"', '\'']);
+    if reg.get(id).is_some() {
+        return Ok(id.to_string());
+    }
+    let raw = raw_part(id).trim().to_ascii_lowercase();
+    let all = reg.list(None);
+    let mut found: Vec<&str> = Vec::new();
+    if !raw.is_empty() {
+        // A subagent's task id is `agent_<session>.<agent-n>`: the part after the dot is its own id.
+        let equal: Vec<&str> = all
+            .iter()
+            .filter(|t| {
+                let r = raw_part(&t.id).to_ascii_lowercase();
+                r == raw || r.rsplit_once('.').is_some_and(|(_, agent)| agent == raw)
+            })
+            .map(|t| t.id.as_str())
+            .collect();
+        found = if !equal.is_empty() {
+            equal
+        } else if raw.len() >= 6 && raw.chars().all(|c| c.is_ascii_hexdigit()) {
+            all.iter().filter(|t| raw_part(&t.id).to_ascii_lowercase().starts_with(&raw)).map(|t| t.id.as_str()).collect()
+        } else {
+            Vec::new()
+        };
+    }
+    match found.as_slice() {
+        [one] => Ok((*one).to_string()),
+        [] => {
+            let mut near: Vec<(usize, &str)> = all.iter().map(|t| (edit_distance(&raw, &raw_part(&t.id).to_ascii_lowercase()), t.id.as_str())).collect();
+            near.sort_by_key(|(d, _)| *d);
+            let near: Vec<String> = near.iter().take(3).map(|(_, id)| format!("`{id}`")).collect();
+            if near.is_empty() {
+                Err(format!("no task `{id}`; task_list shows what is running"))
+            } else {
+                Err(format!("no task `{id}`; the nearest ids are {}; task_list shows what is running", near.join(", ")))
+            }
+        }
+        many => Err(format!(
+            "`{id}` matches {} tasks: {}; use the full id",
+            many.len(),
+            many.iter().map(|m| format!("`{m}`")).collect::<Vec<_>>().join(", ")
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests;

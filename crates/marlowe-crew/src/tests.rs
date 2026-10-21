@@ -155,6 +155,7 @@ fn the_dispatch_declaration_lists_roles_and_its_arguments_parse() {
     assert!(DispatchArgs::parse(&json!({"role": "scout", "goal": "x", "playbook": "dance"})).is_err());
 
     let receipt = DispatchReceipt {
+        task_id: "agent_ab".into(),
         run_id: RunId("ab".into()),
         role: "scout".into(),
         playbook: None,
@@ -162,7 +163,7 @@ fn the_dispatch_declaration_lists_roles_and_its_arguments_parse() {
     };
     assert_eq!(
         serde_json::to_string(&receipt).unwrap(),
-        r#"{"run_id":"ab","role":"scout","estimate":{"minutes":5,"usd":0.1}}"#
+        r#"{"task_id":"agent_ab","run_id":"ab","role":"scout","estimate":{"minutes":5,"usd":0.1}}"#
     );
 }
 

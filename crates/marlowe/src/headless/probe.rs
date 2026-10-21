@@ -26,7 +26,8 @@ use marlowe_agent::args::ArgRewrites;
 use marlowe_agent::context::tool_spec_tokens;
 use marlowe_agent::subagent::{builtin_types, find_type, FilteredTools, SUBAGENT_FRAME};
 use marlowe_agent::{
-    Agent, CallCtx, CallFlow, Conversation, Environment, Steer, SystemPrompt, ToolCallReq, ToolHost, ToolMiddleware, ToolOutcome, UserInfo,
+    Agent, CallCtx, CallFlow, Conversation, Environment, MemoryTaskRegistry, NewTask, Services, Steer, SystemPrompt, TaskKind, TaskRegistry,
+    TaskStatus, Tasks, ToolCallReq, ToolHost, ToolMiddleware, ToolOutcome, UserInfo,
 };
 use marlowe_brains::{CredentialStore, MemoryStore};
 use marlowe_mcp::client::ConnectOpts;
@@ -88,6 +89,49 @@ pub struct Case {
     /// Answers by tool name for calls that get through (default `probe: not run`).
     #[serde(default)]
     pub canned: BTreeMap<String, String>,
+    /// Background tasks the session already has, seeded into the task registry the conductor's
+    /// `task_stop` / `task_output` resolve ids against.
+    #[serde(default)]
+    pub tasks: Vec<CaseTask>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CaseTask {
+    pub id: String,
+    /// `job`, `agent`, `workflow`, `monitor` or `cron`.
+    pub kind: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub session: Option<String>,
+}
+
+/// The case's tasks in a registry, ids typed as the daemon types them.
+fn seed_tasks(case: &Case, own: &SessionId) -> Result<Arc<MemoryTaskRegistry>, String> {
+    let reg = Arc::new(MemoryTaskRegistry::new());
+    for t in &case.tasks {
+        let kind = TaskKind::ALL.into_iter().find(|k| k.as_str() == t.kind).ok_or_else(|| format!("case {}: no task kind {:?}", case.id, t.kind))?;
+        let raw = match TaskKind::split(&t.id) {
+            Some((k, raw)) if k == kind => raw,
+            _ => t.id.as_str(),
+        };
+        let session = t.session.as_deref().map_or_else(|| own.clone(), |s| SessionId(s.to_string()));
+        let id = reg.register(NewTask::new(kind, t.title.clone()).raw_id(raw).session(Some(session)));
+        let status = match t.status.as_deref().unwrap_or("running") {
+            "running" => TaskStatus::Running,
+            "waiting" => TaskStatus::Waiting,
+            "done" => TaskStatus::Done,
+            "failed" => TaskStatus::Failed,
+            "stopped" => TaskStatus::Stopped,
+            other => return Err(format!("case {}: no task status {other:?}", case.id)),
+        };
+        if status != TaskStatus::Running {
+            reg.set_status(&id, status, None);
+        }
+    }
+    Ok(reg)
 }
 
 fn conductor() -> String {
@@ -360,7 +404,12 @@ impl Probe {
         agent.budget.max_steps = case.max_calls.max(1);
         agent.max_wall = Some(self.timeout);
         agent.middleware.push(answer.clone());
-        let mut convo = Conversation::new(SessionId(format!("probe-{}-{run}", case.id)), Some(self.root.clone()));
+        let session = SessionId(format!("probe-{}-{run}", case.id));
+        match seed_tasks(case, &session) {
+            Ok(reg) => agent.services = Services::new().with(Tasks(reg)),
+            Err(e) => return json!({"kind": "run", "case": case.id, "tool": case.tool, "host": case.host, "run": run, "error": e, "calls": []}),
+        }
+        let mut convo = Conversation::new(session, Some(self.root.clone()));
         let text = match &case.reminder {
             Some(r) => format!("<system-reminder>\n{r}\n</system-reminder>\n\n{}", case.request),
             None => case.request.clone(),
@@ -600,6 +649,24 @@ mod tests {
         let bad = &runs[1]["calls"][0];
         assert_eq!(bad["refused"], true, "{}", runs[1]);
         assert!(bad["layer"].is_null() && bad["result"].as_str().unwrap().contains("web_fetch("), "{bad}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_seeded_registry_resolves_a_bare_run_id_before_the_layer_records_it() {
+        let raw = "a990e8f6f05e494c9827b944f6364dfa";
+        let (p, _seq, dir) = probe(vec![vec![("task_stop", json!({"id": raw}))]], vec![None]);
+        let mut out = Vec::new();
+        let stop = case(json!({
+            "id": "stop", "request": "stop that agent",
+            "tasks": [{"id": format!("agent_{raw}"), "kind": "agent", "title": "researcher", "status": "running"}]
+        }));
+        p.run_cases(&[stop], &mut out).unwrap();
+        let run = &lines(out)[0];
+        let call = &run["calls"][0];
+        assert_eq!(call["raw"]["args"]["id"], raw, "{run}");
+        assert_eq!(call["layer"]["args"]["id"], format!("agent_{raw}"), "{run}");
+        assert_eq!(call["refused"], false, "{run}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

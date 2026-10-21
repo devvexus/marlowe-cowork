@@ -115,12 +115,13 @@ fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
         Ok(l) => l,
         Err(e) => return ToolOutcome::error(e),
     };
-    let receipt = json!({"run_id": launched.run_id, "script_path": launched.script_path, "name": launched.name});
+    let task_id = format!("wf_{}", launched.run_id);
+    let receipt = json!({"task_id": task_id, "run_id": launched.run_id, "script_path": launched.script_path, "name": launched.name});
     if background {
         return ToolOutcome::ok(
             format!(
                 "{receipt}\nWorkflow `{}` is running in the background as crew run {}. Its result arrives as a notice when it finishes; \
-                 /workflows shows its progress. Carry on with other work.",
+                 /workflows shows its progress. task_stop / task_output take {task_id}. Carry on with other work.",
                 launched.name, launched.run_id
             ),
             format!("workflow {} started", launched.name),

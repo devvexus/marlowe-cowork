@@ -195,6 +195,31 @@ fn parity_bg2_each_kind_is_stopped_through_its_control() {
 }
 
 #[test]
+fn a_bare_run_id_stops_the_agent_task() {
+    let r = rig("bare-id");
+    let ctl = Arc::new(Ctl::default());
+    let raw = "a990e8f6f05e494c9827b944f6364dfa";
+    let id = r.tasks.register(NewTask::new(TaskKind::Agent, "researcher").raw_id(raw).session(Some(session())).control(ctl.clone()));
+    let o = r.call("task_stop", json!({"id": raw}));
+    assert!(!o.is_error, "{}", o.content);
+    assert_eq!(*ctl.stops.lock().unwrap(), 1);
+    assert_eq!(r.tasks.get(&id).unwrap().status, TaskStatus::Stopped);
+    // The middleware rewrites the id before the approval and teaches it once.
+    let mw = r.tools.middleware();
+    let mut call = marlowe_model::ToolCall { id: "c1".into(), name: "task_output".into(), args: json!({"id": &raw[..8]}) };
+    let cx = r.cx();
+    for m in &mw {
+        m.before_approval(&mut call, &cx);
+    }
+    assert_eq!(call.args["id"], id.as_str());
+    let mut out = ToolOutcome::ok("x", "x");
+    for m in &mw {
+        m.after_call(&call, &cx, &mut out);
+    }
+    assert!(out.content.contains("[args: read `a990e8f6…` as `agent_a990e8f6…`]"), "{}", out.content);
+}
+
+#[test]
 fn parity_bg2_another_sessions_task_asks_the_user() {
     let mut r = rig("bg2-ask");
     let ctl = Arc::new(Ctl::default());

@@ -190,8 +190,11 @@ pub fn run_workflow(runner: &AgentRunner, job: ScriptJob<'_>, emit: &dyn Fn(Scri
     cfg.resume = resume;
     cfg.budget = job.session.and_then(marlowe_workflow::pools::get);
     cfg.resolver = Some(Arc::new(marlowe_workflow::service::roots(job.home, job.workspace, job.plugins.clone())));
-    let local = runner.model_for(WORKFLOW_ROLE).map(|m| m.model.local || m.provider.kind().is_local()).unwrap_or(false);
-    cfg.max_concurrency = marlowe_workflow::default_concurrency(if local { runner.per_local_provider.max(1) } else { marlowe_workflow::MAX_CONCURRENCY });
+    let local = runner.model_for(WORKFLOW_ROLE).ok().filter(|m| m.model.local || m.provider.kind().is_local()).map(|m| m.model.model_ref());
+    cfg.max_concurrency = marlowe_workflow::default_concurrency(match &local {
+        Some(model) => (runner.local_slots)(model).max(1),
+        None => marlowe_workflow::MAX_CONCURRENCY,
+    });
 
     let meta = marlowe_workflow::validate::static_checks(&cfg.filename, &source).map(|v| v.meta).unwrap_or_default();
     let budget_total = cfg.budget.as_ref().and_then(|b| b.total());

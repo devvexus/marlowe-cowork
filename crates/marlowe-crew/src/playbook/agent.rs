@@ -21,7 +21,7 @@ use marlowe_agent::{
     TurnObserver, TurnStop,
 };
 use marlowe_model::{
-    CancelToken, ChatRequest, Completion, Message, ModelInfo, Provider, ProviderError, ProviderKind, Role, StreamEvent, ToolCall,
+    CancelToken, ChatRequest, Completion, Message, ModelInfo, ModelRef, Provider, ProviderError, ProviderKind, Role, StreamEvent, ToolCall,
     ToolResult, Usage,
 };
 use marlowe_proto::{RunId, SandboxKind, SessionId};
@@ -133,14 +133,14 @@ pub trait StepHooks: Send + Sync {
         Budget::default()
     }
 
-    /// Before every model call of a step (`local`: its model runs on this machine). It may block
-    /// (a budget approval, a local-model slot); `Err` ends the step with that error.
-    fn before_call(&self, _spec: &StepSpec, _local: bool) -> Result<(), CrewError> {
+    /// Before every model call of a step (`local`: the model, when it runs on this machine). It
+    /// may block (a budget approval, a local-model slot); `Err` ends the step with that error.
+    fn before_call(&self, _spec: &StepSpec, _local: Option<&ModelRef>) -> Result<(), CrewError> {
         Ok(())
     }
 
     /// After every call `before_call` admitted; `usage` is `None` when the call did not finish.
-    fn after_call(&self, _spec: &StepSpec, _local: bool, _usage: Option<&Usage>) {}
+    fn after_call(&self, _spec: &StepSpec, _local: Option<&ModelRef>, _usage: Option<&Usage>) {}
 
     /// The run has read untrusted content before this step.
     fn tainted(&self) -> bool {
@@ -206,15 +206,15 @@ pub struct AgentRunner {
     pub shell: ShellFn,
     /// Concurrent steps per cloud provider.
     pub per_provider: usize,
-    /// Concurrent steps per local provider.
-    pub per_local_provider: usize,
+    /// Concurrent steps on a local model: the crew's share of its slots.
+    pub local_slots: Arc<dyn Fn(&ModelRef) -> usize + Send + Sync>,
     /// Wraps each step's tool host; `None` keeps it.
     pub step_tools: Option<StepToolsFn>,
 }
 
 impl AgentRunner {
     /// A runner that denies approvals, has no hooks, no steers, and runs shells with
-    /// [`sandbox_shell`]; limits 2 per cloud provider and 1 per local one.
+    /// [`sandbox_shell`]; limits 2 per cloud provider and 1 per local model.
     pub fn new(
         run: RunId,
         roles: Roles,
@@ -237,7 +237,7 @@ impl AgentRunner {
             hooks: Arc::new(NoHooks),
             shell: Arc::new(sandbox_shell),
             per_provider: 2,
-            per_local_provider: 1,
+            local_slots: Arc::new(|_| 1),
             step_tools: None,
         }
     }
@@ -255,7 +255,7 @@ impl AgentRunner {
         let model = (self.models)(card)?;
         let failed = Arc::new(Mutex::new(None));
         let metered = Metered {
-            local: model.model.local || model.provider.kind().is_local(),
+            local: local_ref(&model),
             inner: model.provider,
             hooks: self.hooks.clone(),
             spec: spec.clone(),
@@ -350,8 +350,10 @@ impl AgentRunner {
         for spec in specs {
             let Some(card) = self.roles.get(&spec.role) else { continue };
             let Ok(m) = (self.models)(card) else { continue };
-            let local = m.model.local || m.provider.kind().is_local();
-            limit = limit.min(if local { self.per_local_provider } else { self.per_provider });
+            limit = limit.min(match local_ref(&m) {
+                Some(model) => (self.local_slots)(&model),
+                None => self.per_provider,
+            });
         }
         if limit == usize::MAX {
             self.per_provider.max(1)
@@ -379,7 +381,7 @@ impl AgentRunner {
         };
         let failed = Arc::new(Mutex::new(None));
         let metered = Metered {
-            local: model.model.local || model.provider.kind().is_local(),
+            local: local_ref(&model),
             inner: model.provider,
             hooks: self.hooks.clone(),
             spec: spec.clone(),
@@ -565,9 +567,14 @@ struct Metered {
     inner: Arc<dyn Provider>,
     hooks: Arc<dyn StepHooks>,
     spec: StepSpec,
-    local: bool,
+    local: Option<ModelRef>,
     /// Why `before_call` refused, for `run_step` to return.
     failed: Arc<Mutex<Option<CrewError>>>,
+}
+
+/// The model when it runs on this machine: the key of its stream slots.
+fn local_ref(m: &StepModel) -> Option<ModelRef> {
+    (m.model.local || m.provider.kind().is_local()).then(|| m.model.model_ref())
 }
 
 /// Calls `after_call` once, also when the provider panics.
@@ -578,7 +585,7 @@ struct AfterCall<'a> {
 
 impl Drop for AfterCall<'_> {
     fn drop(&mut self) {
-        self.m.hooks.after_call(&self.m.spec, self.m.local, self.usage.as_ref());
+        self.m.hooks.after_call(&self.m.spec, self.m.local.as_ref(), self.usage.as_ref());
     }
 }
 
@@ -592,7 +599,7 @@ impl Provider for Metered {
     }
 
     fn stream(&self, req: &ChatRequest, cancel: &CancelToken, on: &mut dyn FnMut(StreamEvent)) -> Result<Completion, ProviderError> {
-        if let Err(e) = self.hooks.before_call(&self.spec, self.local) {
+        if let Err(e) = self.hooks.before_call(&self.spec, self.local.as_ref()) {
             *self.failed.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
             return Err(ProviderError::cancelled());
         }

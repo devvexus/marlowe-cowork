@@ -768,6 +768,167 @@ fn local_streams_are_capped_across_runs() {
     finish(fx, &[&home]);
 }
 
+// ---------------------------------------------------------------- crew capacity
+
+/// A local provider whose calls hold until `release`, counting the streams in flight.
+fn holder(release: &Arc<AtomicBool>) -> (Arc<Scripted>, Arc<AtomicUsize>) {
+    let (now, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (n, p, r) = (now.clone(), peak.clone(), release.clone());
+    let provider = Scripted::new(ProviderKind::Ollama, move |_, _, cancel| {
+        p.fetch_max(n.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+        let end = Instant::now() + Duration::from_secs(30);
+        while !r.load(Ordering::SeqCst) && !cancel.is_cancelled() {
+            assert!(Instant::now() < end, "never released");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        n.fetch_sub(1, Ordering::SeqCst);
+        Ok(answer("held, then done"))
+    });
+    (provider, peak)
+}
+
+fn with_slots(b: &Brains, model: &str, slots: u16) -> marlowe_model::ModelRef {
+    let m = b.with_library(|l| l.models().unwrap()).into_iter().find(|m| m.info.id == model).unwrap().model;
+    let policy = marlowe_proto::ContextPolicy {
+        max_ctx: 16_384,
+        kv_type: marlowe_proto::KvType::Q8_0,
+        parallel: slots,
+        source: marlowe_proto::PolicySource::User,
+        updated_ms: 1,
+    };
+    b.with_library(|l| l.set_policy(&m, &policy)).unwrap();
+    m
+}
+
+fn count(sup: &Supervisor, ids: &[RunId], status: CrewRunStatus) -> usize {
+    ids.iter().filter(|id| info(sup, id).status == status).count()
+}
+
+fn dispatch_n(sup: &Supervisor, role: &str, n: usize) -> Vec<RunId> {
+    (0..n).map(|i| sup.dispatch(None, args(role, &format!("Hold {i}"), None, None)).unwrap().run_id).collect()
+}
+
+#[test]
+fn three_local_dispatches_on_six_slots_all_run() {
+    let home = home("slots-three");
+    let release = Arc::new(AtomicBool::new(false));
+    let (local, peak) = holder(&release);
+    let b = brains(&[("qwen", local)]);
+    with_slots(&b, "qwen", 6);
+    let fx = start_with(&home, b, CrewConfig::default(), false);
+    let ids = dispatch_n(&fx.sup, "tester", 3);
+    wait("three running", || count(&fx.sup, &ids, CrewRunStatus::Running) == 3);
+    wait("three streams", || peak.load(Ordering::SeqCst) == 3);
+    assert_eq!(count(&fx.sup, &ids, CrewRunStatus::Queued), 0, "none queued");
+    release.store(true, Ordering::SeqCst);
+    for id in &ids {
+        wait_status(&fx.sup, id, CrewRunStatus::Done);
+    }
+    finish(fx, &[&home]);
+}
+
+#[test]
+fn seven_local_dispatches_run_five_and_queue_two() {
+    let home = home("slots-seven");
+    let release = Arc::new(AtomicBool::new(false));
+    let (local, peak) = holder(&release);
+    let b = brains(&[("qwen", local)]);
+    with_slots(&b, "qwen", 6);
+    let fx = start_with(&home, b, CrewConfig::default(), false);
+    let ids = dispatch_n(&fx.sup, "tester", 7);
+    wait("five running", || count(&fx.sup, &ids, CrewRunStatus::Running) == 5);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!((count(&fx.sup, &ids, CrewRunStatus::Running), count(&fx.sup, &ids, CrewRunStatus::Queued)), (5, 2));
+    assert_eq!(peak.load(Ordering::SeqCst), 5, "the conductor keeps the sixth slot: streams never pass the crew's five");
+    release.store(true, Ordering::SeqCst);
+    for id in &ids {
+        wait_status(&fx.sup, id, CrewRunStatus::Done);
+    }
+    assert_eq!(peak.load(Ordering::SeqCst), 5, "the queued two ran after, not beside");
+    finish(fx, &[&home]);
+}
+
+#[test]
+fn local_streams_are_capped_per_model_not_across_models() {
+    let home = home("slots-per-model");
+    std::fs::write(
+        home.join("roles").join("tester2.md"),
+        format!("---
+name: tester2
+description: Test role.
+tools: [note]
+budget: {{tokens: 100000, steps: 20, usd: 1.0}}
+sandbox: scratch
+---
+{CARD_BODY}"),
+    )
+    .unwrap();
+    // One Ollama provider serves every model (the factory is by kind); it counts streams by model.
+    let release = Arc::new(AtomicBool::new(false));
+    let counts: Arc<Mutex<std::collections::HashMap<String, (usize, usize)>>> = Arc::default();
+    let (c, r) = (counts.clone(), release.clone());
+    let provider = Scripted::new(ProviderKind::Ollama, move |req, _, cancel| {
+        {
+            let mut m = c.lock().unwrap();
+            let e = m.entry(req.model.clone()).or_default();
+            e.0 += 1;
+            e.1 = e.1.max(e.0);
+        }
+        let end = Instant::now() + Duration::from_secs(30);
+        while !r.load(Ordering::SeqCst) && !cancel.is_cancelled() {
+            assert!(Instant::now() < end, "never released");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        c.lock().unwrap().get_mut(&req.model).unwrap().0 -= 1;
+        Ok(answer("done"))
+    });
+    // The conductor's model is the first one; the crew roles run on the other two.
+    let b = brains(&[("cond", provider.clone())]);
+    for id in ["alpha", "gamma"] {
+        b.with_library(|l| l.add(&ModelInfo::bare(ProviderKind::Ollama, id))).unwrap();
+    }
+    with_slots(&b, "cond", 4);
+    let alpha = with_slots(&b, "alpha", 2);
+    let gamma = with_slots(&b, "gamma", 3);
+    b.set_slot(&Slot::Crew("tester".into()), Some(&alpha), Effort::Low).unwrap();
+    b.set_slot(&Slot::Crew("tester2".into()), Some(&gamma), Effort::Low).unwrap();
+    assert_eq!((b.context().crew_slots(&alpha), b.context().crew_slots(&gamma)), (2, 3), "the conductor is on neither");
+    let fx = start_with(&home, b, CrewConfig::default(), false);
+    let mut ids = dispatch_n(&fx.sup, "tester", 4);
+    ids.extend(dispatch_n(&fx.sup, "tester2", 5));
+    wait("five running", || count(&fx.sup, &ids, CrewRunStatus::Running) == 5);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(count(&fx.sup, &ids, CrewRunStatus::Running), 5, "2 on alpha and 3 on gamma at once");
+    release.store(true, Ordering::SeqCst);
+    for id in &ids {
+        wait_status(&fx.sup, id, CrewRunStatus::Done);
+    }
+    let peaks = counts.lock().unwrap().iter().map(|(m, v)| (m.clone(), v.1)).collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(peaks.get("alpha"), Some(&2), "{peaks:?}");
+    assert_eq!(peaks.get("gamma"), Some(&3), "{peaks:?}");
+    finish(fx, &[&home]);
+}
+
+#[test]
+fn cloud_runs_still_obey_per_provider() {
+    let home = home("slots-cloud");
+    let (now, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (n, p) = (now.clone(), peak.clone());
+    let remote = cloud(move |_, _, _| {
+        p.fetch_max(n.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(80));
+        n.fetch_sub(1, Ordering::SeqCst);
+        Ok(answer("cloud done"))
+    });
+    let fx = start_with(&home, brains(&[("gpt", remote)]), CrewConfig { per_provider: 2, ..CrewConfig::default() }, false);
+    let ids = dispatch_n(&fx.sup, "tester", 4);
+    for id in &ids {
+        wait_status(&fx.sup, id, CrewRunStatus::Done);
+    }
+    assert_eq!(peak.load(Ordering::SeqCst), 2, "two per cloud provider, whatever the slots say");
+    finish(fx, &[&home]);
+}
+
 #[test]
 fn a_busy_gpu_moves_local_runs_to_a_cloud_slot_or_holds_them() {
     // Local default, no cloud model: the run waits for the GPU.

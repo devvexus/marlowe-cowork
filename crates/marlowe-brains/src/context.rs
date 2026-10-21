@@ -109,6 +109,15 @@ impl ContextGate<'_> {
         Ok(self.policy(model)?.parallel.max(1))
     }
 
+    /// Agents the crew may run on `model` at once: its slots, less the one the conductor keeps
+    /// when it runs on the same model, never below 1. Runs, model streams and workflow agents
+    /// are all bounded by this one number.
+    pub fn crew_slots(&self, model: &ModelRef) -> usize {
+        let slots = self.slots(model).map_or(1, usize::from);
+        let shared = self.b.resolve(&Slot::Conductor).is_ok_and(|(m, _)| &m == model);
+        slots.saturating_sub(usize::from(shared)).max(1)
+    }
+
     /// Waits up to `timeout` for a free slot on `model` (crew threads only; the conductor never
     /// waits). The slot is released when the lease drops.
     pub fn lease(&self, model: &ModelRef, timeout: Duration) -> Result<SlotLease, BrainsError> {

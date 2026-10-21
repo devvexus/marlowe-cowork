@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use marlowe_agent::{AgentEvent, ApprovalGate, ApprovalReq, Budget, ToolHost, MAX_STEPS};
 use marlowe_mind::{Kind, MemoryIn, ProfileQuery, Provenance, RecallQuery};
-use marlowe_model::{CancelToken, Message, Pricing, Usage};
+use marlowe_model::{CancelToken, Message, ModelRef, Pricing, Usage};
 use marlowe_proto::{
     ApprovalDecision, CostQuote, CrewRunStatus, CrewSpent, Dispatch, MemoryScope, MemoryTrust, PlanDecision, Playbook, ResearchPlan,
     PhaseEvent, PhaseKind, ResearchProgress, RunId, SandboxKind, SessionId,
@@ -40,7 +40,7 @@ fn crew_session(run: &RunId) -> SessionId {
 
 /// Body of a run thread: executes the run behind `catch_unwind`, then records how it ended and
 /// frees its provider slot.
-pub(crate) fn run_thread(inner: Arc<Inner>, id: RunId, provider: &'static str) {
+pub(crate) fn run_thread(inner: Arc<Inner>, id: RunId, provider: String) {
     let outcome = catch_unwind(AssertUnwindSafe(|| execute(&inner, &id)));
     let outcome = outcome.map_err(|p| {
         p.downcast_ref::<&str>()
@@ -48,7 +48,7 @@ pub(crate) fn run_thread(inner: Arc<Inner>, id: RunId, provider: &'static str) {
             .or_else(|| p.downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "unknown panic".into())
     });
-    finish(&inner, &id, provider, outcome);
+    finish(&inner, &id, &provider, outcome);
     inner.wake();
 }
 
@@ -122,7 +122,10 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
     runner.hooks = hooks.clone();
     runner.shell = guarded_shell(inner.clone(), id.clone(), run.session.clone());
     runner.per_provider = inner.cfg.per_provider;
-    runner.per_local_provider = inner.cfg.per_local_provider;
+    runner.local_slots = {
+        let brains = inner.deps.brains.clone();
+        Arc::new(move |model| brains.context().crew_slots(model))
+    };
 
     let cfg = PlaybookConfig {
         max_scouts: inner.cfg.max_scouts,
@@ -170,7 +173,7 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
 
 /// Records how a run thread ended. A user's cancel wins over pause and shutdown; a stopped run
 /// (shutdown) is left `running` in the store so the next start resumes it.
-fn finish(inner: &Arc<Inner>, id: &RunId, provider: &'static str, outcome: Result<Result<Dispatch, CrewError>, String>) {
+fn finish(inner: &Arc<Inner>, id: &RunId, provider: &str, outcome: Result<Result<Dispatch, CrewError>, String>) {
     let mut events = Vec::new();
     let mut memory: Option<(Run, Dispatch)> = None;
     {
@@ -476,13 +479,14 @@ spent: {:?}", self.id, run.goal, run.budget, spent),
         }
     }
 
-    /// One of the machine's local-model stream slots (`per_local_provider` across every run).
-    fn local_slot(&self) -> Result<(), CrewError> {
-        let limit = self.inner.cfg.per_local_provider.max(1);
+    /// One of `model`'s stream slots (`crew_slots` across every run).
+    fn local_slot(&self, model: &ModelRef) -> Result<(), CrewError> {
+        let limit = self.inner.deps.brains.context().crew_slots(model);
         let mut n = self.inner.local_streams.lock().unwrap_or_else(|e| e.into_inner());
         loop {
-            if *n < limit {
-                *n += 1;
+            let held = n.entry(model.to_string()).or_default();
+            if *held < limit {
+                *held += 1;
                 return Ok(());
             }
             self.check()?;
@@ -495,9 +499,11 @@ spent: {:?}", self.id, run.goal, run.budget, spent),
         }
     }
 
-    fn release_local(&self) {
+    fn release_local(&self, model: &ModelRef) {
         let mut n = self.inner.local_streams.lock().unwrap_or_else(|e| e.into_inner());
-        *n = n.saturating_sub(1);
+        if let Some(held) = n.get_mut(&model.to_string()) {
+            *held = held.saturating_sub(1);
+        }
         drop(n);
         self.inner.local_free.notify_one();
     }
@@ -513,10 +519,10 @@ impl StepHooks for Hooks {
         self.enforce_budget()
     }
 
-    fn before_call(&self, spec: &StepSpec, local: bool) -> Result<(), CrewError> {
+    fn before_call(&self, spec: &StepSpec, local: Option<&ModelRef>) -> Result<(), CrewError> {
         self.reserve()?;
-        if local {
-            if let Err(e) = self.local_slot() {
+        if let Some(model) = local {
+            if let Err(e) = self.local_slot(model) {
                 let mut n = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
                 *n = n.saturating_sub(1);
                 return Err(e);
@@ -527,14 +533,14 @@ impl StepHooks for Hooks {
     }
 
     /// Frees the call's place and slot, and books what it spent.
-    fn after_call(&self, spec: &StepSpec, local: bool, usage: Option<&Usage>) {
-        if local {
+    fn after_call(&self, spec: &StepSpec, local: Option<&ModelRef>, usage: Option<&Usage>) {
+        if let Some(model) = local {
             let mut holders = self.inner.local_holders.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(i) = holders.iter().position(|(r, role)| *r == self.id && *role == spec.role) {
                 holders.remove(i);
             }
             drop(holders);
-            self.release_local();
+            self.release_local(model);
         }
         let cost = usage.map(|u| self.cost(&spec.role, u));
         let mut n = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());

@@ -435,7 +435,7 @@ fn every_group_file_registers_its_hooks() {
         // Files: the FileState guard (A). Shell: job notices (B). Git: the git guard (J). Workflow: the .star validator. Code
         // adds post-edit diagnostics only with a local workspace (C).
         let expected = match g.group {
-            marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Shell | marlowe_agent::ToolGroup::Files | marlowe_agent::ToolGroup::Workflow => 1,
+            marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Shell | marlowe_agent::ToolGroup::Files | marlowe_agent::ToolGroup::Workflow | marlowe_agent::ToolGroup::Tasks => 1,
             _ => 0,
         };
         assert_eq!((g.middleware)(&host).len(), expected, "{:?}", g.group);

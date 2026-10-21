@@ -241,6 +241,30 @@ fn parity_wf2_workflow_agents_cannot_spawn() {
 }
 
 #[test]
+fn a_local_workflow_runs_as_many_agents_at_once_as_the_crew_has_slots() {
+    let (now, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (n, p) = (now.clone(), peak.clone());
+    let model = Model::new(true, move |_, _| {
+        p.fetch_max(n.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        n.fetch_sub(1, Ordering::SeqCst);
+        answer("ok")
+    });
+    let home = temp("local-slots");
+    let mut r = runner(model, &home);
+    r.local_slots = Arc::new(|_| 3);
+    let run = RunId::new_random();
+    let src = "META = {\"description\": \"six\"}
+def main(args):
+    return parallel([lambda: agent(\"a\"), lambda: agent(\"b\"), lambda: agent(\"c\"), lambda: agent(\"d\"), lambda: agent(\"e\"), lambda: agent(\"f\")])
+";
+    let wf = job_script(&home, &run, src, json!({}), None);
+    go(&r, &home, &run, &wf).0.unwrap();
+    assert_eq!(peak.load(Ordering::SeqCst), marlowe_workflow::default_concurrency(3), "the crew's slots, not one at a time and not the cloud's eight");
+    assert!(peak.load(Ordering::SeqCst) > 1);
+}
+
+#[test]
 fn parity_bg3_the_journal_has_one_line_per_finished_agent_and_resume_runs_only_the_rest() {
     let model = Model::new(false, |req, _| answer(&format!("did {}", prompt_of(req))));
     let home = temp("bg3");

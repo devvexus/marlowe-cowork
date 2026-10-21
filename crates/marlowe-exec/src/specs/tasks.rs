@@ -15,6 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use marlowe_agent::background::{clamp_wakeup, CronRequest, WatchAction};
 use marlowe_agent::cron::{self, CronExpr};
+use marlowe_agent::tasks::resolve_id;
 use marlowe_agent::todo::Questions;
 use marlowe_agent::{CallCtx, Consequence, Effects, Exposure, TaskInfo, Tasks, ToolCallReq, ToolGroup, ToolOutcome};
 use marlowe_proto::{Question, SessionId};
@@ -188,6 +189,11 @@ fn task_output_call(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOut
     }
     // Without the registry only the host's own jobs exist: say which ones.
     let Some(tasks) = cx.scope.services.get::<Tasks>() else { return crate::jobs::job_output(tools, &json!({"id": id}), cx) };
+    let id = match resolve_id(&*tasks.0, id) {
+        Ok(id) => id,
+        Err(e) => return ToolOutcome::error(e),
+    };
+    let id = id.as_str();
     let since = int_arg(args, "offset").filter(|s| *s >= 0).map(|s| s as u64);
     let filter = str_arg(args, "filter");
     match tasks.0.output(id, since, filter) {
@@ -240,6 +246,11 @@ fn task_stop_call(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutco
             Err(e) => ToolOutcome::error(e),
         };
     }
+    let id = match resolve_id(&*tasks.0, id) {
+        Ok(id) => id,
+        Err(e) => return ToolOutcome::error(e),
+    };
+    let id = id.as_str();
     if let Some(owner) = tasks.0.get(id).and_then(|t| t.session).filter(|s| *s != cx.session) {
         // Another session's task: the user decides.
         let Some(q) = cx.scope.services.get::<Questions>() else {
@@ -458,9 +469,59 @@ pub fn tools() -> Vec<ToolDef> {
     ]
 }
 
-/// Loop middleware for this group: none on the host; the daemon's injection drain is its own.
-pub fn middleware(tools: &BuiltinTools) -> Vec<Arc<dyn marlowe_agent::ToolMiddleware>> {
-    super::no_middleware(tools)
+/// Loop middleware for this group: `TaskIds`; the daemon's injection drain is its own.
+pub fn middleware(_tools: &BuiltinTools) -> Vec<Arc<dyn marlowe_agent::ToolMiddleware>> {
+    vec![Arc::new(TaskIds::default())]
+}
+
+/// Rewrites the `id` of `task_stop` / `task_output` to the canonical task id before the approval
+/// gate, so the approval, the transcript and the journal show the real one, and teaches it once.
+#[derive(Default)]
+pub struct TaskIds {
+    footers: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    told: std::sync::Mutex<std::collections::HashSet<String>>,
+}
+
+impl marlowe_agent::ToolMiddleware for TaskIds {
+    fn name(&self) -> &str {
+        "task-ids"
+    }
+
+    fn before_approval(&self, call: &mut marlowe_model::ToolCall, cx: &CallCtx) -> marlowe_agent::CallFlow {
+        if !matches!(call.name.as_str(), "task_stop" | "task_output") {
+            return marlowe_agent::CallFlow::Continue;
+        }
+        let Some(tasks) = cx.scope.services.get::<Tasks>() else { return marlowe_agent::CallFlow::Continue };
+        let Some(id) = str_arg(&call.args, "id").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else {
+            return marlowe_agent::CallFlow::Continue;
+        };
+        // An id that does not resolve is the tool's to report, with the nearest ids.
+        let Ok(canonical) = resolve_id(&*tasks.0, &id) else { return marlowe_agent::CallFlow::Continue };
+        if canonical != id {
+            call.args["id"] = Value::String(canonical.clone());
+            if self.told.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone()) {
+                let short = |s: &str| {
+                    let (prefix, raw) = match s.find('_') {
+                        Some(i) if i <= 5 => s.split_at(i + 1),
+                        _ => ("", s),
+                    };
+                    if raw.chars().count() >= 8 { format!("{prefix}{}…", raw.chars().take(8).collect::<String>()) } else { s.to_string() }
+                };
+                let footer = format!("[args: read `{}` as `{}`]", short(&id), short(&canonical));
+                self.footers.lock().unwrap_or_else(|e| e.into_inner()).insert(call.id.clone(), footer);
+            }
+        }
+        marlowe_agent::CallFlow::Continue
+    }
+
+    fn after_call(&self, call: &marlowe_model::ToolCall, _cx: &CallCtx, outcome: &mut ToolOutcome) {
+        if let Some(footer) = self.footers.lock().unwrap_or_else(|e| e.into_inner()).remove(&call.id) {
+            outcome.content.push_str("
+
+");
+            outcome.content.push_str(&footer);
+        }
+    }
 }
 
 /// No block: each tool's description says what it is for.

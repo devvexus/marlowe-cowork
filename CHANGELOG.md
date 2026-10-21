@@ -6,6 +6,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ### Green main and follow-ups
 
+- Crew capacity comes from the context planner: a local model runs `slots` minus one agents at once when the conductor shares it (never below 1), for run admission, model streams (now counted per model) and workflow concurrency; the leftover `per_local_provider: 1` is gone, so three dispatches on a six-slot model all run instead of two sitting queued.
+- `task_stop` and `task_output` accept a bare, short (6+ hex characters) or wrong-prefix run id and resolve it to the task (`agent_`/`wf_`); an ambiguous id lists the matches, an unknown one the nearest ids, and a `TaskIds` middleware shows the canonical id in the approval and the transcript.
+- `dispatch` and `workflow` receipts carry `task_id` (`agent_<run>`, `wf_<run>`) so the id to stop is the one the model was given.
+- First-try probe: a case can seed `tasks` into the conductor's task registry; the task cases use it, and `stop-agent-dispatched` shows the new receipt.
 - First-try probe: seven workflow and task_stop cases (summarize, per-crate, research, review commits, cancel a workflow, stop an agent, bare run id) and a grader that checks a workflow script fans out to more than one agent and lets any number of look-ups come first.
 - First-try probe: each run line carries the model's reasoning per step (`thinking`); the workflow cases allow six steps and the review-commits case answers `git` with the three diffs.
 - Headless: a message sent while the turn is running, or while its ask is still starting the turn, steers it instead of queueing a second turn (a steer no longer resends the run options, which made the daemon queue it).

@@ -133,6 +133,9 @@ impl Estimate {
 /// What `dispatch` returns, as the tool result's JSON.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DispatchReceipt {
+    /// The id `task_list`, `task_stop` and `task_output` use: `agent_<run>` (`wf_<run>` for a workflow).
+    #[serde(default)]
+    pub task_id: String,
     pub run_id: RunId,
     pub role: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

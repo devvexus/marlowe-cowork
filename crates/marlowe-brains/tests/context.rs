@@ -276,6 +276,19 @@ fn leases_cap_concurrent_agents_and_release_on_drop() {
 }
 
 #[test]
+fn crew_slots_leave_the_conductor_one() {
+    let b = brains(Arc::default());
+    let (dusk, dolphin) = (dusk(), "ollama/dolphin-llama3:8b".parse::<ModelRef>().unwrap());
+    assert_eq!(b.resolve(&Slot::Conductor).unwrap().0, dusk);
+    b.context().set_policy(&dusk, user(16_384, KvType::Q8_0, 6)).unwrap();
+    b.context().set_policy(&dolphin, user(8_192, KvType::Q8_0, 6)).unwrap();
+    assert_eq!(b.context().crew_slots(&dusk), 5, "six slots shared with the conductor");
+    assert_eq!(b.context().crew_slots(&dolphin), 6, "six slots, the conductor is elsewhere");
+    b.context().set_policy(&dusk, user(16_384, KvType::Q8_0, 1)).unwrap();
+    assert_eq!(b.context().crew_slots(&dusk), 1, "never below one");
+}
+
+#[test]
 fn policies_list_carries_the_conductors_engine() {
     let b = brains(Arc::default());
     let list = b.context_policies().unwrap();

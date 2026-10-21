@@ -7,10 +7,10 @@
 //! in a run is caught (`catch_unwind`) and fails that run only. At start, runs left `queued` or
 //! `running` by a previous daemon are picked up again and skip their completed steps.
 //!
-//! Concurrency: at most `per_provider` runs per cloud provider and `per_local_provider` per local
-//! one, counted by the dispatched role. Every step resolves its own slot, so the same rules hold
-//! per model call too: at most `per_local_provider` local streams at once across all runs, and
-//! while the GPU is busy a local step moves to a cloud slot or waits ("waiting for the GPU").
+//! Concurrency: at most `per_provider` runs per cloud provider; on a local model at most
+//! `ContextGate::crew_slots` (its planner slots, less the conductor's one), which also bounds the
+//! model streams in flight per model and a workflow's agents. While the GPU is busy a local step
+//! moves to a cloud slot or waits ("waiting for the GPU").
 //!
 //! A deep research run waiting on its plan is parked: no thread, no slot. `approve_plan` queues
 //! it with the answer, which its plan gate takes on the next start; at boot a parked plan is
@@ -79,8 +79,6 @@ pub struct RunNotice {
 pub struct CrewConfig {
     /// Concurrent runs per cloud provider.
     pub per_provider: usize,
-    /// Concurrent runs per local provider (Ollama, GGUF).
-    pub per_local_provider: usize,
     /// Scouts in a deep_research run: at least 3, at most this.
     pub max_scouts: usize,
     /// Fix-and-retest iterations in a build run.
@@ -98,7 +96,6 @@ impl Default for CrewConfig {
     fn default() -> Self {
         Self {
             per_provider: 2,
-            per_local_provider: 1,
             max_scouts: 6,
             max_test_iterations: 4,
             budget_extension: 0.5,
@@ -205,8 +202,8 @@ pub(crate) struct Live {
 pub(crate) struct State {
     pub live: HashMap<RunId, Live>,
     pub queue: VecDeque<RunId>,
-    /// Runs in flight per provider (`ProviderKind::as_str`).
-    pub active: HashMap<&'static str, usize>,
+    /// Runs in flight per cloud provider (`ProviderKind::as_str`) or per local model (its ref).
+    pub active: HashMap<String, usize>,
     pub threads: usize,
     pub stopping: bool,
 }
@@ -219,8 +216,8 @@ pub(crate) struct Inner {
     pub sink: Sender<CrewEvent>,
     pub store: Mutex<RunStore>,
     pub state: Mutex<State>,
-    /// Local model streams in flight across every run, at most `cfg.per_local_provider`.
-    pub local_streams: Mutex<usize>,
+    /// Local model streams in flight across every run, by model; at most `crew_slots` each.
+    pub local_streams: Mutex<HashMap<String, usize>>,
     /// Who holds those streams: (run, role), so a waiting turn can name the run it waits behind.
     pub local_holders: Mutex<Vec<(RunId, String)>>,
     pub local_free: Condvar,
@@ -439,19 +436,18 @@ impl Inner {
                 }
                 let kind = choice.model.model.provider;
                 let local = choice.model.model.local || kind.is_local();
-                // A local model runs no more agents at once than its policy's slots.
-                let limit = if local {
-                    let slots = self.deps.brains.context().slots(&choice.model.model.model_ref()).unwrap_or(1);
-                    self.cfg.per_local_provider.min(usize::from(slots))
+                // A local model runs no more agents at once than the crew's share of its slots.
+                let (limit, key) = if local {
+                    let model = choice.model.model.model_ref();
+                    (self.deps.brains.context().crew_slots(&model), model.to_string())
                 } else {
-                    self.cfg.per_provider
-                }
-                .max(1);
-                let busy = st.active.get(kind.as_str()).copied().unwrap_or(0);
-                if busy >= limit {
+                    (self.cfg.per_provider, kind.as_str().to_string())
+                };
+                let busy = st.active.get(&key).copied().unwrap_or(0);
+                if busy >= limit.max(1) {
                     continue;
                 }
-                *st.active.entry(kind.as_str()).or_default() += 1;
+                *st.active.entry(key.clone()).or_default() += 1;
                 st.threads += 1;
                 st.queue.retain(|q| *q != id);
                 if let Some(l) = st.live.get_mut(&id) {
@@ -464,11 +460,12 @@ impl Inner {
                 }));
                 let inner = Arc::clone(self);
                 let run_id = id.clone();
+                let thread_key = key.clone();
                 let spawned = std::thread::Builder::new()
                     .name(format!("crew-{}", id.short()))
-                    .spawn(move || crate::runner::run_thread(inner, run_id, kind.as_str()));
+                    .spawn(move || crate::runner::run_thread(inner, run_id, thread_key));
                 if let Err(e) = spawned {
-                    *st.active.entry(kind.as_str()).or_default() -= 1;
+                    *st.active.entry(key).or_default() -= 1;
                     st.threads -= 1;
                     events.extend(self.touch(&mut st, &id, |r| {
                         r.status = CrewRunStatus::Failed;
@@ -544,7 +541,7 @@ impl Supervisor {
             sink,
             store: Mutex::new(store),
             state: Mutex::new(State::default()),
-            local_streams: Mutex::new(0),
+            local_streams: Mutex::new(HashMap::new()),
             local_holders: Mutex::new(Vec::new()),
             local_free: Condvar::new(),
             plans: Mutex::new(HashMap::new()),
@@ -608,6 +605,7 @@ impl Supervisor {
         // Pricing only: no admission, no GPU probe, nothing that blocks the conductor.
         let pricing = self.inner.priced_model(&card).and_then(|m| m.pricing);
         let receipt = DispatchReceipt {
+            task_id: marlowe_proto::TaskKind::Agent.id(run.id.as_str()),
             run_id: run.id.clone(),
             role: card.name.clone(),
             playbook: args.playbook,
@@ -645,6 +643,7 @@ impl Supervisor {
         run.workflow = Some(prepare(&run.id).map_err(|message| CrewError::Step { step: "workflow".into(), message })?);
         let pricing = self.inner.priced_model(&card).and_then(|m| m.pricing);
         let receipt = DispatchReceipt {
+            task_id: marlowe_proto::TaskKind::Workflow.id(run.id.as_str()),
             run_id: run.id.clone(),
             role: card.name.clone(),
             playbook: None,
