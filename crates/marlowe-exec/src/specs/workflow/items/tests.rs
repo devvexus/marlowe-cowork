@@ -204,6 +204,9 @@ fn a_glob_that_names_only_folders_is_those_folders() {
         assert_eq!(found.items, ["crates/cli", "crates/ingest"], "{sel}");
         assert!(found.note.is_some());
     }
+    let deeper = resolve("crates/*/lib.rs", &ws).unwrap();
+    assert_eq!(deeper.items, ["crates/cli", "crates/ingest"]);
+    assert!(deeper.note.unwrap().contains("no `lib.rs` directly under `crates/*`"));
     assert_eq!(resolve("crates/**/lib.rs", &ws).unwrap().items.len(), 2, "files still win when the glob matches files");
 }
 

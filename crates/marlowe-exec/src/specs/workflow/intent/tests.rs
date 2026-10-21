@@ -22,7 +22,7 @@ fn detection_table() {
     let yes = [
         (SAID, Over::From("folders")),
         ("Use a workflow: find every TODO in the code and group them by folder.", Over::From("folders")),
-        ("Run this as a workflow: compare how the services handle errors.", Over::Topic),
+        ("Run this as a workflow: compare how the services handle errors.", Over::From("folders")),
         ("Kick off a workflow comparing min-p, top-k and nucleus sampling.", Over::Topic),
         ("Fan out over each crate and report what it does.", Over::From("packages")),
         ("One agent per folder, tell me what each is for.", Over::From("folders")),

@@ -178,7 +178,7 @@ pub fn for_tool(name: &str) -> ArgRules {
                 ("each", "items"), ("for_each", "items"), ("over", "items_from"), ("task", "prompt"), ("instructions", "prompt"),
                 ("combine", "then"), ("synthesis", "then"), ("finally", "then"), ("readonly", "read_only"),
             ],
-            ignore: &["role", "label", "phase", "phase_name", "description", "title"],
+            ignore: &["role", "label", "phase", "phase_name", "description", "title", "item_type", "item"],
             example: Some(r#"workflow{"prompt": "Summarise {item}", "items_from": "folders", "then": "one overview"}"#),
             see_also: Some("One task: agent(type, prompt). Crew work: dispatch(role, prompt)."),
             ..ArgRules::NONE

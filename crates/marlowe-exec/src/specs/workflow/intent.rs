@@ -141,7 +141,7 @@ pub fn detect(text: &str) -> Option<Over> {
     } else if any(&["crate", "crates", "package", "packages", "module", "modules"]) {
         Over::From("packages")
     } else if any(&[
-        "repo", "repository", "workspace", "codebase", "code", "folder", "folders", "directory", "directories", "file", "files", "project", "todo", "todos",
+        "repo", "repository", "workspace", "codebase", "code", "service", "services", "folder", "folders", "directory", "directories", "file", "files", "project", "todo", "todos",
     ]) {
         Over::From("folders")
     } else {
@@ -176,7 +176,7 @@ fn call_text(over: &Over, prompt: &str) -> String {
 /// The reminder for a reminded turn.
 pub fn reminder(over: &Over, workspace: Option<&Path>) -> String {
     let mut s = String::from(
-        "<system-reminder>\nThe user asked for a workflow. Call the `workflow` tool now, once, in its short form (not `agent`, not `dispatch`, no script, nothing to look up first):\n",
+        "<system-reminder>\nThe user asked for a workflow. Call the `workflow` tool now, once, in its short form (not `agent`, not `dispatch`, no script):\n",
     );
     match over {
         Over::From(_) => {

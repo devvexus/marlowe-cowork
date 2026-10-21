@@ -428,6 +428,20 @@ fn glob(spec: &str, workspace: &Path) -> Result<Items, String> {
         if !folders.is_empty() {
             return Ok(Items { items: folders, note: Some(format!("`{spec}` matches folders, so these are the folders")) });
         }
+        // `crates/*/lib.rs` where the file sits deeper: one agent per folder the wildcard names.
+        if let Some((parent, file)) = spec.rsplit_once('/') {
+            if parent.contains('*') && !file.is_empty() {
+                let mut dirs: Vec<String> = expand(workspace, parent.trim_start_matches("./"))
+                    .into_iter()
+                    .filter(|d| d.is_dir() && !d.file_name().is_some_and(|n| is_skipped(&n.to_string_lossy())))
+                    .map(|d| slashed(d.strip_prefix(workspace).unwrap_or(&d)))
+                    .collect();
+                dirs.sort();
+                if !dirs.is_empty() {
+                    return Ok(Items { items: dirs, note: Some(format!("no `{file}` directly under `{parent}`, so these are the folders `{parent}` names")) });
+                }
+            }
+        }
     }
     if found.is_empty() {
         let hint = if spec.contains('/') { " One agent per folder: a pattern such as crates/* names the folders." } else { "" };
