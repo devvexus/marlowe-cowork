@@ -36,6 +36,12 @@ pub fn conductor_system(host: &dyn ToolHost) -> SystemPrompt {
     SystemPrompt::new().block(PersonaBlock::Memory).block(PersonaBlock::Crew).blocks_from(host.persona_blocks())
 }
 
+/// The conductor's per-turn guards (the loop guard), shared by the session stack and the probe so
+/// a probe measures the loop that ships.
+pub fn conductor_middleware() -> Vec<Arc<dyn ToolMiddleware>> {
+    vec![marlowe_agent::agent::guard::LoopGuard::new()]
+}
+
 struct Declared {
     inner: Arc<dyn ToolHost>,
     declared: Vec<ToolSpec>,

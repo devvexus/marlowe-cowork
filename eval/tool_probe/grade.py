@@ -8,6 +8,13 @@ Lenient: the same after the forgiving layer (a legacy name or a spelling it fixe
 A workflow passes when it validates and fans out: a script that `fans_out`, or the short form
 (`prompt`, `items` | `items_from`) whose validation reports "over N items" with N of 2 or more.
 
+First try: `first_try` is a strict pass whose accepted call was the model's first step (no look-up, no
+nudge, no retry before it). `rescued` is a lenient pass that was not a first try: the model got there after a
+look-up, a harness nudge, a layer fix or a redirect. In lenient mode a call the harness answered "Not run: the
+user asked for a workflow" is skipped, so the workflow call after it counts (and is `rescued`, never `first_try`).
+A negative case sets `accept_none`: it passes when the model launched nothing (no workflow, no dispatch, no
+background agent).
+
 A case's `first_ok` lists calls that may come first (read before edit, task_list before
 task_stop); the next call then has to be an accepted one. Only the accepted call is held to the
 strict rules: the look-up before it is not.
@@ -153,9 +160,38 @@ def _accepted_call(case, call, mode, surfaces, run):
     return None
 
 
+REDIRECTED = "Not run: the user asked for a workflow"
+
+
+def redirected(call):
+    return (call.get("result") or "").startswith(REDIRECTED)
+
+
+def launches(call):
+    """The call starts crew or workflow work: workflow, dispatch, or an agent that runs in the background."""
+    raw = call.get("raw") or call.get("prepared") or {}
+    name, args = raw.get("name"), raw.get("args") or {}
+    if name in ("workflow", "dispatch"):
+        return True
+    return name == "agent" and (args.get("background") if isinstance(args, dict) else None) is not False
+
+
+def grade_none(run):
+    """(passed, failure class) of a negative case: nothing may be launched."""
+    for c in run.get("calls") or []:
+        if launches(c):
+            return False, f"launched({((c.get('raw') or c.get('prepared') or {}).get('name'))})"
+    return True, None
+
+
 def grade_mode(case, run, mode, surfaces):
     """(passed, failure class) for one mode over the run's calls."""
+    if case.get("accept_none"):
+        return grade_none(run)
     calls = run.get("calls") or []
+    if mode == "layer":
+        # The harness answered these without running them; the model's next call is the one that counts.
+        calls = [c for c in calls if not redirected(c)]
     if not calls:
         return False, "no_call" if not run.get("error") else "error"
     name0, args0 = _view(calls[0], mode)
@@ -192,7 +228,15 @@ def grade(case, run, surfaces):
     strict, strict_why = grade_mode(case, run, "raw", surfaces)
     lenient, lenient_why = grade_mode(case, run, "layer", surfaces)
     first = ((run.get("calls") or [{}])[0].get("raw") or {}).get("name")
+    # The accepted call came from the model's first step. A run line without step marks (an older
+    # probe) counts every call as the first step's.
+    head = (run.get("calls") or [{}])[0]
+    first_try = bool(strict) and not case.get("accept_none") and head.get("step", 0) == 0 and _entry(case["accept"], first) is not None
+    if case.get("accept_none"):
+        first_try = bool(strict)
     return {
+        "first_try": first_try,
+        "rescued": bool(lenient or strict) and not first_try,
         "strict": strict,
         "lenient": lenient or strict,
         "strict_why": strict_why,

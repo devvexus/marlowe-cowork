@@ -131,7 +131,8 @@ enum CallEnd {
     /// Cut by the harness because the reply (or its reasoning) was repeating itself; carries one
     /// copy of the text.
     Looped(String),
-    Failed(ProviderError),
+    /// The call failed; the flag says whether any reply text had been shown.
+    Failed(ProviderError, bool),
 }
 
 /// The model a step calls.
@@ -285,6 +286,7 @@ impl Agent {
         let mut error = None;
         let mut truncated = false;
         let mut loop_cuts = 0u32;
+        let mut malformed_retried = false;
 
         let stop = loop {
             if cancel.is_cancelled() {
@@ -448,8 +450,16 @@ impl Agent {
                     convo.push(Message::user(guard::REPEATING));
                     continue;
                 }
-                CallEnd::Failed(e) => {
+                CallEnd::Failed(e, saw_text) => {
                     spent.steps += 1;
+                    // The engine could not parse the model's tool call: tell it once, in the tail,
+                    // and let it send the call again (only when no reply text was shown).
+                    if e.is_malformed_call() && !saw_text && !malformed_retried {
+                        malformed_retried = true;
+                        let why = e.detail.strip_prefix("malformed tool call: ").unwrap_or(&e.detail);
+                        convo.push(Message::user(format!("Your last tool call was malformed ({why}); send it again, well-formed.")));
+                        continue;
+                    }
                     error = Some(e.to_string());
                     break TurnStop::Error;
                 }
@@ -671,7 +681,7 @@ fn call_model(
                 }
                 attempt += 1;
             }
-            Err(e) => return CallEnd::Failed(e),
+            Err(e) => return CallEnd::Failed(e, !text.trim().is_empty()),
         }
     }
 }

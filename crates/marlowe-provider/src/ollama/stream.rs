@@ -23,6 +23,19 @@ use super::repair::{repair_call, RepairStats};
 use super::scan::{scan, LeakGuard, ToolSet};
 use crate::think::{Segment, ThinkSplitter};
 
+/// Whether Ollama's error is its tool-call parser giving up on the model's output (`error parsing
+/// tool call: ... XML syntax error ... unexpected EOF`), not a fault of the server.
+pub fn is_tool_parse_error(detail: &str) -> bool {
+    let d = detail.to_lowercase();
+    d.contains("error parsing tool call") || d.contains("xml syntax error") || (d.contains("unexpected eof") && d.contains("tool"))
+}
+
+/// The error's text, short enough for a note to the model.
+pub fn clip_detail(detail: &str) -> String {
+    let one = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.chars().count() > 160 { format!("{}...", one.chars().take(160).collect::<String>()) } else { one }
+}
+
 pub struct Folder<'a> {
     on: &'a mut dyn FnMut(StreamEvent),
     builder: CompletionBuilder,
@@ -113,6 +126,9 @@ impl<'a> Folder<'a> {
     pub fn frame(&mut self, frame: &Value) -> Result<(), ProviderError> {
         if let Some(err) = frame.get("error") {
             let detail = err.as_str().map(str::to_string).unwrap_or_else(|| err.to_string());
+            if is_tool_parse_error(&detail) {
+                return Err(ProviderError::malformed_call(clip_detail(&detail)));
+            }
             return Err(ProviderError::server(format!("Ollama reported mid-stream: {detail}")));
         }
         if let Some(msg) = frame.get("message") {
@@ -466,5 +482,17 @@ mod tests {
         assert_eq!((old.usage.load_ms, old.usage.prefill_ms, old.usage.decode_ms), (None, None, None));
         let (bare, _) = run(false, &[json!({"done":true})]);
         assert_eq!(bare.usage.prompt_eval, None);
+    }
+
+    #[test]
+    fn a_tool_call_parse_error_is_marked_malformed_and_other_errors_are_not() {
+        for detail in ["error parsing tool call: raw='<function=read', err=XML syntax error on line 1: unexpected EOF", "XML syntax error on line 9: unexpected EOF"] {
+            let mut on = |_e: StreamEvent| {};
+            let e = Folder::new(false, &mut on).frame(&json!({"error": detail})).unwrap_err();
+            assert!(e.is_malformed_call() && !e.retriable, "{e}");
+        }
+        let mut on = |_e: StreamEvent| {};
+            let e = Folder::new(false, &mut on).frame(&json!({"error": "model crashed"})).unwrap_err();
+        assert!(!e.is_malformed_call() && e.retriable);
     }
 }

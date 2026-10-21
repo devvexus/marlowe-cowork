@@ -22,6 +22,9 @@ impl ProviderErrorKind {
     }
 }
 
+/// The start of a [`ProviderError::malformed_call`] detail.
+pub const MALFORMED_CALL: &str = "malformed tool call";
+
 /// A provider failure. `detail` must never contain a secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[error("{kind:?}: {detail}")]
@@ -51,6 +54,16 @@ impl ProviderError {
 
     pub fn server(detail: impl Into<String>) -> Self {
         Self::new(ProviderErrorKind::Server, detail)
+    }
+
+    /// The engine could not parse the model's tool call (broken markup or JSON). Not retried on
+    /// the wire: the same request would give the same result; the loop tells the model once.
+    pub fn malformed_call(detail: impl std::fmt::Display) -> Self {
+        Self { kind: ProviderErrorKind::Server, detail: format!("{MALFORMED_CALL}: {detail}"), retriable: false }
+    }
+
+    pub fn is_malformed_call(&self) -> bool {
+        self.detail.starts_with(MALFORMED_CALL)
     }
 
     pub fn cancelled() -> Self {

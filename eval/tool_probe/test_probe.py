@@ -207,6 +207,72 @@ def test_every_workflow_family_case_takes_either_form():
     assert len(review["git"]) == 3
 
 
+def stepped(c, step):
+    return {**c, "step": step}
+
+
+WF = case(first_ok=[{"name": "read"}], accept=[{"name": "workflow", "validated": True, "fan_out": True}])
+WF_SURFACES = {"conductor": {"specs": [SPECS["workflow"], SPECS["read"]]}}
+OVER3 = {"ok": True, "text": "valid: workflow fanout over 3 items (a, b, c), then 1 agent combines them"}
+SHORT = {"prompt": "Summarise {item}", "items_from": "folders"}
+
+
+def test_first_try_is_a_strict_pass_from_the_first_step_and_a_later_pass_is_rescued():
+    first = run(stepped(call(("workflow", SHORT), validated=OVER3), 0))
+    r = g.grade(WF, first, WF_SURFACES)
+    assert (r["strict"], r["first_try"], r["rescued"]) == (True, True, False)
+    # A look-up first is still a strict pass, but not a first try.
+    looked = run(stepped(call(("read", {"path": "a"})), 0), stepped(call(("workflow", SHORT), validated=OVER3), 1))
+    r = g.grade(WF, looked, WF_SURFACES)
+    assert (r["strict"], r["first_try"], r["rescued"]) == (True, False, True)
+    # The model said nothing useful in step 0 and a harness nudge got the call in step 1.
+    nudged = run(stepped(call(("workflow", SHORT), validated=OVER3), 1))
+    r = g.grade(WF, nudged, WF_SURFACES)
+    assert (r["strict"], r["first_try"], r["rescued"]) == (True, False, True)
+    # A layer fix is lenient only: rescued, not strict.
+    fixed = call(("workflow", {"prompt": "p", "role": "x"}), layer={"name": "workflow", "args": {"prompt": "p"}}, validated=OVER3)
+    r = g.grade(WF, run(stepped(fixed, 0)), WF_SURFACES)
+    assert (r["strict"], r["lenient"], r["first_try"], r["rescued"]) == (False, True, False, True)
+    # A failure is neither.
+    r = g.grade(WF, run(stepped(call(("dispatch", {"role": "researcher", "prompt": "x"})), 0)), WF_SURFACES)
+    assert (r["strict"], r["lenient"], r["first_try"], r["rescued"]) == (False, False, False, False)
+
+
+def test_a_redirected_call_is_skipped_in_lenient_mode_so_the_workflow_after_it_is_rescued():
+    redirect = call(("dispatch", {"role": "researcher", "prompt": "summarize"}), layer=None, refused=True,
+                    result="Not run: the user asked for a workflow; one `workflow` call runs these agents in parallel and combines them: workflow{}")
+    after = stepped(call(("workflow", SHORT), validated=OVER3), 1)
+    r = g.grade(WF, run(stepped(redirect, 0), after), WF_SURFACES)
+    assert (r["strict"], r["lenient"], r["first_try"], r["rescued"]) == (False, True, False, True)
+    assert r["strict_why"] == "wrong_tool(dispatch)"
+    # Redirected and then nothing: still a failure.
+    only = g.grade(WF, run(stepped(redirect, 0)), WF_SURFACES)
+    assert (only["lenient"], only["lenient_why"]) == (False, "no_call")
+
+
+def test_accept_none_passes_when_nothing_is_launched():
+    neg = case(accept=[], accept_none=True)
+    assert g.grade(neg, run(), WF_SURFACES)["strict"] is True, "prose is fine"
+    looked = g.grade(neg, run(call(("read", {"path": "docs/a.md"}))), WF_SURFACES)
+    assert (looked["strict"], looked["lenient"], looked["first_try"], looked["rescued"]) == (True, True, True, False)
+    for launched in (("workflow", SHORT), ("dispatch", {"role": "researcher", "prompt": "x"}), ("agent", {"prompt": "x"})):
+        r = g.grade(neg, run(call(launched)), WF_SURFACES)
+        assert (r["strict"], r["lenient"]) == (False, False) and r["strict_why"] == f"launched({launched[0]})", launched
+    fg = g.grade(neg, run(call(("agent", {"prompt": "x", "background": False}))), WF_SURFACES)
+    assert fg["strict"] is True, "a foreground agent is not a launch"
+
+
+def test_the_workflow_cases_and_negatives_are_in_the_file():
+    ids = {c["id"] for c in CASES}
+    for want in ("workflow-use-a", "workflow-fanout-words", "workflow-run-as", "workflow-kick-off", "workflow-session-repeat", "workflow-question", "workflow-why-failed"):
+        assert want in ids, want
+    negatives = [c for c in CASES if c.get("accept_none")]
+    assert {c["id"] for c in negatives} == {"workflow-question", "workflow-why-failed"}
+    assert all(c["accept"] == [] for c in negatives)
+    repeat = next(c for c in CASES if c["id"] == "workflow-session-repeat")
+    assert "agent_a990e8f6" in repeat["reminder"] and repeat["tasks"][0]["status"] == "running"
+
+
 # ---------------------------------------------------------------- the report
 
 def write_run(path, calibrated=True):

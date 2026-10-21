@@ -432,10 +432,12 @@ fn every_group_file_registers_its_hooks() {
     assert!(host.specs().iter().any(|s| s.name == "git"), "the git group (track J) is live once configured");
     for g in super::GROUPS {
         assert_eq!(super::group(g.group).map(|r| r.group), Some(g.group));
-        // Files: the FileState guard (A). Shell: job notices (B). Git: the git guard (J). Workflow: the .star validator. Code
+        // Files: the FileState guard (A). Shell: job notices (B). Git: the git guard (J). Workflow: the .star validator and the intent reminder. Code
         // adds post-edit diagnostics only with a local workspace (C).
         let expected = match g.group {
-            marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Shell | marlowe_agent::ToolGroup::Files | marlowe_agent::ToolGroup::Workflow | marlowe_agent::ToolGroup::Tasks => 1,
+            marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Shell | marlowe_agent::ToolGroup::Files | marlowe_agent::ToolGroup::Tasks => 1,
+            // The .star validator, and on this (conductor) host the intent reminder.
+            marlowe_agent::ToolGroup::Workflow => 2,
             _ => 0,
         };
         assert_eq!((g.middleware)(&host).len(), expected, "{:?}", g.group);

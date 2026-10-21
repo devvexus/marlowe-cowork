@@ -208,6 +208,9 @@ impl OllamaProvider {
                     (404, Some(m)) => format!("Ollama has no model `{m}`. Run `ollama pull {m}`. ({said})"),
                     _ => format!("Ollama returned HTTP {status}: {said}"),
                 };
+                if status >= 500 && stream::is_tool_parse_error(&said) {
+                    return ProviderError::malformed_call(stream::clip_detail(&said));
+                }
                 ProviderError::from_status(status, detail)
             }
             HttpError::Malformed { detail, .. } => {

@@ -561,16 +561,17 @@ pub(crate) fn middleware(core: &Arc<Core>, convo: &Conversation) -> Vec<Arc<dyn 
         crate::schedule_ops::add(&c, Some(session.clone()), secs, text).map(|s| s.id)
     });
     let trust: Arc<dyn Trust> = Arc::new(TrustPrompt { core: core.clone() });
-    vec![
+    let mut out: Vec<Arc<dyn ToolMiddleware>> = vec![
         InstructionsMiddleware::with_trust(src.clone(), trust.clone()),
         CommandsMiddleware::with_schedule(src, run, Some(schedule), Some(trust)),
         WorkingSet::new(),
         WorktreeMiddleware::new(),
-        LoopGuard::new(),
-        Arc::new(PrefixNotice { core: core.clone() }),
-        Arc::new(LostAgents { core: core.clone() }),
-        Arc::new(GoodMark { core: core.clone() }),
-    ]
+    ];
+    out.extend(crate::probe::conductor_middleware());
+    out.push(Arc::new(PrefixNotice { core: core.clone() }));
+    out.push(Arc::new(LostAgents { core: core.clone() }));
+    out.push(Arc::new(GoodMark { core: core.clone() }));
+    out
 }
 
 /// `/good`: marks this session, as it stands, worth keeping for `marlowe export trajectories`

@@ -429,8 +429,13 @@ pub fn tools() -> Vec<ToolDef> {
 }
 
 /// Loop middleware for this group (see `specs/mod.rs`): the `.star` validator.
-pub fn middleware(_tools: &crate::BuiltinTools) -> Vec<std::sync::Arc<dyn marlowe_agent::ToolMiddleware>> {
-    vec![std::sync::Arc::new(star::StarValidator::default())]
+pub fn middleware(tools: &crate::BuiltinTools) -> Vec<std::sync::Arc<dyn marlowe_agent::ToolMiddleware>> {
+    let mut out: Vec<std::sync::Arc<dyn marlowe_agent::ToolMiddleware>> = vec![std::sync::Arc::new(star::StarValidator::default())];
+    // The tail reminder and the redirect are the conductor's: a crew host never starts a workflow.
+    if group(tools).conductor {
+        out.push(std::sync::Arc::new(intent::WorkflowIntent));
+    }
+    out
 }
 
 /// No block: the `workflow` description carries the script API and the rules for using it.
@@ -455,6 +460,7 @@ pub fn detect(_root: Option<&std::path::Path>) -> bool {
 }
 
 pub(crate) mod items;
+pub mod intent;
 mod star;
 
 #[cfg(test)]

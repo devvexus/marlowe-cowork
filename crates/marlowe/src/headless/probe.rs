@@ -409,6 +409,8 @@ impl Probe {
         let mut agent = Agent::new(tap.clone(), self.model.clone(), surface.host.clone(), surface.system.clone());
         agent.budget.max_steps = case.max_calls.max(1);
         agent.max_wall = Some(self.timeout);
+        // What the conductor's session adds per turn (the loop guard), then the probe's answer.
+        agent.middleware.extend(marlowe_daemon::probe::conductor_middleware());
         agent.middleware.push(answer.clone());
         let session = SessionId(format!("probe-{}-{run}", case.id));
         match seed_tasks(case, &session) {
@@ -443,6 +445,8 @@ impl Probe {
             }
         }
         let raw: Vec<&ToolCall> = log.raw.iter().flatten().collect();
+        // The model call (0-based) each call came from: a call after a nudge or a look-up is not a first try.
+        let steps: Vec<usize> = log.raw.iter().enumerate().flat_map(|(s, calls)| std::iter::repeat(s).take(calls.len())).collect();
         // The calls that got through, in order; ids repeat across steps on some wires, so a call
         // matches the next one in line by id and name.
         let mut next = 0;
@@ -453,6 +457,7 @@ impl Probe {
                 let through = laid.get(next).filter(|(l, _)| l.id == c.id && l.name == c.name);
                 next += usize::from(through.is_some());
                 json!({
+                    "step": steps.get(i),
                     "raw": raw.get(i).map(|r| json!({"name": r.name, "args": r.args})),
                     "prepared": {"name": c.name, "args": c.args},
                     "layer": through.map(|(l, _)| json!({"name": l.name, "args": l.args})),
@@ -473,6 +478,7 @@ impl Probe {
             "text": log.text.first().map(|t| clip(t, 600)).unwrap_or_default(),
             "thinking": log.thinking.iter().map(|t| clip(t, 3000)).collect::<Vec<_>>(),
             "stop": format!("{:?}", outcome.stop), "error": outcome.error, "rewrites": rewrites,
+            "middleware": agent.middleware.iter().map(|m| m.name().to_string()).collect::<Vec<_>>(),
             "prompt_tokens": log.input_tokens,
         });
         if let Some((without, with)) = log.calibration {
@@ -658,6 +664,9 @@ mod tests {
         assert_eq!(call["result"], "probe: not run");
         assert!(run["rewrites"].as_array().unwrap().len() >= 2, "{run}");
         assert_eq!(run["stop"], "StepLimit", "the turn stops after max_calls steps: {run}");
+        let installed: Vec<&str> = run["middleware"].as_array().unwrap().iter().map(|m| m.as_str().unwrap()).collect();
+        assert!(installed.contains(&"loop-guard") && installed.contains(&"workflow-intent"), "the probe runs the conductor's guards: {installed:?}");
+        assert_eq!(installed.last(), Some(&"probe"), "the probe answers last: {installed:?}");
         assert_eq!(*seq.temps.lock().unwrap().last().unwrap(), Some(0.0));
         assert_eq!(run["calibration"], json!({"without_tools": 0, "with_tools": 0}), "{run}");
         assert_eq!(run["surface"], "conductor");

@@ -851,3 +851,27 @@ fn the_loop_runs_the_canonical_call_and_answers_a_bad_one_with_its_signature() {
     // The rewrite is told once, on the result of the call that ran.
     assert!(results[0].content.contains("[args: read `query` as `url`"), "{}", results[0].content);
 }
+
+#[test]
+fn a_malformed_tool_call_is_retried_once_with_a_tail_note_then_the_error_surfaces() {
+    let bad = || Step::Fail(ProviderError::malformed_call("XML syntax error on line 3: unexpected EOF"));
+    // Once: the second attempt answers.
+    let p = ScriptedProvider::new(vec![bad(), answer("done")]);
+    let a = agent(p.clone(), TestTools::new());
+    let mut c = convo();
+    let r = run(&a, &mut c, "go");
+    assert_eq!((r.outcome.stop, r.outcome.text.as_str()), (TurnStop::Done, "done"), "{:?}", r.outcome.error);
+    let sent = p.requests();
+    assert_eq!(sent.len(), 2);
+    let tail = sent[1].messages.last().unwrap().joined_text();
+    assert!(tail.contains("malformed") && tail.contains("XML syntax error") && tail.contains("well-formed"), "{tail}");
+    assert_eq!(sent[0].system.iter().map(|s| s.text.clone()).take(1).collect::<Vec<_>>(), sent[1].system.iter().map(|s| s.text.clone()).take(1).collect::<Vec<_>>());
+
+    // Twice in one turn: the second failure surfaces.
+    let p = ScriptedProvider::new(vec![bad(), bad(), answer("never")]);
+    let a = agent(p.clone(), TestTools::new());
+    let r = run(&a, &mut convo(), "go");
+    assert_eq!(r.outcome.stop, TurnStop::Error);
+    assert!(r.outcome.error.unwrap().contains("malformed tool call"));
+    assert_eq!(p.requests().len(), 2, "one retry, no more");
+}

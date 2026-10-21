@@ -130,13 +130,15 @@ def report(cases, files, out_dir):
         n = sum(len(v) for v in per_case.values())
         strict = sum(r["strict"] for v in per_case.values() for r in v)
         lenient = sum(r["lenient"] for v in per_case.values() for r in v)
+        first_try = sum(r["first_try"] for v in per_case.values() for r in v)
+        rescued = sum(r["rescued"] for v in per_case.values() for r in v)
         scen = [c["id"] for c in cases if c.get("scenario") in (1, 2, 3, 4)]
         scen_runs = [r for i in scen for r in per_case.get(i, [])]
         scen_ok = sum(r["strict"] for r in scen_runs)
         fam = family(model)
         want_s, want_l = CRITERIA.get(fam, (None, None))
         data["arms"][f"{model}|{arm}"] = {
-            "runs": n, "strict": strict, "lenient": lenient, "strict_pct": round(pct(strict, n), 1), "lenient_pct": round(pct(lenient, n), 1),
+            "runs": n, "strict": strict, "lenient": lenient, "first_try": first_try, "rescued": rescued, "strict_pct": round(pct(strict, n), 1), "lenient_pct": round(pct(lenient, n), 1),
             "scenarios_strict": f"{scen_ok}/{len(scen_runs)}", "scenarios_all_pass": bool(scen_runs) and scen_ok == len(scen_runs),
             "meets": None if want_s is None else {"strict": pct(strict, n) >= 100 * want_s, "lenient": pct(lenient, n) >= 100 * want_l},
             "errors": sum(1 for v in per_case.values() for r in v if r["error"]),
@@ -153,6 +155,7 @@ def report(cases, files, out_dir):
             rew = collections.Counter(w for r in rs for w in r["rewrites"])
             row[f"{model}|{arm}"] = {
                 "strict": f"{sum(r['strict'] for r in rs)}/{len(rs)}", "lenient": f"{sum(r['lenient'] for r in rs)}/{len(rs)}",
+                "first_try": f"{sum(r['first_try'] for r in rs)}/{len(rs)}", "rescued": sum(r["rescued"] for r in rs),
                 "wrong_first_call": wrong.most_common(1)[0][0] if wrong else None,
                 "why": next((r["strict_why"] for r in rs if not r["strict"]), None),
                 "rewrite": rew.most_common(1)[0][0] if rew else None,
@@ -166,16 +169,16 @@ def report(cases, files, out_dir):
 def markdown(cases, data):
     keys = sorted({k for r in data["rows"].values() for k in r})
     out = ["# Tool probe: first-try calls", "", f"{data['cases']} cases. strict = right tool, schema-exact args, no rewrite; lenient = after the forgiving layer.", "", "## Totals", ""]
-    out += ["| model | arm | runs | strict | lenient | scenarios 1-4 strict | meets |", "|---|---|---|---|---|---|---|"]
+    out += ["| model | arm | runs | strict | lenient | first try | rescued | scenarios 1-4 strict | meets |", "|---|---|---|---|---|---|---|---|---|"]
     for k, a in data["arms"].items():
         m, arm = k.split("|")
         meets = "-" if a["meets"] is None else ("yes" if all(a["meets"].values()) and a["scenarios_all_pass"] else "no")
-        out.append(f"| {m} | {arm} | {a['runs']} | {a['strict_pct']}% | {a['lenient_pct']}% | {a['scenarios_strict']} | {meets} |")
+        out.append(f"| {m} | {arm} | {a['runs']} | {a['strict_pct']}% | {a['lenient_pct']}% | {a['first_try']} | {a['rescued']} | {a['scenarios_strict']} | {meets} |")
     out += ["", "## Per case", "", "| case | request | " + " | ".join(f"{k.replace('|', ' ')} strict/lenient" for k in keys) + " | most common wrong first call | rewrite applied |",
             "|---|---|" + "---|" * (len(keys) + 2)]
     by_id = {c["id"]: c for c in cases}
     for i, row in data["rows"].items():
-        cells = [f"{row[k]['strict']} / {row[k]['lenient']}" if k in row else "-" for k in keys]
+        cells = [f"{row[k]['strict']} / {row[k]['lenient']} ft {row[k]['first_try']}" if k in row else "-" for k in keys]
         wrong = next((row[k]["wrong_first_call"] for k in keys if k in row and row[k]["wrong_first_call"]), "")
         rew = next((row[k]["rewrite"] for k in keys if k in row and row[k]["rewrite"]), "")
         out.append(f"| {i} | {by_id[i]['request'][:60].replace('|', '/')} | " + " | ".join(cells) + f" | {wrong or ''} | {rew or ''} |")
