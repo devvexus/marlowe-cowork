@@ -135,6 +135,8 @@ pub struct Driver {
     // run state
     turn: Option<Turn>,
     ask_pending: bool,
+    /// Steers sent after an ask and before its turn started; the turn counts them when it does.
+    early_steers: u32,
     settle_until: Option<Instant>,
     pending: HashMap<String, Pending>,
     next_req: u64,
@@ -382,6 +384,7 @@ pub fn run(args: Args, mut env: Env, connect: Connector) -> i32 {
                 stdin_done: false,
                 turn: None,
                 ask_pending: false,
+                early_steers: 0,
                 settle_until: None,
                 pending: HashMap::new(),
                 next_req: 0,
@@ -670,16 +673,19 @@ impl Driver {
     // ------------------------------------------------------------ the loop
 
     fn send_user(&mut self, text: &str) {
-        let steer = self.turn.is_some();
+        // An ask whose turn has not started yet is already running as far as the daemon is concerned.
+        let steer = self.turn.is_some() || self.ask_pending;
         if steer {
-            if let Some(t) = self.turn.as_mut() {
-                t.steers += 1;
+            match self.turn.as_mut() {
+                Some(t) => t.steers += 1,
+                None => self.early_steers += 1,
             }
         } else {
             self.ask_pending = true;
         }
         self.settle_until = None;
-        let req = Request::Ask { session: Some(self.session.clone()), text: text.to_string(), workspace: None, images: Vec::new(), options: self.options.clone(), client_ms: None };
+        // Options ride the turn's first ask; one that carries them never steers, so a steer sends none.
+        let req = Request::Ask { session: Some(self.session.clone()), text: text.to_string(), workspace: None, images: Vec::new(), options: if steer { None } else { self.options.clone() }, client_ms: None };
         if let Err(e) = self.send(&req) {
             self.fatal = Some(e);
         }
@@ -922,7 +928,7 @@ impl Driver {
                 }
                 self.settle_until = None;
                 self.interrupt_sent = false;
-                self.turn = Some(Turn { started: Some(Instant::now()), ..Turn::default() });
+                self.turn = Some(Turn { started: Some(Instant::now()), steers: std::mem::take(&mut self.early_steers), ..Turn::default() });
             }
             Event::TextDelta { text, .. } => {
                 if let Some(t) = self.turn.as_mut() {

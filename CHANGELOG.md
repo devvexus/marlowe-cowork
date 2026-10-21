@@ -4,6 +4,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Green main and follow-ups
+
+- Headless: a message sent while the turn is running, or while its ask is still starting the turn, steers it instead of queueing a second turn (a steer no longer resends the run options, which made the daemon queue it).
+
 ### Review pass over the live-progress batch
 
 - A short phase on the activity line now carries the turn's running time (`calling the model · 2.6s`), so a remote model's silent wait before its first frame ticks instead of sitting on a static label; the read-to-think line sheds the thinking rate, then the count, before it drops the read at narrow widths.
