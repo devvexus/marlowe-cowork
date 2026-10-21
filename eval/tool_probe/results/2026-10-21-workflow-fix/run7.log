@@ -1,0 +1,4 @@
+12 cases x 3 runs x 1 models x 1 arms
+[14:16:33] marlowe-dawn:9b-super arm C: headless --probe-first-call C:\Users\matth\Projects\MarloweCowork\eval\tool_probe\cases.jsonl --model marlowe-dawn:9b-super --num-ctx 32768 --temps 0,default,default --timeout 300 --out eval\tool_probe\results\2026-10-21-workflow-fix\run7\marlowe-dawn_9b-super.C.jsonl --only workflow,workflow-summarize-repo,workflow-per-crate,workflow-research-three,workflow-review-commits,workflow-use-a,workflow-fanout-words,workflow-run-as,workflow-kick-off,workflow-session-repeat,workflow-question,workflow-why-failed
+marlowe-dawn:9b-super|C: strict 91.7%  lenient 91.7%  scenarios 2/3
+wrote eval\tool_probe\results\2026-10-21-workflow-fix\run7\report.md

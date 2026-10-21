@@ -1,0 +1,898 @@
+{
+ "cases": 77,
+ "arms": {
+  "marlowe-dawn:9b-super|C": {
+   "runs": 231,
+   "strict": 149,
+   "lenient": 153,
+   "first_try": 138,
+   "rescued": 15,
+   "strict_pct": 64.5,
+   "lenient_pct": 66.2,
+   "scenarios_strict": "9/12",
+   "scenarios_all_pass": false,
+   "meets": {
+    "strict": false,
+    "lenient": false
+   },
+   "errors": 0,
+   "dawn_flagged": [
+    "multi_edit",
+    "notebook_edit",
+    "bash",
+    "rename_symbol",
+    "project-gate",
+    "service",
+    "browser",
+    "todo",
+    "ask_user",
+    "skill",
+    "enter_worktree",
+    "git-commit",
+    "gh-ci",
+    "gh-pr",
+    "report_findings",
+    "monitor",
+    "notices",
+    "correct",
+    "read_mcp_resource",
+    "handback",
+    "set_statusline",
+    "create_agent",
+    "stop-agent-bare-id"
+   ]
+  }
+ },
+ "rows": {
+  "read": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": "read",
+    "why": "value(offset)",
+    "rewrite": null
+   }
+  },
+  "write": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": "write",
+    "why": "value(path)",
+    "rewrite": null
+   }
+  },
+  "edit": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "0/3",
+    "rescued": 3,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "multi_edit": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "first_try": "0/3",
+    "rescued": 0,
+    "wrong_first_call": "rename_symbol",
+    "why": "wrong_tool(rename_symbol)",
+    "rewrite": null
+   }
+  },
+  "notebook_edit": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "1/3",
+    "lenient": "1/3",
+    "first_try": "0/3",
+    "rescued": 1,
+    "wrong_first_call": "edit",
+    "why": "wrong_tool(edit)",
+    "rewrite": null
+   }
+  },
+  "glob": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "grep": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": "symbols",
+    "why": "wrong_tool(symbols)",
+    "rewrite": null
+   }
+  },
+  "bash": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "1/3",
+    "lenient": "1/3",
+    "first_try": "1/3",
+    "rescued": 0,
+    "wrong_first_call": "dispatch",
+    "why": "wrong_tool(dispatch)",
+    "rewrite": null
+   }
+  },
+  "powershell": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": "powershell",
+    "why": "value(command)",
+    "rewrite": null
+   }
+  },
+  "python": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   }
+  },
+  "web_fetch-arxiv": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": "web_fetch",
+    "why": "value(url)",
+    "rewrite": null
+   }
+  },
+  "web_fetch-url": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "arxiv": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": "arxiv",
+    "why": "value(query)",
+    "rewrite": null
+   }
+  },
+  "web_search": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   }
+  },
+  "symbols": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": "definition",
+    "why": "wrong_tool(definition)",
+    "rewrite": null
+   }
+  },
+  "definition": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": "symbols",
+    "why": "wrong_tool(symbols)",
+    "rewrite": null
+   }
+  },
+  "references": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": "symbols",
+    "why": "wrong_tool(symbols)",
+    "rewrite": null
+   }
+  },
+  "hover": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": "definition",
+    "why": "wrong_tool(definition)",
+    "rewrite": null
+   }
+  },
+  "diagnostics": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "rename_symbol": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "1/3",
+    "lenient": "1/3",
+    "first_try": "1/3",
+    "rescued": 0,
+    "wrong_first_call": "renames_symbol",
+    "why": "wrong_tool(renames_symbol)",
+    "rewrite": null
+   }
+  },
+  "project-test": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "project-gate": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "first_try": "0/3",
+    "rescued": 0,
+    "wrong_first_call": "git",
+    "why": "wrong_tool(git)",
+    "rewrite": null
+   }
+  },
+  "service": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "first_try": "0/3",
+    "rescued": 0,
+    "wrong_first_call": "service",
+    "why": "invalid_args(refused by the layer)",
+    "rewrite": null
+   }
+  },
+  "http_check": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "browser": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "1/3",
+    "lenient": "1/3",
+    "first_try": "1/3",
+    "rescued": 0,
+    "wrong_first_call": "browser",
+    "why": "value(op)",
+    "rewrite": null
+   }
+  },
+  "todo": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "first_try": "0/3",
+    "rescued": 0,
+    "wrong_first_call": "enter_plan",
+    "why": "wrong_tool(enter_plan)",
+    "rewrite": null
+   }
+  },
+  "ask_user": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "first_try": "0/3",
+    "rescued": 0,
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   }
+  },
+  "skill": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "first_try": "0/3",
+    "rescued": 0,
+    "wrong_first_call": "git",
+    "why": "wrong_tool(diagnostics)",
+    "rewrite": null
+   }
+  },
+  "agent": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "send_message": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   }
+  },
+  "enter_plan": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   }
+  },
+  "exit_plan": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "enter_worktree": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "first_try": "0/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   }
+  },
+  "exit_worktree": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "git-diff": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "git-commit": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "1/3",
+    "lenient": "1/3",
+    "first_try": "1/3",
+    "rescued": 0,
+    "wrong_first_call": "git",
+    "why": "missing_expected(message)",
+    "rewrite": null
+   }
+  },
+  "gh-ci": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "1/3",
+    "lenient": "1/3",
+    "first_try": "1/3",
+    "rescued": 0,
+    "wrong_first_call": "gh",
+    "why": "value(op)",
+    "rewrite": null
+   }
+  },
+  "gh-pr": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "first_try": "0/3",
+    "rescued": 0,
+    "wrong_first_call": "git",
+    "why": "value(op)",
+    "rewrite": null
+   }
+  },
+  "workflow": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "1/3",
+    "rescued": 1,
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   }
+  },
+  "report_findings": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "first_try": "0/3",
+    "rescued": 0,
+    "wrong_first_call": "read",
+    "why": "wrong_tool(diagnostics)",
+    "rewrite": null
+   }
+  },
+  "task_list": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "task_output": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "task_stop": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "cancel-workflow": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "0/3",
+    "rescued": 2,
+    "wrong_first_call": "task_list",
+    "why": "no_second_call",
+    "rewrite": null
+   }
+  },
+  "monitor": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "1/3",
+    "lenient": "1/3",
+    "first_try": "1/3",
+    "rescued": 0,
+    "wrong_first_call": "bash",
+    "why": "wrong_tool(bash)",
+    "rewrite": null
+   }
+  },
+  "schedule": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   }
+  },
+  "watch": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   }
+  },
+  "notify": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "send_file": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": "read",
+    "why": "wrong_tool(read)",
+    "rewrite": null
+   }
+  },
+  "notices": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "first_try": "0/3",
+    "rescued": 0,
+    "wrong_first_call": "task_list",
+    "why": "wrong_tool(task_list)",
+    "rewrite": null
+   }
+  },
+  "remember": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "2/3",
+    "first_try": "2/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": "no_call",
+    "rewrite": null
+   }
+  },
+  "recall": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "forget": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "0/3",
+    "rescued": 3,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "correct": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "first_try": "0/3",
+    "rescued": 0,
+    "wrong_first_call": "remember",
+    "why": "no_call",
+    "rewrite": null
+   }
+  },
+  "dispatch": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "list_mcp_resources": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "read_mcp_resource": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "first_try": "0/3",
+    "rescued": 0,
+    "wrong_first_call": "list_mcp_resources",
+    "why": "wrong_tool(mcp__notes__search_notes)",
+    "rewrite": null
+   }
+  },
+  "mcp-direct": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "mcp-overflow": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "handback": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "1/3",
+    "lenient": "1/3",
+    "first_try": "1/3",
+    "rescued": 0,
+    "wrong_first_call": "read",
+    "why": "wrong_tool(read)",
+    "rewrite": null
+   }
+  },
+  "set_statusline": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "first_try": "0/3",
+    "rescued": 0,
+    "wrong_first_call": "handback",
+    "why": "wrong_tool(handback)",
+    "rewrite": null
+   }
+  },
+  "create_agent": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "0/3",
+    "first_try": "0/3",
+    "rescued": 0,
+    "wrong_first_call": "glob",
+    "why": "no_second_call",
+    "rewrite": null
+   }
+  },
+  "workflow-summarize-repo": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "2/3",
+    "lenient": "3/3",
+    "first_try": "2/3",
+    "rescued": 1,
+    "wrong_first_call": "workflow",
+    "why": "unknown_key(item_type)",
+    "rewrite": "workflow: item_type -> "
+   }
+  },
+  "workflow-per-crate": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-research-three": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "2/3",
+    "rescued": 1,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-review-commits": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "cancel-workflow-notice": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "stop-agent-notice": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "stop-agent-bare-id": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "0/3",
+    "lenient": "3/3",
+    "first_try": "0/3",
+    "rescued": 3,
+    "wrong_first_call": "task_stop",
+    "why": "rewritten(value)",
+    "rewrite": null
+   }
+  },
+  "stop-agent-dispatched": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-use-a": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-fanout-words": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-run-as": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-kick-off": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-session-repeat": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-question": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  },
+  "workflow-why-failed": {
+   "marlowe-dawn:9b-super|C": {
+    "strict": "3/3",
+    "lenient": "3/3",
+    "first_try": "3/3",
+    "rescued": 0,
+    "wrong_first_call": null,
+    "why": null,
+    "rewrite": null
+   }
+  }
+ },
+ "calibration": {
+  "marlowe-dawn:9b-super|C": []
+ }
+}
