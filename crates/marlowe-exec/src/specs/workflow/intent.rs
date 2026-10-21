@@ -44,6 +44,8 @@ struct Turn {
     /// The current batch is being answered (becomes `redirected` at the step's end).
     redirecting: bool,
     nudged: bool,
+    /// Footers for calls whose arguments were changed, by call id.
+    notes: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Default)]
@@ -253,6 +255,15 @@ impl ToolMiddleware for WorkflowIntent {
             if call.name == "workflow" {
                 t.workflow_called = true;
                 t.launched = true;
+                // The user asked for the run. A checked-only short form (no script to check) would
+                // launch nothing, and the model would report it as started: run it.
+                let short = ["script", "path", "name"].iter().all(|k| call.args.get(*k).is_none_or(|v| v.is_null() || v.as_str() == Some("")));
+                if t.reminded && short && call.args.get("validate_only").and_then(Value::as_bool) == Some(true) {
+                    if let Some(o) = call.args.as_object_mut() {
+                        o.remove("validate_only");
+                    }
+                    t.notes.insert(call.id.clone(), "[args: ignored `validate_only`: the user asked to run the workflow, and the short form needs no check]".into());
+                }
                 return CallFlow::Continue;
             }
             let background_call = call.name == "dispatch" || background(call);
@@ -266,6 +277,18 @@ impl ToolMiddleware for WorkflowIntent {
             let over = t.over.clone().unwrap_or(Over::From("folders"));
             CallFlow::Done(ToolOutcome::error(redirect_text(&over, &prompt_of(call))))
         })
+    }
+
+    fn after_call(&self, call: &ToolCall, cx: &CallCtx, outcome: &mut ToolOutcome) {
+        if call.name != "workflow" {
+            return;
+        }
+        let note = cx.scope.with_ext(|e| e.get_mut::<Turn>().and_then(|t| t.notes.remove(&call.id)));
+        if let Some(n) = note {
+            outcome.content.push_str("
+");
+            outcome.content.push_str(&n);
+        }
     }
 
     fn after_step(&self, _info: StepInfo, convo: &mut Conversation) -> Vec<Message> {

@@ -178,6 +178,24 @@ fn no_redirect_after_a_workflow_call_for_foreground_agents_or_without_the_trigge
     assert!(plain.pending_context.is_empty());
 }
 
+#[test]
+fn a_checked_only_short_form_in_a_reminded_turn_is_run_and_says_so() {
+    let ws = temp("validate");
+    let mut c = reminded(&ws);
+    let scope = SessionScope { ext: Arc::new(Mutex::new(std::mem::take(&mut c.ext))), ..SessionScope::detached() };
+    let cx = CallCtx::new(ToolCtx::new(SessionId("s".into()), 1, Some(ws.clone()), CancelToken::new(), false), scope);
+    let mut short = call("1", "workflow", json!({"prompt": "p {item}", "items_from": "folders", "validate_only": true}));
+    assert_eq!(WorkflowIntent.before_approval(&mut short, &cx), CallFlow::Continue);
+    assert!(short.args.get("validate_only").is_none(), "{}", short.args);
+    let mut out = marlowe_agent::ToolOutcome::ok("started wf_1", "ok");
+    WorkflowIntent.after_call(&short, &cx, &mut out);
+    assert!(out.content.contains("ignored `validate_only`"), "{}", out.content);
+    // A script is checked as asked.
+    let mut script = call("2", "workflow", json!({"script": "def main(args): pass", "validate_only": true}));
+    WorkflowIntent.before_approval(&mut script, &cx);
+    assert_eq!(script.args["validate_only"], true);
+}
+
 fn step() -> StepInfo {
     StepInfo { turn: 1, step: 1 }
 }
