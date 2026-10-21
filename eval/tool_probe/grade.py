@@ -80,6 +80,15 @@ def value_problems(entry, args):
     return out
 
 
+def fans_out(script):
+    """True when a workflow script can run more than one agent: two `agent(` calls, or one inside a loop,
+    a comprehension or `pipeline(`. A static reading of the text, not a run."""
+    if not isinstance(script, str):
+        return False
+    n = len(re.findall(r"\bagent\(", script))
+    return n >= 2 or (n == 1 and bool(re.search(r"\bfor\b|\bpipeline\(", script)))
+
+
 def _view(call, mode):
     """(name, args) of a call as the provider parsed it (raw) or as the layer left it (layer)."""
     if mode == "raw":
@@ -121,6 +130,8 @@ def _accepted_call(case, call, mode, surfaces, run):
         return problems[0]
     if entry.get("validated") and not (call.get("validated") or {}).get("ok"):
         return "bad_script"
+    if entry.get("fan_out") and not fans_out(args.get("script") if isinstance(args, dict) else None):
+        return "no_fan_out"
     return None
 
 
@@ -133,13 +144,16 @@ def grade_mode(case, run, mode, surfaces):
     if _entry(case["accept"], name0) is not None:
         why = _accepted_call(case, calls[0], mode, surfaces, run)
         return why is None, why
-    ok = _entry(case.get("first_ok", []), name0)
-    if ok is not None and not value_problems(ok, args0) and len(calls) > 1:
-        why = _accepted_call(case, calls[1], mode, surfaces, run)
-        return why is None, why
-    if ok is not None and len(calls) < 2:
-        return False, "no_second_call"
-    return False, f"wrong_tool({name0})"
+    # Look-up calls the case allows may come first (any number); the call after them is the answer.
+    for i, call in enumerate(calls):
+        name, args = _view(call, mode)
+        if _entry(case["accept"], name) is not None:
+            why = _accepted_call(case, call, mode, surfaces, run)
+            return why is None, why
+        ok = _entry(case.get("first_ok", []), name)
+        if ok is None or value_problems(ok, args):
+            return False, f"wrong_tool({name})"
+    return False, "no_second_call"
 
 
 # The edit tools' own read-first gate fires because a canned `read` is not a real read: not an argument error.

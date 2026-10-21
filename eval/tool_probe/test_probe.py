@@ -153,6 +153,22 @@ def test_a_workflow_script_must_validate():
     assert g.grade(c, bad, sur)["strict_why"] == "bad_script"
 
 
+def test_a_workflow_must_fan_out_and_look_ups_may_repeat():
+    c = case(first_ok=[{"name": "read"}, {"name": "glob"}],
+             accept=[{"name": "workflow", "required_keys": ["script"], "validated": True, "fan_out": True}])
+    sur = {"conductor": {"specs": [SPECS["workflow"], SPECS["read"], SPECS["glob"]]}}
+    one = run(call(("workflow", {"script": "def main(args):\n    return agent('x')"}), validated={"ok": True, "text": "valid"}))
+    assert g.grade(c, one, sur)["strict_why"] == "no_fan_out"
+    many = "def main(args):\n    return parallel([lambda: agent('a'), lambda: agent('b')])"
+    ok = run(call(("glob", {"pattern": "*"})), call(("read", {"path": "a"})),
+             call(("workflow", {"script": many}), validated={"ok": True, "text": "valid"}))
+    assert g.grade(c, ok, sur)["strict"] is True
+    loop = "def main(args):\n    return [agent(c) for c in args['crates']]"
+    assert g.fans_out(loop) and not g.fans_out("def main(args):\n    return agent('x')")
+    dispatched = run(call(("dispatch", {"role": "researcher", "prompt": "x"})))
+    assert g.grade(c, dispatched, sur)["strict_why"] == "wrong_tool(dispatch)"
+
+
 # ---------------------------------------------------------------- the report
 
 def write_run(path, calibrated=True):
