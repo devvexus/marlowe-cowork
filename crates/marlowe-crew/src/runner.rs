@@ -484,7 +484,7 @@ impl StepHooks for Hooks {
         self.enforce_budget()
     }
 
-    fn before_call(&self, _spec: &StepSpec, local: bool) -> Result<(), CrewError> {
+    fn before_call(&self, spec: &StepSpec, local: bool) -> Result<(), CrewError> {
         self.reserve()?;
         if local {
             if let Err(e) = self.local_slot() {
@@ -492,6 +492,7 @@ impl StepHooks for Hooks {
                 *n = n.saturating_sub(1);
                 return Err(e);
             }
+            self.inner.local_holders.lock().unwrap_or_else(|e| e.into_inner()).push((self.id.clone(), spec.role.clone()));
         }
         Ok(())
     }
@@ -499,6 +500,11 @@ impl StepHooks for Hooks {
     /// Frees the call's place and slot, and books what it spent.
     fn after_call(&self, spec: &StepSpec, local: bool, usage: Option<&Usage>) {
         if local {
+            let mut holders = self.inner.local_holders.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(i) = holders.iter().position(|(r, role)| *r == self.id && *role == spec.role) {
+                holders.remove(i);
+            }
+            drop(holders);
             self.release_local();
         }
         let cost = usage.map(|u| self.cost(&spec.role, u));

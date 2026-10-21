@@ -14,10 +14,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
-use marlowe_proto::PhaseKind;
+use marlowe_proto::{PhaseEvent, PhaseKind};
 use marlowe_model::{
     CancelToken, ChatRequest, Completion, CompletionBuilder, Effort, Message, ModelInfo, Provider, ProviderError,
-    StopReason, StreamEvent, ToolCall,
+    StopReason, StreamEvent, ToolCall, Usage,
 };
 
 use crate::approval::{ApprovalGate, DenyAll};
@@ -419,7 +419,7 @@ impl Agent {
             let call_started = Instant::now();
             sink(AgentEvent::CallStarted { step: spent.steps + 1, est_prompt_tokens });
             let mut wire = Some(PhaseTimer::start(PhaseKind::Wire, sink));
-            let ended = call_model(live.provider.as_ref(), &req, cancel, &mut wire, sink);
+            let ended = call_model(live.provider.as_ref(), &req, cancel, &mut wire, (call_started, est_prompt_tokens), sink);
             // A call that never produced a frame (failed, cancelled) still closes its phase.
             if let Some(w) = wire.take() {
                 w.end_with(sink, |e| e.detail("no frame"));
@@ -579,6 +579,7 @@ fn call_model(
     req: &ChatRequest,
     cancel: &CancelToken,
     wire: &mut Option<PhaseTimer>,
+    (call_started, est_prompt): (Instant, u32),
     sink: &mut dyn FnMut(AgentEvent),
 ) -> CallEnd {
     let mut attempt = 0;
@@ -595,8 +596,29 @@ fn call_model(
         let (mut text_watch, mut reasoning_watch) = (guard::RepetitionWatch::default(), guard::RepetitionWatch::for_reasoning());
         let mut looped: Option<String> = None;
         let mut first_token = true;
+        // The prompt read, from the request leaving until the engine reports what it read.
+        let mut prefill: Option<PhaseTimer> = None;
         let result = provider.stream(req, &call_cancel, &mut |ev| {
             let arrived = Instant::now();
+            match &ev {
+                StreamEvent::Sent => {
+                    // Whatever came before (the model's metadata, the body) was preparation.
+                    let prep = arrived.saturating_duration_since(call_started).as_millis() as u64;
+                    sink(AgentEvent::Phase(PhaseEvent::start(PhaseKind::Wire).stage("prepare")));
+                    sink(AgentEvent::Phase(PhaseEvent::end(PhaseKind::Wire, prep).stage("prepare")));
+                    let mut start = PhaseEvent::start(PhaseKind::Prefill).with_total(u64::from(est_prompt)).unit("tok");
+                    start.est = true;
+                    sink(AgentEvent::Phase(start));
+                    prefill = Some(PhaseTimer::begun(PhaseKind::Prefill));
+                    return;
+                }
+                StreamEvent::Usage(u) => {
+                    if let Some(p) = prefill.take() {
+                        p.end_with(sink, |e| read_end(e, u, est_prompt));
+                    }
+                }
+                _ => {}
+            }
             // The first frame of any kind ends the wire phase; the first text or reasoning is the
             // origin of the token-to-screen overhead.
             if let Some(w) = wire.take() {
@@ -631,6 +653,10 @@ fn call_model(
                 sink(ae);
             }
         });
+        // A call that ended before the engine reported its read still closes the phase.
+        if let Some(p) = prefill.take() {
+            p.end_with(sink, |e| e.detail("no report"));
+        }
         if let Some(kept) = looped.filter(|_| !cancel.is_cancelled()) {
             return CallEnd::Looped(kept);
         }
@@ -648,6 +674,24 @@ fn call_model(
             Err(e) => return CallEnd::Failed(e),
         }
     }
+}
+
+/// The prefill phase's end: what the call read, from the engine's own counts. The cached part is
+/// the engine's when it reports one, else our prompt estimate less what it evaluated (`est`).
+fn read_end(e: PhaseEvent, u: &Usage, est_prompt: u32) -> PhaseEvent {
+    let (new, cached, est) = match u.prompt_eval {
+        Some(n) => (n, u64::from(est_prompt).saturating_sub(n), true),
+        None => (u.input.saturating_sub(u.cached_input), u.cached_input, false),
+    };
+    let mut e = e.unit("tok").with_done(new).with_total(new + cached);
+    e.est = est;
+    if let Some(ms) = u.prefill_ms {
+        e.ms = Some(ms);
+        if ms > 0 {
+            e.rate = Some((new as f64 * 1000.0 / ms as f64) as f32);
+        }
+    }
+    e
 }
 
 /// Maps provider stream events onto agent events. Tool-call deltas are not forwarded; the loop

@@ -88,7 +88,7 @@ fn every_m46_request_round_trips_and_is_tagged_by_op() {
 
 #[test]
 fn every_m46_event_round_trips_inside_an_envelope() {
-    let usage = Usage { input: 10, output: 5, reasoning: 0, cached_input: 4, cost_usd: Some(0.01) };
+    let usage = Usage { input: 10, output: 5, reasoning: 0, cached_input: 4, cost_usd: Some(0.01), ..Usage::default() };
     let events = vec![
         Event::ModeChanged { session: sid(), mode: PermissionMode::Plan },
         Event::Rules {

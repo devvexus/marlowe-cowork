@@ -44,6 +44,11 @@ impl PhaseTimer {
         Self { kind, started: Instant::now() }
     }
 
+    /// A timer for a phase whose `Start` the caller already sent with its own numbers.
+    pub fn begun(kind: PhaseKind) -> Self {
+        Self { kind, started: Instant::now() }
+    }
+
     pub fn progress(&self, done: u64, total: u64, unit: &str, estimated: bool, sink: &mut dyn FnMut(AgentEvent)) {
         let mut ev = PhaseEvent::progress(self.kind, done, total).unit(unit);
         ev.est = estimated;

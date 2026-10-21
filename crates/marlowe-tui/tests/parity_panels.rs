@@ -519,7 +519,7 @@ fn parity_S4_cost_shows_what_the_daemon_totalled() {
     let mut s = coding_session();
     let reqs = keys(&mut s, "'/cost' enter");
     assert_eq!(reqs, vec![Request::SessionCost { session: sid() }]);
-    let usage = Usage { input: 120_000, output: 8_000, reasoning: 0, cached_input: 90_000, cost_usd: Some(0.42) };
+    let usage = Usage { input: 120_000, output: 8_000, reasoning: 0, cached_input: 90_000, cost_usd: Some(0.42), ..Usage::default() };
     feed(
         &mut s,
         0,

@@ -384,6 +384,7 @@ fn parse_usage(u: &Value) -> Usage {
         reasoning: n(u.get("completion_tokens_details").and_then(|d| d.get("reasoning_tokens"))),
         cached_input: n(u.get("prompt_tokens_details").and_then(|d| d.get("cached_tokens"))),
         cost_usd: u.get("cost").and_then(Value::as_f64),
+        ..Usage::default()
     }
 }
 

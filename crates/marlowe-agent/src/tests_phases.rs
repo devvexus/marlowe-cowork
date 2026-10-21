@@ -152,3 +152,89 @@ fn a_failed_summary_says_so_instead_of_vanishing() {
     assert_eq!(end.detail.as_deref(), Some("failed"));
     assert!(!events.iter().any(|(_, e)| matches!(e, AgentEvent::Compacted { .. })));
 }
+
+/// An engine that says when it sent the request and reports its own timings.
+struct Engine {
+    inner: Arc<ScriptedProvider>,
+    usage: Usage,
+}
+
+impl Provider for Engine {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Ollama
+    }
+    fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        self.inner.list_models()
+    }
+    fn stream(&self, req: &ChatRequest, cancel: &CancelToken, on: &mut dyn FnMut(StreamEvent)) -> Result<Completion, ProviderError> {
+        on(StreamEvent::Sent);
+        std::thread::sleep(Duration::from_millis(20));
+        let usage = self.usage;
+        self.inner.stream(req, cancel, &mut |e| match e {
+            // The script has no usage frame; the engine reports its own just before the stop.
+            StreamEvent::Stop(s) => {
+                on(StreamEvent::Usage(usage));
+                on(StreamEvent::Stop(s));
+            }
+            other => on(other),
+        })
+    }
+}
+
+fn prefill(events: &[(Instant, AgentEvent)]) -> Vec<&marlowe_proto::PhaseEvent> {
+    events
+        .iter()
+        .filter_map(|(_, e)| match e {
+            AgentEvent::Phase(p) if p.kind == PhaseKind::Prefill => Some(p),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_send_starts_an_estimated_prefill_that_the_engines_counts_end() {
+    let usage = Usage { input: 300, output: 5, prompt_eval: Some(300), prefill_ms: Some(150), load_ms: Some(0), decode_ms: Some(40), ..Default::default() };
+    let inner = ScriptedProvider::new(vec![answer("hello")]);
+    let mut a = Agent::new(Arc::new(Engine { inner, usage }), model(), TestTools::new(), SystemPrompt::with_core("core"));
+    a.memory = Arc::new(NoMemory);
+    let (_, events) = timed_run(&a, &mut convo(), "hi");
+    let marks = phase_marks(&events);
+    let pos = |k: PhaseKind, s: PhaseState, staged: bool| {
+        events.iter().position(|(_, e)| matches!(e, AgentEvent::Phase(p) if p.kind == k && p.state == s && p.stage.is_some() == staged)).unwrap()
+    };
+    // Wire opens before the engine is asked, the read starts at the send, the wire ends at the
+    // engine's first frame.
+    assert!(pos(PhaseKind::Wire, PhaseState::Start, false) < pos(PhaseKind::Prefill, PhaseState::Start, false));
+    assert!(pos(PhaseKind::Wire, PhaseState::End, true) < pos(PhaseKind::Prefill, PhaseState::Start, false), "preparation is over at the send");
+    assert!(pos(PhaseKind::Prefill, PhaseState::Start, false) < pos(PhaseKind::Wire, PhaseState::End, false));
+    let p = prefill(&events);
+    assert_eq!(p.len(), 2);
+    let est_prompt = events.iter().find_map(|(_, e)| if let AgentEvent::CallStarted { est_prompt_tokens, .. } = e { Some(*est_prompt_tokens) } else { None }).unwrap();
+    assert!(p[0].est && p[0].total == Some(u64::from(est_prompt)), "the start carries our estimate: {:?}", p[0]);
+    // The end is the engine's: tokens it evaluated, its own milliseconds and rate; the cached
+    // part is our estimate (marked), never negative.
+    let end = p[1];
+    assert_eq!((end.state, end.done, end.ms), (PhaseState::End, Some(300), Some(150)));
+    assert_eq!(end.rate, Some(2000.0));
+    assert_eq!(end.total, Some(300u64.max(u64::from(est_prompt))));
+    assert!(end.est, "the cached split came from our estimate");
+    assert!(marks.iter().any(|m| m.1 == PhaseKind::Wire && m.2 == PhaseState::End && m.3.is_some()));
+}
+
+#[test]
+fn a_provider_that_cannot_say_when_it_sent_has_no_prefill_phase() {
+    let a = Agent::new(ScriptedProvider::new(vec![answer("hello")]), model(), TestTools::new(), SystemPrompt::with_core("core"));
+    let (_, events) = timed_run(&a, &mut convo(), "hi");
+    assert!(prefill(&events).is_empty());
+}
+
+#[test]
+fn a_call_that_fails_after_the_send_still_closes_the_prefill_phase() {
+    let inner = ScriptedProvider::new(vec![Step::Fail(ProviderError::bad_request("engine fell over"))]);
+    let a = Agent::new(Arc::new(Engine { inner, usage: Usage::default() }), model(), TestTools::new(), SystemPrompt::with_core("core"));
+    let (outcome, events) = timed_run(&a, &mut convo(), "hi");
+    assert_eq!(outcome.stop, TurnStop::Error);
+    let p = prefill(&events);
+    assert_eq!(p.iter().map(|p| p.state).collect::<Vec<_>>(), [PhaseState::Start, PhaseState::End]);
+    assert_eq!(p[1].detail.as_deref(), Some("no report"));
+}

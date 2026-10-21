@@ -514,6 +514,7 @@ fn run_one(
         }
     };
     let model = info.model_ref();
+    clock.set_model(&model);
     // A relay turn runs with nobody waiting on it (at start, at 3am): it never loads a model.
     let who = if input.relay { Priority::Background } else { Priority::Foreground };
     let admitted = admit_conductor(core, &session, &model, cancel, who);

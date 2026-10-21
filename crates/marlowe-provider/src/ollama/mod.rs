@@ -261,6 +261,8 @@ impl Provider for OllamaProvider {
         let body = self.plan(req, &meta)?.body;
         let thinking = body.get("think").is_some_and(|t| t != &Value::Bool(false));
 
+        // The model's metadata and the body are ready; what follows is the engine's time.
+        on(StreamEvent::Sent);
         let reader = http::post_stream(
             &self.endpoint,
             "/api/chat",

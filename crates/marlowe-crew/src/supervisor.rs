@@ -218,6 +218,8 @@ pub(crate) struct Inner {
     pub state: Mutex<State>,
     /// Local model streams in flight across every run, at most `cfg.per_local_provider`.
     pub local_streams: Mutex<usize>,
+    /// Who holds those streams: (run, role), so a waiting turn can name the run it waits behind.
+    pub local_holders: Mutex<Vec<(RunId, String)>>,
     pub local_free: Condvar,
     /// Research plans waiting on the user, by run.
     pub plans: Mutex<HashMap<RunId, PendingPlan>>,
@@ -540,6 +542,7 @@ impl Supervisor {
             store: Mutex::new(store),
             state: Mutex::new(State::default()),
             local_streams: Mutex::new(0),
+            local_holders: Mutex::new(Vec::new()),
             local_free: Condvar::new(),
             plans: Mutex::new(HashMap::new()),
             decided: Mutex::new(HashMap::new()),
@@ -662,6 +665,18 @@ impl Supervisor {
     /// Runs with a live thread now (running, or waiting on the user mid-run).
     pub fn running(&self) -> usize {
         self.inner.state().live.values().filter(|l| l.running).count()
+    }
+
+    /// A run streaming from `model` right now (a local stream in flight), if one is. The engine
+    /// serves one request at a time per model slot, so a turn on the same model waits behind it.
+    pub fn local_stream_on(&self, model: &ModelRef) -> Option<RunId> {
+        let holders = lock(&self.inner.local_holders).clone();
+        let roles = lock(&self.inner.roles).clone();
+        holders.into_iter().find_map(|(run, role)| {
+            let card = roles.get(&role)?;
+            let m = self.inner.priced_model(card)?;
+            (m.model_ref() == *model).then_some(run)
+        })
     }
 
     pub fn roles(&self) -> Vec<RoleInfo> {

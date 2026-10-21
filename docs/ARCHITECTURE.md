@@ -146,6 +146,8 @@ Parallel tracks (design `docs/research/m46-design.md` sections 7-8) plug in with
 
 `marlowe-proto/src/phase.rs` is the one event family for "what is the harness doing now": `Event::Phase` (Start/End ordered and replayed, Progress ephemeral via `Bus::publish_ephemeral`), `TurnTimings` and `Recalled.stages`. The daemon's `TurnClock` (`phases.rs`) zeroes at Enter (`Ask.client_ms`), turns End events into measured spans (recall stages nest under `Recall` via `parent`), and persists them in `turn_timings`. Observers only observe: `StageProbe::progress` is a no-op default in `marlowe-memory`; the clock is `marlowe-mind`'s `LiveProbe`.
 
+Between the request leaving and the engine's first frame (`Wire`): the provider emits `StreamEvent::Sent`; the loop opens `Prefill` (an estimate) and the daemon's `live::Watch` thread publishes ephemeral progress. A cold load is the runners' real GPU-memory growth against the planner's predicted bytes (`~` total), ended by the engine listing the model or the first frame; no per-process data means no bar. The prefill estimate uses the stored `prefill_tok_s:<model>` (updated from every call's engine timings), is capped at 99%, and is replaced by `prompt_eval_count` / `prompt_eval_duration` at `Usage`; no stored rate means elapsed only. A wait is named (`waiting for the GPU - crew run <id>`) only when a crew run is streaming on the same model. `Load`, `Prefill` and `Wire` stages nest under `Wire` in the spans.
+
 ## Crew and sandbox model
 
 An agent is a role card (`roles/*.md`, overridden by `<home>\roles\*.md`: slot, effort, tool allowlist, budget, sandbox kind, instructions), and that is all. Depth 1: crew runs never get `dispatch`.

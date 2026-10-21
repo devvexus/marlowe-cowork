@@ -11,6 +11,13 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - **Retrieval observed, not changed.** `StageProbe::progress` (default no-op) is called at chunk boundaries in dense, gate and rerank; the Mind's `LiveProbe` times stages (the clock lives there, not in `marlowe-memory`) and streams them throttled to 8 ms. A test asserts the injected set, scores and order are identical with the live display on and off.
 - Agent loop: `AgentEvent::{Phase, CallStarted, FirstToken}`; compaction reports estimated progress and no longer fails silently (`End{detail:"failed"}`). The Mind's write tail (`MindEvent`) reports ingest, embed and index.
 
+### Live phases (provider timings, load meter, prefill estimate)
+
+- `Usage` carries the engine's own `prompt_eval`, `load_ms`, `prefill_ms` and `decode_ms` (Ollama's `*_duration` fields, ns to ms; other providers leave them `None`); `StreamEvent::Sent` marks the request leaving, after the model metadata and body. Old frames still parse.
+- The loop closes `Wire`/`prepare` at the send and opens `Prefill` (our prompt estimate, `est`); `Usage` ends it with the engine's counts, ms and rate, so the turn's `read` (new, cached, ms) is real. A failed call still closes it.
+- The daemon's `live::Watch` thread (alive only while the engine is silent): cold-load progress from the runners' GPU-memory growth against the planner's predicted bytes (`est` total, never full before it ends, no bar without per-process data), prefill progress from the stored `prefill_tok_s:<model>` (capped 99%, nothing without a stored rate), and `waiting for the GPU - crew run <id>` only when a crew run streams on the same model. Prefill and decode rates are re-measured after every call into `hw_calibration`.
+- Spans start where their `Start` landed; `Load`, `Prefill` and `Wire` stages nest under `Wire`.
+
 ### Web search off OpenRouter
 
 - **`web_search` and deep research never use a paid API.** The tool searches through the keyless web channel research uses (SearXNG at `research.json` `searxng_url`, else DuckDuckGo lite) and says plainly what to run when none answers; the OpenRouter search backend, its model setting and `HostedSearch` hookup are gone. `hosted_search` in an old `research.json` still parses and is ignored.

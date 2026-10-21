@@ -144,6 +144,13 @@ impl<'a> Folder<'a> {
             let n = |k: &str| frame.get(k).and_then(Value::as_u64).unwrap_or(0);
             self.usage.input = n("prompt_eval_count");
             self.usage.output = n("eval_count");
+            // Ollama reports nanoseconds; `prompt_eval_count` is the tokens it evaluated, the
+            // rest of the prompt came from its cache.
+            let ms = |k: &str| frame.get(k).and_then(Value::as_u64).map(|ns| ns / 1_000_000);
+            self.usage.prompt_eval = frame.get("prompt_eval_count").and_then(Value::as_u64);
+            self.usage.load_ms = ms("load_duration");
+            self.usage.prefill_ms = ms("prompt_eval_duration");
+            self.usage.decode_ms = ms("eval_duration");
             self.stop = Some(match frame.get("done_reason").and_then(Value::as_str) {
                 Some("length") => StopReason::MaxTokens,
                 _ => StopReason::EndTurn,
@@ -436,5 +443,28 @@ mod tests {
         let mut on = |_e: StreamEvent| {};
         let mut f = Folder::new(false, &mut on);
         assert!(f.frame(&json!({"error":"model crashed"})).is_err());
+    }
+
+    #[test]
+    fn the_done_frame_timings_become_milliseconds_and_old_frames_still_parse() {
+        let (c, _) = run(
+            false,
+            &[
+                json!({"message":{"content":"hi"}}),
+                json!({"done":true,"prompt_eval_count":8200,"eval_count":40,"load_duration":6_200_000_000u64,
+                       "prompt_eval_duration":1_900_000_000u64,"eval_duration":520_000_000u64,"total_duration":8_700_000_000u64}),
+            ],
+        );
+        let u = c.usage;
+        assert_eq!((u.input, u.output), (8200, 40));
+        assert_eq!(u.prompt_eval, Some(8200));
+        assert_eq!((u.load_ms, u.prefill_ms, u.decode_ms), (Some(6200), Some(1900), Some(520)));
+
+        let (old, _) = run(false, &[json!({"message":{"content":"hi"},"done":true,"prompt_eval_count":13,"eval_count":2})]);
+        assert_eq!(old.usage.input, 13);
+        assert_eq!(old.usage.prompt_eval, Some(13));
+        assert_eq!((old.usage.load_ms, old.usage.prefill_ms, old.usage.decode_ms), (None, None, None));
+        let (bare, _) = run(false, &[json!({"done":true})]);
+        assert_eq!(bare.usage.prompt_eval, None);
     }
 }

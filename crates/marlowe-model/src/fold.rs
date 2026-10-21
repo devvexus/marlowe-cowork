@@ -51,7 +51,7 @@ impl CompletionBuilder {
             StreamEvent::ToolArgsDelta { index, json } => {
                 self.calls.entry(*index).or_default().args.push_str(json);
             }
-            StreamEvent::ToolCallEnd { .. } => {}
+            StreamEvent::ToolCallEnd { .. } | StreamEvent::Sent => {}
             StreamEvent::Usage(u) => self.usage.merge_report(u),
             StreamEvent::Stop(s) => self.stop = Some(*s),
         }

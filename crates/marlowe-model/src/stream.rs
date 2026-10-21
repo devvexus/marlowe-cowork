@@ -19,6 +19,16 @@ pub struct Usage {
     pub cached_input: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    /// Prompt tokens the engine actually evaluated (the rest came from its cache), when it says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_eval: Option<u64>,
+    /// Engine-reported milliseconds for the model load, the prompt read and the decode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decode_ms: Option<u64>,
 }
 
 impl Usage {
@@ -32,6 +42,14 @@ impl Usage {
             (None, None) => None,
             (a, b) => Some(a.unwrap_or(0.0) + b.unwrap_or(0.0)),
         };
+        let sum = |a: Option<u64>, b: Option<u64>| match (a, b) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0) + b.unwrap_or(0)),
+        };
+        self.prompt_eval = sum(self.prompt_eval, other.prompt_eval);
+        self.load_ms = sum(self.load_ms, other.load_ms);
+        self.prefill_ms = sum(self.prefill_ms, other.prefill_ms);
+        self.decode_ms = sum(self.decode_ms, other.decode_ms);
     }
 
     /// Merges a later report of the same call: each count keeps its maximum.
@@ -43,6 +61,10 @@ impl Usage {
         if later.cost_usd.is_some() {
             self.cost_usd = later.cost_usd;
         }
+        self.prompt_eval = self.prompt_eval.max(later.prompt_eval);
+        self.load_ms = self.load_ms.max(later.load_ms);
+        self.prefill_ms = self.prefill_ms.max(later.prefill_ms);
+        self.decode_ms = self.decode_ms.max(later.decode_ms);
     }
 
     /// Input plus output.
@@ -68,6 +90,9 @@ pub enum StopReason {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum StreamEvent {
+    /// The request is on its way to the engine (after any preparation, before the first byte
+    /// back). Only providers that can tell emit it.
+    Sent,
     /// Visible answer text.
     TextDelta(String),
     /// Reasoning text; `tokens` is the provider's or an estimated count for this delta.

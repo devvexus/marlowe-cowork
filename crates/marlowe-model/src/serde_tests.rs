@@ -64,7 +64,7 @@ fn stream_events_and_completions_round_trip() {
         StreamEvent::ToolCallStart { index: 0, id: "x".into(), name: "grep".into() },
         StreamEvent::ToolArgsDelta { index: 0, json: "{".into() },
         StreamEvent::ToolCallEnd { index: 0 },
-        StreamEvent::Usage(Usage { input: 1, output: 2, reasoning: 0, cached_input: 1, cost_usd: Some(0.5) }),
+        StreamEvent::Usage(Usage { input: 1, output: 2, reasoning: 0, cached_input: 1, cost_usd: Some(0.5), ..Usage::default() }),
         StreamEvent::Stop(StopReason::ToolUse),
     ] {
         round_trip(&ev);

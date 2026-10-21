@@ -5,17 +5,20 @@
 //! receiving it, else the runner starting the turn. `Start` and `End` publish in order (replayed);
 //! `Progress` is ephemeral. Spans are only what was measured, never an estimate.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use marlowe_agent::AgentEvent;
 use marlowe_brains::LoadCost;
 use marlowe_mind::{LiveEvent, LiveKind, MindEvent, MindSink};
+use marlowe_model::{ModelRef, Usage};
 use marlowe_proto::{
     Event, PhaseEvent, PhaseKind, PhaseSpan, PhaseState, ReadStat, SessionId, TurnNumbers,
 };
 
 use crate::daemon::Core;
+use crate::live::{self, Emit, LoadPlan, Probes, Watch};
 use crate::mind::RecallSink;
 use crate::lock;
 
@@ -32,6 +35,30 @@ struct Inner {
     read: Option<ReadStat>,
     /// The planner's cost for a cold load admitted for this turn.
     load: Option<LoadCost>,
+    model: Option<ModelRef>,
+    /// The live meter of the model call in flight (load, prefill estimate, wait reason).
+    watch: Option<Arc<Watch>>,
+    /// When each open phase started, so its span begins there and not where its `End` landed.
+    starts: HashMap<(PhaseKind, Option<String>), u64>,
+}
+
+/// How often the watch reads the GPU and publishes estimates.
+const WATCH_TICK: Duration = Duration::from_millis(125);
+
+/// The prompt size the last call of each session read in full, to guess what the next one finds
+/// already in the engine's cache.
+#[derive(Default)]
+struct LastPrompt(Mutex<HashMap<SessionId, (String, u64)>>);
+
+/// The span a phase nests inside, if it does: those are excluded when spans are summed against
+/// the time to first token.
+fn parent_of(kind: PhaseKind, stage: &Option<String>) -> Option<PhaseKind> {
+    match kind {
+        PhaseKind::Recall if stage.is_some() => Some(PhaseKind::Recall),
+        PhaseKind::Wire | PhaseKind::Admit if stage.is_some() => Some(PhaseKind::Wire),
+        PhaseKind::Prefill | PhaseKind::Load => Some(PhaseKind::Wire),
+        _ => None,
+    }
 }
 
 pub(crate) struct TurnClock {
@@ -82,12 +109,13 @@ impl TurnClock {
         match ev.state {
             PhaseState::Progress => self.core.bus.publish_ephemeral(Event::Phase(ev)),
             PhaseState::Start => {
+                lock(&self.inner).starts.insert((ev.kind, ev.stage.clone()), self.elapsed_ms());
                 self.core.bus.publish(Event::Phase(ev));
             }
             PhaseState::End => {
                 let ms = ev.ms.unwrap_or(0);
-                let start_ms = start_ms.unwrap_or_else(|| self.elapsed_ms().saturating_sub(ms));
-                let nested = ev.kind == PhaseKind::Recall && ev.stage.is_some();
+                let opened = lock(&self.inner).starts.remove(&(ev.kind, ev.stage.clone()));
+                let start_ms = start_ms.or(opened).unwrap_or_else(|| self.elapsed_ms().saturating_sub(ms));
                 let span = PhaseSpan {
                     kind: ev.kind,
                     stage: ev.stage.clone(),
@@ -95,7 +123,7 @@ impl TurnClock {
                     ms,
                     n: ev.total.or(ev.done),
                     detail: ev.detail.clone(),
-                    parent: nested.then_some(PhaseKind::Recall),
+                    parent: parent_of(ev.kind, &ev.stage),
                     est: false,
                 };
                 lock(&self.inner).spans.push(span);
@@ -105,9 +133,21 @@ impl TurnClock {
     }
 
     /// The loop's events: phases go out, the wire and first-token marks are kept.
-    pub fn on_agent(&self, ev: &AgentEvent) {
+    pub fn on_agent(self: &Arc<Self>, ev: &AgentEvent) {
         match ev {
-            AgentEvent::Phase(p) => self.emit(p.clone()),
+            AgentEvent::Phase(p) => {
+                // The load ends before the wire does: it was inside it.
+                if p.kind == PhaseKind::Wire && p.state == PhaseState::End && p.stage.is_none() {
+                    self.first_frame();
+                }
+                self.emit(p.clone());
+                match (p.kind, p.state) {
+                    (PhaseKind::Prefill, PhaseState::Start) => self.request_sent(p.total.unwrap_or(0)),
+                    (PhaseKind::Prefill, PhaseState::End) => self.read_ended(p),
+                    _ => {}
+                }
+            }
+            AgentEvent::Usage(u) => self.calibrate(u),
             AgentEvent::CallStarted { est_prompt_tokens, .. } => {
                 let mut g = lock(&self.inner);
                 g.wire_ms.get_or_insert_with(|| self.elapsed_ms());
@@ -131,19 +171,92 @@ impl TurnClock {
         g.token_to_bus_ms = Some(at.elapsed().as_millis() as u64);
     }
 
-    /// The cold load this turn admitted, if it did.
-    pub fn set_load(&self, load: Option<LoadCost>) {
-        lock(&self.inner).load = load;
+    pub fn set_model(&self, model: &ModelRef) {
+        lock(&self.inner).model = Some(model.clone());
     }
 
-    /// The cold load this turn admitted, with the planner's predicted bytes.
-    #[allow(dead_code)]
-    pub fn load(&self) -> Option<LoadCost> {
-        lock(&self.inner).load.clone()
+    /// The cold load this turn admitted, if it did. Its meter starts at once (reading the
+    /// runners' memory before the model is asked for) and publishes once the request is sent.
+    pub fn set_load(self: &Arc<Self>, load: Option<LoadCost>) {
+        // A load is only shown when the engine said the model is not loaded, and the hardware
+        // sources are here to watch it: with no answer, it may well be loaded.
+        let watchable = self.core.brains.factory().hardware().is_some();
+        let plan = load.as_ref().filter(|c| c.resident_known && watchable).map(|c| LoadPlan { model: c.model.model_id.clone(), need_mib: c.need_mib });
+        let watch = plan.map(|p| self.new_watch(Some(p)));
+        let mut g = lock(&self.inner);
+        g.load = load;
+        g.watch = watch;
     }
 
-    /// What the first model call read (set by the provider's usage report).
-    #[allow(dead_code)]
+    fn new_watch(self: &Arc<Self>, load: Option<LoadPlan>) -> Arc<Watch> {
+        let model = lock(&self.inner).model.clone();
+        let weak = Arc::downgrade(self);
+        let emit: Emit = Arc::new(move |e| {
+            if let Some(clock) = weak.upgrade() {
+                clock.emit(e);
+            }
+        });
+        Arc::new(Watch::start(load, probes(&self.core, model), emit, WATCH_TICK))
+    }
+
+    /// The request for a model call is on its way: the live meter starts publishing.
+    fn request_sent(self: &Arc<Self>, est_prompt: u64) {
+        let last = {
+            let model = lock(&self.inner).model.as_ref().map(ToString::to_string);
+            let memory = self.core.ext.get_or_init(LastPrompt::default);
+            let seen = lock(&memory.0).get(&self.session).cloned();
+            seen.filter(|(m, _)| Some(m) == model.as_ref()).map_or(0, |(_, n)| n)
+        };
+        let waiting = lock(&self.inner).watch.take();
+        let watch = waiting.unwrap_or_else(|| self.new_watch(None));
+        watch.sent(est_prompt.saturating_sub(last));
+        lock(&self.inner).watch = Some(watch);
+    }
+
+    /// The engine's first frame: the load (if it was still open) ends, the estimates stop.
+    fn first_frame(&self) {
+        let watch = lock(&self.inner).watch.take();
+        if let Some(w) = watch {
+            w.first_frame();
+        }
+    }
+
+    /// The call reported what it read: the meter is done, and the call's numbers are kept.
+    fn read_ended(&self, p: &PhaseEvent) {
+        self.first_frame();
+        let (Some(new), Some(total)) = (p.done, p.total) else { return };
+        let model = lock(&self.inner).model.as_ref().map(ToString::to_string).unwrap_or_default();
+        lock(&self.core.ext.get_or_init(LastPrompt::default).0).insert(self.session.clone(), (model, total));
+        self.set_read(ReadStat { new_tok: new, cached_tok: total.saturating_sub(new), ms: p.ms.unwrap_or(0) });
+    }
+
+    /// Keeps the engine's measured prefill and decode rates for the next estimate.
+    fn calibrate(&self, u: &Usage) {
+        let Some(model) = lock(&self.inner).model.clone() else { return };
+        let mut samples = Vec::new();
+        if let (Some(n), Some(ms)) = (u.prompt_eval, u.prefill_ms) {
+            if n >= live::MIN_RATE_TOKENS && ms > 0 {
+                samples.push(("prefill", n as f64 * 1000.0 / ms as f64));
+            }
+        }
+        if let Some(ms) = u.decode_ms {
+            if u.output >= 16 && ms > 0 {
+                samples.push(("decode", u.output as f64 * 1000.0 / ms as f64));
+            }
+        }
+        if samples.is_empty() {
+            return;
+        }
+        self.core.brains.with_library(|l| {
+            for (kind, sample) in samples {
+                let key = live::rate_key(kind, &model.to_string());
+                let stored = l.calibration(&key).ok().flatten();
+                let _ = l.set_calibration(&key, live::blend(stored, sample));
+            }
+        });
+    }
+
+    /// What the first model call read (set by the prefill phase's end).
     pub fn set_read(&self, read: ReadStat) {
         lock(&self.inner).read.get_or_insert(read);
     }
@@ -184,6 +297,33 @@ impl TurnClock {
                 clock.core.bus.publish(other);
             }
         })
+    }
+}
+
+/// What the live meter reads: the GPU and the engine's model list through the planner's hardware
+/// sources, the crew supervisor, and the stored prefill rate.
+fn probes(core: &Arc<Core>, model: Option<ModelRef>) -> Probes {
+    let hw = core.brains.factory().hardware().cloned();
+    let name = model.as_ref().map(|m| m.model_id.clone()).unwrap_or_default();
+    let (gpu, models) = (hw.clone(), hw);
+    let (for_crew, for_rate) = (Arc::downgrade(core), Arc::downgrade(core));
+    let (crew_model, rate_model) = (model.clone(), model);
+    Probes {
+        runner_mib: Box::new(move || gpu.as_ref().and_then(|h| live::runners_mib(h.gpu.as_ref()))),
+        resident: Box::new(move || {
+            let loaded = models.as_ref()?.models.resident()?;
+            Some(loaded.iter().any(|n| live::same_model(n, &name)))
+        }),
+        crew_run: Box::new(move || {
+            let core = for_crew.upgrade()?;
+            let run = core.crew.get()?.supervisor.local_stream_on(crew_model.as_ref()?)?;
+            Some(run.short().to_string())
+        }),
+        prefill_rate: Box::new(move || {
+            let core = for_rate.upgrade()?;
+            let key = live::rate_key("prefill", &rate_model.as_ref()?.to_string());
+            core.brains.with_library(|l| l.calibration(&key).ok().flatten())
+        }),
     }
 }
 

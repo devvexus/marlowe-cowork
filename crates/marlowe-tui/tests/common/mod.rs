@@ -126,7 +126,7 @@ pub fn sonnet_ref() -> ModelRef {
 }
 
 pub fn usage() -> Usage {
-    Usage { input: 12_400, output: 830, reasoning: 1_204, cached_input: 0, cost_usd: Some(0.0496) }
+    Usage { input: 12_400, output: 830, reasoning: 1_204, cached_input: 0, cost_usd: Some(0.0496), ..Usage::default() }
 }
 
 pub fn key(code: KeyCode) -> KeyEvent {

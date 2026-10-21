@@ -27,6 +27,8 @@ use marlowe_proto::{
 struct Slow {
     before_first_frame: u64,
     requests: Mutex<Vec<ChatRequest>>,
+    /// An engine that says when the request is sent and reports its own timings in this usage.
+    engine: Option<Usage>,
 }
 
 impl Provider for Slow {
@@ -43,12 +45,15 @@ impl Provider for Slow {
 
     fn stream(&self, req: &ChatRequest, _cancel: &CancelToken, on: &mut dyn FnMut(StreamEvent)) -> Result<Completion, ProviderError> {
         self.requests.lock().unwrap().push(req.clone());
+        if self.engine.is_some() {
+            on(StreamEvent::Sent);
+        }
         std::thread::sleep(Duration::from_millis(self.before_first_frame));
         let mut b = CompletionBuilder::new();
         for e in [
             StreamEvent::TextDelta("Hel".into()),
             StreamEvent::TextDelta("lo".into()),
-            StreamEvent::Usage(Usage { input: 10, output: 5, ..Default::default() }),
+            StreamEvent::Usage(self.engine.unwrap_or(Usage { input: 10, output: 5, ..Default::default() })),
             StreamEvent::Stop(StopReason::EndTurn),
         ] {
             b.push(&e);
@@ -190,7 +195,7 @@ fn timings(log: &[Envelope]) -> (Vec<PhaseSpan>, TurnNumbers) {
 fn enter_to_first_token_is_covered_by_named_spans_that_sum_to_the_ttft() {
     let home = temp_home("coverage");
     seed_model(&home);
-    let provider = Arc::new(Slow { before_first_frame: 70, requests: Mutex::new(Vec::new()) });
+    let provider = Arc::new(Slow { before_first_frame: 70, requests: Mutex::new(Vec::new()), engine: None });
     let d = start(&home, provider, 45, None);
     let mut a = Client::connect(&d.info, None);
     // Enter was pressed 6 ms before the ask reached the daemon.
@@ -259,7 +264,7 @@ fn enter_to_first_token_is_covered_by_named_spans_that_sum_to_the_ttft() {
 fn harness_overhead_with_nothing_slow_is_small() {
     let home = temp_home("overhead");
     seed_model(&home);
-    let provider = Arc::new(Slow { before_first_frame: 0, requests: Mutex::new(Vec::new()) });
+    let provider = Arc::new(Slow { before_first_frame: 0, requests: Mutex::new(Vec::new()), engine: None });
     let d = start(&home, provider, 0, None);
     let mut a = Client::connect(&d.info, None);
     ask(&mut a, None, "warm up", None);
@@ -286,7 +291,7 @@ fn an_abstained_recall_still_says_so_and_the_memory_tail_is_reported() {
     seed_model(&home);
     // No models: memory is degraded, so recall abstains at once; the write tail still reports.
     let mind = Mind::open_with(&home, MindConfig { models_dir: Some(home.join("no-models-here")), ..MindConfig::default() }).unwrap();
-    let provider = Arc::new(Slow { before_first_frame: 0, requests: Mutex::new(Vec::new()) });
+    let provider = Arc::new(Slow { before_first_frame: 0, requests: Mutex::new(Vec::new()), engine: None });
     let d = start(&home, provider, 0, Some(mind));
     let mut a = Client::connect(&d.info, None);
     ask(&mut a, None, "I always use uv, never pip.", None);
@@ -316,7 +321,7 @@ fn an_abstained_recall_still_says_so_and_the_memory_tail_is_reported() {
 fn progress_is_live_only_and_never_replayed() {
     let home = temp_home("replay");
     seed_model(&home);
-    let provider = Arc::new(Slow { before_first_frame: 0, requests: Mutex::new(Vec::new()) });
+    let provider = Arc::new(Slow { before_first_frame: 0, requests: Mutex::new(Vec::new()), engine: None });
     let d = start(&home, provider, 0, None);
     let mut a = Client::connect(&d.info, None);
     ask(&mut a, None, "hi", None);
@@ -335,6 +340,64 @@ fn progress_is_live_only_and_never_replayed() {
     assert!(seen.iter().filter(|e| matches!(e.event, Event::Phase(_))).all(|e| e.seq > 0), "a replayed phase is numbered");
     assert!(seen.iter().filter_map(|e| if let Event::Phase(p) = &e.event { Some(p) } else { None }).all(|p| p.state != PhaseState::Progress));
     assert!(seen.iter().any(|e| matches!(e.event, Event::Phase(_))), "start and end events are replayed");
+    stop(d);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn the_prompt_read_is_a_nested_span_with_the_engines_numbers_and_the_rates_are_kept_for_the_next_estimate() {
+    let home = temp_home("prefill");
+    seed_model(&home);
+    let usage = Usage {
+        input: 4000,
+        output: 50,
+        prompt_eval: Some(4000),
+        prefill_ms: Some(2000),
+        load_ms: Some(0),
+        decode_ms: Some(500),
+        ..Default::default()
+    };
+    let provider = Arc::new(Slow { before_first_frame: 450, requests: Mutex::new(Vec::new()), engine: Some(usage) });
+    let d = start(&home, provider, 0, None);
+    let mut a = Client::connect(&d.info, None);
+
+    // First turn: no stored rate, so no estimate is shown; the end carries the engine's numbers.
+    ask(&mut a, None, "first", None);
+    let log = a.until(is_finished);
+    let ps = phases(&log);
+    assert!(ps.iter().all(|p| !(p.kind == PhaseKind::Prefill && p.state == PhaseState::Progress)), "no rate stored yet: no bar");
+    let start_ev = ps.iter().find(|p| p.kind == PhaseKind::Prefill && p.state == PhaseState::Start).expect("prefill starts at the send");
+    assert!(start_ev.est && start_ev.total.is_some(), "the prompt size is our estimate: {start_ev:?}");
+    let end = ps.iter().find(|p| p.kind == PhaseKind::Prefill && p.state == PhaseState::End).expect("prefill ends");
+    assert_eq!((end.done, end.ms, end.rate), (Some(4000), Some(2000), Some(2000.0)));
+    assert!(ps.iter().any(|p| p.kind == PhaseKind::Wire && p.stage.as_deref() == Some("prepare") && p.state == PhaseState::End));
+    let (spans, numbers) = timings(&log);
+    let read = spans.iter().find(|s| s.kind == PhaseKind::Prefill).expect("a prefill span");
+    assert_eq!((read.parent, read.ms), (Some(PhaseKind::Wire), 2000));
+    let wire = spans.iter().find(|s| s.kind == PhaseKind::Wire && s.stage.is_none()).unwrap();
+    assert!(read.start_ms >= wire.start_ms, "the read begins inside the wire phase: {read:?} {wire:?}");
+    // The nested read and prepare spans do not double-count: the top-level spans still sum to the TTFT.
+    let top: Vec<&PhaseSpan> = spans.iter().filter(|s| s.parent.is_none() && s.kind != PhaseKind::Prefill).collect();
+    let sum: u64 = top.iter().filter(|s| !matches!(s.kind, PhaseKind::MemoryWrite)).map(|s| s.ms).sum();
+    let ttft = numbers.ttft_ms.unwrap();
+    let slack = top.len() as u64 + 16;
+    assert!(sum <= ttft + slack && ttft <= sum + slack, "spans sum to {sum} ms, TTFT {ttft} ms: {top:?}");
+    assert!(spans.iter().any(|s| s.kind == PhaseKind::Wire && s.stage.as_deref() == Some("prepare") && s.parent == Some(PhaseKind::Wire)));
+    let r = numbers.read.expect("what the first call read");
+    assert_eq!((r.new_tok, r.ms), (4000, 2000));
+    // The measured rates are stored per model.
+    let lib = Library::open(&paths::cowork_db(&home)).unwrap();
+    assert_eq!(lib.calibration("prefill_tok_s:ollama/scripted").unwrap(), Some(2000.0));
+    assert_eq!(lib.calibration("decode_tok_s:ollama/scripted").unwrap(), Some(100.0));
+
+    // A new session: the stored rate gives an estimate, marked, capped, with its rate.
+    ask(&mut a, None, "second", None);
+    let log = a.until(is_finished);
+    let progress: Vec<&PhaseEvent> = phases(&log).into_iter().filter(|p| p.kind == PhaseKind::Prefill && p.state == PhaseState::Progress).collect();
+    assert!(!progress.is_empty(), "an estimate while the engine is silent");
+    assert!(progress.iter().all(|p| p.est && p.rate == Some(2000.0) && p.done < p.total && p.unit.as_deref() == Some("tok")));
+    let (_, numbers) = timings(&log);
+    assert_eq!(numbers.read.map(|r| r.new_tok), Some(4000), "the real count replaces the estimate");
     stop(d);
     let _ = std::fs::remove_dir_all(&home);
 }
