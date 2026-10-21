@@ -461,24 +461,24 @@ fn the_per_role_tool_table_is_pinned() {
 }
 
 const TABLE: &str = "
-role analyst               813  read glob grep write edit python bash powershell
+role analyst               854  read glob grep write edit python bash powershell
 role compressor              0
-role engineer             1494  read write edit glob grep bash powershell python git project
-role integrator           1406  read write edit glob grep bash powershell git project
-role lead                  956  read write edit glob grep bash powershell project
-role researcher            687  read glob grep write web_search web_fetch arxiv
-role review-correctness    564  read glob grep bash powershell
-role review-performance    564  read glob grep bash powershell
-role review-security       564  read glob grep bash powershell
-role reviewer              847  read glob grep bash powershell web_search web_fetch arxiv
-role scout                 626  web_search web_fetch arxiv read glob grep
+role engineer             1544  read write edit glob grep bash powershell python git project
+role integrator           1456  read write edit glob grep bash powershell git project
+role lead                 1006  read write edit glob grep bash powershell project
+role researcher            698  read glob grep write web_search web_fetch arxiv
+role review-correctness    605  read glob grep bash powershell
+role review-performance    605  read glob grep bash powershell
+role review-security       605  read glob grep bash powershell
+role reviewer              888  read glob grep bash powershell web_search web_fetch arxiv
+role scout                 637  web_search web_fetch arxiv read glob grep
 role verifier                0
-role workflow             1922  read write edit multi_edit notebook_edit glob grep bash powershell python web_fetch web_search git project
-type explore               745  read glob grep symbols definition references hover diagnostics
-type plan                  745  read glob grep symbols definition references hover diagnostics
+role workflow             1972  read write edit multi_edit notebook_edit glob grep bash powershell python web_fetch web_search git project
+type explore               758  read glob grep symbols definition references hover diagnostics
+type plan                  758  read glob grep symbols definition references hover diagnostics
 type general                 -  (the caller's tools)
 type fork                    -  (the caller's tools)
-type guide                 343  read glob grep
-type statusline            427  read glob grep set_statusline
-type agent-creator         519  read glob grep create_agent
+type guide                 354  read glob grep
+type statusline            438  read glob grep set_statusline
+type agent-creator         530  read glob grep create_agent
 ";

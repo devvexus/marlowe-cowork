@@ -7,6 +7,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 ### Green main and follow-ups
 
 - Headless: a message sent while the turn is running, or while its ask is still starting the turn, steers it instead of queueing a second turn (a steer no longer resends the run options, which made the daemon queue it).
+- Per-role tool table re-pinned for the tuned tool descriptions of the first-try probe (28b400e); no role's tool list changed, token costs rose by 11 (guide, researcher, scout) to 50 (engineer, lead, integrator, workflow) per role.
 
 ### Review pass over the live-progress batch
 
