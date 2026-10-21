@@ -264,6 +264,15 @@ impl ToolMiddleware for WorkflowIntent {
                     }
                     t.notes.insert(call.id.clone(), "[args: ignored `validate_only`: the user asked to run the workflow, and the short form needs no check]".into());
                 }
+                // A request about the workspace's folders, packages or commits whose call names no
+                // items would run three made-up angles instead: it gets the items the reminder offered.
+                let empty = |k: &str| call.args.get(k).is_none_or(|v| v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty()) || v.as_array().is_some_and(Vec::is_empty));
+                if let (true, true, Some(Over::From(sel))) = (t.reminded && short, empty("items") && empty("items_from"), t.over.clone()) {
+                    if let Some(o) = call.args.as_object_mut() {
+                        o.insert("items_from".into(), Value::String(sel.to_string()));
+                    }
+                    t.notes.insert(format!("{}+items", call.id), format!("[args: added `items_from` \"{sel}\": the request is about the workspace]"));
+                }
                 return CallFlow::Continue;
             }
             let background_call = call.name == "dispatch" || background(call);
@@ -283,10 +292,12 @@ impl ToolMiddleware for WorkflowIntent {
         if call.name != "workflow" {
             return;
         }
-        let note = cx.scope.with_ext(|e| e.get_mut::<Turn>().and_then(|t| t.notes.remove(&call.id)));
-        if let Some(n) = note {
-            outcome.content.push_str("
-");
+        let notes = cx.scope.with_ext(|e| {
+            e.get_mut::<Turn>().map(|t| [call.id.clone(), format!("{}+items", call.id)].iter().filter_map(|k| t.notes.remove(k)).collect::<Vec<_>>()).unwrap_or_default()
+        });
+        for n in notes {
+            outcome.content.push('
+');
             outcome.content.push_str(&n);
         }
     }

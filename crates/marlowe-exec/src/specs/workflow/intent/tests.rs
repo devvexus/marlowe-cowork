@@ -190,6 +190,16 @@ fn a_checked_only_short_form_in_a_reminded_turn_is_run_and_says_so() {
     let mut out = marlowe_agent::ToolOutcome::ok("started wf_1", "ok");
     WorkflowIntent.after_call(&short, &cx, &mut out);
     assert!(out.content.contains("ignored `validate_only`"), "{}", out.content);
+    // A call that names no items in a workspace request gets the reminder's `items_from`.
+    let mut bare = call("3", "workflow", json!({"prompt": "Summarise {item}", "read_only": true}));
+    WorkflowIntent.before_approval(&mut bare, &cx);
+    assert_eq!(bare.args["items_from"], "folders");
+    let mut out = marlowe_agent::ToolOutcome::ok("started", "ok");
+    WorkflowIntent.after_call(&bare, &cx, &mut out);
+    assert!(out.content.contains("added `items_from` \"folders\""), "{}", out.content);
+    let mut named = call("4", "workflow", json!({"prompt": "p", "items": ["a", "b"]}));
+    WorkflowIntent.before_approval(&mut named, &cx);
+    assert!(named.args.get("items_from").is_none(), "named items are kept");
     // A script is checked as asked.
     let mut script = call("2", "workflow", json!({"script": "def main(args): pass", "validate_only": true}));
     WorkflowIntent.before_approval(&mut script, &cx);
