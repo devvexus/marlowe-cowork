@@ -90,6 +90,14 @@ pub struct CrewConfig {
     pub research: ResearchV2Config,
     /// build_v2: parallel engineers, rounds, plan auto-approval, wall-clock budget, lockfiles.
     pub build: BuildV2Config,
+    /// A new local model call waits while Windows has less commit memory than this (bytes): a
+    /// runner's host cache grows with every new prompt, and at the commit limit every process
+    /// on the machine fails its next allocation.
+    pub commit_floor: u64,
+    /// How long such a call waits for memory before it fails with the reason.
+    pub memory_wait: Duration,
+    /// Reads the commit memory ([`marlowe_os::memory::commit`]; tests fake it).
+    pub commit: fn() -> Option<marlowe_os::memory::Commit>,
 }
 
 impl Default for CrewConfig {
@@ -101,6 +109,9 @@ impl Default for CrewConfig {
             budget_extension: 0.5,
             research: ResearchV2Config::default(),
             build: BuildV2Config::default(),
+            commit_floor: 2 << 30,
+            memory_wait: Duration::from_secs(60),
+            commit: marlowe_os::memory::commit,
         }
     }
 }
@@ -159,6 +170,36 @@ pub enum CrewEvent {
 /// The note a run carries when the window closed on it (`interrupted: stopped after step 4 while
 /// running cargo test`). The prompt at the next launch finds the runs by it.
 pub const INTERRUPTED: &str = "interrupted";
+
+/// `<home>\crew.alive`: written when a supervisor starts and removed when it stops cleanly
+/// ([`Supervisor::shutdown`], or a closed window). Still there at the next start, it means the
+/// previous daemon died with runs in flight. It holds how long `daemon.log` was then, so the
+/// next start reads only what that daemon logged.
+pub const ALIVE_FILE: &str = "crew.alive";
+
+/// Why the previous daemon stopped, from what it logged after `offset` in `<home>\daemon.log`.
+fn crash_reason(home: &Path, offset: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut text = String::new();
+    if let Ok(mut f) = std::fs::File::open(home.join("daemon.log")) {
+        let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+        // At most the last 256 KB of that daemon's lifetime.
+        let from = offset.min(len).max(len.saturating_sub(256 * 1024));
+        let mut bytes = Vec::new();
+        if f.seek(SeekFrom::Start(from)).is_ok() && f.read_to_end(&mut bytes).is_ok() {
+            text = String::from_utf8_lossy(&bytes).into_owned();
+        }
+    }
+    let last = |needle: &str| text.lines().rev().find(|l| l.contains(needle)).map(|l| l.trim().to_string());
+    let why = if let Some(line) = last("memory allocation of") {
+        format!("Windows ran out of commit memory (`{line}`)")
+    } else if let Some(line) = last("panicked") {
+        format!("it panicked (`{}`)", line.chars().take(300).collect::<String>())
+    } else {
+        "nothing in daemon.log says why".to_string()
+    };
+    format!("the daemon stopped while this run was running: {why}. Its finished steps are kept; run it again to continue")
+}
 
 /// Handle to the supervisor. Clones share one.
 #[derive(Clone)]
@@ -553,7 +594,28 @@ impl Supervisor {
         // waiting on an approval lost it: it pauses, and resuming asks again. One parked at its
         // research plan gate waits on as it was: its checkpointed proposal is pending again
         // straight from the store, with no model, GPU or concurrency slot, and the answer queues it.
-        let resumable = inner.store().resumable()?;
+        let alive = home.join(ALIVE_FILE);
+        let crashed = std::fs::read_to_string(&alive).ok().map(|m| {
+            let offset = m.lines().find_map(|l| l.strip_prefix("log=")).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+            crash_reason(home, offset)
+        });
+        let log_len = std::fs::metadata(home.join("daemon.log")).map(|m| m.len()).unwrap_or(0);
+        let _ = std::fs::write(&alive, format!("pid={}
+log={log_len}
+", std::process::id()));
+        let mut resumable = inner.store().resumable()?;
+        // A run that was running when the daemon died fails with the reason rather than starting
+        // again by itself (what killed the daemon would likely kill it again). Queued runs never
+        // started; they go on.
+        if let Some(why) = &crashed {
+            for mut run in resumable.extract_if(.., |r| r.status == CrewRunStatus::Running) {
+                run.status = CrewRunStatus::Failed;
+                run.note = Some(why.clone());
+                run.current_action = None;
+                run.relay_due = run.session.is_some();
+                inner.save_detached(run)?;
+            }
+        }
         let stranded: Vec<Run> = inner
             .store()
             .list(u32::MAX)?
@@ -1069,6 +1131,7 @@ impl Supervisor {
         while self.inner.state().threads > 0 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
+        let _ = std::fs::remove_file(self.inner.home.join(ALIVE_FILE));
     }
 
     /// The window closed (N, 2026-10-10), first half: fires every run's cancel token and stop
@@ -1121,6 +1184,7 @@ impl Supervisor {
                 out.push(run);
             }
         }
+        let _ = std::fs::remove_file(self.inner.home.join(ALIVE_FILE));
         out
     }
 

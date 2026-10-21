@@ -430,6 +430,60 @@ fn a_run_killed_mid_way_resumes_at_its_next_step_after_a_restart() {
 }
 
 #[test]
+fn a_run_the_daemon_died_under_fails_with_the_reason_instead_of_staying_running() {
+    // 2026-10-21: the daemon aborted with "memory allocation of 5505024 bytes failed" when
+    // llama-server took the last of the commit limit, and its workflow run stayed `running`.
+    let home = home("crashed");
+    let first = cloud(|req, _, cancel| {
+        if last_user(req).contains("Plan the investigation") {
+            Ok(answer("1. Which ranks were tested?\n2. Which tasks?"))
+        } else {
+            block(cancel)
+        }
+    });
+    let fx = start(&home, &first);
+    assert!(home.join(ALIVE_FILE).exists(), "a running supervisor leaves its marker");
+    let id = fx.sup.dispatch(None, args("researcher", "LoRA rank sensitivity", Some(Playbook::DeepResearch), None)).unwrap().run_id;
+    wait("both scouts in flight", || {
+        first.requests().iter().filter(|r| last_user(r).contains("Your sub-question")).count() == 2
+    });
+    fx.sup.shutdown();
+    drop(fx);
+    assert!(!home.join(ALIVE_FILE).exists(), "a clean stop removes it");
+
+    // What the dead daemon left: its marker, and its last words after the offset it recorded.
+    std::fs::write(home.join("daemon.log"), "an older daemon: memory allocation of 1 bytes failed\nmarlowe: loading the conductor\nmemory allocation of 5505024 bytes failed\n").unwrap();
+    std::fs::write(home.join(ALIVE_FILE), "pid=1\nlog=53\n").unwrap();
+    let second = cloud(|_, _, _| Ok(answer("resumed")));
+    let fx = start(&home, &second);
+    let run = info(&fx.sup, &id);
+    assert_eq!(run.status, CrewRunStatus::Failed, "{:?}", run.note);
+    let note = run.note.unwrap_or_default();
+    assert!(note.contains("commit memory") && note.contains("5505024") && !note.contains("of 1 bytes"), "{note}");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(second.requests().is_empty(), "it does not start again by itself");
+    finish(fx, &[&home]);
+}
+
+#[test]
+fn a_local_call_waits_for_commit_memory_and_fails_with_the_reason_when_it_stays_short() {
+    let home = home("commit-short");
+    let local = Scripted::new(ProviderKind::Ollama, |_, _, _| Ok(answer("never")));
+    let cfg = CrewConfig {
+        commit: || Some(marlowe_os::memory::Commit { available: 1 << 30, limit: 127 << 30 }),
+        memory_wait: Duration::from_millis(300),
+        ..CrewConfig::default()
+    };
+    let fx = start_with(&home, brains(&[("qwen", local.clone())]), cfg, false);
+    let id = fx.sup.dispatch(None, args("tester", "Anything", None, None)).unwrap().run_id;
+    let run = wait_status(&fx.sup, &id, CrewRunStatus::Failed);
+    let note = run.note.unwrap_or_default();
+    assert!(note.contains("Windows is out of memory: 1.0 GB of its 127 GB commit limit is left"), "{note}");
+    assert_eq!(local.calls.load(Ordering::SeqCst), 0, "the runner never got the prompt");
+    finish(fx, &[&home]);
+}
+
+#[test]
 fn live_step_numbers_match_the_transcript_rows_with_parallel_scouts() {
     let home = home("rows");
     // A scout that may call `note`, so one scout makes two model calls while the other makes one.

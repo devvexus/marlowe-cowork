@@ -29,6 +29,11 @@ mod wire;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+/// A full commit limit (a local model's runner can take the last of it) stalls an allocation for
+/// a while instead of aborting the daemon at once.
+#[global_allocator]
+static ALLOC: marlowe_os::memory::Patient = marlowe_os::memory::Patient::system();
+
 const USAGE: &str = "\
 marlowe                                   open the TUI (starts the daemon if needed)
 marlowe --launch [args]                   open it in a configured Windows Terminal window

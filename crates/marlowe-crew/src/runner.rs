@@ -481,6 +481,7 @@ spent: {:?}", self.id, run.goal, run.budget, spent),
 
     /// One of `model`'s stream slots (`crew_slots` across every run).
     fn local_slot(&self, model: &ModelRef) -> Result<(), CrewError> {
+        self.room_for_a_call(model)?;
         let limit = self.inner.deps.brains.context().crew_slots(model);
         let mut n = self.inner.local_streams.lock().unwrap_or_else(|e| e.into_inner());
         loop {
@@ -497,6 +498,38 @@ spent: {:?}", self.id, run.goal, run.budget, spent),
                 .unwrap_or_else(|e| e.into_inner())
                 .0;
         }
+    }
+
+    /// Holds a new call on a local model while Windows is short of commit memory (the runner's
+    /// cache grows with each new prompt, and at the limit every process on the machine, the daemon
+    /// and the runner included, fails its next allocation). Fails the call with the reason when
+    /// memory does not come back within `memory_wait`.
+    fn room_for_a_call(&self, model: &ModelRef) -> Result<(), CrewError> {
+        let cfg = &self.inner.cfg;
+        let short = || (cfg.commit)().filter(|c| c.available < cfg.commit_floor);
+        let Some(mut c) = short() else { return Ok(()) };
+        let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
+        self.progress(&format!("waiting for memory: Windows has {:.1} GB of commit left", gb(c.available)));
+        let end = Instant::now() + cfg.memory_wait;
+        while Instant::now() < end {
+            self.check()?;
+            std::thread::sleep(Duration::from_millis(250).min(cfg.memory_wait));
+            match short() {
+                None => return Ok(()),
+                Some(now) => c = now,
+            }
+        }
+        Err(CrewError::Step {
+            step: model.to_string(),
+            message: format!(
+                "Windows is out of memory: {:.1} GB of its {:.0} GB commit limit is left, under the {:.1} GB a model call \
+                 needs to be safe (the local model's runner grows with each new prompt). Close programs, unload models or \
+                 enlarge the page file, then resume",
+                gb(c.available),
+                gb(c.limit),
+                gb(cfg.commit_floor)
+            ),
+        })
     }
 
     fn release_local(&self, model: &ModelRef) {

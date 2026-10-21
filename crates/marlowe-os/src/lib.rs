@@ -29,6 +29,8 @@ pub mod console;
 /// [`child`] (`tests/spawn_audit.rs` counts every direct call), and seam-crew makes them
 /// `pub(crate)` once the crew's last caller has moved.
 pub mod job;
+/// Commit memory and the allocator that waits for it ([`memory::Patient`]).
+pub mod memory;
 pub mod toast;
 pub mod tray;
 pub mod workspace;
