@@ -296,8 +296,7 @@ impl ToolMiddleware for WorkflowIntent {
             e.get_mut::<Turn>().map(|t| [call.id.clone(), format!("{}+items", call.id)].iter().filter_map(|k| t.notes.remove(k)).collect::<Vec<_>>()).unwrap_or_default()
         });
         for n in notes {
-            outcome.content.push('
-');
+            outcome.content.push('\n');
             outcome.content.push_str(&n);
         }
     }
