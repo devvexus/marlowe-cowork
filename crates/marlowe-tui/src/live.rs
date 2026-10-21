@@ -236,6 +236,9 @@ pub struct Call {
 pub struct Strip {
     /// Enter pressed, nothing back from the daemon yet.
     pub sending: Option<i64>,
+    /// When the turn began for this window: Enter, or its first phase. Short phases show how long
+    /// the turn has been going, so a wait with no stage of its own still ticks.
+    pub began: Option<i64>,
     turn: Option<u32>,
     done_turn: Option<u32>,
     up: bool,
@@ -321,6 +324,7 @@ impl Strip {
         self.done_turn = None;
         self.up = true;
         self.sending = Some(now);
+        self.began = Some(now);
         self.short.borrow_mut().push("sending");
     }
 
@@ -371,6 +375,7 @@ impl Strip {
         self.done_turn = Some(turn);
         self.up = false;
         self.sending = None;
+        self.began = None;
         self.call = Call::default();
         self.tools.clear();
         self.wait = None;
@@ -390,6 +395,7 @@ impl Strip {
         self.reset_turn();
         self.up = false;
         self.sending = None;
+        self.began = None;
         self.turn = None;
         self.tail = None;
         self.done_turn = None;
@@ -501,6 +507,7 @@ impl Strip {
         if !self.fresh(p.turn) {
             return None;
         }
+        self.began.get_or_insert(at);
         self.note_turn(p.turn);
         let stage = p.stage.as_deref();
         match (p.kind, p.state) {
@@ -517,7 +524,7 @@ impl Strip {
                 PhaseState::Progress => {}
             },
             (PhaseKind::Admit, PhaseState::Start) => self.flash("checking the GPU"),
-            (PhaseKind::Wire, PhaseState::Start) => self.flash("preparing the request"),
+            (PhaseKind::Wire, PhaseState::Start) => self.flash("calling the model"),
             (PhaseKind::Recall, _) if stage.is_none() => match p.state {
                 PhaseState::Start => self.flash("recalling"),
                 PhaseState::End => self.recall_done(),

@@ -206,7 +206,7 @@ fn activity(state: &State, theme: &Theme, w: usize) -> Option<Line<'static>> {
             tail.push(sep(theme));
             tail.push(Span::styled(clock(now - since), ink(Ink::Accent, theme)));
         }
-        return Some(lead(g, Ink::Accent, with_read(c.read.as_ref(), tail, w, theme), theme));
+        return Some(lead(g, Ink::Accent, with_read(c.read.as_ref(), vec![tail], w, theme), theme));
     }
     if let Some(since) = c.think_since {
         let mut tail = vec![
@@ -214,10 +214,16 @@ fn activity(state: &State, theme: &Theme, w: usize) -> Option<Line<'static>> {
             Span::styled(clock(now - since), ink(Ink::Speech, theme)),
             Span::styled(format!(" · {} tok", text::thousands(c.think_tokens)), ink(Ink::Speech, theme)),
         ];
+        // Narrow widths drop the thinking rate, then the count, before any of the read segment.
+        let mut tails = Vec::new();
         if let Some(r) = c.window.rate(now) {
-            tail.push(Span::styled(format!(" · {r:>3} tok/s"), ink(Ink::Speech, theme)));
+            tails.push(tail.clone());
+            tails.last_mut().unwrap().push(Span::styled(format!(" · {r:>3} tok/s"), ink(Ink::Speech, theme)));
         }
-        return Some(lead(g, Ink::Speech, with_read(c.read.as_ref(), tail, w, theme), theme));
+        tails.push(tail.clone());
+        tail.truncate(2);
+        tails.push(tail);
+        return Some(lead(g, Ink::Speech, with_read(c.read.as_ref(), tails, w, theme), theme));
     }
     if let Some(p) = &c.prefill {
         let since = s.read_from.unwrap_or(p.started);
@@ -244,29 +250,45 @@ fn activity(state: &State, theme: &Theme, w: usize) -> Option<Line<'static>> {
         variants.push(plain);
         return Some(lead(g, Ink::Speech, pick(variants, w), theme));
     }
+    // Every short phase carries the turn's running time, so a wait with no stage of its own
+    // (a remote model before its first frame) still ticks.
+    let waited = |text: &str| {
+        let mut v = vec![label(text.to_string(), theme)];
+        if let Some(b) = s.began {
+            v.push(sep(theme));
+            v.push(label(clock(now - b), theme));
+        }
+        lead(g, Ink::Hover, v, theme)
+    };
     if let Some(label_text) = s.short_label() {
-        return Some(lead(g, Ink::Hover, vec![label(label_text, theme)], theme));
+        return Some(waited(label_text));
     }
     if s.sending.is_some() {
-        return Some(lead(g, Ink::Hover, vec![label("sending", theme)], theme));
+        return Some(waited("sending"));
     }
     if state.live.is_some() {
-        return Some(lead(g, Ink::Hover, vec![label("working", theme)], theme));
+        return Some(waited("working"));
     }
     None
 }
 
-/// The read segment before the state of the call, shortened until the line fits.
-fn with_read(read: Option<&Read>, tail: Vec<Span<'static>>, w: usize, theme: &Theme) -> Vec<Span<'static>> {
-    let Some(r) = read else { return tail };
-    let arrow = || Span::styled("  ›  ", ink(Ink::Dimmer, theme));
+/// The read segment before the state of the call, shortened until the line fits. `tails` run from
+/// the fullest to the barest; the read segment goes only after every tail has been tried short.
+fn with_read(read: Option<&Read>, tails: Vec<Vec<Span<'static>>>, w: usize, theme: &Theme) -> Vec<Span<'static>> {
+    let Some(r) = read else { return pick(tails, w) };
+    let mut variants = Vec::new();
     let mut full = read_spans(r, false, theme);
-    full.push(arrow());
-    full.extend(tail.clone());
-    let mut short = read_spans(r, true, theme);
-    short.push(Span::styled(" › ", ink(Ink::Dimmer, theme)));
-    short.extend(tail.clone());
-    pick(vec![full, short, tail], w)
+    full.push(Span::styled("  ›  ", ink(Ink::Dimmer, theme)));
+    full.extend(tails[0].clone());
+    variants.push(full);
+    for t in &tails {
+        let mut short = read_spans(r, true, theme);
+        short.push(Span::styled(" › ", ink(Ink::Dimmer, theme)));
+        short.extend(t.clone());
+        variants.push(short);
+    }
+    variants.push(tails[tails.len() - 1].clone());
+    pick(variants, w)
 }
 
 // ---- row two: the detail ------------------------------------------------------------------------

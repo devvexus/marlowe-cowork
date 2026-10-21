@@ -134,6 +134,21 @@ fn a_failed_ask_takes_the_strip_down_again() {
     assert!(r.s.pending_user.is_none());
 }
 
+#[test]
+fn a_wait_with_no_stage_of_its_own_still_ticks() {
+    // A remote model reports nothing between the request leaving and its first frame: the
+    // strip names the wait and counts it, so no moment is an unlabelled stall.
+    let mut r = Rig::new();
+    r.enter(2_000, "and the eval?");
+    r.started(2_010, 2, "and the eval?");
+    r.phase(2_020, 2, ph(PhaseKind::Wire));
+    let (a, _) = r.strip(2_100);
+    let (b, _) = r.strip(4_600);
+    assert!(a.contains("calling the model"), "{a}");
+    assert!(a.contains("100ms") && b.contains("2.6s"), "the wait counts up: {a} / {b}");
+    assert_eq!(a.chars().count().abs_diff(b.chars().count()), 0, "and does not shift: {a} / {b}");
+}
+
 // ---- recall ---------------------------------------------------------------------------------------
 
 fn stage(r: &mut Rig, ms: i64, name: &str, n: u64, took: u64) {

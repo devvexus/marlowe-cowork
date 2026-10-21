@@ -4,6 +4,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Review pass over the live-progress batch
+
+- A short phase on the activity line now carries the turn's running time (`calling the model · 2.6s`), so a remote model's silent wait before its first frame ticks instead of sitting on a static label; the read-to-think line sheds the thinking rate, then the count, before it drops the read at narrow widths.
+
 ### Live phases (protocol and instrumentation)
 
 - **One event family for every named step** (`marlowe_proto::phase`): `Event::Phase{kind, state, stage, done/total, rate, ms, est, detail}` for sending, setup, admit, prompt, recall (per stage), fit, compaction, wire and the memory-write tail. `Start`/`End` are ordered and replayed; `Progress` goes through `Bus::publish_ephemeral` (seq 0, not in the ring, never drops a client). Additive: no `PROTO_VERSION` bump, unknown events are skipped by old readers, unknown kinds decode as `Unknown`.
