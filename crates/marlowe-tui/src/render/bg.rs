@@ -116,7 +116,7 @@ pub fn tasks(area: Rect, state: &State, ui: &TasksUi, theme: &Theme, buf: &mut B
         return;
     }
     if rows.is_empty() {
-        note(inner, inner.y + 2, "nothing is running in the background \u{b7} a shell command with ctrl+b, a monitor, a workflow or a background agent shows up here", theme, buf);
+        note(inner, inner.y + 2, "nothing is running in the background \u{b7} a shell command with ctrl+b, a monitor, a team task or a background agent shows up here", theme, buf);
         return;
     }
     let visible = (inner.height as usize).saturating_sub(2);
@@ -129,11 +129,11 @@ pub fn tasks(area: Rect, state: &State, ui: &TasksUi, theme: &Theme, buf: &mut B
             _ => "",
         };
         let detail = t.detail.as_deref().filter(|d| !d.trim().is_empty()).map(|d| format!(" \u{b7} {}", text::clean(d))).unwrap_or_default();
-        let room = (inner.width as usize).saturating_sub(2 + 9 + 22 + 10 + 9);
+        let room = (inner.width as usize).saturating_sub(2 + 10 + 22 + 10 + 9);
         let title = text::truncate(&format!("{}{detail}{who}", text::clean(&t.title)), room);
         let spans = vec![
             marker(sel, state, theme, i),
-            Span::styled(text::pad(t.kind.as_str(), 9), ink(Ink::Dim, theme)),
+            Span::styled(text::pad(t.kind.label(), 10), ink(Ink::Dim, theme)),
             Span::styled(text::pad(&text::truncate(&t.id, 21), 22), ink(Ink::Dimmer, theme)),
             Span::styled(text::pad(t.status.as_str(), 10), ink(task_status_ink(t.status), theme)),
             Span::styled(text::pad(&elapsed(t, state.now_ms), 9), ink(Ink::Dimmer, theme)),
@@ -186,7 +186,7 @@ pub fn workflows(area: Rect, state: &State, ui: &WorkflowsUi, theme: &Theme, buf
     match ui.open.as_ref().and_then(|r| state.bg.workflow(r)) {
         Some(info) => workflow_run(area, state, ui, info, theme, buf),
         None if ui.open.is_some() => {
-            let inner = frame(area, 100, 8, "workflow", &[("esc", "back")], theme, buf);
+            let inner = frame(area, 100, 8, "team task", &[("esc", "back")], theme, buf);
             note(inner, inner.y, "waiting for the run's first update\u{2026}", theme, buf);
         }
         None => workflow_list(area, state, ui, theme, buf),
@@ -201,7 +201,7 @@ fn workflow_list(area: Rect, state: &State, ui: &WorkflowsUi, theme: &Theme, buf
         area,
         108,
         h.clamp(12, area.height.saturating_sub(2)),
-        "workflows",
+        "team tasks",
         &[("\u{21b5}", "open or start"), ("r", "refresh"), ("\u{2191}\u{2193}", "select"), ("esc", "close")],
         theme,
         buf,
@@ -211,11 +211,11 @@ fn workflow_list(area: Rect, state: &State, ui: &WorkflowsUi, theme: &Theme, buf
     put(buf, inner.x, y, &Line::from(Span::styled("runs", ink(Ink::Accent, theme))), inner.width);
     y += 1;
     if !state.bg.workflows_known {
-        let msg = if unavailable(state, "list_workflows") { "this daemon does not run workflows yet" } else { "loading\u{2026}" };
+        let msg = if unavailable(state, "list_workflows") { "this daemon does not run team tasks yet" } else { "loading\u{2026}" };
         note(inner, y, msg, theme, buf);
         y += 1;
     } else if runs.is_empty() {
-        note(inner, y, "none yet \u{b7} /workflow <name> starts one", theme, buf);
+        note(inner, y, "none yet \u{b7} /team <name> starts one", theme, buf);
         y += 1;
     }
     for (i, w) in runs.iter().enumerate() {
@@ -266,7 +266,7 @@ fn workflow_run(area: Rect, state: &State, ui: &WorkflowsUi, info: &WorkflowInfo
         &[("s", "skip agent"), ("x", "stop run"), ("m", "messages"), ("\u{2191}\u{2193}", "select"), ("esc", "back")]
     };
     let h = area.height.saturating_sub(4);
-    let inner = frame(area, 112, h, &format!("workflow \u{b7} {}", text::truncate(&text::clean(&info.name), 40)), hints, theme, buf);
+    let inner = frame(area, 112, h, &format!("team task \u{b7} {}", text::truncate(&text::clean(&info.name), 40)), hints, theme, buf);
     let dim = ink(Ink::Dim, theme);
     let dimmer = ink(Ink::Dimmer, theme);
     let mut y = inner.y;
@@ -315,7 +315,7 @@ fn workflow_run(area: Rect, state: &State, ui: &WorkflowsUi, info: &WorkflowInfo
     put(buf, inner.x, y, &Line::from(head), if y == inner.y { first_w } else { inner.width });
     y += 2;
     if ui.confirm_stop {
-        put(buf, inner.x, y - 1, &Line::from(Span::styled("Stop this workflow? Running agents stop; finished agents\u{2019} results are kept for a resume. y / n", ink(Ink::Amber, theme))), inner.width);
+        put(buf, inner.x, y - 1, &Line::from(Span::styled("Stop this team task? Running agents stop; finished agents\u{2019} results are kept for a resume. y / n", ink(Ink::Amber, theme))), inner.width);
     }
 
     // The log takes the bottom; the agents take the rest.

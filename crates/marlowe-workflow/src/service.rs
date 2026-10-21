@@ -73,7 +73,7 @@ pub struct Workflows(pub Arc<dyn WorkflowLauncher>);
 
 impl std::fmt::Debug for Workflows {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Workflows")
+        f.write_str("Team tasks")
     }
 }
 
@@ -105,7 +105,7 @@ pub struct Prepared {
 pub fn prepare(roots: &Roots, script: Option<&str>, script_path: Option<&str>, name: Option<&str>) -> Result<Prepared, String> {
     let given = [script.is_some(), script_path.is_some(), name.is_some()].iter().filter(|b| **b).count();
     if given != 1 {
-        return Err("give exactly one of `script` (inline Starlark), `script_path` (a .star file) or `name` (a saved workflow)".into());
+        return Err("give exactly one of `script` (inline Starlark), `script_path` (a .star file) or `name` (a saved team task)".into());
     }
     let (name, filename, source, path, builtin) = if let Some(s) = script {
         ("inline".to_string(), "inline.star".to_string(), s.to_string(), None, false)
@@ -113,7 +113,7 @@ pub fn prepare(roots: &Roots, script: Option<&str>, script_path: Option<&str>, n
         let path = resolve_path(roots, p);
         if path.extension().is_some_and(|x| x == "js") {
             return Err(format!(
-                "{} is JavaScript. Workflows here are Starlark: convert it once with `/workflow convert <name>`, or write the .star yourself",
+                "{} is JavaScript. Team tasks here are Starlark: convert it once with `/team convert <name>`, or write the .star yourself",
                 path.display()
             ));
         }
@@ -169,7 +169,7 @@ pub fn may_run(home: &Path, prepared: &Prepared, approved_digest: Option<&str>) 
         return Ok(());
     }
     Err(format!(
-        "{} is not the script that was checked for approval (it changed, or appeared, after the check); nothing ran. Call `workflow` again to see and approve this version",
+        "{} is not the script that was checked for approval (it changed, or appeared, after the check); nothing ran. Call `team` again to see and approve this version",
         prepared.filename
     ))
 }
@@ -250,7 +250,7 @@ pub fn remembered_args(home: &Path, project: Option<&Path>, name: &str, args: Va
 pub fn approval_summary(p: &Prepared) -> String {
     let phases = if p.meta.phases.is_empty() { String::new() } else { format!(" · phases: {}", p.meta.phases.join(" → ")) };
     format!(
-        "run workflow `{}` (first run of this script): {}{phases} · up to {} agents, {} at a time, in a crew sandbox",
+        "run team task `{}` (first run of this script): {}{phases} · up to {} agents, {} at a time, in a crew sandbox",
         p.name,
         p.meta.description.trim(),
         crate::MAX_AGENTS,

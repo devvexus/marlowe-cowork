@@ -137,7 +137,6 @@ pub fn for_tool(name: &str) -> ArgRules {
         "agent" => ArgRules {
             aliases: &[("subagent_type", "type"), ("agent_type", "type"), ("kind", "type"), ("task", "prompt"), ("goal", "prompt"), ("instructions", "prompt"), ("description", "label"), ("title", "label"), ("run_in_background", "background")],
             example: Some(r#"agent{"type": "explore", "prompt": "Find where the config is parsed"}"#),
-            see_also: Some("A workflow: workflow(script). Crew work: dispatch(role, prompt)."),
             ..ArgRules::NONE
         },
         "send_message" => ArgRules {
@@ -172,12 +171,11 @@ pub fn for_tool(name: &str) -> ArgRules {
             values: &[("op", "pr_checks", "ci")], requires: &[Require::When { key: "op", is: "pr_create", need: &["title"], unless: &[] }, Require::When { key: "op", is: "pr_reply", need: &["number", "comment_id", "body"], unless: &[] }, Require::When { key: "op", is: "issue_view", need: &["number"], unless: &[] }],
             ..ArgRules::NONE
         },
-        "workflow" => ArgRules {
+        "team" => ArgRules {
             aliases: &[
-                ("code", "script"), ("source", "script"), ("starlark", "script"), ("script_path", "path"), ("file", "path"), ("workflow", "name"), ("input", "args"), ("params", "args"),
+                ("code", "script"), ("source", "script"), ("starlark", "script"), ("script_path", "path"), ("file", "path"), ("workflow", "name"), ("team", "name"), ("team_task", "name"), ("input", "args"), ("params", "args"),
             ],
             ignore: &["role", "label", "phase", "phase_name", "description", "title"],
-            see_also: Some("One task: agent(type, prompt). Crew work: dispatch(role, prompt)."),
             ..ArgRules::NONE
         },
         "report_findings" => ArgRules {

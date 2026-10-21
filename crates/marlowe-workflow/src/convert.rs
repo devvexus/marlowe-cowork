@@ -1,7 +1,7 @@
 //! The one-time converter for Claude Code's JavaScript workflows (`.claude\workflows\*.js`,
-//! 9.2-q): their `meta` is read here so the listing can show it, and `/workflow convert <name>`
+//! 9.2-q): their `meta` is read here so the listing can show it, and `/team convert <name>`
 //! hands the model [`conversion_prompt`], which writes `.marlowe\workflows\<name>.star` and
-//! checks it with `workflow{path, validate_only:true}` until it is clean. The JavaScript
+//! checks it with `team{path, validate_only:true}` until it is clean. The JavaScript
 //! file is never modified and never run.
 
 use serde_json::Value;
@@ -131,10 +131,10 @@ fn js_object_to_json(src: &str) -> Option<String> {
     Some(out)
 }
 
-/// What the model is told to do for `/workflow convert <name>`.
+/// What the model is told to do for `/team convert <name>`.
 pub fn conversion_prompt(name: &str, js_path: &str, target: &str) -> String {
     format!(
-        "Convert the Claude Code JavaScript workflow `{name}` ({js_path}) into a Marlowe Starlark workflow at {target}. \
+        "Convert the Claude Code JavaScript workflow `{name}` ({js_path}) into a Marlowe Starlark team task at {target}. \
 Read the JavaScript first; do not modify or run it.\n\
 Starlark is Python-like. Map it this way:\n\
 - `export const meta = {{...}}` -> `META = {{...}}` (a pure literal; `whenToUse` may stay or become `when_to_use`).\n\
@@ -145,9 +145,9 @@ Starlark is Python-like. Map it this way:\n\
 - Template literals -> f-strings (`f\"Review {{path}}\"`); `JSON.stringify(x)` -> `json.encode(x)`; `JSON.parse` -> `json.decode`.\n\
 - `x.length` -> `len(x)`, `arr.map(f)` -> `[f(v) for v in arr]`, `arr.filter(f)` -> `[v for v in arr if f(v)]`, `null` -> `None`, `===` -> `==`, `&&`/`||`/`!` -> `and`/`or`/`not`.\n\
 - `while` loops and recursion do not exist: use `for i in range(N):` with `break`; `try`/`catch` does not exist: a failed agent returns `None`, check for it.\n\
-- `budget.total`, `budget.spent()`, `budget.remaining()`, `phase()`, `log()` and `workflow(name, args)` keep their names.\n\
-Write the file with the write tool, then call `workflow{{path:\"{target}\", validate_only:true}}` and fix every error it reports until it says the script is valid. \
-Then tell the user the workflow can run as `/workflow {name}`."
+- `budget.total`, `budget.spent()`, `budget.remaining()`, `phase()` and `log()` keep their names; `workflow(name, args)` becomes `team(name, args)`.\n\
+Write the file with the write tool, then call `team{{path:\"{target}\", validate_only:true}}` and fix every error it reports until it says the script is valid. \
+Then tell the user the team task can run as `/team {name}`."
     )
 }
 

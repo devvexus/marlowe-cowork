@@ -136,7 +136,7 @@ fn parity_wf6_project_shadows_user_and_builtins() {
     assert_eq!(list[1].0.description, "project triage");
     // The index for the prompt stays within its budget.
     let idx = saved::index(&list.iter().map(|(s, _)| s.clone()).collect::<Vec<_>>(), 120);
-    assert!(idx.len() <= 160 && idx.contains("more: /workflows"), "{idx}");
+    assert!(idx.len() <= 160 && idx.contains("more: /teams"), "{idx}");
 }
 
 /// `workflow(name)` inside a running workflow: the parent's approval never showed the child, so
@@ -180,9 +180,9 @@ fn parity_wf6_cc_javascript_is_listed_and_named_for_conversion() {
     let roots = Roots { workspaces: vec![ws], home: None, plugins: vec![] };
     let list = roots.list();
     let js = list.iter().find(|(s, _)| s.name == "portfolio-assess").unwrap();
-    assert!(js.0.description.contains("Assess each system") && js.0.description.contains("/workflow convert portfolio-assess"));
+    assert!(js.0.description.contains("Assess each system") && js.0.description.contains("/team convert portfolio-assess"));
     let e = roots.resolve("portfolio-assess").unwrap_err();
-    assert!(e.contains("JavaScript") && e.contains("/workflow convert portfolio-assess"), "{e}");
+    assert!(e.contains("JavaScript") && e.contains("/team convert portfolio-assess"), "{e}");
     let prompt = marlowe_workflow::convert::conversion_prompt("portfolio-assess", "a.js", ".marlowe/workflows/portfolio-assess.star");
     assert!(prompt.contains("validate_only:true") && prompt.contains("lambda f=f"));
 }

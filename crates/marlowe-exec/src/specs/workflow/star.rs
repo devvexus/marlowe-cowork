@@ -55,10 +55,10 @@ impl ToolMiddleware for StarValidator {
                     cx.scope.with_ext(|e| {
                         e.get_or_default::<VerifyState>().dirty.remove(&f);
                     });
-                    outcome.content.push_str(&format!("\n{} is a valid workflow.", f.display()));
+                    outcome.content.push_str(&format!("\n{} is a valid team task.", f.display()));
                 }
                 Err(errors) => outcome.content.push_str(&format!(
-                    "\n<workflow-errors>\n{} is not a valid workflow; fix these (the workflow tool refuses it until you do):\n{errors}\n</workflow-errors>",
+                    "\n<team-errors>\n{} is not a valid team task script; fix these (the team tool refuses it until you do):\n{errors}\n</team-errors>",
                     f.display()
                 )),
             }

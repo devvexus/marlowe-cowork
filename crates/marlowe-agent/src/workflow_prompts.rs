@@ -1,6 +1,6 @@
 //! The slash commands built on workflows (track W): `/code-review` (G11), `/simplify` (G12),
-//! `/workflow <name> [args]` and `/workflow convert <name>` (WF6), `/workflows` (WF7). Like the
-//! git commands, each expands into a prompt that has the conductor call the `workflow` tool; a
+//! `/team <name> [args]` and `/team convert <name>` (WF6), `/teams` (WF7); the old `/workflow` and `/workflows` still work. Like the
+//! git commands, each expands into a prompt that has the conductor call the `team` tool; a
 //! command file of the same name wins over these.
 
 use serde_json::{json, Map, Value};
@@ -10,8 +10,8 @@ pub fn builtin(name: &str) -> Option<fn(&str) -> String> {
     match name {
         "code-review" => Some(code_review),
         "simplify" => Some(simplify),
-        "workflow" => Some(workflow),
-        "workflows" => Some(workflows),
+        "team" | "workflow" => Some(workflow),
+        "teams" | "workflows" => Some(workflows),
         _ => None,
     }
 }
@@ -86,7 +86,7 @@ pub fn code_review(args: &str) -> String {
     };
     let call = json!({"name": "code-review", "args": review_args(&r), "background": false});
     let mut text = format!(
-        "Run the built-in code review now: call workflow{call} exactly. It reviews {} with finders per lens and adversarial verifiers; \
+        "Run the built-in code review now: call team{call} exactly. It reviews {} with finders per lens and adversarial verifiers; \
          a level or cap not given here is the one remembered for this project.\n\
          When it returns, call report_findings with its `findings` (unchanged), then give the user the findings ranked by severity, \
          each as file:line, the claim and the fix, and say how many were refuted.",
@@ -114,7 +114,7 @@ pub fn simplify(args: &str) -> String {
         json!({"name": "simplify", "args": {"target": target}, "background": false})
     };
     format!(
-        "Run the built-in simplify workflow now: call workflow{call} exactly. It looks at the changed code for reuse, simplification, \
+        "Run the built-in simplify team task now: call team{call} exactly. It looks at the changed code for reuse, simplification, \
          efficiency and altitude cleanups and applies them in the run's worktree; it does not hunt for bugs. When it returns, tell the user \
          what was applied and skipped, and that the diff needs their approval to merge."
     )
@@ -124,7 +124,7 @@ pub fn simplify(args: &str) -> String {
 pub fn workflow(args: &str) -> String {
     let a = args.trim();
     if a.is_empty() {
-        return "List the saved workflows for the user (they are in the workflow tool's description and /workflows) and ask which to run.".into();
+        return "List the saved team tasks for the user (they are in the team tool's description and /teams) and ask which to run.".into();
     }
     if let Some(name) = a.strip_prefix("convert ").map(str::trim) {
         let js = format!(".claude/workflows/{name}.js");
@@ -142,15 +142,15 @@ pub fn workflow(args: &str) -> String {
     };
     let call = json!({"name": name, "args": args_json});
     format!(
-        "Start the saved workflow `{name}` now: call workflow{call}. It runs in the background; tell the user it started (and its run id), \
+        "Start the saved team task `{name}` now: call team{call}. It runs in the background; tell the user it started (and its run id), \
          then carry on. Its result arrives as a notice."
     )
 }
 
 /// `/workflows`: the TUI shows the view; a client without it gets the list.
 pub fn workflows(_args: &str) -> String {
-    "Tell the user which workflows are saved (name and one line each) and which workflow runs are going or finished, from what you know; \
-     the /workflows view in the terminal shows live progress."
+    "Tell the user which team tasks are saved (name and one line each) and which are going or finished, from what you know; \
+     the /teams view in the terminal shows live progress."
         .into()
 }
 

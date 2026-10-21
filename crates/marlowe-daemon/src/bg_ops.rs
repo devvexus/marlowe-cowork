@@ -138,7 +138,7 @@ impl BackgroundOps for DaemonBackground {
             for r in link.supervisor.list(100).unwrap_or_default().into_iter().filter(|r| r.session.as_ref() == Some(session)) {
                 rows.push(AgentRow {
                     id: r.id.as_str().to_string(),
-                    kind: if r.workflow.is_some() { "workflow" } else { "crew run" }.into(),
+                    kind: if r.workflow.is_some() { "team task" } else { "team task, 1 specialist" }.into(),
                     status: r.status.as_str().replace('_', " "),
                     title: format!("{}: {}", r.role, r.title),
                     workspace: r.workspace.clone(),

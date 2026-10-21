@@ -98,7 +98,7 @@ impl Roots {
     pub fn resolve(&self, name: &str) -> Result<Found, String> {
         let name = name.trim();
         if !valid_name(name) {
-            return Err(format!("`{name}` is not a workflow name (letters, digits, -, _, .)"));
+            return Err(format!("`{name}` is not a team task name (letters, digits, -, _, .)"));
         }
         for ws in &self.workspaces {
             if let Some((p, s)) = star_in(&ws.join(".marlowe").join("workflows"), name) {
@@ -122,12 +122,12 @@ impl Roots {
             let js = ws.join(".claude").join("workflows").join(format!("{name}.js"));
             if js.is_file() {
                 return Err(format!(
-                    "`{name}` is a Claude Code JavaScript workflow ({}). Workflows here are Starlark: convert it once with `/workflow convert {name}` (it writes .marlowe/workflows/{name}.star and checks it), then run it by name.",
+                    "`{name}` is a Claude Code JavaScript workflow ({}). Team tasks here are Starlark: convert it once with `/team convert {name}` (it writes .marlowe/workflows/{name}.star and checks it), then run it by name.",
                     js.display()
                 ));
             }
         }
-        Err(format!("no workflow named `{name}`; `/workflows` lists them"))
+        Err(format!("no team task named `{name}`; `/teams` lists them"))
     }
 
     /// Every workflow, first by priority wins per name, then the JavaScript ones not yet converted.
@@ -201,8 +201,8 @@ impl Roots {
                     SavedWorkflow {
                         name: n.clone(),
                         description: format!(
-                            "{} (Claude Code JavaScript; convert once with /workflow convert {n})",
-                            if meta.description.is_empty() { "a CC workflow".to_string() } else { meta.description }
+                            "{} (Claude Code JavaScript; convert once with /team convert {n})",
+                            if meta.description.is_empty() { "a CC team task".to_string() } else { meta.description }
                         ),
                         when_to_use: meta.when_to_use,
                         phases: meta.phases,
@@ -241,7 +241,7 @@ pub fn index(list: &[SavedWorkflow], budget: usize) -> String {
         out.push_str(&line);
     }
     if left > 0 {
-        out.push_str(&format!("- ({left} more: /workflows lists them)\n"));
+        out.push_str(&format!("- ({left} more: /teams lists them)\n"));
     }
     out
 }
@@ -268,7 +268,7 @@ impl crate::engine::ScriptResolver for Roots {
         let approved = builtin || self.home.as_deref().is_some_and(|h| crate::service::digest_trusted(h, &crate::digest(&source)));
         if !approved {
             return Err(format!(
-                "{name_or_path} has not been approved to run (this version of it never ran on its own); start it once by itself to approve it, then run this workflow again"
+                "{name_or_path} has not been approved to run (this version of it never ran on its own); start it once by itself to approve it, then run this team task again"
             ));
         }
         Ok((file, source))

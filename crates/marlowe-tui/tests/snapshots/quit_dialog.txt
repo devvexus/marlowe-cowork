@@ -12,7 +12,7 @@
 │                                           ⣿  MARLOWE                                           │╭ Watch ─────────────────────────────────╮
 │                                                                                                ││ nothing watched                        │
 │                              ╭ quit ──────────────────────────────────────────────────────────────────────╮                              │
-│                              │ Still running: 2 agent runs, 1 job. Stop the agent, or close the window    │                              │
+│                              │ Still running: 2 team tasks, 1 job. Stop the agent, or close the window    │                              │
 │                              │ and leave the agent running?                                               │                              │
 │                ask anything  │                                                                            │                              │
 │                              │   s Stop and close agent                                                   │                              │

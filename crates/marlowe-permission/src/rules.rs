@@ -158,6 +158,8 @@ fn tool_pat(name: &str) -> ToolPat {
         "kill_shell" | "kill_bash" | "job_kill" | "cron_delete" => ToolPat::Named("task_stop".into()),
         "cron_create" | "schedule_wakeup" => ToolPat::Named("schedule".into()),
         "cron_list" | "list_agents" => ToolPat::Named("task_list".into()),
+        // `workflow` is the old name of `team`: a saved rule for it keeps covering the team tool.
+        "workflow" | "team_task" => ToolPat::Named("team".into()),
         _ => ToolPat::Named(snake),
     }
 }
@@ -840,6 +842,8 @@ mod tests {
         assert_eq!(Rule::parse("KillShell").unwrap().tool, ToolPat::Named("task_stop".into()));
         assert_eq!(Rule::parse("cron_create").unwrap().tool, ToolPat::Named("schedule".into()));
         assert_eq!(Rule::parse("todo_add").unwrap().tool, ToolPat::Named("todo".into()));
+        assert_eq!(Rule::parse("workflow").unwrap().tool, ToolPat::Named("team".into()), "a saved rule for the old name covers `team`");
+        assert_eq!(Rule::parse("team").unwrap().tool, ToolPat::Named("team".into()));
         assert!(Rule::parse("bash(git").is_err());
         assert!(Rule::parse("web_fetch(x.org)").is_err());
         assert!(Rule::parse("").is_err());

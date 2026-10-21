@@ -232,7 +232,7 @@ mod tests {
         let dusk = ModelInfo { context_window: Some(32_768), ..ModelInfo::bare(ProviderKind::Ollama, "marlowe-dusk:27b-super") };
         let small = configured().with_model_exposure(&dusk);
         let names: Vec<String> = small.specs().into_iter().map(|s| s.name).collect();
-        for t in ["todo", "enter_plan", "send_message", "enter_worktree", "exit_worktree", "web_fetch", "workflow"] {
+        for t in ["todo", "enter_plan", "send_message", "enter_worktree", "exit_worktree", "web_fetch", "team"] {
             assert!(names.contains(&t.to_string()), "{t} is not listed at 32k: {names:?}");
         }
         assert!(!names.contains(&"tool_search".to_string()), "no search for built-ins");

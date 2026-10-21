@@ -145,23 +145,23 @@ def test_a_look_up_first_then_the_answer_passes_over_two_calls():
 
 
 def test_a_workflow_script_must_validate():
-    c = case(accept=[{"name": "workflow", "required_keys": ["script"], "validated": True}])
-    sur = {"conductor": {"specs": [SPECS["workflow"]]}}
-    ok = run(call(("workflow", {"script": "x"}), validated={"ok": True, "text": "valid"}))
-    bad = run(call(("workflow", {"script": "x"}), validated={"ok": False, "text": "line 1"}))
+    c = case(accept=[{"name": "team", "required_keys": ["script"], "validated": True}])
+    sur = {"conductor": {"specs": [SPECS["team"]]}}
+    ok = run(call(("team", {"script": "x"}), validated={"ok": True, "text": "valid"}))
+    bad = run(call(("team", {"script": "x"}), validated={"ok": False, "text": "line 1"}))
     assert g.grade(c, ok, sur)["strict"] is True
     assert g.grade(c, bad, sur)["strict_why"] == "bad_script"
 
 
 def test_a_workflow_must_fan_out_and_look_ups_may_repeat():
     c = case(first_ok=[{"name": "read"}, {"name": "glob"}],
-             accept=[{"name": "workflow", "required_keys": ["script"], "validated": True, "fan_out": True}])
-    sur = {"conductor": {"specs": [SPECS["workflow"], SPECS["read"], SPECS["glob"]]}}
-    one = run(call(("workflow", {"script": "def main(args):\n    return agent('x')"}), validated={"ok": True, "text": "valid"}))
+             accept=[{"name": "team", "required_keys": ["script"], "validated": True, "fan_out": True}])
+    sur = {"conductor": {"specs": [SPECS["team"], SPECS["read"], SPECS["glob"]]}}
+    one = run(call(("team", {"script": "def main(args):\n    return agent('x')"}), validated={"ok": True, "text": "valid"}))
     assert g.grade(c, one, sur)["strict_why"] == "no_fan_out"
     many = "def main(args):\n    return parallel([lambda: agent('a'), lambda: agent('b')])"
     ok = run(call(("glob", {"pattern": "*"})), call(("read", {"path": "a"})),
-             call(("workflow", {"script": many}), validated={"ok": True, "text": "valid"}))
+             call(("team", {"script": many}), validated={"ok": True, "text": "valid"}))
     assert g.grade(c, ok, sur)["strict"] is True
     loop = "def main(args):\n    return [agent(c) for c in args['crates']]"
     assert g.fans_out(loop) and not g.fans_out("def main(args):\n    return agent('x')")
@@ -171,26 +171,26 @@ def test_a_workflow_must_fan_out_and_look_ups_may_repeat():
 
 def test_a_workflow_passes_when_it_validates_and_its_script_fans_out():
     c = case(first_ok=[{"name": "read"}],
-             accept=[{"name": "workflow", "validated": True, "fan_out": True}])
-    sur = {"conductor": {"specs": [SPECS["workflow"], SPECS["read"]]}}
-    ok = run(call(("workflow", {"script": FAN}), validated={"ok": True, "text": "x.star is valid. META: {}"}))
+             accept=[{"name": "team", "validated": True, "fan_out": True}])
+    sur = {"conductor": {"specs": [SPECS["team"], SPECS["read"]]}}
+    ok = run(call(("team", {"script": FAN}), validated={"ok": True, "text": "x.star is valid. META: {}"}))
     assert g.grade(c, ok, sur)["strict"] is True
     # One agent is not a fan-out; an invalid call is not either.
-    one = run(call(("workflow", {"script": "def main(args):\n    return agent('x')"}), validated={"ok": True, "text": "valid"}))
+    one = run(call(("team", {"script": "def main(args):\n    return agent('x')"}), validated={"ok": True, "text": "valid"}))
     assert g.grade(c, one, sur)["strict_why"] == "no_fan_out"
-    refused = run(call(("workflow", {"script": FAN}), validated={"ok": False, "text": "bad"}))
+    refused = run(call(("team", {"script": FAN}), validated={"ok": False, "text": "bad"}))
     assert g.grade(c, refused, sur)["strict_why"] == "bad_script"
     # A saved name is not a script: it does not count as a fan-out.
-    named = run(call(("workflow", {"name": "code-review"}), validated={"ok": True, "text": "code-review.star is valid. META: {}"}))
+    named = run(call(("team", {"name": "code-review"}), validated={"ok": True, "text": "code-review.star is valid. META: {}"}))
     assert g.grade(c, named, sur)["strict_why"] == "no_fan_out"
 
 
 def test_every_workflow_family_case_wants_a_validated_fan_out():
-    family = [c for c in CASES if c["tool"] == "workflow"]
+    family = [c for c in CASES if c["tool"] == "team"]
     assert len(family) >= 5
     for c in family:
         entry = c["accept"][0]
-        assert entry["name"] == "workflow" and entry.get("validated") is True and entry.get("fan_out") is True, c["id"]
+        assert entry["name"] == "team" and entry.get("validated") is True and entry.get("fan_out") is True, c["id"]
     review = next(c for c in family if c["id"] == "workflow-review-commits")
     assert len(review["git"]) == 3
 
@@ -199,27 +199,27 @@ def stepped(c, step):
     return {**c, "step": step}
 
 
-WF = case(first_ok=[{"name": "read"}], accept=[{"name": "workflow", "validated": True, "fan_out": True}])
-WF_SURFACES = {"conductor": {"specs": [SPECS["workflow"], SPECS["read"]]}}
+WF = case(first_ok=[{"name": "read"}], accept=[{"name": "team", "validated": True, "fan_out": True}])
+WF_SURFACES = {"conductor": {"specs": [SPECS["team"], SPECS["read"]]}}
 OVER3 = {"ok": True, "text": "x.star is valid. META: {}"}
 FAN = "def main(args):\n    return [agent(c) for c in args['crates']]"
 SHORT = {"script": FAN}
 
 
 def test_first_try_is_a_strict_pass_from_the_first_step_and_a_later_pass_is_rescued():
-    first = run(stepped(call(("workflow", SHORT), validated=OVER3), 0))
+    first = run(stepped(call(("team", SHORT), validated=OVER3), 0))
     r = g.grade(WF, first, WF_SURFACES)
     assert (r["strict"], r["first_try"], r["rescued"]) == (True, True, False)
     # A look-up first is still a strict pass, but not a first try.
-    looked = run(stepped(call(("read", {"path": "a"})), 0), stepped(call(("workflow", SHORT), validated=OVER3), 1))
+    looked = run(stepped(call(("read", {"path": "a"})), 0), stepped(call(("team", SHORT), validated=OVER3), 1))
     r = g.grade(WF, looked, WF_SURFACES)
     assert (r["strict"], r["first_try"], r["rescued"]) == (True, False, True)
     # The model said nothing useful in step 0 and a harness nudge got the call in step 1.
-    nudged = run(stepped(call(("workflow", SHORT), validated=OVER3), 1))
+    nudged = run(stepped(call(("team", SHORT), validated=OVER3), 1))
     r = g.grade(WF, nudged, WF_SURFACES)
     assert (r["strict"], r["first_try"], r["rescued"]) == (True, False, True)
     # A layer fix is lenient only: rescued, not strict.
-    fixed = call(("workflow", {"script": FAN, "role": "x"}), layer={"name": "workflow", "args": {"script": FAN}}, validated=OVER3)
+    fixed = call(("team", {"script": FAN, "role": "x"}), layer={"name": "team", "args": {"script": FAN}}, validated=OVER3)
     r = g.grade(WF, run(stepped(fixed, 0)), WF_SURFACES)
     assert (r["strict"], r["lenient"], r["first_try"], r["rescued"]) == (False, True, False, True)
     # A failure is neither.
@@ -232,7 +232,7 @@ def test_accept_none_passes_when_nothing_is_launched():
     assert g.grade(neg, run(), WF_SURFACES)["strict"] is True, "prose is fine"
     looked = g.grade(neg, run(call(("read", {"path": "docs/a.md"}))), WF_SURFACES)
     assert (looked["strict"], looked["lenient"], looked["first_try"], looked["rescued"]) == (True, True, True, False)
-    for launched in (("workflow", SHORT), ("dispatch", {"role": "researcher", "prompt": "x"}), ("agent", {"prompt": "x"})):
+    for launched in (("team", SHORT), ("dispatch", {"role": "researcher", "prompt": "x"}), ("agent", {"prompt": "x"})):
         r = g.grade(neg, run(call(launched)), WF_SURFACES)
         assert (r["strict"], r["lenient"]) == (False, False) and r["strict_why"] == f"launched({launched[0]})", launched
     fg = g.grade(neg, run(call(("agent", {"prompt": "x", "background": False}))), WF_SURFACES)

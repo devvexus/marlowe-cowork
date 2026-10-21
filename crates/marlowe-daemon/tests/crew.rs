@@ -434,7 +434,7 @@ fn dispatch_returns_at_once_and_the_idle_session_gets_a_relay_turn_that_leads_wi
         })
         .expect("a relay turn in the parent session");
     let lines: Vec<&str> = relay.lines().collect();
-    assert!(lines[0].starts_with(&format!("[crew · run {} · analyst", run.short())), "{relay}");
+    assert!(lines[0].starts_with(&format!("[crew · run {} · team task, 1 specialist · analyst", run.short())), "{relay}");
     assert!(lines[1].starts_with("Outcome: The answer is 42."), "the outcome leads: {relay}");
 
     // The conductor saw the dispatch tool and the crew block; the crew saw neither.
@@ -925,7 +925,7 @@ fn parity_wf7_a_workflow_run_streams_progress_and_its_result_starts_a_turn() {
             _ => None,
         })
         .unwrap();
-    assert!(relay.contains("Workflow `two` finished"), "the completion notice starts a turn: {relay}");
+    assert!(relay.contains("Team task `two` finished"), "the completion notice starts a turn: {relay}");
     a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
 
     // Listed, with its journal and findings.
@@ -942,7 +942,7 @@ fn parity_wf7_a_workflow_run_streams_progress_and_its_result_starts_a_turn() {
     // A bad script is refused before anything is queued.
     a.send(&Request::RunWorkflow { session: None, name: Some("nope".into()), script_path: None, args: serde_json::Value::Null, resume_from: None });
     let got = a.until_event(|e| matches!(e, Event::Error { .. }));
-    assert!(matches!(&got.last().unwrap().event, Event::Error { message, .. } if message.contains("no workflow named")));
+    assert!(matches!(&got.last().unwrap().event, Event::Error { message, .. } if message.contains("no team task named")));
     stop(d);
 }
 

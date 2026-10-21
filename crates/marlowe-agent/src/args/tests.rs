@@ -100,6 +100,10 @@ fn legacy_names_resolve_to_the_merged_tool_and_inject_what_they_implied() {
     }
     assert_eq!(resolved(&h, "ci_status", json!({})), ("gh".into(), json!({"op": "ci"})));
     assert_eq!(resolved(&h, "Job-Watch", json!({})).0, "task_output", "legacy names are spelling-insensitive too");
+    // `workflow` was renamed `team`: old transcripts and saved calls still reach it.
+    let t = names_host(&["team"]);
+    assert_eq!(resolved(&t, "workflow", json!({"name": "code-review"})), ("team".into(), json!({"name": "code-review"})));
+    assert_eq!(resolved(&t, "team_task", json!({})).0, "team");
 }
 
 #[test]
@@ -139,6 +143,7 @@ fn an_allowlist_or_denylist_naming_an_old_tool_means_the_tool_that_runs_it() {
     assert_eq!(canonical_tool("cron_create"), "schedule");
     assert_eq!(canonical_tool("job_kill"), "task_stop");
     assert_eq!(canonical_tool("paper"), "web_fetch");
+    assert_eq!(canonical_tool("workflow"), "team", "a crew allowlist or denylist naming `workflow` means `team`");
     assert_eq!(canonical_tool("read"), "read");
 }
 

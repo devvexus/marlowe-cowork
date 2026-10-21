@@ -55,7 +55,7 @@ use crate::tools::{
 /// Tools a subagent never gets: no nesting (depth 1), no questions to the user, no session-level
 /// moves (worktrees, plan mode), no crew dispatch, no workflows (WF2: only the conductor starts them).
 pub const NEVER_FOR_SUBAGENTS: &[&str] = &[
-    "agent", "send_message", "ask_user", "enter_worktree", "exit_worktree", "enter_plan", "exit_plan", "dispatch", "workflow",
+    "agent", "send_message", "ask_user", "enter_worktree", "exit_worktree", "enter_plan", "exit_plan", "dispatch", "team", "workflow",
     // Background work and the user's attention belong to the session that conducts (track N).
     // (`task_output` and `task_stop` stay: a subagent reads and stops its own shell jobs, and only those.)
     "task_list", "monitor", "schedule", "watch", "notify", "send_file", "notices",

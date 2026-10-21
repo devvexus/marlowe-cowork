@@ -1035,7 +1035,7 @@ fn parity_bg10_list_agents_lists_a_subagent_a_crew_run_and_another_session() {
     assert_eq!(sub.id, "agent-1");
     assert!(sub.title.contains("find the retry code"));
     assert_eq!(sub.status, "finished");
-    let crew = by("crew run");
+    let crew = by("team task, 1 specialist");
     assert_eq!(crew.id, run.as_str());
     assert_eq!(crew.status, "running");
     let sess = by("session");
@@ -1517,8 +1517,8 @@ fn the_next_launch_offers_to_resume_what_the_close_interrupted_and_resuming_pick
     let mut window = Client::connect(&d.info, "tui");
     let offer = window.until(|e| matches!(e, Event::Interrupted { .. })).pop().unwrap();
     let Event::Interrupted { runs, summary } = offer.event else { unreachable!() };
-    assert_eq!(summary, "2 crew runs");
-    assert_eq!(marlowe_daemon::resume_prompt(&summary), "We were still working when you closed Marlowe last time (2 crew runs). Resume?");
+    assert_eq!(summary, "2 team tasks");
+    assert_eq!(marlowe_daemon::resume_prompt(&summary), "We were still working when you closed Marlowe last time (2 team tasks). Resume?");
     assert!(runs.iter().any(|r| r.run == run_a) && runs.iter().any(|r| r.run == run_b));
     assert!(runs.iter().all(|r| r.stopped_at.contains("stopped after step")), "{runs:#?}");
     // A client that is not a window is not asked, and nothing ran on its own.
@@ -1558,7 +1558,7 @@ fn declining_the_resume_leaves_the_runs_paused_and_the_question_is_not_asked_aga
     let d = start(&home, p.clone(), &Options { crew: true, ..Options::default() });
     let mut window = Client::connect(&d.info, "tui");
     let offer = window.until(|e| matches!(e, Event::Interrupted { .. })).pop().unwrap();
-    assert!(matches!(&offer.event, Event::Interrupted { summary, .. } if summary == "1 crew run"));
+    assert!(matches!(&offer.event, Event::Interrupted { summary, .. } if summary == "1 team task"));
     window.send(&Request::ResumeInterrupted { resume: false });
     window.send(&Request::ListRuns { limit: 10 });
     let list = window.until(|e| matches!(e, Event::Runs { .. })).pop().unwrap();

@@ -136,6 +136,8 @@ pub const LEGACY: &[Legacy] = &[
     Legacy { from: "todo_update", to: "todo", inject: None },
     Legacy { from: "todo_get", to: "todo", inject: None },
     Legacy { from: "ci_status", to: "gh", inject: Some(("op", "\"ci\"")) },
+    Legacy { from: "workflow", to: "team", inject: None },
+    Legacy { from: "team_task", to: "team", inject: None },
 ];
 
 /// A tool name as an allowlist or denylist should read it: a merged tool's old name is the tool

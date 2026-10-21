@@ -235,7 +235,7 @@ pub(crate) fn run_task(r: &CrewRunInfo) -> TaskInfo {
         session: r.session.clone(),
         title: match &r.workflow {
             Some(w) => w.name.clone().unwrap_or_else(|| r.title.clone()),
-            None => format!("{}: {}", r.role, r.title),
+            None => format!("1 specialist · {}: {}", r.role, r.title),
         },
         status: run_status(r.status),
         started_ms: r.created_ms,

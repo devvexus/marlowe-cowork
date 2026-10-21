@@ -56,6 +56,15 @@ impl TaskKind {
         }
     }
 
+    /// The word the user reads: a crew run (`dispatch`, one specialist) and a script run are both
+    /// team tasks. `as_str` stays the stable key.
+    pub fn label(self) -> &'static str {
+        match self {
+            TaskKind::Agent | TaskKind::Workflow => "team task",
+            other => other.as_str(),
+        }
+    }
+
     /// The typed id for `raw` (the owner's own id, e.g. a job's `j7`): `job_j7`.
     pub fn id(self, raw: &str) -> String {
         format!("{}{}", self.prefix(), raw)
@@ -157,7 +166,7 @@ pub enum WorkflowAgentStatus {
     Skipped,
 }
 
-/// One `agent()` call of a workflow, for the `/workflows` view.
+/// One `agent()` call of a team task, for the `/teams` view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowAgentInfo {
     /// The call's issue sequence number; `SkipWorkflowAgent` names it.
@@ -172,7 +181,7 @@ pub struct WorkflowAgentInfo {
     pub elapsed_ms: u64,
 }
 
-/// A workflow run as the `/workflows` view shows it.
+/// A team task run as the `/teams` view shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowInfo {
     pub run: RunId,
@@ -318,13 +327,13 @@ pub struct FastState {
 
 // ---- Closing the window (N, 2026-10-10).
 
-/// A crew run or workflow a closed window interrupted. It is paused, its checkpoints kept; the
+/// A crew run or team task a closed window interrupted. It is paused, its checkpoints kept; the
 /// next launch offers to resume it (`Event::Interrupted`, `Request::ResumeInterrupted`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InterruptedRun {
     pub run: RunId,
     pub title: String,
-    /// A workflow script's run (counted apart from a crew run in the prompt).
+    /// A team task script's run (a crew run is one with a single specialist).
     #[serde(default)]
     pub workflow: bool,
     /// Where it stopped: `step 4: running cargo test`.
@@ -334,19 +343,12 @@ pub struct InterruptedRun {
 }
 
 impl InterruptedRun {
-    /// The prompt's tally: `2 crew runs, 1 workflow`.
+    /// The prompt's tally: `3 team tasks` (a crew run is a team task with one specialist).
     pub fn tally(list: &[InterruptedRun]) -> String {
-        let workflows = list.iter().filter(|r| r.workflow).count();
-        let runs = list.len() - workflows;
-        let part = |n: usize, one: &str, many: &str| match n {
-            0 => None,
-            1 => Some(format!("1 {one}")),
-            n => Some(format!("{n} {many}")),
-        };
-        [part(runs, "crew run", "crew runs"), part(workflows, "workflow", "workflows")]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(", ")
+        match list.len() {
+            0 => String::new(),
+            1 => "1 team task".into(),
+            n => format!("{n} team tasks"),
+        }
     }
 }

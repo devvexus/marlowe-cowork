@@ -314,7 +314,9 @@ fn relay(core: &Arc<Core>, session: &SessionId, run: &RunId, dispatch: Option<Di
 pub(crate) fn relay_text(info: &CrewRunInfo, dispatch: Option<&Dispatch>) -> String {
     let mut lines = Vec::new();
     let playbook = info.playbook.map(|p| format!(" · {}", p.as_str())).unwrap_or_default();
-    lines.push(format!("{RELAY_PREFIX}{} · {}{playbook} · {}]", info.id.short(), info.role, info.status.as_str().replace('_', " ")));
+    // A crew run from `dispatch` is a team task with one specialist.
+    let kind = if info.workflow.is_some() { "team task" } else { "team task, 1 specialist" };
+    lines.push(format!("{RELAY_PREFIX}{} · {kind} · {}{playbook} · {}]", info.id.short(), info.role, info.status.as_str().replace('_', " ")));
     match dispatch {
         Some(d) => {
             lines.push(format!("Outcome: {}", clip(d.summary.trim(), RELAY_SUMMARY_CHARS, &info.id)));
@@ -685,7 +687,7 @@ mod tests {
         };
         let text = relay_text(&info(CrewRunStatus::NeedsYou), Some(&d));
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines[0], "[crew · run 01234567 · engineer · build · needs you]");
+        assert_eq!(lines[0], "[crew · run 01234567 · team task, 1 specialist · engineer · build · needs you]");
         assert!(lines[0].starts_with(RELAY_PREFIX));
         assert!(lines[1].starts_with("Outcome: Fixed: the test raced"), "{text}");
         assert_eq!(lines[2], "Confidence: high");

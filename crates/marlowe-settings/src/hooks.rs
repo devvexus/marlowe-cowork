@@ -151,7 +151,8 @@ pub fn matcher_matches(matcher: Option<&str>, target: &str) -> bool {
         // An invalid regex matches its literal text only.
         Err(_) => return m.eq_ignore_ascii_case(target),
     };
-    let names = [Some(target), claude_tool_name(target)];
+    // `team` was `workflow`: a matcher written for the old name still selects it.
+    let names = [Some(target), claude_tool_name(target), (target == "team").then_some("workflow")];
     if names.iter().flatten().any(|n| re.is_match(n)) {
         return true;
     }

@@ -408,7 +408,7 @@ fn workflows_open() -> State {
 fn parity_WF7_the_workflows_view_lists_runs_and_saved_scripts() {
     let mut s = workflows_open();
     let buf = palette_frame(&s);
-    for want in ["workflows", "runs", "code-review", "running", "1 of 3 agents", "saved", "Review the diff for bugs", "builtin"] {
+    for want in ["team tasks", "runs", "code-review", "running", "1 of 3 agents", "saved", "Review the diff for bugs", "builtin"] {
         assert!(contains(&buf, want), "{want:?}\n{}", dump(&buf));
     }
     snapshot("workflows_list", &buf);
@@ -419,7 +419,7 @@ fn parity_WF7_the_workflows_view_lists_runs_and_saved_scripts() {
     let mut s = workflows_open();
     keys(&mut s, "down enter");
     assert_eq!(s.overlay, None);
-    assert_eq!(s.composer.text(), "/workflow code-review ");
+    assert_eq!(s.composer.text(), "/team code-review ");
 }
 
 #[test]
@@ -497,7 +497,7 @@ fn the_workflow_view_has_a_clickable_stop_control_with_the_same_confirm() {
     let m = MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: rect.x + 1, row: rect.y, modifiers: KeyModifiers::NONE };
     assert!(s.on_mouse(m, ratatui::layout::Rect::new(0, 0, W, H)).is_empty());
     let buf = render(&s, W, H);
-    assert!(contains(&buf, "Stop this workflow? Running agents stop; finished agents\u{2019} results are kept for a resume."), "{}", dump(&buf));
+    assert!(contains(&buf, "Stop this team task? Running agents stop; finished agents\u{2019} results are kept for a resume."), "{}", dump(&buf));
     assert_eq!(keys(&mut s, "y"), vec![Request::StopTask { id: "wf_wf1".into() }]);
 }
 
@@ -506,7 +506,7 @@ fn parity_WF7_stopping_the_run_asks_first() {
     let mut s = workflows_open();
     keys(&mut s, "enter");
     assert!(keys(&mut s, "x").is_empty());
-    assert!(contains(&render(&s, W, H), "Stop this workflow?"));
+    assert!(contains(&render(&s, W, H), "Stop this team task?"));
     assert!(keys(&mut s, "n").is_empty(), "anything but y keeps it going");
     keys(&mut s, "x");
     assert_eq!(keys(&mut s, "y"), vec![Request::StopTask { id: "wf_wf1".into() }]);
@@ -541,7 +541,7 @@ fn parity_WF7_a_background_completion_that_starts_a_turn_is_news_not_you() {
 #[test]
 fn parity_WF7_the_workflow_command_starts_a_run_and_opens_its_progress() {
     let mut s = coding_session();
-    let reqs = keys(&mut s, "'/workflow code-review {\"level\":\"low\"}' enter");
+    let reqs = keys(&mut s, "'/team code-review {\"level\":\"low\"}' enter");
     assert_eq!(
         reqs,
         vec![Request::RunWorkflow {
@@ -557,7 +557,7 @@ fn parity_WF7_the_workflow_command_starts_a_run_and_opens_its_progress() {
     assert!(contains(&render(&s, W, H), "security lens"));
     // Bad JSON is the user's to fix, not a request.
     let mut s = coding_session();
-    assert!(keys(&mut s, "'/workflow code-review {oops' enter").is_empty());
+    assert!(keys(&mut s, "'/team code-review {oops' enter").is_empty());
     assert!(contains(&render(&s, W, H), "the arguments are JSON"));
 }
 
@@ -568,7 +568,7 @@ fn parity_WF7_rows_answer_the_mouse() {
     click(&mut s, &Target::Row(1));
     assert!(s.composer.text().is_empty());
     click(&mut s, &Target::Row(1));
-    assert_eq!(s.composer.text(), "/workflow code-review ");
+    assert_eq!(s.composer.text(), "/team code-review ");
     let mut s = workflows_open();
     let reqs = click(&mut s, &Target::Row(0));
     assert_eq!(reqs, vec![Request::WatchWorkflow { run: RunId::from("wf1") }]);
@@ -618,7 +618,7 @@ fn tasks_open() -> State {
 fn parity_BG1_tasks_lists_one_of_each_kind_with_status_and_elapsed() {
     let s = tasks_open();
     let buf = palette_frame(&s);
-    for want in ["tasks", "job_j1", "cargo test -p gate", "agent_r7", "workflow", "wf_wf1", "monitor", "mon_m2", "cron", "cron_c1", "next 09:00", "running", "waiting", "done", "1m35s", "1m20s", "1m00s", "40s", "1m55s"] {
+    for want in ["tasks", "job_j1", "cargo test -p gate", "agent_r7", "team task", "wf_wf1", "monitor", "mon_m2", "cron", "cron_c1", "next 09:00", "running", "waiting", "done", "1m35s", "1m20s", "1m00s", "40s", "1m55s"] {
         assert!(contains(&buf, want), "{want:?}\n{}", dump(&buf));
     }
     let text = dump(&buf);
@@ -1044,7 +1044,7 @@ fn parity_u19_the_palette_and_help_list_what_wave_two_added() {
     keys(&mut s, "ctrl-k 'tasks' enter");
     assert_eq!(s.overlay, Some(Overlay::Panel));
     keys(&mut s, "esc");
-    for (query, want) in [("workflows", "loading"), ("files", "nothing sent yet"), ("bench", "looking"), ("findings", "")] {
+    for (query, want) in [("teams", "loading"), ("files", "nothing sent yet"), ("bench", "looking"), ("findings", "")] {
         keys(&mut s, &format!("ctrl-k '{query}' enter"));
         if !want.is_empty() {
             assert!(contains(&render(&s, W, H), want), "{query}: {}", dump(&render(&s, W, H)));
@@ -1057,7 +1057,7 @@ fn parity_u19_the_palette_and_help_list_what_wave_two_added() {
     keys(&mut s, "'/help' enter");
     keys(&mut s, "end");
     let buf = render(&s, W, H);
-    assert!(contains(&buf, "/workflow code-review") && contains(&buf, "/deploy <env>") && contains(&buf, "ship it to staging"), "{}", dump(&buf));
+    assert!(contains(&buf, "/team code-review") && contains(&buf, "/deploy <env>") && contains(&buf, "ship it to staging"), "{}", dump(&buf));
 }
 
 // ---- the palette, at every size -------------------------------------------------------------------

@@ -13,7 +13,7 @@
 //!   killed is the daemon's job to notice (it treats the last screen disconnecting without a
 //!   goodbye as a close).
 //! - **The next launch** may be offered the work a close interrupted ("We were still working when
-//!   you closed Marlowe last time (2 crew runs, 1 workflow). Resume?"); the answer goes back as
+//!   you closed Marlowe last time (3 team tasks). Resume?"); the answer goes back as
 //!   `ResumeInterrupted`.
 //!
 //! The running work is tracked from the daemon's task events, observed without consuming them, so
@@ -130,20 +130,19 @@ impl Closing {
         v
     }
 
-    /// `2 agent runs, 1 workflow, 1 job, 1 monitor`; empty when nothing runs.
+    /// `3 team tasks, 1 job, 1 monitor`; empty when nothing runs. A crew run is a team task with
+    /// one specialist.
     pub fn running_summary(&self) -> String {
         let mut counts: Vec<(&str, &str, usize)> = vec![
-            ("agent run", "agent runs", 0),
-            ("workflow", "workflows", 0),
+            ("team task", "team tasks", 0),
             ("job", "jobs", 0),
             ("monitor", "monitors", 0),
         ];
         for t in self.running() {
             let i = match t.kind {
-                TaskKind::Agent => 0,
-                TaskKind::Workflow => 1,
-                TaskKind::Job => 2,
-                TaskKind::Monitor => 3,
+                TaskKind::Agent | TaskKind::Workflow => 0,
+                TaskKind::Job => 1,
+                TaskKind::Monitor => 2,
                 TaskKind::Cron => continue,
             };
             counts[i].2 += 1;
@@ -490,16 +489,16 @@ mod tests {
                 task("job_j0", TaskKind::Job, TaskStatus::Done, None),
             ],
         });
-        assert_eq!(c.running_summary(), "2 agent runs, 1 workflow, 1 job, 1 monitor");
+        assert_eq!(c.running_summary(), "3 team tasks, 1 job, 1 monitor");
         // An update replaces; a finished job is no longer work.
         c.observe(&Event::TaskUpdated(task("job_j1", TaskKind::Job, TaskStatus::Done, None)));
-        assert_eq!(c.running_summary(), "2 agent runs, 1 workflow, 1 monitor");
+        assert_eq!(c.running_summary(), "3 team tasks, 1 monitor");
     }
 
     #[test]
     fn the_prompts_read_as_the_dialogs_say_them() {
-        let d = Dialog::Resume { summary: "2 crew runs, 1 workflow".into() };
-        assert_eq!(d.prompt(), "We were still working when you closed Marlowe last time (2 crew runs, 1 workflow). Resume?");
+        let d = Dialog::Resume { summary: "3 team tasks".into() };
+        assert_eq!(d.prompt(), "We were still working when you closed Marlowe last time (3 team tasks). Resume?");
         assert_eq!(d.choices().len(), 2);
         let q = Dialog::Quit { summary: "1 job".into() };
         assert!(q.prompt().contains("1 job") && q.prompt().contains("leave the agent running"));

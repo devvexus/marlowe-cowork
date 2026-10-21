@@ -102,7 +102,7 @@ pub struct Case {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CaseTask {
     pub id: String,
-    /// `job`, `agent`, `workflow`, `monitor` or `cron`.
+    /// `job`, `agent`, `workflow` (a team task), `monitor` or `cron`.
     pub kind: String,
     #[serde(default)]
     pub status: Option<String>,
@@ -349,9 +349,9 @@ impl ToolMiddleware for Answer {
         if self.host.tool_spec(&call.name).is_none() {
             return CallFlow::Done(ToolOutcome::error(format!("`{}` is not available to this agent", call.name)));
         }
-        // Every workflow call form (script, path, name) is checked the way
-        // `workflow{validate_only}` checks it: nothing runs.
-        let checked = (call.name == "workflow").then(|| {
+        // Every team call form (script, path, name) is checked the way
+        // `team{validate_only}` checks it: nothing runs.
+        let checked = (call.name == "team").then(|| {
             let mut args = call.args.clone();
             args["validate_only"] = json!(true);
             let out = self.host.call_scoped(&ToolCallReq { id: call.id.clone(), name: call.name.clone(), args }, cx);
@@ -755,7 +755,7 @@ mod tests {
         let surfaces: Vec<&Value> = all.iter().filter(|l| l["kind"] == "surface").collect();
         assert_eq!(surfaces.iter().map(|s| s["key"].as_str().unwrap()).collect::<Vec<_>>(), ["conductor", "subagent:explore"]);
         let names: Vec<&str> = surfaces[0]["specs"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
-        for want in ["read", "git", "workflow", "remember", "recall", "dispatch"] {
+        for want in ["read", "git", "team", "remember", "recall", "dispatch"] {
             assert!(names.contains(&want), "{want} missing: {names:?}");
         }
         assert!(surfaces[0]["tools_chars"].as_u64().unwrap() > 10_000 && surfaces[0]["persona_chars"].as_u64().unwrap() > 3_000);
@@ -794,7 +794,7 @@ mod tests {
 def main(args):
     return {\"ok\": True}
 ";
-        let (p, _seq, dir) = probe(vec![vec![("workflow", json!({"script": good}))], vec![("workflow", json!({"script": "this is not starlark ("}))]], vec![None]);
+        let (p, _seq, dir) = probe(vec![vec![("team", json!({"script": good}))], vec![("team", json!({"script": "this is not starlark ("}))]], vec![None]);
         let mut out = Vec::new();
         let a = case(json!({"id": "good", "request": "spawn a workflow"}));
         let b = case(json!({"id": "bad", "request": "spawn a workflow"}));
@@ -809,7 +809,7 @@ def main(args):
     #[test]
     fn every_workflow_call_form_is_validated() {
         let named = json!({"name": "code-review"});
-        let replies = vec![vec![("workflow", named)], vec![("workflow", json!({"name": "no-such-workflow"}))], vec![("workflow", json!({"prompt": "What is min-p?"}))]];
+        let replies = vec![vec![("team", named)], vec![("team", json!({"name": "no-such-workflow"}))], vec![("team", json!({"prompt": "What is min-p?"}))]];
         let (p, _seq, dir) = probe(replies, vec![None]);
         let mut out = Vec::new();
         let a = case(json!({"id": "named", "request": "spawn a workflow"}));
@@ -829,7 +829,7 @@ def main(args):
 def main(args):
     return 1
 ";
-        let replies = vec![vec![("workflow", json!({"script": ok, "validate_only": true}))], vec![("workflow", json!({"script": ok}))]];
+        let replies = vec![vec![("team", json!({"script": ok, "validate_only": true}))], vec![("team", json!({"script": ok}))]];
         let (p, _seq, dir) = probe(replies, vec![None]);
         let mut out = Vec::new();
         let a = case(json!({"id": "commits", "request": "review the commits", "git": ["one", "two", "three"], "files": {"leak.txt": "x"}}));

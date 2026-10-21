@@ -149,10 +149,10 @@ def _accepted_call(case, call, mode, surfaces, run):
 
 
 def launches(call):
-    """The call starts crew or workflow work: workflow, dispatch, or an agent that runs in the background."""
+    """The call starts crew or team work: team (once `workflow`), dispatch, or an agent that runs in the background."""
     raw = call.get("raw") or call.get("prepared") or {}
     name, args = raw.get("name"), raw.get("args") or {}
-    if name in ("workflow", "dispatch"):
+    if name in ("team", "workflow", "dispatch"):
         return True
     return name == "agent" and (args.get("background") if isinstance(args, dict) else None) is not False
 

@@ -75,7 +75,7 @@ impl Meta {
                 Some(_) => Err(format!("META[\"{k}\"] must be a string")),
             }
         };
-        let description = s("description")?.filter(|d| !d.trim().is_empty()).ok_or("META needs a \"description\": one line on what the workflow does")?;
+        let description = s("description")?.filter(|d| !d.trim().is_empty()).ok_or("META needs a \"description\": one line on what the team task does")?;
         let phases = match o.get("phases") {
             None | Some(Value::Null) => Vec::new(),
             Some(Value::Array(a)) => a
@@ -152,7 +152,7 @@ pub fn static_checks(filename: &str, source: &str) -> Result<Validated, Vec<Diag
             0
         }
         None => {
-            diags.push(Diagnostic::new(None, "define `def main(args):` at the top level and `return` the workflow's result from it"));
+            diags.push(Diagnostic::new(None, "define `def main(args):` at the top level and `return` the team task's result from it"));
             0
         }
     };
@@ -172,7 +172,7 @@ fn parse_error(e: &starlark::Error, source: &str) -> Diagnostic {
     let src_line = d.line.and_then(|l| source.lines().nth((l as usize).saturating_sub(1))).unwrap_or("");
     if looks_like_js(src_line) || looks_like_js(source) {
         d.message.push_str(
-            " (workflow scripts are Starlark, Python-like: `def main(args):`, `x = agent(\"...\")`, `[f(x) for x in xs]`, no `const`, `await`, `=>`, `{ }` blocks or `;`)",
+            " (team task scripts are Starlark, Python-like: `def main(args):`, `x = agent(\"...\")`, `[f(x) for x in xs]`, no `const`, `await`, `=>`, `{ }` blocks or `;`)",
         );
     }
     d
@@ -576,7 +576,7 @@ fn recursion(toks: &[Tok], source: &str) -> Vec<Diagnostic> {
                 let shown = cycle.join(" -> ");
                 out.push(Diagnostic::new(
                     line.get(start).copied(),
-                    format!("recursion is not allowed in workflow scripts (so every script ends): {shown}; use a `for` loop over a bounded range instead"),
+                    format!("recursion is not allowed in team task scripts (so every script ends): {shown}; use a `for` loop over a bounded range instead"),
                 ));
             }
         }
@@ -742,8 +742,8 @@ fn reserved(toks: &[Tok], source: &str) -> Vec<Diagnostic> {
             Token::Identifier(s) if s.starts_with(GUARD_PREFIX) => {
                 out.push(Diagnostic::new(line, format!("`{s}`: names starting with `{GUARD_PREFIX}` are reserved for the engine")));
             }
-            Token::StarEqual => out.push(Diagnostic::new(line, "write `x = x * n`: `*=` is not available in workflow scripts")),
-            Token::LessLessEqual => out.push(Diagnostic::new(line, "write `x = x << n`: `<<=` is not available in workflow scripts")),
+            Token::StarEqual => out.push(Diagnostic::new(line, "write `x = x * n`: `*=` is not available in team task scripts")),
+            Token::LessLessEqual => out.push(Diagnostic::new(line, "write `x = x << n`: `<<=` is not available in team task scripts")),
             _ => {}
         }
     }
@@ -829,7 +829,7 @@ pub fn guarded_source(filename: &str, source: &str) -> String {
 }
 
 /// Host functions that only work while `main` runs.
-const HOST_CALLS: &[&str] = &["agent", "parallel", "pipeline", "workflow"];
+const HOST_CALLS: &[&str] = &["agent", "parallel", "pipeline", "team", "workflow"];
 
 /// The host calls that need `main`, made directly at the top level: the top level is never run
 /// before approval, so this is where they are caught.

@@ -406,7 +406,7 @@ pub enum Event {
     /// Reply to `SuggestRules`.
     RuleSuggestions { list: Vec<RuleSuggestion> },
     /// Work the last window close interrupted, offered at the next launch to a screen client
-    /// (`summary` is the tally, `2 crew runs, 1 workflow`). Answered with `ResumeInterrupted`.
+    /// (`summary` is the tally, `3 team tasks`). Answered with `ResumeInterrupted`.
     Interrupted { runs: Vec<InterruptedRun>, summary: String },
     /// Whether the daemon runs on after the window closes (broadcast on change; the reply to
     /// `KeepRunning`).

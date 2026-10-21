@@ -57,7 +57,7 @@ pub struct CronRequest {
 pub struct AgentRow {
     /// What `send_message` takes as `to`: `agent-2`, a run id, `session:<id>`.
     pub id: String,
-    /// `subagent`, `crew run`, `workflow`, `session`.
+    /// `subagent`, `team task`, `team task, 1 specialist`, `session`.
     pub kind: String,
     pub status: String,
     pub title: String,

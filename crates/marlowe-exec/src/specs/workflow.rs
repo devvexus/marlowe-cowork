@@ -1,11 +1,12 @@
-//! The workflow group (track W): `workflow` (run a Starlark workflow script: inline, a saved name
-//! or a `path`; `resume_from`; `validate_only`) and `report_findings` (G13).
+//! The team-task group (track W): `team` (run a Starlark team task script: inline, a saved name
+//! or a `path`; `resume_from`; `validate_only`; it was `workflow`, which still resolves) and
+//! `report_findings` (G13).
 //!
 //! Which form a call is: `script`, else `path`, else `name` (a saved workflow); keys the chosen
 //! form does not use are named in the result, not refused. With a `script` the `name` is its
 //! display label.
 //!
-//! `workflow` is the conductor's (configured hosts only): the call is checked here, launched by
+//! `team` is the conductor's (configured hosts only): the call is checked here, launched by
 //! the daemon's [`marlowe_workflow::Workflows`] service as a durable crew run, and returns the run
 //! id at once (non-negotiable 4); `background:false` waits for the result, and Esc detaches. The
 //! first run of a script digest asks, showing its META; built-ins and approved digests are free.
@@ -67,7 +68,7 @@ fn roots(t: &BuiltinTools, workspace: Option<&std::path::Path>) -> Option<marlow
 }
 
 fn workflow_spec() -> marlowe_model::ToolSpec {
-    marlowe_agent::compact_specs::spec("workflow")
+    marlowe_agent::compact_specs::spec("team")
 }
 
 fn report_findings_spec() -> marlowe_model::ToolSpec {
@@ -122,7 +123,7 @@ fn plan(a: &Value) -> Result<Plan, String> {
     } else if let Some(n) = name {
         p.name = Some(n.to_string());
     } else {
-        return Err("Say what to run: `script` (inline Starlark), `path` (a .star file) or `name` (a saved workflow).".into());
+        return Err("Say what to run: `script` (inline Starlark), `path` (a .star file) or `name` (a saved team task).".into());
     }
     Ok(p)
 }
@@ -138,7 +139,7 @@ Ignored: {}.", p.ignored.join("; "))
 
 fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
     let Some(roots) = roots(t, cx.workspace.as_deref()) else {
-        return ToolOutcome::error("workflows are not available on this host");
+        return ToolOutcome::error("team tasks are not available on this host");
     };
     let plan = match plan(a) {
         Ok(p) => p,
@@ -153,7 +154,7 @@ fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
         };
     }
     let Some(Workflows(launcher)) = cx.scope.services.get::<Workflows>().cloned() else {
-        return ToolOutcome::error("workflows run in the daemon; this session has no workflow launcher");
+        return ToolOutcome::error("team tasks run in the daemon; this session has no team task launcher");
     };
     let args = a.get("args").cloned().unwrap_or(Value::Null);
     if !(args.is_null() || args.is_object()) {
@@ -186,11 +187,11 @@ fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
     if background {
         return ToolOutcome::ok(
             format!(
-                "{receipt}\nWorkflow `{name}` is running in the background as crew run {}. Its result arrives as a notice when it finishes; \
-                 /workflows shows its progress. task_stop / task_output take {task_id}. Carry on with other work.{extra}",
+                "{receipt}\nTeam task `{name}` is running in the background as crew run {}. Its result arrives as a notice when it finishes; \
+                 /teams shows its progress. task_stop / task_output take {task_id}. Carry on with other work.{extra}",
                 launched.run_id
             ),
-            format!("workflow {name} started"),
+            format!("team task {name} started"),
         );
     }
     match launcher.wait(&launched.run_id, &cx.cancel) {
@@ -208,12 +209,12 @@ fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
             } else {
                 text
             };
-            ToolOutcome::ok(format!("{receipt}\nWorkflow `{name}` returned:\n{shown}{extra}"), format!("workflow {name} done"))
+            ToolOutcome::ok(format!("{receipt}\nTeam task `{name}` returned:\n{shown}{extra}"), format!("team task {name} done"))
         }
-        Waited::Failed(why) => ToolOutcome::error(format!("{receipt}\nWorkflow `{name}` failed: {why}")),
+        Waited::Failed(why) => ToolOutcome::error(format!("{receipt}\nTeam task `{name}` failed: {why}")),
         Waited::Detached => ToolOutcome::ok(
-            format!("{receipt}\nStopped waiting; the workflow goes on in the background and its result arrives as a notice."),
-            "workflow detached",
+            format!("{receipt}\nStopped waiting; the team task goes on in the background and its result arrives as a notice."),
+            "team task detached",
         ),
     }
 }
@@ -225,7 +226,7 @@ fn workflow_consequence(t: &BuiltinTools, c: &ToolCallReq) -> Consequence {
     }
     let g = group(t);
     let (Some(home), Some(roots)) = (g.home.as_deref(), roots(t, None)) else {
-        return Consequence::Ask { summary: "run a workflow".into() };
+        return Consequence::Ask { summary: "run a team task".into() };
     };
     let mut approved = g.approved.lock().unwrap_or_else(|e| e.into_inner());
     // Nothing will run when the call names nothing: it returns the error.
@@ -253,10 +254,10 @@ fn workflow_consequence(t: &BuiltinTools, c: &ToolCallReq) -> Consequence {
 fn describe_workflow(c: &ToolCallReq) -> String {
     let a = &c.args;
     match (script(a), path(a), s(a, "name")) {
-        (Some(_), _, Some(n)) => format!("workflow {n} (inline script)"),
-        (Some(_), _, None) => "workflow (inline script)".into(),
-        (None, Some(p), _) => format!("workflow {p}"),
-        (None, None, Some(n)) => format!("workflow {n}"),
+        (Some(_), _, Some(n)) => format!("team task {n} (inline script)"),
+        (Some(_), _, None) => "team task (inline script)".into(),
+        (None, Some(p), _) => format!("team task {p}"),
+        (None, None, Some(n)) => format!("team task {n}"),
         _ => "workflow".into(),
     }
 }
@@ -312,17 +313,17 @@ pub fn middleware(tools: &crate::BuiltinTools) -> Vec<std::sync::Arc<dyn marlowe
     vec![std::sync::Arc::new(star::StarValidator::default())]
 }
 
-/// No block: the `workflow` description carries the script API and the rules for using it.
+/// No block: the `team` description carries the script API and the rules for using it.
 pub fn persona_block() -> Option<&'static str> {
     None
 }
 
-/// The conductor's hosts: `workflow` is live and findings are stored under the profile home.
+/// The conductor's hosts: `team` is live and findings are stored under the profile home.
 pub fn configure(tools: crate::BuiltinTools, setup: &super::HostSetup<'_>) -> crate::BuiltinTools {
     tools.with_state(WorkflowGroup::new(setup.home, true))
 }
 
-/// A crew host: `report_findings` stores under the profile home; no `workflow` (agents never
+/// A crew host: `report_findings` stores under the profile home; no `team` (agents never
 /// start workflows, WF2).
 pub fn crew_configure(tools: crate::BuiltinTools, setup: &super::HostSetup<'_>) -> crate::BuiltinTools {
     tools.with_state(WorkflowGroup::new(setup.home, false))

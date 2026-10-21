@@ -59,7 +59,7 @@ const SCRIPT: &str = "META = {\"name\": \"two\", \"description\": \"Two agents\"
 fn parity_wf1_first_run_of_a_digest_asks_with_its_meta_then_is_free() {
     let (home, ws) = (temp("home1"), temp("ws1"));
     let t = host(&home, &ws);
-    let call = req("workflow", json!({"script": SCRIPT}));
+    let call = req("team", json!({"script": SCRIPT}));
     match t.consequence(&call) {
         Consequence::Ask { summary } => {
             assert!(summary.contains("Two agents") && summary.contains("a → b") && summary.contains("first run"), "{summary}")
@@ -70,8 +70,8 @@ fn parity_wf1_first_run_of_a_digest_asks_with_its_meta_then_is_free() {
     marlowe_workflow::service::trust(&home, &p).unwrap();
     assert_eq!(t.consequence(&call), Consequence::Free, "an approved digest runs free");
     // Built-ins are trusted; a script that cannot run asks nothing (the call returns the errors).
-    assert_eq!(t.consequence(&req("workflow", json!({"name": "code-review"}))), Consequence::Free);
-    assert_eq!(t.consequence(&req("workflow", json!({"script": "def main(:"}))), Consequence::Free);
+    assert_eq!(t.consequence(&req("team", json!({"name": "code-review"}))), Consequence::Free);
+    assert_eq!(t.consequence(&req("team", json!({"script": "def main(:"}))), Consequence::Free);
 }
 
 #[test]
@@ -80,13 +80,13 @@ fn parity_wf1_the_call_returns_the_run_id_at_once_or_waits_when_asked() {
     let t = host(&home, &ws);
     let fake = Arc::new(FakeLauncher::default());
     let services = Services::new().with(Workflows(fake.clone()));
-    let out = t.call_scoped(&req("workflow", json!({"script": SCRIPT, "args": {"k": 1}})), &cx(&ws, services.clone()));
+    let out = t.call_scoped(&req("team", json!({"script": SCRIPT, "args": {"k": 1}})), &cx(&ws, services.clone()));
     assert!(!out.is_error, "{}", out.content);
     assert!(out.content.contains("\"run_id\":\"r1\"") && out.content.contains("script_path"), "{}", out.content);
     let sent = fake.launched.lock().unwrap()[0].clone();
     assert_eq!(sent.args, json!({"k": 1}));
     assert!(sent.background);
-    let out = t.call_scoped(&req("workflow", json!({"name": "code-review", "background": false})), &cx(&ws, services));
+    let out = t.call_scoped(&req("team", json!({"name": "code-review", "background": false})), &cx(&ws, services));
     assert!(out.content.contains("\"answer\": 42"), "{}", out.content);
 }
 
@@ -97,9 +97,9 @@ fn parity_wf1_validation_errors_come_back_and_nothing_runs() {
     let fake = Arc::new(FakeLauncher::default());
     let services = Services::new().with(Workflows(fake.clone()));
     let bad = "NAME = \"x\"\nMETA = {\"name\": NAME, \"description\": \"d\"}\ndef main(args):\n    return agent(\"never\")\n";
-    let out = t.call_scoped(&req("workflow", json!({"script": bad, "validate_only": true})), &cx(&ws, services.clone()));
+    let out = t.call_scoped(&req("team", json!({"script": bad, "validate_only": true})), &cx(&ws, services.clone()));
     assert!(out.is_error && out.content.contains("line 2") && out.content.contains("pure literal"), "{}", out.content);
-    let ok = t.call_scoped(&req("workflow", json!({"script": SCRIPT, "validate_only": true})), &cx(&ws, services));
+    let ok = t.call_scoped(&req("team", json!({"script": SCRIPT, "validate_only": true})), &cx(&ws, services));
     assert!(!ok.is_error && ok.content.contains("\"description\":\"Two agents\""), "{}", ok.content);
     assert!(fake.launched.lock().unwrap().is_empty(), "validation launched nothing");
 }
@@ -109,16 +109,16 @@ fn parity_wf2_workflow_is_the_conductors_only() {
     let (home, ws) = (temp("home4"), temp("ws4"));
     let crew = super::crew_configure(BuiltinTools::new(Some(ws.clone())), &HostSetup { home: &home, workspace: Some(&ws) });
     let names: Vec<String> = crew.specs().into_iter().map(|s| s.name).collect();
-    assert!(!names.contains(&"workflow".to_string()) && names.contains(&"report_findings".to_string()), "{names:?}");
+    assert!(!names.contains(&"team".to_string()) && names.contains(&"report_findings".to_string()), "{names:?}");
     let conductor: Vec<String> = host(&home, &ws).specs().into_iter().map(|s| s.name).collect();
-    assert!(conductor.contains(&"workflow".to_string()));
+    assert!(conductor.contains(&"team".to_string()));
     // A subagent the conductor spawns sees the conductor's host through its type's filter: never
     // the workflow tool, whatever the type (CC gives subagents no Workflow tool either).
     let conductor: Arc<dyn ToolHost> = Arc::new(host(&home, &ws));
     for ty in marlowe_agent::subagent::builtin_types() {
         let sub = marlowe_agent::subagent::FilteredTools::new(conductor.clone(), &ty);
-        assert!(!sub.admits("workflow"), "{} admits workflow", ty.name);
-        assert!(!sub.specs().iter().any(|s| s.name == "workflow"), "{} lists workflow", ty.name);
+        assert!(!sub.admits("team"), "{} admits workflow", ty.name);
+        assert!(!sub.specs().iter().any(|s| s.name == "team"), "{} lists workflow", ty.name);
     }
 }
 
@@ -127,10 +127,10 @@ fn parity_wf4_a_waited_on_workflow_taints_the_conversation() {
     let (home, ws) = (temp("home7"), temp("ws7"));
     let t = host(&home, &ws);
     // The returned value is built by agents that read the web and the repository.
-    assert!(t.taints(&req("workflow", json!({"name": "code-review", "background": false}))));
+    assert!(t.taints(&req("team", json!({"name": "code-review", "background": false}))));
     // In the background the result comes back through the relay, which carries its own taint.
-    assert!(!t.taints(&req("workflow", json!({"name": "code-review"}))));
-    assert!(!t.taints(&req("workflow", json!({"name": "code-review", "background": true}))));
+    assert!(!t.taints(&req("team", json!({"name": "code-review"}))));
+    assert!(!t.taints(&req("team", json!({"name": "code-review", "background": true}))));
 }
 
 /// The daemon's launch rule (`may_run`, then `trust_approved`) over the real resolver.
@@ -166,7 +166,7 @@ fn parity_wf1_the_launch_runs_the_approved_digest_or_nothing() {
     let t = host(&home, &ws);
     let launcher = Arc::new(BindingLauncher { home: home.clone(), ws: ws.clone(), ran: Mutex::new(Vec::new()) });
     let services = Services::new().with(Workflows(launcher.clone()));
-    let call = req("workflow", json!({"script_path": "wf.star"}));
+    let call = req("team", json!({"script_path": "wf.star"}));
     let roots = marlowe_workflow::service::roots(&home, Some(&ws), vec![]);
     let trusted = |src: &str| {
         let p = marlowe_workflow::service::prepare(&roots, Some(src), None, None).unwrap();
@@ -209,10 +209,33 @@ fn parity_wf9_the_description_carries_the_api_and_no_block_is_needed() {
     assert!(!with.persona_blocks().iter().any(|b| b.text().contains("## Workflows")), "the workflow group has no persona block");
     let all_but: Vec<ToolGroup> = ToolGroup::ALL.iter().copied().filter(|g| *g != ToolGroup::Workflow).collect();
     let without = host(&home, &ws).with_exposure(ExposureProfile::Frontier, all_but);
-    assert!(!without.specs().iter().any(|s| s.name == "workflow"));
+    assert!(!without.specs().iter().any(|s| s.name == "team"));
     // The description carries the API on its own.
-    let spec = with.specs().into_iter().find(|s| s.name == "workflow").unwrap();
+    let spec = with.specs().into_iter().find(|s| s.name == "team").unwrap();
     assert!(spec.description.contains("pipeline(") && spec.description.contains("def main(args)"));
+}
+
+/// The tool is `team`: its description carries Claude Code's opt-in rule and the authoring rules,
+/// and `dispatch` says it is one specialist, not a team.
+#[test]
+fn the_team_description_carries_the_opt_in_rule_and_dispatch_is_one_specialist() {
+    let (home, ws) = (temp("home9"), temp("ws9"));
+    let t = host(&home, &ws);
+    let d = t.specs().into_iter().find(|s| s.name == "team").unwrap().description;
+    for want in [
+        "in their own words", "names a saved one", "a skill says so", "Teams is on", "do the work yourself", "roughly what it costs, and ask",
+        "authoring skill", "never name paths you have not seen", "META", "pipeline", "is a barrier", "team(name, args), one level",
+    ] {
+        assert!(d.contains(want), "team description lacks `{want}`: {d}");
+    }
+    assert!(!d.to_lowercase().contains("workflow"), "{d}");
+    assert!(d.len() < 2_400, "the description stays compact: {} chars", d.len());
+    let dispatch = marlowe_agent::compact_specs::spec("dispatch").description;
+    assert!(dispatch.contains("One specialist: a prompt given to one crew subagent in its own sandbox — not a team, no script"), "{dispatch}");
+    for name in ["agent", "dispatch", "team"] {
+        let d = marlowe_agent::compact_specs::spec(name).description;
+        assert!(!d.contains("Not for a workflow"), "{name}: the descriptions do not steer between each other");
+    }
 }
 
 #[test]
@@ -258,7 +281,7 @@ mod star_files {
         let good = ws.join("two.star");
         std::fs::write(&good, SCRIPT).unwrap();
         let out = written(&star, &cx, "a", &good);
-        assert!(out.content.starts_with("wrote it") && out.content.contains("is a valid workflow"), "{}", out.content);
+        assert!(out.content.starts_with("wrote it") && out.content.contains("is a valid team task"), "{}", out.content);
 
         // The kind of file a model writes when it has not read the API: no META, a while loop.
         let bad = ws.join("bad.star");
@@ -267,7 +290,7 @@ mod star_files {
         agent(\"x\")
 ").unwrap();
         let out = written(&star, &cx, "b", &bad);
-        assert!(out.content.contains("<workflow-errors>") && out.content.contains("not a valid workflow"), "{}", out.content);
+        assert!(out.content.contains("<team-errors>") && out.content.contains("not a valid team task script"), "{}", out.content);
         assert!(!out.is_error, "the write itself succeeded");
 
         // Other files, failed writes and calls without paths are left alone.
@@ -323,7 +346,7 @@ name = \"x\"
         let (home, ws) = (temp("home5"), temp("ws5"));
         let t = host(&home, &ws);
         assert!(t.middleware().iter().any(|m| m.name() == "star-validator"));
-        let d = t.specs().into_iter().find(|s| s.name == "workflow").unwrap().description;
+        let d = t.specs().into_iter().find(|s| s.name == "team").unwrap().description;
         assert!(d.contains("`script` inline") && d.contains("save a .star only when asked"), "{d}");
     }
 }
@@ -390,7 +413,7 @@ mod launch_forms {
     fn a_call_that_names_nothing_to_run_says_what_can_be_named() {
         let (home, ws) = fixture("lf1");
         let t = host(&home, &ws);
-        let out = t.call_scoped(&req("workflow", json!({})), &cx(&ws, Services::new()));
+        let out = t.call_scoped(&req("team", json!({})), &cx(&ws, Services::new()));
         assert!(out.is_error && out.content.contains("`script`") && out.content.contains("`path`") && out.content.contains("`name`"), "{}", out.content);
         assert!(!out.content.contains("items_from") && !out.content.contains("prompt"), "{}", out.content);
     }
@@ -404,23 +427,23 @@ mod launch_forms {
         trust_script(&home, &ws, None, Some("wf.star"));
         // script + name: the script runs, the name is its label.
         let l = RunLauncher::new(&home, &ws);
-        let out = t.call_scoped(&req("workflow", json!({"script": SCRIPT, "name": "my-audit"})), &cx(&ws, svc(&l)));
+        let out = t.call_scoped(&req("team", json!({"script": SCRIPT, "name": "my-audit"})), &cx(&ws, svc(&l)));
         assert!(!out.is_error, "{}", out.content);
         let sent = l.seen.lock().unwrap()[0].clone();
         assert_eq!((sent.script.as_deref(), sent.name.as_deref(), sent.script_path.as_deref()), (Some(SCRIPT), None, None));
-        assert!(out.content.contains("Workflow `my-audit`") && out.content.contains("\"label\":\"my-audit\""), "{}", out.content);
+        assert!(out.content.contains("Team task `my-audit`") && out.content.contains("\"label\":\"my-audit\""), "{}", out.content);
         // script + path: the script runs and the path is named as ignored.
-        let out = t.call_scoped(&req("workflow", json!({"script": SCRIPT, "path": "wf.star"})), &cx(&ws, svc(&RunLauncher::new(&home, &ws))));
+        let out = t.call_scoped(&req("team", json!({"script": SCRIPT, "path": "wf.star"})), &cx(&ws, svc(&RunLauncher::new(&home, &ws))));
         assert!(!out.is_error && out.content.contains("Ignored: `path` (a `script` was given)"), "{}", out.content);
         // path + name: the file runs, the name is named as ignored.
         let l = RunLauncher::new(&home, &ws);
-        let out = t.call_scoped(&req("workflow", json!({"path": "wf.star", "name": "code-review"})), &cx(&ws, svc(&l)));
+        let out = t.call_scoped(&req("team", json!({"path": "wf.star", "name": "code-review"})), &cx(&ws, svc(&l)));
         assert!(!out.is_error && out.content.contains("`name` (a `path` was given)"), "{}", out.content);
         assert_eq!(l.seen.lock().unwrap()[0].script_path.as_deref(), Some("wf.star"));
         // A saved name runs the saved workflow; an unknown one is an error.
-        let out = t.call_scoped(&req("workflow", json!({"name": "code-review", "validate_only": true})), &cx(&ws, Services::new()));
+        let out = t.call_scoped(&req("team", json!({"name": "code-review", "validate_only": true})), &cx(&ws, Services::new()));
         assert!(out.content.starts_with("code-review.star is valid"), "{}", out.content);
-        let out = t.call_scoped(&req("workflow", json!({"name": "no-such-workflow", "validate_only": true})), &cx(&ws, Services::new()));
+        let out = t.call_scoped(&req("team", json!({"name": "no-such-workflow", "validate_only": true})), &cx(&ws, Services::new()));
         assert!(out.is_error, "{}", out.content);
     }
 
@@ -433,7 +456,7 @@ def main(args):
     return 1
 ";
         for args in [json!({"script": bad, "validate_only": true}), json!({"script": bad})] {
-            let out = t.call_scoped(&req("workflow", args), &cx(&ws, svc(&RunLauncher::new(&home, &ws))));
+            let out = t.call_scoped(&req("team", args), &cx(&ws, svc(&RunLauncher::new(&home, &ws))));
             assert!(out.is_error, "{}", out.content);
             assert!(out.content.contains("Starlark has no import") && out.content.contains("`import os`"), "{}", out.content);
             assert!(!out.content.contains("No code needed"), "{}", out.content);
@@ -443,7 +466,7 @@ def main(args):
     #[test]
     fn the_description_has_no_short_form_and_every_argument_is_listed() {
         let (home, ws) = fixture("lf5");
-        let spec = host(&home, &ws).specs().into_iter().find(|s| s.name == "workflow").unwrap();
+        let spec = host(&home, &ws).specs().into_iter().find(|s| s.name == "team").unwrap();
         assert!(!spec.description.contains("No code needed") && !spec.description.contains("items_from"), "{}", spec.description);
         let props = spec.input_schema["properties"].as_object().unwrap();
         for k in ["script", "path", "name", "args", "background", "resume_from", "validate_only"] {

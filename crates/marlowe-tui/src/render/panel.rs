@@ -134,10 +134,10 @@ fn help(area: Rect, state: &State, sc: &crate::panel::Scroll, theme: &Theme, buf
     }
     if !state.bg.saved.is_empty() {
         lines.push(Line::default());
-        lines.push(Line::from(Span::styled("Saved workflows \u{b7} /workflow <name>", ink(Ink::Accent, theme).add_modifier(Modifier::BOLD))));
+        lines.push(Line::from(Span::styled("Saved team tasks \u{b7} /team <name>", ink(Ink::Accent, theme).add_modifier(Modifier::BOLD))));
         for w in &state.bg.saved {
             lines.push(Line::from(vec![
-                Span::styled(text::pad(&text::truncate(&format!("/workflow {}", text::clean(&w.name)), 29), 30), theme.normal()),
+                Span::styled(text::pad(&text::truncate(&format!("/team {}", text::clean(&w.name)), 29), 30), theme.normal()),
                 Span::styled(text::truncate(&text::clean(&w.description), 58), ink(Ink::Dim, theme)),
             ]));
         }

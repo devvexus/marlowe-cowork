@@ -43,7 +43,11 @@ const KINDS: [Option<TaskKind>; 6] =
     [None, Some(TaskKind::Job), Some(TaskKind::Agent), Some(TaskKind::Workflow), Some(TaskKind::Monitor), Some(TaskKind::Cron)];
 
 pub fn kind_label(k: Option<TaskKind>) -> &'static str {
-    k.map_or("all", TaskKind::as_str)
+    k.map_or("all", |k| match k {
+        TaskKind::Agent => "one-specialist team task",
+        TaskKind::Workflow => "team task",
+        other => other.as_str(),
+    })
 }
 
 // ---- /workflows ------------------------------------------------------------------------------------
@@ -387,7 +391,7 @@ impl State {
                     ui.open = Some(run);
                     ui.agent = 0;
                 } else if let Some(w) = self.bg.saved.get(ui.sel - runs) {
-                    let line = format!("/workflow {} ", w.name);
+                    let line = format!("/team {} ", w.name);
                     self.composer.set(&line);
                     self.focus = Focus::Message;
                     return false;
@@ -403,7 +407,7 @@ impl State {
             ui.confirm_stop = false;
             if matches!(k.code, KeyCode::Char('y') | KeyCode::Enter) {
                 out.push(Request::StopTask { id: workflow_task_id(run) });
-                self.flash("stopping the workflow \u{b7} it can be resumed", NoteTone::Dim);
+                self.flash("stopping the team task \u{b7} it can be resumed", NoteTone::Dim);
             }
             return true;
         }

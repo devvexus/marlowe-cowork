@@ -7,12 +7,12 @@
 │           ╭ tasks ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮           │
 │           │ kind all                                                                                                         │───── (w) ─╯
 │           │                                                                                                                  │───────────╮
-│           │ › monitor  mon_m2                waiting   40s      tail -f train.log · armed                                    │           │
-│           │   workflow wf_wf1                running   1m00s    code-review · 1 of 3 agents                                  │───── (1) ─╯
-│           │   agent    agent_r7              running   1m20s    engineer: fix the gate · step 4                              │───────────╮
-│           │   job      job_j1                running   1m35s    cargo test -p gate                                           │           │
-│           │   cron     cron_c1               waiting   30s      check the build · next 09:00                                 │           │
-│           │   job      job_j0                done      1m55s    npm run lint · exit 0                                        │           │
+│           │ › monitor   mon_m2                waiting   40s      tail -f train.log · armed                                   │           │
+│           │   team task wf_wf1                running   1m00s    code-review · 1 of 3 agents                                 │───── (1) ─╯
+│           │   team task agent_r7              running   1m20s    engineer: fix the gate · step 4                             │───────────╮
+│           │   job       job_j1                running   1m35s    cargo test -p gate                                          │           │
+│           │   cron      cron_c1               waiting   30s      check the build · next 09:00                                │           │
+│           │   job       job_j0                done      1m55s    npm run lint · exit 0                                       │           │
 │           │                                                                                                                  │           │
 │           │                                                                                                                  │           │
 │           │                                                                                                                  │           │

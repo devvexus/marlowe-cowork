@@ -85,7 +85,7 @@ fn notice_for(tasks: &[TaskInfo], me: &marlowe_proto::SessionId) -> Option<Strin
     let mut out = String::from(NOTICE_PREFIX);
     for t in active.iter().take(NOTICE_MAX) {
         let status = Some(status_word(t)).filter(|s| !s.is_empty()).unwrap_or_else(|| "waiting".into());
-        out.push_str(&format!("\n{} · {} · {} · {}", t.id, t.kind.as_str(), crate::tasks::clip_line(&t.title, 48), status));
+        out.push_str(&format!("\n{} · {} · {} · {}", t.id, t.kind.label(), crate::tasks::clip_line(&t.title, 48), status));
         if t.session.as_ref().is_some_and(|s| s != me) {
             out.push_str(" · (another conversation)");
         }
@@ -93,7 +93,7 @@ fn notice_for(tasks: &[TaskInfo], me: &marlowe_proto::SessionId) -> Option<Strin
     if active.len() > NOTICE_MAX {
         out.push_str(&format!("\n+{} more", active.len() - NOTICE_MAX));
     }
-    out.push_str("\ntask_stop <id> stops one (a workflow stops as a whole); task_list shows them.\n</system-reminder>");
+    out.push_str("\ntask_stop <id> stops one (a team task stops as a whole); task_list shows them.\n</system-reminder>");
     Some(out)
 }
 

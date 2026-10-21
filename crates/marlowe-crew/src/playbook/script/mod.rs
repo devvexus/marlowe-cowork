@@ -213,7 +213,7 @@ pub fn run_workflow(runner: &AgentRunner, job: ScriptJob<'_>, emit: &dyn Fn(Scri
     let observer = observer_for(&job);
     let host = CrewAgentHost::new(runner.clone(), job.run.clone(), job.home.to_path_buf(), observer, job.worktree.clone());
     let mut obs = JournalObserver { path: journal.clone(), progress: Progress::new(job.run.clone(), name.clone(), meta.phases.clone(), budget_total), run: job.run.clone(), emit };
-    crate::playbook::StepRunner::progress(runner, &format!("workflow {name}"));
+    crate::playbook::StepRunner::progress(runner, &format!("team task {name}"));
     let outcome = marlowe_workflow::run(&source, cfg, host, &mut obs, &ctl_rx);
     {
         // The run is over in this process: its live entries go. The last progress view stays for
@@ -244,7 +244,7 @@ pub fn run_workflow(runner: &AgentRunner, job: ScriptJob<'_>, emit: &dyn Fn(Scri
             let text = serde_json::to_string_pretty(&out.value).unwrap_or_default();
             let shown = clip(&text, SUMMARY_CHARS);
             let mut summary = format!(
-                "Workflow `{name}` finished: {} agent(s), {} from cache, {} output tokens.\nReturn value:\n```json\n{shown}\n```",
+                "Team task `{name}` finished: {} agent(s), {} from cache, {} output tokens.\nReturn value:\n```json\n{shown}\n```",
                 out.agents, out.cached, out.tokens
             );
             if text.len() > shown.len() {

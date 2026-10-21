@@ -465,6 +465,10 @@ fn parity_x9_matcher_table() {
         (Some("auto"), "manual", false),
         (Some("permission_prompt"), "permission_prompt", true),
         (Some("[unclosed"), "[unclosed", true),
+        // `team` was `workflow`: a hook written for the old name still fires.
+        (Some("workflow"), "team", true),
+        (Some("team"), "team", true),
+        (Some("workflow"), "agent", false),
     ];
     for (m, target, want) in rows {
         assert_eq!(matcher_matches(*m, target), *want, "{m:?} vs {target}");

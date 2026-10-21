@@ -651,7 +651,7 @@
  },
  {
   "name": "todo",
-  "description": "Task list for 3+ step work, shared with your subagents and workflow agents. `items` replaces the list (keep ids); item fields alone add one item, or change item `id`; no args shows the list. One in_progress; complete each as soon as done.",
+  "description": "Task list for 3+ step work, shared with your subagents and team agents. `items` replaces the list (keep ids); item fields alone add one item, or change item `id`; no args shows the list. One in_progress; complete each as soon as done.",
   "input_schema": {
    "type": "object",
    "properties": {
@@ -759,7 +759,7 @@
  },
  {
   "name": "agent",
-  "description": "Start a quick, bounded subagent: explore (read-only), plan, general, fork (a copy of you with this chat), guide (about Marlowe) or an agents-folder type. Only fork sees this chat: `prompt` is the whole task. Background unless `background: false`. Not for a workflow or fan-out the user asks for (workflow), nor long sandboxed work (dispatch).",
+  "description": "Start a quick, bounded subagent: explore (read-only), plan, general, fork (a copy of you with this chat), guide (about Marlowe) or an agents-folder type. Only fork sees this chat: `prompt` is the whole task. Background unless `background: false`. Not for long sandboxed work (dispatch).",
   "input_schema": {
    "type": "object",
    "properties": {
@@ -1045,8 +1045,8 @@
   }
  },
  {
-  "name": "workflow",
-  "description": "Run many agents in parallel in the background and combine their answers; returns a wf_ task id, the result arrives as a notice. Use it whenever the user asks for a workflow, a fan-out or one agent per item. Pass `script` inline (save a .star only when asked), a `path`, or the `name` of a saved workflow. Starlark: META = {\"name\": \"x\", \"description\": \"..\"}; def main(args): ... return result. API: agent(prompt, label=, phase=, schema=, model=, effort=, isolation=\"worktree\", agent_type=) -> text, dict (schema) or None; parallel([lambda: agent(..), ..]); pipeline(items, lambda prev, item, i: ..); phase(name); log(msg); workflow(name, args); budget; json.encode/decode. No import, while, recursion, clock or files. In loops: lambda f=f: agent(f). `validate_only` checks without running.",
+  "name": "team",
+  "description": "Run a team task: a team of specialist agents working an objective, written as a full Starlark script; returns a wf_ task id, the result arrives as a notice. Only when the user asks for a team task in their own words, names a saved one, a skill says so, or Teams is on; otherwise do the work yourself and, if a team would clearly help, say what it would do and roughly what it costs, and ask. Load the team-task authoring skill before writing a script; scout the workspace first and never name paths you have not seen. Pass `script` inline (save a .star only when asked), a `path`, or the `name` of a saved team task. Starlark: META = {\"name\": \"x\", \"description\": \"..\"} first; def main(args): ... return result. API: agent(prompt, label=, phase=, schema=, model=, effort=, isolation=\"worktree\", agent_type=) -> text, dict (schema) or None; parallel([lambda: agent(..), ..]) is a barrier; pipeline(items, lambda prev, item, i: ..) has none and is the default for staged work; phase(name); log(msg); team(name, args), one level; budget; json.encode/decode. No import, while, recursion, clock or files. In loops: lambda f=f: agent(f). `validate_only` checks without running.",
   "input_schema": {
    "type": "object",
    "properties": {
@@ -1055,7 +1055,7 @@
      "description": ".star file"
     },
     "name": {
-     "description": "saved workflow"
+     "description": "saved team task"
     },
     "args": {
      "type": "object"
@@ -1166,7 +1166,7 @@
  },
  {
   "name": "task_stop",
-  "description": "Stop a task by id: a job and its processes, agent, crew run, workflow, monitor or schedule. Another conversation's asks.",
+  "description": "Stop a task by id: a job and its processes, agent, crew run, team task, monitor or schedule. Another conversation's asks.",
   "input_schema": {
    "type": "object",
    "properties": {
@@ -1374,7 +1374,7 @@
  },
  {
   "name": "dispatch",
-  "description": "Hand long or bulky work (deep research, big builds, \"in the background\") to one sandboxed background crew agent; returns an agent_ task id, the result comes later. It cannot see this chat: `prompt` needs the context, paths and done-criteria. Tell the user in one line. Not for a workflow or several agents: that is workflow.",
+  "description": "One specialist: a prompt given to one crew subagent in its own sandbox — not a team, no script. Long or bulky work (deep research, big builds, \"in the background\"); returns an agent_ task id, the result comes later. It cannot see this chat: `prompt` needs the context, paths and done-criteria. Tell the user in one line.",
   "input_schema": {
    "type": "object",
    "properties": {
@@ -1537,7 +1537,7 @@
   "input_schema": {
    "type": "object",
    "properties": {},
-   "description": "replaced by the workflow script's schema, verbatim"
+   "description": "replaced by the team task script's schema, verbatim"
   }
  }
 ]

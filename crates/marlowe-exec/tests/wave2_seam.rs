@@ -18,7 +18,7 @@ fn the_wave2_groups_follow_mcp_and_each_declares_only_what_its_track_landed() {
     // W landed: its two tools, its block, offered in any workspace.
     let w = specs::group(ToolGroup::Workflow).unwrap();
     let names = |g: ToolGroup| -> Vec<String> { (specs::group(g).unwrap().tools)().iter().map(|d| d.name().to_string()).collect() };
-    assert_eq!(names(ToolGroup::Workflow), ["workflow", "report_findings"]);
+    assert_eq!(names(ToolGroup::Workflow), ["team", "report_findings"]);
     assert!((w.persona_block)().is_none() && (w.detect)(None));
     // Tasks and notify (track N): their tools, a block with the tasks group, and detection
     // wherever there is a workspace.

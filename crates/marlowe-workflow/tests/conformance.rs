@@ -210,6 +210,9 @@ fn c13_nested_workflow_one_level() {
     let host = ScriptedHost::echo();
     let (r, _) = go("13-nested.star", cfg("13", json!({"topic": "rust"})), host.clone());
     assert_eq!(r.unwrap().value, json!({"child": "done: research rust"}));
+    // `team()` is the same call under its new name; `workflow()` above is the old one.
+    let (r, _) = go("13b-nested-team.star", cfg("13b", json!({"topic": "rust"})), host.clone());
+    assert_eq!(r.unwrap().value, json!({"child": "done: research rust"}));
     let (r, _) = go("27-child-cannot-nest.star", cfg("27", json!({})), ScriptedHost::echo());
     match r {
         Err(WorkflowError::Script(d)) => assert!(d.message.contains("one level deep"), "{d}"),

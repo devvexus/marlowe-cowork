@@ -94,7 +94,7 @@ struct NoTools;
 
 impl ToolHost for NoTools {
     fn specs(&self) -> Vec<ToolSpec> {
-        ["read", "grep", "agent", "workflow", "dispatch", "report_findings"]
+        ["read", "grep", "agent", "workflow", "team", "dispatch", "report_findings"]
             .map(|n| ToolSpec { name: n.into(), description: n.into(), input_schema: json!({"type": "object"}) })
             .to_vec()
     }
@@ -223,12 +223,12 @@ fn parity_wf3_an_agent_without_a_valid_call_gets_one_finalisation_call_with_form
 #[test]
 fn parity_wf2_workflow_agents_cannot_spawn() {
     let card = Roles::builtin().get(WORKFLOW_ROLE).cloned().expect("the workflow role card");
-    for t in ["agent", "workflow", "dispatch", "send_message"] {
+    for t in ["agent", "workflow", "team", "dispatch", "send_message"] {
         assert!(!card.allows(t), "a workflow agent must not have `{t}`");
     }
     let model = Model::new(false, |req, _| {
         let names: Vec<&str> = req.tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(!names.contains(&"agent") && !names.contains(&"workflow") && !names.contains(&"dispatch"), "{names:?}");
+        assert!(!names.contains(&"agent") && !names.contains(&"workflow") && !names.contains(&"team") && !names.contains(&"dispatch"), "{names:?}");
         answer("ok")
     });
     let home = temp("wf2");

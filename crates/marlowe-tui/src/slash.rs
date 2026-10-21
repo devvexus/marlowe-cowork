@@ -56,8 +56,8 @@ pub const BUILTINS: &[Builtin] = &[
     b("todos", &[], Args::None, "show or hide the todo list"),
     b("jobs", &[], Args::None, "background jobs"),
     b("tasks", &["bashes"], Args::None, "everything running in the background: stop it, read its output"),
-    b("workflows", &[], Args::None, "workflow progress, skip an agent, saved workflows"),
-    b("workflow", &[], Args::Optional("name [json args]"), "run a saved workflow and watch it"),
+    b("teams", &["workflows"], Args::None, "team task progress, skip an agent, saved team tasks"),
+    b("team", &["workflow"], Args::Optional("name [json args]"), "run a saved team task and watch it"),
     b("findings", &[], Args::None, "the last code review's findings"),
     b("files", &[], Args::None, "files the agent sent you"),
     b("messages", &["threads"], Args::None, "messages to crew runs and agents"),
@@ -296,8 +296,8 @@ impl State {
             }
             "jobs" => self.open_jobs(out),
             "tasks" => self.open_tasks(out),
-            "workflows" => self.open_workflows(out),
-            "workflow" => {
+            "teams" => self.open_workflows(out),
+            "team" => {
                 if args.is_empty() {
                     self.open_workflows(out);
                 } else if args.split_whitespace().next().is_some_and(|w| w.eq_ignore_ascii_case("convert")) {
@@ -394,7 +394,7 @@ impl State {
         self.flash(format!("thinking effort: {effort}"), NoteTone::Dim);
     }
 
-    /// `/workflow <name|path> [json args]`: starts the run and opens its progress when it appears.
+    /// `/team <name|path> [json args]`: starts the run and opens its progress when it appears.
     fn slash_workflow(&mut self, args: &str, out: &mut Vec<Request>) {
         let (name, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
         let rest = rest.trim();
@@ -413,7 +413,7 @@ impl State {
         let (name, script_path) = if is_path { (None, Some(name.to_string())) } else { (Some(name.to_string()), None) };
         self.bg.expect_run = true;
         out.push(Request::RunWorkflow { session: self.session.clone(), name, script_path, args: value, resume_from: None });
-        self.flash("starting the workflow...", NoteTone::Dim);
+        self.flash("starting the team task...", NoteTone::Dim);
     }
 
     /// `/fast [on|off]`: the conductor on the Quick slot's model, or back.

@@ -204,7 +204,7 @@ pub enum WorkflowError {
     #[error("the script failed: {0}")]
     Script(Diagnostic),
     /// Stopped by the user; the journal has every finished agent, so it can resume.
-    #[error("the workflow was stopped")]
+    #[error("the team task was stopped")]
     Stopped,
     #[error("internal: {0}")]
     Internal(String),
@@ -427,10 +427,10 @@ impl Ctx {
             return Ok(result);
         }
         if st.stopped {
-            return Err(Halt::Fatal("the workflow was stopped".into()));
+            return Err(Halt::Fatal("the team task was stopped".into()));
         }
         if st.next_index >= self.cfg.max_agents {
-            return Err(Halt::Throw(format!("a workflow runs at most {} agents", self.cfg.max_agents)));
+            return Err(Halt::Throw(format!("a team task runs at most {} agents", self.cfg.max_agents)));
         }
         if let Some(b) = &self.cfg.budget {
             if let Some(total) = b.total() {
@@ -467,7 +467,7 @@ pub fn call_key(id: &str, prompt: &str, opts: &AgentOpts) -> String {
 }
 
 fn ctx<'a>(eval: &Evaluator<'_, 'a, '_>) -> &'a Ctx {
-    eval.extra.and_then(|e| e.downcast_ref::<Ctx>()).expect("the workflow context")
+    eval.extra.and_then(|e| e.downcast_ref::<Ctx>()).expect("the team task context")
 }
 
 // ---------------------------------------------------------------- values
@@ -559,7 +559,7 @@ fn mul_fits<'v>(a: Value<'v>, b: Value<'v>) -> Result<(), String> {
 
 /// The error for an operation that would build a value over [`MAX_VALUE_BYTES`].
 fn too_big(op: &str, v: Value, bytes: u128) -> String {
-    format!("`{op}` would build a {} of about {} MB; values in a workflow stay under {} MB", v.get_type(), bytes >> 20, MAX_VALUE_BYTES >> 20)
+    format!("`{op}` would build a {} of about {} MB; values in a team task stay under {} MB", v.get_type(), bytes >> 20, MAX_VALUE_BYTES >> 20)
 }
 
 /// Whether `a + b` stays within the limits: two strings, lists or tuples joined.
@@ -579,7 +579,7 @@ fn add_fits<'v>(a: Value<'v>, b: Value<'v>) -> Result<(), String> {
 fn shl_fits(a: Value, b: Value) -> Result<(), String> {
     match int_of(b) {
         Some(Ok(n)) if n <= MAX_SHIFT => {}
-        Some(_) => return Err(format!("`<<` shifts by at most {MAX_SHIFT} bits in a workflow")),
+        Some(_) => return Err(format!("`<<` shifts by at most {MAX_SHIFT} bits in a team task")),
         None => return Ok(()),
     }
     match int_of(a) {
@@ -656,7 +656,7 @@ fn guard_api(builder: &mut GlobalsBuilder) {
         };
         if n > MAX_RANGE {
             let c = ctx(eval);
-            return Err(c.halt(Halt::Fatal(format!("range() gives at most {MAX_RANGE} numbers in a workflow; this one would give {n}"))));
+            return Err(c.halt(Halt::Fatal(format!("range() gives at most {MAX_RANGE} numbers in a team task; this one would give {n}"))));
         }
         let heap = eval.heap();
         Ok(heap.alloc(AllocList((0..n).map(|i| heap.alloc(start + i * step)).collect::<Vec<_>>())))
@@ -923,39 +923,53 @@ fn host_api(builder: &mut GlobalsBuilder) {
         Ok(starlark::values::none::NoneType)
     }
 
-    /// Runs a saved workflow (by name or path) with `args` and returns its result. One level
-    /// deep: a workflow started this way cannot start another. It shares this run's limits and
+    /// Runs a saved team task (by name or path) with `args` and returns its result. One level
+    /// deep: a team task started this way cannot start another. It shares this run's limits and
     /// budget.
+    fn team<'v>(
+        #[starlark(require = pos)] name: &str,
+        #[starlark(require = pos)] args: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        nested(name, args, eval, "team")
+    }
+
+    /// The old name of `team`: saved scripts that call it keep running.
     fn workflow<'v>(
         #[starlark(require = pos)] name: &str,
         #[starlark(require = pos)] args: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
-        let c = ctx(eval);
-        c.require_main("workflow")?;
-        if c.pass.borrow().depth >= 1 {
-            return Err(anyhow::anyhow!("workflow() is one level deep: a workflow started by workflow() cannot start another"));
-        }
-        let args_json = args.unwrap_or_else(Value::new_none).to_json_value().map_err(|e| anyhow::anyhow!("workflow(name, args): args must be JSON-like: {e}"))?;
-        let (filename, source) = c.child(name)?;
-        let id = c.pass.borrow_mut().next_op();
-        {
-            let mut p = c.pass.borrow_mut();
-            p.push(format!("{id}/"));
-            p.depth += 1;
-        }
-        let r = run_child(c, &filename, &source, &args_json);
-        {
-            let mut p = c.pass.borrow_mut();
-            p.depth -= 1;
-            p.pop();
-        }
-        match r {
-            Ok(v) => Ok(to_value(eval.heap(), &v)),
-            Err(ChildErr::Waiting) => Err(c.halt(Halt::Waiting)),
-            Err(ChildErr::Fatal(m)) => Err(c.halt(Halt::Fatal(m))),
-            Err(ChildErr::Throw(m)) => Err(anyhow::anyhow!("workflow(\"{name}\") failed: {m}")),
-        }
+        nested(name, args, eval, "workflow")
+    }
+}
+
+/// `team(name, args)` / `workflow(name, args)`: `who` is the spelling the script used.
+fn nested<'v>(name: &str, args: Option<Value<'v>>, eval: &mut Evaluator<'v, '_, '_>, who: &str) -> anyhow::Result<Value<'v>> {
+    let c = ctx(eval);
+    c.require_main(who)?;
+    if c.pass.borrow().depth >= 1 {
+        return Err(anyhow::anyhow!("{who}() is one level deep: a team task started by {who}() cannot start another"));
+    }
+    let args_json = args.unwrap_or_else(Value::new_none).to_json_value().map_err(|e| anyhow::anyhow!("{who}(name, args): args must be JSON-like: {e}"))?;
+    let (filename, source) = c.child(name)?;
+    let id = c.pass.borrow_mut().next_op();
+    {
+        let mut p = c.pass.borrow_mut();
+        p.push(format!("{id}/"));
+        p.depth += 1;
+    }
+    let r = run_child(c, &filename, &source, &args_json);
+    {
+        let mut p = c.pass.borrow_mut();
+        p.depth -= 1;
+        p.pop();
+    }
+    match r {
+        Ok(v) => Ok(to_value(eval.heap(), &v)),
+        Err(ChildErr::Waiting) => Err(c.halt(Halt::Waiting)),
+        Err(ChildErr::Fatal(m)) => Err(c.halt(Halt::Fatal(m))),
+        Err(ChildErr::Throw(m)) => Err(anyhow::anyhow!("{who}(\"{name}\") failed: {m}")),
     }
 }
 
@@ -991,10 +1005,10 @@ impl Ctx {
         if let Some(c) = self.st.borrow().children.get(name) {
             return Ok(c.clone());
         }
-        let resolver = self.cfg.resolver.clone().ok_or_else(|| anyhow::anyhow!("workflow(\"{name}\"): no saved workflows are available here"))?;
-        let (filename, source) = resolver.resolve(name).map_err(|e| anyhow::anyhow!("workflow(\"{name}\"): {e}"))?;
+        let resolver = self.cfg.resolver.clone().ok_or_else(|| anyhow::anyhow!("team(\"{name}\"): no saved team tasks are available here"))?;
+        let (filename, source) = resolver.resolve(name).map_err(|e| anyhow::anyhow!("team(\"{name}\"): {e}"))?;
         validate::static_checks(&filename, &source)
-            .map_err(|d| anyhow::anyhow!("workflow(\"{name}\") is not valid:\n{}", validate::render(&d)))?;
+            .map_err(|d| anyhow::anyhow!("team(\"{name}\") is not valid:\n{}", validate::render(&d)))?;
         self.st.borrow_mut().children.insert(name.to_string(), (filename.clone(), source.clone()));
         Ok((filename, source))
     }
@@ -1020,7 +1034,7 @@ fn run_child(c: &Ctx, filename: &str, source: &str, args: &Json) -> Result<Json,
     let in_main = std::mem::replace(&mut c.pass.borrow_mut().in_main, false);
     let r = eval.eval_module(ast, &globals).and_then(|_| {
         c.pass.borrow_mut().in_main = true;
-        let main = module.get("main").ok_or_else(|| starlark::Error::new_other(anyhow::anyhow!("the workflow has no main()")))?;
+        let main = module.get("main").ok_or_else(|| starlark::Error::new_other(anyhow::anyhow!("the team task has no main()")))?;
         let n = arity(main).unwrap_or(0).min(1);
         eval.eval_function(main, &[args_v][..n], &[])
     });

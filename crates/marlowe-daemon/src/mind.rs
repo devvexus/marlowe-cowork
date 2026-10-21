@@ -679,7 +679,7 @@ mod tests {
     fn the_wired_dusk_lists_every_built_in_and_holds_no_block_back() {
         let w = wired_dusk();
         let names: Vec<&str> = w.specs.iter().map(|s| s.name.as_str()).collect();
-        for live in ["project", "remember", "dispatch", "git", "gh", "web_search", "web_fetch", "workflow", "monitor", "symbols"] {
+        for live in ["project", "remember", "dispatch", "git", "gh", "web_search", "web_fetch", "team", "monitor", "symbols"] {
             assert!(names.contains(&live), "{live} missing: {names:?}");
         }
         assert!(!names.contains(&"tool_search"), "no tool_search without MCP overflow: {names:?}");

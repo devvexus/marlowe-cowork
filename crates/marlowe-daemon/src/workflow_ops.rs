@@ -30,7 +30,7 @@ use marlowe_workflow::{AgentCall, AgentResult, Control, Workflows};
 
 use crate::daemon::Core;
 
-const NO_CREW: &str = "workflows run on the crew, and the crew is not running";
+const NO_CREW: &str = "team tasks run on the crew, and the crew is not running";
 /// Runs scanned for workflow runs (lists, tasks).
 const SCAN: u32 = 500;
 
@@ -45,7 +45,7 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
         }
         Request::WatchWorkflow { run } => match view(core, &run) {
             Some(info) => reply(Event::WorkflowUpdated(info)),
-            None => fail(format!("no workflow run {}", run.short())),
+            None => fail(format!("no team task run {}", run.short())),
         },
         Request::RunWorkflow { session, name, script_path, args, resume_from } => {
             let workspace = session.as_ref().and_then(|s| core.store.get(s).ok().flatten()).and_then(|s| s.workspace).map(PathBuf::from);
@@ -68,7 +68,7 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
             match launcher.launch(req) {
                 Ok(l) => match core.crew.get().and_then(|c| c.supervisor.get(&RunId(l.run_id.clone())).ok().flatten()) {
                     Some(info) => reply(Event::RunUpdated(info)),
-                    None => fail(format!("workflow run {} vanished after it was queued", l.run_id)),
+                    None => fail(format!("team task run {} vanished after it was queued", l.run_id)),
                 },
                 Err(e) => fail(e),
             }
@@ -80,7 +80,7 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
                     reply(Event::WorkflowUpdated(info));
                 }
             }
-            None => fail(format!("workflow run {} is not running", run.short())),
+            None => fail(format!("team task run {} is not running", run.short())),
         },
         Request::ListFindings { run, session } => {
             let findings = match (&run, &session) {
@@ -90,7 +90,7 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
             };
             reply(Event::Findings { session, run, findings })
         }
-        other => fail(format!("not a workflow request: {other:?}")),
+        other => fail(format!("not a team task request: {other:?}")),
     }
 }
 
@@ -156,12 +156,12 @@ pub(crate) fn on_boot(core: &Arc<Core>) {
     install_skill(&core.home);
 }
 
-/// The `workflow-authoring` skill (WF9: the long reference and examples), shipped as a user-level
+/// The `team-task-authoring` skill (WF9: the long reference and examples), shipped as a user-level
 /// skill on first start; a copy the user edited is left alone.
 pub(crate) const AUTHORING_SKILL: &str = include_str!("../../../workflows/workflow-authoring.md");
 
 pub(crate) fn install_skill(home: &Path) {
-    let path = home.join("skills").join("workflow-authoring").join("SKILL.md");
+    let path = home.join("skills").join("team-task-authoring").join("SKILL.md");
     if path.exists() {
         return;
     }
@@ -226,13 +226,13 @@ impl WorkflowLauncher for Launcher {
                 let found = link.supervisor.list(SCAN).unwrap_or_default().into_iter().find(|i| i.id.as_str() == r || i.id.as_str().starts_with(r));
                 let info = found.ok_or_else(|| format!("no run {r} to resume from"))?;
                 if !script::journal_path(&core.home, &info.id).is_file() {
-                    return Err(format!("run {} has no workflow journal to resume from", info.id.short()));
+                    return Err(format!("run {} has no team task journal to resume from", info.id.short()));
                 }
                 Some(info.id)
             }
         };
         let session = req.session.clone().or_else(|| self.session.clone());
-        let goal = format!("workflow {}: {}", prepared.name, prepared.meta.description.trim());
+        let goal = format!("team task {}: {}", prepared.name, prepared.meta.description.trim());
         let dispatch = DispatchArgs {
             role: script::WORKFLOW_ROLE.into(),
             goal,
@@ -376,7 +376,7 @@ impl TaskSource for WorkflowTasks {
                 let done = progress.as_ref().map(|p| p.agents.iter().filter(|a| a.status != marlowe_proto::WorkflowAgentStatus::Queued && a.status != marlowe_proto::WorkflowAgentStatus::Running).count());
                 let total = progress.as_ref().map(|p| p.agents.len());
                 let phase = progress.as_ref().and_then(|p| p.phase.clone());
-                let mut title = format!("workflow {}", wf.name.clone().unwrap_or_else(|| "inline".into()));
+                let mut title = format!("team task {}", wf.name.clone().unwrap_or_else(|| "inline".into()));
                 if let Some(ph) = phase {
                     title.push_str(&format!(" · {ph}"));
                 }

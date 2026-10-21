@@ -212,7 +212,7 @@ mod tests {
         for want in ["read", "write", "edit", "grep", "glob", "bash", "web_fetch"] {
             assert!(names.contains(&want), "{want} missing from {names:?}");
         }
-        assert!(!names.contains(&"agent") && !names.contains(&"workflow"), "conductor-only tools are not served: {names:?}");
+        assert!(!names.contains(&"agent") && !names.contains(&"team"), "conductor-only tools are not served: {names:?}");
         let read = &replies[2]["result"];
         assert_eq!(read["isError"], false, "{read}");
         assert!(read["content"][0]["text"].as_str().unwrap().contains("served by marlowe"), "{read}");

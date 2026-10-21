@@ -85,7 +85,7 @@ fn quitting_with_work_running_asks_and_a_stray_enter_cancels() {
     assert_palette_only(&frame);
     let text = dump(&frame);
     for want in [
-        "2 agent runs, 1 job",
+        "2 team tasks, 1 job",
         "leave the agent running",
         "Stop and close agent",
         "Close window (keep agent running)",
@@ -284,7 +284,7 @@ fn interrupted() -> Event {
             InterruptedRun { run: RunId::from("r-2"), title: "evaluate B".into(), workflow: false, stopped_at: "stopped after step 0".into(), at_ms: 1 },
             InterruptedRun { run: RunId::from("r-3"), title: "code review".into(), workflow: true, stopped_at: "stopped after step 9".into(), at_ms: 1 },
         ],
-        summary: "2 crew runs, 1 workflow".into(),
+        summary: "3 team tasks".into(),
     }
 }
 
@@ -298,7 +298,7 @@ fn the_next_launch_offers_to_resume_and_yes_resumes() {
     // The dialog wraps its sentence; the sentence itself is the dialog's.
     assert_eq!(
         s.closing.dialog.as_ref().map(|d| d.prompt()),
-        Some("We were still working when you closed Marlowe last time (2 crew runs, 1 workflow). Resume?".to_string())
+        Some("We were still working when you closed Marlowe last time (3 team tasks). Resume?".to_string())
     );
     for part in ["We were still working when you closed", "Resume?", "Yes", "Not now"] {
         assert!(contains(&frame, part), "{part}
