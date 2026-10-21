@@ -310,6 +310,15 @@ fn repeated_calls_note(times: u32) -> String {
     )
 }
 
+/// Crew wording of [`ERROR_NUDGE`]: a crew step answers a brief, there is no user to ask.
+pub const CREW_ERROR_NUDGE: &str = "<system-reminder>\nYour last tool call failed and you ended the step without \
+trying again. If the error shows what to change (a path, a name, an argument), make the corrected call now. \
+Otherwise write your final answer from what you found, and say plainly what you could not find.\n</system-reminder>";
+
+/// Crew wording of [`EMPTY_NUDGE`].
+pub const CREW_EMPTY_NUDGE: &str = "<system-reminder>\nYou ended your step without writing an answer. Write your final \
+answer now from what you found; if what you were asked about does not exist, say so plainly.\n</system-reminder>";
+
 /// The guard's per-session state in `Conversation::ext`.
 #[derive(Debug, Clone, Default)]
 pub struct GuardState {
@@ -328,12 +337,31 @@ pub struct GuardState {
 
 /// The guard middleware (see the module docs).
 #[derive(Debug, Default)]
-pub struct LoopGuard;
+pub struct LoopGuard {
+    /// Crew wording for the error and empty-reply nudges.
+    crew: bool,
+}
 
 impl LoopGuard {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self)
+        Arc::new(Self::default())
     }
+
+    /// The guard of a crew step: the same detection, nudges worded for a step that answers a
+    /// brief rather than a user.
+    pub fn for_crew() -> Arc<Self> {
+        Arc::new(Self { crew: true })
+    }
+}
+
+/// The path of a "does not exist" error (`read`, `grep`, `glob`, `list`, `edit` word it three
+/// ways), so failures on one bad path count together whichever tool hit it.
+fn missing_path(first_line: &str) -> Option<&str> {
+    let head = first_line.find(": it does not exist").or_else(|| first_line.find(" does not exist"))?;
+    let path = first_line[..head].trim();
+    let path = path.strip_prefix("cannot read ").unwrap_or(path);
+    let path = path.strip_prefix("`path` ").unwrap_or(path).trim();
+    (!path.is_empty()).then_some(path)
 }
 
 /// The last assistant message's calls as one canonical string.
@@ -390,7 +418,10 @@ impl ToolMiddleware for LoopGuard {
                 return;
             }
             let first: String = outcome.content.lines().next().unwrap_or("").chars().take(120).collect();
-            let key = format!("{}: {first}", call.name);
+            let key = match missing_path(&first) {
+                Some(path) => format!("missing:{path}"),
+                None => format!("{}: {first}", call.name),
+            };
             let n = match st.failure.take() {
                 Some((k, n)) if k == key => n + 1,
                 _ => 1,
@@ -438,11 +469,11 @@ impl ToolMiddleware for LoopGuard {
         if !st.nudged.2 && st.last_batch_failed && info.step > 1 && !question {
             st.nudged.2 = true;
             st.last_batch_failed = false;
-            return FinalFlow::Continue(ERROR_NUDGE.into());
+            return FinalFlow::Continue(if self.crew { CREW_ERROR_NUDGE } else { ERROR_NUDGE }.into());
         }
         if !st.nudged.3 && text.trim().is_empty() {
             st.nudged.3 = true;
-            return FinalFlow::Continue(EMPTY_NUDGE.into());
+            return FinalFlow::Continue(if self.crew { CREW_EMPTY_NUDGE } else { EMPTY_NUDGE }.into());
         }
         FinalFlow::Accept
     }

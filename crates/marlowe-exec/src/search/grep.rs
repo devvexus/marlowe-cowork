@@ -322,7 +322,7 @@ pub fn grep(env: &SearchEnv, args: &Value) -> ToolOutcome {
         Err(e) => return e,
     };
     if env.port.metadata(&base).is_err() {
-        return ToolOutcome::error(format!("`path` {} does not exist", env.shown(&base)));
+        return ToolOutcome::error(format!("`path` {} does not exist.{}", env.shown(&base), crate::paths::did_you_mean(env.root, &base)));
     }
 
     let mut mb = RegexMatcherBuilder::new();

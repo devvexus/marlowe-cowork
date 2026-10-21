@@ -446,10 +446,11 @@ fn multi_error(f: &Files<'_>, e: MultiError, total: usize) -> ToolOutcome {
     let body = match e {
         MultiError::Edit { index, path, error } => format!("{}{}", lead(index, &path), error.message()),
         MultiError::Missing { index, path } => format!(
-            "{}{} does not exist. Use `write` with `path` and `content` to create it (or an empty \
+            "{}{} does not exist.{} Use `write` with `path` and `content` to create it (or an empty \
              `old_string`).",
             lead(index, &path),
-            f.shown(&path)
+            f.shown(&path),
+            paths::did_you_mean(f.root, &path)
         ),
         MultiError::NotText { path } => format!(
             "{} is not UTF-8 text, so it cannot be edited as text. Use `write` to replace it whole.",
@@ -502,7 +503,7 @@ fn read(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
     let meta = match f.port().metadata(&abs) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return ToolOutcome::error(format!("cannot read {shown}: it does not exist."))
+            return ToolOutcome::error(format!("cannot read {shown}: it does not exist.{}", paths::did_you_mean(f.root, &abs)))
         }
         Err(e) => return ToolOutcome::error(format!("cannot read {shown}: {e}")),
     };
@@ -1012,7 +1013,7 @@ fn edit_tool(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
             return ToolOutcome::error(edit::EditError::EmptyOld.message().replace("old_string", old_key))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && !old.is_empty() => {
-            return ToolOutcome::error(format!("{shown} does not exist. Use `write` with `path` and `content` to create it."))
+            return ToolOutcome::error(format!("{shown} does not exist.{} Use `write` with `path` and `content` to create it.", paths::did_you_mean(f.root, &abs)))
         }
         _ => {}
     }

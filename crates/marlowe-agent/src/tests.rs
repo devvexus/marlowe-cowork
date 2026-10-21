@@ -640,7 +640,8 @@ fn compaction_fires_at_the_trigger_and_keeps_the_live_turn() {
     assert!(reqs[0].tools.is_empty(), "the summariser call has no tools");
     let prompt = reqs[0].messages[0].joined_text();
     assert!(prompt.contains(SUMMARY_PROMPT) && prompt.contains("answer 9"));
-    assert!(!prompt.contains("now?"));
+    assert!(prompt.contains("<current_request>\nnow?\n</current_request>"), "the summariser sees the live request");
+    assert!(prompt.find("<current_request>") < prompt.find("<transcript>"));
     let sys = reqs[1].system_text();
     assert!(sys.contains(SUMMARY_PREFACE) && sys.contains("SUMMARY OF EARLIER"));
     assert_eq!(reqs[1].messages, vec![Message::user("now?")]);

@@ -17,11 +17,16 @@ use super::SearchEnv;
 pub(crate) const FILE_CAP: usize = 200_000;
 
 /// Version control, never searched.
-const VCS_DIRS: [&str; 5] = [".git", ".hg", ".svn", ".bzr", ".jj"];
+pub(crate) const VCS_DIRS: [&str; 5] = [".git", ".hg", ".svn", ".bzr", ".jj"];
+
+/// Whether a directory of this name is never searched (VCS data, build output).
+pub(crate) fn is_skipped(name: &str) -> bool {
+    VCS_DIRS.iter().chain(SKIP_DIRS.iter()).any(|d| name == *d)
+}
 
 /// Build output and caches that are skipped unless named as the base (or already ignored, in
 /// which case nothing is said).
-const SKIP_DIRS: [&str; 5] = ["target", "node_modules", ".venv", "__pycache__", "dist"];
+pub(crate) const SKIP_DIRS: [&str; 5] = ["target", "node_modules", ".venv", "__pycache__", "dist"];
 
 /// Which files a call wants, beyond ignore rules.
 #[derive(Default, Clone)]

@@ -393,6 +393,7 @@ impl AgentRunner {
         let mut agent = Agent::new(Arc::new(metered), model.model, tools.clone(), system);
         agent.effort = spec.effort.unwrap_or(card.effort);
         agent.approvals = self.approvals.clone();
+        agent.middleware.push(marlowe_agent::agent::guard::LoopGuard::for_crew());
         // A sized step gets the room its prompt leaves, not the provider's default (Ollama's is
         // a quarter of the window, which a thinking model can spend before it answers).
         if let Some(want) = spec.max_output {
@@ -432,13 +433,23 @@ impl AgentRunner {
         let mut prompt = if resumed { RESUME_PROMPT.to_string() } else { spec.prompt.clone() };
         let mut finished = false;
         let mut truncated = false;
+        // Reasoning tokens of the model call in flight: a reply of reasoning alone leaves nothing in
+        // the history, so this is the only record of it.
+        let reasoned = std::cell::Cell::new(0u64);
         for _ in 0..=MAX_CONTINUES {
             self.hooks.admit(spec)?;
             if self.cancel.is_cancelled() {
                 return Err(CrewError::Cancelled);
             }
             agent.budget = self.hooks.remaining();
-            let out = agent.run_turn(&mut convo, &prompt, &self.cancel, &self.inbox, &mut |ev| self.hooks.event(spec, &ev));
+            let out = agent.run_turn(&mut convo, &prompt, &self.cancel, &self.inbox, &mut |ev| {
+                match &ev {
+                    AgentEvent::CallStarted { .. } => reasoned.set(0),
+                    AgentEvent::ReasoningDelta { tokens, .. } => reasoned.set(reasoned.get() + tokens),
+                    _ => {}
+                }
+                self.hooks.event(spec, &ev)
+            });
             usage.add(&out.usage);
             // A call the hooks refused (budget refused, paused, cancelled) ends the step with why.
             if let Some(e) = failed.lock().unwrap_or_else(|e| e.into_inner()).take() {
@@ -462,10 +473,17 @@ impl AgentRunner {
         }
         let text = last_assistant_text(&convo.messages);
         if !finished || text.trim().is_empty() {
-            let why = if finished { "the agent gave no answer" } else { "the step did not finish" };
-            let failure = StepFailure { why: why.into(), usage, truncated, max_output: agent.max_output };
+            let why = if !finished {
+                "the step did not finish".to_string()
+            } else {
+                match reasoned.get() {
+                    0 => "the agent gave no answer".to_string(),
+                    n => format!("stopped with reasoning only ({n} tokens) after a nudge"),
+                }
+            };
+            let failure = StepFailure { why: why.clone(), usage, truncated, max_output: agent.max_output };
             self.hooks.failed(spec, &convo.messages, &failure);
-            return Err(CrewError::Step { step: spec.key.clone(), message: why.into() });
+            return Err(CrewError::Step { step: spec.key.clone(), message: why });
         }
         let result = StepResult { text, usage, tainted: convo.exposure.tainted, truncated };
         self.hooks.finished(spec, &convo.messages, &result);

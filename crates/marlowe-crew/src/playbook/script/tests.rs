@@ -175,7 +175,7 @@ fn parity_wf3_three_retries_then_none() {
                     let r = last_tool_result(req).unwrap();
                     assert!(r.contains(&format!("{} of 3 retries left", 4 - i)), "{i}: {r}");
                 }
-                call(STRUCTURED_OUTPUT, json!({"n": "three"}))
+                call(STRUCTURED_OUTPUT, json!({"n": format!("three{i}")}))
             }
             4 => {
                 let r = last_tool_result(req).unwrap();
@@ -192,7 +192,7 @@ fn parity_wf3_three_retries_then_none() {
     let (out, _) = go(&r, &home, &run, &wf);
     assert!(out.unwrap().summary.contains("null"));
     let turns = model.requests().iter().filter(|q| q.format.is_none()).count();
-    assert_eq!(turns, 5, "four invalid calls, then the turn ends");
+    assert_eq!(turns, 6, "four invalid calls, the refusal, and one crew-guard nudge before the turn ends");
 }
 
 #[test]

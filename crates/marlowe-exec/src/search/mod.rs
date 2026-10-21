@@ -22,7 +22,7 @@
 
 mod glob;
 mod grep;
-mod walk;
+pub(crate) mod walk;
 
 #[cfg(test)]
 mod tests;

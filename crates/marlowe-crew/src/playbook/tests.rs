@@ -659,6 +659,62 @@ fn a_role_prompt_dispatch_is_one_step_and_resumes_from_its_checkpoint() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A reply that thinks and says nothing.
+fn thinking_only(tokens: u64) -> Vec<StreamEvent> {
+    vec![StreamEvent::ReasoningDelta { text: "weighing what the files say".into(), tokens }, StreamEvent::Stop(StopReason::EndTurn)]
+}
+
+/// Run a990e8f6's shape: the same missing path again and again, a call that ends in reasoning
+/// alone, then text once the harness nudges.
+#[test]
+fn a_crew_step_that_ends_in_reasoning_alone_is_nudged_and_returns_the_answer() {
+    let dir = temp_dir("a990");
+    let missing = dir.join("docrARCHITECTURE.md").display().to_string();
+    let analyst = Scripted::queue(vec![
+        call("read", json!({"path": missing})),
+        call("read", json!({"path": missing})),
+        call("read", json!({"path": missing})),
+        thinking_only(3_313),
+        answer("There is no such file; the project has no architecture document.\n\nConfidence: low"),
+    ]);
+    let runner = AgentRunner::new(
+        RunId::new_random(),
+        Roles::builtin(),
+        resolver(vec![("analyst", analyst.clone())]),
+        TestTools::new(),
+        scratch(&dir),
+        None,
+    );
+    let d = single(&runner, "analyst", "Read the architecture document.").unwrap();
+    assert!(d.summary.starts_with("There is no such file"), "{}", d.summary);
+    let reqs = analyst.requests();
+    assert_eq!(reqs.len(), 5);
+    let third = reqs[3].messages.iter().filter(|m| m.role == Role::Tool).last().unwrap().tool_results_iter().next().unwrap().content.clone();
+    assert!(third.contains("same failure 3 calls in a row"), "{third}");
+    let nudge = reqs[4].messages.last().unwrap().joined_text();
+    assert!(nudge.contains("final answer") && nudge.contains("make the corrected call"), "{nudge}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_crew_step_that_stays_in_reasoning_after_the_nudge_fails_with_the_reason() {
+    let dir = temp_dir("silent");
+    let analyst = Scripted::queue(vec![thinking_only(3_313), thinking_only(40)]);
+    let runner = AgentRunner::new(
+        RunId::new_random(),
+        Roles::builtin(),
+        resolver(vec![("analyst", analyst.clone())]),
+        TestTools::new(),
+        scratch(&dir),
+        None,
+    );
+    let e = single(&runner, "analyst", "Read the architecture document.").unwrap_err();
+    let CrewError::Step { message, .. } = e else { panic!("{e:?}") };
+    assert!(message.starts_with("stopped with reasoning only (") && message.ends_with("tokens) after a nudge"), "{message}");
+    assert_eq!(analyst.requests().len(), 2, "one nudge, no more");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_sandbox_shell_runs_in_the_sandbox_without_api_keys() {
     let dir = temp_dir("shell");

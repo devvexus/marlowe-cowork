@@ -157,6 +157,12 @@ impl ToolHost for Fake {
         self.log.lock().unwrap().push((call.name.clone(), call.args.clone(), cx.workspace.clone()));
         let a = &call.args;
         match call.name.as_str() {
+            "read" if a["path"].as_str().is_some_and(|p| p.contains("nowhere")) => {
+                ToolOutcome::error(format!("cannot read {}: it does not exist.", a["path"].as_str().unwrap_or("?")))
+            }
+            "grep" if a["path"].as_str().is_some_and(|p| p.contains("nowhere")) => {
+                ToolOutcome::error(format!("`path` {} does not exist", a["path"].as_str().unwrap_or("?")))
+            }
             "read" => ToolOutcome::ok(format!("contents of {}", a["path"].as_str().unwrap_or("?")), "1 line"),
             "write" => ToolOutcome::ok("written", "written"),
             "bash" => {
@@ -1301,6 +1307,34 @@ fn a_model_that_stays_silent_after_the_nudge_ends_the_turn_empty_without_looping
     assert_eq!(r.len(), 2, "one call, one nudge, one more call");
     assert_eq!(r.iter().filter(|q| messages_text(q).contains(guard::EMPTY_NUDGE)).count(), 1);
     assert_eq!((out.stop, out.text.trim()), (TurnStop::Done, ""));
+}
+
+#[test]
+fn read_and_grep_alternating_on_one_missing_path_count_as_one_failure() {
+    let p = Script::new(vec![
+        call("read", json!({"path": "nowhere/a.md"})),
+        call("grep", json!({"pattern": "x", "path": "nowhere/a.md"})),
+        call("read", json!({"path": "nowhere/a.md"})),
+        answer("It does not exist."),
+    ]);
+    let mut a = agent(p.clone(), frontier(), Fake::new());
+    a.middleware.push(guard::LoopGuard::for_crew());
+    run(&a, &mut convo(None), "find a.md");
+    let r = p.requests();
+    let res = tool_results(&r[3]);
+    assert!(!res[1].contains("same failure") && res[2].contains("same failure 3 calls in a row"), "{res:?}");
+}
+
+#[test]
+fn a_crew_guard_nudges_an_empty_reply_once_in_crew_words() {
+    let p = Script::new(vec![thinking_only("hmm"), thinking_only("still")]);
+    let mut a = agent(p.clone(), frontier(), Fake::new());
+    a.middleware.push(guard::LoopGuard::for_crew());
+    run(&a, &mut convo(None), "summarise");
+    let r = p.requests();
+    assert_eq!(r.len(), 2);
+    assert_eq!(last_user(&r[1]), guard::CREW_EMPTY_NUDGE);
+    assert_eq!(r.iter().filter(|q| messages_text(q).contains("say so plainly")).count(), 1);
 }
 
 #[test]

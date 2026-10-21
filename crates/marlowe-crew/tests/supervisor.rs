@@ -442,7 +442,7 @@ fn live_step_numbers_match_the_transcript_rows_with_parallel_scouts() {
         let u = last_user(req);
         Ok(if u.contains("Plan the investigation") {
             answer("1. First question?\n2. Second question?")
-        } else if u.contains("First question?") && !after_tool(req) {
+        } else if u.contains("Your sub-question: First question?") && !after_tool(req) {
             call("note", json!({"text": "looked"}))
         } else if u.contains("Your sub-question") {
             answer(&format!("1. claim for {} [src](https://example.com/{})", &u[u.len() - 16..], u.len()))

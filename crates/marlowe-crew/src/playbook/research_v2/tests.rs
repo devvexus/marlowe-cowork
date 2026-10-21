@@ -1085,7 +1085,7 @@ fn a_step_that_gives_no_answer_runs_once_more() {
     });
     let cfg = ResearchV2Config { auto_approve_under_tokens: Some(10_000_000), ..Default::default() };
     deep_research_v2(&runner(&crew, &dir, Arc::new(Checkpoints::default())), &host, QM, &cfg).unwrap();
-    assert_eq!(tries.load(Ordering::SeqCst), 2, "asked once more");
+    assert_eq!(tries.load(Ordering::SeqCst), 2, "nudged once");
     let asked: Vec<(String, Effort)> = crew
         .compressor
         .prompts()
@@ -1097,7 +1097,7 @@ fn a_step_that_gives_no_answer_runs_once_more() {
     assert_ne!(asked[0].1, Effort::Off, "the first ask uses the card's effort");
     assert_eq!(asked[1].1, asked[0].1, "the second keeps it: never asked without reasoning");
     let budgets: Vec<Option<u32>> = crew.compressor.calls_with("Group the claims").into_iter().map(|c| c.2).collect();
-    assert_eq!(budgets, [Some(FIRST_OUTPUT), Some(2 * FIRST_OUTPUT)], "the retry gets twice the budget");
+    assert_eq!(budgets, [Some(FIRST_OUTPUT), Some(FIRST_OUTPUT)], "the crew guard nudges inside the step, on the same budget");
     assert_eq!(record(&dir)["corroboration"][0]["standing"], "contested", "the retried grouping was used");
     let report = std::fs::read_to_string(dir.join(REPORT_FILE)).unwrap();
     assert!(!report.contains("model calls failed"), "{report}");

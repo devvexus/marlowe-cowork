@@ -30,7 +30,7 @@ pub fn glob(env: &SearchEnv, args: &Value) -> ToolOutcome {
         );
     }
     if env.port.metadata(&base).is_err() {
-        return ToolOutcome::error(format!("`path` {} does not exist", env.shown(&base)));
+        return ToolOutcome::error(format!("`path` {} does not exist.{}", env.shown(&base), crate::paths::did_you_mean(env.root, &base)));
     }
     let pattern = match args.get("pattern") {
         None | Some(Value::Null) => None,
