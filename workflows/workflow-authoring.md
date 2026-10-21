@@ -62,58 +62,64 @@ comprehension iterations and lambda calls, for at most 120 s, and holds at most 
 gives at most 100000 numbers; `*` and `+` build at most 16 MB; a prompt is at most 1 MB; a `log`
 line is cut at 4000 characters. The top level runs only once the run starts, never during the check.
 
-## Rules the checker enforces
+## Starlark gotchas (the checker names each one with its line)
 
-- No `while`, no recursion: loop with `for i in range(n):` and `break`.
-- No clock, randomness, files, network or `load()`: agents do all the work. The script is
-  deterministic, which is what lets a resume replay it.
-- No `try`/`except`: a failed agent returns `None`; check for it.
-- A lambda or nested `def` inside a loop or comprehension must not read the loop variable, or a
-  variable the loop body sets, unbound: write `[lambda f = f: agent(f) for f in files]`,
-  `lambda p = p: agent(p)`, or use `pipeline(files, lambda prev, f, i: agent(f))`.
-- Write `x = x * n` and `x = x << n`: `*=` and `<<=` are not available. Names starting with `_wf_` are reserved.
-- Pass lists to a script through `args`; scouting happens before, with your own tools.
-- Schemas: the root is `{"type": "object", ...}` and `required` names only declared properties.
-  The subset understood: type, properties, required, items, enum, const, minimum/maximum,
-  minLength/maxLength, minItems/maxItems, additionalProperties, anyOf, oneOf.
+| Python habit | Starlark |
+|---|---|
+| `import json` | none: `json`, `budget`, `args` are already there. A script cannot read files or run commands; agents do, and lists come in through `args` |
+| `x is None`, `x is not None` | `x == None`, `x != None` |
+| `f"{r['n']} {len(xs)}"` | an f-string holds only a plain name: assign first, or join: `"n=" + str(r["n"])` |
+| `"abc" "def"` (neighbouring strings) | `"abc" + "def"`, or one string; use `\n` or triple quotes for several lines |
+| `while cond:` / recursion | `for i in range(n):` with `break`; extend a list between rounds |
+| `[lambda: agent(f) for f in files]` | bind the variable: `lambda f = f: agent(f)`, or `pipeline(files, lambda prev, f, i: agent(f))` |
+| `x *= n`, `x <<= n` | `x = x * n`, `x = x << n` |
+| `try`/`except` | a failed or skipped agent returns `None`: test it |
+| `isinstance(x, list)` | `type(x) == "list"` |
+
+Also: no clock, randomness, files, network or `load()`: the script must be deterministic, which is
+what lets a resume replay it. META is a pure literal (no names, calls, f-strings or arithmetic),
+first in the file. Names starting with `_wf_` are reserved. Schemas: the root is
+`{"type": "object", ...}` and `required` names only declared properties; the subset understood is
+type, properties, required, items, enum, const, minimum/maximum, minLength/maxLength,
+minItems/maxItems, additionalProperties, anyOf, oneOf. Use `schema=` for anything the script reads
+and keep schemas small.
 
 ## Quality patterns
 
-- **Pipeline by default.** When items take several steps, `pipeline` lets each item move on as soon
-  as its own step is done; `parallel` per stage makes everyone wait for the slowest. Use a barrier
-  (`parallel`) only when a step needs every earlier result (a merge, a ranking, a dedupe).
-- **Structured answers for anything the script reads.** Use `schema=`; keep schemas small.
-- **Adversarial verify.** A second agent that tries to refute each claim drops most false
-  findings; for important claims use several skeptics and keep a claim on a majority.
-- **Perspective-diverse verify.** Give each verifier a different lens (correctness, security,
-  "would this really happen"), not the same prompt N times.
-- **Judge panel.** When candidates compete (designs, fixes), several judges score them against the
-  same rubric; the script picks by the scores, not by the first answer.
-- **Loop until dry.** Run finders in rounds with `for i in range(n)`, telling each round what is
-  already found; stop when a round adds nothing new or the budget is low.
-- **Completeness critic.** One agent is given the objective and the result and asked what is
-  missing; if it names gaps, run another round on them.
-- **No silent caps.** If you sample, truncate or skip, `log()` what was dropped and why, and say so
+- **Pipeline by default.** Each item moves on as soon as its own step is done; `parallel` per stage
+  makes everyone wait for the slowest. Barrier (`parallel`) only when a step needs every earlier
+  result (a merge, a ranking, a dedupe).
+- **Adversarial verify.** Skeptics try to refute each claim; keep it on a majority. Most false
+  findings die here. Skip it for trivial or already-verified results.
+- **Perspective-diverse verify.** A different lens per verifier (correctness, "would this really
+  happen", security), not the same prompt N times.
+- **Judge panel.** Candidates compete; several judges score against one rubric; the script picks by
+  score, not by the first answer.
+- **Loop until dry.** Rounds of finders told what is already found; stop when a round adds nothing
+  new or the budget is low.
+- **Completeness critic.** One agent gets the objective and the result and names what is missing;
+  run another round on the gaps.
+- **No silent caps.** Sampling, truncating or skipping: `log()` what was dropped and why, and say so
   in the result.
-- **Fan out wide, then narrow.** Many cheap finders, fewer careful verifiers, one writer.
-- **Budget loops.** `if budget.remaining() != None and budget.remaining() < 20000: break`.
+- **Wide, then narrow.** Many cheap finders, fewer careful verifiers, one writer.
+- **Budget.** `if budget.remaining() != None and budget.remaining() < 20000: break`.
 
 ## Large inputs: batch
 
-For hundreds of items do not send one agent per item. Cut the list into batches in `main`
-(`items[i:i + 20]`), one agent per batch, each returning a structured list, then merge. Keep the
-batch size in `args` so a rerun can change it.
+Hundreds of items: never one agent per item. Chunk the list in `main` (`items[i:i + n]`, size in
+`args` so a rerun can change it), pipeline the chunks, each returning a structured list, then merge
+and `log()` the count.
 
 ## Resume
 
-Rerunning a changed script with `resume_from` (the run id) reuses every unchanged agent call before
-the first changed one; put the expensive, stable work first. The script is saved to a file: edit it
-and resume rather than starting over.
+Rerun a changed script with `resume_from` (the run id): every unchanged agent call before the first
+change replays from cache, so put the expensive, stable work first. The script is saved to a file;
+edit it and resume rather than starting over.
 
-## Example: review every changed file, verify, summarise
+## Example: review, then verify with skeptics and lenses
 
 ```python
-META = {"name": "file-review", "description": "Review each changed file and verify each issue", "phases": ["review", "verify", "summary"]}
+META = {"name": "file-review", "description": "Review each file, then verify each issue with skeptics", "phases": ["review", "verify", "summary"]}
 
 ISSUES = {
     "type": "object",
@@ -125,17 +131,18 @@ ISSUES = {
     "required": ["issues"],
 }
 VERDICT = {"type": "object", "properties": {"real": {"type": "boolean"}}, "required": ["real"]}
+LENSES = ["Would this really happen on a real input?", "Is it already handled elsewhere in the code?", "Is it a real defect rather than style?"]
+
+def verify(path, issue):
+    votes = parallel([lambda lens = lens: agent(lens + " Try to refute " + path + ":" + str(issue["line"]) + " " + issue["claim"], phase = "verify", schema = VERDICT) for lens in LENSES])
+    real = [v for v in votes if v != None and v["real"]]
+    return len(real) * 2 > len(LENSES)
 
 def review(prev, path, i):
     found = agent("Review " + path + " for bugs. Report each with its line.", label = path, phase = "review", schema = ISSUES)
     if found == None:
         return []
-    kept = []
-    for issue in found["issues"]:
-        v = agent("Try to refute: " + path + ":" + str(issue["line"]) + " " + issue["claim"], phase = "verify", schema = VERDICT)
-        if v != None and v["real"]:
-            kept.append({"file": path, "line": issue["line"], "claim": issue["claim"]})
-    return kept
+    return [{"file": path, "line": x["line"], "claim": x["claim"]} for x in found["issues"] if verify(path, x)]
 
 def main(args):
     per_file = pipeline(args["files"], review)
@@ -144,8 +151,67 @@ def main(args):
         if found:
             issues.extend(found)
     phase("summary")
-    log(str(len(issues)) + " verified issue(s)")
+    log(str(len(issues)) + " verified issue(s) in " + str(len(args["files"])) + " file(s)")
     return {"issues": issues}
+```
+
+`args["files"]` comes from your own scouting (`glob`, `grep`), never from a guess.
+
+## Example: judge panel
+
+```python
+META = {"name": "pick-design", "description": "Draft designs in parallel, score each with a judge panel, return the best", "phases": ["draft", "judge"]}
+
+SCORE = {"type": "object", "properties": {"score": {"type": "integer", "minimum": 1, "maximum": 10}}, "required": ["score"]}
+
+def main(args):
+    drafts = parallel([lambda a = a: agent("Design: " + args["goal"] + ". Approach: " + a, phase = "draft") for a in args["angles"]])
+    phase("judge")
+    best = None
+    best_total = -1
+    for i in range(len(drafts)):
+        if drafts[i] == None:
+            log("draft " + str(i + 1) + " failed and was dropped")
+            continue
+        scores = parallel([lambda j = j, i = i: agent("Score 1-10 for " + args["rubric"] + " (judge " + str(j + 1) + "):\n" + drafts[i], phase = "judge", schema = SCORE) for j in range(3)])
+        total = 0
+        for s in scores:
+            if s != None:
+                total = total + s["score"]
+        if total > best_total:
+            best_total = total
+            best = drafts[i]
+    return {"best": best, "total": best_total}
+```
+
+## Example: batch a large list
+
+```python
+META = {"name": "classify-all", "description": "Classify a long list in batches and merge", "phases": ["classify"]}
+
+LABELS = {
+    "type": "object",
+    "properties": {"labels": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"item": {"type": "string"}, "label": {"type": "string"}},
+        "required": ["item", "label"],
+    }}},
+    "required": ["labels"],
+}
+
+def main(args):
+    items = args["items"]
+    size = args.get("batch", 25)
+    batches = [items[i:i + size] for i in range(0, len(items), size)]
+    done = pipeline(batches, lambda prev, b, i: agent("Label each item as " + args["question"] + ". Items:\n" + json.encode(b), label = "batch " + str(i + 1), phase = "classify", schema = LABELS))
+    merged = []
+    for d in done:
+        if d == None:
+            log("a batch failed; its items are missing from the result")
+        else:
+            merged.extend(d["labels"])
+    log(str(len(merged)) + " of " + str(len(items)) + " items labelled")
+    return {"labels": merged}
 ```
 
 ## Example: loop until dry, then a completeness critic
