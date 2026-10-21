@@ -7,6 +7,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 ### Green main and follow-ups
 
 - First-try probe: seven workflow and task_stop cases (summarize, per-crate, research, review commits, cancel a workflow, stop an agent, bare run id) and a grader that checks a workflow script fans out to more than one agent and lets any number of look-ups come first.
+- First-try probe: each run line carries the model's reasoning per step (`thinking`); the workflow cases allow six steps and the review-commits case answers `git` with the three diffs.
 - Headless: a message sent while the turn is running, or while its ask is still starting the turn, steers it instead of queueing a second turn (a steer no longer resends the run options, which made the daemon queue it).
 - Per-role tool table re-pinned for the tuned tool descriptions of the first-try probe (28b400e); no role's tool list changed, token costs rose by 11 (guide, researcher, scout) to 50 (engineer, lead, integrator, workflow) per role.
 - web_search's description no longer promises a synthesized answer: it is keyless now and returns results with title, URL and snippet (compact specs and the pinned web fixture; the other fixtures are unchanged).

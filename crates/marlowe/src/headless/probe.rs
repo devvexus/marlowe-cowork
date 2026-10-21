@@ -228,6 +228,8 @@ struct TapLog {
     raw: Vec<Vec<ToolCall>>,
     input_tokens: Vec<u64>,
     text: Vec<String>,
+    /// Each model call's reasoning text (empty when the model sent none).
+    thinking: Vec<String>,
     /// (without tools, with tools) prompt tokens, from the calibration pair.
     calibration: Option<(u64, u64)>,
     asked_without_tools: bool,
@@ -270,6 +272,7 @@ impl Provider for Tap {
         log.raw.push(done.tool_calls.clone());
         log.input_tokens.push(done.usage.input);
         log.text.push(done.text.clone());
+        log.thinking.push(done.thinking.as_ref().map(|t| t.text.clone()).unwrap_or_default());
         Ok(done)
     }
 }
@@ -413,6 +416,7 @@ impl Probe {
             "kind": "run", "case": case.id, "tool": case.tool, "host": case.host, "run": run, "temperature": temp,
             "model": self.model.id, "calls": calls, "steps": log.raw.len(), "ms": ms,
             "text": log.text.first().map(|t| clip(t, 600)).unwrap_or_default(),
+            "thinking": log.thinking.iter().map(|t| clip(t, 3000)).collect::<Vec<_>>(),
             "stop": format!("{:?}", outcome.stop), "error": outcome.error, "rewrites": rewrites,
             "prompt_tokens": log.input_tokens,
         });
