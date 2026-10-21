@@ -1046,29 +1046,10 @@
  },
  {
   "name": "workflow",
-  "description": "Run many agents in parallel in the background and combine their answers; returns a wf_ task id, the result arrives as a notice. Use it whenever the user asks for a workflow, a fan-out or one agent per item. No code needed: `prompt` (one agent's task; {item} is its item), `items` (list) or `items_from` (folders | packages | commits:N | a glob; the harness lists the real ones), `then` (how to combine); agents only read unless read_only:false. Other shapes: pass `script` inline (save a .star only when asked), Starlark: META = {\"name\": \"x\", \"description\": \"..\"}; def main(args): ... return result. API: agent(prompt, label=, phase=, schema=, model=, effort=, isolation=\"worktree\", agent_type=) -> text, dict (schema) or None; parallel([lambda: agent(..), ..]); pipeline(items, lambda prev, item, i: ..); phase(name); log(msg); workflow(name, args); budget; json.encode/decode. No import, while, recursion, clock or files. In loops: lambda f=f: agent(f). `validate_only` checks without running.",
+  "description": "Run many agents in parallel in the background and combine their answers; returns a wf_ task id, the result arrives as a notice. Use it whenever the user asks for a workflow, a fan-out or one agent per item. Pass `script` inline (save a .star only when asked), a `path`, or the `name` of a saved workflow. Starlark: META = {\"name\": \"x\", \"description\": \"..\"}; def main(args): ... return result. API: agent(prompt, label=, phase=, schema=, model=, effort=, isolation=\"worktree\", agent_type=) -> text, dict (schema) or None; parallel([lambda: agent(..), ..]); pipeline(items, lambda prev, item, i: ..); phase(name); log(msg); workflow(name, args); budget; json.encode/decode. No import, while, recursion, clock or files. In loops: lambda f=f: agent(f). `validate_only` checks without running.",
   "input_schema": {
    "type": "object",
    "properties": {
-    "prompt": {
-     "description": "one agent's task; {item} is its item"
-    },
-    "items": {
-     "type": "array",
-     "items": {
-      "type": "string"
-     }
-    },
-    "items_from": {
-     "description": "folders | packages | commits:N | glob"
-    },
-    "then": {
-     "description": "how to combine the answers"
-    },
-    "read_only": {
-     "type": "boolean",
-     "description": "default true"
-    },
     "script": {},
     "path": {
      "description": ".star file"

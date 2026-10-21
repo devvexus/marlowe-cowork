@@ -9,9 +9,6 @@ A workflow is a Starlark file (Python-like; no Python runtime). The `workflow` t
 anything runs and hands back every error with its line. It runs in the background as a crew run;
 its agents are crew steps in a sandbox, journalled, resumable.
 
-No script is needed for a plain fan-out: `workflow{prompt, items | items_from, then}` runs one read-only agent per item, then one that combines them (`items_from`: folders, packages, commits:N or a glob).
-Write a script only for another shape (stages, loops over results, structured output, writing agents).
-
 ## Shape
 
 ```python

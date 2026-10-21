@@ -278,7 +278,7 @@ fn habit_hint(line: &str) -> Option<&'static str> {
     let f = scan_line(line);
     let has = |w: &str| f.words.iter().any(|x| x == w);
     if t.starts_with("import ") || (t.starts_with("from ") && has("import")) {
-        return Some("Starlark has no import: a script cannot read files or run commands. Pass the items in (items_from) or have an agent read them.");
+        return Some("Starlark has no import: a script cannot read files or run commands. Pass the items in through `args` or have an agent read them.");
     }
     if has("isinstance") {
         return Some("Starlark has no isinstance: use `type(x) == \"list\"` (or \"dict\", \"string\", \"int\").");

@@ -1,5 +1,5 @@
 // One natural request per tool, from the tool-surface design, plus Matthew's scenarios (scenario 1-4: no slack; 5: MCP).
-// accept: {name, required_keys, value_checks (regex on the JSON text of the value), validated (a workflow call must pass validate_only), fan_out (it must be able to run more than one agent: a script that fans out, or a short form over 2+ items)}.
+// accept: {name, required_keys, value_checks (regex on the JSON text of the value), validated (a workflow call must pass validate_only), fan_out (it must be able to run more than one agent: a script that fans out)}.
 // git: commit messages, oldest first: the fixture becomes a real repository with those commits.
 // first_ok: calls that may come first (read before edit, task_list before task_stop); then the next call must be an accepted one.
 {"id": "read", "tool": "read", "host": "conductor", "request": "Show me crates/marlowe-agent/src/context.rs from line 460", "accept": [{"name": "read", "required_keys": ["path", "offset"], "value_checks": {"path": "context\\.rs$", "offset": "^460$"}}]}

@@ -349,9 +349,8 @@ impl ToolMiddleware for Answer {
         if self.host.tool_spec(&call.name).is_none() {
             return CallFlow::Done(ToolOutcome::error(format!("`{}` is not available to this agent", call.name)));
         }
-        // Every workflow call form (script, path, name, short form) is checked the way
-        // `workflow{validate_only}` checks it: nothing runs, and a short form's answer says how many
-        // items it would fan out over.
+        // Every workflow call form (script, path, name) is checked the way
+        // `workflow{validate_only}` checks it: nothing runs.
         let checked = (call.name == "workflow").then(|| {
             let mut args = call.args.clone();
             args["validate_only"] = json!(true);
@@ -675,7 +674,7 @@ mod tests {
         assert!(run["rewrites"].as_array().unwrap().len() >= 2, "{run}");
         assert_eq!(run["stop"], "StepLimit", "the turn stops after max_calls steps: {run}");
         let installed: Vec<&str> = run["middleware"].as_array().unwrap().iter().map(|m| m.as_str().unwrap()).collect();
-        assert!(installed.contains(&"loop-guard") && installed.contains(&"workflow-intent"), "the probe runs the conductor's guards: {installed:?}");
+        assert!(installed.contains(&"loop-guard") && installed.contains(&"star-validator"), "the probe runs the conductor's guards: {installed:?}");
         assert_eq!(installed.last(), Some(&"probe"), "the probe answers last: {installed:?}");
         assert_eq!(*seq.temps.lock().unwrap().last().unwrap(), Some(0.0));
         assert_eq!(run["calibration"], json!({"without_tools": 0, "with_tools": 0}), "{run}");
@@ -808,39 +807,37 @@ def main(args):
     }
 
     #[test]
-    fn every_workflow_call_form_is_validated_and_a_short_form_says_how_many_items() {
-        let short = json!({"prompt": "Summarise {item}", "items_from": "folders"});
+    fn every_workflow_call_form_is_validated() {
         let named = json!({"name": "code-review"});
-        let replies = vec![vec![("workflow", short)], vec![("workflow", named)], vec![("workflow", json!({"prompt": "What is min-p?"}))]];
+        let replies = vec![vec![("workflow", named)], vec![("workflow", json!({"name": "no-such-workflow"}))], vec![("workflow", json!({"prompt": "What is min-p?"}))]];
         let (p, _seq, dir) = probe(replies, vec![None]);
         let mut out = Vec::new();
-        let a = case(json!({"id": "short", "request": "spawn a workflow", "files": {"api/main.rs": "x", "web/main.rs": "x", "worker/main.rs": "x"}}));
-        let b = case(json!({"id": "named", "request": "spawn a workflow"}));
-        let c = case(json!({"id": "angles", "request": "spawn a workflow"}));
+        let a = case(json!({"id": "named", "request": "spawn a workflow"}));
+        let b = case(json!({"id": "unknown", "request": "spawn a workflow"}));
+        let c = case(json!({"id": "bare", "request": "spawn a workflow"}));
         p.run_cases(&[a, b, c], &mut out).unwrap();
         let runs = lines(out);
-        let text = |i: usize| runs[i]["calls"][0]["validated"]["text"].as_str().unwrap_or("").to_string();
-        assert_eq!(runs[0]["calls"][0]["validated"]["ok"], true, "{}", runs[0]);
-        assert!(text(0).contains("over 4 items (api, src, web, worker)"), "folders of the fixture, not invented ones: {}", text(0));
-        assert_eq!(runs[1]["calls"][0]["validated"]["ok"], true, "a saved name is validated too: {}", runs[1]);
-        assert!(text(2).contains("over 3 items"), "{}", text(2));
+        assert_eq!(runs[0]["calls"][0]["validated"]["ok"], true, "a saved name is validated too: {}", runs[0]);
+        assert_eq!(runs[1]["calls"][0]["validated"]["ok"], false, "{}", runs[1]);
+        assert_eq!(runs[2]["calls"][0]["refused"], true, "the short-form arguments are unknown now: {}", runs[2]);
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn a_case_starts_from_a_clean_fixture_and_git_builds_a_real_repository() {
-        let replies = vec![vec![("workflow", json!({"prompt": "Review {item}", "items_from": "commits:3", "validate_only": true}))], vec![("workflow", json!({"prompt": "x", "items_from": "folders"}))]];
+        let ok = "META = {\"name\": \"probe\", \"description\": \"x\"}
+def main(args):
+    return 1
+";
+        let replies = vec![vec![("workflow", json!({"script": ok, "validate_only": true}))], vec![("workflow", json!({"script": ok}))]];
         let (p, _seq, dir) = probe(replies, vec![None]);
         let mut out = Vec::new();
         let a = case(json!({"id": "commits", "request": "review the commits", "git": ["one", "two", "three"], "files": {"leak.txt": "x"}}));
+        p.run_cases(&[a], &mut out).unwrap();
+        assert!(p.root.join(".git").exists(), "git builds a real repository");
         let b = case(json!({"id": "after", "request": "x"}));
-        p.run_cases(&[a, b], &mut out).unwrap();
-        let runs = lines(out);
-        let t = runs[0]["calls"][0]["validated"]["text"].as_str().unwrap().to_string();
-        assert!(t.contains("over 3 items") && t.contains(" three, ") && t.contains(" one"), "{t}");
+        p.run_cases(&[b], &mut out).unwrap();
         assert!(!p.root.join("leak.txt").exists(), "the next case's fixture does not carry the last one's files");
-        let t = runs[1]["calls"][0]["validated"]["text"].as_str().unwrap().to_string();
-        assert!(!t.contains("leak"), "{t}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

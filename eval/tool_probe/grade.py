@@ -5,13 +5,11 @@ shown tool, every key in the schema, types exact (an untyped property is a strin
 no rewrite by the forgiving layer, the case's expected keys and values present.
 Lenient: the same after the forgiving layer (a legacy name or a spelling it fixes is a pass).
 
-A workflow passes when it validates and fans out: a script that `fans_out`, or the short form
-(`prompt`, `items` | `items_from`) whose validation reports "over N items" with N of 2 or more.
+A workflow passes when it validates and fans out: a script that `fans_out`.
 
 First try: `first_try` is a strict pass whose accepted call was the model's first step (no look-up, no
 nudge, no retry before it). `rescued` is a lenient pass that was not a first try: the model got there after a
-look-up, a harness nudge, a layer fix or a redirect. In lenient mode a call the harness answered "Not run: the
-user asked for a workflow" is skipped, so the workflow call after it counts (and is `rescued`, never `first_try`).
+look-up, a harness nudge or a layer fix.
 A negative case sets `accept_none`: it passes when the model launched nothing (no workflow, no dispatch, no
 background agent).
 
@@ -99,19 +97,9 @@ def fans_out(script):
     return n >= 2 or (n == 1 and bool(re.search(r"\bfor\b|\bpipeline\(", script)))
 
 
-def short_form_items(call):
-    """N of a short-form `workflow` call whose validation said "workflow fanout over N items", else 0."""
-    text = (call.get("validated") or {}).get("text") or ""
-    m = re.search(r"workflow fanout over (\d+) items", text)
-    return int(m.group(1)) if m else 0
-
-
 def fans_out_call(call, args):
-    """A workflow call can run more than one agent: its script `fans_out`, or its short form is over 2+ items
-    (no items at all is the three-angle default, which validation reports as "over 3 items")."""
-    if isinstance(args, dict) and args.get("script"):
-        return fans_out(args["script"])
-    return short_form_items(call) >= 2
+    """A workflow call can run more than one agent: its script `fans_out`."""
+    return isinstance(args, dict) and bool(args.get("script")) and fans_out(args["script"])
 
 
 def _view(call, mode):
@@ -160,13 +148,6 @@ def _accepted_call(case, call, mode, surfaces, run):
     return None
 
 
-REDIRECTED = "Not run: the user asked for a workflow"
-
-
-def redirected(call):
-    return (call.get("result") or "").startswith(REDIRECTED)
-
-
 def launches(call):
     """The call starts crew or workflow work: workflow, dispatch, or an agent that runs in the background."""
     raw = call.get("raw") or call.get("prepared") or {}
@@ -189,9 +170,6 @@ def grade_mode(case, run, mode, surfaces):
     if case.get("accept_none"):
         return grade_none(run)
     calls = run.get("calls") or []
-    if mode == "layer":
-        # The harness answered these without running them; the model's next call is the one that counts.
-        calls = [c for c in calls if not redirected(c)]
     if not calls:
         return False, "no_call" if not run.get("error") else "error"
     name0, args0 = _view(calls[0], mode)

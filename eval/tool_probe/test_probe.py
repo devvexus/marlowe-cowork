@@ -169,40 +169,28 @@ def test_a_workflow_must_fan_out_and_look_ups_may_repeat():
     assert g.grade(c, dispatched, sur)["strict_why"] == "wrong_tool(dispatch)"
 
 
-def test_a_short_form_workflow_passes_when_it_validates_over_two_or_more_items():
+def test_a_workflow_passes_when_it_validates_and_its_script_fans_out():
     c = case(first_ok=[{"name": "read"}],
              accept=[{"name": "workflow", "validated": True, "fan_out": True}])
     sur = {"conductor": {"specs": [SPECS["workflow"], SPECS["read"]]}}
-    short = {"prompt": "Summarise {item}", "items_from": "folders"}
-    three = "valid: workflow fanout over 3 items (api, web, worker), then 1 agent combines them"
-    ok = run(call(("workflow", short), validated={"ok": True, "text": three}))
+    ok = run(call(("workflow", {"script": FAN}), validated={"ok": True, "text": "x.star is valid. META: {}"}))
     assert g.grade(c, ok, sur)["strict"] is True
-    assert g.short_form_items(ok["calls"][0]) == 3
-    # One item is not a fan-out; an invalid or unvalidated call is not either.
-    one = run(call(("workflow", short), validated={"ok": True, "text": "valid: workflow fanout over 1 items (src), then 1 agent combines them"}))
+    # One agent is not a fan-out; an invalid call is not either.
+    one = run(call(("workflow", {"script": "def main(args):\n    return agent('x')"}), validated={"ok": True, "text": "valid"}))
     assert g.grade(c, one, sur)["strict_why"] == "no_fan_out"
-    refused = run(call(("workflow", short), validated={"ok": False, "text": "No files match `*.py`"}))
+    refused = run(call(("workflow", {"script": FAN}), validated={"ok": False, "text": "bad"}))
     assert g.grade(c, refused, sur)["strict_why"] == "bad_script"
-    # The prompt-only form is the three-angle default; the typed items are the model's own.
-    angles = run(call(("workflow", {"prompt": "What is min-p?"}), validated={"ok": True, "text": three}))
-    assert g.grade(c, angles, sur)["strict"] is True
-    typed = run(call(("workflow", {"prompt": "p", "items": ["a", "b"]}), validated={"ok": True, "text": "valid: workflow fanout over 2 items (a, b), then 1 agent combines them"}))
-    assert g.grade(c, typed, sur)["strict"] is True
-    # A schema-exact check still applies: items is an array, read_only a boolean.
-    wrong = run(call(("workflow", {"prompt": "p", "items": "a, b"}), validated={"ok": True, "text": three}))
-    assert g.grade(c, wrong, sur)["strict_why"] == "type(items)"
-    # A script and a saved name: the script must fan out, a saved name is not the short form.
+    # A saved name is not a script: it does not count as a fan-out.
     named = run(call(("workflow", {"name": "code-review"}), validated={"ok": True, "text": "code-review.star is valid. META: {}"}))
     assert g.grade(c, named, sur)["strict_why"] == "no_fan_out"
 
 
-def test_every_workflow_family_case_takes_either_form():
+def test_every_workflow_family_case_wants_a_validated_fan_out():
     family = [c for c in CASES if c["tool"] == "workflow"]
     assert len(family) >= 5
     for c in family:
         entry = c["accept"][0]
         assert entry["name"] == "workflow" and entry.get("validated") is True and entry.get("fan_out") is True, c["id"]
-        assert "script" not in entry.get("required_keys", []), f"{c['id']}: the short form has no script"
     review = next(c for c in family if c["id"] == "workflow-review-commits")
     assert len(review["git"]) == 3
 
@@ -213,8 +201,9 @@ def stepped(c, step):
 
 WF = case(first_ok=[{"name": "read"}], accept=[{"name": "workflow", "validated": True, "fan_out": True}])
 WF_SURFACES = {"conductor": {"specs": [SPECS["workflow"], SPECS["read"]]}}
-OVER3 = {"ok": True, "text": "valid: workflow fanout over 3 items (a, b, c), then 1 agent combines them"}
-SHORT = {"prompt": "Summarise {item}", "items_from": "folders"}
+OVER3 = {"ok": True, "text": "x.star is valid. META: {}"}
+FAN = "def main(args):\n    return [agent(c) for c in args['crates']]"
+SHORT = {"script": FAN}
 
 
 def test_first_try_is_a_strict_pass_from_the_first_step_and_a_later_pass_is_rescued():
@@ -230,24 +219,12 @@ def test_first_try_is_a_strict_pass_from_the_first_step_and_a_later_pass_is_resc
     r = g.grade(WF, nudged, WF_SURFACES)
     assert (r["strict"], r["first_try"], r["rescued"]) == (True, False, True)
     # A layer fix is lenient only: rescued, not strict.
-    fixed = call(("workflow", {"prompt": "p", "role": "x"}), layer={"name": "workflow", "args": {"prompt": "p"}}, validated=OVER3)
+    fixed = call(("workflow", {"script": FAN, "role": "x"}), layer={"name": "workflow", "args": {"script": FAN}}, validated=OVER3)
     r = g.grade(WF, run(stepped(fixed, 0)), WF_SURFACES)
     assert (r["strict"], r["lenient"], r["first_try"], r["rescued"]) == (False, True, False, True)
     # A failure is neither.
     r = g.grade(WF, run(stepped(call(("dispatch", {"role": "researcher", "prompt": "x"})), 0)), WF_SURFACES)
     assert (r["strict"], r["lenient"], r["first_try"], r["rescued"]) == (False, False, False, False)
-
-
-def test_a_redirected_call_is_skipped_in_lenient_mode_so_the_workflow_after_it_is_rescued():
-    redirect = call(("dispatch", {"role": "researcher", "prompt": "summarize"}), layer=None, refused=True,
-                    result="Not run: the user asked for a workflow; one `workflow` call runs these agents in parallel and combines them: workflow{}")
-    after = stepped(call(("workflow", SHORT), validated=OVER3), 1)
-    r = g.grade(WF, run(stepped(redirect, 0), after), WF_SURFACES)
-    assert (r["strict"], r["lenient"], r["first_try"], r["rescued"]) == (False, True, False, True)
-    assert r["strict_why"] == "wrong_tool(dispatch)"
-    # Redirected and then nothing: still a failure.
-    only = g.grade(WF, run(stepped(redirect, 0)), WF_SURFACES)
-    assert (only["lenient"], only["lenient_why"]) == (False, "no_call")
 
 
 def test_accept_none_passes_when_nothing_is_launched():

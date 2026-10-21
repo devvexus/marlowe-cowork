@@ -175,11 +175,8 @@ pub fn for_tool(name: &str) -> ArgRules {
         "workflow" => ArgRules {
             aliases: &[
                 ("code", "script"), ("source", "script"), ("starlark", "script"), ("script_path", "path"), ("file", "path"), ("workflow", "name"), ("input", "args"), ("params", "args"),
-                ("each", "items"), ("for_each", "items"), ("over", "items_from"), ("task", "prompt"), ("instructions", "prompt"),
-                ("combine", "then"), ("synthesis", "then"), ("finally", "then"), ("readonly", "read_only"),
             ],
-            ignore: &["role", "label", "phase", "phase_name", "description", "title", "item_type", "item"],
-            example: Some(r#"workflow{"prompt": "Summarise {item}", "items_from": "folders", "then": "one overview"}"#),
+            ignore: &["role", "label", "phase", "phase_name", "description", "title"],
             see_also: Some("One task: agent(type, prompt). Crew work: dispatch(role, prompt)."),
             ..ArgRules::NONE
         },

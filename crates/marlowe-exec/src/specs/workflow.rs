@@ -1,12 +1,9 @@
 //! The workflow group (track W): `workflow` (run a Starlark workflow script: inline, a saved name
-//! or a `path`; `resume_from`; `validate_only`; or the no-code short form) and `report_findings` (G13).
+//! or a `path`; `resume_from`; `validate_only`) and `report_findings` (G13).
 //!
-//! The short form (`prompt`, `items` | `items_from`, `then`, `read_only`) runs the built-in
-//! `fanout` with its arguments filled from the call: one read-only agent per item, then one that
-//! combines their answers. `items_from` is listed by the harness ([`items`]), never by the model.
-//! Which form a call is: `script`, else `path`, else `name` (a saved workflow), else the short
-//! form; keys the chosen form does not use are named in the result, not refused. With a `script`
-//! the `name` is its display label, and an unknown `name` next to a `prompt` labels the short form.
+//! Which form a call is: `script`, else `path`, else `name` (a saved workflow); keys the chosen
+//! form does not use are named in the result, not refused. With a `script` the `name` is its
+//! display label.
 //!
 //! `workflow` is the conductor's (configured hosts only): the call is checked here, launched by
 //! the daemon's [`marlowe_workflow::Workflows`] service as a durable crew run, and returns the run
@@ -51,11 +48,8 @@ fn call_key(p: &Plan) -> String {
     json!([p.script, p.path, p.name]).to_string()
 }
 
-/// Every script error ends with the way out for a plain fan-out.
-const NO_CODE: &str = "No code needed for a plain fan-out: workflow{prompt, items | items_from, then}.";
-
 fn script_error(e: impl std::fmt::Display) -> String {
-    format!("{}\n{NO_CODE}", e.to_string().trim_end())
+    e.to_string().trim_end().to_string()
 }
 
 /// Longest result a waited-on workflow puts in the tool result (the journal has it whole).
@@ -94,17 +88,13 @@ fn script<'a>(a: &'a Value) -> Option<&'a str> {
     a.get("script").and_then(Value::as_str).filter(|v| !v.trim().is_empty())
 }
 
-/// Keys that belong to the short form.
-const SHORT_KEYS: [&str; 5] = ["prompt", "items", "items_from", "then", "read_only"];
-
 /// The form a call is, and what it leaves unused.
 #[derive(Debug, Default)]
 struct Plan {
     script: Option<String>,
     path: Option<String>,
-    /// What `service::prepare` resolves: a saved name, or `fanout` for the short form.
+    /// What `service::prepare` resolves: a saved name.
     name: Option<String>,
-    short: bool,
     /// The run's display name when the model gave one that is not what runs.
     label: Option<String>,
     ignored: Vec<String>,
@@ -114,10 +104,8 @@ fn present(a: &Value, k: &str) -> bool {
     a.get(k).is_some_and(|v| !v.is_null())
 }
 
-fn plan(roots: &marlowe_workflow::saved::Roots, a: &Value) -> Result<Plan, String> {
+fn plan(a: &Value) -> Result<Plan, String> {
     let (script, path, name) = (script(a), path(a), s(a, "name"));
-    // The built-in's own name is the short form too: it has no use without its arguments.
-    let short_given = SHORT_KEYS.iter().any(|k| present(a, k)) || name == Some("fanout");
     let mut p = Plan::default();
     let ignore = |p: &mut Plan, keys: &[&str], why: &str| {
         for k in keys.iter().filter(|k| present(a, k) || (**k == "path" && present(a, "script_path"))) {
@@ -128,167 +116,46 @@ fn plan(roots: &marlowe_workflow::saved::Roots, a: &Value) -> Result<Plan, Strin
         p.script = Some(sc.to_string());
         p.label = name.map(str::to_string);
         ignore(&mut p, &["path"], "a `script` was given");
-        ignore(&mut p, &SHORT_KEYS, "a `script` was given");
     } else if let Some(pa) = path {
         p.path = Some(pa.to_string());
         ignore(&mut p, &["name"], "a `path` was given");
-        ignore(&mut p, &SHORT_KEYS, "a `path` was given");
-    } else if let Some(n) = name.filter(|n| *n != "fanout" && (!short_given || roots.resolve(n).is_ok())) {
+    } else if let Some(n) = name {
         p.name = Some(n.to_string());
-        ignore(&mut p, &SHORT_KEYS, "a saved workflow `name` was given");
-    } else if short_given {
-        p.short = true;
-        p.name = Some("fanout".into());
-        p.label = name.filter(|n| *n != "fanout").map(str::to_string);
-        ignore(&mut p, &["args"], "the short form takes no `args`");
-        if present(a, "items") && present(a, "items_from") {
-            p.ignored.push("`items_from` (`items` was given)".into());
-        }
     } else {
-        return Err("Say what to run. No code: workflow{\"prompt\": \"<one agent's task; {item} is its item>\", \"items_from\": \"folders\", \"then\": \"<how to combine>\"}. \
-             Or `script` (inline Starlark), `path` (a .star file) or `name` (a saved workflow)."
-            .into());
+        return Err("Say what to run: `script` (inline Starlark), `path` (a .star file) or `name` (a saved workflow).".into());
     }
     Ok(p)
 }
 
-/// The three angles a short form takes when it names no items.
-const ANGLES: [&str; 3] = ["overview and the main approaches", "the strongest approach, in depth", "evidence, limits and open problems"];
-
-/// A short-form call, resolved: what the built-in gets and what the receipt shows.
-struct Short {
-    items: Vec<String>,
-    note: Option<String>,
-    args: Value,
-}
-
-fn clip(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        return s.to_string();
+/// The ignored keys, as the line after a result.
+fn notes(p: &Plan) -> String {
+    if p.ignored.is_empty() {
+        return String::new();
     }
-    format!("{}…", s.chars().take(n).collect::<String>().trim_end())
-}
-
-fn short_form(a: &Value, workspace: Option<&Path>, label: Option<&str>) -> Result<Short, String> {
-    let Some(prompt) = s(a, "prompt") else {
-        return Err("The short form needs `prompt`: one agent's task, with {item} where its item goes. e.g. workflow{\"prompt\": \"Summarise {item}\", \"items_from\": \"folders\"}".into());
-    };
-    let given: Vec<String> = match a.get("items") {
-        Some(Value::Array(v)) => v.iter().map(|x| x.as_str().map(str::to_string).unwrap_or_else(|| x.to_string())).collect(),
-        Some(Value::String(t)) if !t.trim().is_empty() => vec![t.clone()],
-        _ => Vec::new(),
-    };
-    let mut items: Vec<String> = Vec::new();
-    for i in given.iter().map(|i| i.trim()).filter(|i| !i.is_empty()) {
-        if !items.iter().any(|x| x == i) {
-            items.push(i.to_string());
-        }
-    }
-    let mut note = None;
-    if items.is_empty() {
-        match s(a, "items_from") {
-            Some(sel) => {
-                let Some(ws) = workspace else { return Err("`items_from` lists the workspace, and this session has none; give `items` instead.".into()) };
-                match items::resolve(sel, ws) {
-                    Ok(found) => {
-                        items = found.items;
-                        note = found.note;
-                    }
-                    Err(e) => match items::as_list(sel, ws) {
-                        Some(found) if found.items.len() <= items::MAX_ITEMS => {
-                            items = found.items;
-                            note = found.note;
-                        }
-                        // Free text that is no selector (topics typed into `items_from`): the
-                        // fixed angles run, and the note says how to name your own.
-                        _ if sel.split_whitespace().count() >= 2 && !sel.contains(['/', '*', '\\']) => {
-                            items = ANGLES.iter().map(|x| x.to_string()).collect();
-                            note = Some(format!(
-                                "`items_from` \"{}\" is not a selector (folders | packages | commits:N | a glob), so the three fixed angles run; to name your own, give `items`",
-                                clip(sel, 60)
-                            ));
-                        }
-                        _ => return Err(e),
-                    },
-                }
-            }
-            None => {
-                items = ANGLES.iter().map(|x| x.to_string()).collect();
-                note = Some("no items given, so three fixed angles".into());
-            }
-        }
-    } else if items.len() > items::MAX_ITEMS {
-        return Err(format!("{} items; at most {} (each answer has to fit one combining step). Narrow the list.", items.len(), items::MAX_ITEMS));
-    }
-    let workspace_text = workspace.map(|w| w.display().to_string()).unwrap_or_else(|| ".".into());
-    let title = label.map(str::to_string).unwrap_or_else(|| clip(prompt, 60));
-    let args = json!({
-        "items": items,
-        "prompt": prompt,
-        "then": s(a, "then"),
-        "read_only": a.get("read_only").and_then(Value::as_bool).unwrap_or(true),
-        "workspace": workspace_text,
-        "title": title,
-    });
-    Ok(Short { items, note, args })
-}
-
-fn item_names(items: &[String]) -> String {
-    let shown: Vec<String> = items.iter().take(4).map(|i| clip(i, 40)).collect();
-    let more = if items.len() > 4 { ", ..." } else { "" };
-    format!("{}{more}", shown.join(", "))
-}
-
-/// The ignored keys and the harness's choices, as the lines after a result.
-fn notes(p: &Plan, short: Option<&Short>) -> String {
-    let mut out = String::new();
-    if !p.ignored.is_empty() {
-        out.push_str(&format!("\nIgnored: {}.", p.ignored.join("; ")));
-    }
-    if let Some(n) = short.and_then(|s| s.note.as_deref()) {
-        out.push_str(&format!("\nNote: {n}."));
-    }
-    out
+    format!("
+Ignored: {}.", p.ignored.join("; "))
 }
 
 fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
     let Some(roots) = roots(t, cx.workspace.as_deref()) else {
         return ToolOutcome::error("workflows are not available on this host");
     };
-    let plan = match plan(&roots, a) {
+    let plan = match plan(a) {
         Ok(p) => p,
         Err(e) => return ToolOutcome::error(e),
-    };
-    let workspace = cx.workspace.as_deref().or(t.workspace());
-    let short = if plan.short {
-        match short_form(a, workspace, plan.label.as_deref()) {
-            Ok(sh) => Some(sh),
-            Err(e) => return ToolOutcome::error(e),
-        }
-    } else {
-        None
     };
     let from_script = plan.script.is_some() || plan.path.is_some();
     let fail = |e: String| ToolOutcome::error(if from_script { script_error(e) } else { e });
     if a.get("validate_only").and_then(Value::as_bool).unwrap_or(false) {
         return match service::prepare(&roots, plan.script.as_deref(), plan.path.as_deref(), plan.name.as_deref()) {
-            Ok(p) => match &short {
-                Some(sh) => ToolOutcome::ok(
-                    format!("valid: workflow fanout over {} items ({}), then 1 agent combines them{}", sh.items.len(), item_names(&sh.items), notes(&plan, Some(sh))),
-                    "valid",
-                ),
-                None => ToolOutcome::ok(format!("{} is valid. META: {}{}", p.filename, serde_json::to_string(&p.meta).unwrap_or_default(), notes(&plan, None)), "valid"),
-            },
+            Ok(p) => ToolOutcome::ok(format!("{} is valid. META: {}{}", p.filename, serde_json::to_string(&p.meta).unwrap_or_default(), notes(&plan)), "valid"),
             Err(e) => fail(e),
         };
     }
     let Some(Workflows(launcher)) = cx.scope.services.get::<Workflows>().cloned() else {
         return ToolOutcome::error("workflows run in the daemon; this session has no workflow launcher");
     };
-    let args = match &short {
-        Some(sh) => sh.args.clone(),
-        None => a.get("args").cloned().unwrap_or(Value::Null),
-    };
+    let args = a.get("args").cloned().unwrap_or(Value::Null);
     if !(args.is_null() || args.is_object()) {
         return ToolOutcome::error("`args` must be a JSON object");
     }
@@ -314,16 +181,12 @@ fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
     if let Some(l) = &plan.label {
         receipt["label"] = json!(l);
     }
-    if let Some(sh) = &short {
-        receipt["items"] = json!(sh.items);
-    }
     let name = plan.label.clone().unwrap_or_else(|| launched.name.clone());
-    let over = short.as_ref().map(|sh| format!(" over {} items ({})", sh.items.len(), item_names(&sh.items))).unwrap_or_default();
-    let extra = notes(&plan, short.as_ref());
+    let extra = notes(&plan);
     if background {
         return ToolOutcome::ok(
             format!(
-                "{receipt}\nWorkflow `{name}`{over} is running in the background as crew run {}. Its result arrives as a notice when it finishes; \
+                "{receipt}\nWorkflow `{name}` is running in the background as crew run {}. Its result arrives as a notice when it finishes; \
                  /workflows shows its progress. task_stop / task_output take {task_id}. Carry on with other work.{extra}",
                 launched.run_id
             ),
@@ -345,7 +208,7 @@ fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
             } else {
                 text
             };
-            ToolOutcome::ok(format!("{receipt}\nWorkflow `{name}`{over} returned:\n{shown}{extra}"), format!("workflow {name} done"))
+            ToolOutcome::ok(format!("{receipt}\nWorkflow `{name}` returned:\n{shown}{extra}"), format!("workflow {name} done"))
         }
         Waited::Failed(why) => ToolOutcome::error(format!("{receipt}\nWorkflow `{name}` failed: {why}")),
         Waited::Detached => ToolOutcome::ok(
@@ -366,7 +229,7 @@ fn workflow_consequence(t: &BuiltinTools, c: &ToolCallReq) -> Consequence {
     };
     let mut approved = g.approved.lock().unwrap_or_else(|e| e.into_inner());
     // Nothing will run when the call names nothing: it returns the error.
-    let Ok(plan) = plan(&roots, a) else { return Consequence::Free };
+    let Ok(plan) = plan(a) else { return Consequence::Free };
     let key = call_key(&plan);
     match service::prepare(&roots, plan.script.as_deref(), plan.path.as_deref(), plan.name.as_deref()) {
         // Nothing will run: the call returns the errors. A script that appears by the time the
@@ -377,7 +240,7 @@ fn workflow_consequence(t: &BuiltinTools, c: &ToolCallReq) -> Consequence {
         }
         Ok(p) => {
             approved.insert(key, p.digest.clone());
-            // The built-in `fanout` is trusted; its agents only read unless the call says otherwise.
+            // Built-ins and approved digests are free.
             if service::is_trusted(home, &p) {
                 Consequence::Free
             } else {
@@ -393,12 +256,8 @@ fn describe_workflow(c: &ToolCallReq) -> String {
         (Some(_), _, Some(n)) => format!("workflow {n} (inline script)"),
         (Some(_), _, None) => "workflow (inline script)".into(),
         (None, Some(p), _) => format!("workflow {p}"),
-        (None, None, Some(n)) if !SHORT_KEYS.iter().any(|k| present(a, k)) => format!("workflow {n}"),
-        _ => match (s(a, "items_from"), s(a, "name")) {
-            (Some(f), _) => format!("workflow over {f}"),
-            (None, Some(n)) => format!("workflow {n}"),
-            _ => "workflow".into(),
-        },
+        (None, None, Some(n)) => format!("workflow {n}"),
+        _ => "workflow".into(),
     }
 }
 
@@ -449,12 +308,8 @@ pub fn tools() -> Vec<ToolDef> {
 
 /// Loop middleware for this group (see `specs/mod.rs`): the `.star` validator.
 pub fn middleware(tools: &crate::BuiltinTools) -> Vec<std::sync::Arc<dyn marlowe_agent::ToolMiddleware>> {
-    let mut out: Vec<std::sync::Arc<dyn marlowe_agent::ToolMiddleware>> = vec![std::sync::Arc::new(star::StarValidator::default())];
-    // The tail reminder and the redirect are the conductor's: a crew host never starts a workflow.
-    if group(tools).conductor {
-        out.push(std::sync::Arc::new(intent::WorkflowIntent));
-    }
-    out
+    let _ = tools;
+    vec![std::sync::Arc::new(star::StarValidator::default())]
 }
 
 /// No block: the `workflow` description carries the script API and the rules for using it.
@@ -478,8 +333,6 @@ pub fn detect(_root: Option<&std::path::Path>) -> bool {
     true
 }
 
-pub(crate) mod items;
-pub mod intent;
 mod star;
 
 #[cfg(test)]

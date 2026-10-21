@@ -324,13 +324,13 @@ name = \"x\"
         let t = host(&home, &ws);
         assert!(t.middleware().iter().any(|m| m.name() == "star-validator"));
         let d = t.specs().into_iter().find(|s| s.name == "workflow").unwrap().description;
-        assert!(d.contains("pass `script` inline") && d.contains("save a .star only when asked"), "{d}");
+        assert!(d.contains("`script` inline") && d.contains("save a .star only when asked"), "{d}");
     }
 }
 
-// ---------------------------------------------------------------- the short form
+// ---------------------------------------------------------------- launch forms
 
-mod short_form {
+mod launch_forms {
     use super::*;
     use marlowe_workflow::{RunConfig, Scripted, ScriptedHost};
 
@@ -373,14 +373,7 @@ mod short_form {
     }
 
     fn fixture(name: &str) -> (PathBuf, PathBuf) {
-        let (home, ws) = (temp(&format!("{name}h")), temp(&format!("{name}w")));
-        for d in ["api", "web", "worker"] {
-            std::fs::create_dir_all(ws.join(d)).unwrap();
-            std::fs::write(ws.join(d).join("main.rs"), "x").unwrap();
-        }
-        std::fs::create_dir_all(ws.join("target/debug")).unwrap();
-        std::fs::write(ws.join("target/debug/x"), "x").unwrap();
-        (home, ws)
+        (temp(&format!("{name}h")), temp(&format!("{name}w")))
     }
 
     fn svc(l: &Arc<RunLauncher>) -> Services {
@@ -394,67 +387,17 @@ mod short_form {
     }
 
     #[test]
-    fn validate_only_names_the_resolved_items() {
-        let (home, ws) = fixture("sf1");
+    fn a_call_that_names_nothing_to_run_says_what_can_be_named() {
+        let (home, ws) = fixture("lf1");
         let t = host(&home, &ws);
-        let c = cx(&ws, Services::new());
-        let out = t.call_scoped(&req("workflow", json!({"prompt": "Summarise {item}", "items_from": "folders", "validate_only": true})), &c);
-        assert!(!out.is_error, "{}", out.content);
-        assert!(out.content.starts_with("valid: workflow fanout over 3 items (api, web, worker), then 1 agent combines them"), "{}", out.content);
-        // Typed items: counted as given, four named with an ellipsis.
-        let out = t.call_scoped(&req("workflow", json!({"prompt": "p", "items": ["a", "b", "c", "d", "e"], "validate_only": true})), &c);
-        assert!(out.content.starts_with("valid: workflow fanout over 5 items (a, b, c, d, ...), then 1 agent combines them"), "{}", out.content);
-        // No items at all: three fixed angles, said in the note.
-        let out = t.call_scoped(&req("workflow", json!({"prompt": "What is min-p sampling?", "validate_only": true})), &c);
-        assert!(out.content.starts_with("valid: workflow fanout over 3 items (overview and the main approaches,"), "{}", out.content);
-        assert!(out.content.contains("three fixed angles"), "{}", out.content);
-        // Nothing to read from: a clean error that says what is there.
-        let out = t.call_scoped(&req("workflow", json!({"prompt": "p", "items_from": "*.py", "validate_only": true})), &c);
-        assert!(out.is_error && out.content.contains("No files match") && out.content.contains("api, web, worker"), "{}", out.content);
-        // Topics typed into `items_from` run the three angles and say so; a list is the items.
-        let out = t.call_scoped(&req("workflow", json!({"prompt": "Compare {item}", "items_from": "min-p top-k nucleus", "validate_only": true})), &c);
-        assert!(!out.is_error && out.content.contains("over 3 items (overview") && out.content.contains("is not a selector"), "{}", out.content);
-        let out = t.call_scoped(&req("workflow", json!({"prompt": "Compare {item}", "items_from": "min-p, top-k", "validate_only": true})), &c);
-        assert!(out.content.starts_with("valid: workflow fanout over 2 items (min-p, top-k)"), "{}", out.content);
-        // The short form needs a prompt.
-        let out = t.call_scoped(&req("workflow", json!({"items_from": "folders", "validate_only": true})), &c);
-        assert!(out.is_error && out.content.contains("needs `prompt`"), "{}", out.content);
-        // Nothing at all names what to run.
-        let out = t.call_scoped(&req("workflow", json!({})), &c);
-        assert!(out.is_error && out.content.contains("No code:"), "{}", out.content);
+        let out = t.call_scoped(&req("workflow", json!({})), &cx(&ws, Services::new()));
+        assert!(out.is_error && out.content.contains("`script`") && out.content.contains("`path`") && out.content.contains("`name`"), "{}", out.content);
+        assert!(!out.content.contains("items_from") && !out.content.contains("prompt"), "{}", out.content);
     }
 
     #[test]
-    fn a_launch_runs_the_items_together_then_one_combine_and_returns_summary_and_items() {
-        let (home, ws) = fixture("sf2");
-        let t = host(&home, &ws);
-        let l = RunLauncher::new(&home, &ws);
-        let call = req("workflow", json!({"prompt": "What is {item} for?", "items_from": "folders", "then": "One line per folder.", "background": false}));
-        // The built-in is trusted: no approval.
-        assert_eq!(t.consequence(&call), Consequence::Free);
-        let out = t.call_scoped(&call, &cx(&ws, svc(&l)));
-        assert!(!out.is_error, "{}", out.content);
-        assert!(out.content.contains("over 3 items (api, web, worker)") && out.content.contains("\"task_id\":\"wf_r9\""), "{}", out.content);
-        assert!(out.content.contains("\"summary\": \"report on combine\""), "{}", out.content);
-        assert!(out.content.contains("\"item\": \"web\"") && out.content.contains("report on web"), "{}", out.content);
-        let calls = l.host.calls();
-        assert_eq!(calls.len(), 4, "three item agents and one combine");
-        let first_done = calls.iter().filter_map(|c| c.finished).min().unwrap();
-        let items: Vec<_> = calls.iter().filter(|c| c.call.opts.label.as_deref() != Some("combine")).collect();
-        assert!(items.iter().all(|c| c.started < first_done), "the item agents ran together");
-        assert!(items.iter().all(|c| c.call.opts.agent_type.as_deref() == Some("explore")), "read-only by default");
-        assert!(items[0].call.prompt.contains(&format!("Workspace: {}. Your item: ", ws.display())));
-        assert!(calls.iter().find(|c| c.call.opts.label.as_deref() == Some("combine")).unwrap().call.prompt.starts_with("One line per folder."));
-        // read_only:false runs the workflow role.
-        let l2 = RunLauncher::new(&home, &ws);
-        let w = req("workflow", json!({"prompt": "Fix {item}", "items": ["x"], "read_only": false, "background": false}));
-        t.call_scoped(&w, &cx(&ws, svc(&l2)));
-        assert!(l2.host.calls().iter().all(|c| c.call.opts.agent_type.as_deref() == Some("workflow")));
-    }
-
-    #[test]
-    fn precedence_is_script_then_path_then_name_then_the_short_form() {
-        let (home, ws) = fixture("sf3");
+    fn precedence_is_script_then_path_then_name() {
+        let (home, ws) = fixture("lf3");
         let t = host(&home, &ws);
         std::fs::write(ws.join("wf.star"), OTHER).unwrap();
         trust_script(&home, &ws, Some(SCRIPT), None);
@@ -469,53 +412,45 @@ mod short_form {
         // script + path: the script runs and the path is named as ignored.
         let out = t.call_scoped(&req("workflow", json!({"script": SCRIPT, "path": "wf.star"})), &cx(&ws, svc(&RunLauncher::new(&home, &ws))));
         assert!(!out.is_error && out.content.contains("Ignored: `path` (a `script` was given)"), "{}", out.content);
-        // path + short keys: the file runs, the prompt is named as ignored.
+        // path + name: the file runs, the name is named as ignored.
         let l = RunLauncher::new(&home, &ws);
-        let out = t.call_scoped(&req("workflow", json!({"path": "wf.star", "prompt": "x"})), &cx(&ws, svc(&l)));
-        assert!(!out.is_error && out.content.contains("`prompt` (a `path` was given)"), "{}", out.content);
+        let out = t.call_scoped(&req("workflow", json!({"path": "wf.star", "name": "code-review"})), &cx(&ws, svc(&l)));
+        assert!(!out.is_error && out.content.contains("`name` (a `path` was given)"), "{}", out.content);
         assert_eq!(l.seen.lock().unwrap()[0].script_path.as_deref(), Some("wf.star"));
-        // A saved name beats the short form; an unknown name next to a prompt labels the short form.
-        let out = t.call_scoped(&req("workflow", json!({"name": "code-review", "prompt": "x", "validate_only": true})), &cx(&ws, Services::new()));
-        assert!(out.content.starts_with("code-review.star is valid") && out.content.contains("`prompt` (a saved workflow `name` was given)"), "{}", out.content);
-        let l = RunLauncher::new(&home, &ws);
-        let out = t.call_scoped(&req("workflow", json!({"name": "folder summary", "prompt": "Summarise {item}", "items_from": "folders"})), &cx(&ws, svc(&l)));
-        assert!(!out.is_error, "{}", out.content);
-        let sent = l.seen.lock().unwrap()[0].clone();
-        assert_eq!(sent.name.as_deref(), Some("fanout"));
-        assert_eq!(sent.args["items"], json!(["api", "web", "worker"]));
-        assert_eq!(sent.args["title"], "folder summary");
-        assert!(out.content.contains("Workflow `folder summary` over 3 items"), "{}", out.content);
-        // The built-in by its own name is the short form too, and still wants a prompt.
-        let out = t.call_scoped(&req("workflow", json!({"name": "fanout"})), &cx(&ws, Services::new()));
-        assert!(out.is_error && out.content.contains("needs `prompt`"), "{}", out.content);
+        // A saved name runs the saved workflow; an unknown one is an error.
+        let out = t.call_scoped(&req("workflow", json!({"name": "code-review", "validate_only": true})), &cx(&ws, Services::new()));
+        assert!(out.content.starts_with("code-review.star is valid"), "{}", out.content);
+        let out = t.call_scoped(&req("workflow", json!({"name": "no-such-workflow", "validate_only": true})), &cx(&ws, Services::new()));
+        assert!(out.is_error, "{}", out.content);
     }
 
     #[test]
-    fn every_script_error_ends_with_the_way_out() {
-        let (home, ws) = fixture("sf4");
+    fn a_script_error_is_the_validators_and_nothing_else() {
+        let (home, ws) = fixture("lf4");
         let t = host(&home, &ws);
-        let bad = "import os\ndef main(args):\n    return 1\n";
+        let bad = "import os
+def main(args):
+    return 1
+";
         for args in [json!({"script": bad, "validate_only": true}), json!({"script": bad})] {
             let out = t.call_scoped(&req("workflow", args), &cx(&ws, svc(&RunLauncher::new(&home, &ws))));
             assert!(out.is_error, "{}", out.content);
             assert!(out.content.contains("Starlark has no import") && out.content.contains("`import os`"), "{}", out.content);
-            assert!(out.content.ends_with("No code needed for a plain fan-out: workflow{prompt, items | items_from, then}."), "{}", out.content);
+            assert!(!out.content.contains("No code needed"), "{}", out.content);
         }
-        std::fs::write(ws.join("bad.star"), bad).unwrap();
-        let out = t.call_scoped(&req("workflow", json!({"path": "bad.star", "validate_only": true})), &cx(&ws, Services::new()));
-        assert!(out.is_error && out.content.ends_with("then}."), "{}", out.content);
     }
 
     #[test]
-    fn the_description_leads_with_the_short_form_and_every_argument_is_listed() {
-        let (home, ws) = fixture("sf5");
+    fn the_description_has_no_short_form_and_every_argument_is_listed() {
+        let (home, ws) = fixture("lf5");
         let spec = host(&home, &ws).specs().into_iter().find(|s| s.name == "workflow").unwrap();
-        assert!(spec.description.contains("No code needed:") && spec.description.contains("items_from"));
+        assert!(!spec.description.contains("No code needed") && !spec.description.contains("items_from"), "{}", spec.description);
         let props = spec.input_schema["properties"].as_object().unwrap();
-        for k in ["prompt", "items", "items_from", "then", "read_only", "script", "path", "name", "args", "background", "resume_from", "validate_only"] {
+        for k in ["script", "path", "name", "args", "background", "resume_from", "validate_only"] {
             assert!(props.contains_key(k), "{k}");
         }
-        assert_eq!(props["items"]["type"], "array");
-        assert_eq!(props["read_only"]["type"], "boolean");
+        for k in ["prompt", "items", "items_from", "then", "read_only"] {
+            assert!(!props.contains_key(k), "{k}");
+        }
     }
 }
