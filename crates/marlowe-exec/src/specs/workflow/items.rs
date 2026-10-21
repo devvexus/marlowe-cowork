@@ -52,7 +52,12 @@ pub fn resolve(selector: &str, workspace: &Path) -> Result<Items, String> {
         let found = Items { items: list, note: Some("`items_from` was a list, so it is read as `items`".into()) };
         return capped(raw, found);
     }
-    let raw = raw.strip_prefix("glob:").map(str::trim).unwrap_or(raw);
+    // `glob:crates/*`, `folders/services/*`, `folders:src`: a selector word in front of a path is the path.
+    let raw = ["glob:", "folders/", "folders:", "dirs:", "paths:"]
+        .iter()
+        .find_map(|p| raw.strip_prefix(p).map(str::trim).filter(|r| !r.is_empty()))
+        .unwrap_or(raw);
+    let low = if raw.len() == selector.trim().len() { low } else { raw.to_lowercase() };
     let found = match low.as_str() {
         "folders" | "folder" | "dirs" | "dir" | "directories" | "directory" | "subfolders" | "top-level folders" | "top level folders" | "top-level directories"
         | "top level directories" | "top-level" | "toplevel" => folders(workspace)?,
