@@ -193,3 +193,27 @@ fn what_models_send_instead_is_read_not_refused() {
     assert_eq!(resolve("git log -3 --format=%H", &repo).unwrap().items.len(), 1);
     assert_eq!(resolve("git -c core.pager=cat log --oneline", &repo).unwrap().items.len(), 1);
 }
+
+#[test]
+fn a_glob_that_names_only_folders_is_those_folders() {
+    let ws = temp("globdirs");
+    put(&ws, "crates/cli/src/lib.rs", "");
+    put(&ws, "crates/ingest/src/lib.rs", "");
+    for sel in ["crates/*", "crates/*/"] {
+        let found = resolve(sel, &ws).unwrap();
+        assert_eq!(found.items, ["crates/cli", "crates/ingest"], "{sel}");
+        assert!(found.note.is_some());
+    }
+    assert_eq!(resolve("crates/**/lib.rs", &ws).unwrap().items.len(), 2, "files still win when the glob matches files");
+}
+
+#[test]
+fn free_text_in_items_from_is_read_as_a_list_when_it_is_one() {
+    let ws = temp("aslist");
+    put(&ws, "services/api/main.py", "");
+    put(&ws, "services/worker/worker.py", "");
+    assert_eq!(as_list("min-p, top-k, nucleus", &ws).unwrap().items, ["min-p", "top-k", "nucleus"]);
+    assert_eq!(as_list("services/api/main.py services/worker/worker.py", &ws).unwrap().items.len(), 2);
+    assert!(as_list("min-p top-k nucleus", &ws).is_none(), "words that are not paths are not a list");
+    assert!(as_list("folders", &ws).is_none());
+}

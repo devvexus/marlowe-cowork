@@ -189,9 +189,28 @@ fn short_form(a: &Value, workspace: Option<&Path>, label: Option<&str>) -> Resul
         match s(a, "items_from") {
             Some(sel) => {
                 let Some(ws) = workspace else { return Err("`items_from` lists the workspace, and this session has none; give `items` instead.".into()) };
-                let found = items::resolve(sel, ws)?;
-                items = found.items;
-                note = found.note;
+                match items::resolve(sel, ws) {
+                    Ok(found) => {
+                        items = found.items;
+                        note = found.note;
+                    }
+                    Err(e) => match items::as_list(sel, ws) {
+                        Some(found) if found.items.len() <= items::MAX_ITEMS => {
+                            items = found.items;
+                            note = found.note;
+                        }
+                        // Free text that is no selector (topics typed into `items_from`): the
+                        // fixed angles run, and the note says how to name your own.
+                        _ if sel.split_whitespace().count() >= 2 && !sel.contains(['/', '*', '\\']) => {
+                            items = ANGLES.iter().map(|x| x.to_string()).collect();
+                            note = Some(format!(
+                                "`items_from` \"{}\" is not a selector (folders | packages | commits:N | a glob), so the three fixed angles run; to name your own, give `items`",
+                                clip(sel, 60)
+                            ));
+                        }
+                        _ => return Err(e),
+                    },
+                }
             }
             None => {
                 items = ANGLES.iter().map(|x| x.to_string()).collect();

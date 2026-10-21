@@ -69,6 +69,28 @@ pub fn resolve(selector: &str, workspace: &Path) -> Result<Items, String> {
     capped(raw, found)
 }
 
+/// What a model sends in `items_from` instead of a selector, read as the list it meant: names
+/// separated by commas, semicolons or lines, or several paths that exist in the workspace.
+pub fn as_list(raw: &str, workspace: &Path) -> Option<Items> {
+    let split: Vec<String> = raw
+        .split(|c| matches!(c, ',' | ';' | '\n'))
+        .map(|p| p.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if split.len() >= 2 {
+        return Some(Items { items: split, note: Some("`items_from` was a list of names, so it is read as `items`".into()) });
+    }
+    let tokens: Vec<&str> = raw.split_whitespace().collect();
+    let exists = |t: &str| {
+        let p = Path::new(t);
+        if p.is_absolute() { p.exists() } else { workspace.join(p).exists() }
+    };
+    if tokens.len() >= 2 && tokens.iter().all(|t| exists(t)) {
+        return Some(Items { items: tokens.iter().map(|t| t.to_string()).collect(), note: Some("`items_from` was a list of paths, so it is read as `items`".into()) });
+    }
+    None
+}
+
 fn capped(raw: &str, found: Items) -> Result<Items, String> {
     if found.items.len() > MAX_ITEMS {
         return Err(format!(
@@ -367,6 +389,8 @@ fn glob(spec: &str, workspace: &Path) -> Result<Items, String> {
     if spec.is_empty() {
         return Err(format!("`items_from` gave an empty glob. {}", there(workspace)));
     }
+    // "crates/*/" names folders as well as "crates/*" does.
+    let spec = if spec.len() > 1 { spec.trim_end_matches('/') } else { spec };
     let filters = Filters::default().with_globs(workspace, Some(workspace), spec)?;
     let mut b = walker(workspace, usize::MAX);
     if let Some(o) = filters.overrides {
@@ -375,6 +399,7 @@ fn glob(spec: &str, workspace: &Path) -> Result<Items, String> {
     let mut found: Vec<String> = Vec::new();
     let mut seen = 0usize;
     for e in b.build().flatten() {
+        let shown = || slashed(e.path().strip_prefix(workspace).unwrap_or(e.path()));
         if !e.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
@@ -382,9 +407,21 @@ fn glob(spec: &str, workspace: &Path) -> Result<Items, String> {
         if seen > WALK_CAP {
             break;
         }
-        found.push(slashed(e.path().strip_prefix(workspace).unwrap_or(e.path())));
+        found.push(shown());
     }
     found.sort();
+    // A pattern that names only folders (`crates/*`) is those folders.
+    if found.is_empty() {
+        let mut folders: Vec<String> = expand(workspace, spec.trim_start_matches("./"))
+            .into_iter()
+            .filter(|d| d.is_dir() && d != workspace && !d.file_name().is_some_and(|n| is_skipped(&n.to_string_lossy())))
+            .map(|d| slashed(d.strip_prefix(workspace).unwrap_or(&d)))
+            .collect();
+        folders.sort();
+        if !folders.is_empty() {
+            return Ok(Items { items: folders, note: Some(format!("`{spec}` matches folders, so these are the folders")) });
+        }
+    }
     if found.is_empty() {
         return Err(format!("No files match `{spec}`. {}", there(workspace)));
     }

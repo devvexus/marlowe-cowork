@@ -291,10 +291,13 @@ impl ToolMiddleware for WorkflowIntent {
             Over::From(_) => format!("For {{item}}: {}", t.request),
             Over::Topic => format!("Investigate {{item}}: {}", t.request),
         };
-        FinalFlow::Continue(format!(
-            "The user asked for a workflow and no workflow ran. Call it now, once: {} (change `then` to say how to combine the answers).",
-            call_text(&over, &prompt)
-        ))
+        // A call typed as prose is the common slip: say so.
+        let lead = if text.contains("workflow{") {
+            "That workflow{...} was written as text, so nothing ran. Make the tool call itself, once"
+        } else {
+            "The user asked for a workflow and no workflow ran. Call it now, once"
+        };
+        FinalFlow::Continue(format!("{lead}: {} (change `then` to say how to combine the answers).", call_text(&over, &prompt)))
     }
 }
 

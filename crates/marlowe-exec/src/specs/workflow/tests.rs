@@ -411,6 +411,11 @@ mod short_form {
         // Nothing to read from: a clean error that says what is there.
         let out = t.call_scoped(&req("workflow", json!({"prompt": "p", "items_from": "*.py", "validate_only": true})), &c);
         assert!(out.is_error && out.content.contains("No files match") && out.content.contains("api, web, worker"), "{}", out.content);
+        // Topics typed into `items_from` run the three angles and say so; a list is the items.
+        let out = t.call_scoped(&req("workflow", json!({"prompt": "Compare {item}", "items_from": "min-p top-k nucleus", "validate_only": true})), &c);
+        assert!(!out.is_error && out.content.contains("over 3 items (overview") && out.content.contains("is not a selector"), "{}", out.content);
+        let out = t.call_scoped(&req("workflow", json!({"prompt": "Compare {item}", "items_from": "min-p, top-k", "validate_only": true})), &c);
+        assert!(out.content.starts_with("valid: workflow fanout over 2 items (min-p, top-k)"), "{}", out.content);
         // The short form needs a prompt.
         let out = t.call_scoped(&req("workflow", json!({"items_from": "folders", "validate_only": true})), &c);
         assert!(out.is_error && out.content.contains("needs `prompt`"), "{}", out.content);
