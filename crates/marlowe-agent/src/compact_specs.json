@@ -322,7 +322,7 @@
  },
  {
   "name": "web_search",
-  "description": "Search the web: a short answer with cited source URLs. Read a source with web_fetch.",
+  "description": "Search the web: results with title, URL and snippet. Read a source with web_fetch.",
   "input_schema": {
    "type": "object",
    "properties": {
