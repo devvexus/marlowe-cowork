@@ -1,4 +1,4 @@
- * marlowe — gate work  ╭ help ────────────────────────────────────────────────────────────────────────────────────╮    0 runs · 0 need you
+ * marlowe — gate work  ╭ help ────────────────────────────────────────────────────────────────────────────────────╮ ○  0 runs · 0 need you
 ╭ Conversation · gate wo│ Keys                                                                                     │───────────────────────╮
 │                       │ enter                   send · shift+enter or ctrl+j for a new line                      │5 ▾             medium │
 │                       │ esc                     interrupt the turn · or move between the boxes                   │┊──── 0 / 200k · cloud │

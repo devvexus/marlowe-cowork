@@ -1,4 +1,4 @@
- * marlowe — threshold                                                                                                  0 runs · 0 need you
+ * marlowe — threshold                                                                                         teams ○  0 runs · 0 need you
 ╭ Conversation · threshold ───────────────────────────────────────────────────── ⣶⣶⣶⣤⣀⣴ writing ─╮╭ Model ─────────────────────────────────╮
 │  you  what threshold did we settle on?                                                         ││ Claude Sonnet 4.5 ▾             medium │
 │  ⋯ recall · 3 memories · gate sweep, cue choice                                                ││ ctx ────────────┊──── 0 / 200k · cloud │

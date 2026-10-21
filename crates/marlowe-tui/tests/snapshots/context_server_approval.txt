@@ -1,4 +1,4 @@
- * marlowe — kv planning                                                                                               0 runs · 1 needs you
+ * marlowe — kv planning                                                                                      teams ○  0 runs · 1 needs you
 ╭ Conversation · kv planning ───────────────────────────────────────────────── ⣠⣾⣦⣴⣷⣄ needs you ─╮╭ Model ─────────────────────────────────╮
 │                                                                                                ││ marlowe-dusk:27b-super ▾        medium │
 │                                                                                                ││ ctx 12.4k / 32k · kv q8 · 1 slot       │

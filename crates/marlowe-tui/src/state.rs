@@ -385,10 +385,11 @@ pub enum Command {
     Messages,
     Bench,
     Fast,
+    ToggleTeams,
 }
 
 impl Command {
-    pub const ALL: [Command; 42] = [
+    pub const ALL: [Command; 43] = [
         Command::NewSession,
         Command::Sessions,
         Command::Model,
@@ -431,6 +432,7 @@ impl Command {
         Command::Messages,
         Command::Bench,
         Command::Fast,
+        Command::ToggleTeams,
     ];
 
     pub fn label(self) -> &'static str {
@@ -477,6 +479,7 @@ impl Command {
             Command::Messages => "Messages — threads to crew runs and agents",
             Command::Bench => "Bench and eval reports",
             Command::Fast => "Fast — run the conductor on the Quick model",
+            Command::ToggleTeams => "Teams — turn the standing opt-in to team tasks on or off",
         }
     }
 
@@ -524,6 +527,7 @@ impl Command {
             Command::Messages => "/messages",
             Command::Bench => "/bench",
             Command::Fast => "/fast",
+            Command::ToggleTeams => "alt-m",
         }
     }
 }
@@ -1013,6 +1017,7 @@ impl State {
         self.strip.reset();
         self.pending_user = None;
         self.awaiting_new = false;
+        self.code.teams = false;
         self.bg.reset_session();
         self.follow_tail();
     }

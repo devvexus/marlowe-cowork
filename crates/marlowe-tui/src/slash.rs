@@ -56,7 +56,7 @@ pub const BUILTINS: &[Builtin] = &[
     b("todos", &[], Args::None, "show or hide the todo list"),
     b("jobs", &[], Args::None, "background jobs"),
     b("tasks", &["bashes"], Args::None, "everything running in the background: stop it, read its output"),
-    b("teams", &["workflows"], Args::None, "team task progress, skip an agent, saved team tasks"),
+    b("teams", &["workflows"], Args::Optional("on|off"), "team task progress and saved team tasks; on or off sets Teams for the session"),
     b("team", &["workflow"], Args::Optional("name [json args]"), "run a saved team task and watch it"),
     b("findings", &[], Args::None, "the last code review's findings"),
     b("files", &[], Args::None, "files the agent sent you"),
@@ -296,7 +296,12 @@ impl State {
             }
             "jobs" => self.open_jobs(out),
             "tasks" => self.open_tasks(out),
-            "teams" => self.open_workflows(out),
+            "teams" => match args.trim().to_ascii_lowercase().as_str() {
+                "" => self.open_workflows(out),
+                "on" | "yes" | "true" => self.set_teams(true, out),
+                "off" | "no" | "false" => self.set_teams(false, out),
+                other => self.flash(format!("/teams takes on or off, not `{other}`"), NoteTone::Amber),
+            },
             "team" => {
                 if args.is_empty() {
                     self.open_workflows(out);

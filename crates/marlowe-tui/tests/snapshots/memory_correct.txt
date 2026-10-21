@@ -1,4 +1,4 @@
- * marlowe — new session                                                                                                0 runs · 0 need you
+ * marlowe — new session                                                                                       teams ○  0 runs · 0 need you
 ╭ Memory ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮
 │                                                                                                                                          │
 │  Memory  ·  1,204 memories · 37 episodes · 1,198 vectors                                                                                 │

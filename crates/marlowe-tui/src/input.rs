@@ -112,6 +112,7 @@ impl State {
                 KeyCode::Char('s' | 'S') => Some(Command::Sessions),
                 KeyCode::Char('r' | 'R') => Some(Command::Crew),
                 KeyCode::Char('t' | 'T') => Some(Command::CycleEffort),
+                KeyCode::Char('m' | 'M') => Some(Command::ToggleTeams),
                 // Windows Terminal keeps ^v for itself: the other way to paste an image.
                 KeyCode::Char('p' | 'P') if self.view == View::Conversation => {
                     self.paste_clipboard_image();
@@ -699,6 +700,10 @@ impl State {
             Command::Help => self.open_help(out),
             Command::Tasks => self.open_tasks(out),
             Command::Workflows => self.open_workflows(out),
+            Command::ToggleTeams => {
+                let on = !self.code.teams;
+                self.set_teams(on, out);
+            }
             Command::Findings => self.slash_findings(out),
             Command::Files => self.open_files(out),
             Command::Messages => self.open_threads(None, out),

@@ -24,6 +24,8 @@ fn every_m46_request_round_trips_and_is_tagged_by_op() {
     let ws = || Some("C:/w".to_string());
     let requests = vec![
         (Request::SetMode { session: sid(), mode: PermissionMode::AcceptEdits }, "set_mode"),
+        (Request::SetTeams { session: sid(), on: true }, "set_teams"),
+        (Request::GetTeams { session: sid() }, "get_teams"),
         (Request::ListRules { workspace: ws() }, "list_rules"),
         (
             Request::AddRule { action: RuleAction::Deny, pattern: "bash(git push*)".into(), scope: SettingsScope::Local, workspace: ws() },
@@ -91,6 +93,7 @@ fn every_m46_event_round_trips_inside_an_envelope() {
     let usage = Usage { input: 10, output: 5, reasoning: 0, cached_input: 4, cost_usd: Some(0.01), ..Usage::default() };
     let events = vec![
         Event::ModeChanged { session: sid(), mode: PermissionMode::Plan },
+        Event::TeamsChanged { session: sid(), on: true, size: 10 },
         Event::Rules {
             rules: vec![RuleInfo {
                 action: RuleAction::Allow,

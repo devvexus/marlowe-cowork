@@ -229,6 +229,12 @@ pub struct Coding {
     pub mode: PermissionMode,
     /// A mode chosen before a session existed; sent once there is one.
     pub pending_mode: Option<PermissionMode>,
+    /// Teams is on for the session (the header toggle; `alt-m`, `/teams on|off`).
+    pub teams: bool,
+    /// The team-size guideline the daemon reported.
+    pub team_size: u32,
+    /// Teams switched before a session existed; sent once there is one.
+    pub pending_teams: Option<bool>,
     pub todos: Vec<TodoItem>,
     /// The todo strip is shown (it is, while any item is open).
     pub todos_hidden: bool,

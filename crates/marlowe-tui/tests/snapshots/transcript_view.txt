@@ -1,4 +1,4 @@
- * marlowe — gate work                                                                                                  0 runs · 0 need you
+ * marlowe — gate work                                                                                         teams ○  0 runs · 0 need you
 ╭ transcript ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ you  fix the gate                                                                                                                        │
 │ ▾ thought · 8 tokens                                                                                                                     │

@@ -1,4 +1,4 @@
- * marlowe — gate work                                                                                                   1 run · 0 need you
+ * marlowe — gate work                                                                                          teams ○  1 run · 0 need you
 ╭ Conversation╭ team task · code-review ─────────────────────────────────────────────────────────────────────────────────────╮─────────────╮
 │             │ find › verify                                                                                     ■ stop run │      medium │
 │             │ ● running · 1 of 3 agents done · budget 54k of 500k                                                          │200k · cloud │

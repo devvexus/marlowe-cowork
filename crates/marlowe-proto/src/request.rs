@@ -322,6 +322,11 @@ pub enum Request {
     // E: modes, rules, hooks, settings (`mode_ops.rs`).
     /// Answered with `ModeChanged` (broadcast).
     SetMode { session: SessionId, mode: PermissionMode },
+    /// Turns Teams on or off for a session (remembered across restarts); answered with
+    /// `TeamsChanged` (broadcast).
+    SetTeams { session: SessionId, on: bool },
+    /// Asks for a session's Teams state; answered with `TeamsChanged`.
+    GetTeams { session: SessionId },
     /// Answered with `Rules`.
     ListRules {
         #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -299,6 +299,9 @@ pub enum Event {
     // ---- M4.6 (types in `coding.rs`).
     /// A session's permission mode changed (broadcast).
     ModeChanged { session: SessionId, mode: crate::coding::PermissionMode },
+    /// A session's Teams state (broadcast on a change, and the reply to `GetTeams`): `size` is the
+    /// team-size guideline the reminder carries.
+    TeamsChanged { session: SessionId, on: bool, size: u32 },
     /// Reply to `ListRules`, `AddRule`, `RemoveRule`.
     Rules { rules: Vec<crate::coding::RuleInfo> },
     /// Reply to `ListHooks`, `TrustHooks`.
@@ -434,6 +437,7 @@ impl Event {
             | Event::TurnTimings { session, .. }
             | Event::ContextUsage { session, .. }
             | Event::ModeChanged { session, .. }
+            | Event::TeamsChanged { session, .. }
             | Event::QuestionAsked { session, .. }
             | Event::Todos { session, .. }
             | Event::Rewound { session, .. }

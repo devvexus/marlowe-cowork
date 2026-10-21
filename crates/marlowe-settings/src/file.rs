@@ -19,6 +19,10 @@
 //! matcher = "bash|powershell"
 //! hooks = [{ type = "command", command = "python .marlowe/hooks/check.py", timeout = 30 }]
 //!
+//! [teams]
+//! default = false         # new sessions start with Teams on
+//! size = 10               # specialists a team task stays under
+//!
 //! [import]
 //! claude = true          # read .claude/settings.json (default)
 //! claude_user = false    # also ~/.claude/settings.json
@@ -43,6 +47,8 @@ pub struct SettingsFile {
     pub disable_all_hooks: bool,
     #[serde(default)]
     pub import: Import,
+    #[serde(default)]
+    pub teams: Teams,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +70,16 @@ pub struct Permissions {
     pub protected_paths: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub protected_branches: Vec<String>,
+}
+
+/// Teams mode: whether new sessions start with it on, and the team-size guideline.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Teams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<bool>,
+    /// Specialists a team task should stay under (default 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -65,6 +65,7 @@ pub fn from_claude_json(text: &str) -> Result<SettingsFile, String> {
         hooks: cc.hooks,
         disable_all_hooks: cc.disable_all_hooks,
         import: Default::default(),
+        teams: Default::default(),
     })
 }
 

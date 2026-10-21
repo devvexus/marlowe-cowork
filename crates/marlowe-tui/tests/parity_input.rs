@@ -50,7 +50,10 @@ fn parity_U9_a_mode_chosen_before_the_session_exists_is_sent_when_it_does() {
     assert!(keys(&mut s, "shift-tab").is_empty(), "no session to send it to yet");
     keys(&mut s, "'hi' enter");
     let reqs = feed(&mut s, 0, Event::SessionOpened { session: sid(), title: "hi".into(), workspace: None });
-    assert_eq!(reqs, vec![Request::SetMode { session: sid(), mode: PermissionMode::AcceptEdits }]);
+    assert_eq!(
+        reqs,
+        vec![Request::SetMode { session: sid(), mode: PermissionMode::AcceptEdits }, Request::GetTeams { session: sid() }]
+    );
 }
 
 #[test]
@@ -275,7 +278,10 @@ fn parity_U8_a_bang_before_any_session_opens_one_first() {
     let reqs = keys(&mut s, "'!echo hi' enter");
     assert_eq!(reqs, vec![Request::NewSession { workspace: Some("C:/work/valiance".into()) }]);
     let reqs = feed(&mut s, 0, Event::SessionOpened { session: sid(), title: String::new(), workspace: None });
-    assert_eq!(reqs, vec![Request::UserShell { session: SessionId::from("5e55"), command: "echo hi".into() }]);
+    assert_eq!(
+        reqs,
+        vec![Request::GetTeams { session: sid() }, Request::UserShell { session: SessionId::from("5e55"), command: "echo hi".into() }]
+    );
 }
 
 // ---- T18 -------------------------------------------------------------------------------------------

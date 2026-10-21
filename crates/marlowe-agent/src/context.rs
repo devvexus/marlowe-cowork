@@ -175,6 +175,11 @@ pub struct PinnedSnapshot(pub String);
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TailReminders(pub Vec<(usize, String)>);
 
+/// Notes that ride on a turn's user message whatever the context policy (Teams reminders):
+/// `(message index, text)`. Like [`TailReminders`], cleared by compaction except the live turn's.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TurnNotes(pub Vec<(usize, String)>);
+
 /// The index of the running turn's own user message (its query) in `Conversation::ext`. Thinking
 /// is kept on every assistant message after it: the loop's mid-turn reminders (todos, lazy rules,
 /// guard nudges) are user-role messages too, and must not strip the turn's reasoning, or each
@@ -246,6 +251,13 @@ pub fn assemble_with(
                 if let Some(m) = messages.get_mut(*i).filter(|m| m.role == Role::User) {
                     m.content.insert(0, Part::Text { text: text.clone() });
                 }
+            }
+        }
+    }
+    if let Some(notes) = convo.ext.get::<TurnNotes>() {
+        for (i, text) in &notes.0 {
+            if let Some(m) = messages.get_mut(*i).filter(|m| m.role == Role::User) {
+                m.content.insert(0, Part::Text { text: text.clone() });
             }
         }
     }
@@ -437,6 +449,10 @@ pub fn compact_observed(
     convo.ext.insert(PinnedSnapshot(pinned.trim().to_string()));
     // Indices moved: the live turn's tail (if any) is now at 0; older turns' tails are gone.
     if let Some(t) = convo.ext.get_mut::<TailReminders>() {
+        let live = live_user.and_then(|lu| t.0.iter().find(|(i, _)| *i == lu).map(|(_, s)| s.clone()));
+        t.0 = live.map(|s| vec![(0, s)]).unwrap_or_default();
+    }
+    if let Some(t) = convo.ext.get_mut::<TurnNotes>() {
         let live = live_user.and_then(|lu| t.0.iter().find(|(i, _)| *i == lu).map(|(_, s)| s.clone()));
         t.0 = live.map(|s| vec![(0, s)]).unwrap_or_default();
     }

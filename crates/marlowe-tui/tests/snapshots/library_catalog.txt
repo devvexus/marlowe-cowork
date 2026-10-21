@@ -1,4 +1,4 @@
- * marlowe — new session                                                                                                0 runs · 0 need you
+ * marlowe — new session                                                                                       teams ○  0 runs · 0 need you
 ╭ Library ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮
 │                                                                                                                                          │
 │  OPENROUTER  ·  1 of 3 models                                                                                                            │

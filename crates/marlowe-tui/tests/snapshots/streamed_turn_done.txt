@@ -1,4 +1,4 @@
- * marlowe — what changed in the gate overnight?                                                                        0 runs · 0 need you
+ * marlowe — what changed in the gate overnight?                                                               teams ○  0 runs · 0 need you
 ╭ Conversation · what changed in the gate overnight? ────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
 │  you  what changed in the gate overnight?                                                      ││ Claude Sonnet 4.5 ▾             medium │
 │  ▸ thought · 1,204 tokens                                                                      ││ ctx ────────────┊──── 0 / 200k · cloud │

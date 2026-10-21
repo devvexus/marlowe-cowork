@@ -1153,6 +1153,17 @@ impl State {
         self.set_mode(next, out);
     }
 
+    /// The header toggle, `alt-m` and `/teams on|off`: Teams for this session. Shown at once; the
+    /// daemon's `TeamsChanged` confirms it.
+    pub fn set_teams(&mut self, on: bool, out: &mut Vec<Request>) {
+        self.code.teams = on;
+        match self.session.clone() {
+            Some(session) => out.push(Request::SetTeams { session, on }),
+            None => self.code.pending_teams = Some(on),
+        }
+        self.flash(if on { "Teams on: team tasks for substantive requests" } else { "Teams off" }, NoteTone::Dim);
+    }
+
     pub fn set_mode(&mut self, mode: PermissionMode, out: &mut Vec<Request>) {
         self.code.mode = mode;
         match self.session.clone() {

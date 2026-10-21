@@ -1,4 +1,4 @@
- * marlowe — new session                ╭ palette ─────────────────────────────────────────────────╮                    0 runs · 0 need you
+ * marlowe — new session                ╭ palette ─────────────────────────────────────────────────╮           teams ○  0 runs · 0 need you
 ╭ Conversation ─────────────────────────│ › type a command                                         │Model ─────────────────────────────────╮
 │                                       │                                                          │add a model ▾                          │
 │                                       │ › New session                                         ^n │                                       │

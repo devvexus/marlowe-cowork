@@ -1,4 +1,4 @@
- * marlowe — new session                                                                                               2 runs · 1 needs you
+ * marlowe — new session                                                                                      teams ○  2 runs · 1 needs you
 ╭ Conversation ──────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
 │                                                 ╭────────────────────────────────────────────╮ ││ Claude Sonnet 4.5 ▾             medium │
 │                                                 │ ◐ engineer needs you · fix the gate thres… │ ││ ctx ────────────┊──── 0 / 200k · cloud │

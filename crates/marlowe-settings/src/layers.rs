@@ -276,6 +276,17 @@ impl Settings {
         mode
     }
 
+    /// Whether new sessions start with Teams on: the highest layer that sets it (a project file
+    /// counts only when it applies).
+    pub fn teams_default(&self) -> bool {
+        self.layers.iter().filter(|l| self.applies(l)).filter_map(|l| l.file.teams.default).last().unwrap_or(false)
+    }
+
+    /// The team-size guideline (specialists): the highest layer that sets one, else 10.
+    pub fn team_size(&self) -> u32 {
+        self.layers.iter().filter(|l| self.applies(l)).filter_map(|l| l.file.teams.size).last().unwrap_or(10).clamp(1, 100)
+    }
+
     /// Hooks that run: from layers that apply, unless a layer that applies disables them all.
     pub fn hooks(&self) -> Vec<HookEntry> {
         if self.layers.iter().any(|l| self.applies(l) && l.file.disable_all_hooks) {

@@ -119,6 +119,10 @@ impl State {
         if let Some(mode) = self.code.pending_mode.take() {
             out.push(Request::SetMode { session: session.clone(), mode });
         }
+        match self.code.pending_teams.take() {
+            Some(on) => out.push(Request::SetTeams { session: session.clone(), on }),
+            None => out.push(Request::GetTeams { session: session.clone() }),
+        }
         if let Some(cmd) = self.code.pending_shell.take() {
             self.pending_user = None;
             out.push(Request::UserShell { session, command: cmd });
@@ -263,6 +267,10 @@ impl State {
             Event::ModeChanged { session, mode } if self.mine(session) => {
                 self.code.mode = *mode;
                 self.code.statusline.dirty = true;
+            }
+            Event::TeamsChanged { session, on, size } if self.mine(session) => {
+                self.code.teams = *on;
+                self.code.team_size = *size;
             }
             Event::Todos { session, items } if self.mine(session) => self.code.todos = items.clone(),
             Event::QuestionAsked { session, id, questions } if self.mine(session) => self.ask_questions(session, id, questions),

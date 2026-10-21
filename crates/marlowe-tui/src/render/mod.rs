@@ -691,23 +691,51 @@ fn draw_view_frame(main: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     border_right(main, main.y, &presence(state, theme), taken, buf);
 }
 
-/// The header: `* marlowe — <session>` on the left, the live summary on the right. One row, no
-/// border (it has no hotkey); the summary opens the crew.
+/// The header: `* marlowe — <session>` on the left, then the Teams toggle and the live summary on
+/// the right. One row, no border (it has no hotkey); the summary opens the crew and the toggle
+/// switches Teams (`teams ○` off, `teams ●` on in the accent; the pointer lights it). The summary
+/// gives way before the toggle does, and the title before both.
 fn draw_header(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     if r.height == 0 {
         return;
     }
+    const TOGGLE_W: u16 = 7;
+    const MIN_TITLE: u16 = 10;
     let summary = state.summary();
-    let sw = text::width(&summary) as u16;
-    let target = Target::Summary;
-    let summary_style = if hovered(state, &target) { theme.normal() } else { ink(Ink::Dim, theme) };
-    let sx = r.right().saturating_sub(sw + 1);
-    put(buf, sx, r.y, &Line::from(Span::styled(summary, summary_style)), sw);
-    hit(state, Rect { x: sx, y: r.y, width: sw, height: 1 }, target);
-    let room = r.width.saturating_sub(sw + 4) as usize;
-    let title = text::truncate(&format!("marlowe — {}", state.session_label()), room.saturating_sub(2));
+    let mut sw = text::width(&summary) as u16;
+    let show_toggle = r.width >= TOGGLE_W + 4;
+    let toggle_room = if show_toggle { TOGGLE_W + 2 } else { 0 };
+    if r.width < sw + toggle_room + MIN_TITLE + 4 {
+        sw = 0;
+    }
+    let mut edge = r.right().saturating_sub(1);
+    if sw > 0 {
+        let target = Target::Summary;
+        let summary_style = if hovered(state, &target) { theme.normal() } else { ink(Ink::Dim, theme) };
+        let sx = edge.saturating_sub(sw);
+        put(buf, sx, r.y, &Line::from(Span::styled(summary, summary_style)), sw);
+        hit(state, Rect { x: sx, y: r.y, width: sw, height: 1 }, target);
+        edge = sx.saturating_sub(2);
+    }
+    if show_toggle {
+        let target = Target::Chord(Command::ToggleTeams);
+        let on = state.code.teams;
+        let style = match (on, hovered(state, &target)) {
+            (true, true) => ink(Ink::Speech, theme),
+            (true, false) => ink(Ink::Accent, theme),
+            (false, true) => theme.normal(),
+            (false, false) => ink(Ink::Dim, theme),
+        };
+        let tx = edge.saturating_sub(TOGGLE_W);
+        let label = if on { "teams ●" } else { "teams ○" };
+        put(buf, tx, r.y, &Line::from(Span::styled(label, style)), TOGGLE_W);
+        hit(state, Rect { x: tx, y: r.y, width: TOGGLE_W, height: 1 }, target);
+        edge = tx.saturating_sub(2);
+    }
+    let room = edge.saturating_sub(r.x + 1);
+    let title = text::truncate(&format!("marlowe — {}", state.session_label()), (room as usize).saturating_sub(2));
     let left = Line::from(vec![Span::styled("* ", ink(Ink::Accent, theme)), Span::styled(title, theme.normal())]);
-    put(buf, r.x + 1, r.y, &left, room as u16);
+    put(buf, r.x + 1, r.y, &left, room);
 }
 
 /// The footer: the most-used chords on the left, the day on the right. One line, the same in

@@ -1,4 +1,4 @@
- * marlowe — gate work                                                                                                  0 runs · 0 need you
+ * marlowe — gate work                                                                                         teams ○  0 runs · 0 need you
 ╭ C╭ diff · changes in this session ────────────────────────────────────────────────────────────────────────────────────────────────────╮──╮
 │  │ src/gate.rs  new file  +1 −1                                                                                                       │m │
 │  │ @@ -10,4 +10,4 @@ fn gate                                                                                                          │d │

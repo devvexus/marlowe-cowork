@@ -1,4 +1,4 @@
- * marlowe — new session                                                                                                1 run · 1 needs you
+ * marlowe — new session                                                                                       teams ○  1 run · 1 needs you
 ╭ Run · fix the gate threshold off-by-one ─────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮
 │                                                                                                                                          │
 │  ◐ engineer · fix the gate threshold off-by-one                                                                   needs you  ■ stop run  │

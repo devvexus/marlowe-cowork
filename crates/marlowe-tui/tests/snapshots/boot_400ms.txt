@@ -1,4 +1,4 @@
- * marlowe — new session                                                                                                 1 run · 0 need you
+ * marlowe — new session                                                                                        teams ○  1 run · 0 need you
 ╭ Conversation ────────────────────────────────────────────────────────────────── ⣿⣿⣿⣿⣿⣿ waking ─╮╭ Model ─────────────────────────────────╮
 │                                                                                                ││ Claude Sonnet 4.5 ▾             medium │
 │                                                                                                ││ ctx ────────────┊──── 0 / 200k · cloud │

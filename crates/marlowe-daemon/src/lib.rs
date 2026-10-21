@@ -45,6 +45,7 @@ mod session_ops;
 mod stack;
 mod store;
 mod task_ops;
+mod teams_ops;
 mod tasks;
 pub mod user;
 mod watch_ops;

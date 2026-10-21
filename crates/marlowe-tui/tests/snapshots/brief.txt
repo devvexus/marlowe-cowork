@@ -1,4 +1,4 @@
- * marlowe — new session                                                                                                 1 run · 0 need you
+ * marlowe — new session                                                                                        teams ○  1 run · 0 need you
 ╭ Conversation ──────────────────────────────────────────────────────────────── ⣀⣀⣷⣾⣀⣀ speaking ─╮╭ Model ─────────────────────────────────╮
 │  Good evening, sir. wnr4 finished at 05:19: top1 0.875, kl 0.0803, the best so far. wnr5 is    ││ Claude Sonnet 4.5 ▾             medium │
 │  alive at layer 9. wnr3 has been silent 23 minutes with its pid still alive, and the 8B sweep  ││ ctx ────────────┊──── 0 / 200k · cloud │

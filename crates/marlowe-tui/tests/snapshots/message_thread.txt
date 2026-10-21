@@ -1,4 +1,4 @@
- * marlowe — gate work                                                                                                   1 run · 0 need you
+ * marlowe — gate work                                                                                          teams ○  1 run · 0 need you
 ╭ Run · code-review ╭ messages ────────────────────────────────────────────────────────────────────────────────────────╮───── ⣀⣀⣀⣀⣀⣀ idle ─╮
 │                   │ run aa11bb22 · code-review · running                                                             │                   │
 │  ● workflow · code│                                                                                                  │nning  ■ stop run  │

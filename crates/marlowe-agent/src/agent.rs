@@ -281,6 +281,11 @@ impl Agent {
             }
         }
 
+        // Teams mode: its reminder rides on this turn's user message, whatever the tail policy.
+        if let Some(note) = self.services.get::<crate::teams::TeamsNote>().and_then(|t| t.note(said)) {
+            convo.ext.get_or_default::<context::TurnNotes>().0.push((user_index, note));
+        }
+
         let mut spent = Spent::default();
         let mut texts: Vec<String> = Vec::new();
         let mut error = None;

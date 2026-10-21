@@ -191,6 +191,7 @@ fn dispatch(core: &Arc<Core>, client: u64, client_name: &str, req: Request) {
         | Request::TrustHooks { .. }
         | Request::GetSettings { .. }
         | Request::SetSetting { .. }) => crate::mode_ops::dispatch(core, client, mode),
+        teams @ (Request::SetTeams { .. } | Request::GetTeams { .. }) => crate::teams_ops::dispatch(core, client, teams),
         cond @ (Request::Compact { .. }
         | Request::AddDir { .. }
         | Request::SwitchModel { .. }

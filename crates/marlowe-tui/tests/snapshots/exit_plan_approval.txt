@@ -1,4 +1,4 @@
- * marlowe — gate work                                                                                                 0 runs · 1 needs you
+ * marlowe — gate work                                                                                        teams ○  0 runs · 1 needs you
 ╭ Conversation · gate work ─────────────────────────────────────────────────── ⣠⣾⣦⣴⣷⣄ needs you ─╮╭ Model ─────────────────────────────────╮
 │                                                                                                ││ Claude Sonnet 4.5 ▾             medium │
 │                                                                                                ││ ctx ────────────┊──── 0 / 200k · cloud │

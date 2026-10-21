@@ -1,4 +1,4 @@
- * marlowe — new session                                                                                         1 run · 0 need you · 1 new
+ * marlowe — new session                                                                                teams ○  1 run · 0 need you · 1 new
 ╭ Watch ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮
 │                                                                                                                                          │
 │  Watch  ·  1 root · 4 runs · 1 alive                                                                                                     │

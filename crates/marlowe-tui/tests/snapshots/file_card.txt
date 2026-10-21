@@ -1,4 +1,4 @@
- * marlowe — gate work                                                                                                  0 runs · 0 need you
+ * marlowe — gate work                                                                                         teams ○  0 runs · 0 need you
 ╭ Conversation · gate work ──────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
 │  ▪ loss.html · 12 KB                                                                           ││ Claude Sonnet 4.5 ▾             medium │
 │    the loss curves for the last run                                                            ││ ctx ────────────┊──── 0 / 200k · cloud │
