@@ -27,7 +27,7 @@ use crate::images::Emitter;
 use crate::links::LinkEmitter;
 use crate::local;
 use crate::osc;
-use crate::pacing::Pacer;
+use crate::pacing::{FineTimerHold, Pacer};
 use crate::render;
 use crate::state::{ClientEvent, State};
 use crate::TuiError;
@@ -124,10 +124,7 @@ pub fn run(client: Client, mut state: State, theme: Theme) -> Result<(), TuiErro
     }
     // Before the input thread exists: the terminal's answers arrive as input.
     let images = start_images();
-    // Waits of a few milliseconds (a frame at 144 Hz) are real ones, not rounded to 15.6 ms.
-    let timer = marlowe_os::console::FineTimer::start();
     let result = event_loop(&client, &mut state, &theme, images, ansi);
-    drop(timer);
     restore(enhanced);
     if result.is_ok() && state.farewell_shut() {
         // The daemon closed while it was on screen; the alternate screen is gone, so the last
@@ -185,6 +182,9 @@ fn event_loop(
     // after a quiet spell draws at once and a burst becomes one frame ([`crate::pacing`]). Pointer
     // motion that lands on the same target as before changes nothing on screen and draws nothing.
     let mut pacer = Pacer::detect();
+    // Waits of a few milliseconds (a frame at 144 Hz) are real ones, not rounded to 15.6 ms, but
+    // the 1 ms timer costs power system-wide: held only while the cadence is live or boot.
+    let mut timer = FineTimerHold::default();
     let mut dirty = true;
     let mut drawn = Instant::now();
     loop {
@@ -194,6 +194,7 @@ fn event_loop(
         run_effects(state, &local_tx, &mut term)?;
         pacer.set_cap(state.max_fps());
         let cadence = state.cadence();
+        timer.follow(cadence, marlowe_os::console::FineTimer::start);
         if pacer.until_draw(drawn.elapsed(), dirty, cadence).is_zero() {
             draw(&mut term, state, theme, typeset, &mut emitter, &mut links, ansi)?;
             drawn = Instant::now();

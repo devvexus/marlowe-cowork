@@ -29,6 +29,42 @@ pub enum Cadence {
     Live,
 }
 
+impl Cadence {
+    /// Whether frames come faster than a coarse timer can pace them: only an idle screen can do
+    /// without the 1 ms timer resolution.
+    pub fn needs_fine_timer(self) -> bool {
+        self != Cadence::Idle
+    }
+}
+
+/// Holds a resource (the 1 ms Windows timer resolution) only while the cadence needs it, so an idle
+/// UI leaves the system timer rate alone.
+pub struct FineTimerHold<G> {
+    held: Option<G>,
+}
+
+impl<G> Default for FineTimerHold<G> {
+    fn default() -> Self {
+        FineTimerHold { held: None }
+    }
+}
+
+impl<G> FineTimerHold<G> {
+    /// Takes the resource with `acquire` when `cadence` needs it and none is held, releases it when
+    /// the cadence is idle again.
+    pub fn follow(&mut self, cadence: Cadence, acquire: impl FnOnce() -> G) {
+        match (cadence.needs_fine_timer(), self.held.is_some()) {
+            (true, false) => self.held = Some(acquire()),
+            (false, true) => self.held = None,
+            _ => {}
+        }
+    }
+
+    pub fn is_held(&self) -> bool {
+        self.held.is_some()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pacer {
     refresh_hz: u32,
@@ -96,6 +132,38 @@ impl Pacer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_fine_timer_is_held_only_while_the_cadence_is_live_or_boot() {
+        use std::{cell::Cell, rc::Rc};
+        let (made, dropped) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+        struct Guard(Rc<Cell<u32>>);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        let mut hold = FineTimerHold::default();
+        let step = |hold: &mut FineTimerHold<Guard>, c| {
+            hold.follow(c, || {
+                made.set(made.get() + 1);
+                Guard(dropped.clone())
+            })
+        };
+        step(&mut hold, Cadence::Idle);
+        assert!(!hold.is_held() && made.get() == 0, "idle takes nothing");
+        step(&mut hold, Cadence::Boot);
+        step(&mut hold, Cadence::Live);
+        step(&mut hold, Cadence::Live);
+        assert!(hold.is_held() && made.get() == 1, "boot and live share one hold");
+        step(&mut hold, Cadence::Idle);
+        assert!(!hold.is_held() && dropped.get() == 1, "back to idle releases it");
+        step(&mut hold, Cadence::Idle);
+        step(&mut hold, Cadence::Live);
+        assert!(hold.is_held() && made.get() == 2 && dropped.get() == 1, "live takes it again");
+        drop(hold);
+        assert_eq!(dropped.get(), 2, "dropping the hold releases it");
+    }
 
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
