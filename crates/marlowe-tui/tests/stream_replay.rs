@@ -154,7 +154,7 @@ struct Replay {
 /// frame), with the view `scroll` lines up from the bottom once `scroll_from` tokens are in.
 fn replay(w: u16, h: u16, per_frame: usize, scroll: usize, scroll_from: usize) -> Replay {
     let mut s = in_session();
-    let pane = marlowe_tui::render::geometry(Rect::new(0, 0, w, h), &s).conversation;
+    let pane = marlowe_tui::render::transcript_pane(marlowe_tui::render::geometry(Rect::new(0, 0, w, h), &s).conversation, &s);
     let toks = tokens(REPLY);
     let mut frames = Vec::new();
     let mut seq = 7;
@@ -271,9 +271,12 @@ fn following_the_stream_never_moves_the_view_back() {
         assert_eq!(n, 0, "{w}x{h}: the view jumped back {n} times while following the stream");
         let lost = shrinks(&r);
         assert!(lost.is_empty(), "{w}x{h}: the transcript got shorter at (frame, rows) {lost:?}");
-        // And it kept up: the last frame shows the end of the reply.
-        let last = r.frames.last().unwrap();
+        // And it kept up: the last streaming frame shows the end of the reply. The frame after it
+        // is the turn finishing, when the strip's rows are freed under the text, which stays put.
+        let n = r.frames.len();
+        let (last, done) = (&r.frames[n - 2], &r.frames[n - 1]);
         assert_eq!(last.start + r.pane.height as usize, last.total, "{w}x{h}: the view fell behind the tail");
+        assert_eq!(done.start, last.start, "{w}x{h}: the reply slid when the strip went away");
     }
 }
 
@@ -315,7 +318,9 @@ fn a_scrolled_up_view_stays_put_while_the_reply_streams() {
     let from = r.frames.iter().position(|f| f.start + f.rows.len() + 12 <= f.total).expect("scrolled");
     let strip = |f: &Frame| f.rows.iter().map(|l| without_tag(l).to_string()).collect::<Vec<_>>();
     let pinned = strip(&r.frames[from]);
-    let moved = r.frames[from..].iter().filter(|f| strip(f) != pinned).count();
+    // The last frame is the turn finishing: the strip's rows go and the tag moves down with the pane.
+    let streamed = &r.frames[from..r.frames.len() - 1];
+    let moved = streamed.iter().filter(|f| strip(f) != pinned).count();
     println!("== scrolled up 12 at token 200: {moved} of {} frames changed the rows on screen", r.frames.len() - from - 1);
     assert_eq!(moved, 0, "the reader's rows moved under them");
 }
@@ -349,7 +354,10 @@ fn reservation_falls(inner: usize) -> Vec<(String, Vec<usize>)> {
 #[test]
 fn the_held_rows_of_a_partial_formula_rise_and_fall_token_by_token() {
     // 140 columns: the pane is 96 wide, its text 92, a formula's 90.
-    let pane = marlowe_tui::render::geometry(Rect::new(0, 0, W, H), &in_session()).conversation;
+    let pane = {
+        let s = in_session();
+        marlowe_tui::render::transcript_pane(marlowe_tui::render::geometry(Rect::new(0, 0, W, H), &s).conversation, &s)
+    };
     let inner = pane.width as usize - 4 - 2;
     for (head, series) in reservation_falls(inner) {
         let falls: Vec<(usize, usize, usize)> = series
@@ -402,7 +410,7 @@ fn collapsing_reasoning_mid_stream_follows_the_new_tail() {
     assert!(open.total > 200, "a few hundred lines of reasoning: {}", open.total);
     s.on_key(ctrl('t'));
     assert!(!s.show_thinking);
-    let pane = marlowe_tui::render::geometry(Rect::new(0, 0, W, H), &s).conversation;
+    let pane = marlowe_tui::render::transcript_pane(marlowe_tui::render::geometry(Rect::new(0, 0, W, H), &s).conversation, &s);
     let check = |s: &State, when: &str| {
         let buf = render(s, W, H);
         let v = s.viewport.get();
@@ -431,7 +439,7 @@ fn a_scrolled_up_view_keeps_its_place_through_a_paste_and_a_resize() {
         }
         render(&s, W, H);
     }
-    let pane_of = |s: &State, w: u16, h: u16| marlowe_tui::render::geometry(Rect::new(0, 0, w, h), s).conversation;
+    let pane_of = |s: &State, w: u16, h: u16| marlowe_tui::render::transcript_pane(marlowe_tui::render::geometry(Rect::new(0, 0, w, h), s).conversation, s);
     // The top rows on screen, as the reader sees them.
     let top_rows = |s: &State, w: u16, h: u16| {
         let rows = pane_rows(&render(s, w, h), pane_of(s, w, h));

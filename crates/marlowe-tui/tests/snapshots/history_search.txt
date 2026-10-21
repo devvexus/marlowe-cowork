@@ -1,7 +1,7 @@
  * marlowe — gate work                                                                                                  0 runs · 0 need you
 ╭ Conversation · gate work ──────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
-│                                                                                                ││ Claude Sonnet 4.5 ▾             medium │
-│                                                                                                ││ ctx ────────────┊──── 0 / 200k · cloud │
+│  you  fix the build                                                                            ││ Claude Sonnet 4.5 ▾             medium │
+│  ⣾ sending                                                                                     ││ ctx ────────────┊──── 0 / 200k · cloud │
 │                                                                                                │╰────────────────────────────────── (m) ─╯
 │                                                                                                │╭ Workspace ─────────────────────────────╮
 │                                                                                                ││ C:/work/valiance ▾                     │
@@ -10,12 +10,12 @@
 │                                                                                                ││ no runs                                │
 │                                                                                                │╰────────────────────────────────── (1) ─╯
 │                                                                                                │╭ Watch ─────────────────────────────────╮
-│                                           ⣿  MARLOWE                                           ││ nothing watched                        │
+│                                                                                                ││ nothing watched                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │
-│                                         Good evening.                                          ││                                        │
 │                                                                                                ││                                        │
-│                ask anything  ·  ^o past sessions  ·  ^l library  ·  ^k palette                 ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │

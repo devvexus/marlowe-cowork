@@ -65,7 +65,7 @@ fn session(turns: u32) -> (State, u64) {
 }
 
 fn pane(s: &State) -> Rect {
-    geometry(Rect::new(0, 0, W, H), s).conversation
+    marlowe_tui::render::transcript_pane(geometry(Rect::new(0, 0, W, H), s).conversation, s)
 }
 
 /// The pane's text rows on screen, without the scrollbar or the `↓ N more` tag (whose count

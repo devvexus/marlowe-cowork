@@ -21,7 +21,8 @@ fn local(s: &mut marlowe_tui::State, ev: LocalEvent) -> Vec<Request> {
 }
 
 fn ask(text: &str) -> Request {
-    Request::Ask { session: Some(sid()), text: text.into(), workspace: None, images: vec![], options: None, client_ms: None }
+    // The Enter stamp is the test clock: the daemon measures sending from it.
+    Request::Ask { session: Some(sid()), text: text.into(), workspace: None, images: vec![], options: None, client_ms: Some(1_800_000_000_000) }
 }
 
 // ---- U9, M1 ----------------------------------------------------------------------------------------
@@ -151,7 +152,8 @@ fn parity_U6_a_message_typed_while_the_model_works_is_queued_and_sent_at_the_ste
     // A tool starts and finishes: the model is about to take its next step.
     assert!(feed(&mut s, 3, tool_started("c1", "read", "read src/gate.rs")).is_empty());
     let reqs = feed(&mut s, 4, tool_finished("c1", true, "80 lines"));
-    assert_eq!(reqs, vec![ask("also check CI")]);
+    // A steer joins the turn in flight: there is no Enter-to-wire to measure for it.
+    assert_eq!(reqs, vec![Request::Ask { session: Some(sid()), text: "also check CI".into(), workspace: None, images: vec![], options: None, client_ms: None }]);
     assert_eq!(s.entries.last(), Some(&Entry::User { text: "also check CI".into(), steer: true }));
     assert_eq!(s.code.queue_len(), 0);
     assert!(!contains(&palette_frame(&s), "1 queued"));

@@ -39,6 +39,7 @@ mod overlay;
 mod plan;
 mod panel;
 mod popup;
+mod strip;
 mod transcript;
 mod watch;
 
@@ -238,9 +239,16 @@ fn composer_text_width(cols: u16) -> usize {
     cols.saturating_sub(6) as usize
 }
 
+/// The part of the conversation pane the transcript fills: the pane less the live strip's rows
+/// while it is up. Tests that read the transcript off the screen use it.
+pub fn transcript_pane(pane: Rect, state: &State) -> Rect {
+    Rect { height: pane.height.saturating_sub(strip::height(state, pane)), ..pane }
+}
+
 /// Draws the whole frame.
 pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
     crate::images::begin_frame();
+    state.strip.begin_frame();
     state.hits.borrow_mut().clear();
     state.code.link_plan.borrow_mut().clear();
     let area = frame.area();

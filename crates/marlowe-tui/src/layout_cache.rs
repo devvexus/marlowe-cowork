@@ -117,11 +117,14 @@ impl Hasher {
                 self.u64(2);
                 self.str(text);
             }
-            Entry::Thinking { text, tokens, live, ms } => {
+            Entry::Thinking { text, tokens, live, ms, read } => {
                 self.u64(3 | u64::from(*live) << 8);
                 self.u64(*tokens);
                 self.u64(*ms);
                 self.str(text);
+                if let Some(r) = read {
+                    self.str(&format!("{r:?}"));
+                }
             }
             Entry::Tool { call_id, summary, status } => {
                 self.u64(4);
@@ -147,9 +150,12 @@ impl Hasher {
                 }) << 8);
                 self.str(text);
             }
-            Entry::Recall { count, summary } => {
+            Entry::Recall { count, summary, timing } => {
                 self.u64(6 | u64::from(*count) << 8);
                 self.str(summary);
+                if let Some(t) = timing {
+                    self.str(&format!("{t:?}"));
+                }
             }
             Entry::Job { id, command, output, code } => {
                 self.u64(7 | (code.map_or(0, |c| i64::from(c) + 1) as u64) << 8);
@@ -163,7 +169,7 @@ impl Hasher {
                 self.str(text);
             }
             // Rare and small: their debug text is every field.
-            Entry::Usage { .. } | Entry::Brief { .. } | Entry::File { .. } => {
+            Entry::Usage { .. } | Entry::Brief { .. } | Entry::File { .. } | Entry::Timings(_) => {
                 self.u64(9);
                 self.str(&format!("{e:?}"));
             }

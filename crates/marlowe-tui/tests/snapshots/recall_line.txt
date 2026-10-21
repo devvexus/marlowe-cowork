@@ -3,7 +3,7 @@
 │  you  what threshold did we settle on?                                                         ││ Claude Sonnet 4.5 ▾             medium │
 │  ⋯ recall · 3 memories · gate sweep, cue choice                                                ││ ctx ────────────┊──── 0 / 200k · cloud │
 │  We settled on 0.41.                                                                           │╰────────────────────────────────── (m) ─╯
-│                                                                                                │╭ Workspace ─────────────────────────────╮
+│  ⣾ writing ·   0ms                                                                             │╭ Workspace ─────────────────────────────╮
 │                                                                                                ││ C:/work/valiance ▾                     │
 │                                                                                                │╰────────────────────────────────── (w) ─╯
 │                                                                                                │╭ Crew ──────────────────────────────────╮

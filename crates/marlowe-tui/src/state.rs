@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 
 use marlowe_model::{Part, Role, Usage};
 use marlowe_proto::{
-    ApprovalDecision, ApprovalId, Envelope, Event, Request, RunId, SessionId, SessionSummary, StoredTurn,
-    TurnStop,
+    ApprovalDecision, ApprovalId, Envelope, Event, PhaseSpan, Request, RunId, SessionId, SessionSummary, StageMs,
+    StoredTurn, TurnNumbers, TurnStop,
 };
 
 use crate::composer::Composer;
@@ -71,13 +71,18 @@ pub enum Entry {
     Prose { text: String },
     /// Reasoning. `live` while it is still streaming; `ms` is how long it took, from its first
     /// delta to what closed it (0 when not known, as in a stored transcript).
-    Thinking { text: String, tokens: u64, live: bool, ms: u64 },
+    ///
+    /// `read` is what the model call that began it read (its header says so).
+    Thinking { text: String, tokens: u64, live: bool, ms: u64, read: Option<crate::live::Read> },
     Tool { call_id: String, summary: String, status: ToolStatus },
     Note { text: String, tone: NoteTone },
     /// Usage footer for a finished turn.
     Usage { usage: Usage },
-    /// Memories the daemon injected before the turn.
-    Recall { count: u32, summary: String },
+    /// Memories the daemon injected before the turn, and (from a daemon that measures it) how long
+    /// each stage of finding them took.
+    Recall { count: u32, summary: String, timing: Option<Box<RecallTiming>> },
+    /// A turn's measured phases, shown with reasoning open (^t).
+    Timings(Box<Timings>),
     /// The Wake brief, with the directories it offers to watch.
     Brief { text: String, offers: Vec<marlowe_proto::WatchCandidate> },
     /// A background job or the user's `!` shell: its command and what it has printed.
@@ -87,6 +92,23 @@ pub enum Entry {
     News { label: String, text: String },
     /// A file the agent sent with `send_file`.
     File { file: marlowe_proto::SentFile },
+}
+
+/// How long a recall took, stage by stage.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecallTiming {
+    pub total_ms: u64,
+    pub stages: Vec<StageMs>,
+    pub abstained: bool,
+}
+
+/// A finished turn's measured phases and totals.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Timings {
+    pub spans: Vec<PhaseSpan>,
+    pub numbers: TurnNumbers,
+    /// The TUI's share of token-to-screen (the first token applied to it drawn), in ms.
+    pub screen_ms: Option<u64>,
 }
 
 /// A turn in flight in the open session.
@@ -108,6 +130,9 @@ pub struct Viewport {
     /// The pane's size: a resize lays everything out again, so a line index from another size
     /// means nothing.
     pub size: (u16, u16),
+    /// Rows the live strip took under the pane when it was drawn. The pane's height changing by
+    /// exactly this is the strip coming or going, not a resize.
+    pub strip: u16,
     /// [`State::scroll`] when this frame was drawn. While it is unchanged and non-zero, the view
     /// stays on [`Self::top`] however much arrives below.
     pub scroll: usize,
@@ -652,7 +677,9 @@ pub struct State {
     pub launch_workspace: Option<String>,
     pub entries: Vec<Entry>,
     pub live: Option<LiveTurn>,
-    /// Text sent with no session yet, shown until its TurnStarted arrives.
+    /// What the turn is doing now, line by line ([`crate::live`]).
+    pub strip: crate::live::Strip,
+    /// Text sent and not yet a turn, shown until its TurnStarted arrives.
     pub pending_user: Option<String>,
     awaiting_new: bool,
     pub(crate) pending_open: Option<SessionId>,
@@ -764,6 +791,7 @@ impl State {
             default_workspace,
             entries: Vec::new(),
             live: None,
+            strip: crate::live::Strip::default(),
             pending_user: None,
             awaiting_new: false,
             pending_open: None,
@@ -902,6 +930,12 @@ impl State {
         self.live.is_some()
     }
 
+    /// Whether the live strip's rows are reserved: from Enter until the turn is over, and while
+    /// the memory write or a load or compaction result it left is still showing.
+    pub fn strip_up(&self) -> bool {
+        self.live.is_some() || self.pending_user.is_some() || self.strip.turn_up() || self.strip.trailing(self.now_ms)
+    }
+
     pub fn current_approval(&self) -> Option<&Approval> {
         self.approvals.first()
     }
@@ -971,6 +1005,7 @@ impl State {
         self.forget_folds();
         self.epoch = self.epoch.wrapping_add(1);
         self.live = None;
+        self.strip.reset();
         self.pending_user = None;
         self.awaiting_new = false;
         self.bg.reset_session();
@@ -1032,6 +1067,7 @@ impl State {
     pub(crate) fn reload(&mut self, out: &mut Vec<Request>) {
         if let Some(s) = self.session.clone() {
             self.live = None;
+            self.strip.reset();
             self.pending_open = Some(s.clone());
             out.push(Request::OpenSession { session: s });
         }
@@ -1046,6 +1082,7 @@ impl State {
                 self.profile_home = Some(profile_home.clone());
                 if restarted {
                     self.last_seq = *seq;
+                    self.strip.reset();
                     if self.live.take().is_some() {
                         self.note("the daemon restarted; the turn was lost", NoteTone::Amber);
                     }
@@ -1112,6 +1149,7 @@ impl State {
                     self.code.tool_detail = transcript_details(turns);
                     self.code.detail_gen += 1;
                     self.live = None;
+                    self.strip.reset();
                     self.pending_user = None;
                     self.follow_tail();
                     self.view = View::Conversation;
@@ -1132,10 +1170,12 @@ impl State {
                         self.entries.push(user_entry(user.clone()));
                     }
                     self.live = Some(LiveTurn { turn: *turn, model: model.clone(), started_ms: at_ms });
+                    self.strip.turn_started(*turn);
                     self.follow_tail();
                 }
             }
             Event::TextDelta { session, text, .. } if self.mine(session) => {
+                self.strip.text(at_ms, text.chars().count());
                 self.close_thinking(at_ms);
                 match self.entries.last_mut() {
                     Some(Entry::Prose { text: t }) => t.push_str(text),
@@ -1154,8 +1194,9 @@ impl State {
                 }
             }
             Event::ReasoningDelta { session, text, tokens, .. } if self.mine(session) => {
+                self.strip.reasoning(at_ms, *tokens);
                 match self.entries.last_mut() {
-                    Some(Entry::Thinking { text: t, tokens: n, live: true, ms }) => {
+                    Some(Entry::Thinking { text: t, tokens: n, live: true, ms, .. }) => {
                         t.push_str(text);
                         *n += *tokens;
                         if let Some(since) = self.thinking_since {
@@ -1164,7 +1205,9 @@ impl State {
                     }
                     _ => {
                         self.thinking_since = Some(at_ms);
-                        self.entries.push(Entry::Thinking { text: text.clone(), tokens: *tokens, live: true, ms: 0 })
+                        self.strip.call.entry = Some(self.entries.len());
+                        let read = self.strip.call_read();
+                        self.entries.push(Entry::Thinking { text: text.clone(), tokens: *tokens, live: true, ms: 0, read })
                     }
                 }
             }
@@ -1176,12 +1219,13 @@ impl State {
                             t.push_str(&text);
                             *n += tokens;
                         }
-                        _ => self.entries.push(Entry::Thinking { text, tokens: *tokens, live: false, ms: 0 }),
+                        _ => self.entries.push(Entry::Thinking { text, tokens: *tokens, live: false, ms: 0, read: None }),
                     }
                 }
             }
             Event::ToolStarted { session, call_id, tool, summary, .. } if self.mine(session) => {
                 self.close_thinking(at_ms);
+                self.strip.tool_started(call_id, summary, at_ms);
                 self.record_tool_start(call_id, tool, summary);
                 let summary = if summary.trim().is_empty() { tool.clone() } else { summary.clone() };
                 self.entries.push(Entry::Tool {
@@ -1193,6 +1237,7 @@ impl State {
             Event::ToolFinished { session, call_id, ok, summary, .. } if self.mine(session) => {
                 // The first line is the tool line; any more is the call's output or its diff.
                 let (first, rest) = split_summary(summary);
+                self.strip.tool_finished(call_id);
                 self.record_tool_finish(call_id, *ok, &rest);
                 let status = if *ok {
                     ToolStatus::Done(first)
@@ -1214,7 +1259,8 @@ impl State {
                 // A step boundary: what the user queued while the model worked goes in now.
                 self.flush_queue(out);
             }
-            Event::TurnFinished { session, usage, stop, .. } if self.mine(session) => {
+            Event::TurnFinished { session, turn, usage, stop } if self.mine(session) => {
+                self.strip.finished(*turn, at_ms);
                 self.close_thinking(at_ms);
                 for e in &mut self.entries {
                     if let Entry::Tool { status: s @ ToolStatus::Running, .. } = e {
@@ -1317,10 +1363,27 @@ impl State {
             Event::MemoryChanged { id, change } => self.memory_changed(id, change, out),
             Event::MemoryProfile { hits, tokens, omitted } => self.memory_profile(hits, *tokens, *omitted),
             Event::MemoryStats(report) => self.memory.stats = Some(report.clone()),
-            Event::Recalled { session, count, summary, .. } if self.mine(session) => {
-                if *count > 0 {
-                    self.entries.push(Entry::Recall { count: *count, summary: crate::text::clean(summary) });
+            Event::Recalled { session, count, summary, total_ms, stages, abstained, .. } if self.mine(session) => {
+                self.strip.recalled();
+                // A daemon that measures the stages says so even when nothing was found: the
+                // line then reads `0 memories` and where the time went. An older one is silent.
+                let timed = *total_ms > 0 || !stages.is_empty();
+                if *count > 0 || timed {
+                    let timing = timed.then(|| Box::new(RecallTiming { total_ms: *total_ms, stages: stages.clone(), abstained: *abstained }));
+                    self.entries.push(Entry::Recall { count: *count, summary: crate::text::clean(summary), timing });
                 }
+            }
+            Event::Phase(p) if p.session.as_ref().is_some_and(|s| self.mine(s)) => {
+                if let Some(read) = self.strip.phase(p, at_ms) {
+                    // The engine's own numbers replace the estimate on the reasoning header.
+                    if let Some(Entry::Thinking { read: slot, .. }) = self.strip.call.entry.and_then(|i| self.entries.get_mut(i)) {
+                        *slot = Some(read);
+                    }
+                }
+            }
+            Event::TurnTimings { session, spans, numbers, .. } if self.mine(session) => {
+                let screen_ms = self.strip.screen_us().map(|us| us.div_ceil(1000));
+                self.entries.push(Entry::Timings(Box::new(Timings { spans: spans.clone(), numbers: numbers.clone(), screen_ms })));
             }
             Event::ImportProgress { read, imported } => {
                 self.import = Some(ImportStatus { read: *read, imported: *imported });
@@ -1410,11 +1473,19 @@ impl State {
                     return;
                 }
                 match session {
-                    Some(s) if self.mine(s) => self.note(&text, NoteTone::Red),
+                    Some(s) if self.mine(s) => {
+                        self.note(&text, NoteTone::Red);
+                        if self.live.is_none() {
+                            // The ask failed before it became a turn: nothing is in flight.
+                            self.pending_user = None;
+                            self.strip.reset();
+                        }
+                    }
                     Some(_) => {}
                     None => self.flash(text, NoteTone::Red),
                 }
                 if self.pending_user.is_some() && session.is_none() && self.session.is_none() {
+                    self.strip.reset();
                     // The ask failed before a session existed: give the text back.
                     if let Some(t) = self.pending_user.take() {
                         if self.composer.is_blank() {
@@ -1539,7 +1610,24 @@ fn first_line(s: &str) -> String {
 /// Rebuilds conversation entries from a stored transcript.
 pub fn entries_from_transcript(turns: &[StoredTurn]) -> Vec<Entry> {
     let mut out = Vec::new();
+    // The measured phases of the turn being read, and what its first model call read.
+    let mut timings: Option<Timings> = None;
+    let mut read: Option<crate::live::Read> = None;
     for t in turns {
+        if t.role == Role::User && (t.numbers.is_some() || !t.phases.is_empty()) {
+            if let Some(done) = timings.take() {
+                out.push(Entry::Timings(Box::new(done)));
+            }
+            let numbers = t.numbers.clone().unwrap_or_default();
+            read = numbers.read.map(|r| crate::live::Read {
+                new: r.new_tok,
+                cached: r.cached_tok,
+                ms: Some(r.ms),
+                cached_est: true,
+                ..Default::default()
+            });
+            timings = Some(Timings { spans: t.phases.clone(), numbers, screen_ms: None });
+        }
         match t.role {
             Role::User => {
                 let text: String = t
@@ -1564,6 +1652,7 @@ pub fn entries_from_transcript(turns: &[StoredTurn]) -> Vec<Entry> {
                                 tokens: crate::text::width(&th.text) as u64 / 4,
                                 live: false,
                                 ms: 0,
+                                read: read.take(),
                             })
                         }
                         Part::Text { text } if !text.trim().is_empty() => {
@@ -1605,6 +1694,9 @@ pub fn entries_from_transcript(turns: &[StoredTurn]) -> Vec<Entry> {
             }
             Role::System => {}
         }
+    }
+    if let Some(done) = timings.take() {
+        out.push(Entry::Timings(Box::new(done)));
     }
     for e in &mut out {
         if let Entry::Tool { status: s @ ToolStatus::Running, .. } = e {

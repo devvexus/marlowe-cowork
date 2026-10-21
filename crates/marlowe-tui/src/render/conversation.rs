@@ -25,12 +25,13 @@ pub fn draw(full: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     // The pinned todo list takes the bottom of the pane while anything is open.
     let todo_h = todo_height(state, full);
     let strip_h = super::bg::strip_height(state, full);
-    let r = Rect { height: full.height.saturating_sub(todo_h + strip_h), ..full };
+    let live_h = super::strip::height(state, full);
+    let r = Rect { height: full.height.saturating_sub(todo_h + strip_h + live_h), ..full };
     if strip_h > 0 {
-        super::bg::draw_strip(Rect { y: r.bottom(), height: strip_h, ..full }, state, theme, buf, PAD);
+        super::bg::draw_strip(Rect { y: r.bottom() + live_h, height: strip_h, ..full }, state, theme, buf, PAD);
     }
     if todo_h > 0 {
-        draw_todos(Rect { y: r.bottom() + strip_h, height: todo_h, ..full }, state, theme, buf);
+        draw_todos(Rect { y: r.bottom() + live_h + strip_h, height: todo_h, ..full }, state, theme, buf);
     }
     // Text column: padding on the left, one blank column and the scrollbar on the right.
     let tw = r.width.saturating_sub(PAD + 2) as usize;
@@ -41,9 +42,15 @@ pub fn draw(full: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     let tail = tail_lines(state, tw, theme, cache.lines.is_empty());
     let base = cache.lines.len();
     let total = base + tail.len();
+    // The live strip sits directly under the output: at the pane's bottom once the text fills it,
+    // right below the last line before that. Its rows are reserved either way.
+    let under = |rows: usize| Rect { y: r.y + rows.min(r.height as usize) as u16, height: live_h, ..full };
     if total == 0 {
         state.marks.borrow_mut().clear();
         empty_state(r, state, theme, buf);
+        if live_h > 0 {
+            super::strip::draw(under(0), state, theme, buf, PAD);
+        }
         return;
     }
     let h = r.height as usize;
@@ -54,7 +61,7 @@ pub fn draw(full: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
         .take()
         .filter(|a| a.epoch == state.epoch)
         .and_then(|a| cache.marks.iter().find(|m| m.entry == a.entry).map(|m| (m.line, a.row)));
-    let start = view_top(state, (r.width, r.height), total, max, anchor);
+    let start = view_top(state, (r.width, r.height), live_h, total, max, anchor);
     // Past the tail the reader can still scroll up to the first line: the range runs from here.
     let past = state.viewport.get().pin == Pin::Tail;
     state.scroll_max.set(if past { start + state.scroll } else { max });
@@ -85,6 +92,9 @@ pub fn draw(full: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
         }
     }
     state.marks.replace(marks);
+    if live_h > 0 {
+        super::strip::draw(under(total), state, theme, buf, PAD);
+    }
     if total > h {
         scrollbar(r, total, h, start.min(max), max, theme, buf);
     }
@@ -139,10 +149,12 @@ fn marker_row(
 /// on: the view keeps it there, so only the lines under it move. That can leave the view above the
 /// tail ([`Pin::Above`], held like a scrolled-up view) or past it ([`Pin::Tail`], empty rows under
 /// a fold closed near the end, until text fills them). `tests/folds.rs` replays both.
-fn view_top(state: &State, size: (u16, u16), total: usize, max: usize, anchor: Option<(usize, usize)>) -> usize {
+fn view_top(state: &State, size: (u16, u16), strip: u16, total: usize, max: usize, anchor: Option<(usize, usize)>) -> usize {
     let prev = state.viewport.get();
     let turn = state.live.as_ref().map(|l| l.turn);
-    let same = prev.size == size && prev.epoch == state.epoch;
+    // The live strip coming or going changes the pane's height by its own rows and nothing else.
+    let same_size = prev.size == size || (prev.size.0 == size.0 && prev.size.1 + prev.strip == size.1 + strip);
+    let same = same_size && prev.epoch == state.epoch;
     let kept = prev.scroll == state.scroll && prev.epoch == state.epoch && prev.total > 0;
     let last = total.saturating_sub(1);
     let (top, pin) = if let Some((line, row)) = anchor {
@@ -164,7 +176,13 @@ fn view_top(state: &State, size: (u16, u16), total: usize, max: usize, anchor: O
     } else if state.scroll == 0 {
         let streaming = turn.is_some() && prev.turn == turn && prev.scroll == 0;
         let held = prev.total.saturating_sub(total) <= HOLD_LINES;
-        if same && streaming && held {
+        // The strip going away widens the pane: the text stays where it is, with the freed rows
+        // empty under it until the next message fills them, rather than the reply sliding down.
+        let released = same && strip < prev.strip && prev.pin == Pin::None && prev.total <= total;
+        if released {
+            let top = max.max(prev.top.min(last));
+            (top, Pin::of(top, max))
+        } else if same && streaming && held {
             (max.max(prev.top.min(last)), Pin::None)
         } else {
             (max, Pin::None)
@@ -172,7 +190,7 @@ fn view_top(state: &State, size: (u16, u16), total: usize, max: usize, anchor: O
     } else {
         (max - state.scroll.min(max), Pin::None)
     };
-    state.viewport.set(Viewport { top, total, size, scroll: state.scroll, turn, epoch: state.epoch, pin });
+    state.viewport.set(Viewport { top, total, size, strip, scroll: state.scroll, turn, epoch: state.epoch, pin });
     top
 }
 
@@ -340,19 +358,7 @@ fn tail_lines(state: &State, width: usize, theme: &Theme, empty: bool) -> Vec<Li
             Span::styled(format!("{}{more}", text::truncate(&text::clean(first), width.saturating_sub(USER_LABEL + 3))), ink(Ink::Dim, theme)),
         ]));
     }
-    // Nothing has streamed yet: say so rather than sit still.
-    let waiting = state.pending_user.is_some()
-        || (state.live.is_some()
-            && matches!(
-                state.entries.iter().rev().find(|e| !matches!(e, Entry::Recall { .. })),
-                Some(Entry::User { .. }) | None
-            ));
-    if waiting {
-        out.push(Line::from(vec![
-            Span::styled(format!("{} ", chrome::DISCLOSURE_CLOSED), ink(Ink::Hover, theme)),
-            Span::styled("thinking…", ink(Ink::Dim, theme)),
-        ]));
-    }
+    // Nothing has streamed yet: the live strip under the pane says what the wait is.
     out
 }
 
@@ -394,7 +400,7 @@ fn sync(cache: &mut TranscriptCache, state: &State, width: usize, theme: &Theme)
 fn entry_key(state: &State, idx: usize, e: &Entry, gap: bool, live: bool) -> u64 {
     let mut h = crate::layout_cache::Hasher::default();
     h.entry(e);
-    h.u64(u64::from(gap) | u64::from(live) << 1 | u64::from(state.thought_open(idx)) << 2);
+    h.u64(u64::from(gap) | u64::from(live) << 1 | u64::from(state.thought_open(idx)) << 2 | u64::from(state.show_thinking) << 3);
     h.u64(idx as u64);
     if let Entry::Tool { call_id, .. } = e {
         if state.code.tool_detail.get(call_id).is_some_and(|d| d.diff.is_some()) {
@@ -446,11 +452,13 @@ pub(super) fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, th
                 out.extend(markdown::render_prose(text, width, theme, base));
             }
         }
-        Entry::Thinking { text, tokens, live, ms } => {
+        Entry::Thinking { text, tokens, live, ms, read } => {
             let n = if *tokens > 0 { *tokens } else { (text.chars().count() as u64).div_ceil(4) };
             let open = state.thought_open(idx) && !text.trim().is_empty();
             let marker = if open { chrome::DISCLOSURE_OPEN } else { chrome::DISCLOSURE_CLOSED };
-            let head = if *live {
+            let head = if let Some(r) = read {
+                thought_head(marker, r, (*live, n, *ms), width, theme)
+            } else if *live {
                 vec![
                     Span::styled(format!("{marker} "), ink(Ink::Hover, theme)),
                     Span::styled("thinking… ", ink(Ink::Dim, theme)),
@@ -529,7 +537,9 @@ pub(super) fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, th
                 ]));
             }
         }
-        Entry::Recall { count, summary } => {
+        Entry::Recall { count, summary, timing: Some(t) } => recall_timed(*count, summary, t, state.show_thinking, width, theme, out),
+        Entry::Timings(t) => timings_lines(t, state.show_thinking, width, theme, out),
+        Entry::Recall { count, summary, timing: None } => {
             let n = format!("{count} memor{}", if *count == 1 { "y" } else { "ies" });
             let mut spans = vec![
                 Span::styled("⋯ ", ink(Ink::Dimmer, theme)),
@@ -578,6 +588,170 @@ pub(super) fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, th
             ]));
         }
     }
+}
+
+/// A reasoning block's header with the read that began it: `▸ read 8.2k · 1.9s  ›  thought 4.1s ·
+/// 312 tok · 76 tok/s`, the read shortened and then the rate dropped until it is one row.
+fn thought_head(marker: char, read: &crate::live::Read, (live, n, ms): (bool, u64, u64), width: usize, theme: &Theme) -> Vec<Span<'static>> {
+    let tail_ink = if live { Ink::Dim } else { Ink::Dimmer };
+    let words = |rate: bool| -> Vec<Span<'static>> {
+        if live {
+            return vec![
+                Span::styled("thinking… ", ink(Ink::Dim, theme)),
+                Span::styled(format!("{} tokens", text::thousands(n)), ink(Ink::Dimmer, theme)),
+            ];
+        }
+        let took = if ms >= 1000 { format!(" {}", super::strip::took(ms)) } else { String::new() };
+        let mut t = format!("thought{took} · {} tok", text::thousands(n));
+        if rate && ms >= 500 && n * 1000 / ms > 0 {
+            t.push_str(&format!(" · {} tok/s", n * 1000 / ms));
+        }
+        vec![Span::styled(t, ink(tail_ink, theme))]
+    };
+    let mark = Span::styled(format!("{marker} "), ink(if live { Ink::Hover } else { Ink::Dimmer }, theme));
+    let arrow = |s: &'static str| Span::styled(s, ink(Ink::Dimmer, theme));
+    let mut variants: Vec<Vec<Span<'static>>> = Vec::new();
+    for (short, rate) in [(false, true), (true, true), (true, false)] {
+        let mut v = vec![mark.clone()];
+        v.extend(super::strip::read_spans(read, short, theme));
+        v.push(arrow(if short { " › " } else { "  ›  " }));
+        v.extend(words(rate));
+        variants.push(v);
+    }
+    let mut bare = vec![mark];
+    bare.extend(words(false));
+    variants.push(bare);
+    let fits = |v: &Vec<Span<'static>>| v.iter().map(|s| text::width(&s.content)).sum::<usize>() <= width;
+    let at = variants.iter().position(fits).unwrap_or(variants.len() - 1);
+    variants.swap_remove(at)
+}
+
+/// The recall line with its stage timings: `⋯ recall · 3 memories · 84ms  embed 12 · bm25 2 · …`,
+/// what was recalled after it as room allows. With reasoning open (^t) each stage has a row.
+fn recall_timed(count: u32, summary: &str, t: &crate::state::RecallTiming, open: bool, width: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
+    let n = format!("{count} memor{}", if count == 1 { "y" } else { "ies" });
+    let amber = |s: String| Span::styled(s, ink(Ink::Amber, theme));
+    let dim = |s: String| Span::styled(s, ink(Ink::Dim, theme));
+    let mut spans = vec![Span::styled("⋯ ", ink(Ink::Dimmer, theme)), dim(format!("recall · {n}"))];
+    if t.abstained && count == 0 {
+        spans.push(Span::styled(" · abstained", ink(Ink::Dimmer, theme)));
+    }
+    spans.push(Span::styled(" · ", ink(Ink::Dimmer, theme)));
+    spans.push(amber(format!("{}ms", t.total_ms)));
+    let used = |v: &[Span<'static>]| v.iter().map(|s| text::width(&s.content)).sum::<usize>();
+    let stage_spans = |abbrev: bool| -> Vec<Span<'static>> {
+        let mut v = vec![Span::raw("  ")];
+        for (i, s) in t.stages.iter().filter(|s| s.name != "ingest").enumerate() {
+            if i > 0 {
+                v.push(Span::styled(if abbrev { " " } else { " · " }, ink(Ink::Dimmer, theme)));
+            }
+            let name = if abbrev { s.name.chars().take(1).collect::<String>() } else { format!("{} ", s.name) };
+            v.push(dim(name));
+            v.push(amber(s.ms.to_string()));
+        }
+        v
+    };
+    if !t.stages.is_empty() {
+        for abbrev in [false, true] {
+            let v = stage_spans(abbrev);
+            if used(&spans) + used(&v) <= width {
+                spans.extend(v);
+                break;
+            }
+        }
+    }
+    let room = width.saturating_sub(used(&spans) + 3);
+    if !summary.trim().is_empty() && room > 8 {
+        let first = summary.lines().next().unwrap_or("");
+        spans.push(Span::styled(format!(" · {}", text::truncate(first, room)), ink(Ink::Dimmer, theme)));
+    }
+    out.push(Line::from(spans));
+    if open {
+        for s in &t.stages {
+            let mut v = vec![Span::raw("    "), dim(text::pad(&s.name, 10)), amber(format!("{}ms", s.ms))];
+            if let Some(n) = s.n {
+                v.push(Span::styled(format!(" · {}", text::thousands(n)), ink(Ink::Dimmer, theme)));
+            }
+            out.push(Line::from(v));
+        }
+    }
+}
+
+/// A turn's measured phases, one dim row (two with the overhead numbers), only with reasoning
+/// open: `recall 180ms · prompt 12ms · prefill 1.9s (8.2k) · first token 6.2s`.
+fn timings_lines(t: &crate::state::Timings, open: bool, width: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
+    use marlowe_proto::PhaseKind as K;
+    if !open {
+        return;
+    }
+    let amber = |s: String| Span::styled(s, ink(Ink::Amber, theme));
+    let dim = |s: &str| Span::styled(s.to_string(), ink(Ink::Dim, theme));
+    let sep = || Span::styled(" · ", ink(Ink::Dimmer, theme));
+    let row = |parts: Vec<(String, String, Option<String>)>| -> Option<Line<'static>> {
+        if parts.is_empty() {
+            return None;
+        }
+        let mut spans = vec![Span::raw("  ")];
+        for (i, (name, value, extra)) in parts.into_iter().enumerate() {
+            if i > 0 {
+                spans.push(sep());
+            }
+            spans.push(dim(&format!("{name} ")));
+            spans.push(amber(value));
+            if let Some(x) = extra {
+                spans.push(dim(&format!(" ({x})")));
+            }
+        }
+        // One row at any width: what does not fit is cut, not wrapped.
+        let mut acc = 0;
+        let mut kept = Vec::new();
+        for sp in spans {
+            let sw = text::width(&sp.content);
+            if acc + sw > width.saturating_sub(1) {
+                kept.push(Span::styled("…", ink(Ink::Dimmer, theme)));
+                break;
+            }
+            acc += sw;
+            kept.push(sp);
+        }
+        Some(Line::from(kept))
+    };
+    let mut ordered: Vec<&marlowe_proto::PhaseSpan> = t.spans.iter().filter(|s| s.stage.is_none() || s.kind != K::Recall).collect();
+    ordered.sort_by_key(|s| s.start_ms);
+    let mut phases = Vec::new();
+    for s in ordered {
+        let name = match (s.kind, s.stage.as_deref()) {
+            (K::Sending, _) => "sending",
+            (K::Setup, _) => "setup",
+            (K::Admit, Some("gpu")) => "gpu wait",
+            (K::Admit, _) => "admit",
+            (K::Prompt, _) => "prompt",
+            (K::Recall, _) => "recall",
+            (K::Fit, _) => "fit",
+            (K::Compact, _) => "compact",
+            (K::Wire, Some(_)) => "prepare",
+            (K::Load, _) => "load",
+            (K::Prefill, _) => "prefill",
+            _ => continue,
+        };
+        let extra = if s.kind == K::Prefill { s.n.map(text::compact) } else { None };
+        phases.push((name.to_string(), super::strip::took(s.ms), extra));
+    }
+    if let Some(ms) = t.numbers.ttft_ms {
+        phases.push(("first token".to_string(), super::strip::took(ms), None));
+    }
+    out.extend(row(phases));
+    // The harness's own share: Enter to the request on the wire, and a token to the screen (the
+    // daemon's leg is measured, the TUI's leg is this machine's clock, so the sum is approximate).
+    let mut over = Vec::new();
+    if let Some(ms) = t.numbers.enter_to_wire_ms {
+        over.push(("enter→wire".to_string(), super::strip::took(ms), None));
+    }
+    if let Some(bus) = t.numbers.token_to_bus_ms {
+        let screen = bus + t.screen_ms.unwrap_or(0);
+        over.push(("token→screen".to_string(), format!("~{}", super::strip::took(screen)), None));
+    }
+    out.extend(row(over));
 }
 
 /// Rows the pinned todo list takes: none unless something is open and the pane is tall enough to
@@ -827,16 +1001,91 @@ mod tests {
     ];
 
     fn entry(r: &mut Lcg, n: usize) -> Entry {
-        match r.next(9) {
+        match r.next(12) {
             0 => Entry::User { text: format!("question {n} about the thing"), steer: r.next(5) == 0 },
             1 | 2 => Entry::Prose { text: PROSE[r.next(PROSE.len())].to_string() },
-            3 => Entry::Thinking { text: format!("considering option {n}\nand then $\\alpha_{n}$"), tokens: 40, live: false, ms: 1200 },
+            3 => Entry::Thinking { text: format!("considering option {n}\nand then $\\alpha_{n}$"), tokens: 40, live: false, ms: 1200, read: None },
             4 => Entry::Tool { call_id: format!("c{n}"), summary: format!("bash cargo test {n}"), status: ToolStatus::Done("ok".into()) },
             5 => Entry::Note { text: format!("a note {n}"), tone: NoteTone::Amber },
-            6 => Entry::Recall { count: 3, summary: "valiance - eval".into() },
+            6 => Entry::Recall { count: 3, summary: "valiance - eval".into(), timing: None },
             7 => Entry::Job { id: "j".into(), command: "cargo build".into(), output: "a\nb\nc".into(), code: Some(0) },
+            8 => Entry::Thinking { text: format!("weighing {n}"), tokens: 312, live: r.next(2) == 0, ms: 4_100, read: Some(read()) },
+            9 => Entry::Recall { count: 3, summary: "valiance - eval".into(), timing: Some(Box::new(timing())) },
+            10 => Entry::Timings(Box::new(crate::state::Timings {
+                spans: vec![marlowe_proto::PhaseSpan {
+                    kind: marlowe_proto::PhaseKind::Recall,
+                    stage: None,
+                    start_ms: 1,
+                    ms: 84,
+                    n: None,
+                    detail: None,
+                    parent: None,
+                    est: false,
+                }],
+                numbers: marlowe_proto::TurnNumbers { ttft_ms: Some(2_100), enter_to_wire_ms: Some(5), ..Default::default() },
+                screen_ms: Some(1),
+            })),
             _ => Entry::News { label: "monitor".into(), text: format!("line {n}") },
         }
+    }
+
+    fn read() -> crate::live::Read {
+        crate::live::Read { new: 8_200, cached: 0, ms: Some(1_900), ..Default::default() }
+    }
+
+    fn timing() -> crate::state::RecallTiming {
+        let stage = |name: &str, ms| marlowe_proto::StageMs { name: name.into(), ms, n: None };
+        crate::state::RecallTiming {
+            total_ms: 84,
+            stages: vec![stage("embed", 12), stage("bm25", 2), stage("dense", 4), stage("gate", 1), stage("rerank", 61)],
+            abstained: false,
+        }
+    }
+
+    fn text_of(l: &Line<'_>) -> String {
+        l.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// The reasoning header is one row that fits at every width: the read shortens first, then the
+    /// rate goes, then the read itself, and an estimate keeps its tilde.
+    #[test]
+    fn the_thought_header_shortens_to_fit_and_never_wraps() {
+        let th = theme();
+        let expect = [
+            (80, "▸ read 8.2k · 1.9s  ›  thought 4.1s · 312 tok · 76 tok/s"),
+            (50, "▸ 8.2k/1.9s › thought 4.1s · 312 tok · 76 tok/s"),
+            (44, "▸ 8.2k/1.9s › thought 4.1s · 312 tok"),
+            (24, "▸ thought 4.1s · 312 tok"),
+        ];
+        for (width, want) in expect {
+            let spans = thought_head(chrome::DISCLOSURE_CLOSED, &read(), (false, 312, 4_100), width, &th);
+            let got = text_of(&Line::from(spans));
+            assert_eq!(got, want, "at width {width}");
+            assert!(text::width(&got) <= width, "{got:?} is wider than {width}");
+        }
+        let est = crate::live::Read { new_est: true, ms_est: true, ..read() };
+        let spans = thought_head(chrome::DISCLOSURE_CLOSED, &est, (true, 4, 0), 80, &th);
+        assert_eq!(text_of(&Line::from(spans)), "▸ read ~8.2k · ~1.9s  ›  thinking… 4 tokens");
+    }
+
+    #[test]
+    fn the_recall_line_abbreviates_its_stages_by_width() {
+        let th = theme();
+        let at = |width| {
+            let mut out = Vec::new();
+            recall_timed(3, "valiance - eval", &timing(), false, width, &th, &mut out);
+            assert_eq!(out.len(), 1, "one row");
+            let t = text_of(&out[0]);
+            assert!(text::width(&t) <= width, "{t:?} is wider than {width}");
+            t
+        };
+        assert!(at(100).contains("84ms  embed 12 · bm25 2 · dense 4 · gate 1 · rerank 61"), "{}", at(100));
+        assert!(at(56).contains("84ms  e12 b2 d4 g1 r61"), "{}", at(56));
+        assert!(at(30).starts_with("⋯ recall · 3 memories · 84ms"), "{}", at(30));
+        // Opened with ^t: a row for each stage.
+        let mut out = Vec::new();
+        recall_timed(3, "", &timing(), true, 80, &th, &mut out);
+        assert_eq!(out.len(), 1 + 5);
     }
 
     /// The cache brought up to date, compared with the transcript laid out from scratch.
@@ -902,7 +1151,7 @@ mod tests {
         let mut state = State::new(None);
         for i in 0..n {
             state.entries.push(Entry::User { text: format!("question {i}"), steer: false });
-            state.entries.push(Entry::Thinking { text: "hmm".into(), tokens: 3, live: false, ms: 0 });
+            state.entries.push(Entry::Thinking { text: "hmm".into(), tokens: 3, live: false, ms: 0, read: None });
             state.entries.push(Entry::Prose { text: PROSE[i % PROSE.len()].to_string() });
         }
         state

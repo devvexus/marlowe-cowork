@@ -319,6 +319,13 @@ impl State {
 
     /// Sends `text` with exactly these images: uploaded first, then asked with their references.
     fn ask_with(&mut self, text: String, atts: Vec<Attachment>, out: &mut Vec<Request>) {
+        // On screen in this frame, before the daemon has said a word: the message, and the strip
+        // under it saying it is being sent. (A steer typed mid-turn is already an entry.)
+        let enter = (!self.is_busy()).then_some(self.now_ms).filter(|t| *t > 0);
+        if !self.is_busy() {
+            self.pending_user = Some(text.clone());
+            self.strip.enter(self.now_ms);
+        }
         if !atts.is_empty() {
             let (up, reqs) = Upload::start(self.session.clone(), text.clone(), self.default_workspace.clone().filter(|_| self.session.is_none()), &atts);
             if self.session.is_none() {
@@ -331,7 +338,7 @@ impl State {
         }
         match self.session.clone() {
             Some(s) => {
-                out.push(Request::Ask { session: Some(s), text, workspace: None, images: Vec::new(), options: None, client_ms: None });
+                out.push(Request::Ask { session: Some(s), text, workspace: None, images: Vec::new(), options: None, client_ms: enter });
             }
             None => {
                 self.expect_new_session(&text);
@@ -341,7 +348,7 @@ impl State {
                     workspace: self.default_workspace.clone(),
                     images: Vec::new(),
                     options: None,
-                    client_ms: None,
+                    client_ms: enter,
                 });
             }
         }

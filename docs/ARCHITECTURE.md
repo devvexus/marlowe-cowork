@@ -150,6 +150,8 @@ Between the request leaving and the engine's first frame (`Wire`): the provider 
 
 Frames: the TUI draws a frame the moment an event arrives, at most once per display refresh (`pacing.rs`; `display_refresh_hz` from the primary monitor, 60 in a classic console, `max_fps` lowers it), ticks at that rate while a turn or the voice is live, and once a second when still. The conversation's rows are cached per entry (`layout_cache.rs`, keyed on content, fold, gap, live flag, width, theme, diff), so a streaming frame lays out the last entry and copies out only the rows on screen; images are applied to that window afterwards and are never re-sent for a change elsewhere.
 
+The live strip (`marlowe-tui/src/live.rs`, `render/strip.rs`): `Strip` folds phase events and the stream into the turn's current call (read, thinking, writing, tools, waits), recall stages, load, compaction and the memory tail; the renderer only reads it. It is two rows, reserved by state alone while a turn is up (Enter to `TurnFinished`, plus a brief linger for the tail), drawn right under the last transcript line; `view_top` treats its coming and going as a strip change, not a resize, so a scrolled-up reader keeps their rows and the text does not slide when it leaves. Stages and short phases go through `Flip` queues that give each one frame; `Strip::begin_frame` advances them whether or not the strip is drawn. Every figure is a daemon measurement or carries `~` until one replaces it.
+
 ## Crew and sandbox model
 
 An agent is a role card (`roles/*.md`, overridden by `<home>\roles\*.md`: slot, effort, tool allowlist, budget, sandbox kind, instructions), and that is all. Depth 1: crew runs never get `dispatch`.

@@ -3,7 +3,7 @@
 │  you  what changed in the gate overnight?                                                      ││ Claude Sonnet 4.5 ▾             medium │
 │  ▸ thought · 1,204 tokens                                                                      ││ ctx ────────────┊──── 0 / 200k · cloud │
 │  ⋯ powershell Remove-Item build …                                                              │╰────────────────────────────────── (m) ─╯
-│                                                                                                │╭ Workspace ─────────────────────────────╮
+│  ⣾ waiting for your approval ·   0ms                                                           │╭ Workspace ─────────────────────────────╮
 │                                                                                                ││ C:/work/valiance ▾                     │
 │                                                                                                │╰────────────────────────────────── (w) ─╯
 │                                                                                                │╭ Crew ──────────────────────────────────╮

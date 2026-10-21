@@ -249,10 +249,12 @@ fn recall_line_appears_dim_before_the_answer() {
     let mut s = recalled_turn();
     feed(&mut s, 4, Event::Recalled { session: sid(), turn: 1, count: 3, summary: "gate sweep, cue choice".into(), total_ms: 0, stages: Vec::new(), abstained: false });
     assert!(matches!(s.entries.last(), Some(Entry::Recall { count: 3, .. })));
-    // Still waiting for the model: the thinking line is not hidden by the recall line.
+    // Still waiting for the model: the live strip under the pane says so beside the recall line
+    // (a second frame: the first showed `sending`, which each phase gets one frame of).
+    render(&s, W, H);
     let buf = render(&s, W, H);
     assert!(contains(&buf, "\u{22ef} recall \u{b7} 3 memories \u{b7} gate sweep, cue choice"));
-    assert!(contains(&buf, "thinking\u{2026}"));
+    assert!(contains(&buf, "working"));
     feed(&mut s, 5, Event::TextDelta { session: sid(), turn: 1, text: "We settled on 0.41.".into() });
     let buf = render(&s, W, H);
     assert!(contains(&buf, "We settled on 0.41."));

@@ -26,6 +26,7 @@ pub mod diff;
 pub mod history;
 pub mod images;
 pub mod layout_cache;
+pub mod live;
 mod input;
 pub mod library;
 pub mod links;

@@ -611,7 +611,7 @@ fn parity_X10_a_command_the_daemon_lists_is_sent_as_the_message_and_unknown_ones
     snapshot("slash_popup", &buf);
     s.composer.clear();
     let reqs = keys(&mut s, "'/review 12' enter");
-    assert_eq!(reqs, vec![Request::Ask { session: Some(sid()), text: "/review 12".into(), workspace: None, images: vec![], options: None, client_ms: None }]);
+    assert_eq!(reqs, vec![Request::Ask { session: Some(sid()), text: "/review 12".into(), workspace: None, images: vec![], options: None, client_ms: Some(1_800_000_000_000) }]);
     // An unknown command is not sent; the line stays for editing.
     assert!(keys(&mut s, "'/frobnicate now' enter").is_empty());
     assert_eq!(s.composer.text(), "/frobnicate now");

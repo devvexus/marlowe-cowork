@@ -1,7 +1,7 @@
  * marlowe — gate work                                                                                                  0 runs · 0 need you
 ╭ Conversation · gate work ──────────────────────────────────────────────────── ⣄⣠⣾⣷⣤⣤ thinking ─╮╭ Model ─────────────────────────────────╮
 │  you  fix the gate                                                                             ││ Claude Sonnet 4.5 ▾             medium │
-│  ▸ thinking…                                                                                   ││ ctx ────────────┊──── 0 / 200k · cloud │
+│  ⣾ working                                                                                     ││ ctx ────────────┊──── 0 / 200k · cloud │
 │                                                                                                │╰────────────────────────────────── (m) ─╯
 │                                                                                                │╭ Workspace ─────────────────────────────╮
 │                                                                                                ││ C:/work/valiance ▾                     │

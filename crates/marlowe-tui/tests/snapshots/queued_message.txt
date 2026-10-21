@@ -3,7 +3,7 @@
 │  you  fix the gate                                                                             ││ Claude Sonnet 4.5 ▾             medium │
 │                                                                                                ││ ctx ────────────┊──── 0 / 200k · cloud │
 │  queuedalso check CI                                                                           │╰────────────────────────────────── (m) ─╯
-│  ▸ thinking…                                                                                   │╭ Workspace ─────────────────────────────╮
+│  ⣾ working                                                                                     │╭ Workspace ─────────────────────────────╮
 │                                                                                                ││ C:/work/valiance ▾                     │
 │                                                                                                │╰────────────────────────────────── (w) ─╯
 │                                                                                                │╭ Crew ──────────────────────────────────╮

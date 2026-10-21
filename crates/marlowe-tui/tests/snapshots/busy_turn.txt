@@ -9,7 +9,7 @@
 │                                 12.4k in · 830 out · 1.2k reasoning · $0.0496  │╭ 1 Crew 2 Watch 3 Threads 4 Memory ─╮
 │                                                                                ││ ◐ engineer · fix the gate thresh…  │
 │  you  and the eval?                                                            ││   waiting on you                   │
-│  ▸ thinking…                                                                   ││ ● researcher · LoRA rank ablatio…  │
+│  ⣯ working                                                                     ││ ● researcher · LoRA rank ablatio…  │
 │                                                                                ││   step 6 · $0.0213 · web_search …  │
 │                                                                                ││                                    │
 │                                                                                ││                                    │

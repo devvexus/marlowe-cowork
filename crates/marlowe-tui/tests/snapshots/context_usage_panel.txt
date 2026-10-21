@@ -4,7 +4,7 @@
 │  Looking at the gate now.                                                                      ││ ctx ━━━━━━━━━━━─── 150k / 200k · cloud │
 │                                                                                                │╰────────────────────────────────── (m) ─╯
 │  ⋯ read src/gate.rs · 80 l╭ context ─────────────────────────────────────────────────────────────────────────╮───────────────────────────╮
-│                           │ ctx ━━━━━━━━━━━━━━━━━━────── 150k / 200k · cloud                                 │ance ▾                     │
+│  ⣾ working                │ ctx ━━━━━━━━━━━━━━━━━━────── 150k / 200k · cloud                                 │ance ▾                     │
 │                           │ 75% of the window used                                                           │───────────────────── (w) ─╯
 │                           │                                                                                  │───────────────────────────╮
 │                           │ what this screen holds (an estimate; the daemon has not sent its own count)      │                           │

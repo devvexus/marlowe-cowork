@@ -110,6 +110,29 @@ fn live_frames(mut s: State, mut seq: u64, frames: usize) -> Stat {
     stat(costs)
 }
 
+/// The strip at its busiest: every frame a reasoning delta, a recall stage ticking its progress and
+/// the clock, with the strip's two rows drawn under a 200-entry transcript.
+fn strip_frames(mut s: State, mut seq: u64, frames: usize) -> Stat {
+    use marlowe_proto::{PhaseEvent, PhaseKind};
+    let mut t = terminal();
+    draw(&mut t, &s);
+    let turn = s.live.as_ref().map(|l| l.turn).unwrap_or(0);
+    let mut costs = Vec::new();
+    for i in 0..frames {
+        feed(&mut s, seq, Event::ReasoningDelta { session: sid(), turn, text: format!("thought {i} "), tokens: 3 });
+        seq += 1;
+        let mut p = PhaseEvent::progress(PhaseKind::Recall, i as u64, frames as u64).stage("dense").unit("items");
+        p.rate = Some(1.9e6);
+        feed(&mut s, 0, Event::Phase(p.on(&sid(), turn)));
+        s.now_ms += 7;
+        costs.push(draw(&mut t, &s));
+    }
+    let text = dump(t.backend().buffer());
+    assert!(text.contains("writing") || text.contains("thinking"), "the strip is on screen while it is measured:
+{text}");
+    stat(costs)
+}
+
 #[test]
 fn frame_cost_cold_live_and_idle() {
     let (s, seq) = session_with(50);
@@ -134,10 +157,12 @@ fn frame_cost_cold_live_and_idle() {
     let mut scratch = s.clone();
     scratch.no_layout_cache = true;
     let uncached = live_frames(scratch, seq, 60);
+    let busy = strip_frames(s.clone(), seq, 300);
 
     println!("\nframe cost, {W}x{H}, {entries} entries, {} build", if cfg!(debug_assertions) { "debug" } else { "release" });
     show("cold (nothing cached)", cold);
     show("live (reply streaming)", live);
+    show("live, strip busy", busy);
     show("idle (nothing changed)", idle);
     show("live without the cache", uncached);
     println!("a 144 Hz refresh period is 6.944 ms; the live target is under 2 ms (release)\n");
@@ -153,6 +178,7 @@ fn frame_cost_cold_live_and_idle() {
     // Loose: five times the target in a release build, and a debug build's slack on top.
     let limit = if cfg!(debug_assertions) { Duration::from_millis(60) } else { Duration::from_millis(10) };
     assert!(live.median < limit, "live frame median {:.2} ms is over {:.0} ms", ms(live.median), ms(limit));
+    assert!(busy.median < limit, "live frame with the strip busy: median {:.2} ms is over {:.0} ms", ms(busy.median), ms(limit));
     if live.median > Duration::from_millis(2) && !cfg!(debug_assertions) {
         println!("note: the live frame is over its 2 ms target on this machine right now");
     }

@@ -4,7 +4,7 @@
 │  ▸ thought · 1,204 tokens                                                                      ││ ctx ────────────┊──── 0 / 200k · cloud │
 │  ⋯ bash git log --since=yesterday …                                                            │╰────────────────────────────────── (m) ─╯
 │  ⋯ read src/gate.rs …                                                                          │╭ Workspace ─────────────────────────────╮
-│                                                                                                ││ C:/work/valiance ▾                     │
+│  ⣾ read src/gate.rs ·   0ms  +1                                                                ││ C:/work/valiance ▾                     │
 │                                                                                                │╰────────────────────────────────── (w) ─╯
 │                                                                                                │╭ Crew ──────────────────────────────────╮
 │                                                                                                ││ no runs                                │

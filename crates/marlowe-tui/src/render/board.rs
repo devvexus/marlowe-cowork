@@ -274,7 +274,7 @@ pub fn memory_lines(state: &State, w: usize) -> Vec<(String, Ink)> {
         .entries
         .iter()
         .filter_map(|e| match e {
-            Entry::Recall { count, summary } => Some((*count, summary.as_str())),
+            Entry::Recall { count, summary, .. } => Some((*count, summary.as_str())),
             _ => None,
         })
         .collect();
