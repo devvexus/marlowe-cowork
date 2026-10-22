@@ -29,7 +29,8 @@ pub use ggml::{CacheType, GgmlType, KvType};
 pub use header::{ModelHeader, Tensor};
 pub use plan::{build, ctx_label, Calibration, Fit, GpuBudget, PlanInputs, PlanModel};
 pub use source::{
-    GpuSnapshot, GpuSource, ModelFiles, ModelSource, RunnerObservation, ServerChange, ServerControl, ServerEnv, SlotObservation,
+    EngineStart, GpuSnapshot, GpuSource, ModelFiles, ModelSource, RunnerObservation, ServerChange, ServerControl, ServerEnv,
+    SlotObservation,
 };
 
 /// What the planner expects each buffer of a load to be, MiB, for checking a plan against the

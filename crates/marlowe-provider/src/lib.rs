@@ -9,6 +9,7 @@
 pub mod http;
 pub mod ollama;
 pub mod ollama_runtime;
+pub mod ollama_start;
 pub mod ollama_store;
 pub mod sse;
 pub mod think;

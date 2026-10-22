@@ -516,7 +516,7 @@ impl Strip {
             (PhaseKind::Prompt, PhaseState::Start) => self.flash("building the prompt"),
             (PhaseKind::Fit, PhaseState::Start) => self.flash("fitting the context"),
             (PhaseKind::Fit, PhaseState::End) => self.fit_tokens = p.done.unwrap_or(0),
-            (PhaseKind::Admit, _) if stage == Some("gpu") => match p.state {
+            (PhaseKind::Admit, _) if matches!(stage, Some("gpu" | "ollama")) => match p.state {
                 PhaseState::Start => {
                     self.wait = Some(Wait { detail: p.detail.clone().unwrap_or_else(|| "waiting for the GPU".into()), since: at })
                 }

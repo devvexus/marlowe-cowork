@@ -567,6 +567,19 @@ impl Brains {
         self.factory().hardware().is_some()
     }
 
+    /// Starts the local engine `model` runs on if it is not answering (never restarts a running
+    /// one). `progress` hears one line when a start begins. Hosted models and builds without a
+    /// server control are `NotApplicable`.
+    pub fn ensure_engine(&self, model: &ModelRef, progress: &mut dyn FnMut(&str)) -> marlowe_hw::EngineStart {
+        if !self.is_local_ollama(model) {
+            return marlowe_hw::EngineStart::NotApplicable;
+        }
+        match self.factory().hardware() {
+            Some(hw) => hw.server.ensure_running(progress),
+            None => marlowe_hw::EngineStart::NotApplicable,
+        }
+    }
+
     /// Applies an approved server change. The daemon calls this only after an Allow.
     pub fn apply_server(&self, change: ServerChange) -> Result<String, BrainsError> {
         let hw = self.factory().hardware().ok_or_else(|| BrainsError::Invalid("no server control in this build".into()))?;

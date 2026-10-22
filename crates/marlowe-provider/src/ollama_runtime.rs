@@ -296,11 +296,19 @@ pub struct OllamaServerControl {
     endpoint: LocalEndpoint,
     /// Variables removed from every process this starts (API keys never reach Ollama).
     scrub: Vec<String>,
+    /// Whether `ensure_running` may start Ollama (off for a remote server or a scripted run).
+    auto_start: bool,
 }
 
 impl OllamaServerControl {
     pub fn new(endpoint: LocalEndpoint) -> Self {
-        Self { endpoint, scrub: Vec::new() }
+        Self { endpoint, scrub: Vec::new(), auto_start: true }
+    }
+
+    /// Whether a stopped Ollama is started when something needs it (default on).
+    pub fn auto_start(mut self, on: bool) -> Self {
+        self.auto_start = on;
+        self
     }
 
     /// Removes these variables (the credential list) from every child's environment.
@@ -311,6 +319,14 @@ impl OllamaServerControl {
 }
 
 impl ServerControl for OllamaServerControl {
+    fn ensure_running(&self, progress: &mut dyn FnMut(&str)) -> marlowe_hw::EngineStart {
+        if !self.auto_start {
+            return marlowe_hw::EngineStart::NotApplicable;
+        }
+        let io = crate::ollama_start::SystemIo { endpoint: self.endpoint.clone(), scrub: self.scrub.clone() };
+        crate::ollama_start::ensure_running(&io, &self.endpoint, crate::ollama_start::START_TIMEOUT, progress)
+    }
+
     fn apply(&self, change: &ServerChange) -> Result<String, String> {
         if change.is_empty() {
             return Ok("nothing to change".into());

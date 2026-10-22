@@ -126,9 +126,13 @@ fn model(id: &str) -> ModelRef {
 
 /// The preview's library and slots, exactly.
 fn preview(engine: Arc<Engine>) -> Brains {
+    preview_with(engine, Arc::new(NoServer))
+}
+
+fn preview_with(engine: Arc<Engine>, server: Arc<dyn ServerControl>) -> Brains {
     let mut f = ProviderFactory::new(Arc::new(MemoryStore::new()));
     f.register(ProviderKind::Ollama, |_| Ok(Arc::new(NoChat)));
-    f.set_hardware(Hardware { models: engine.clone(), gpu: Arc::new(Gpu(engine)), server: Arc::new(NoServer) });
+    f.set_hardware(Hardware { models: engine.clone(), gpu: Arc::new(Gpu(engine)), server });
     let b = Brains::new(Library::open_in_memory().unwrap(), f);
     b.add_model(ProviderKind::Ollama, VALIANCE).unwrap();
     b.add_model(ProviderKind::Ollama, DAWN).unwrap();
@@ -243,4 +247,63 @@ fn an_engine_that_does_not_say_what_is_loaded_is_not_taken_as_empty() {
     assert!(b.background_model(&Slot::Quick).is_err());
     engine.ps_down.store(false, std::sync::atomic::Ordering::SeqCst);
     assert_eq!(b.admit(&model(DAWN), Priority::Crew), Admission::Resident);
+}
+
+/// A server control whose engine comes up when asked to start.
+struct Starter {
+    engine: Arc<Engine>,
+    outcome: marlowe_hw::EngineStart,
+    asked: std::sync::atomic::AtomicU32,
+}
+impl ServerControl for Starter {
+    fn apply(&self, _: &ServerChange) -> Result<String, String> {
+        Err("not in this test".into())
+    }
+    fn ensure_running(&self, progress: &mut dyn FnMut(&str)) -> marlowe_hw::EngineStart {
+        if self.engine.ps_down.load(std::sync::atomic::Ordering::SeqCst) {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            progress("starting Ollama");
+            if matches!(self.outcome, marlowe_hw::EngineStart::Started(_)) {
+                self.engine.ps_down.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+            return self.outcome.clone();
+        }
+        marlowe_hw::EngineStart::Running
+    }
+}
+
+#[test]
+fn a_stopped_engine_is_started_for_a_crew_step_and_asked_again() {
+    let engine = Arc::new(Engine::default());
+    engine.ps_down.store(true, std::sync::atomic::Ordering::SeqCst);
+    let starter = Arc::new(Starter {
+        engine: engine.clone(),
+        outcome: marlowe_hw::EngineStart::Started("Ollama started in 2.0 s".into()),
+        asked: Default::default(),
+    });
+    let b = preview_with(engine.clone(), starter.clone());
+    // Plain admit waits on an engine that does not answer; admit_starting starts it first.
+    assert!(matches!(b.admit(&model(DAWN), Priority::Crew), Admission::Wait(_)));
+    assert!(b.admit_starting(&model(DAWN), Priority::Crew).may_run());
+    assert_eq!(starter.asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // Running now: nothing more is started.
+    assert!(b.admit_starting(&model(DAWN), Priority::Crew).may_run());
+    assert_eq!(starter.asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn an_engine_that_will_not_start_is_reported_and_the_step_keeps_waiting() {
+    let engine = Arc::new(Engine::default());
+    engine.ps_down.store(true, std::sync::atomic::Ordering::SeqCst);
+    let starter = Arc::new(Starter {
+        engine: engine.clone(),
+        outcome: marlowe_hw::EngineStart::Failed("Ollama is not installed".into()),
+        asked: Default::default(),
+    });
+    let b = preview_with(engine, starter);
+    assert!(matches!(b.admit_starting(&model(DAWN), Priority::Crew), Admission::Wait(_)));
+    let mut said = Vec::new();
+    let r = b.ensure_engine(&model(DAWN), &mut |l| said.push(l.to_string()));
+    assert_eq!(r, marlowe_hw::EngineStart::Failed("Ollama is not installed".into()));
+    assert_eq!(said, ["starting Ollama"]);
 }

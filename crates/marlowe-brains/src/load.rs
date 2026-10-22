@@ -128,6 +128,16 @@ fn same_model(a: &str, b: &str) -> bool {
 }
 
 impl Brains {
+    /// [`Brains::admit`], and when the engine did not say what is loaded (`Wait`) because it is
+    /// not running, starts it and asks once more. For callers with no live line to show.
+    pub fn admit_starting(&self, model: &ModelRef, who: Priority) -> Admission {
+        let first = self.admit(model, who);
+        if matches!(first, Admission::Wait(_)) && matches!(self.ensure_engine(model, &mut |_| {}), marlowe_hw::EngineStart::Started(_)) {
+            return self.admit(model, who);
+        }
+        first
+    }
+
     /// Whether `model` may be used now by `who`. See the module docs.
     pub fn admit(&self, model: &ModelRef, who: Priority) -> Admission {
         if !self.is_local_ollama(model) {

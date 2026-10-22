@@ -369,6 +369,17 @@ fn thinking_and_writing_have_their_own_inks_and_a_tool_is_green() {
 }
 
 #[test]
+fn starting_ollama_is_a_live_line_with_a_clock_that_ends_when_it_answers() {
+    let mut r = Rig::new();
+    reading(&mut r);
+    r.phase(3_000, 2, PhaseEvent::start(PhaseKind::Admit).stage("ollama").detail("starting Ollama"));
+    let (first, _) = r.strip(5_200);
+    assert!(first.contains("starting Ollama ·  2.2s"), "{first}");
+    r.phase(6_000, 2, PhaseEvent::end(PhaseKind::Admit, 3_000).stage("ollama"));
+    assert!(!r.strip(6_001).0.contains("starting Ollama"), "the line goes when Ollama answers");
+}
+
+#[test]
 fn waiting_for_the_user_or_the_gpu_is_amber_and_names_why() {
     let mut r = Rig::new();
     reading(&mut r);

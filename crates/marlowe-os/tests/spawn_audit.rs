@@ -18,6 +18,7 @@ const ALLOWED: &[(&str, usize, &str)] = &[
     ("marlowe-crew/src/playbook/tests.rs", 1, "test fixture git"),
     ("marlowe-mcp/src/lib.rs", 2, "MCP stdio server (one is a source-text test); track K moves it to child::spawn"),
     ("marlowe-provider/src/ollama_runtime.rs", 5, "Ollama must outlive Marlowe; scrubbed by hand; Containment::Detached is its target"),
+    ("marlowe-provider/src/ollama_start.rs", 4, "starts Ollama hidden and detached so it outlives Marlowe (breakaway spawn, then without), credentials scrubbed; two `reg query` reads of the saved environment"),
     ("marlowe-sentinel/src/git.rs", 2, "cfg(test) fixtures only; the probe itself uses child::spawn"),
     ("marlowe-typeset/src/helper.rs", 1, "env_clear helper, stricter than the scrub; ChildSpec::with_clear_env is its target"),
     ("marlowe/src/bench/e2e.rs", 1, "cfg(test) only: a dry run of eval/coding/run.py checks the report card's argv (no model, no network)"),

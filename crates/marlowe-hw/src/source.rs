@@ -135,4 +135,23 @@ impl ServerChange {
 /// Only ever called after the user approved it; tests use a fake.
 pub trait ServerControl: Send + Sync {
     fn apply(&self, change: &ServerChange) -> Result<String, String>;
+
+    /// Makes sure the engine is answering, starting it if it is not (never restarting a running
+    /// one: that is `apply`, behind an approval). `progress` hears one line when a start begins.
+    fn ensure_running(&self, _progress: &mut dyn FnMut(&str)) -> EngineStart {
+        EngineStart::NotApplicable
+    }
+}
+
+/// What [`ServerControl::ensure_running`] found or did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineStart {
+    /// It was already answering; nothing was started.
+    Running,
+    /// It was not answering and now is; the line says how long it took.
+    Started(String),
+    /// Not a local engine this build manages (a remote server, a test).
+    NotApplicable,
+    /// It could not be started: why, plainly.
+    Failed(String),
 }

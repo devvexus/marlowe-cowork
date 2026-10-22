@@ -517,6 +517,13 @@ fn run_one(
     clock.set_model(&model);
     // A relay turn runs with nobody waiting on it (at start, at 3am): it never loads a model.
     let who = if input.relay { Priority::Background } else { Priority::Foreground };
+    // The user's own turn on a local model: a stopped Ollama is started first, not reported.
+    if !input.relay {
+        if let Err(message) = ensure_engine(core, &clock, &model) {
+            core.bus.publish(Event::Error { session: Some(session), message });
+            return;
+        }
+    }
     let admitted = admit_conductor(core, &session, &model, cancel, who);
     if let Err(message) = &admitted {
         let message = message.clone();
@@ -745,6 +752,31 @@ fn admit_conductor(core: &Arc<Core>, session: &SessionId, model: &ModelRef, canc
         Ok(Some(cost))
     } else {
         Err(format!("not loading {model}: {}", cost.describe()))
+    }
+}
+
+/// Starts the local engine `model` needs if it is not answering, with a live "starting Ollama"
+/// line while it comes up. `Err` is why it could not be started, for the user. A running engine,
+/// a hosted model and a remote server cost nothing and say nothing.
+fn ensure_engine(core: &Arc<Core>, clock: &Arc<TurnClock>, model: &ModelRef) -> Result<(), String> {
+    let began = Instant::now();
+    let mut said = false;
+    let outcome = guard(|| {
+        core.brains.ensure_engine(model, &mut |line| {
+            said = true;
+            clock.emit(PhaseEvent::start(PhaseKind::Admit).stage("ollama").detail(line));
+        })
+    })?;
+    if said {
+        clock.emit(PhaseEvent::end(PhaseKind::Admit, began.elapsed().as_millis() as u64).stage("ollama"));
+    }
+    match outcome {
+        marlowe_hw::EngineStart::Failed(why) => Err(why),
+        marlowe_hw::EngineStart::Started(note) => {
+            eprintln!("marlowe: {note}");
+            Ok(())
+        }
+        _ => Ok(()),
     }
 }
 

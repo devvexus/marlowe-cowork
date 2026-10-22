@@ -376,7 +376,7 @@ impl Inner {
             }
         }
         if !waits_for_gpu {
-            match brains.admit(&model, Priority::Crew) {
+            match brains.admit_starting(&model, Priority::Crew) {
                 Admission::Refused(why) => {
                     return Err(marlowe_brains::BrainsError::Invalid(format!("not loading {model}: {why}")).into());
                 }

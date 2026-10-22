@@ -731,6 +731,7 @@ fn timings_lines(t: &crate::state::Timings, open: bool, width: usize, theme: &Th
             (K::Sending, _) => "sending",
             (K::Setup, _) => "setup",
             (K::Admit, Some("gpu")) => "gpu wait",
+            (K::Admit, Some("ollama")) => "ollama start",
             (K::Admit, _) => "admit",
             (K::Prompt, _) => "prompt",
             (K::Recall, _) => "recall",
