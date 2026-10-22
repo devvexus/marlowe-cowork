@@ -1725,6 +1725,29 @@ fn parity_a4_background_agents_are_recorded_and_stopped_at_shutdown() {
     assert!(services.get::<Subagents>().unwrap().background_ids().is_empty());
 }
 
+/// A background agent carries its start time and model calls while it runs, and its end time after
+/// (the task list and the crew rail show them).
+#[test]
+fn a_background_agent_reports_its_progress_and_when_it_ended() {
+    let root = tmp("a4p");
+    let sub = Script::with(ProviderKind::OpenRouter, vec![answer("BG done")], Duration::from_millis(100));
+    let ledger = Arc::new(FakeLedger::default());
+    let resolver = Arc::new(FixedResolver { provider: sub.clone(), asked: Mutex::new(Vec::new()) });
+    let (services, wakes, host) = ledgered(&root, resolver, ledger);
+    let p = Script::new(vec![call("agent", json!({"type": "general", "description": "job", "prompt": "do it", "background": true})), answer("ok")]);
+    let mut a = agent(p, frontier(), host);
+    a.services = services.clone();
+    let before = marlowe_agent::tasks::now_ms();
+    run(&a, &mut convo(Some(&root)), "go");
+    let subs = services.get::<Subagents>().unwrap();
+    let mine = subs.agents().into_iter().find(|s| s.id == "agent-1").unwrap();
+    assert!(mine.progress.started_ms >= before, "started when the call was made: {:?}", mine.progress);
+    wakes.recv_timeout(Duration::from_secs(5)).expect("a finished agent reports");
+    let done = subs.agents().into_iter().find(|s| s.id == "agent-1").unwrap();
+    assert!(!done.running && done.progress.steps >= 1 && done.progress.ended_ms >= done.progress.started_ms && done.progress.ended_ms > 0, "{:?}", done.progress);
+    assert!(done.progress.doing.is_empty());
+}
+
 /// A foreground local agent never waits behind a background one (each has its own local slot).
 #[test]
 fn parity_a4_a_foreground_local_agent_does_not_wait_behind_a_background_one() {

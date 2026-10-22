@@ -40,6 +40,7 @@ use serde_json::Value;
 use crate::agent::Agent;
 use crate::approval::ApprovalGate;
 use crate::convo::Conversation;
+use crate::events::AgentEvent;
 use crate::fork::{self, ForkBase, ForkRun, FORK_TYPE};
 use crate::instructions::yaml::{self, Yaml};
 use crate::instructions::{self, Sources};
@@ -846,10 +847,24 @@ struct State {
     inboxes: Mutex<HashMap<String, Sender<Steer>>>,
     /// `name` to agent id.
     names: Mutex<HashMap<String, String>>,
+    /// Where each agent is: when it started, its model calls, and the tool it is in.
+    progress: Mutex<HashMap<String, Progress>>,
     /// Subagent runs that ended with `handback`, and ones that ended on their final text.
     with_handback: AtomicU64,
     without_handback: AtomicU64,
     next: AtomicU64,
+}
+
+/// How far a subagent has got, for the task list and the crew rail.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Progress {
+    pub started_ms: i64,
+    /// When its last run ended; 0 while it runs.
+    pub ended_ms: i64,
+    /// Model calls so far.
+    pub steps: u32,
+    /// The tool it is inside now, as `read src/lib.rs`; empty between tools.
+    pub doing: String,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -863,6 +878,7 @@ pub struct AgentSummary {
     pub label: String,
     pub background: bool,
     pub running: bool,
+    pub progress: Progress,
 }
 
 /// The names of this session's subagents, as a service for tools that attribute work to one
@@ -1011,13 +1027,30 @@ impl Subagents {
         cancel: &marlowe_model::CancelToken,
         background: bool,
         inbox: &Receiver<Steer>,
+        id: &str,
     ) -> Result<String, String> {
         let lane = Lane::of(&agent.model, background);
         let c = cancel.clone();
         if !self.state.slots.acquire(lane, self.cfg.cloud_slots, &|| c.is_cancelled()) {
             return Err("interrupted before the agent started".into());
         }
-        let out = agent.run_turn(convo, prompt, cancel, inbox, &mut |_| {});
+        let state = self.state.clone();
+        let mut note = |e: AgentEvent| {
+            let mut all = lock(&state.progress);
+            let p = all.entry(id.to_string()).or_insert_with(|| Progress { started_ms: crate::tasks::now_ms(), ..Progress::default() });
+            p.ended_ms = 0;
+            match e {
+                AgentEvent::CallStarted { .. } => p.steps += 1,
+                AgentEvent::ToolStarted { tool, summary, .. } => p.doing = format!("{tool} {summary}").trim().to_string(),
+                AgentEvent::ToolFinished { .. } => p.doing.clear(),
+                _ => {}
+            }
+        };
+        let out = agent.run_turn(convo, prompt, cancel, inbox, &mut note);
+        lock(&self.state.progress).entry(id.to_string()).and_modify(|p| {
+            p.doing.clear();
+            p.ended_ms = crate::tasks::now_ms();
+        });
         self.state.slots.release(lane);
         // A report handed back is the result as written; the handback ended the run by cancelling
         // its own token, which is not an interrupt.
@@ -1126,6 +1159,7 @@ impl Subagents {
         let ignored = if is_fork && (req.model.is_some() || req.effort.is_some()) { " A fork always runs on your model at your effort; `model` and `effort` were ignored." } else { "" };
 
         lock(&self.state.labels).insert(id.clone(), (label.clone(), req.background));
+        lock(&self.state.progress).insert(id.clone(), Progress { started_ms: crate::tasks::now_ms(), ..Progress::default() });
         let (inbox_tx, inbox_rx) = unbounded::<Steer>();
         lock(&self.state.inboxes).insert(id.clone(), inbox_tx);
         lock(&self.state.running).insert(id.clone());
@@ -1161,7 +1195,7 @@ impl Subagents {
                         }
                     });
                 }
-                let result = me.run_agent(&agent, &mut convo, &prompt, &cancel, true, &inbox_rx);
+                let result = me.run_agent(&agent, &mut convo, &prompt, &cancel, true, &inbox_rx, &id2);
                 done.store(true, Ordering::SeqCst);
                 let tainted = convo.exposure.tainted;
                 lock(&me.state.background).remove(&id2);
@@ -1200,7 +1234,7 @@ impl Subagents {
             );
         }
 
-        let result = self.run_agent(&agent, &mut convo, &prompt, &cancel, false, &inbox_rx);
+        let result = self.run_agent(&agent, &mut convo, &prompt, &cancel, false, &inbox_rx, &id);
         if convo.exposure.tainted {
             cx.scope.with_ext(|e| e.insert(ReportTainted));
         }
@@ -1252,7 +1286,7 @@ impl Subagents {
         };
         let (_tx, rx) = unbounded::<Steer>();
         let result = match built {
-            Ok(agent) => self.run_agent(&agent, &mut f.convo, text, &cancel, false, &rx),
+            Ok(agent) => self.run_agent(&agent, &mut f.convo, text, &cancel, false, &rx, agent_id),
             Err(e) => Err(e),
         };
         if f.convo.exposure.tainted {
@@ -1271,6 +1305,7 @@ impl Subagents {
     pub fn agents(&self) -> Vec<AgentSummary> {
         let running = self.state.running.lock().unwrap_or_else(|p| p.into_inner()).clone();
         let labels = self.state.labels.lock().unwrap_or_else(|p| p.into_inner());
+        let progress = lock(&self.state.progress).clone();
         let mut out: Vec<AgentSummary> = labels
             .iter()
             .map(|(id, (label, background))| AgentSummary {
@@ -1278,6 +1313,7 @@ impl Subagents {
                 label: label.clone(),
                 background: *background,
                 running: running.contains(id),
+                progress: progress.get(id).cloned().unwrap_or_default(),
             })
             .collect();
         out.sort_by_key(|a| a.id.trim_start_matches("agent-").parse::<u64>().unwrap_or(u64::MAX));

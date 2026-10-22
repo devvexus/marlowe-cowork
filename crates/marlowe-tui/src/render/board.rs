@@ -136,7 +136,7 @@ pub type Row = (Line<'static>, Option<Target>);
 
 /// Rows the Crew section needs when stacked.
 pub fn crew_rows(state: &State) -> usize {
-    let n = state.crew.runs.len();
+    let n = state.crew.runs.len() + state.bg.subagents(state.session.as_ref()).len();
     if n == 0 {
         1
     } else {

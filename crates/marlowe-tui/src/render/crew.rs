@@ -46,12 +46,13 @@ fn plural(n: usize) -> &'static str {
 /// and the section's count.
 pub fn rail_lines(state: &State, w: usize, max_runs: usize, theme: &Theme) -> (Vec<super::board::Row>, Option<String>) {
     let crew = &state.crew;
-    if crew.runs.is_empty() {
+    let subs = state.bg.subagents(state.session.as_ref());
+    if crew.runs.is_empty() && subs.is_empty() {
         let empty = if crew.presence == Presence::Absent { "crew not running" } else { "no runs" };
         return (vec![(dimmer(empty, theme), None)], None);
     }
     let needs = crew.count(CrewRunStatus::NeedsYou);
-    let running = crew.count(CrewRunStatus::Running);
+    let running = crew.count(CrewRunStatus::Running) + subs.len();
     let count = if needs > 0 {
         Some(format!("{needs} need{} you", if needs == 1 { "s" } else { "" }))
     } else if running > 0 {
@@ -81,7 +82,22 @@ pub fn rail_lines(state: &State, w: usize, max_runs: usize, theme: &Theme) -> (V
         let detail = text::truncate(&run_detail(r, state.now_ms), w.saturating_sub(2));
         out.push((Line::from(vec![Span::raw("  "), Span::styled(detail, dstyle)]), at));
     }
-    let hidden = runs.len().saturating_sub(max_runs);
+    let room = max_runs.saturating_sub(runs.len().min(max_runs));
+    for t in subs.iter().take(room) {
+        let at = Some(Target::Chord(crate::state::Command::Tasks));
+        let title = text::truncate(&text::clean_maths(&t.title), w.saturating_sub(5 + "subagent".len()));
+        out.push((Line::from(vec![
+            Span::styled("\u{25cf} ", ink(Ink::Green, theme)),
+            Span::styled("subagent", ink(Ink::Dim, theme)),
+            Span::styled(" \u{b7} ", ink(Ink::Dimmer, theme)),
+            Span::styled(title, theme.normal()),
+        ]), at.clone()));
+        let secs = ((state.now_ms - t.started_ms).max(0) / 1000) as u64;
+        let progress = t.detail.as_deref().unwrap_or("");
+        let detail = text::truncate(&format!("{progress} \u{b7} {}m{:02}s", secs / 60, secs % 60), w.saturating_sub(2));
+        out.push((Line::from(vec![Span::raw("  "), Span::styled(detail, ink(Ink::Dim, theme))]), at));
+    }
+    let hidden = (runs.len() + subs.len()).saturating_sub(max_runs);
     if hidden > 0 {
         out.push((dimmer(&format!("+{hidden} more · alt-r"), theme), Some(Target::Chord(crate::state::Command::Crew))));
     }

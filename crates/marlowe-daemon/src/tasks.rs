@@ -321,6 +321,16 @@ fn agent_raw(session: &SessionId, agent: &str) -> String {
     format!("{session}.{agent}")
 }
 
+/// `step 4 · read src/lib.rs` while it runs; what to do with it once it has finished.
+fn agent_detail(a: &marlowe_agent::subagent::AgentSummary) -> String {
+    if !a.running {
+        return format!("finished; send_message to {} continues it", a.id);
+    }
+    let p = &a.progress;
+    let step = if p.steps == 0 { "starting".to_string() } else { format!("step {}", p.steps) };
+    if p.doing.is_empty() { step } else { format!("{step} · {}", clip_line(&p.doing, 60)) }
+}
+
 impl TaskSource for AgentSource {
     fn list(&self) -> Vec<TaskInfo> {
         let Some(core) = self.core.upgrade() else { return Vec::new() };
@@ -334,11 +344,10 @@ impl TaskSource for AgentSource {
                     session: Some(session.clone()),
                     title: a.label.clone(),
                     status: if a.running { TaskStatus::Running } else { TaskStatus::Done },
-                    // The service keeps no start time; the order of ids is the order they started.
-                    started_ms: 0,
-                    ended_ms: None,
+                    started_ms: a.progress.started_ms,
+                    ended_ms: (!a.running).then_some(a.progress.ended_ms).filter(|e| *e > 0),
                     output_file: None,
-                    detail: Some(format!("{}; send_message to {} continues it", if a.running { "running" } else { "finished" }, a.id)),
+                    detail: Some(agent_detail(&a)),
                 });
             }
         }

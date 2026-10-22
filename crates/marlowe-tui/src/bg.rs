@@ -184,6 +184,15 @@ impl Bg {
         v
     }
 
+    /// Background subagents (`agent_<session>.agent-n`) that are alive in `session`: the crew rail
+    /// lists them beside the runs, as one-specialist team tasks. A crew run's own task id has no dot.
+    pub fn subagents(&self, session: Option<&SessionId>) -> Vec<&TaskInfo> {
+        self.strip(session)
+            .into_iter()
+            .filter(|t| t.kind == TaskKind::Agent && TaskKind::split(&t.id).is_some_and(|(_, raw)| raw.contains('.')))
+            .collect()
+    }
+
     pub fn workflow(&self, run: &RunId) -> Option<&WorkflowInfo> {
         self.workflows.iter().find(|w| &w.run == run)
     }

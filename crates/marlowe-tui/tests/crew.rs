@@ -182,6 +182,46 @@ fn rail_shows_mixed_run_states_most_urgent_first() {
 }
 
 #[test]
+fn rail_lists_a_background_subagent_as_a_one_specialist_task_and_drops_it_when_done() {
+    use marlowe_proto::{TaskInfo, TaskKind, TaskStatus};
+    let mut s = with_runs(vec![]);
+    let sub = |status: TaskStatus, detail: &str| TaskInfo {
+        id: format!("agent_{}.agent-1", sid()),
+        kind: TaskKind::Agent,
+        session: Some(sid()),
+        title: "general: inventory the repo".into(),
+        status,
+        started_ms: NOW - 95_000,
+        ended_ms: status.is_terminal().then_some(NOW),
+        output_file: None,
+        detail: Some(detail.into()),
+    };
+    feed(&mut s, 0, Event::TaskUpdated(sub(TaskStatus::Running, "step 3 · read src/lib.rs")));
+    // A crew run's own task is the run itself, already on the rail: no second row for it.
+    feed(&mut s, 0, Event::TaskUpdated(TaskInfo {
+        id: "agent_aa11bb22".into(),
+        kind: TaskKind::Agent,
+        session: Some(sid()),
+        title: "1 specialist · scout: x".into(),
+        status: TaskStatus::Running,
+        started_ms: NOW,
+        ended_ms: None,
+        output_file: None,
+        detail: None,
+    }));
+    assert_eq!(s.bg.subagents(s.session.as_ref()).len(), 1);
+    let buf = render(&s, W, H);
+    for want in ["1 running", "subagent · general: inventory", "step 3 · read src/lib.rs"] {
+        assert!(contains(&buf, want), "rail is missing {want:?}\n{}", dump(&buf));
+    }
+    assert!(!contains(&buf, "no runs"), "{}", dump(&buf));
+    assert_palette_only(&buf);
+    feed(&mut s, 0, Event::TaskUpdated(sub(TaskStatus::Done, "finished")));
+    let buf = render(&s, W, H);
+    assert!(!contains(&buf, "subagent"), "{}", dump(&buf));
+}
+
+#[test]
 fn ctrl_r_opens_the_most_urgent_run_and_streams_its_steps() {
     let mut s = with_runs(vec![research_run()]);
     let reqs = s.on_key(alt('r'));
