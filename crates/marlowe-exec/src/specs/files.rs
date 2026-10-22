@@ -28,6 +28,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use marlowe_agent::todo::ReadLedger;
 use marlowe_agent::{
     CallCtx, CallFlow, Consequence, Conversation, Effects, Exposure, Mutation, SandboxView, StepInfo, ToolCallReq,
     ToolCtx, ToolGroup, ToolMiddleware, ToolOutcome, TurnFlow,
@@ -53,8 +54,11 @@ const MAX_HASH_BYTES: u64 = 64 * 1024 * 1024;
 /// Largest image `read` attaches (the provider downscales it; track G).
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 
-/// Bytes of rendered notebook or PDF text one `read` returns.
-const DOCUMENT_TEXT_MAX: usize = 2 * READ_WINDOW_BYTES;
+/// Share of the model's window, in percent, that one `read` result may take.
+const READ_SHARE_PERCENT: usize = 12;
+
+/// The least one `read` result may be cut to, however small the window.
+const READ_WINDOW_BYTES_MIN: usize = 4 * 1024;
 
 /// Lines of context around an edit that `edit` shows back.
 const SNIPPET_CONTEXT: usize = 3;
@@ -516,7 +520,7 @@ fn read(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
     // Huge files on this machine are streamed a window at a time and tracked by size and mtime.
     if meta.len > MAX_HASH_BYTES && f.port().kind() == "local" {
         f.record_meta(&abs, &meta);
-        return read_huge(tools, args, &abs, &shown, meta.len);
+        return read_huge(tools, args, &abs, &shown, meta.len, &seen_by(&f, &shown));
     }
     let bytes = match f.port().read(&abs) {
         Ok(b) => b,
@@ -532,12 +536,21 @@ fn read(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutcome {
         return read_image(tools, &shown, &bytes, meta.len, mime, w, h);
     }
     if pdf::is_pdf(&bytes) {
-        return read_pdf(&shown, &bytes, str_arg(args, "pages"));
+        return read_pdf(tools, &shown, &bytes, str_arg(args, "pages"));
     }
     if let Some(e) = pages_not_pdf(args, &shown) {
         return e;
     }
-    read_text(tools, args, &shown, &bytes)
+    let seen = seen_by(&f, &shown);
+    read_text(tools, args, &shown, &bytes, &seen)
+}
+
+/// Records lines `a..=b` of the file in the session's read ledger ([`ReadLedger`]) and returns
+/// the range read before the last compaction that already covers them.
+type Seen<'a> = &'a dyn Fn(usize, usize) -> Option<(usize, usize)>;
+
+fn seen_by<'b>(f: &'b Files<'_>, shown: &'b str) -> impl Fn(usize, usize) -> Option<(usize, usize)> + 'b {
+    move |a, b| f.cx.scope.with_ext(|e| e.get_or_default::<ReadLedger>().record(shown, a, b))
 }
 
 fn pages_not_pdf(args: &Value, shown: &str) -> Option<ToolOutcome> {
@@ -599,7 +612,7 @@ impl<'a> Want<'a> {
     }
 }
 
-fn read_text(tools: &BuiltinTools, args: &Value, shown: &str, bytes: &[u8]) -> ToolOutcome {
+fn read_text(tools: &BuiltinTools, args: &Value, shown: &str, bytes: &[u8], seen: Seen<'_>) -> ToolOutcome {
     let size = bytes.len();
     let Some((text, lossy)) = decode_text(bytes) else {
         return ToolOutcome::ok(
@@ -623,12 +636,12 @@ fn read_text(tools: &BuiltinTools, args: &Value, shown: &str, bytes: &[u8]) -> T
     let note = (lossy && window.contains('\u{fffd}'))
         .then(|| "[the file is not valid UTF-8 throughout; invalid bytes show as \u{fffd}.]".to_string());
     let whole_file_tokens = estimate_tokens_of(text.len() + total * (LINE_NUMBER_WIDTH + 1));
-    numbered_window(tools, &want, window, total, whole_file_tokens, note)
+    numbered_window(tools, &want, window, total, whole_file_tokens, note, seen)
 }
 
 /// A file above [`MAX_HASH_BYTES`] on this machine: the asked-for window is streamed from disk
 /// (any offset, never the whole file in memory) and the total line count is counted on the way.
-fn read_huge(tools: &BuiltinTools, args: &Value, abs: &Path, shown: &str, size: u64) -> ToolOutcome {
+fn read_huge(tools: &BuiltinTools, args: &Value, abs: &Path, shown: &str, size: u64, seen: Seen<'_>) -> ToolOutcome {
     let head = match read_head(abs, 64 * 1024) {
         Ok(h) => h,
         Err(e) => return ToolOutcome::error(format!("cannot read {shown}: {e}")),
@@ -667,7 +680,7 @@ fn read_huge(tools: &BuiltinTools, args: &Value, abs: &Path, shown: &str, size: 
     let raw = if want.first == 1 { raw.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&raw).to_vec() } else { raw };
     let window = String::from_utf8_lossy(&raw).into_owned();
     let whole_file_tokens = estimate_tokens_of(size as usize + total * (LINE_NUMBER_WIDTH + 1));
-    numbered_window(tools, &want, window, total, whole_file_tokens, None)
+    numbered_window(tools, &want, window, total, whole_file_tokens, None, seen)
 }
 
 /// The first `n` bytes of a file.
@@ -727,6 +740,7 @@ fn numbered_window(
     total: usize,
     whole_file_tokens: u32,
     note: Option<String>,
+    seen: Seen<'_>,
 ) -> ToolOutcome {
     let first = want.first;
     let wanted = want.n.min(total - first + 1);
@@ -739,10 +753,12 @@ fn numbered_window(
     let anchors = tools.state::<EditFormats>().edit_lines;
     let mut out = if anchors { editlines::anchored(&window, first) } else { number_lines(&window, first) };
     let cap = window_bytes(tools.context_tokens);
+    let mut size_cut = false;
     if out.len() > cap {
         let (cut, lines) = cut_to_whole_lines(&out, cap);
         out = cut;
         kept = lines;
+        size_cut = true;
     }
     if clipped > 0 {
         out.push_str(&format!(
@@ -758,10 +774,10 @@ fn numbered_window(
     // continues whenever the file goes on.
     let more = if want.range.is_some() || want.limit.is_some() { kept < wanted } else { last < total };
     if more {
-        let cost = if whole_file_tokens > tools.context_tokens / 4 {
+        let cost = if size_cut || whole_file_tokens > tools.context_tokens / 4 {
             format!(
-                " The whole file is about {whole_file_tokens} tokens; to find something specific, \
-                 `grep` searches inside files and returns `path:line:text`."
+                " The whole file is about {whole_file_tokens} tokens and your window is {} tokens; to find something specific, `grep` searches inside files and returns `path:line:text`.",
+                tools.context_tokens
             )
         } else {
             String::new()
@@ -772,16 +788,31 @@ fn numbered_window(
             format!("offset {}", last + 1)
         };
         out.push_str(&format!("\n\n[showing lines {first}-{last} of {total}. Continue with {next}.{cost}]"));
+        // Many windows' worth: say so before the text, so the model does not walk the file.
+        let window = tools.context_tokens.max(1);
+        if whole_file_tokens / window >= 2 {
+            out = format!(
+                "[This file is about {whole_file_tokens} tokens, {}x your {window}-token window: do not read it whole. `grep` for what you need, or read sections with `offset` and `limit`.]\n\n{out}",
+                whole_file_tokens / window
+            );
+        }
+    }
+    if kept > 0 {
+        if let Some((a, b)) = seen(first, last) {
+            out.push_str(&format!(
+                "\n\n[you read lines {a}-{b} of this file before the context was compacted; read the next part or grep instead.]"
+            ));
+        }
     }
     let summary = format!("{kept} lines · {} B", out.len());
     ToolOutcome::ok(out, summary)
 }
 
-/// Bytes one text window may take: [`READ_WINDOW_BYTES`] on a small context, up to an eighth of a
-/// larger window (about 4 bytes a token), never more than [`READ_WINDOW_BYTES_MAX`] (Claude
-/// Code's 25k-token read cap).
-fn window_bytes(context_tokens: u32) -> usize {
-    (context_tokens as usize / 8 * 4).clamp(READ_WINDOW_BYTES, READ_WINDOW_BYTES_MAX)
+/// Bytes one read result may take: [`READ_SHARE_PERCENT`] of the model's window (3 bytes a
+/// token, as [`estimate_tokens_of`]), never more than [`READ_WINDOW_BYTES`] and never less than
+/// [`READ_WINDOW_BYTES_MIN`]. About 11.8 KB (3.9k tokens) on a 32k window.
+pub(crate) fn window_bytes(context_tokens: u32) -> usize {
+    (context_tokens as usize * READ_SHARE_PERCENT / 100 * 3).clamp(READ_WINDOW_BYTES_MIN, READ_WINDOW_BYTES)
 }
 
 /// Stores `bytes` in the blob store under their blake3 and returns the reference.
@@ -828,9 +859,9 @@ fn read_image(tools: &BuiltinTools, shown: &str, bytes: &[u8], size: u64, mime: 
     }
 }
 
-fn cap_document(mut text: String) -> String {
-    if text.len() > DOCUMENT_TEXT_MAX {
-        let cut = floor_boundary(&text, DOCUMENT_TEXT_MAX);
+fn cap_document(mut text: String, max: usize) -> String {
+    if text.len() > max {
+        let cut = floor_boundary(&text, max);
         let more = text.len() - cut;
         text.truncate(cut);
         text.push_str(&format!("\n\n[the text continues for {more} more bytes; ask for fewer `pages`.]"));
@@ -838,7 +869,7 @@ fn cap_document(mut text: String) -> String {
     text
 }
 
-fn read_pdf(shown: &str, bytes: &[u8], pages: Option<&str>) -> ToolOutcome {
+fn read_pdf(tools: &BuiltinTools, shown: &str, bytes: &[u8], pages: Option<&str>) -> ToolOutcome {
     let texts = match pdf::page_texts(bytes) {
         Ok(t) => t,
         Err(e) => return ToolOutcome::error(format!("{shown}: {e}")),
@@ -874,7 +905,7 @@ fn read_pdf(shown: &str, bytes: &[u8], pages: Option<&str>) -> ToolOutcome {
             "[no text layer on these pages: they are probably scanned images, which this build cannot read.]",
         );
     }
-    let out = cap_document(out.trim_end().to_string());
+    let out = cap_document(out.trim_end().to_string(), window_bytes(tools.context_tokens));
     let summary = format!("pdf · {} of {total} pages", selected.len());
     ToolOutcome::ok(out, summary)
 }

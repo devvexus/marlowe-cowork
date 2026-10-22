@@ -359,6 +359,7 @@ impl Agent {
                     let before = asm.tokens;
                     let pinned = crate::todo::pinned_ids(convo);
                     if context::mask_chunk(&mut convo.messages, cfg.keep_tool_results, &pinned) > 0 {
+                        crate::todo::note_compacted(convo);
                         asm = context::assemble_with(&system, &profile, &memory, convo, &cfg);
                         sink(AgentEvent::Compacted { before_tokens: before, after_tokens: asm.tokens });
                     }

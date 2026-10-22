@@ -137,5 +137,7 @@ fn a_large_file_notice_states_the_whole_file_cost_against_the_window() {
     assert!(o.content.contains("The whole file is about"), "{}", &o.content[o.content.len() - 300..]);
     let t = ws.tools().with_context_tokens(2_000_000);
     let o = call(&t, "read", json!({"path": "long.txt"}));
-    assert!(!o.content.contains("The whole file is about"));
+    // The 32 KB ceiling still cuts a 6,000-line file on a huge window, so the cost is stated
+    // against that window too.
+    assert!(o.content.contains("your window is 2000000 tokens"), "{}", &o.content[o.content.len() - 300..]);
 }

@@ -334,6 +334,97 @@ fn is_gate_call(call: &ToolCallReq) -> bool {
     }
 }
 
+/// Files and line ranges `read` returned, so the model still knows after compaction what it has
+/// read and a repeat read can say so. `now` is what was read since the last compaction; `before`
+/// is what was read earlier (the context that held it is gone).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReadLedger {
+    now: Vec<(String, Vec<(usize, usize)>)>,
+    before: Vec<(String, Vec<(usize, usize)>)>,
+}
+
+const LEDGER_FILES: usize = 64;
+const LEDGER_SHOWN_FILES: usize = 15;
+const LEDGER_SHOWN_RANGES: usize = 8;
+
+fn add_range(list: &mut Vec<(String, Vec<(usize, usize)>)>, file: &str, a: usize, b: usize) {
+    let at = match list.iter().position(|(f, _)| f == file) {
+        Some(i) => list.remove(i),
+        None => (file.to_string(), Vec::new()),
+    };
+    let (name, mut ranges) = at;
+    ranges.push((a, b));
+    ranges.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (x, y) in ranges {
+        match merged.last_mut() {
+            Some(last) if x <= last.1.saturating_add(1) => last.1 = last.1.max(y),
+            _ => merged.push((x, y)),
+        }
+    }
+    list.push((name, merged));
+    if list.len() > LEDGER_FILES {
+        list.remove(0);
+    }
+}
+
+impl ReadLedger {
+    /// Records lines `a..=b` of `file` as read. Returns the range read before the last compaction
+    /// that already covers all of them, if there is one.
+    pub fn record(&mut self, file: &str, a: usize, b: usize) -> Option<(usize, usize)> {
+        let seen = self
+            .before
+            .iter()
+            .find(|(f, _)| f == file)
+            .and_then(|(_, rs)| rs.iter().find(|(x, y)| *x <= a && b <= *y).copied());
+        add_range(&mut self.now, file, a, b);
+        seen
+    }
+
+    /// The context was compacted: what was read is no longer in it.
+    pub fn compacted(&mut self) {
+        for (f, rs) in std::mem::take(&mut self.now) {
+            for (a, b) in rs {
+                add_range(&mut self.before, &f, a, b);
+            }
+        }
+    }
+
+    /// One line per file, most recently read last, for the pinned working set.
+    fn render(&self) -> Option<String> {
+        let mut all = self.before.clone();
+        for (f, rs) in &self.now {
+            for &(a, b) in rs {
+                add_range(&mut all, f, a, b);
+            }
+        }
+        if all.is_empty() {
+            return None;
+        }
+        let skip = all.len().saturating_sub(LEDGER_SHOWN_FILES);
+        let lines: Vec<String> = all
+            .iter()
+            .skip(skip)
+            .map(|(f, rs)| {
+                let shown: Vec<String> = rs.iter().take(LEDGER_SHOWN_RANGES).map(|(a, b)| format!("{a}-{b}")).collect();
+                let more = if rs.len() > LEDGER_SHOWN_RANGES { ", ..." } else { "" };
+                format!("- {f}: lines {}{more}", shown.join(", "))
+            })
+            .collect();
+        Some(format!(
+            "Already read (do not read these again; read the next part, or grep):\n{}",
+            lines.join("\n")
+        ))
+    }
+}
+
+/// The context was compacted or masked: tell the read ledger, if the session has one.
+pub fn note_compacted(convo: &mut Conversation) {
+    if let Some(l) = convo.ext.get_mut::<ReadLedger>() {
+        l.compacted();
+    }
+}
+
 /// The user's own words from before earlier compactions, so they outlive any number of them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CarriedWords(pub Vec<String>);
@@ -349,6 +440,7 @@ pub fn pin_for_compaction(convo: &mut Conversation) -> String {
     let words = all_user_words(convo);
     let block = render_pinned(convo, &words);
     convo.ext.insert(CarriedWords(words));
+    note_compacted(convo);
     block
 }
 
@@ -388,6 +480,9 @@ fn render_pinned(convo: &Conversation, users: &[String]) -> String {
     if let Some(p) = convo.ext.get::<PlanState>().and_then(|p| p.plan.as_deref()) {
         parts.push(format!("Approved plan:
 {}", p.trim()));
+    }
+    if let Some(r) = convo.ext.get::<ReadLedger>().and_then(ReadLedger::render) {
+        parts.push(r);
     }
     if let Some(pin) = convo.ext.get::<Pinned>() {
         if !pin.edits.is_empty() {
@@ -651,5 +746,23 @@ mod tests {
         assert!(is_gate_command("powershell -NoProfile -File scripts/cargo-idle.ps1 check"));
         assert!(!is_gate_command("git status"));
         assert!(!is_gate_command("ls -la"));
+    }
+}
+
+#[cfg(test)]
+mod read_ledger_tests {
+    use super::*;
+
+    #[test]
+    fn ranges_merge_and_repeat_only_after_rotation() {
+        let mut l = ReadLedger::default();
+        assert_eq!(l.record("a.md", 1, 100), None);
+        assert_eq!(l.record("a.md", 1, 100), None, "same context: not a repeat");
+        l.record("a.md", 101, 200);
+        l.compacted();
+        assert_eq!(l.record("a.md", 50, 150), Some((1, 200)), "inside a merged earlier range");
+        assert_eq!(l.record("a.md", 150, 300), None, "reaches past what was read");
+        let r = l.render().unwrap();
+        assert!(r.contains("- a.md: lines 1-300"), "{r}");
     }
 }

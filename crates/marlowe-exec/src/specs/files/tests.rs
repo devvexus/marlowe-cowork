@@ -269,12 +269,12 @@ fn a_huge_file_is_streamed_by_window() {
     let (raw, total) = super::stream_lines(&s.p("h.txt"), 3, 2).unwrap();
     assert_eq!(total, 5, "an unterminated last line counts");
     assert!(raw.ends_with(b"\nd\n") && raw.len() < long.len(), "{}", raw.len());
-    let o = super::read_huge(&s.tools, &json!({"offset": 3, "limit": 2}), &s.p("h.txt"), "h.txt", 1 << 27);
+    let o = super::read_huge(&s.tools, &json!({"offset": 3, "limit": 2}), &s.p("h.txt"), "h.txt", 1 << 27, &|_, _| None);
     assert!(o.content.starts_with("     3\tyyy") && o.content.contains("     4\td"), "{}", &o.content[..60]);
     assert!(o.content.contains("line(s) longer than"), "a long line is still marked as cut");
-    let o = super::read_huge(&s.tools, &json!({}), &s.p("h.txt"), "h.txt", 1 << 27);
+    let o = super::read_huge(&s.tools, &json!({}), &s.p("h.txt"), "h.txt", 1 << 27, &|_, _| None);
     assert!(o.content.starts_with("     1\ta\n"), "the BOM is not shown: {:?}", &o.content[..12]);
-    let e = super::read_huge(&s.tools, &json!({"offset": 9}), &s.p("h.txt"), "h.txt", 1 << 27);
+    let e = super::read_huge(&s.tools, &json!({"offset": 9}), &s.p("h.txt"), "h.txt", 1 << 27, &|_, _| None);
     assert!(e.is_error && e.content.contains("has 5 lines"), "{}", e.content);
 }
 
@@ -1012,4 +1012,69 @@ fn the_files_group_declares_the_reviewed_m46_schemas() {
     let specs: Vec<marlowe_model::ToolSpec> = super::tools().into_iter().map(|d| d.spec).collect();
     let pinned: Vec<marlowe_model::ToolSpec> = serde_json::from_str(include_str!("specs_m46_files.json")).unwrap();
     assert_eq!(specs, pinned);
+}
+
+// ---------------------------------------------------------------- read sized to the window
+
+fn numbered_lines(n: usize) -> String {
+    (1..=n).map(|i| format!("line {i} of a long markdown file with some words in it\n")).collect()
+}
+
+/// One read result takes a share of the window: at 32k it is cut to about 12 percent, says how
+/// big the file is, the window, and exactly how to go on.
+#[test]
+fn a_read_on_a_32k_window_is_capped_with_a_continuation_note() {
+    let mut s = Session::with("cap32k", |t| t.with_context_tokens(32_768));
+    s.put("big.md", numbered_lines(1_500));
+    let o = s.read("big.md");
+    let cap = super::window_bytes(32_768);
+    assert!(cap < 12 * 1024, "{cap}");
+    let note_at = o.content.rfind("\n\n[showing lines").expect(&o.content[o.content.len() - 300..]);
+    assert!(note_at <= cap, "{note_at} > {cap}");
+    let tail = &o.content[note_at..];
+    assert!(tail.contains("of 1500. Continue with offset "), "{tail}");
+    assert!(tail.contains("The whole file is about") && tail.contains("your window is 32768 tokens"), "{tail}");
+    assert!(tail.contains("`grep`"), "{tail}");
+    // The offset it names continues exactly where this stopped.
+    let next: usize = tail.split("Continue with offset ").nth(1).unwrap().split('.').next().unwrap().parse().unwrap();
+    let o = s.ok("read", json!({"path": "big.md", "offset": next, "limit": 2}));
+    assert!(o.content.starts_with(&format!("{next:>6}\tline {next} ")), "{}", o.content);
+}
+
+/// A file many windows long is flagged first: do not read it whole.
+#[test]
+fn a_file_many_windows_long_says_read_in_sections_first() {
+    let mut s = Session::with("huge32k", |t| t.with_context_tokens(32_768));
+    s.put("huge.md", numbered_lines(8_000));
+    let o = s.read("huge.md");
+    assert!(o.content.starts_with("[This file is about "), "{}", &o.content[..200]);
+    assert!(o.content.contains("do not read it whole") && o.content.contains("your 32768-token window"), "{}", &o.content[..300]);
+    assert!(o.content.contains("Continue with offset"));
+}
+
+/// After a compaction the ledger lists what was read, and a repeat read says so (once; the
+/// first read of new lines does not).
+#[test]
+fn a_repeat_read_after_compaction_gets_a_note_and_the_pinned_set_lists_the_ranges() {
+    use marlowe_agent::todo::{pin_for_compaction, ReadLedger};
+    let mut s = Session::with("repeat", |t| t.with_context_tokens(32_768));
+    s.put("big.md", numbered_lines(1_500));
+    let first = s.read("big.md");
+    assert!(!first.content.contains("before the context was compacted"));
+    // Same window again, no compaction in between: no note.
+    assert!(!s.read("big.md").content.contains("before the context was compacted"));
+    // The loop compacts: extensions go to the conversation, which pins and rotates the ledger.
+    let mut convo = Conversation::new(SessionId::from("s"), Some(s.root.clone()));
+    convo.ext = std::mem::take(&mut *s.scope.ext.lock().unwrap());
+    let pinned = pin_for_compaction(&mut convo);
+    *s.scope.ext.lock().unwrap() = std::mem::take(&mut convo.ext);
+    assert!(pinned.contains("Already read") && pinned.contains("- big.md: lines 1-"), "{pinned}");
+    assert!(s.scope.with_ext(|e| e.get::<ReadLedger>().is_some()));
+    let again = s.read("big.md");
+    assert!(again.content.contains("you read lines 1-"), "{}", &again.content[again.content.len() - 250..]);
+    assert!(again.content.contains("before the context was compacted; read the next part or grep instead"));
+    assert!(!again.is_error);
+    // Another part of the file is new: no note.
+    let o = s.ok("read", json!({"path": "big.md", "offset": 1_400, "limit": 50}));
+    assert!(!o.content.contains("before the context was compacted"), "{}", o.content);
 }

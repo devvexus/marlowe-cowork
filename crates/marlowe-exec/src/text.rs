@@ -14,9 +14,6 @@ pub const READ_WINDOW_LINES: usize = 2_000;
 /// Byte ceiling on one `read` window, measured on the numbered text actually returned.
 pub const READ_WINDOW_BYTES: usize = 32 * 1024;
 
-/// The most one text window takes on a large context window.
-pub const READ_WINDOW_BYTES_MAX: usize = 100 * 1024;
-
 /// How much of a file `grep` holds in memory. `read` windows any offset of a larger file.
 pub const MAX_READ_BYTES: u64 = 4 * 1024 * 1024;
 
