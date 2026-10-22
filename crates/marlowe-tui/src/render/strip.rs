@@ -262,7 +262,28 @@ fn activity(state: &State, theme: &Theme, w: usize) -> Option<Line<'static>> {
     if state.live.is_some() {
         return Some(waited("working"));
     }
-    None
+    // Nothing of the turn's: the daemon's own background work, so no cost runs unseen.
+    let (run, others) = state.work.newest()?;
+    Some(lead(g, Ink::Hover, pick(work_variants(run, others, now, theme), w), theme))
+}
+
+/// A background job: `embedding 4,300 memories 1,200/4,300 · 3.4s  +1`, shortened until it fits.
+fn work_variants(w: &live::WorkRun, others: usize, now: i64, theme: &Theme) -> Vec<Vec<Span<'static>>> {
+    let more = if others > 0 { label(format!("  +{others}"), theme) } else { label("", theme) };
+    let head = label(text::truncate(&w.detail, 48), theme);
+    let clock = [sep(theme), num(clock(now - w.since), theme)];
+    let mut out = Vec::new();
+    if w.total > 0 {
+        let mut v = vec![head.clone(), num(format!(" {}/{}", text::thousands(w.done), text::thousands(w.total)), theme)];
+        v.extend(clock.clone());
+        v.push(more.clone());
+        out.push(v);
+    }
+    let mut bare = vec![head];
+    bare.extend(clock);
+    bare.push(more);
+    out.push(bare);
+    out
 }
 
 /// A model load: `loading dusk ━━━━╺━━━━ 4.1 / ~9.0 GB · 3.4s`, shortened until it fits.

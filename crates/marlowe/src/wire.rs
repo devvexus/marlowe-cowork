@@ -250,10 +250,15 @@ pub fn start_sentinel(home: &Path) -> Option<SentinelLink> {
     }
 }
 
-/// Spoken voice. Without a speech backend the voice reports itself unavailable; only a panic
+/// Spoken voice, off until asked for: without `MARLOWE_VOICE=1` nothing voice-related starts (no
+/// speech engine, no sidecar, no greeting, no spoken alerts) and the daemon runs without a voice.
+/// Asked for, but without a speech backend, the voice reports itself unavailable; only a panic
 /// leaves the daemon silent. A voice sidecar (the Chatterbox clone) never sees an API key, and
 /// starts on the GPU only when its footprint fits in the memory free there, less headroom.
 pub fn start_voice(home: &Path) -> Option<VoiceLink> {
+    if !marlowe_voice::requested(&|k| std::env::var(k).ok()) {
+        return None;
+    }
     let (tx, events) = crossbeam_channel::bounded(VOICE_QUEUE);
     let gpu = marlowe_sentinel::vram::SentinelGpu::open();
     let vram = marlowe_voice::VramCheck(Arc::new(move |need_mib| {
@@ -274,7 +279,7 @@ pub fn start_voice(home: &Path) -> Option<VoiceLink> {
 /// The memory service for `home`. A profile that will not open leaves the daemon without memory,
 /// said on stderr (the daemon log) rather than silently.
 pub fn open_mind(home: &Path, sentinel: Option<marlowe_sentinel::Sentinel>) -> Option<marlowe_mind::Mind> {
-    let cfg = marlowe_mind::MindConfig { gpu: Some(gpu_probe(sentinel)), ..Default::default() };
+    let cfg = marlowe_mind::MindConfig { gpu: Some(gpu_probe(sentinel)), await_sink: true, ..Default::default() };
     match marlowe_mind::Mind::open_with(home, cfg) {
         Ok(mind) => {
             if let Ok(Some(reason)) = mind.stats().map(|s| s.degraded) {
@@ -335,6 +340,16 @@ pub fn gpu_verdict(state: &marlowe_proto::WatchState, compute: &ComputeLists) ->
 #[cfg(test)]
 mod tests {
     use super::{crew_configure, crew_host};
+
+    /// Voice does not exist until M6: nothing starts (no engine, no sidecar, no greeting) unless
+    /// MARLOWE_VOICE asks for it.
+    #[test]
+    fn voice_does_not_start_unless_asked_for() {
+        if std::env::var_os(marlowe_voice::ENV_ENABLE).is_some() {
+            return;
+        }
+        assert!(super::start_voice(&std::env::temp_dir()).is_none());
+    }
     use marlowe_agent::ToolHost;
     use marlowe_crew::{Sandbox, SandboxKind};
 

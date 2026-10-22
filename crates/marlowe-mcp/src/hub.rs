@@ -44,6 +44,9 @@ pub struct HubOpts {
     pub max_output_tokens: usize,
     /// Where over-long output is saved in full.
     pub spill_dir: Option<PathBuf>,
+    /// Told when a server's process starts connecting (`false`) and when that ends, ready or not
+    /// (`true`), so a client can show the helper process live.
+    pub on_connect: Option<Arc<dyn Fn(&str, bool) + Send + Sync>>,
 }
 
 impl HubOpts {
@@ -56,6 +59,7 @@ impl HubOpts {
             connect,
             max_output_tokens: output::DEFAULT_MAX_TOKENS,
             spill_dir: None,
+            on_connect: None,
         }
     }
 }
@@ -239,6 +243,17 @@ impl Hub {
     }
 
     fn connect(&self, slot: &Arc<Slot>) {
+        let announce = self.opts.on_connect.clone().filter(|_| !slot.cfg.disabled);
+        if let Some(f) = &announce {
+            f(&slot.cfg.name, false);
+        }
+        self.connect_inner(slot);
+        if let Some(f) = &announce {
+            f(&slot.cfg.name, true);
+        }
+    }
+
+    fn connect_inner(&self, slot: &Arc<Slot>) {
         *lock(&slot.last_attempt) = Some(Instant::now());
         let set = |s: State| *lock(&slot.state) = s;
         let cfg = &slot.cfg;

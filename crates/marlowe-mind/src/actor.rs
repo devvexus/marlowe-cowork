@@ -37,6 +37,8 @@ type Reply<T> = Sender<T>;
 
 /// Wait before retrying background embedding after a failure.
 const EMBED_RETRY: Duration = Duration::from_secs(30);
+/// How long [`MindConfig::await_sink`] holds the first embed run for a listener.
+pub const SINK_GRACE: Duration = Duration::from_secs(5);
 
 pub(crate) enum Cmd {
     Ingest(TurnIn, Reply<Result<(), MindError>>),
@@ -124,6 +126,7 @@ pub(crate) struct Actor {
     pub last_snapshot: Instant,
     /// The embed run in progress (for the write tail's events).
     pub embed_run: Option<EmbedRun>,
+    opened: Instant,
 }
 
 /// One pass of the embed queue from first chunk to empty.
@@ -236,6 +239,7 @@ impl Actor {
             snapshot_seq,
             last_snapshot: Instant::now(),
             embed_run: None,
+            opened: Instant::now(),
         })
     }
 
@@ -291,7 +295,7 @@ impl Actor {
     /// or embed retry deadline.
     fn next_wake(&self) -> Duration {
         if !self.queue.is_empty() && self.embed_retry_at.is_none() {
-            return Duration::ZERO;
+            return self.embed_held().map_or(Duration::ZERO, |left| left.max(Duration::from_millis(50)));
         }
         let mut at = self.last_snapshot + self.cfg.snapshot_every;
         if let (false, Some(r)) = (self.queue.is_empty(), self.embed_retry_at) {
@@ -303,6 +307,14 @@ impl Actor {
         at.saturating_duration_since(Instant::now()).clamp(Duration::from_millis(50), Duration::from_secs(60))
     }
 
+    /// How much longer the first embed run waits for a listener, when it is waiting at all.
+    fn embed_held(&self) -> Option<Duration> {
+        if !self.cfg.await_sink || self.cfg.on_event.is_some() || self.embed_run.is_some() {
+            return None;
+        }
+        SINK_GRACE.checked_sub(self.opened.elapsed())
+    }
+
     /// Background work between commands: one embed chunk, else unloads and periodic snapshots.
     fn idle_work(&mut self) {
         let now = Instant::now();
@@ -310,6 +322,9 @@ impl Actor {
             self.embed_retry_at = None;
         }
         if !self.queue.is_empty() && self.embed_retry_at.is_none() {
+            if self.embed_held().is_some() {
+                return;
+            }
             // A failed step re-queues what it took; retry later rather than spin.
             if let Err(e) = self.embed_step() {
                 eprintln!("marlowe-mind: embedding paused for {}s: {e}", EMBED_RETRY.as_secs());

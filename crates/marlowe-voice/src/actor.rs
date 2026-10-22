@@ -34,6 +34,8 @@ pub(crate) struct Shared {
     pub(crate) degraded: Mutex<Option<String>>,
     /// Why `voice.json` must not be overwritten (fields in it could not be read).
     pub(crate) unsaved: Mutex<Option<String>>,
+    /// The engine's load marker ([`Backend::loading_flag`]).
+    pub(crate) load: Option<Arc<AtomicU64>>,
 }
 
 impl Shared {
@@ -46,6 +48,7 @@ impl Shared {
             epoch: AtomicU64::new(0),
             degraded: Mutex::new(None),
             unsaved: Mutex::new(None),
+            load: None,
         }
     }
 

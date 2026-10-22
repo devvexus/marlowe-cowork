@@ -814,3 +814,66 @@ fn the_strip_keeps_the_screen_on_the_display_rate_while_it_is_up() {
     r.enter(2_000, "go");
     assert_eq!(r.s.cadence(), marlowe_tui::pacing::Cadence::Live);
 }
+
+// ---- the daemon's own background work ------------------------------------------------------------
+
+fn work(stage: &str, p: PhaseEvent) -> Event {
+    Event::Phase(p.stage(stage))
+}
+
+#[test]
+fn background_work_shows_on_the_strip_while_it_runs_and_goes_when_it_ends() {
+    let mut r = Rig::new();
+    let idle = r.strip_now(1_100).0;
+    assert!(!idle.starts_with(|c| SPINNERS.contains(c)) && !idle.contains("embedding"), "nothing runs: {idle:?}");
+
+    r.at(2_000, work("embed", PhaseEvent::start(PhaseKind::Work).detail("embedding 4300 memories")));
+    let (row, _) = r.strip(2_000);
+    assert!(row.starts_with(|c| SPINNERS.contains(c)) && row.contains("embedding 4300 memories"), "{row:?}");
+    assert!(row.contains("0ms"), "its clock starts at its start: {row:?}");
+
+    r.at(5_400, work("embed", PhaseEvent::progress(PhaseKind::Work, 1_200, 4_300).unit("memories")));
+    let (row, _) = r.strip(5_400);
+    assert!(row.contains("1,200/4,300") && row.contains("3.4s"), "{row:?}");
+    assert_eq!(times(&r.frame(5_400), "embedding"), 1, "one line, one clock");
+
+    r.at(9_000, work("embed", PhaseEvent::end(PhaseKind::Work, 7_000)));
+    let after = r.frame(9_000);
+    assert!(!after.contains("embedding 4300"), "{after}");
+    assert!(!r.s.strip_up(), "the strip's row is given back");
+}
+
+#[test]
+fn a_turn_in_flight_owns_the_strip_and_work_waits_its_turn_not_beside_it() {
+    let mut r = Rig::new();
+    r.at(1_100, work("voice", PhaseEvent::start(PhaseKind::Work).detail("loading the voice model")));
+    r.enter(2_000, "go");
+    r.started(2_010, 2, "go");
+    r.phase(2_020, 2, ph(PhaseKind::Wire));
+    let text = r.frame(2_050);
+    assert_eq!(times(&text, "loading the voice model"), 0, "the turn's activity is the one line:\n{text}");
+    r.phase(2_060, 2, PhaseEvent::end(PhaseKind::Wire, 5));
+    r.at(2_100, Event::TurnFinished { session: sid(), turn: 2, usage: usage(), stop: TurnStop::Done });
+    let (row, _) = r.strip(9_000);
+    assert!(row.contains("loading the voice model"), "back to the work once the turn is over: {row:?}");
+}
+
+#[test]
+fn several_background_jobs_are_one_line_with_a_count() {
+    let mut r = Rig::new();
+    r.at(2_000, work("mcp:git", PhaseEvent::start(PhaseKind::Work).detail("starting MCP server git")));
+    r.at(2_100, work("mcp:web", PhaseEvent::start(PhaseKind::Work).detail("starting MCP server web")));
+    let (row, _) = r.strip(2_500);
+    assert!(row.contains("starting MCP server web") && row.contains("+1"), "{row:?}");
+    r.at(3_000, work("mcp:web", PhaseEvent::end(PhaseKind::Work, 900)));
+    let (row, _) = r.strip(3_100);
+    assert!(row.contains("starting MCP server git") && !row.contains("+1"), "{row:?}");
+}
+
+#[test]
+fn progress_that_arrives_before_its_start_still_shows_the_job() {
+    let mut r = Rig::new();
+    r.at(2_000, work("embed", PhaseEvent::progress(PhaseKind::Work, 10, 40).unit("memories")));
+    let (row, _) = r.strip(2_100);
+    assert!(row.contains("embed") && row.contains("10/40"), "joined mid-way: {row:?}");
+}

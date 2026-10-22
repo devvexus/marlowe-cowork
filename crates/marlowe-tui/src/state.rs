@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use marlowe_model::{Part, Role, Usage};
 use marlowe_proto::{
-    ApprovalDecision, ApprovalId, Envelope, Event, PhaseSpan, Request, RunId, SessionId, SessionSummary, StageMs,
+    ApprovalDecision, ApprovalId, Envelope, Event, PhaseKind, PhaseSpan, Request, RunId, SessionId, SessionSummary, StageMs,
     StoredTurn, TurnNumbers, TurnStop,
 };
 
@@ -685,6 +685,8 @@ pub struct State {
     pub live: Option<LiveTurn>,
     /// What the turn is doing now, line by line ([`crate::live`]).
     pub strip: crate::live::Strip,
+    /// Background work the daemon is doing outside any turn ([`crate::live::Works`]).
+    pub work: crate::live::Works,
     /// Text sent and not yet a turn, shown until its TurnStarted arrives.
     pub pending_user: Option<String>,
     awaiting_new: bool,
@@ -800,6 +802,7 @@ impl State {
             entries: Vec::new(),
             live: None,
             strip: crate::live::Strip::default(),
+            work: crate::live::Works::default(),
             pending_user: None,
             awaiting_new: false,
             pending_open: None,
@@ -942,7 +945,7 @@ impl State {
     /// Whether the live strip's rows are reserved: from Enter until the turn is over, and while
     /// the memory write or a load or compaction result it left is still showing.
     pub fn strip_up(&self) -> bool {
-        self.live.is_some() || self.pending_user.is_some() || self.strip.turn_up() || self.strip.trailing(self.now_ms)
+        self.live.is_some() || self.pending_user.is_some() || self.strip.turn_up() || self.strip.trailing(self.now_ms) || self.work.any()
     }
 
     pub fn current_approval(&self) -> Option<&Approval> {
@@ -1099,6 +1102,7 @@ impl State {
                 if restarted {
                     self.last_seq = *seq;
                     self.strip.reset();
+                    self.work.reset();
                     if self.live.take().is_some() {
                         self.note("the daemon restarted; the turn was lost", NoteTone::Amber);
                     }
@@ -1399,6 +1403,7 @@ impl State {
                 }
                 self.strip_notes();
             }
+            Event::Phase(p) if p.kind == PhaseKind::Work && p.session.is_none() => self.work.phase(p, at_ms),
             Event::Phase(p) if crate::seq::BlockKind::of(p).is_some() => self.seq_phase(p),
             Event::TurnTimings { session, spans, numbers, .. } if self.mine(session) => {
                 let screen_ms = self.strip.screen_us().map(|us| us.div_ceil(1000));

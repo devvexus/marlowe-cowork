@@ -17,6 +17,68 @@ use marlowe_proto::{PhaseEvent, PhaseKind, PhaseState};
 
 use crate::text;
 
+/// Work the daemon does on its own, outside any turn (a memory embed, a voice model loading, an MCP
+/// server starting, a brief polish), as the daemon reports it. The strip shows the newest when no
+/// turn is using it; a cost never runs unseen.
+#[derive(Debug, Clone, Default)]
+pub struct Works {
+    runs: Vec<WorkRun>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkRun {
+    pub stage: String,
+    /// What it is doing, in words (`embedding 4,300 memories`).
+    pub detail: String,
+    pub since: i64,
+    pub done: u64,
+    pub total: u64,
+}
+
+impl Works {
+    pub fn any(&self) -> bool {
+        !self.runs.is_empty()
+    }
+
+    /// The newest still running, and how many others there are.
+    pub fn newest(&self) -> Option<(&WorkRun, usize)> {
+        self.runs.last().map(|w| (w, self.runs.len() - 1))
+    }
+
+    pub fn reset(&mut self) {
+        self.runs.clear();
+    }
+
+    /// Folds one daemon `Work` phase in. A progress that arrives without its start (this client
+    /// joined mid-way) starts the line from there.
+    pub fn phase(&mut self, p: &PhaseEvent, at_ms: i64) {
+        let stage = p.stage.clone().unwrap_or_else(|| "work".into());
+        let at = self.runs.iter().position(|w| w.stage == stage);
+        match p.state {
+            PhaseState::End => {
+                if let Some(i) = at {
+                    self.runs.remove(i);
+                }
+            }
+            PhaseState::Start | PhaseState::Progress => {
+                let i = at.unwrap_or_else(|| {
+                    let detail = p.detail.clone().unwrap_or_else(|| stage.clone());
+                    self.runs.push(WorkRun { stage, detail, since: at_ms, done: 0, total: 0 });
+                    self.runs.len() - 1
+                });
+                let w = &mut self.runs[i];
+                if let Some(d) = p.detail.clone().filter(|d| !d.is_empty()) {
+                    w.detail = d;
+                }
+                if p.state == PhaseState::Progress {
+                    w.done = p.done.unwrap_or(w.done);
+                    w.total = p.total.unwrap_or(w.total);
+                }
+            }
+        }
+    }
+}
+
 /// Rows the strip takes while it is up. A constant: the height never depends on what it shows.
 pub const ROWS: u16 = 1;
 /// The window the token rate is taken over.

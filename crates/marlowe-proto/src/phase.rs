@@ -43,6 +43,9 @@ pub enum PhaseKind {
     Channel,
     /// A crew run spinning up; `stage` is sandbox / model / tools / budget.
     Spinup,
+    /// Work the daemon does on its own, outside any turn (a memory embed, a voice model, an MCP
+    /// server starting, a brief polish): `stage` names it, `detail` says what. Never filed under a session.
+    Work,
     #[default]
     #[serde(other)]
     Unknown,

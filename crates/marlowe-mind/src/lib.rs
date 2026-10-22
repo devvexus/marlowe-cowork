@@ -49,6 +49,7 @@ pub use paths::{
     remember_models_dir, resolve_models_dir, EMBEDDER_DIR, MODELS_ENV, MODELS_POINTER, RERANKER_DIR,
 };
 pub use profile::{Profile, ProfileQuery, DEFAULT_PROFILE_TOKENS};
+pub use actor::SINK_GRACE;
 pub use live::{LiveEvent, LiveKind, LiveSink, MindEvent, MindSink, PROGRESS_EVERY};
 pub use marlowe_memory::ep::{judge_gpu, GpuLoad, GpuVerdict};
 pub use types::{

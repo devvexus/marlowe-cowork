@@ -36,7 +36,7 @@ use actor::{Cmd, Shared};
 pub use marlowe_proto::{VoiceStatus, ENVELOPE_HZ};
 pub use chatterbox::{ChatterboxBackend, CLONE_ID};
 pub use select::pick_voice;
-pub use settings::{ChatterboxSettings, Engine, Loaded, VoiceSettings};
+pub use settings::{requested, ChatterboxSettings, Engine, Loaded, VoiceSettings, ENV_ENABLE};
 pub use sidecar::{owns_process, VramCheck};
 pub use wav::{envelope, parse_wav, Wav};
 #[cfg(windows)]
@@ -142,6 +142,11 @@ pub trait Backend: Send {
     }
     /// Gets ready to speak soon without blocking (a sidecar starts loading). Default: nothing.
     fn prewarm(&mut self) {}
+    /// Epoch ms at which the engine began loading a model, while it still is (else 0): shared, so a
+    /// client can show the load live. Default: an engine that loads nothing.
+    fn loading_flag(&self) -> Option<Arc<AtomicU64>> {
+        None
+    }
     /// A degradation to report once (the engine fell back), taken by the actor.
     fn take_notice(&mut self) -> Option<String> {
         None
@@ -306,7 +311,9 @@ impl Voice {
         // A backend with no installed voices cannot speak.
         let backend = backend.filter(|_| !voices.is_empty());
         let loaded = VoiceSettings::read(home);
-        let shared = Arc::new(Shared::new(backend.is_some(), voices, loaded.settings));
+        let mut sh = Shared::new(backend.is_some(), voices, loaded.settings);
+        sh.load = backend.as_ref().and_then(|b| b.loading_flag());
+        let shared = Arc::new(sh);
         if !loaded.problems.is_empty() {
             *lock(&shared.unsaved) = Some(loaded.problems.join("; "));
         }
@@ -440,6 +447,13 @@ impl Voice {
         let epoch = sh.epoch.load(Ordering::SeqCst);
         tx.send(Cmd::Speak { id, text: text.to_string(), voice_id, epoch, background }).map_err(|_| VoiceError::Stopped)?;
         Ok(id)
+    }
+
+    /// Epoch ms at which the engine's model began loading, while it is still loading: a cost the
+    /// daemon shows live. `None` when nothing is loading.
+    pub fn loading_since_ms(&self) -> Option<i64> {
+        let at = self.inner.shared.load.as_ref()?.load(Ordering::SeqCst);
+        (at > 0).then_some(at as i64)
     }
 
     /// Lets the engine get ready to speak (a voice sidecar starts loading its model) when the

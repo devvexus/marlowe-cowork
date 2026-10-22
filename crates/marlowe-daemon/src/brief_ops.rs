@@ -17,6 +17,7 @@ use marlowe_proto::{
 
 use crate::brief::{self, Brief, BriefInputs, BriefRoot, MemoryNews, POLISH_TIMEOUT};
 use crate::daemon::Core;
+use crate::work::Work;
 use crate::{lock, now_ms};
 
 /// Client names that mean the user is at the keyboard. Headless commands and probes are not.
@@ -184,7 +185,7 @@ pub(crate) fn reply(core: &Arc<Core>, client: u64) {
 }
 
 /// Gathers inputs, composes, and polishes when there is something to say.
-fn build(core: &Core, last_seen: Option<i64>, away: Option<Duration>, first_today: bool) -> (BriefInputs, Brief, Option<Vec<String>>) {
+fn build(core: &Arc<Core>, last_seen: Option<i64>, away: Option<Duration>, first_today: bool) -> (BriefInputs, Brief, Option<Vec<String>>) {
     let now = Local::now();
     let now_ms = now.timestamp_millis();
     let since = last_seen.unwrap_or(now_ms - NO_HISTORY_WINDOW_MS);
@@ -286,7 +287,7 @@ fn memory_news(core: &Core) -> (MemoryNews, Option<Vec<String>>) {
 /// whichever is hosted or already loaded: background work never loads a model. Skipped on a local
 /// model unless allowed and nothing else is using it (see [`brief::polish_allowed`]). The model
 /// used, or why none was, goes to the daemon log.
-fn polish(core: &Core, inputs: &BriefInputs, b: &Brief, gpu: &GpuReport) -> Option<String> {
+fn polish(core: &Arc<Core>, inputs: &BriefInputs, b: &Brief, gpu: &GpuReport) -> Option<String> {
     let chosen = guard(|| core.brains.background_model(&Slot::Quick).and_then(|(m, e)| core.brains.model_parts(&m, e)))?;
     let (provider, info, _effort) = match chosen {
         Ok(p) => p,
@@ -299,6 +300,8 @@ fn polish(core: &Core, inputs: &BriefInputs, b: &Brief, gpu: &GpuReport) -> Opti
         return None;
     }
     eprintln!("marlowe: brief polished on {}", info.model_ref());
+    // A model call nobody asked for: shown live for as long as it runs.
+    let _work = Work::start(core, "brief", format!("polishing the brief on {}", info.model_ref()));
     let system = SystemPrompt::new().block(PersonaBlock::Briefing).user(core.user()).render();
     let req = brief::polish_request(&info.id, system, inputs, b);
     let attention: Vec<String> = b.items.iter().filter(|i| i.kind == BriefItemKind::Attention).map(|i| i.text.clone()).collect();

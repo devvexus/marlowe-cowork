@@ -221,6 +221,10 @@ impl Backend for ChatterboxBackend {
         }
     }
 
+    fn loading_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicU64>> {
+        Some(self.sidecar.loading_flag())
+    }
+
     fn take_notice(&mut self) -> Option<String> {
         self.notice.take()
     }

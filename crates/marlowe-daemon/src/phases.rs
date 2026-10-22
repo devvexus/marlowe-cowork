@@ -6,6 +6,7 @@
 //! `Progress` is ephemeral. Spans are only what was measured, never an estimate.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -21,6 +22,7 @@ use crate::daemon::Core;
 use crate::live::{self, Emit, LoadPlan, Probes, Watch};
 use crate::mind::RecallSink;
 use crate::lock;
+use crate::work::Work;
 
 #[derive(Default)]
 struct Inner {
@@ -368,12 +370,40 @@ impl TailTarget {
     }
 }
 
-/// Hooks the Mind's write tail (ingest, embed, index) up to the bus as `MemoryWrite` phases.
+/// Hooks the Mind's write tail (ingest, embed, index) up to the bus. A run that follows a turn's
+/// ingest is that turn's `MemoryWrite` phases. An embed run with no ingest behind it (the backfill
+/// of beliefs that have no vector yet, at start-up or after a failed step) belongs to no turn: it
+/// is background [`Work`], so it shows live like the rest.
 pub(crate) fn attach_mind(core: &Arc<Core>) {
     let Some(mind) = &core.mind else { return };
     let weak: Weak<Core> = Arc::downgrade(core);
+    // A turn's ingest has not yet been followed by its embed run.
+    let fresh = AtomicBool::new(false);
+    // The backfill's `Indexed` is still to come and is not a turn's.
+    let swallow_index = AtomicBool::new(false);
+    let backfill: Mutex<Option<Work>> = Mutex::new(None);
     mind.set_event_sink(MindSink::new(move |e| {
         let Some(core) = weak.upgrade() else { return };
+        match e {
+            MindEvent::Ingested => fresh.store(true, Ordering::SeqCst),
+            MindEvent::EmbedStart { queued } if !fresh.swap(false, Ordering::SeqCst) => {
+                *lock(&backfill) = Some(Work::start(&core, "embed", format!("embedding {queued} memories")));
+                return;
+            }
+            MindEvent::EmbedProgress { done, total } if lock(&backfill).is_some() => {
+                if let Some(w) = lock(&backfill).as_ref() {
+                    w.progress(u64::from(done), u64::from(total), "memories");
+                }
+                return;
+            }
+            MindEvent::EmbedDone { .. } if lock(&backfill).is_some() => {
+                drop(lock(&backfill).take());
+                swallow_index.store(true, Ordering::SeqCst);
+                return;
+            }
+            MindEvent::Indexed if swallow_index.swap(false, Ordering::SeqCst) => return,
+            _ => {}
+        }
         let Some((session, turn)) = core.ext.get_or_init(TailTarget::default).get() else { return };
         let on = |p: PhaseEvent| Event::Phase(p.on(&session, turn));
         let kind = PhaseKind::MemoryWrite;

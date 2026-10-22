@@ -133,6 +133,16 @@ impl Default for VoiceSettings {
     }
 }
 
+/// The one switch for voice: the daemon starts no voice (no WinRT greeting, no sidecar, nothing
+/// loaded) unless this is set to `1`, `on`, `true` or `yes`. Voice arrives with M6; until then it is
+/// opt-in, and `voice.json`'s `enabled` only says whether a started voice speaks.
+pub const ENV_ENABLE: &str = "MARLOWE_VOICE";
+
+/// Whether [`ENV_ENABLE`] asks for voice, from `env`.
+pub fn requested(env: &dyn Fn(&str) -> Option<String>) -> bool {
+    env(ENV_ENABLE).is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "on" | "true" | "yes"))
+}
+
 /// Environment overrides for quick testing; never written back to `voice.json`.
 pub const ENV_ENGINE: &str = "MARLOWE_VOICE_ENGINE";
 pub const ENV_PYTHON: &str = "MARLOWE_VOICE_PYTHON";
@@ -249,6 +259,18 @@ mod tests {
 
     fn no_env(_: &str) -> Option<String> {
         None
+    }
+
+    #[test]
+    fn voice_is_off_unless_marlowe_voice_asks_for_it() {
+        let with = |v: Option<&str>| requested(&|k| (k == ENV_ENABLE).then(|| v.map(str::to_string)).flatten());
+        assert!(!with(None), "unset: no voice, whatever voice.json says");
+        for off in ["", "0", "off", "false", "no", "winrt"] {
+            assert!(!with(Some(off)), "{off:?}");
+        }
+        for on in ["1", "on", "TRUE", " yes "] {
+            assert!(with(Some(on)), "{on:?}");
+        }
     }
 
     #[test]

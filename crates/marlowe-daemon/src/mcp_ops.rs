@@ -36,6 +36,7 @@ use marlowe_proto::{Event, McpServerInfo, Request, SettingsScope, Slot};
 pub(crate) use host::McpTools;
 
 use crate::daemon::Core;
+use crate::work::Work;
 
 /// How long a session's first turn waits for its servers to connect.
 const CONNECT_GRACE: Duration = Duration::from_secs(3);
@@ -139,6 +140,17 @@ fn hub_for(core: &Arc<Core>, ws: Option<&Path>) -> Arc<Hub> {
     opts.session = reg.session_servers(&key);
     opts.strict = std::env::var(marlowe_mcp::STRICT_ENV).is_ok_and(|v| v.trim() == "1");
     opts.spill_dir = Some(spill_dir(core));
+    // A server is a helper process the user did not start: it shows while it connects.
+    let (weak, running) = (Arc::downgrade(core), Mutex::new(HashMap::<String, Work>::new()));
+    opts.on_connect = Some(Arc::new(move |name: &str, ended: bool| {
+        let mut running = lock(&running);
+        match (ended, weak.upgrade()) {
+            (false, Some(core)) => {
+                running.insert(name.to_string(), Work::start(&core, format!("mcp:{name}"), format!("starting MCP server {name}")));
+            }
+            _ => drop(running.remove(name)),
+        }
+    }));
     if let Some(n) = std::env::var("MAX_MCP_OUTPUT_TOKENS").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0) {
         opts.max_output_tokens = n;
     }

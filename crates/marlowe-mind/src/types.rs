@@ -252,6 +252,9 @@ pub struct MindConfig {
     pub gpu: Option<GpuProbe>,
     /// Hears the write tail (ingest, embed, index) as it happens; the daemon turns it into phases.
     pub on_event: Option<crate::live::MindSink>,
+    /// Hold the first embed run (the backfill of beliefs with no vector) until `on_event` is set,
+    /// at most [`crate::SINK_GRACE`], so the daemon sees its model load and progress from the start.
+    pub await_sink: bool,
 }
 
 impl Default for MindConfig {
@@ -263,6 +266,7 @@ impl Default for MindConfig {
             snapshot_every: Duration::from_secs(15 * 60),
             gpu: None,
             on_event: None,
+            await_sink: false,
         }
     }
 }

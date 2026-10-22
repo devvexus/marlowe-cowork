@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -351,6 +352,9 @@ pub(crate) struct Sidecar {
     proc: Option<Running>,
     active: Option<Active>,
     next_id: u64,
+    /// Epoch ms the process was spawned while its model is still loading, else 0: what a client
+    /// shows as a live cost. Cleared by the reader of its output the moment it says ready or fatal.
+    loading: Arc<AtomicU64>,
 }
 
 fn materialize_script(dir: &Path) -> std::io::Result<PathBuf> {
@@ -415,7 +419,12 @@ fn join_clauses(clauses: &[String]) -> String {
 
 impl Sidecar {
     pub fn new(cfg: SidecarConfig) -> Sidecar {
-        Sidecar { cfg, proc: None, active: None, next_id: 1 }
+        Sidecar { cfg, proc: None, active: None, next_id: 1, loading: Arc::new(AtomicU64::new(0)) }
+    }
+
+    /// The load marker (see the field).
+    pub fn loading_flag(&self) -> Arc<AtomicU64> {
+        self.loading.clone()
     }
 
     /// How long a line waits for a model that is still loading.
@@ -442,7 +451,11 @@ impl Sidecar {
             }
         }
         self.cfg.vram_gate()?;
-        self.proc = Some(self.spawn()?);
+        let spawned = self.spawn();
+        if spawned.is_err() {
+            self.loading.store(0, Ordering::SeqCst);
+        }
+        self.proc = Some(spawned?);
         Ok(())
     }
 
@@ -459,6 +472,7 @@ impl Sidecar {
     pub fn reset(&mut self) {
         self.active = None;
         self.proc = None;
+        self.loading.store(0, Ordering::SeqCst);
     }
 
     fn spawn(&self) -> Result<Running, SidecarError> {
@@ -509,15 +523,22 @@ impl Sidecar {
             .spawn(move || drain_stderr(stderr, t, pid))
             .map_err(|e| SidecarError::Start(format!("stderr reader: {e}")))?;
         let (tx, lines) = crossbeam_channel::bounded::<String>(64);
+        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_millis() as u64).max(1);
+        self.loading.store(since, Ordering::SeqCst);
+        let loading = self.loading.clone();
         std::thread::Builder::new()
             .name("marlowe-voice-sidecar-out".into())
             .spawn(move || {
                 for line in BufReader::new(stdout).lines() {
                     let Ok(line) = line else { break };
+                    if line.contains("\"ready\"") || line.contains("\"fatal\"") {
+                        loading.store(0, Ordering::SeqCst);
+                    }
                     if tx.send(line).is_err() {
                         break;
                     }
                 }
+                loading.store(0, Ordering::SeqCst);
             })
             .map_err(|e| SidecarError::Start(format!("stdout reader: {e}")))?;
         register(&job);

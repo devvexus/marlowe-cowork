@@ -10,6 +10,7 @@ use marlowe_sentinel::SentinelEvent;
 use marlowe_voice::VoiceEvent;
 
 use crate::daemon::Core;
+use crate::work::Work;
 
 const NO_SENTINEL: &str = "the Sentinel is not running";
 const NO_VOICE: &str = "voice is not available";
@@ -118,6 +119,24 @@ pub(crate) fn forward_voice(core: Arc<Core>, events: Receiver<VoiceEvent>) -> st
                 }
             }
             core.bus.publish(Event::VoiceState(status));
+        }
+    })
+}
+
+/// Shows the voice engine's model loading as background work while it does (the Chatterbox sidecar
+/// takes tens of seconds and holds GPU memory): the work is announced when the load begins and
+/// ends when the engine says it is ready, fails, or exits. Ends with the daemon.
+pub(crate) fn watch_voice_load(core: Arc<Core>) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new().name("marlowe-voice-load".into()).spawn(move || {
+        let mut work: Option<Work> = None;
+        while !core.is_shutting_down() {
+            let loading = core.voice.as_ref().and_then(|v| v.loading_since_ms()).is_some();
+            match (loading, work.is_some()) {
+                (true, false) => work = Some(Work::start(&core, "voice", "loading the voice model")),
+                (false, true) => work = None,
+                _ => {}
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
         }
     })
 }

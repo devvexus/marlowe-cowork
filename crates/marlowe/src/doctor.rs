@@ -212,11 +212,15 @@ pub fn render_json(checks: &[Check]) -> Value {
 pub fn run(home: &Path, args: &[String]) -> i32 {
     let port = daemon_ctl::live(home).map(|i| i.port);
     let mut checks = report(&System, home, port);
-    // The voice engine (M4.5's Chatterbox sidecar); WinRT speaks when it is not usable.
+    // Voice is off until MARLOWE_VOICE=1 (M6); the engine is only looked at when it is asked for.
     let voice = marlowe_voice::VoiceSettings::load(home).with_env(&|k| std::env::var(k).ok());
-    checks.push(match marlowe_voice::engine_check(&voice) {
-        Ok(d) => check("voice", Status::Ok, d),
-        Err(e) => check("voice", Status::Info, format!("{e}; WinRT speaks instead")),
+    checks.push(if marlowe_voice::requested(&|k| std::env::var(k).ok()) {
+        match marlowe_voice::engine_check(&voice) {
+            Ok(d) => check("voice", Status::Ok, d),
+            Err(e) => check("voice", Status::Info, format!("{e}; WinRT speaks instead")),
+        }
+    } else {
+        check("voice", Status::Info, format!("off (set {} to start it)", marlowe_voice::ENV_ENABLE))
     });
     checks.push(editor_check(home, std::env::current_dir().ok().as_deref()));
     if args.iter().any(|a| a == "--json") {

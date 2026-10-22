@@ -50,6 +50,7 @@ mod tasks;
 pub mod user;
 mod watch_ops;
 mod web_ops;
+mod work;
 mod workflow_ops;
 
 use std::path::{Path, PathBuf};

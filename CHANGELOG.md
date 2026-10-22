@@ -13,6 +13,8 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ### Background work
 
+- **Voice does not exist until M6: nothing voice-related starts unless `MARLOWE_VOICE=1` is set.** No speech engine, no Chatterbox sidecar (it was loading on the GPU at every launch), no spoken greeting or alert; `marlowe doctor` says "off". `voice.json` only says whether a started voice speaks.
+- **Background work is visible live.** The daemon announces work no turn asked for as a `Work` phase, and the strip shows it (one line, one clock, `+N` for more) when no turn is using it: the memory embed backfill at start-up (held until a client listens so its model load is seen too), a voice model loading, an MCP server starting, a brief polish on a local model.
 - **A slow Ollama is not taken for a stopped one.** The start check probes twice with a longer wait before it starts anything.
 - **An ask can no longer slip into a relay turn that is just starting.** An ask arriving as a relay turn starts (before the runner has picked it up) now queues for its own turn, so each gets its own reply.
 - **A background subagent shows on the Crew rail** as a one-specialist task with its step, the tool it is in and its time; the `/tasks` panel stops it. Its start and end times are real now.

@@ -531,6 +531,7 @@ impl Daemon {
         }
         if let Some(link) = deps.voice {
             core.add_writer(crate::watch_ops::forward_voice(core.clone(), link.events)?);
+            core.add_writer(crate::watch_ops::watch_voice_load(core.clone())?);
         }
         if let Some(setup) = deps.crew {
             // A crew that will not start leaves the daemon without one, said in the daemon log.
