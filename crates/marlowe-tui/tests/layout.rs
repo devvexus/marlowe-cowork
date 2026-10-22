@@ -228,7 +228,7 @@ fn esc_still_interrupts_a_running_turn() {
     s.now_ms += 12_000;
     let buf = check(&s, 120, 30, "busy_turn");
     assert!(contains(&buf, "esc Interrupt"), "the footer leads with the interrupt");
-    assert!(contains(&buf, "thinking · 12s"));
+    assert!(contains(&buf, "thinking"));
     assert_eq!(s.on_key(key(KeyCode::Esc)), vec![Request::Interrupt { session: sid() }]);
     assert_eq!(s.focus, Focus::Message);
 }

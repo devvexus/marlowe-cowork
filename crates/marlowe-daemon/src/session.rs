@@ -253,6 +253,8 @@ impl SessionHandle {
         }
         if !st.busy {
             st.busy = true;
+            // Set now: an ask arriving before the runner picks the turn up must not steer into it.
+            st.relay_turn = true;
             st.cancel = CancelToken::new();
             return self.cmd_tx.send(RunnerCmd::Turn(TurnInput::relay(text, tainted))).map_err(|_| Enqueue::Closed);
         }
@@ -465,6 +467,7 @@ fn settle(core: &Arc<Core>, handle: &Arc<SessionHandle>, next: &mut VecDeque<Tur
     }
     next.extend(relays);
     if !next.is_empty() && !core.is_shutting_down() {
+        st.relay_turn = next.front().is_some_and(|i| i.relay);
         st.cancel = CancelToken::new();
     } else {
         next.clear();

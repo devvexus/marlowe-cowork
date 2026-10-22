@@ -19,7 +19,7 @@ use crate::http::{self, LocalEndpoint};
 /// How long a freshly started Ollama has to answer.
 pub const START_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(400);
-const PROBE: Duration = Duration::from_millis(1500);
+const PROBE: Duration = Duration::from_millis(2500);
 
 /// What starting needs from the machine.
 pub trait StartIo {
@@ -165,7 +165,8 @@ pub struct SystemIo {
 
 impl StartIo for SystemIo {
     fn answers(&self) -> bool {
-        http::get_json(&self.endpoint, "/api/version", PROBE).is_ok()
+        // Twice: an Ollama busy with a load can be slow to answer, and that is not "stopped".
+        (0..2).any(|_| http::get_json(&self.endpoint, "/api/version", PROBE).is_ok())
     }
 
     fn app(&self) -> Option<PathBuf> {

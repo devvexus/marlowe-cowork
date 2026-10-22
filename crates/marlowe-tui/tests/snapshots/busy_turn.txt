@@ -1,5 +1,5 @@
  * marlowe — what changed in the gate overnight?                                          teams ○  3 runs · 1 needs you
-╭ Conversation · what changed in the gate overnight? ──── ⣠⣴⣶⣶⣷⣄ thinking · 12s ─╮╭ Model ─────────────────────────────╮
+╭ Conversation · what changed in the gate overnight? ────────── ⣠⣴⣶⣶⣷⣄ thinking ─╮╭ Model ─────────────────────────────╮
 │  you  what changed in the gate overnight?                                      ││ Claude Sonnet 4.5 ▾         medium │
 │  ⋯ recall · 3 memories · valiance gate threshold history                       ││ ctx ─────────┊─── 0 / 200k · cloud │
 │  ⋯ bash git log --since=yesterday · 3 commits                                  │╰────────────────────────────── (m) ─╯

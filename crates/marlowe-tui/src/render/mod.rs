@@ -615,7 +615,7 @@ pub(crate) fn meter(state: &State) -> String {
         .collect()
 }
 
-/// The presence meter, what Marlowe is doing, and for how long when it is working.
+/// The presence meter and what Marlowe is doing.
 fn presence(state: &State, theme: &Theme) -> Line<'static> {
     let act = state.activity();
     let meter_style = match act {
@@ -633,15 +633,8 @@ fn presence(state: &State, theme: &Theme) -> Line<'static> {
         _ => ink(Ink::Speech, theme),
     };
     let word = if state.booting() { "waking" } else { act.label() };
-    let mut spans = vec![Span::styled(meter(state), meter_style), Span::raw(" "), Span::styled(word, act_style)];
-    if let Some(live) = &state.live {
-        let secs = (state.now_ms - live.started_ms).max(0) / 1000;
-        if secs > 0 {
-            let t = if secs < 60 { format!("{secs}s") } else { format!("{}m{:02}s", secs / 60, secs % 60) };
-            spans.push(Span::styled(" · ", ink(Ink::Dimmer, theme)));
-            spans.push(Span::styled(t, ink(Ink::Dim, theme)));
-        }
-    }
+    let spans = vec![Span::styled(meter(state), meter_style), Span::raw(" "), Span::styled(word, act_style)];
+    // No clock here: the live strip owns the one clock of what is happening now.
     Line::from(spans)
 }
 
