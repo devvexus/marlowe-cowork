@@ -125,7 +125,7 @@ impl Env {
             None => base.unwrap_or_else(|| paths::resolve(None, ".")),
         };
         if !dir.is_dir() {
-            return Err(format!("{} is not a directory", dir.display()));
+            return Err(paths::not_a_directory(self.root.as_deref().or(workspace), &dir));
         }
         if let Some(pin) = self.shell_dir.as_deref().filter(|p| !paths::inside(p, &dir)) {
             return Err(format!("{} is outside the sandbox {}; git runs inside it", dir.display(), pin.display()));

@@ -244,6 +244,7 @@ impl State {
                     self.code.file_index = Some(files);
                 }
             }
+            LocalEvent::DirListing { dir, names } => self.wspick.store(&dir, names),
             LocalEvent::Image { source, result } => self.image_read(source, result),
             LocalEvent::EditorClosed { path, result } => self.editor_closed(&path, &result, out),
             LocalEvent::Written { path, result } => match result {

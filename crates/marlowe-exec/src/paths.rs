@@ -17,6 +17,15 @@ pub fn expand_home(raw: &str) -> Option<PathBuf> {
     Some(user_home()?.join(rest.trim_start_matches(['/', '\\'])))
 }
 
+/// What a tool says when `dir` is not a folder: if the session's workspace `root` is itself gone
+/// and `dir` is it (or under it), that, plainly, so the model does not hunt for the folder.
+pub fn not_a_directory(root: Option<&Path>, dir: &Path) -> String {
+    match root.filter(|r| !r.is_dir() && inside(r, dir)) {
+        Some(r) => marlowe_proto::workspace::missing_message(r),
+        None => format!("cwd {} is not a directory", dir.display()),
+    }
+}
+
 /// Absolute, lexically normalised form of `raw` (relative paths join `base`, else the process
 /// cwd; a leading `~` is the user's home).
 pub fn resolve(base: Option<&Path>, raw: &str) -> PathBuf {

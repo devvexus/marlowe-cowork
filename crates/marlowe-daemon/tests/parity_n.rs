@@ -297,7 +297,8 @@ fn temp_home(name: &str) -> PathBuf {
 fn work_dir(home: &Path, name: &str) -> PathBuf {
     let dir = home.join("work").join(name);
     std::fs::create_dir_all(&dir).unwrap();
-    dir.canonicalize().unwrap()
+    // The form a session stores, so paths the tools see and the test names agree.
+    marlowe_proto::workspace::normalise(&dir.to_string_lossy()).unwrap()
 }
 
 #[derive(Clone, Default)]

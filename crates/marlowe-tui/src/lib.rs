@@ -44,6 +44,7 @@ pub mod state;
 mod term;
 pub mod text;
 pub mod wake;
+pub mod wspath;
 
 pub use client::{Client, Resolver};
 pub use input::palette_matches;

@@ -193,6 +193,7 @@ pub(crate) struct SavedContext {
 enum Cmd {
     Create(SessionSummary, Sender<StoreResult<()>>),
     SetTitle(SessionId, String, Sender<StoreResult<()>>),
+    SetWorkspace(SessionId, String, Sender<StoreResult<()>>),
     AppendRows { session: SessionId, rows: Vec<RowIn>, next_turn: u32, tainted: bool, at: i64, reply: Sender<StoreResult<()>> },
     PutCallResult { session: SessionId, row: CallResultRow, at: i64, reply: Sender<StoreResult<()>> },
     CallResults(SessionId, Sender<StoreResult<Vec<CallResultRow>>>),
@@ -260,6 +261,13 @@ fn serve(conn: &mut Connection, cmd: Cmd) -> bool {
         Cmd::SetTitle(id, title, reply) => {
             let r = conn
                 .execute("UPDATE sessions SET title = ?2 WHERE id = ?1", params![id.as_str(), title])
+                .map(|_| ())
+                .map_err(e);
+            let _ = reply.send(r);
+        }
+        Cmd::SetWorkspace(id, workspace, reply) => {
+            let r = conn
+                .execute("UPDATE sessions SET workspace = ?2 WHERE id = ?1", params![id.as_str(), workspace])
                 .map(|_| ())
                 .map_err(e);
             let _ = reply.send(r);
@@ -764,6 +772,24 @@ impl Store {
     }
 
     /// Appends whole messages with no per-call provenance, all of turn `next_turn - 1`.
+    pub fn set_workspace(&self, id: &SessionId, workspace: &str) -> StoreResult<()> {
+        self.call(|r| Cmd::SetWorkspace(id.clone(), workspace.to_string(), r))
+    }
+
+    /// Rewrites stored workspaces that name an existing folder in another spelling (`~/x`, `/x`,
+    /// relative) to the absolute canonical path; the ones that resolve nowhere are left as they are.
+    /// Returns how many changed.
+    pub fn repair_workspaces(&self, at: &marlowe_proto::workspace::Where) -> StoreResult<usize> {
+        let mut n = 0;
+        for s in self.list(u32::MAX)? {
+            if let Some(fixed) = s.workspace.as_deref().and_then(|w| marlowe_proto::workspace::repair_in(w, at)) {
+                self.set_workspace(&s.id, &fixed)?;
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
     pub fn append(&self, session: &SessionId, messages: Vec<Message>, next_turn: u32, tainted: bool, at: i64) -> StoreResult<()> {
         let turn = next_turn.saturating_sub(1);
         let rows = messages.into_iter().map(|message| RowIn { message, turn, step: None, at, meta: None, mem_seq: None }).collect();
@@ -884,6 +910,37 @@ mod tests {
 
     fn summary(id: &SessionId, ws: &str) -> SessionSummary {
         SessionSummary { id: id.clone(), title: String::new(), workspace: Some(ws.into()), created_ms: 1, updated_ms: 1, turns: 0 }
+    }
+
+    #[test]
+    fn stored_workspaces_in_another_spelling_are_repaired_on_load() {
+        use marlowe_proto::workspace::Where;
+        let dir = scratch("repair");
+        // Fixtures: a fake home with the project in it, never the real one.
+        let home = dir.join("home");
+        let project = home.join("Projects").join("MSFFN");
+        std::fs::create_dir_all(&project).unwrap();
+        let at = Where { home: Some(home.clone()), cwd: Some(dir.clone()), roots: vec![dir.join("no-such-drive")] };
+        let (store, handle) = open(&dir.join("cowork.db")).unwrap();
+        let (tilde, rooted, fine, gone) = (SessionId("t".into()), SessionId("r".into()), SessionId("f".into()), SessionId("g".into()));
+        store.create(summary(&tilde, "~/Projects/MSFFN")).unwrap();
+        store.create(summary(&rooted, "/Projects/MSFFN")).unwrap();
+        let canon = marlowe_proto::workspace::normalise_in(&project.to_string_lossy(), &at).unwrap().to_string_lossy().into_owned();
+        store.create(summary(&fine, &canon)).unwrap();
+        store.create(summary(&gone, "~/Projects/vanished")).unwrap();
+
+        assert_eq!(store.repair_workspaces(&at).unwrap(), if cfg!(windows) { 2 } else { 1 });
+        let ws = |id: &SessionId| store.get(id).unwrap().unwrap().workspace.unwrap();
+        assert_eq!(ws(&tilde), canon);
+        assert_eq!(ws(&fine), canon, "a normal path is left alone");
+        assert_eq!(ws(&gone), "~/Projects/vanished", "an unresolvable path keeps what it has");
+        if cfg!(windows) {
+            assert_eq!(ws(&rooted), canon, "a rooted path with no drive is found under home");
+        }
+        assert_eq!(store.repair_workspaces(&at).unwrap(), 0, "repair is stable");
+        store.close();
+        handle.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

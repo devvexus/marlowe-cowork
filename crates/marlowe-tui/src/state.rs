@@ -663,6 +663,9 @@ fn readable_detail(detail: &str) -> String {
     out.join("\n")
 }
 
+/// Rows the workspace picker offers at most.
+pub const WORKSPACE_ROWS: usize = 12;
+
 /// Everything the client knows.
 #[derive(Debug, Clone)]
 pub struct State {
@@ -779,6 +782,8 @@ pub struct State {
     pub quit: bool,
     /// The daemon's shutdown in progress after a quit that stops it (see [`crate::seq::Farewell`]).
     pub farewell: Option<crate::seq::Farewell>,
+    /// The workspace picker's folder listings and the reason its last Enter was refused.
+    pub wspick: crate::wspath::WsPick,
 }
 
 impl Default for State {
@@ -851,6 +856,7 @@ impl State {
             now_ms: 0,
             quit: false,
             farewell: None,
+            wspick: Default::default(),
         }
     }
 
@@ -924,6 +930,15 @@ impl State {
         if q.contains(['/', '\\', ':']) || q.starts_with('~') {
             push(q);
         }
+        // Folders under the typed one, then `~` and the drives while no folder is typed yet.
+        for c in self.wspick.children(q) {
+            push(&c);
+        }
+        if crate::wspath::split_query(q).is_none() {
+            for r in self.wspick.root_matches(q) {
+                push(&r);
+            }
+        }
         let ql = q.to_lowercase().replace('\\', "/");
         let mut known: Vec<&str> = Vec::new();
         known.extend(self.shown_workspace());
@@ -935,7 +950,16 @@ impl State {
                 push(p);
             }
         }
+        out.truncate(WORKSPACE_ROWS);
         out
+    }
+
+    /// Asks a worker for the folder the typed text is in, unless it is known or asked already.
+    pub(crate) fn want_dir(&mut self, query: &str) {
+        self.wspick.note = None;
+        if let Some(dir) = self.wspick.want_for(query) {
+            self.code.effects.push(crate::coding::Effect::ListDir { dir });
+        }
     }
 
     pub fn is_busy(&self) -> bool {

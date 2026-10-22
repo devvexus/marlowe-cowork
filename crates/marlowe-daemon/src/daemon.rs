@@ -260,6 +260,16 @@ impl Core {
         if self.is_shutting_down() {
             return Err((None, "the daemon is shutting down".into()));
         }
+        // The stored workspace is the normal form: absolute, canonical, existing.
+        let workspace = match workspace.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
+            Some(w) => Some(
+                marlowe_proto::workspace::normalise(w)
+                    .map_err(|e| (None, format!("workspace: {e}")))?
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            None => None,
+        };
         let now = now_ms();
         let id = SessionId::new_random();
         let summary = SessionSummary {
@@ -484,6 +494,9 @@ impl Daemon {
         }
         let db = paths::cowork_db(home);
         let (store, store_thread) = store::open(&db)?;
+        // Workspaces stored as `~/x` or `/x` are rewritten to the folder they name; failure only means
+        // the old spelling stays (tools then say the workspace is missing).
+        let _ = store.repair_workspaces(&marlowe_proto::workspace::Where::current());
         let brains = match Brains::open(&db, deps.providers) {
             Ok(b) => Arc::new(b),
             Err(e) => {

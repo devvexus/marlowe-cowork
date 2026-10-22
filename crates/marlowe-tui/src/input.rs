@@ -158,9 +158,15 @@ impl State {
             return;
         }
         match (&mut self.overlay, self.view) {
-            (Some(Overlay::Palette { query, sel }), _) | (Some(Overlay::WorkspacePicker { query, sel }), _) => {
+            (Some(Overlay::Palette { query, sel }), _) => {
                 query.push_str(text.lines().next().unwrap_or(""));
                 *sel = 0;
+            }
+            (Some(Overlay::WorkspacePicker { query, sel }), _) => {
+                query.push_str(text.lines().next().unwrap_or(""));
+                *sel = 0;
+                let q = query.clone();
+                self.want_dir(&q);
             }
             (Some(Overlay::Onboard), _) => self.onboard_paste(text),
             (Some(Overlay::Dispatch), _) => self.dispatch_paste(text),
@@ -551,6 +557,10 @@ impl State {
         self.view = View::Conversation;
         self.focus = Focus::Workspace;
         self.overlay = Some(Overlay::WorkspacePicker { query: String::new(), sel: 0 });
+        self.wspick.reset();
+        if let Some(dir) = self.wspick.want("") {
+            self.code.effects.push(crate::coding::Effect::ListDir { dir });
+        }
         if self.conn.is_online() {
             out.push(Request::ListSessions { limit: 30 });
         }
@@ -899,23 +909,41 @@ impl State {
                     KeyCode::Up => {
                         self.overlay = Some(Overlay::WorkspacePicker { query, sel: sel.saturating_sub(1) })
                     }
-                    KeyCode::Down | KeyCode::Tab => {
+                    KeyCode::Down => {
                         let sel = (sel + 1).min(n.saturating_sub(1));
                         self.overlay = Some(Overlay::WorkspacePicker { query, sel });
                     }
+                    // The only folder, else what the folders share, else the selected row.
+                    KeyCode::Tab => {
+                        let kids = self.wspick.children(&query);
+                        let chosen = self.workspace_choices(&query).get(sel).cloned();
+                        if let Some(done) = crate::wspath::complete(&query, &kids, chosen.as_deref()) {
+                            query = done;
+                        }
+                        self.want_dir(&query);
+                        self.overlay = Some(Overlay::WorkspacePicker { query, sel: 0 });
+                    }
                     KeyCode::Enter => {
                         if let Some(p) = self.workspace_choices(&query).get(sel).cloned() {
-                            self.overlay = None;
-                            self.focus = Focus::Message;
-                            self.choose_workspace(p);
+                            match (self.wspick.check)(&p) {
+                                Ok(path) => {
+                                    self.overlay = None;
+                                    self.focus = Focus::Message;
+                                    self.wspick.note = None;
+                                    self.choose_workspace(path);
+                                }
+                                Err(why) => self.wspick.note = Some(why),
+                            }
                         }
                     }
                     KeyCode::Backspace => {
                         query.pop();
+                        self.want_dir(&query);
                         self.overlay = Some(Overlay::WorkspacePicker { query, sel: 0 });
                     }
                     KeyCode::Char(c) if !ctrl => {
                         query.push(c);
+                        self.want_dir(&query);
                         self.overlay = Some(Overlay::WorkspacePicker { query, sel: 0 });
                     }
                     _ => {}

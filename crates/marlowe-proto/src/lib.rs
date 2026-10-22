@@ -26,6 +26,7 @@ mod request;
 mod research;
 mod user;
 mod watch;
+pub mod workspace;
 
 pub use background::{
     Finding, FindingSeverity, FastState, InterruptedRun, NotifyState, PlanFileDecision, RuleSuggestion, SavedWorkflow, SentFile, TaskInfo,

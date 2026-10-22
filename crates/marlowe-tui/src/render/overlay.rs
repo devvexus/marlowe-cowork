@@ -590,6 +590,13 @@ pub fn workspace_picker(r: Rect, state: &State, query: &str, sel: usize, theme: 
         Span::styled(text::clean(query), theme.normal())
     };
     put(buf, inner.x, inner.y, &Line::from(vec![Span::styled("› ", ink(Ink::Accent, theme)), field]), inner.width);
+    // Why Enter was refused, on the line under the field.
+    if let Some(why) = &state.wspick.note {
+        // Long paths lose their start: the reason is at the end.
+        let room = (inner.width as usize).saturating_sub(2);
+        let line = Line::from(Span::styled(text::truncate_left(&text::clean(why), room), ink(Ink::Amber, theme)));
+        put(buf, inner.x + 2, inner.y + 1, &line, inner.width.saturating_sub(2));
+    }
     let choices = state.workspace_choices(query);
     if choices.is_empty() {
         put(buf, inner.x + 2, inner.y + 2, &Line::from(Span::styled("nothing matches — type a full path", dim)), inner.width);

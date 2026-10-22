@@ -299,7 +299,7 @@ fn two_clients_see_one_identical_stream_and_late_clients_replay_it() {
 
     let mut a = Client::connect(&d.info, None);
     let mut b = Client::connect(&d.info, None);
-    a.send(&Request::Ask { session: None, text: "hello there\nsecond line".into(), workspace: Some("C:/ws".into()), images: Vec::new(), options: None, client_ms: None });
+    a.send(&Request::Ask { session: None, text: "hello there\nsecond line".into(), workspace: Some(home.display().to_string()), images: Vec::new(), options: None, client_ms: None });
     let got_a = a.until(is_finished);
     let got_b = b.until(is_finished);
 
@@ -312,7 +312,7 @@ fn two_clients_see_one_identical_stream_and_late_clients_replay_it() {
 
     let evs: Vec<&Event> = bcast_a.iter().map(|e| &e.event).collect();
     assert!(evs.iter().any(|e| matches!(e, Event::SessionOpened { title, workspace, .. }
-        if title == "hello there" && workspace.as_deref() == Some("C:/ws"))));
+        if title == "hello there" && workspace.as_deref() == marlowe_proto::workspace::normalise(&home.display().to_string()).unwrap().to_str())));
     assert!(evs.iter().any(|e| matches!(e, Event::TurnStarted { user, turn: 0, model, .. }
         if user.starts_with("hello there") && model.to_string() == "ollama/scripted")));
     let deltas: String = evs
@@ -1356,5 +1356,39 @@ fn retrieval_in_a_turn_never_repeats_a_profile_item() {
     for id in &profile_ids {
         assert!(!whole(&req).contains(&format!("[Memory {id} ")), "{id} injected twice:\n{}", whole(&req));
     }
+    stop(d, &home);
+}
+
+#[test]
+fn a_workspace_that_does_not_exist_is_refused_and_a_real_one_is_stored_canonical() {
+    let home = temp_home("ws-normal");
+    seed_model(&home);
+    let p = Arc::new(Scripted::default());
+    p.push(vec![text("ok"), usage(), Step::Ev(StreamEvent::Stop(StopReason::EndTurn))]);
+    let d = start(&home, p.clone(), DaemonConfig::default());
+    let mut c = Client::connect(&d.info, None);
+
+    let gone = home.join("no-such-folder");
+    c.send(&Request::Ask { session: None, text: "hi".into(), workspace: Some(gone.display().to_string()), images: Vec::new(), options: None, client_ms: None });
+    let got = c.until(|e| matches!(e, Event::Error { .. }));
+    let msg = got.iter().find_map(|e| match &e.event {
+        Event::Error { message, .. } => Some(message.clone()),
+        _ => None,
+    });
+    assert!(msg.as_deref().is_some_and(|m| m.contains("workspace") && m.contains("does not exist")), "{msg:?}");
+    match c.request(&Request::ListSessions { limit: 10 }, |e| matches!(e, Event::SessionList { .. })) {
+        Event::SessionList { sessions } => assert!(sessions.is_empty(), "no session was made for a missing folder"),
+        _ => unreachable!(),
+    }
+
+    // A real folder in a roundabout spelling is stored as the canonical path.
+    let roundabout = format!("{}/./", home.display());
+    c.send(&Request::Ask { session: None, text: "hi".into(), workspace: Some(roundabout), images: Vec::new(), options: None, client_ms: None });
+    let got = c.until(is_finished);
+    let stored = got.iter().find_map(|e| match &e.event {
+        Event::SessionOpened { workspace, .. } => workspace.clone(),
+        _ => None,
+    });
+    assert_eq!(stored.as_deref(), marlowe_proto::workspace::normalise(&home.display().to_string()).unwrap().to_str());
     stop(d, &home);
 }

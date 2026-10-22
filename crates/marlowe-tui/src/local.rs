@@ -44,6 +44,10 @@ pub fn run(effect: Effect) -> Option<LocalEvent> {
             let files = index_files(Path::new(&root), INDEX_FILES, INDEX_TIME);
             LocalEvent::FileIndex { root, files }
         }
+        Effect::ListDir { dir } => {
+            let names = crate::wspath::list_dirs(&dir);
+            LocalEvent::DirListing { dir, names }
+        }
         Effect::ClipboardImage => LocalEvent::Image { source: ImageSource::Clipboard, result: clipboard_image() },
         Effect::ReadImage { path } => {
             let result = read_image(Path::new(&path));

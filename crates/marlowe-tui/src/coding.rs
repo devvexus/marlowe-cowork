@@ -27,6 +27,8 @@ pub enum Effect {
     Statusline { command: String, input: String, cwd: Option<String> },
     /// Walk `root` (gitignore-aware) for the `@` picker.
     IndexFiles { root: String },
+    /// List the sub-folders of `dir` for the workspace picker (`""`: `~` and the drives).
+    ListDir { dir: String },
     /// Read an image off the clipboard.
     ClipboardImage,
     /// Read an image file.
@@ -67,6 +69,7 @@ pub enum LocalEvent {
     /// The first line the status-line command printed (ANSI removed), or why it failed.
     Statusline(Result<String, String>),
     FileIndex { root: String, files: Vec<String> },
+    DirListing { dir: String, names: Vec<String> },
     Image { source: ImageSource, result: Result<(String, Vec<u8>), String> },
     EditorClosed { path: String, result: Result<(), String> },
     Written { path: String, result: Result<(), String> },

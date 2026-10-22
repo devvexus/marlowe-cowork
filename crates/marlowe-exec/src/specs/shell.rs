@@ -112,7 +112,7 @@ pub(crate) fn run_shell(tools: &BuiltinTools, kind: Interpreter, args: &Value, c
         None => root.clone().unwrap_or_else(|| paths::resolve(None, ".")),
     };
     if !dir.is_dir() {
-        return ToolOutcome::error(format!("cwd {} is not a directory", dir.display()));
+        return ToolOutcome::error(paths::not_a_directory(tools.root_for_ref(cx), &dir));
     }
     if let Some(pin) = tools.shell_dir.as_deref().filter(|p| !paths::inside(p, &dir)) {
         return ToolOutcome::error(format!(

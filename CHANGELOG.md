@@ -4,6 +4,12 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Workspace paths
+
+- **A workspace path is made real when it is set.** `~` is expanded, a rooted path with no drive (`/Projects/MSFFN`) is found on the home or working drive or under home, the result is absolute and canonical (no `\\?\` prefix), and a path that does not exist or is a file is refused with the reason (`marlowe_proto::workspace`). The picker keeps its `~` display form apart from the stored path. Sessions already stored as `~/Projects/MSFFN` or `/Projects/MSFFN` are rewritten when the daemon starts.
+- **A missing workspace is named once, plainly.** `bash`, `monitor` and `git` say "this session's workspace <path> does not exist — set it in the workspace picker" instead of "cwd ... is not a directory", so the model stops hunting for the folder.
+- **The workspace picker completes paths.** Typing a path lists the folders under it filtered by what is typed, then recent workspaces, `~` and the drives (read on a worker, capped at 12 rows). Tab takes the only match, else the common start, else the selected row; the arrows move, a click or Enter sets it, and a path that does not exist stays open with the reason under the field.
+
 ### Prefill progress
 
 - **The read line is Ollama's own numbers, never a guess.** The runner's output (`server.log` for the app; a size-capped `<home>\logs\ollama-serve.log` for an `ollama serve` Marlowe starts) is tailed read-only and matched to the request in flight, so the strip shows `reading 12.6k tok · 6.6k cached · 2,600/6,000 new · 96 tok/s ━━ 43%` with no `~`, and a cache miss shows as `0 cached`. With no output to read (a server started by hand) it shows tokens and elapsed only. `prompt_eval_count` is the whole prompt, so a read with no log has no split and no rate, and the stored prefill rate learns only from a runner-timed full read or the first call after a cold load; the old stored rates are forgotten.

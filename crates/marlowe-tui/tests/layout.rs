@@ -251,6 +251,8 @@ fn m_opens_the_model_picker_under_its_box() {
 #[test]
 fn the_workspace_picker_starts_new_sessions_elsewhere() {
     let mut s = working();
+    // These paths are the test's own, not folders on this machine.
+    s.wspick.check = |p| Ok(p.to_string());
     s.on_key(key(KeyCode::Esc));
     let reqs = s.on_key(key(KeyCode::Char('w')));
     assert_eq!(reqs, vec![Request::ListSessions { limit: 30 }]);

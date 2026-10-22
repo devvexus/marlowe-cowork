@@ -205,3 +205,20 @@ fn the_bash_tool_is_git_bash_not_the_wsl_launcher() {
     let os = o.content.trim().to_ascii_uppercase();
     assert!(os.contains("MINGW") || os.contains("MSYS"), "bash ran outside Git Bash: {os}");
 }
+
+#[test]
+fn a_missing_workspace_is_named_plainly_so_the_model_stops_guessing() {
+    let ws = Ws::new("sb-missing-ws");
+    let gone = ws.path("MSFFN");
+    let t = marlowe_exec::BuiltinTools::new(Some(gone.clone()));
+    for (tool, args) in [("bash", json!({"command": "echo hi"})), ("bash", json!({"command": "echo hi", "cwd": "sub"}))] {
+        let o = call(&t, tool, args);
+        assert!(o.is_error);
+        let want = format!("this session's workspace {} does not exist — set it in the workspace picker", gone.display());
+        assert!(o.content.contains(&want), "{}", o.content);
+    }
+    // A folder that exists under a real workspace keeps the ordinary wording.
+    let t = ws.tools();
+    let o = call(&t, "bash", json!({"command": "echo hi", "cwd": "nope"}));
+    assert!(o.content.contains("is not a directory") && !o.content.contains("workspace"), "{}", o.content);
+}

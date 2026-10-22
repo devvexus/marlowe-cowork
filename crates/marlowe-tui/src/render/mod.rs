@@ -190,7 +190,7 @@ pub fn geometry(area: Rect, state: &State) -> Geometry {
             g.picker = Some(dropdown(area, model, w.max(model.width), h));
         }
         Some(Overlay::WorkspacePicker { query, .. }) => {
-            let rows = state.workspace_choices(query).len().clamp(1, 12) as u16;
+            let rows = state.workspace_choices(query).len().clamp(1, crate::state::WORKSPACE_ROWS) as u16;
             g.picker = Some(dropdown(area, workspace, workspace.width.max(72), rows + 4));
         }
         _ => {}
