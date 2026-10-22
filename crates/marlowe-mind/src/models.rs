@@ -77,7 +77,7 @@ impl Models {
             .collect();
         let degraded = (!missing.is_empty()).then(|| {
             format!(
-                "models missing from {}: {}. Recall is lexical only and auto-injection is off",
+                "models missing from {}: {}. Recall is lexical only and auto-injection is off.                  Fix: `marlowe models install <dir holding the models>`",
                 dir.display(),
                 missing.join(", ")
             )

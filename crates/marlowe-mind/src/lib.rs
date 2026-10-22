@@ -45,8 +45,8 @@ pub use marlowe_proto::{
     MemoryStatsReport as MindStats, MemoryTrust as Trust,
 };
 pub use paths::{
-    default_legacy_profile, models_dir_candidates, profile_dir, resolve_models_dir, EMBEDDER_DIR,
-    MODELS_ENV, RERANKER_DIR,
+    default_legacy_profile, has_models, install_dir, install_models, models_dir_candidates, profile_dir,
+    remember_models_dir, resolve_models_dir, EMBEDDER_DIR, MODELS_ENV, MODELS_POINTER, RERANKER_DIR,
 };
 pub use profile::{Profile, ProfileQuery, DEFAULT_PROFILE_TOKENS};
 pub use live::{LiveEvent, LiveKind, LiveSink, MindEvent, MindSink, PROGRESS_EVERY};

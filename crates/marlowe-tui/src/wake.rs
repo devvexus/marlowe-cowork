@@ -395,7 +395,7 @@ impl State {
         };
         let memory = match (&self.memory.stats, self.wake.memory_presence) {
             (Some(s), _) if s.degraded.is_some() => {
-                (format!("{} beliefs · keyword only", crate::text::thousands(s.beliefs)), Health::Degraded)
+                (format!("{} beliefs · memory degraded · keyword only", crate::text::thousands(s.beliefs)), Health::Degraded)
             }
             (Some(s), _) => (format!("{} beliefs · recall online", crate::text::thousands(s.beliefs)), Health::Ok),
             (None, Presence::Absent) => ("not running".into(), Health::Down),

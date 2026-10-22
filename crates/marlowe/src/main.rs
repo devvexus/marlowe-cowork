@@ -90,6 +90,9 @@ every approval in this turn; an empty answer or a closed stdin denies.
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let home = marlowe_proto::paths::cowork_home();
+    // A process that has the models variable leaves a pointer for those that do not (the terminal
+    // relaunch), so memory is never silently off for want of an inherited variable.
+    marlowe_mind::remember_models_dir();
     let result = dispatch(&home, &args);
     match result {
         Ok(0) => ExitCode::SUCCESS,

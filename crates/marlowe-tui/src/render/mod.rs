@@ -732,10 +732,26 @@ fn draw_header(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
         hit(state, Rect { x: tx, y: r.y, width: TOGGLE_W, height: 1 }, target);
         edge = tx.saturating_sub(2);
     }
+    // Memory running degraded is never only in a log: amber, here, and a click opens the Memory view.
+    const MEM_LABEL: &str = "memory degraded";
+    let mem_w = text::width(MEM_LABEL) as u16;
+    if memory_degraded(state) && edge.saturating_sub(r.x) >= mem_w + MIN_TITLE + 4 {
+        let target = Target::Chord(Command::Memory);
+        let style = if hovered(state, &target) { theme.normal() } else { ink(Ink::Amber, theme) };
+        let mx = edge.saturating_sub(mem_w);
+        put(buf, mx, r.y, &Line::from(Span::styled(MEM_LABEL, style)), mem_w);
+        hit(state, Rect { x: mx, y: r.y, width: mem_w, height: 1 }, target);
+        edge = mx.saturating_sub(2);
+    }
     let room = edge.saturating_sub(r.x + 1);
     let title = text::truncate(&format!("marlowe — {}", state.session_label()), (room as usize).saturating_sub(2));
     let left = Line::from(vec![Span::styled("* ", ink(Ink::Accent, theme)), Span::styled(title, theme.normal())]);
     put(buf, r.x + 1, r.y, &left, room);
+}
+
+/// Whether the memory service reports it is running degraded (models missing or failed to load).
+pub(crate) fn memory_degraded(state: &State) -> bool {
+    state.memory.stats.as_ref().is_some_and(|s| s.degraded.is_some())
 }
 
 /// The footer: the most-used chords on the left, the day on the right. One line, the same in

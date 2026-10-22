@@ -118,6 +118,20 @@ fn memory_view_empty_and_degraded() {
 }
 
 #[test]
+fn degraded_memory_is_loud_in_the_header_of_every_view() {
+    let mut s = online();
+    assert!(!contains(&render(&s, W, H), "memory degraded"));
+    feed(
+        &mut s,
+        0,
+        Event::MemoryStats(MemoryStatsReport { degraded: Some("models missing".into()), ..MemoryStatsReport::default() }),
+    );
+    assert!(contains(&render(&s, W, H), "memory degraded"), "the conversation header says so");
+    feed(&mut s, 0, Event::MemoryStats(MemoryStatsReport::default()));
+    assert!(!contains(&render(&s, W, H), "memory degraded"), "and stops when memory is healthy");
+}
+
+#[test]
 fn selection_moves_and_stops_at_the_ends() {
     let mut s = in_memory();
     s.on_key(key(KeyCode::Down));

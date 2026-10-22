@@ -188,10 +188,39 @@ fn prompt(tool: &str, summary: &str, detail: &str) -> ApprovalDecision {
 
 // ---------------------------------------------------------------- models
 
-const MODELS_USAGE: &str = "usage: marlowe models [list | detect | catalog <provider> | \
+const MODELS_USAGE: &str = "usage: marlowe models [path | install <dir> | list | detect | catalog <provider> | \
 add <provider> <model-id> | remove <ref> | slot <slot> <ref|default> [effort]]";
 
+/// Where the memory models are looked for, and whether they are there.
+fn models_path(home: &Path) -> CmdResult {
+    let dir = marlowe_mind::resolve_models_dir(home);
+    let found = marlowe_mind::has_models(&dir);
+    println!("{}  ({})", dir.display(), if found { "memory models found" } else { "memory models MISSING: recall is keyword only" });
+    if !found {
+        println!(
+            "fix: marlowe models install <dir holding {} and {}>",
+            marlowe_mind::EMBEDDER_DIR,
+            marlowe_mind::RERANKER_DIR
+        );
+    }
+    Ok(0)
+}
+
+/// Copy the memory models into the fixed install location so every launch finds them.
+fn models_install(src: Option<&String>) -> CmdResult {
+    let src = src.ok_or("usage: marlowe models install <dir holding the memory models>")?;
+    let fixed = marlowe_mind::install_dir().ok_or("no %LOCALAPPDATA% to install into")?;
+    let dest = marlowe_mind::install_models(Path::new(src), &fixed).map_err(|e| e.to_string())?;
+    println!("installed the memory models to {}", dest.display());
+    Ok(0)
+}
+
 pub fn models(home: &Path, args: &[String]) -> CmdResult {
+    match args.first().map(String::as_str) {
+        Some("path") => return models_path(home),
+        Some("install") => return models_install(args.get(1)),
+        _ => {}
+    }
     let mut c = connect(home, "marlowe-models")?;
     match args.first().map(String::as_str).unwrap_or("list") {
         "list" => {
