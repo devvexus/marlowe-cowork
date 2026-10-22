@@ -413,6 +413,10 @@ impl Core {
         let summary = self.store.get(id).map_err(refuse)?.ok_or_else(|| refuse(format!("unknown session {id}")))?;
         let turns = self.store.load(id).map_err(refuse)?;
         self.bus.reply(client, Event::SessionOpened { session: id.clone(), title: summary.title, workspace: summary.workspace });
+        let notes = self.store.notes(id).unwrap_or_default();
+        if !notes.is_empty() {
+            self.bus.reply(client, Event::SessionNotes { session: id.clone(), notes });
+        }
         self.bus.reply(client, Event::Transcript { session: id.clone(), turns });
         Ok(())
     }

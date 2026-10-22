@@ -341,12 +341,12 @@ impl State {
             }
             Event::Notified { session, title, body, urgency } => {
                 let ours = session.as_ref().is_none_or(|s| self.mine(s));
-                let line = if body.trim().is_empty() { title.clone() } else { format!("{title} \u{b7} {body}") };
+                let line = crate::state::notification_line(title, body);
                 let tone = if *urgency == Urgency::Urgent { NoteTone::Amber } else { NoteTone::Dim };
                 if ours {
-                    self.note(&format!("notification \u{b7} {}", crate::text::clean(&line)), tone);
+                    self.note(&line, tone);
                 } else {
-                    self.flash(format!("notification \u{b7} {}", crate::text::clean(&line)), tone);
+                    self.flash(line, tone);
                 }
             }
             Event::NotifyState(ns) => self.bg.notify = Some(*ns),

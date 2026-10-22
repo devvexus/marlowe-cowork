@@ -1258,12 +1258,24 @@ fn a_finished_task_whose_relay_must_wait_still_reaches_the_user_at_once() {
     release.send(()).unwrap();
     let got = a.until_event(|e| matches!(e, Event::Notified { .. }));
     let Some(Event::Notified { session: s, title, body, .. }) = got.last().map(|e| e.event.clone()) else { unreachable!() };
-    assert_eq!(s, Some(session));
+    assert_eq!(s, Some(session.clone()));
     assert!(title.starts_with("crew · run ") && title.ends_with("done"), "{title}");
     assert!(body.starts_with("Seven of the twenty seeds fail."), "{body}");
     assert!(body.ends_with("Marlowe takes it up on your next message"), "{body}");
     assert!(!got.iter().any(|e| matches!(&e.event, Event::TurnStarted { .. })), "no relay turn ran");
+    // The line is kept with the conversation: a window opened later gets it ahead of the transcript.
     drop(a);
+    let mut b = Client::connect(&d.info);
+    b.send(&Request::OpenSession { session: session.clone() });
+    let got = b.until_event(|e| matches!(e, Event::Transcript { .. }));
+    let notes = got.iter().find_map(|e| match &e.event {
+        Event::SessionNotes { session: s, notes } if *s == session => Some(notes.clone()),
+        _ => None,
+    });
+    let notes = notes.expect("the stored line came with the reopened session");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].title.starts_with("crew · run ") && notes[0].body.ends_with("Marlowe takes it up on your next message"), "{notes:?}");
+    drop(b);
     stop(d);
 }
 

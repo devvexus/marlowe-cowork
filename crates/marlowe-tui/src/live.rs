@@ -304,6 +304,8 @@ pub struct Strip {
     tail: Option<Tail>,
     /// The finished memory write of the turn in flight, held until the reply is down.
     held_tail: Option<(u32, Note)>,
+    /// A memory write that finished during a later turn: it belongs to the turn that wrote it.
+    late_tails: Vec<(u32, Note)>,
     notes: Vec<Note>,
     fit_tokens: u64,
     /// When the engine began reading: the send, or the end of the model load.
@@ -352,6 +354,11 @@ impl Strip {
     /// Anything the strip still has to show once the turn is over.
     pub fn trailing(&self, _now: i64) -> bool {
         self.recall.borrow().pending()
+    }
+
+    /// Memory writes that finished while another turn was running, with the turn that wrote each.
+    pub fn take_late(&mut self) -> Vec<(u32, Note)> {
+        std::mem::take(&mut self.late_tails)
     }
 
     /// What stages left behind since last asked, for the transcript.
@@ -440,6 +447,7 @@ impl Strip {
         self.turn = None;
         self.tail = None;
         self.held_tail = None;
+        self.late_tails.clear();
         self.done_turn = None;
     }
 
@@ -756,7 +764,8 @@ impl Strip {
             return;
         }
         // Written: it goes with the finished turn, after its reply. While that turn is still in
-        // flight it waits for the reply; another turn's is not worth a line in the middle of this.
+        // flight it waits for the reply; another turn's goes to that turn's footer, not the middle
+        // of this one.
         let (turn, note) = (t.turn, t.note());
         self.tail = None;
         let Some(note) = note else { return };
@@ -764,6 +773,8 @@ impl Strip {
             self.notes.push(note);
         } else if self.turn == Some(turn) {
             self.held_tail = Some((turn, note));
+        } else {
+            self.late_tails.push((turn, note));
         }
     }
 }

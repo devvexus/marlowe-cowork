@@ -67,8 +67,12 @@ impl Composer {
         }
     }
 
-    /// Deletes the word before the cursor.
+    /// Deletes the word before the cursor. At the start of a line it first joins with the previous
+    /// line (deletes the newline), then deletes the word before that.
     pub fn backspace_word(&mut self) {
+        if self.text[..self.cursor].ends_with('\n') {
+            self.backspace();
+        }
         while self.text[..self.cursor].ends_with(' ') {
             self.backspace();
         }
@@ -200,6 +204,31 @@ mod tests {
         assert_eq!(c.text(), "helo world\n");
         assert_eq!(c.take(), "helo world\n");
         assert!(c.is_blank());
+    }
+
+    #[test]
+    fn word_delete_at_a_line_start_joins_then_deletes_the_word() {
+        let mut c = Composer::default();
+        c.set("one two\nthree");
+        c.home();
+        c.backspace_word();
+        assert_eq!(c.text(), "one three");
+        assert_eq!(c.cursor(), 4);
+        // Blank lines go one newline at a time.
+        c.set("a\n\nb");
+        c.home();
+        c.backspace_word();
+        assert_eq!(c.text(), "a\nb");
+        // First line start: nothing to join.
+        c.set("x");
+        c.home();
+        c.backspace_word();
+        assert_eq!(c.text(), "x");
+        // Trailing spaces on the previous line go with the word.
+        c.set("foo  \nbar");
+        c.home();
+        c.backspace_word();
+        assert_eq!(c.text(), "bar");
     }
 
     #[test]

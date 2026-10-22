@@ -48,7 +48,7 @@ pub use crew::{
 };
 pub use event::{
     Envelope, Event, LibraryModel, ProviderStatus, SessionSummary, SlotAssignment, StatusReport,
-    StoredTurn, TurnStop,
+    StoredNote, StoredTurn, TurnStop,
 };
 pub use frame::{write_line, FrameError, LineReader, MAX_LINE_BYTES};
 pub use ids::{ApprovalId, SessionId};

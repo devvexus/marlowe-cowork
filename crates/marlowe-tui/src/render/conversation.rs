@@ -579,7 +579,7 @@ pub(super) fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, th
                 out.push(Line::from(spans));
             }
         }
-        Entry::Usage { usage } => {
+        Entry::Usage { usage, memory } => {
             let mut parts = vec![
                 format!("{} in", text::compact(usage.input)),
                 format!("{} out", text::compact(usage.output)),
@@ -590,6 +590,7 @@ pub(super) fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, th
             if let Some(c) = usage.cost_usd {
                 parts.push(text::cost(c));
             }
+            parts.extend(memory.clone());
             let s = parts.join(" · ");
             let pad = width.saturating_sub(text::width(&s));
             out.push(Line::from(vec![

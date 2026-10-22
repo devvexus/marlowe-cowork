@@ -70,6 +70,14 @@ pub struct StoredTurn {
     pub numbers: Option<TurnNumbers>,
 }
 
+/// A line the daemon announced into a session outside any turn, kept with the conversation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoredNote {
+    pub at_ms: i64,
+    pub title: String,
+    pub body: String,
+}
+
 /// A model in the library.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LibraryModel {
@@ -129,6 +137,9 @@ pub enum Event {
         workspace: Option<String>,
     },
     SessionList { sessions: Vec<SessionSummary> },
+    /// Lines the daemon said into a session outside any turn (a held report), stored with it; sent
+    /// just before the `Transcript` they belong to (reply).
+    SessionNotes { session: SessionId, notes: Vec<StoredNote> },
     /// A session's stored transcript (replay on open).
     Transcript { session: SessionId, turns: Vec<StoredTurn> },
     /// A turn began. `user` is the text that started it, so every client can show it.
@@ -425,6 +436,7 @@ impl Event {
         match self {
             Event::SessionOpened { session, .. }
             | Event::Transcript { session, .. }
+            | Event::SessionNotes { session, .. }
             | Event::TurnStarted { session, .. }
             | Event::TextDelta { session, .. }
             | Event::ReasoningDelta { session, .. }

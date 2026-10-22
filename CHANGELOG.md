@@ -4,6 +4,13 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Composer and transcript notes
+
+- **Ctrl+Backspace and Ctrl+W join lines.** At the start of a line they delete the newline and then the word before it, as editors do.
+- **A turn that compacted or loaded a model and then said nothing still ends with "ended without a reply".** The engine's own lines no longer count as the model having spoken.
+- **A memory write that finishes during a later turn is kept on the turn that wrote it** (its usage footer), not dropped.
+- **A held report's line is stored with the conversation** (`session_notes`, sent as `SessionNotes` ahead of the transcript), so it is still there after the window is closed and the session reopened.
+
 ### Team agents
 
 - **A team task's `agent(model=...)` is honoured.** A name that is in the model library or Ollama's local models (added to the library) runs that agent when the planner says it fits beside what is loaded; an unknown or unfit name runs it on the conversation's model, with a note on the agent's result and on the run (as for an unfit crew slot). `inherit` keeps the role's model. `effort=` already reached the request and is tested. Tests use scripted models only.

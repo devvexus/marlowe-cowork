@@ -99,6 +99,7 @@ fn every_event_round_trips_inside_an_envelope() {
                 turns: 3,
             }],
         },
+        Event::SessionNotes { session: sid(), notes: vec![StoredNote { at_ms: 4, title: "crew · run r1 done".into(), body: "held".into() }] },
         Event::Transcript {
             session: sid(),
             turns: vec![StoredTurn { idx: 0, role: Role::User, content: vec![Part::Text { text: "hi".into() }], at_ms: 5, phases: Vec::new(), numbers: None }],

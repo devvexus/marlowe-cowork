@@ -329,6 +329,10 @@ pub(crate) fn announce(core: &Arc<Core>, session: &SessionId, title: &str, body:
             eprintln!("marlowe: no toast for {title}: {e}");
         }
     }
+    // Kept with the conversation: a closed window must not lose what nothing else will say.
+    if let Err(e) = core.store.put_note(session, now_ms(), title, body) {
+        eprintln!("marlowe: could not keep the note for {session}: {e}");
+    }
     core.bus.publish(Event::Notified {
         session: Some(session.clone()),
         title: title.to_string(),

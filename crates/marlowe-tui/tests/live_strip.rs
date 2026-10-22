@@ -427,6 +427,45 @@ fn nothing_is_shown_twice_while_the_model_thinks() {
         assert!(!text.contains("read 8.2k") && !combined(&text), "the read is not shown beside it:\n{text}");
     }
 }
+/// Once thinking ends the transcript has one fold header, `▸ thought …`, and opened it shows the
+/// read statistics first (dim labels, amber numbers) and then the thinking text.
+#[test]
+fn a_finished_thought_is_one_header_and_opens_to_the_read_then_the_thinking() {
+    let mut r = Rig::new();
+    reading(&mut r);
+    r.at(2_500, Event::ReasoningDelta { session: sid(), turn: 2, text: "Weighing the two options.".into(), tokens: 30 });
+    let mut end = PhaseEvent::end(PhaseKind::Prefill, 1_900).with_done(8_200).with_total(8_200).unit("tok");
+    end.est = false;
+    r.phase(2_600, 2, end);
+    r.at(4_600, Event::TextDelta { session: sid(), turn: 2, text: "The second.".into() });
+    r.at(4_800, Event::TurnFinished { session: sid(), turn: 2, usage: usage(), stop: TurnStop::Done });
+    let closed = r.frame(5_000);
+    assert_eq!(times(&closed, "▸ thought"), 1, "one header once thinking ends:{}{closed}", "
+");
+    assert_eq!(times(&closed, "▸ reasoning"), 0, "the live header is gone:{}{closed}", "
+");
+    assert!(!closed.contains("Weighing") && !closed.contains("read 8.2k"), "closed hides both:{}{closed}", "
+");
+    r.open_fold(5_001, 0);
+    let buf = render(&r.s, W, H);
+    let text = dump(&buf);
+    assert_eq!(times(&text, "▾ thought"), 1, "{text}");
+    let rows: Vec<&str> = text.lines().collect();
+    let at = |what: &str| rows.iter().position(|l| l.contains(what)).unwrap_or_else(|| panic!("{what} missing:{}{text}", "
+"));
+    let (head, stats, said) = (at("▾ thought"), at("read 8.2k"), at("Weighing the two options."));
+    assert!(head < stats && stats < said, "head, then the read, then the thinking:{}{text}", "
+");
+    assert_eq!(stats, head + 1, "the read is the first row under the header");
+    let th = theme();
+    use marlowe_surface::chrome::Ink;
+    let row: String = (0..buf.area.width).map(|x| buf.cell((x, stats as u16)).unwrap().symbol().to_string()).collect();
+    let col = row[..row.find("read 8.2k").unwrap()].chars().count() as u16;
+    assert_eq!(buf.cell((col, stats as u16)).unwrap().fg, Ink::Dim.color(&th), "the label is dim");
+    assert_eq!(buf.cell((col + 5, stats as u16)).unwrap().fg, Ink::Amber.color(&th), "the number is amber");
+    assert_palette_only(&buf);
+}
+
 #[test]
 fn a_later_step_reads_only_what_is_new_and_says_what_was_cached() {
     let mut r = Rig::new();
@@ -681,6 +720,45 @@ fn a_memory_write_after_the_turn_is_the_same_dim_line() {
     assert!(!r.s.strip_up(), "the strip does not linger for it");
 }
 #[test]
+fn a_memory_write_that_ends_during_a_later_turn_joins_the_turn_that_wrote_it() {
+    let mut r = Rig::new();
+    r.enter(2_000, "go on");
+    r.started(2_005, 2, "go on");
+    // Turn 1's write finishes while turn 2 is streaming.
+    r.phase(2_050, 1, PhaseEvent::end(PhaseKind::MemoryWrite, 0).stage("ingest").with_done(1).unit("items"));
+    r.phase(2_060, 1, PhaseEvent::start(PhaseKind::MemoryWrite).stage("embed").with_total(1).unit("items"));
+    r.phase(2_070, 1, PhaseEvent::end(PhaseKind::MemoryWrite, 31).stage("embed").with_done(1).unit("items"));
+    r.phase(2_080, 1, PhaseEvent::end(PhaseKind::MemoryWrite, 0).stage("index"));
+    r.at(2_100, Event::TextDelta { session: sid(), turn: 2, text: "Sure.".into() });
+    r.at(2_200, Event::TurnFinished { session: sid(), turn: 2, usage: usage(), stop: TurnStop::Done });
+    let text = r.frame(2_250);
+    assert_eq!(times(&text, "+1 memory · embedded 31ms · indexed"), 1, "kept, not dropped:\n{text}");
+    let rows: Vec<&str> = text.lines().collect();
+    let note = rows.iter().position(|l| l.contains("+1 memory")).unwrap();
+    let hello = rows.iter().position(|l| l.contains("Hello.")).unwrap();
+    let sure = rows.iter().position(|l| l.contains("Sure.")).unwrap();
+    assert!(hello < note && note < sure, "on turn 1's footer, above turn 2:\n{text}");
+    assert!(rows[note].contains("12.4k in"), "the same line as turn 1's usage:\n{text}");
+}
+
+#[test]
+fn a_turn_that_loaded_a_model_and_compacted_but_said_nothing_still_ends_without_a_reply() {
+    let mut r = Rig::new();
+    r.enter(2_000, "go on");
+    r.started(2_005, 2, "go on");
+    r.phase(2_020, 2, PhaseEvent::end(PhaseKind::Fit, 10).with_done(28_100).unit("tok"));
+    r.phase(2_030, 2, ph(PhaseKind::Compact));
+    r.phase(2_900, 2, PhaseEvent::end(PhaseKind::Compact, 870).with_done(28_100).with_total(6_200).unit("tok"));
+    r.phase(3_000, 2, ph(PhaseKind::Load));
+    r.phase(3_500, 2, PhaseEvent::end(PhaseKind::Load, 500).detail("marlowe-dusk:22b"));
+    r.at(4_000, Event::TurnFinished { session: sid(), turn: 2, usage: usage(), stop: TurnStop::Done });
+    let text = r.frame(4_100);
+    assert_eq!(times(&text, "compacted 28.1k"), 1, "{text}");
+    assert_eq!(times(&text, "loaded marlowe-dusk:22b"), 1, "{text}");
+    assert_eq!(times(&text, "ended without a reply"), 1, "{text}");
+}
+
+#[test]
 fn compaction_is_one_line_with_one_clock_then_a_note() {
     let mut r = Rig::new();
     r.enter(2_000, "go on");
@@ -840,6 +918,42 @@ fn a_reopened_session_shows_the_stored_read_and_timings() {
     r.s.on_key(ctrl('t'));
     let open = r.frame(9_003);
     assert!(open.contains("recall 90ms · first token 1.4s"), "{open}");
+}
+
+/// A held report's line is stored with the conversation: reopening it (a closed window) shows the
+/// line where it was said, between the turns around it.
+#[test]
+fn a_reopened_session_shows_the_stored_held_report_where_it_was_said() {
+    use marlowe_model::{Part, Role};
+    let mut r = Rig::new();
+    let row = |idx: u32, role: Role, text: &str, at: i64| StoredTurn {
+        idx,
+        role,
+        content: vec![Part::Text { text: text.into() }],
+        at_ms: BASE + at,
+        phases: Vec::new(),
+        numbers: None,
+    };
+    let turns = vec![
+        row(0, Role::User, "start the run", 0),
+        row(1, Role::Assistant, "Sent to the tester.", 1),
+        row(2, Role::User, "how is it going", 20_000),
+        row(3, Role::Assistant, "Still working.", 20_001),
+    ];
+    let note = marlowe_proto::StoredNote { at_ms: BASE + 10_000, title: "crew · run r1 done".into(), body: "Seven seeds fail · Marlowe takes it up on your next message".into() };
+    r.at(9_000, Event::SessionNotes { session: sid(), notes: vec![note] });
+    r.at(9_001, Event::Transcript { session: sid(), turns });
+    let text = r.frame(9_002);
+    let rows: Vec<&str> = text.lines().collect();
+    let at = |what: &str| rows.iter().position(|l| l.contains(what)).unwrap_or_else(|| panic!("{what} missing:
+{text}"));
+    let (sent, line, ask) = (at("Sent to the tester."), at("notification · crew · run r1 done"), at("how is it going"));
+    assert!(sent < line && line < ask, "between the two turns:
+{text}");
+    assert!(rows[line].contains("Seven seeds fail"), "{text}");
+    // Opened again without notes: none is left over from before.
+    r.at(9_100, Event::Transcript { session: sid(), turns: Vec::new() });
+    assert!(!r.frame(9_101).contains("crew · run r1 done"));
 }
 
 #[test]

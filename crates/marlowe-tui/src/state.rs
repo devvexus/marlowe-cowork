@@ -77,7 +77,8 @@ pub enum Entry {
     Tool { call_id: String, summary: String, status: ToolStatus },
     Note { text: String, tone: NoteTone },
     /// Usage footer for a finished turn.
-    Usage { usage: Usage },
+    /// `memory` is the turn's memory write when it finished after the turn did.
+    Usage { usage: Usage, memory: Option<String> },
     /// Memories the daemon injected before the turn, and (from a daemon that measures it) how long
     /// each stage of finding them took.
     Recall { count: u32, summary: String, timing: Option<Box<RecallTiming>> },
@@ -750,6 +751,12 @@ pub struct State {
     pub anchor: Cell<Option<Anchor>>,
     /// When the live reasoning block's first delta arrived.
     thinking_since: Option<i64>,
+    /// Stored notes of the session being opened, sent just ahead of its transcript.
+    stored_notes: Vec<marlowe_proto::StoredNote>,
+    /// The footer entry of each finished turn, so a note that arrives late can join it.
+    usage_at: std::collections::HashMap<u32, usize>,
+    /// Notes the engine's stages made (a load, a compaction): not something the model said.
+    engine_notes: Vec<usize>,
     /// Lines scrolled up from the bottom of the conversation; 0 follows the stream. Scrolled up,
     /// the pane stays on the lines it shows while text arrives below ([`Viewport`]), so the lines
     /// from the bottom grow; [`State::settle_scroll`] brings this back in step before input uses it.
@@ -842,6 +849,9 @@ impl State {
             marks: RefCell::new(Vec::new()),
             anchor: Cell::new(None),
             thinking_since: None,
+            stored_notes: Vec::new(),
+            usage_at: Default::default(),
+            engine_notes: Vec::new(),
             scroll: 0,
             scroll_max: Cell::new(0),
             layout: RefCell::new(crate::layout_cache::TranscriptCache::default()),
@@ -1030,6 +1040,8 @@ impl State {
         self.anchor.set(None);
         self.marks.borrow_mut().clear();
         self.thinking_since = None;
+        self.usage_at.clear();
+        self.engine_notes.clear();
     }
 
     /// Clears the conversation for a new session.
@@ -1183,11 +1195,13 @@ impl State {
                 self.code.detail_refresh = None;
                 self.merge_tool_details(turns);
             }
+            Event::SessionNotes { notes, .. } => self.stored_notes = notes.clone(),
             Event::Transcript { session, turns } => {
+                let notes = std::mem::take(&mut self.stored_notes);
                 if self.pending_open.as_ref() == Some(session) || self.mine(session) {
                     self.pending_open = None;
                     self.session = Some(session.clone());
-                    self.entries = entries_from_transcript(turns);
+                    self.entries = entries_with_notes(turns, &notes);
                     self.forget_folds();
                     self.epoch = self.epoch.wrapping_add(1);
                     self.code.tool_detail = transcript_details(turns);
@@ -1321,7 +1335,8 @@ impl State {
                     TurnStop::Budget => self.note("stopped at the budget", NoteTone::Amber),
                 }
                 if usage.total() > 0 {
-                    self.entries.push(Entry::Usage { usage: *usage });
+                    self.usage_at.insert(*turn, self.entries.len());
+                    self.entries.push(Entry::Usage { usage: *usage, memory: None });
                 }
                 self.strip_notes();
                 self.live = None;
@@ -1555,7 +1570,22 @@ impl State {
     /// written) goes into the transcript as dim lines, so the strip itself shows only the present.
     fn strip_notes(&mut self) {
         for n in self.strip.take_notes() {
+            self.engine_notes.push(self.entries.len());
             self.note(&n.text, if n.bad { NoteTone::Red } else { NoteTone::Dim });
+        }
+        for (turn, n) in self.strip.take_late() {
+            let slot = self.usage_at.get(&turn).copied().and_then(|i| match self.entries.get_mut(i) {
+                Some(Entry::Usage { memory, .. }) => Some(memory),
+                _ => None,
+            });
+            match slot {
+                Some(m) => *m = Some(match m.take() {
+                    Some(prev) => format!("{prev} · {}", n.text),
+                    None => n.text,
+                }),
+                // That turn has no footer (it used no tokens): the note stands alone.
+                None => self.note(&n.text, NoteTone::Dim),
+            }
         }
     }
 
@@ -1568,10 +1598,13 @@ impl State {
     fn turn_said_anything(&self) -> bool {
         self.entries
             .iter()
+            .enumerate()
             .rev()
-            .take_while(|e| !matches!(e, Entry::User { steer: false, .. } | Entry::News { .. }))
-            .any(|e| match e {
+            .take_while(|(_, e)| !matches!(e, Entry::User { steer: false, .. } | Entry::News { .. }))
+            .any(|(i, e)| match e {
                 Entry::Prose { text } => !text.trim().is_empty(),
+                // A model load or compaction is the engine's line, not a reply.
+                Entry::Note { .. } if self.engine_notes.contains(&i) => false,
                 Entry::Note { .. } | Entry::File { .. } | Entry::Job { .. } | Entry::Brief { .. } => true,
                 _ => false,
             })
@@ -1661,6 +1694,32 @@ pub fn user_entry(text: String) -> Entry {
 
 fn first_line(s: &str) -> String {
     crate::text::truncate(s.lines().next().unwrap_or("").trim(), 60)
+}
+
+/// A line announced outside any turn, as the transcript shows it (live and on reopening).
+pub(crate) fn notification_line(title: &str, body: &str) -> String {
+    let line = if body.trim().is_empty() { title.to_string() } else { format!("{title} \u{b7} {body}") };
+    format!("notification \u{b7} {}", crate::text::clean(&line))
+}
+
+/// The transcript with the notes the daemon stored beside it, each before the first turn that began
+/// after it was said.
+pub fn entries_with_notes(turns: &[StoredTurn], notes: &[marlowe_proto::StoredNote]) -> Vec<Entry> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    for n in notes {
+        let begins = |t: &StoredTurn| {
+            t.role == Role::User
+                && t.at_ms > n.at_ms
+                && !matches!(t.content.first(), Some(Part::Text { text }) if text.trim_start().starts_with("<system-reminder>"))
+        };
+        let k = turns.iter().enumerate().skip(from).find(|(_, t)| begins(t)).map_or(turns.len(), |(i, _)| i);
+        out.extend(entries_from_transcript(&turns[from..k]));
+        out.push(Entry::Note { text: notification_line(&n.title, &n.body), tone: NoteTone::Dim });
+        from = k;
+    }
+    out.extend(entries_from_transcript(&turns[from..]));
+    out
 }
 
 /// Rebuilds conversation entries from a stored transcript.

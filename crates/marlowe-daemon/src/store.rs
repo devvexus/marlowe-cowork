@@ -77,6 +77,12 @@ CREATE TABLE IF NOT EXISTS turn_context (
     at_offset INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (session, turn, kind)
 );
+CREATE TABLE IF NOT EXISTS session_notes (
+    session TEXT NOT NULL,
+    at      INTEGER NOT NULL,
+    title   TEXT NOT NULL,
+    body    TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS rewound_turns (
     session     TEXT NOT NULL,
     idx         INTEGER NOT NULL,
@@ -213,6 +219,8 @@ enum Cmd {
     PutTimings { session: SessionId, turn: u32, spans: Vec<PhaseSpan>, numbers: TurnNumbers, reply: Sender<StoreResult<()>> },
     PutContext { session: SessionId, turn: u32, kind: String, text: String, offset: u32, reply: Sender<StoreResult<()>> },
     Context(SessionId, Sender<StoreResult<SavedContext>>),
+    PutNote { session: SessionId, at: i64, title: String, body: String, reply: Sender<StoreResult<()>> },
+    Notes(SessionId, Sender<StoreResult<Vec<marlowe_proto::StoredNote>>>),
     Close,
 }
 
@@ -404,6 +412,24 @@ fn serve(conn: &mut Connection, cmd: Cmd) -> bool {
                 )
                 .map(|_| ())
                 .map_err(e);
+            let _ = reply.send(r);
+        }
+        Cmd::PutNote { session, at, title, body, reply } => {
+            let r = conn
+                .execute("INSERT INTO session_notes (session, at, title, body) VALUES (?1, ?2, ?3, ?4)", params![session.as_str(), at, title, body])
+                .map(|_| ())
+                .map_err(e);
+            let _ = reply.send(r);
+        }
+        Cmd::Notes(session, reply) => {
+            let r = (|| {
+                let mut st = conn.prepare("SELECT at, title, body FROM session_notes WHERE session = ?1 ORDER BY at, rowid")?;
+                let rows = st.query_map([session.as_str()], |r| {
+                    Ok(marlowe_proto::StoredNote { at_ms: r.get(0)?, title: r.get(1)?, body: r.get(2)? })
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()
+            })()
+            .map_err(e);
             let _ = reply.send(r);
         }
         Cmd::Close => return false,
@@ -889,6 +915,16 @@ impl Store {
     /// Keeps a turn's measured phases and totals.
     pub fn put_timings(&self, session: &SessionId, turn: u32, spans: Vec<PhaseSpan>, numbers: TurnNumbers) -> StoreResult<()> {
         self.call(|reply| Cmd::PutTimings { session: session.clone(), turn, spans, numbers, reply })
+    }
+
+    /// Keeps a line announced into a session outside any turn, so it is there when the session is
+    /// opened again.
+    pub fn put_note(&self, session: &SessionId, at: i64, title: &str, body: &str) -> StoreResult<()> {
+        self.call(|reply| Cmd::PutNote { session: session.clone(), at, title: title.into(), body: body.into(), reply })
+    }
+
+    pub fn notes(&self, session: &SessionId) -> StoreResult<Vec<marlowe_proto::StoredNote>> {
+        self.call(|r| Cmd::Notes(session.clone(), r))
     }
 
     /// Stops the store thread after pending commands.
