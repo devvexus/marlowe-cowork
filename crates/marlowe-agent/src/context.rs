@@ -1,7 +1,7 @@
 //! Context assembly: tiered system prompt, append-only history, compaction, the prefix budget.
 //!
 //! Tiers: stable (persona core + blocks + project sections + user + output style, cached) ->
-//! context (profile, compaction summary) -> per-turn (retrieved memory, environment) -> history.
+//! context (profile) -> per-turn (retrieved memory, environment) -> history.
 //! With [`ContextConfig::volatile_tail`] the per-turn tier rides on its turn's user message as a
 //! `<system-reminder>` instead, so the system prompt is byte-identical from turn to turn.
 //!
@@ -35,8 +35,15 @@ pub const DEFAULT_WINDOW: u32 = 32_768;
 /// Replaces the body of a masked tool result.
 pub const MASKED_RESULT: &str = "[older tool result elided by the harness; call the tool again if needed]";
 
-/// Preface of the harness-written summary that replaces compacted history.
-pub const SUMMARY_PREFACE: &str = "[The conversation so far, condensed by the harness]";
+/// Opens the one message that stands in for compacted history. It says who did what: the harness
+/// compacted, the assistant wrote the summary, the user said none of it. Stable text (cache-safe).
+pub const SUMMARY_PREFACE: &str = "This session is being continued from an earlier conversation that ran out of context. The harness compacted that conversation, and the summary below was written by the assistant (you) from it. It is not something the user said, and the user did not write it.";
+
+/// Follows the summary and says what comes next and how to carry on. Stable text (cache-safe).
+pub const SUMMARY_CLOSING: &str = "The summary covers everything before the messages that follow. The user's latest message and the most recent steps follow verbatim, untouched. Continue from where the work stands: do not ask the user to repeat anything the summary records, and do not re-read files it already covers unless you need their exact text.";
+
+/// Heads the working set the harness kept verbatim beside the summary.
+pub const WORKING_SET_HEADING: &str = "Kept verbatim by the harness (not part of the summary):";
 
 /// Instruction given to the summariser call.
 pub const SUMMARY_PROMPT: &str = "Summarise the conversation so far for your own later use: the \
@@ -159,9 +166,31 @@ fn system_tokens(blocks: &[SystemBlock]) -> u32 {
     blocks.iter().map(|b| estimate_tokens(&b.text)).sum()
 }
 
-/// The system block carrying a compaction summary. Cached: it changes only on compaction.
-pub fn summary_block(summary: &str) -> SystemBlock {
-    SystemBlock { text: format!("{SUMMARY_PREFACE}\n\n{}", summary.trim()), cache: true }
+/// The one framed user-role message that carries a compaction summary (and the pinned working
+/// set), first among the messages. It changes only on compaction, so the cache holds after it.
+pub fn summary_message(summary: &str, pinned: &str) -> Message {
+    let mut text = format!("{SUMMARY_PREFACE}
+
+<summary>
+{}
+</summary>", summary.trim());
+    if !pinned.trim().is_empty() {
+        text.push_str(&format!("
+
+{WORKING_SET_HEADING}
+{}", pinned.trim()));
+    }
+    text.push_str(&format!("
+
+{SUMMARY_CLOSING}"));
+    Message::user(text)
+}
+
+/// [`summary_message`] for a conversation that has been compacted.
+fn convo_summary_message(convo: &Conversation) -> Option<Message> {
+    let s = convo.summary.as_deref().filter(|s| !s.trim().is_empty())?;
+    let pinned = convo.ext.get::<PinnedSnapshot>().map_or("", |p| p.0.as_str());
+    Some(summary_message(s, pinned))
 }
 
 /// The pinned working set as it stood at the last compaction, rendered after the summary (so it
@@ -234,11 +263,12 @@ pub fn assemble(system: &SystemPrompt, memory: &[String], convo: &Conversation, 
 /// Builds the system blocks and message list for the next model call.
 ///
 /// System: stable tier (core, blocks, project sections, user, output style), the profile
-/// (cached), the compaction summary, then (unless `volatile_tail`) retrieved memory blocks and
+/// (cached), then (unless `volatile_tail`) retrieved memory blocks and
 /// the environment. Messages: the history as stored, reasoning included (a provider that must
 /// not resend old reasoning drops it in its own request builder; local models never do, so their
 /// prefix cache holds); with `volatile_tail`, each turn's recorded tail prefixed to its user
-/// message; with [`Masking::Rolling`], all but the last `keep_tool_results` results masked.
+/// message; with [`Masking::Rolling`], all but the last `keep_tool_results` results masked. After
+/// a compaction the framed summary message ([`summary_message`]) is the first message.
 pub fn assemble_with(
     system: &SystemPrompt,
     profile: &str,
@@ -255,12 +285,6 @@ pub fn assemble_with(
     };
     if inherited.is_none() && !profile.trim().is_empty() {
         blocks.push(SystemBlock { text: profile.trim().to_string(), cache: true });
-    }
-    if let Some(s) = convo.summary.as_deref().filter(|s| !s.trim().is_empty()) {
-        match convo.ext.get::<PinnedSnapshot>().filter(|p| !p.0.is_empty()) {
-            Some(p) => blocks.push(summary_block(&format!("{}\n\n{}", s.trim(), p.0))),
-            None => blocks.push(summary_block(s)),
-        }
     }
     if !cfg.volatile_tail && inherited.is_none() {
         blocks.extend(
@@ -291,6 +315,9 @@ pub fn assemble_with(
     }
     if cfg.masking == Masking::Rolling {
         mask_tool_results(&mut messages, cfg.keep_tool_results);
+    }
+    if let Some(m) = convo_summary_message(convo) {
+        messages.insert(0, m);
     }
     if let Some(p) = inherited {
         let mut all = p.messages.clone();
@@ -334,7 +361,7 @@ pub fn needs_compaction(tokens: u32, cfg: &ContextConfig) -> bool {
 
 /// Estimated tokens of what compaction acts on: the summary plus the messages.
 fn history_tokens(convo: &Conversation) -> u32 {
-    convo.summary.as_deref().map_or(0, |s| estimate_tokens(&summary_block(s).text))
+    convo_summary_message(convo).map_or(0, |m| estimate_message_tokens(&m))
         + convo.messages.iter().map(estimate_message_tokens).sum::<u32>()
 }
 
@@ -751,12 +778,13 @@ mod tests {
         let a = assemble(&sys, &["<memory>x</memory>".into()], &convo, &cfg);
         let texts: Vec<&str> = a.system.iter().map(|b| b.text.as_str()).collect();
         assert_eq!(texts[0], "core");
-        assert!(texts[1].starts_with(SUMMARY_PREFACE) && texts[1].contains("earlier stuff"));
-        assert_eq!(texts[2], "<memory>x</memory>");
-        assert!(texts[3].starts_with("<environment>"));
-        assert!(!a.system[3].cache);
-        assert!(a.messages[1].thinking().is_some(), "an earlier turn's thinking is sent as stored");
-        assert_eq!(a.messages[1].joined_text(), "answer");
+        assert_eq!(texts[1], "<memory>x</memory>");
+        assert!(texts[2].starts_with("<environment>"));
+        assert!(!a.system[2].cache);
+        assert!(!texts.iter().any(|t| t.contains("earlier stuff")), "the summary is not in the system prompt");
+        assert!(a.messages[0].joined_text().starts_with(SUMMARY_PREFACE) && a.messages[0].joined_text().contains("earlier stuff"));
+        assert!(a.messages[2].thinking().is_some(), "an earlier turn's thinking is sent as stored");
+        assert_eq!(a.messages[2].joined_text(), "answer");
         assert!(convo.messages[1].thinking().is_some(), "the stored history is untouched");
         assert!(a.tokens > 0);
     }
@@ -887,5 +915,36 @@ mod tests {
         assert!(!fit.wants_tool_search);
         let roomy = fit_prefix(1_000, 1_000, &PromptSections { instructions: "short".into(), ..Default::default() }, b);
         assert!(roomy.warnings.is_empty() && roomy.sections.instructions == "short");
+    }
+
+    #[test]
+    fn a_compacted_conversation_opens_with_one_framed_user_message() {
+        let sys = SystemPrompt::with_core("core");
+        let mut convo = Conversation::new(SessionId::from("s"), None);
+        convo.summary = Some("  the user wants X; file a.rs was edited  ".into());
+        convo.ext.insert(PinnedSnapshot("<todos>
+- [ ] ship
+</todos>".into()));
+        convo.push(Message::user("what next?"));
+        convo.push(Message::assistant("one step"));
+        let cfg = ContextConfig::for_model(&ModelInfo::bare(ProviderKind::Ollama, "m"));
+        let a = assemble(&sys, &[], &convo, &cfg);
+
+        assert_eq!(a.system.len(), 1, "a compaction leaves the system prompt alone");
+        assert_eq!(a.messages.len(), 3);
+        assert_eq!(a.messages[0].role, Role::User, "the summary is not in the system role");
+        assert_eq!(a.messages[1], Message::user("what next?"));
+        assert_eq!(a.messages[2], Message::assistant("one step"));
+        let t = a.messages[0].joined_text();
+        assert!(t.starts_with(SUMMARY_PREFACE) && t.ends_with(SUMMARY_CLOSING), "{t}");
+        assert!(t.contains("The harness compacted") && t.contains("written by the assistant"));
+        assert!(t.contains("not something the user said"));
+        assert!(t.contains("<summary>
+the user wants X; file a.rs was edited
+</summary>"));
+        assert!(t.contains("follow verbatim") && t.contains("do not ask the user to repeat"));
+        let (summary, working) = (t.find("</summary>").unwrap(), t.find(WORKING_SET_HEADING).unwrap());
+        assert!(summary < working && working < t.find("- [ ] ship").unwrap() && t.find("- [ ] ship") < t.find(SUMMARY_CLOSING));
+        assert_eq!(assemble(&sys, &[], &convo, &cfg).messages, a.messages, "stable between steps");
     }
 }

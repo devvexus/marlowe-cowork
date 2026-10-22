@@ -535,14 +535,15 @@ fn parity_c7_the_pinned_working_set_survives_compaction() {
     run(&a, &mut c, "go on");
     let r = p.requests();
     assert!(system_text(&r[0]).contains("You condense conversations"), "the first call is the summariser");
-    let sys = system_text(&r[1]);
+    assert!(!system_text(&r[1]).contains("SUMMARY-ONE"), "the summary rides in a message, not the system prompt");
+    let sys = r[1].messages[0].joined_text();
     assert!(sys.contains("SUMMARY-ONE") && sys.contains("<pinned_working_set>"), "{sys}");
     assert!(sys.contains("TODO-ALPHA") && sys.contains("USER-ORDER: never touch the migrations folder"));
 
     // A second compaction keeps the pinned set (it is carried, not summarised away).
     long_history(&mut c, 12);
     run(&a, &mut c, "and again");
-    let sys = system_text(&p.requests()[3]);
+    let sys = p.requests()[3].messages[0].joined_text();
     assert!(sys.contains("SUMMARY-TWO") && sys.contains("TODO-ALPHA") && sys.contains("USER-ORDER"), "{sys}");
 }
 
@@ -614,7 +615,9 @@ fn parity_c8_compact_focus_reaches_the_summariser() {
     run(&a, &mut c, "carry on");
     let r = p.requests();
     assert!(last_user(&r[0]).contains("focus on: the parser"), "{}", last_user(&r[0]));
-    assert!(system_text(&r[1]).contains("SUMMARY"));
+    assert!(r[1].messages[0].joined_text().contains("<summary>
+SUMMARY
+</summary>"));
     assert!(c.messages.len() < 8, "older history was folded into the summary");
 }
 

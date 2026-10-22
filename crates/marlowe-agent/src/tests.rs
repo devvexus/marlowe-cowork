@@ -12,7 +12,7 @@ use marlowe_model::{
 use marlowe_proto::SessionId;
 use serde_json::{json, Value};
 
-use crate::context::{SUMMARY_PREFACE, SUMMARY_PROMPT};
+use crate::context::{SUMMARY_CLOSING, SUMMARY_PREFACE, SUMMARY_PROMPT};
 use crate::run_tools::DENIED;
 use crate::*;
 
@@ -642,9 +642,15 @@ fn compaction_fires_at_the_trigger_and_keeps_the_live_turn() {
     assert!(prompt.contains(SUMMARY_PROMPT) && prompt.contains("answer 9"));
     assert!(prompt.contains("<current_request>\nnow?\n</current_request>"), "the summariser sees the live request");
     assert!(prompt.find("<current_request>") < prompt.find("<transcript>"));
-    let sys = reqs[1].system_text();
-    assert!(sys.contains(SUMMARY_PREFACE) && sys.contains("SUMMARY OF EARLIER"));
-    assert_eq!(reqs[1].messages, vec![Message::user("now?")]);
+    assert!(!reqs[1].system_text().contains("SUMMARY OF EARLIER"), "the summary is not a system block");
+    assert_eq!(reqs[1].messages.len(), 2, "the framed summary, then the live turn");
+    assert_eq!(reqs[1].messages[0].role, Role::User);
+    let framed = reqs[1].messages[0].joined_text();
+    assert!(framed.starts_with(SUMMARY_PREFACE) && framed.contains("<summary>
+SUMMARY OF EARLIER
+</summary>"));
+    assert!(framed.ends_with(SUMMARY_CLOSING));
+    assert_eq!(reqs[1].messages[1], Message::user("now?"));
 }
 
 #[test]
