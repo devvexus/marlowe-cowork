@@ -880,3 +880,4 @@ Brief narrative:
 
 ### Verified
 - `cargo check --workspace --all-targets` clean; `cargo test --workspace`: 654 passed, 0 failed, including `embedding_reference` and `cross_encoder_reference` against the real pinned models on CPU.
+- Review: line endings that earlier commits had flipped (crew supervisor, runner, playbook; git run; mind actor; wire) are back to each file's own.
