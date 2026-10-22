@@ -65,6 +65,13 @@ fn is_active(t: &TaskInfo) -> bool {
     !t.status.is_terminal() && t.kind != TaskKind::Cron
 }
 
+/// A run that is paused, whether a window close interrupted it or the user kept it paused. It is
+/// offered for resume at the next launch; another conversation is not told about it (an 11-hour-old
+/// pair of them once sat in every notice and derailed the model).
+fn is_paused_elsewhere(t: &TaskInfo, me: &marlowe_proto::SessionId) -> bool {
+    t.status == TaskStatus::Waiting && t.detail.as_deref().is_some_and(|d| d.starts_with("paused")) && t.session.as_ref() != Some(me)
+}
+
 /// `running`, `queued`, `paused`, `needs you`: what a person would say about it.
 fn status_word(t: &TaskInfo) -> String {
     if t.status != TaskStatus::Waiting {
@@ -78,7 +85,7 @@ fn status_word(t: &TaskInfo) -> String {
 
 /// The reminder for the active tasks, newest first, or `None` when nothing is active.
 fn notice_for(tasks: &[TaskInfo], me: &marlowe_proto::SessionId) -> Option<String> {
-    let active: Vec<&TaskInfo> = tasks.iter().filter(|t| is_active(t)).collect();
+    let active: Vec<&TaskInfo> = tasks.iter().filter(|t| is_active(t) && !is_paused_elsewhere(t, me)).collect();
     if active.is_empty() {
         return None;
     }
@@ -201,10 +208,10 @@ mod tests {
         let id = run_of_another_conversation(&reg);
         assert_eq!(turn(&mw, &mut c, "a").len(), 1);
         assert!(turn(&mw, &mut c, "b").is_empty(), "same set, same status");
-        reg.set_status(&id, TaskStatus::Waiting, Some("paused".into()));
+        reg.set_status(&id, TaskStatus::Waiting, Some("needs you: approve a push".into()));
         let again = turn(&mw, &mut c, "c");
         assert_eq!(again.len(), 1);
-        assert!(again[0].contains("paused"), "{again:?}");
+        assert!(again[0].contains("needs you"), "{again:?}");
         assert!(turn(&mw, &mut c, "d").is_empty());
         let job = reg.register(NewTask::new(TaskKind::Job, "cargo test").raw_id("j1").session(Some(c.session.clone())));
         let more = turn(&mw, &mut c, "e");
@@ -225,6 +232,36 @@ mod tests {
         assert_eq!(turn(&mw, &mut c, "now").len(), 1);
         let mut fresh = Conversation::new(SessionId("fresh".into()), None);
         assert_eq!(turn(&mw, &mut fresh, "first turn").len(), 1, "the first turn of a conversation always gets it");
+    }
+
+    #[test]
+    fn a_run_a_close_paused_is_not_listed_to_another_conversation() {
+        let (reg, mw, mut c) = rig();
+        let id = run_of_another_conversation(&reg);
+        reg.set_status(&id, TaskStatus::Waiting, Some("paused: interrupted: stopped after step 4".into()));
+        assert!(turn(&mw, &mut c, "hello").is_empty(), "offered for resume at launch, not restated to every conversation");
+        // Kept paused after the offer: still not listed elsewhere.
+        reg.set_status(&id, TaskStatus::Waiting, Some("paused".into()));
+        assert!(turn(&mw, &mut c, "again").is_empty());
+        // Its own conversation still hears of it.
+        let own = reg.register(NewTask::new(TaskKind::Agent, "mine").raw_id("own1").session(Some(c.session.clone())));
+        reg.set_status(&own, TaskStatus::Waiting, Some("paused".into()));
+        let note = turn(&mw, &mut c, "mine?");
+        assert!(note.len() == 1 && note[0].contains(&own) && !note[0].contains(&id), "{note:?}");
+        // Resumed, it is running work for everyone again.
+        reg.set_status(&id, TaskStatus::Running, None);
+        let note = turn(&mw, &mut c, "resumed");
+        assert!(note.len() == 1 && note[0].contains(&id), "{note:?}");
+    }
+
+    #[test]
+    fn the_notice_names_task_list_so_the_tool_must_be_there() {
+        let (reg, mw, mut c) = rig();
+        run_of_another_conversation(&reg);
+        let note = turn(&mw, &mut c, "go").remove(0);
+        assert!(note.contains("task_list"));
+        // Offered in a session with no workspace: the notice can appear there.
+        assert!((marlowe_exec::specs::group(marlowe_agent::ToolGroup::Tasks).unwrap().detect)(None));
     }
 
     #[test]

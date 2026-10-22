@@ -4,6 +4,12 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Background work
+
+- **A background subagent shows on the Crew rail** as a one-specialist task with its step, the tool it is in and its time; the `/tasks` panel stops it. Its start and end times are real now.
+- **`task_list` is offered in every session**, with or without a workspace, so the background-work notice never points at a tool the model lacks.
+- **A paused run is no longer listed to other conversations.** A run a window close interrupted is offered for resume at the next launch; paused, it stays out of every other conversation's background notice.
+
 ### Prompt cache
 
 - **A local model's prompt cache is never invalidated.** Marlowe stripped old reasoning from the history twice (the agent's context assembly and the Ollama request builder), so each new message rewrote what the model had already read; on hybrid models (qwen35: dusk-22b) that meant re-reading the whole conversation, 16-20k tokens and 8-10 s, on every message. History now goes out exactly as produced and the model's template decides what to render; every request's messages are an exact prefix of the next (tested step to step and across turns). Hosted models (OpenRouter) keep their old behaviour in their own request builder.
