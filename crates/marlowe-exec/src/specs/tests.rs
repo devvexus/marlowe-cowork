@@ -449,7 +449,8 @@ fn every_group_file_registers_its_hooks() {
             g.group
         );
         // Workflows are offered to a local model in any workspace (W).
-        assert_eq!((g.detect)(None), g.group == marlowe_agent::ToolGroup::Workflow, "{:?}", g.group);
+        let anywhere = matches!(g.group, marlowe_agent::ToolGroup::Workflow | marlowe_agent::ToolGroup::Tasks);
+        assert_eq!((g.detect)(None), anywhere, "{:?}", g.group);
     }
     assert!(super::group(marlowe_agent::ToolGroup::Memory).is_none(), "memory tools are the daemon's");
 }

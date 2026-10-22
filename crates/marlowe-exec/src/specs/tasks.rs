@@ -534,10 +534,11 @@ pub fn configure(tools: BuiltinTools, _setup: &super::HostSetup<'_>) -> BuiltinT
     tools.with_state(TasksGroup { enabled: true })
 }
 
-/// Every workspace: background work is part of coding. (`configure` is what turns the tools on,
-/// so a daemon-less host never offers them.)
-pub fn detect(root: Option<&std::path::Path>) -> bool {
-    root.is_some()
+/// Every session, workspace or not: the background-work notice can appear anywhere a crew run or
+/// a subagent does, and it points at `task_list`. (`configure` is what turns the tools on, so a
+/// daemon-less host never offers them.)
+pub fn detect(_root: Option<&std::path::Path>) -> bool {
+    true
 }
 
 #[cfg(test)]
