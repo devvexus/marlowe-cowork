@@ -314,10 +314,13 @@ fn probes(core: &Arc<Core>, model: Option<ModelRef>) -> Probes {
             let loaded = models.as_ref()?.models.resident()?;
             Some(loaded.iter().any(|n| live::same_model(n, &name)))
         }),
-        crew_run: Box::new(move || {
+        queued_behind: Box::new(move || {
             let core = for_crew.upgrade()?;
-            let run = core.crew.get()?.supervisor.local_stream_on(crew_model.as_ref()?)?;
-            Some(run.short().to_string())
+            let model = crew_model.as_ref()?;
+            let (run, streams) = core.crew.get()?.supervisor.local_streams_on(model);
+            let run = run?;
+            let why = core.brains.context().queue_reason(model, streams)?;
+            Some(format!("waiting for crew run {} · {why}", run.short()))
         }),
         prefill_rate: Box::new(move || {
             let core = for_rate.upgrade()?;

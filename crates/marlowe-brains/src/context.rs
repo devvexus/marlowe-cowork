@@ -134,6 +134,24 @@ impl ContextGate<'_> {
         slots.saturating_sub(usize::from(shared)).max(1)
     }
 
+    /// Why a request on `model` waits while `streams` crew calls are in flight on it, or `None`
+    /// when it does not (the runner serves more requests at once than they hold). 2026-10-21:
+    /// OLLAMA_NUM_PARALLEL=6, yet Ollama served the qwen35 dusk one request at a time, so the
+    /// conductor's calls queued 5 to 25 s behind a team task's agent.
+    pub fn queue_reason(&self, model: &ModelRef, streams: usize) -> Option<String> {
+        let serving = self.slots(model).ok()?.max(1);
+        if streams < usize::from(serving) {
+            return None;
+        }
+        let planned = self.policy(model).map_or(1, |p| p.parallel.max(1));
+        let serial = self.b.ctx.seen.lock().unwrap_or_else(|e| e.into_inner()).get(model).and_then(|e| e.serial_arch.clone());
+        Some(match serial {
+            Some(arch) => format!("Ollama runs {arch} models one request at a time"),
+            None if planned > serving => format!("Ollama is serving {serving} at a time, not the {planned} planned"),
+            None => format!("its {serving} slot{} are all busy", if serving == 1 { "" } else { "s" }),
+        })
+    }
+
     /// Waits up to `timeout` for a free slot on `model` (crew threads only; the conductor never
     /// waits). The slot is released when the lease drops.
     pub fn lease(&self, model: &ModelRef, timeout: Duration) -> Result<SlotLease, BrainsError> {
@@ -204,7 +222,7 @@ fn blob_key(blob: &str) -> &str {
     blob.rsplit(['\\', '/']).next().unwrap_or(blob)
 }
 
-fn engine_settings(rt: &RunnerObservation, has_draft: bool) -> EngineSettings {
+fn engine_settings(rt: &RunnerObservation, has_draft: bool, arch: Option<&str>) -> EngineSettings {
     let launch = rt.load.as_ref().map(|l| &l.launch);
     let own = rt.load.as_ref().filter(|l| !l.contexts.is_empty());
     let on = |s: &Option<String>| s.as_deref().map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "on" | "1" | "true"));
@@ -229,6 +247,7 @@ fn engine_settings(rt: &RunnerObservation, has_draft: bool) -> EngineSettings {
         slots,
         decode_tok_s: own.and_then(|l| l.decode_tok_s),
         load_secs: own.and_then(|l| l.started_secs),
+        serial_arch: arch.filter(|a| rt.serial_archs.iter().any(|s| s == a)).map(str::to_string),
     }
 }
 
@@ -300,7 +319,7 @@ impl Brains {
         let a = self.analyzed(model).ok();
         let blob = a.as_ref().and_then(|a| a.files.blob.clone());
         let rt = hw.models.runtime(&model.model_id, blob.as_deref());
-        let e = engine_settings(&rt, a.as_ref().is_some_and(|a| a.draft.is_some()));
+        let e = engine_settings(&rt, a.as_ref().is_some_and(|a| a.draft.is_some()), a.as_ref().map(|a| a.main.arch.as_str()));
         self.ctx.seen.lock().unwrap_or_else(|e| e.into_inner()).insert(model.clone(), e.clone());
         e
     }
@@ -342,7 +361,7 @@ impl Brains {
         let a = self.analyzed(model)?;
         let blob = a.files.blob.clone();
         let rt = hw.models.runtime(&model.model_id, blob.as_deref());
-        let in_effect = engine_settings(&rt, a.draft.is_some());
+        let in_effect = engine_settings(&rt, a.draft.is_some(), Some(a.main.arch.as_str()));
         self.ctx.seen.lock().unwrap_or_else(|e| e.into_inner()).insert(model.clone(), in_effect.clone());
         let snap = hw.gpu.snapshot();
         let mut warnings: Vec<String> = a.main.warnings.clone();

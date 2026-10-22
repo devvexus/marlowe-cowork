@@ -730,7 +730,7 @@ fn timings_lines(t: &crate::state::Timings, open: bool, width: usize, theme: &Th
         let name = match (s.kind, s.stage.as_deref()) {
             (K::Sending, _) => "sending",
             (K::Setup, _) => "setup",
-            (K::Admit, Some("gpu")) => "gpu wait",
+            (K::Admit, Some("gpu")) => "queued",
             (K::Admit, Some("ollama")) => "ollama start",
             (K::Admit, _) => "admit",
             (K::Prompt, _) => "prompt",

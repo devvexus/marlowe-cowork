@@ -183,7 +183,8 @@ impl Brains {
         let gate = self.context();
         let policy = gate.policy(model).ok();
         let ctx = gate.allowed_ctx(model, None).ok().or(policy.as_ref().map(|p| p.max_ctx)).unwrap_or(crate::DEFAULT_WINDOW);
-        let agents = policy.as_ref().map_or(1, |p| p.parallel.max(1));
+        // What the runner will serve, not only what is planned (a qwen35 model loads with one).
+        let agents = gate.slots(model).map_or(1, |n| n.max(1));
         let kv = policy.as_ref().map_or(KvType::F16, |p| p.kv_type);
         let plan = self.context_plan(model).ok().and_then(|p| p.plan);
         let need_mib = plan.as_ref().map(|p| p.need_mib(ctx, kv, agents));

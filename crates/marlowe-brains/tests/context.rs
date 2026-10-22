@@ -52,6 +52,7 @@ impl ModelSource for FakeModels {
             ps_context: loaded.then_some(32_768),
             slots: if loaded { vec![SlotObservation { id: 0, n_ctx: 32_768, n_prompt_tokens: 1187, is_processing: false }] } else { vec![] },
             saved: ServerEnv { kv_cache_type: Some("q8_0".into()), num_parallel: Some("1".into()), flash_attention: Some("1".into()) },
+            serial_archs: Vec::new(),
         }
     }
 }
@@ -327,6 +328,52 @@ fn slots_are_what_the_runner_serves_and_a_shortfall_is_said_plainly() {
     b.context().set_policy(&m, user(32_768, KvType::Q8_0, 6)).unwrap();
     assert_eq!((b.context().slots(&m).unwrap(), b.context().crew_slots(&m)), (6, 5));
     assert_eq!(b.context().slots_note(&m), None);
+}
+
+/// What Ollama 0.32.5 logs before it launches a qwen35 model (2026-10-21, server.log 18:54):
+/// `model architecture does not currently support parallel requests architecture=qwen35`.
+struct SerialDusk;
+impl ModelSource for SerialDusk {
+    fn files(&self, model_id: &str) -> Result<ModelFiles, String> {
+        FakeModels.files(model_id)
+    }
+    fn runtime(&self, model_id: &str, blob: Option<&str>) -> RunnerObservation {
+        RunnerObservation { serial_archs: vec!["qwen35".into()], ..FakeModels.runtime(model_id, blob) }
+    }
+}
+
+/// Session 82cb2e7f, 2026-10-21: OLLAMA_NUM_PARALLEL=6, yet Ollama served the qwen35 dusk one
+/// request at a time. The conductor's calls queued 5 to 25 s behind a team task's agent under
+/// "waiting for the GPU", and the slots note said a restart would apply the 6. The wait and the
+/// note now say what is true.
+#[test]
+fn a_model_ollama_serves_one_at_a_time_says_so_in_its_wait_and_its_note() {
+    let mut f = ProviderFactory::new(Arc::new(MemoryStore::new()));
+    f.register(ProviderKind::Ollama, |_| Ok(Arc::new(NoChat)));
+    f.set_hardware(Hardware { models: Arc::new(SerialDusk), gpu: Arc::new(FakeGpu), server: Arc::<RecordingServer>::default() });
+    let b = Brains::new(Library::open_in_memory().unwrap(), f);
+    b.add_model(ProviderKind::Ollama, "marlowe-dusk:27b-super").unwrap();
+    let m = dusk();
+    b.context().set_policy(&m, user(32_768, KvType::Q8_0, 6)).unwrap();
+    assert_eq!((b.context().slots(&m).unwrap(), b.context().crew_slots(&m)), (1, 1));
+    assert_eq!(b.context().slots_note(&m).as_deref(), Some("Ollama runs qwen35 models one request at a time, not the 6 planned"));
+    assert_eq!(b.context().queue_reason(&m, 1).as_deref(), Some("Ollama runs qwen35 models one request at a time"));
+    assert_eq!(b.context().queue_reason(&m, 0), None, "no crew call in flight: nothing to wait behind");
+
+    // A server started with one slot: a restart applies the plan, and the wait says that.
+    let old = brains(Arc::default());
+    old.context().set_policy(&m, user(32_768, KvType::Q8_0, 6)).unwrap();
+    assert_eq!(old.context().queue_reason(&m, 1).as_deref(), Some("Ollama is serving 1 at a time, not the 6 planned"));
+
+    // Six slots served: two crew calls leave the conductor room; six fill it.
+    let mut f = ProviderFactory::new(Arc::new(MemoryStore::new()));
+    f.register(ProviderKind::Ollama, |_| Ok(Arc::new(NoChat)));
+    f.set_hardware(Hardware { models: Arc::new(SixSlots), gpu: Arc::new(FakeGpu), server: Arc::<RecordingServer>::default() });
+    let six = Brains::new(Library::open_in_memory().unwrap(), f);
+    six.add_model(ProviderKind::Ollama, "marlowe-dusk:27b-super").unwrap();
+    six.context().set_policy(&m, user(32_768, KvType::Q8_0, 6)).unwrap();
+    assert_eq!(six.context().queue_reason(&m, 2), None, "not queued, so no wait line however slow the read");
+    assert_eq!(six.context().queue_reason(&m, 6).as_deref(), Some("its 6 slots are all busy"));
 }
 
 #[test]

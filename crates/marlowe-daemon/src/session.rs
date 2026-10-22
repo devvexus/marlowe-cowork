@@ -8,7 +8,8 @@
 //! turn; a busy one gets the result as a steer at its next step (an untainted result) or as a
 //! relay turn right after the current one (a tainted result, so the exposure is raised before the
 //! conductor acts on it). A relay is never ingested into memory at user trust. A relay turn runs
-//! on the model the conversation is on.
+//! on the model the conversation is on; the user's ask that arrives during one is not folded
+//! into it but runs as its own turn next, so each gets its own reply.
 
 use std::collections::VecDeque;
 use std::time::Instant;
@@ -115,6 +116,8 @@ struct RunState {
     queued_extras: AskExtras,
     /// Crew results waiting for the current turn to end; each runs as a relay turn.
     relays: Vec<TurnInput>,
+    /// The running turn is a relay turn: the user's asks queue for their own turn.
+    relay_turn: bool,
     /// Job notices and background-agent reports whose relay turn could not run (relays never load
     /// a model): they go out after the user's next turn, when the conductor's model is up.
     held: Vec<TurnInput>,
@@ -160,6 +163,7 @@ impl SessionHandle {
                 queued: Vec::new(),
                 queued_extras: AskExtras::default(),
                 relays: Vec::new(),
+                relay_turn: false,
                 held: Vec::new(),
                 closed: false,
             };
@@ -222,7 +226,9 @@ impl SessionHandle {
             let input = TurnInput { extras, ..TurnInput::user(text) };
             return self.cmd_tx.send(RunnerCmd::Turn(input)).map_err(|_| Enqueue::Closed);
         }
-        if !st.queued.is_empty() || !extras.is_empty() {
+        // Behind queued asks, with images or options, or during a relay turn (whose reply is the
+        // relay's): a turn of its own.
+        if !st.queued.is_empty() || !extras.is_empty() || st.relay_turn {
             st.queued.push(text);
             st.queued_extras.merge(extras);
             return Ok(());
@@ -403,8 +409,13 @@ fn serve(
                 lock(&handle.state).busy = false;
                 break;
             }
-            let cancel = lock(&handle.state).cancel.clone();
+            let cancel = {
+                let mut st = lock(&handle.state);
+                st.relay_turn = input.relay;
+                st.cancel.clone()
+            };
             run_one(core, handle, &mut convo, &tools, &stack, &recorder, &input, &cancel);
+            lock(&handle.state).relay_turn = false;
             turns_run += 1;
             // Hooks' systemMessage lines, failures and diagnostics (track E) reach the user.
             if let Some(r) = stack.services.get::<Arc<marlowe_agent::hooks::HookRunner>>() {

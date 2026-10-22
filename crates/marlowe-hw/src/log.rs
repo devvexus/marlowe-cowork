@@ -200,6 +200,21 @@ pub fn parse(text: &str) -> Vec<LoadBlock> {
     blocks
 }
 
+/// The model architectures Ollama said it serves one request at a time, whatever
+/// `OLLAMA_NUM_PARALLEL` says (`model architecture does not currently support parallel requests`
+/// `architecture=qwen35`, logged before it launches such a model with `-np 1`). Deduplicated, in
+/// the order first seen.
+pub fn serial_architectures(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines().filter(|l| l.contains("does not currently support parallel requests")) {
+        let Some(arch) = quoted_or_bare(line, "architecture").filter(|a| !a.is_empty()) else { continue };
+        if !out.contains(&arch) {
+            out.push(arch);
+        }
+    }
+    out
+}
+
 /// The newest block whose launch loaded `blob` (matched on the file name, any separators).
 pub fn last_for_blob<'a>(blocks: &'a [LoadBlock], blob: &str) -> Option<&'a LoadBlock> {
     let want = file_name(blob);
@@ -418,6 +433,20 @@ mod tests {
     use super::*;
 
     const LAUNCH: &str = r#"time=2026-10-09T12:50:51.885-05:00 level=INFO source=llama_server.go:442 msg="starting llama-server" cmd="C:\\Ollama\\llama-server.exe --model C:\\m\\blobs\\sha256-17c3 --port 61916 --host 127.0.0.1 -c 32768 -np 1 --spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-model C:\\m\\blobs\\sha256-50d9 --no-mmap --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on -b 512 -ub 512 --context-shift --keep 4""#;
+
+    /// Ollama 0.32.5's server.log of 2026-10-21 18:54, before each launch of marlowe-dawn:9b-super
+    /// (and of every qwen35 model, dusk 22b included): `-np 1` whatever OLLAMA_NUM_PARALLEL says.
+    #[test]
+    fn the_architectures_ollama_serves_one_at_a_time_are_read_from_its_warnings() {
+        let text = format!(
+            "{}\n{LAUNCH}\n{}\n",
+            r#"time=2026-10-21T18:54:00.602-05:00 level=WARN source=sched.go:510 msg="model architecture does not currently support parallel requests" architecture=qwen35"#,
+            r#"time=2026-10-21T18:54:07.219-05:00 level=WARN source=sched.go:510 msg="model architecture does not currently support parallel requests" architecture=qwen35"#,
+        );
+        assert_eq!(serial_architectures(&text), vec!["qwen35".to_string()]);
+        assert!(serial_architectures(LAUNCH).is_empty());
+        assert_eq!(parse(&text).len(), 1, "the warnings are not launches");
+    }
 
     #[test]
     fn a_live_command_line_is_read_with_its_quotes() {

@@ -176,8 +176,10 @@ impl OllamaHw {
             .map_err(|e| format!("/api/show {model}: {e}"))
     }
 
-    fn logs(&self) -> Vec<LoadBlock> {
-        self.log.as_deref().and_then(|p| read_tail(p, LOG_TAIL_BYTES).ok()).map(|t| log::parse(&t)).unwrap_or_default()
+    /// The log's launches, and the architectures it said it serves one request at a time.
+    fn logs(&self) -> (Vec<LoadBlock>, Vec<String>) {
+        let text = self.log.as_deref().and_then(|p| read_tail(p, LOG_TAIL_BYTES).ok()).unwrap_or_default();
+        (log::parse(&text), log::serial_architectures(&text))
     }
 }
 
@@ -220,7 +222,7 @@ impl ModelSource for OllamaHw {
     fn runtime(&self, model_id: &str, blob: Option<&str>) -> RunnerObservation {
         let ps = http::get_json(&self.endpoint, "/api/ps", QUICK).map(|v| parse_ps(&v)).unwrap_or_default();
         let entry = ps.iter().find(|p| p.name == model_id);
-        let blocks = self.logs();
+        let (blocks, serial_archs) = self.logs();
         let live = live_launches();
         let mine = blob.and_then(|b| live.iter().find(|l| l.model.as_deref().is_some_and(|m| same_file(m, b)))).cloned();
         let load = match (blob.and_then(|b| log::last_for_blob(&blocks, b)).cloned(), mine) {
@@ -252,6 +254,7 @@ impl ModelSource for OllamaHw {
                 num_parallel: saved_user_env("OLLAMA_NUM_PARALLEL"),
                 flash_attention: saved_user_env("OLLAMA_FLASH_ATTENTION"),
             },
+            serial_archs,
         }
     }
 

@@ -103,6 +103,10 @@ pub struct EngineSettings {
     /// Seconds the last load took.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub load_secs: Option<f64>,
+    /// The model's architecture when Ollama said it serves that architecture one request at a
+    /// time, whatever `OLLAMA_NUM_PARALLEL` says (qwen35 on Ollama 0.32).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial_arch: Option<String>,
 }
 
 impl EngineSettings {
@@ -115,9 +119,13 @@ impl EngineSettings {
         self.saved_parallel.or(self.parallel)
     }
 
-    /// Requests the loaded runner serves at once: its `/slots`, else its launch's `-np`. `None`
-    /// while the model is not loaded (the next load decides).
+    /// Requests the loaded runner serves at once: its `/slots`, else its launch's `-np`; 1 for
+    /// an architecture Ollama serves one at a time, loaded or not. `None` while another model is
+    /// not loaded (the next load decides).
     pub fn serving_parallel(&self) -> Option<u16> {
+        if self.serial_arch.is_some() {
+            return Some(1);
+        }
         if !self.loaded {
             return None;
         }
@@ -128,11 +136,18 @@ impl EngineSettings {
     }
 
     /// `planned 6 parallel, Ollama is serving 1 — restart Ollama to apply`, when the loaded runner
-    /// serves fewer requests at once than `planned`. Agents past what it serves only queue in
+    /// serves fewer requests at once than `planned`; for an architecture Ollama serves one at a
+    /// time, that it does (a restart changes nothing). Agents past what it serves only queue in
     /// Ollama, so the crew runs at most what it serves.
     pub fn parallel_shortfall(&self, planned: u16) -> Option<String> {
         let serving = self.serving_parallel()?;
-        (serving < planned).then(|| format!("planned {planned} parallel, Ollama is serving {serving} — restart Ollama to apply"))
+        if serving >= planned {
+            return None;
+        }
+        Some(match &self.serial_arch {
+            Some(arch) => format!("Ollama runs {arch} models one request at a time, not the {planned} planned"),
+            None => format!("planned {planned} parallel, Ollama is serving {serving} — restart Ollama to apply"),
+        })
     }
 
     pub fn partial(&self) -> bool {

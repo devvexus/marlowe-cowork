@@ -27,8 +27,10 @@ pub(crate) struct Probes {
     pub runner_mib: Box<dyn Fn() -> Option<f64> + Send + Sync>,
     /// Whether the model is loaded by the engine now.
     pub resident: Box<dyn Fn() -> Option<bool> + Send + Sync>,
-    /// The crew run a request on this model would wait behind, if one is streaming.
-    pub crew_run: Box<dyn Fn() -> Option<String> + Send + Sync>,
+    /// The wait line when a request on this model queues behind a crew run (`waiting for crew
+    /// run 6f8210de · Ollama runs qwen35 models one request at a time`); `None` when no crew run
+    /// holds what the request needs, however slow the read.
+    pub queued_behind: Box<dyn Fn() -> Option<String> + Send + Sync>,
     /// The stored prefill rate for the model, tokens per second.
     pub prefill_rate: Box<dyn Fn() -> Option<f64> + Send + Sync>,
 }
@@ -210,12 +212,12 @@ fn run(s: &Shared, load: Option<LoadPlan>, probes: &Probes, tick: Duration) {
             p.est = true;
             (s.emit)(p);
         }
-        // Silent well past what the read should take, and a crew run is streaming on this model:
-        // the request is queued behind it.
+        // Silent well past what the read should take, and crew runs hold every request the
+        // runner serves on this model: the request is queued behind them, and the line says why.
         if st.waiting.is_none() && elapsed.as_secs_f64() * 1000.0 > (est_ms * 1.5).max(500.0) {
-            if let Some(run) = (probes.crew_run)() {
+            if let Some(line) = (probes.queued_behind)() {
                 st.waiting = Some(Instant::now());
-                (s.emit)(PhaseEvent::start(PhaseKind::Admit).stage("gpu").detail(format!("waiting for the GPU · crew run {run}")));
+                (s.emit)(PhaseEvent::start(PhaseKind::Admit).stage("gpu").detail(line));
             }
         }
     }
@@ -277,7 +279,7 @@ mod tests {
         Probes {
             runner_mib: Box::new(runner),
             resident: Box::new(resident),
-            crew_run: Box::new(|| None),
+            queued_behind: Box::new(|| None),
             prefill_rate: Box::new(|| None),
         }
     }
@@ -389,11 +391,11 @@ mod tests {
         assert!(seen.lock().unwrap().iter().all(|p| p.kind != PhaseKind::Load));
     }
 
-    fn with_rate(rate: Option<f64>, crew: Option<&'static str>) -> Probes {
+    fn with_rate(rate: Option<f64>, queued: Option<&'static str>) -> Probes {
         Probes {
             runner_mib: Box::new(|| None),
             resident: Box::new(|| Some(true)),
-            crew_run: Box::new(move || crew.map(str::to_string)),
+            queued_behind: Box::new(move || queued.map(str::to_string)),
             prefill_rate: Box::new(move || rate),
         }
     }
@@ -425,19 +427,20 @@ mod tests {
     }
 
     #[test]
-    fn a_wait_names_its_crew_run_only_when_one_is_streaming_on_the_model() {
-        // Silent past the estimate and a crew run streams: the reason is stated, then ended.
+    fn a_wait_names_its_crew_run_only_when_the_request_queues_behind_it() {
+        // Silent past the estimate and queued behind a crew run: the reason is stated, then ended.
+        let line = "waiting for crew run b8ee1234 · Ollama runs qwen35 models one request at a time";
         let (emit, seen) = collect();
-        let w = Watch::start(None, with_rate(Some(1_000_000.0), Some("b8ee1234")), emit, Duration::from_millis(100));
+        let w = Watch::start(None, with_rate(Some(1_000_000.0), Some(line)), emit, Duration::from_millis(100));
         w.sent(10);
         wait_for(&seen, |e| e.iter().any(|p| p.kind == PhaseKind::Admit));
         w.first_frame();
         let ev = seen.lock().unwrap().clone();
         let start = ev.iter().find(|p| p.kind == PhaseKind::Admit && p.state == PhaseState::Start).unwrap();
-        assert_eq!(start.detail.as_deref(), Some("waiting for the GPU · crew run b8ee1234"));
+        assert_eq!(start.detail.as_deref(), Some(line));
         assert_eq!(start.stage.as_deref(), Some("gpu"));
         assert!(ev.iter().any(|p| p.kind == PhaseKind::Admit && p.state == PhaseState::End && p.ms.is_some()));
-        // Nobody known: nothing is said, however long it takes.
+        // Not queued (the runner serves more than the crew holds): nothing is said, however long.
         let (emit, seen) = collect();
         let w = Watch::start(None, with_rate(Some(1_000_000.0), None), emit, Duration::from_millis(100));
         w.sent(10);

@@ -1266,3 +1266,38 @@ fn a_finished_task_whose_relay_must_wait_still_reaches_the_user_at_once() {
     drop(a);
     stop(d);
 }
+
+/// Session 82cb2e7f, turn 2: the user's "Hows it going", sent as turn 1 ended, landed in the
+/// relay turn that had just started and was folded into it; one reply answered the question and
+/// dropped the relay, and the user's words never showed as a turn of theirs. An ask that arrives
+/// during a relay turn now runs as its own turn right after it: one reply each.
+#[test]
+fn an_ask_during_a_relay_turn_gets_its_own_turn_not_a_fold_into_the_relay() {
+    let home = temp_home("relay-then-ask");
+    let p = Arc::new(Routed::default());
+    let (release, gate) = bounded(1);
+    p.conductor(tool_call("c1", "dispatch", r#"{"role":"tester","goal":"Summarize the workspace"}"#));
+    p.conductor(reply("Sent to the tester."));
+    p.conductor(vec![Step::Gate(gate), text("The tester is done: the summary is in."), usage(), end()]);
+    p.conductor(reply("Going well: the summary came back."));
+    p.crew(reply("The workspace is an MSFFN study.\nConfidence: high"));
+    let d = start(&home, p.clone(), true);
+    let mut a = Client::connect(&d.info);
+    a.send(&Request::Ask { session: None, text: "summarize the workspace".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
+    let session = started_session(&a.until_event(|e| matches!(e, Event::TurnFinished { .. })));
+    a.until_event(|e| matches!(e, Event::TurnStarted { user, .. } if user.starts_with("[crew · run ")));
+    // The relay turn holds its model call; the user asks meanwhile.
+    a.send(&Request::Ask { session: Some(session), text: "Hows it going".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
+    std::thread::sleep(Duration::from_millis(200));
+    release.send(()).unwrap();
+    a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
+    a.until_event(|e| matches!(e, Event::TurnStarted { user, .. } if user == "Hows it going"));
+    a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
+    let conductor: Vec<ChatRequest> = p.requests().into_iter().filter(|(c, _)| !c).map(|(_, r)| r).collect();
+    let says = |r: &ChatRequest, what: &str| r.messages.iter().any(|m| m.joined_text().contains(what));
+    let relay = conductor.iter().position(|r| says(r, "[crew · run ")).expect("the relay turn's call");
+    assert!(!says(&conductor[relay], "Hows it going"), "the relay's call does not carry the ask");
+    assert_eq!(conductor.len(), relay + 2, "one call for the relay, one for the ask: {}", conductor.len());
+    assert!(says(conductor.last().unwrap(), "Hows it going"), "the ask's own turn");
+    stop(d);
+}

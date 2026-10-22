@@ -53,6 +53,8 @@ pub struct RunnerObservation {
     pub slots: Vec<SlotObservation>,
     /// The saved user environment (what the next server start reads).
     pub saved: ServerEnv,
+    /// Architectures the engine said it serves one request at a time (its log's warnings).
+    pub serial_archs: Vec<String>,
 }
 
 /// Reads model files and the engine's state.

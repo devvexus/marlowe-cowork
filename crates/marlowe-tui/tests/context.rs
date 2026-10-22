@@ -55,6 +55,7 @@ fn running() -> EngineSettings {
         slots: vec![RunnerSlot { id: 0, n_ctx: 32_768, n_prompt_tokens: 1187, is_processing: false }],
         decode_tok_s: Some(81.99),
         load_secs: Some(6.84),
+        serial_arch: None,
     }
 }
 
