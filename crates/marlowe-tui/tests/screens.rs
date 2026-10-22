@@ -182,7 +182,7 @@ fn a_tool_call_under_expanded_thinking_has_its_own_ink_and_a_boundary() {
 fn streamed_turn_with_thinking_tools_and_markdown() {
     let mut s = streamed_turn();
     let buf = render(&s, W, H);
-    assert!(contains(&buf, "▸ thinking… 1,204 tokens"), "{}", dump(&buf));
+    assert!(contains(&buf, "▸ reasoning"), "{}", dump(&buf));
     assert!(contains(&buf, "thinking"), "title bar activity");
 
     feed(&mut s, 6, Event::ToolStarted { session: sid(), turn: 1, call_id: "c1".into(), tool: "bash".into(), summary: "bash git log --since=yesterday".into() });

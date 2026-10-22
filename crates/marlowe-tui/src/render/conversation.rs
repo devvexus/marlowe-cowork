@@ -288,7 +288,7 @@ fn gap_before(state: &State, idx: usize, prev: Option<&Entry>, e: &Entry) -> boo
     // An expanded reasoning block ends with a blank row, so the tool call under it does not
     // read as one more line of it.
     let after_open_thought = idx > 0
-        && matches!(prev, Some(Entry::Thinking { text, .. }) if !text.trim().is_empty())
+        && matches!(prev, Some(Entry::Thinking { text, read, .. }) if foldable(text, read))
         && state.thought_open(idx - 1);
     match (prev, e) {
         (None, _) => false,
@@ -330,7 +330,7 @@ fn render_entry(
         }));
         out.extend(lines);
     } else {
-        if matches!(e, Entry::Thinking { text, .. } if !text.trim().is_empty()) {
+        if matches!(e, Entry::Thinking { text, read, .. } if foldable(text, read)) {
             marks.push(Mark { entry: idx, line: out.len() });
         }
         entry_lines(e, idx, state, width, theme, live, out);
@@ -456,16 +456,13 @@ pub(super) fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, th
         }
         Entry::Thinking { text, tokens, live, ms, read } => {
             let n = if *tokens > 0 { *tokens } else { (text.chars().count() as u64).div_ceil(4) };
-            let open = state.thought_open(idx) && !text.trim().is_empty();
+            let open = state.thought_open(idx) && foldable(text, read);
             let marker = if open { chrome::DISCLOSURE_OPEN } else { chrome::DISCLOSURE_CLOSED };
-            let head = if let Some(r) = read {
-                thought_head(marker, r, (*live, n, *ms), width, theme)
-            } else if *live {
-                vec![
-                    Span::styled(format!("{marker} "), ink(Ink::Hover, theme)),
-                    Span::styled("thinking… ", ink(Ink::Dim, theme)),
-                    Span::styled(format!("{} tokens", text::thousands(n)), ink(Ink::Dimmer, theme)),
-                ]
+            let head = if *live {
+                // The live count and clock are the strip's: the block is only its fold handle.
+                vec![Span::styled(format!("{marker} "), ink(Ink::Hover, theme)), Span::styled("reasoning", ink(Ink::Dim, theme))]
+            } else if read.is_some() {
+                thought_head(marker, (n, *ms), width, theme)
             } else {
                 // How long it took, once that is known and at least a second.
                 let took = if *ms >= 1000 { format!(" for {}", text::took(*ms)) } else { String::new() };
@@ -478,6 +475,12 @@ pub(super) fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, th
             if open {
                 let rule = format!("{} ", chrome::QUOTE_RULE);
                 let body = width.saturating_sub(2);
+                // What the call read is seen here, under the opened block, never beside it.
+                if let Some(r) = read {
+                    let mut spans = vec![Span::styled(rule.clone(), ink(Ink::Dimmer, theme))];
+                    spans.extend(super::strip::read_spans(r, theme));
+                    out.push(Line::from(spans));
+                }
                 let rows: Vec<Line<'static>> = if markdown::has_maths(text) {
                     // Reasoning is shown as written, except that its maths is typeset: LaTeX never
                     // reaches the screen as source, here or anywhere.
@@ -597,40 +600,24 @@ pub(super) fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, th
     }
 }
 
-/// A reasoning block's header with the read that began it: `▸ read 8.2k · 1.9s  ›  thought 4.1s ·
-/// 312 tok · 76 tok/s`, the read shortened and then the rate dropped until it is one row.
-fn thought_head(marker: char, read: &crate::live::Read, (live, n, ms): (bool, u64, u64), width: usize, theme: &Theme) -> Vec<Span<'static>> {
-    let tail_ink = if live { Ink::Dim } else { Ink::Dimmer };
-    let words = |rate: bool| -> Vec<Span<'static>> {
-        if live {
-            return vec![
-                Span::styled("thinking… ", ink(Ink::Dim, theme)),
-                Span::styled(format!("{} tokens", text::thousands(n)), ink(Ink::Dimmer, theme)),
-            ];
+/// Whether a reasoning block has anything to open: its text, or the read that began it.
+pub(super) fn foldable(text: &str, read: &Option<crate::live::Read>) -> bool {
+    !text.trim().is_empty() || read.is_some()
+}
+
+/// A finished reasoning block's header: `▸ thought 4.1s · 312 tok · 76 tok/s`, the rate dropped
+/// when it does not fit. The read that began it is under the opened block.
+fn thought_head(marker: char, (n, ms): (u64, u64), width: usize, theme: &Theme) -> Vec<Span<'static>> {
+    let took = if ms >= 1000 { format!(" {}", super::strip::took(ms)) } else { String::new() };
+    let mark = Span::styled(format!("{marker} "), ink(Ink::Dimmer, theme));
+    let mut words = format!("thought{took} · {} tok", text::thousands(n));
+    if ms >= 500 && n * 1000 / ms > 0 {
+        let with_rate = format!("{words} · {} tok/s", n * 1000 / ms);
+        if 2 + text::width(&with_rate) <= width {
+            words = with_rate;
         }
-        let took = if ms >= 1000 { format!(" {}", super::strip::took(ms)) } else { String::new() };
-        let mut t = format!("thought{took} · {} tok", text::thousands(n));
-        if rate && ms >= 500 && n * 1000 / ms > 0 {
-            t.push_str(&format!(" · {} tok/s", n * 1000 / ms));
-        }
-        vec![Span::styled(t, ink(tail_ink, theme))]
-    };
-    let mark = Span::styled(format!("{marker} "), ink(if live { Ink::Hover } else { Ink::Dimmer }, theme));
-    let arrow = |s: &'static str| Span::styled(s, ink(Ink::Dimmer, theme));
-    let mut variants: Vec<Vec<Span<'static>>> = Vec::new();
-    for (short, rate) in [(false, true), (true, true), (true, false)] {
-        let mut v = vec![mark.clone()];
-        v.extend(super::strip::read_spans(read, short, theme));
-        v.push(arrow(if short { " › " } else { "  ›  " }));
-        v.extend(words(rate));
-        variants.push(v);
     }
-    let mut bare = vec![mark];
-    bare.extend(words(false));
-    variants.push(bare);
-    let fits = |v: &Vec<Span<'static>>| v.iter().map(|s| text::width(&s.content)).sum::<usize>() <= width;
-    let at = variants.iter().position(fits).unwrap_or(variants.len() - 1);
-    variants.swap_remove(at)
+    vec![mark, Span::styled(words, ink(Ink::Dimmer, theme))]
 }
 
 /// The recall line with its stage timings: `⋯ recall · 3 memories · 84ms  embed 12 · bm25 2 · …`,
@@ -1054,26 +1041,19 @@ mod tests {
         l.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
-    /// The reasoning header is one row that fits at every width: the read shortens first, then the
-    /// rate goes, then the read itself, and an estimate keeps its tilde.
+    /// The reasoning header is one row that fits at every width: the rate goes first. It never
+    /// carries the read: that is under the opened block.
     #[test]
-    fn the_thought_header_shortens_to_fit_and_never_wraps() {
+    fn the_thought_header_shortens_to_fit_and_never_carries_the_read() {
         let th = theme();
-        let expect = [
-            (80, "▸ read 8.2k · 1.9s  ›  thought 4.1s · 312 tok · 76 tok/s"),
-            (50, "▸ 8.2k/1.9s › thought 4.1s · 312 tok · 76 tok/s"),
-            (44, "▸ 8.2k/1.9s › thought 4.1s · 312 tok"),
-            (24, "▸ thought 4.1s · 312 tok"),
-        ];
+        let expect = [(80, "▸ thought 4.1s · 312 tok · 76 tok/s"), (30, "▸ thought 4.1s · 312 tok")];
         for (width, want) in expect {
-            let spans = thought_head(chrome::DISCLOSURE_CLOSED, &read(), (false, 312, 4_100), width, &th);
+            let spans = thought_head(chrome::DISCLOSURE_CLOSED, (312, 4_100), width, &th);
             let got = text_of(&Line::from(spans));
             assert_eq!(got, want, "at width {width}");
             assert!(text::width(&got) <= width, "{got:?} is wider than {width}");
+            assert!(!got.contains("read") && !got.contains('›'), "{got:?}");
         }
-        let est = crate::live::Read { new_est: true, ms_est: true, ..read() };
-        let spans = thought_head(chrome::DISCLOSURE_CLOSED, &est, (true, 4, 0), 80, &th);
-        assert_eq!(text_of(&Line::from(spans)), "▸ read ~8.2k · ~1.9s  ›  thinking… 4 tokens");
     }
 
     #[test]

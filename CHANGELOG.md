@@ -4,6 +4,12 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Live strip
+
+- **Nothing on the live strip is shown twice, and it is one line.** The strip is only the current activity at the bottom of the conversation: read and thinking are separate lines (thinking replaces the read line), the thinking block in the transcript is a fold handle (`reasoning`) while the strip carries the count and clock, a running tool is named once (in the transcript), a load or compaction is one line with one clock, and recall stages use that same line.
+- **The read stats live under the opened thinking block** (coloured, estimates keep their `~` until the real numbers arrive); the thought header no longer carries a `read › thought` prefix.
+- **A load, a compaction and the memory write become dim lines in the transcript** (the memory write after the reply it belongs to) instead of strip rows below the activity.
+
 ### Background work
 
 - **A background subagent shows on the Crew rail** as a one-specialist task with its step, the tool it is in and its time; the `/tasks` panel stops it. Its start and end times are real now.

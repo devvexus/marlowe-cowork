@@ -1295,6 +1295,7 @@ impl State {
                 if usage.total() > 0 {
                     self.entries.push(Entry::Usage { usage: *usage });
                 }
+                self.strip_notes();
                 self.live = None;
                 self.add_totals(usage);
                 self.code.interrupting = false;
@@ -1396,6 +1397,7 @@ impl State {
                         *slot = Some(read);
                     }
                 }
+                self.strip_notes();
             }
             Event::Phase(p) if crate::seq::BlockKind::of(p).is_some() => self.seq_phase(p),
             Event::TurnTimings { session, spans, numbers, .. } if self.mine(session) => {
@@ -1517,6 +1519,14 @@ impl State {
             }
             // Session events for other sessions, and the M4.6 events.
             other => self.coding_event(other, reply, out),
+        }
+    }
+
+    /// What the live strip's stages left behind (a model loaded, a context compacted, the memory
+    /// written) goes into the transcript as dim lines, so the strip itself shows only the present.
+    fn strip_notes(&mut self) {
+        for n in self.strip.take_notes() {
+            self.note(&n.text, if n.bad { NoteTone::Red } else { NoteTone::Dim });
         }
     }
 

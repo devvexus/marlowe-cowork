@@ -1,6 +1,8 @@
-//! The live strip's state: what the turn in flight is doing from Enter to the last token, and the
-//! memory-write tail after it. Folded from the daemon's phase events and the stream itself; the
-//! renderer ([`crate::render::strip`]) only reads it.
+//! The live strip's state: what the turn in flight is doing from Enter to the last token. Folded
+//! from the daemon's phase events and the stream itself; the renderer ([`crate::render::strip`])
+//! only reads it. The strip is one line, the current activity, and nothing else: what a stage
+//! leaves behind (a model loaded, a context compacted, the memory written) is handed out as a note
+//! for the transcript ([`Strip::take_notes`]), never kept on the strip.
 //!
 //! Every number here is one the daemon or the stream reported, or is flagged as an estimate
 //! (`*_est`) until the real one replaces it. Nothing waits on a timer: a line shows the frame after
@@ -13,13 +15,10 @@ use std::time::Instant;
 
 use marlowe_proto::{PhaseEvent, PhaseKind, PhaseState};
 
+use crate::text;
+
 /// Rows the strip takes while it is up. A constant: the height never depends on what it shows.
-pub const ROWS: u16 = 2;
-/// How long a finished line (loaded, compacted, memory written) stays after the turn is over.
-/// Display only: no work waits for it.
-const LINGER_MS: i64 = 1_500;
-/// A memory write that never reports its end stops showing after this.
-const TAIL_STALE_MS: i64 = 6_000;
+pub const ROWS: u16 = 1;
 /// The window the token rate is taken over.
 const RATE_WINDOW_MS: i64 = 1_000;
 
@@ -138,15 +137,6 @@ pub struct Load {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Loaded {
-    pub model: String,
-    pub mib: Option<u64>,
-    pub ms: u64,
-    /// Shown until this; `None` while the turn is up.
-    pub until: Option<i64>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct Compact {
     pub started: i64,
     /// The prompt's size when it was found too big.
@@ -154,15 +144,6 @@ pub struct Compact {
     pub written: u64,
     /// The summary's output cap: an upper bound, so the figure is an estimate.
     pub cap: u64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Compacted {
-    pub before: u64,
-    pub after: u64,
-    pub ms: u64,
-    pub failed: bool,
-    pub until: Option<i64>,
 }
 
 /// The memory ingest and embed after a turn.
@@ -175,8 +156,13 @@ pub struct Tail {
     /// Embedded: how many vectors were installed and how long it took.
     pub embedded: Option<(u64, u64)>,
     pub indexed: bool,
-    pub last: i64,
-    pub done_at: Option<i64>,
+}
+
+/// What a stage left behind, for the transcript: the text and whether it is a failure.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Note {
+    pub text: String,
+    pub bad: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -249,10 +235,11 @@ pub struct Strip {
     pub tools: Vec<ToolRun>,
     pub wait: Option<Wait>,
     pub load: Option<Load>,
-    pub loaded: Option<Loaded>,
     pub compact: Option<Compact>,
-    pub compacted: Option<Compacted>,
-    pub tail: Option<Tail>,
+    tail: Option<Tail>,
+    /// The finished memory write of the turn in flight, held until the reply is down.
+    held_tail: Option<(u32, Note)>,
+    notes: Vec<Note>,
     fit_tokens: u64,
     /// When the engine began reading: the send, or the end of the model load.
     pub(crate) read_from: Option<i64>,
@@ -298,21 +285,13 @@ impl Strip {
     }
 
     /// Anything the strip still has to show once the turn is over.
-    pub fn trailing(&self, now: i64) -> bool {
+    pub fn trailing(&self, _now: i64) -> bool {
         self.recall.borrow().pending()
-            || self.loaded.as_ref().is_some_and(|l| l.until.is_some_and(|u| now < u))
-            || self.compacted.as_ref().is_some_and(|c| c.until.is_some_and(|u| now < u))
-            || self.tail_showing(now)
     }
 
-    pub fn tail_showing(&self, now: i64) -> bool {
-        match &self.tail {
-            Some(t) => match t.done_at {
-                Some(d) => self.up || now < d + LINGER_MS,
-                None => now < t.last + TAIL_STALE_MS,
-            },
-            None => false,
-        }
+    /// What stages left behind since last asked, for the transcript.
+    pub fn take_notes(&mut self) -> Vec<Note> {
+        std::mem::take(&mut self.notes)
     }
 
     // ---- turn bookkeeping ---------------------------------------------------------------------
@@ -336,9 +315,7 @@ impl Strip {
         self.tools.clear();
         self.wait = None;
         self.load = None;
-        self.loaded = None;
         self.compact = None;
-        self.compacted = None;
         self.fit_tokens = 0;
         self.read_from = None;
         self.first_token = None;
@@ -371,7 +348,7 @@ impl Strip {
 
     /// The turn is over: what it was doing stops; what trails it (the memory tail, a load or
     /// compaction result) lingers for a moment.
-    pub fn finished(&mut self, turn: u32, at: i64) {
+    pub fn finished(&mut self, turn: u32, _at: i64) {
         self.done_turn = Some(turn);
         self.up = false;
         self.sending = None;
@@ -382,11 +359,10 @@ impl Strip {
         self.load = None;
         self.compact = None;
         self.short.borrow_mut().clear();
-        if let Some(l) = &mut self.loaded {
-            l.until = Some(at + LINGER_MS);
-        }
-        if let Some(c) = &mut self.compacted {
-            c.until = Some(at + LINGER_MS);
+        if let Some((t, note)) = self.held_tail.take() {
+            if t == turn {
+                self.notes.push(note);
+            }
         }
     }
 
@@ -398,6 +374,7 @@ impl Strip {
         self.began = None;
         self.turn = None;
         self.tail = None;
+        self.held_tail = None;
         self.done_turn = None;
     }
 
@@ -501,7 +478,7 @@ impl Strip {
             return None;
         }
         if p.kind == PhaseKind::MemoryWrite {
-            self.memory_write(p, at);
+            self.memory_write(p);
             return None;
         }
         if !self.fresh(p.turn) {
@@ -595,7 +572,6 @@ impl Strip {
     fn compaction(&mut self, p: &PhaseEvent, at: i64) {
         match p.state {
             PhaseState::Start => {
-                self.flash("compacting");
                 self.compact = Some(Compact { started: at, before: self.fit_tokens, written: 0, cap: 0 });
             }
             PhaseState::Progress => {
@@ -606,16 +582,15 @@ impl Strip {
             }
             PhaseState::End => {
                 let c = self.compact.take();
-                let cancelled = p.detail.as_deref() == Some("cancelled");
-                if cancelled {
+                if p.detail.as_deref() == Some("cancelled") {
                     return;
                 }
-                self.compacted = Some(Compacted {
-                    before: p.done.or(c.as_ref().map(|c| c.before)).unwrap_or(0),
-                    after: p.total.unwrap_or(0),
-                    ms: p.ms.unwrap_or(0),
-                    failed: p.detail.as_deref() == Some("failed"),
-                    until: None,
+                let before = text::compact(p.done.or(c.as_ref().map(|c| c.before)).unwrap_or(0));
+                self.notes.push(if p.detail.as_deref() == Some("failed") {
+                    Note { text: format!("compaction failed · kept {before}"), bad: true }
+                } else {
+                    let after = text::compact(p.total.unwrap_or(0));
+                    Note { text: format!("compacted {before} → {after} · {}", took(p.ms.unwrap_or(0))), bad: false }
                 });
             }
         }
@@ -643,12 +618,10 @@ impl Strip {
                 let l = self.load.take();
                 self.read_from = Some(at);
                 if let Some(l) = l {
-                    self.loaded = Some(Loaded {
-                        model: p.detail.clone().unwrap_or(l.model),
-                        mib: p.done.filter(|d| *d > 0).or(Some(l.done_mib).filter(|d| *d > 0)),
-                        ms: p.ms.unwrap_or(0),
-                        until: None,
-                    });
+                    let model = p.detail.clone().unwrap_or(l.model);
+                    let mib = p.done.filter(|d| *d > 0).or(Some(l.done_mib).filter(|d| *d > 0));
+                    let size = mib.map(|m| format!(" · {:.1} GB", m as f64 / 1024.0)).unwrap_or_default();
+                    self.notes.push(Note { text: format!("loaded {}{size} · {}", text::truncate(&model, 24), took(p.ms.unwrap_or(0))), bad: false });
                 }
             }
         }
@@ -690,14 +663,13 @@ impl Strip {
         }
     }
 
-    fn memory_write(&mut self, p: &PhaseEvent, at: i64) {
-        let fresh = Tail { turn: p.turn, ingested: 0, embedding: None, embedded: None, indexed: false, last: at, done_at: None };
+    fn memory_write(&mut self, p: &PhaseEvent) {
+        let fresh = Tail { turn: p.turn, ingested: 0, embedding: None, embedded: None, indexed: false };
         match &self.tail {
-            Some(t) if t.turn == p.turn && t.done_at.is_none() => {}
+            Some(t) if t.turn == p.turn && !t.indexed => {}
             _ => self.tail = Some(fresh),
         }
         let Some(t) = &mut self.tail else { return };
-        t.last = at;
         match (p.stage.as_deref(), p.state) {
             (Some("ingest"), PhaseState::End) => t.ingested += p.done.unwrap_or(1),
             (Some("embed"), PhaseState::Start) => t.embedding = Some((0, p.total.unwrap_or(0))),
@@ -706,12 +678,46 @@ impl Strip {
                 t.embedding = None;
                 t.embedded = Some((p.done.unwrap_or(0), p.ms.unwrap_or(0)));
             }
-            (Some("index"), PhaseState::End) => {
-                t.indexed = true;
-                t.done_at = Some(at);
-            }
+            (Some("index"), PhaseState::End) => t.indexed = true,
             _ => {}
         }
+        if !t.indexed {
+            return;
+        }
+        // Written: it goes with the finished turn, after its reply. While that turn is still in
+        // flight it waits for the reply; another turn's is not worth a line in the middle of this.
+        let (turn, note) = (t.turn, t.note());
+        self.tail = None;
+        let Some(note) = note else { return };
+        if !self.up {
+            self.notes.push(note);
+        } else if self.turn == Some(turn) {
+            self.held_tail = Some((turn, note));
+        }
+    }
+}
+
+impl Tail {
+    /// `+1 memory · embedded 3ms · indexed`, or nothing when no memory was written.
+    fn note(&self) -> Option<Note> {
+        if self.ingested == 0 {
+            return None;
+        }
+        let mut s = format!("+{} memor{}", self.ingested, if self.ingested == 1 { "y" } else { "ies" });
+        if let Some((_, ms)) = self.embedded {
+            s.push_str(&format!(" · embedded {}", took(ms)));
+        }
+        s.push_str(" · indexed");
+        Some(Note { text: s, bad: false })
+    }
+}
+
+/// A time that has settled: `340ms`, `1.9s`, `12s`, `1m05s`.
+pub(crate) fn took(ms: u64) -> String {
+    match ms {
+        0..=999 => format!("{ms}ms"),
+        1_000..=9_999 => format!("{:.1}s", ms as f64 / 1000.0),
+        _ => text::took(ms),
     }
 }
 
@@ -812,30 +818,30 @@ mod tests {
     }
 
     #[test]
-    fn the_memory_tail_counts_ingests_and_completes_on_the_index() {
+    fn the_memory_write_becomes_one_note_for_the_finished_turn_and_never_a_strip_line() {
         let mut s = Strip::default();
         let mw = |stage: &str, state| PhaseEvent { stage: Some(stage.into()), ..ev(PhaseKind::MemoryWrite, state) };
         let mut ing = mw("ingest", PhaseState::End);
         ing.done = Some(1);
+        s.turn_started(1);
         s.phase(&ing, 10);
-        s.phase(&ing, 20);
         let mut emb = mw("embed", PhaseState::Start);
-        emb.total = Some(2);
+        emb.total = Some(1);
         s.phase(&emb, 30);
-        assert!(s.tail_showing(40));
         let mut done = mw("embed", PhaseState::End);
-        done.done = Some(2);
-        done.ms = Some(31);
+        done.done = Some(1);
+        done.ms = Some(3);
         s.phase(&done, 60);
         s.phase(&mw("index", PhaseState::End), 70);
-        let t = s.tail.as_ref().unwrap();
-        assert_eq!((t.ingested, t.embedded, t.indexed), (2, Some((2, 31)), true));
-        assert!(s.tail_showing(70 + LINGER_MS - 1));
-        assert!(!s.tail_showing(70 + LINGER_MS + 1), "it lingers briefly and goes");
-        // One that never reports its end is not shown for ever.
-        let mut stuck = Strip::default();
-        stuck.phase(&ing, 0);
-        assert!(!stuck.tail_showing(TAIL_STALE_MS + 1));
+        assert!(s.take_notes().is_empty(), "the turn is still going: the note waits for its reply");
+        s.finished(1, 100);
+        let notes = s.take_notes();
+        assert_eq!(notes.iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), vec!["+1 memory · embedded 3ms · indexed"]);
+        // After the turn it is immediate, and once.
+        s.phase(&ing, 200);
+        s.phase(&mw("index", PhaseState::End), 210);
+        assert_eq!(s.take_notes().len(), 1);
+        assert!(s.take_notes().is_empty());
     }
 
     #[test]

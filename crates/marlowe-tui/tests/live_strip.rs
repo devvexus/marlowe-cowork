@@ -7,7 +7,7 @@
 mod common;
 
 use common::*;
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use marlowe_proto::{
     Envelope, Event, PhaseEvent, PhaseKind, PhaseSpan, ReadStat, Request, StageMs, StoredTurn, TurnNumbers, TurnStop,
 };
@@ -83,15 +83,44 @@ impl Rig {
         self.strip_now(ms)
     }
 
-    /// The strip's two rows in the next frame: they sit right under the pane's last line.
+    /// The strip's row in the next frame, which sits right under the pane's last line, and the row
+    /// under it, which must be empty: the strip is the bottom of the conversation.
     fn strip_now(&mut self, ms: i64) -> (String, String) {
         let text = self.frame(ms);
         let rows: Vec<&str> = text.lines().collect();
         let g = marlowe_tui::render::geometry(ratatui::layout::Rect::new(0, 0, W, H), &self.s);
         let v = self.s.viewport.get();
         let y = g.conversation.y as usize + v.total.min(v.size.1 as usize);
-        (pane_text(rows[y]), pane_text(rows[y + 1]))
+        let pane_bottom = marlowe_tui::render::transcript_pane(g.conversation, &self.s).bottom() as usize;
+        let (row, below) = (pane_text(rows[y]), if y + 1 < pane_bottom { rows[y + 1].chars().skip(1).take(90).collect::<String>().trim().to_string() } else { String::new() });
+        assert!(below.is_empty(), "something sits below the current activity {row:?}: {below:?}\n{text}");
+        (row, below)
     }
+
+    /// Opens the `n`th reasoning block on screen by clicking its fold marker.
+    fn open_fold(&mut self, ms: i64, n: usize) {
+        let text = self.frame(ms);
+        let (y, line) = text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.contains("▸ thought") || l.contains("▸ reasoning"))
+            .nth(n)
+            .unwrap_or_else(|| panic!("no fold header #{n}:\n{text}"));
+        let x = line.chars().position(|c| c == '▸').unwrap();
+        let click = MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: x as u16, row: y as u16, modifiers: KeyModifiers::NONE };
+        self.s.on_mouse(click, ratatui::layout::Rect::new(0, 0, W, H));
+    }
+}
+
+/// How often `needle` is on screen: a state shown twice is a bug.
+fn times(text: &str, needle: &str) -> usize {
+    // The pane's title bar carries the app-wide activity pulse; that is chrome, not the strip.
+    text.lines().filter(|l| !l.contains("╭ Conversation")).map(|l| l.matches(needle).count()).sum()
+}
+
+/// A line that joins the read to what follows it: `read 8.2k · 1.9s  ›  thinking`.
+fn combined(text: &str) -> bool {
+    text.lines().any(|l| l.contains("read ") && l.contains(" › "))
 }
 
 fn has_spinner(row: &str) -> bool {
@@ -169,16 +198,16 @@ fn every_recall_stage_is_on_screen_for_at_least_a_frame_even_when_they_all_arriv
     r.at(2_008, Event::Recalled { session: sid(), turn: 2, count: 3, summary: "decision · 0.42".into(), total_ms: 84, stages: Vec::new(), abstained: false });
     let mut seen = String::new();
     for k in 0..14 {
-        let (_, second) = r.strip_now(2_010 + k);
-        seen.push_str(&second);
+        let (first, _) = r.strip_now(2_010 + k);
+        seen.push_str(&first);
         seen.push('\n');
     }
     for name in ["pool", "embed", "bm25", "dense", "gate", "rerank", "assemble"] {
         assert!(seen.contains(&format!("recall · {name}")), "{name} was never drawn:\n{seen}");
     }
     // Drained: the row is free for what comes next.
-    let (_, second) = r.strip_now(2_100);
-    assert!(!second.contains("recall"), "{second}");
+    let (first, _) = r.strip_now(2_100);
+    assert!(!first.contains("recall ·"), "{first}");
 }
 
 #[test]
@@ -190,15 +219,16 @@ fn a_recall_stage_that_loops_shows_its_progress_and_rate() {
     let mut p = PhaseEvent::progress(PhaseKind::Recall, 2_940, 4_198).stage("dense").unit("items");
     p.rate = Some(1_900_000.0);
     r.phase(2_010, 2, p);
-    let (_, second) = r.strip(2_011);
-    assert!(second.contains("recall · dense 2,940/4,198 · 1.9M/s"), "{second}");
+    let (first, _) = r.strip(2_011);
+    assert!(first.contains("recall · dense 2,940/4,198 · 1.9M/s"), "{first}");
+    assert_eq!(times(&r.frame(2_012), "recall ·"), 1, "one recall line, and not the old second row besides");
     r.phase(2_020, 2, PhaseEvent::start(PhaseKind::Recall).stage("rerank").detail("cpu"));
     let mut p = PhaseEvent::progress(PhaseKind::Recall, 6, 10).stage("rerank").unit("pairs");
     p.rate = Some(210.0);
     r.phase(2_030, 2, p);
     let mut seen = String::new();
     for k in 0..4 {
-        seen.push_str(&r.strip(2_040 + k).1);
+        seen.push_str(&r.strip(2_040 + k).0);
     }
     assert!(seen.contains("recall · rerank 6/10 · 210 pairs/s · cpu"), "{seen}");
 }
@@ -297,23 +327,70 @@ fn the_read_is_an_estimate_with_a_tilde_until_the_engines_numbers_arrive() {
     assert!(first.contains("reading ~8.2k tok · ~1,900 tok/s"), "{first}");
     assert!(first.contains('━') && first.contains("~62%"), "the bar and its estimated percentage: {first}");
 
-    // The first token ends the read: the same row now reads `read ~8.2k · ~1.9s  ›  thinking`.
+    // The first token ends the read: thinking replaces the read line entirely.
     r.at(3_900, Event::ReasoningDelta { session: sid(), turn: 2, text: "Let me look.".into(), tokens: 4 });
     let (first, _) = r.strip(3_901);
-    assert!(first.contains("read ~8.2k · ~1.9s"), "{first}");
-    assert!(first.contains("›  thinking"), "{first}");
+    assert!(first.contains("thinking"), "{first}");
+    assert!(!first.contains("read") && !first.contains('›'), "no combined read › thinking line: {first}");
+    assert!(!combined(&r.frame(3_901)));
+    let text = r.frame(3_902);
+    assert!(!text.contains("read ~8.2k") && !combined(&text), "the read is not on screen until the block is opened:\n{text}");
+
+    // Opened, the block carries the read: still estimated, so still tilde'd.
+    r.open_fold(3_903, 0);
+    let text = r.frame(3_904);
+    assert!(text.contains("read ~8.2k · ~1.9s"), "{text}");
 
     // The engine's own numbers arrive with the call's usage: no more tildes on what it measured.
     let mut end = PhaseEvent::end(PhaseKind::Prefill, 1_873).with_done(8_123).with_total(8_123).unit("tok");
     end.est = false;
     r.phase(9_000, 2, end);
-    let (first, _) = r.strip_now(9_001);
-    // Out of the strip (no thinking now), into the header of the reasoning block.
-    let _ = first;
     let text = r.frame(9_002);
-    assert!(text.contains("▸ read 8.1k · 1.9s  ›  thinking… 4 tokens"), "{text}");
+    assert!(text.contains("read 8.1k · 1.9s") && !text.contains("~8.1k"), "{text}");
 }
 
+#[test]
+fn the_read_stats_are_coloured_under_the_opened_block_and_labels_are_dim() {
+    let mut r = Rig::new();
+    reading(&mut r);
+    r.at(2_500, Event::ReasoningDelta { session: sid(), turn: 2, text: "Weighing it.".into(), tokens: 3 });
+    let mut end = PhaseEvent::end(PhaseKind::Prefill, 1_900).with_done(8_200).with_total(8_200).unit("tok");
+    end.est = false;
+    r.phase(2_600, 2, end);
+    r.open_fold(2_700, 0);
+    let th = theme();
+    let buf = render(&r.s, W, H);
+    let mut found = false;
+    for y in 0..buf.area.height {
+        let row: String = (0..buf.area.width).map(|x| buf.cell((x, y)).unwrap().symbol().to_string()).collect();
+        if let Some(at) = row.find("read 8.2k") {
+            let col = row[..at].chars().count() as u16;
+            use marlowe_surface::chrome::Ink;
+            assert_eq!(buf.cell((col, y)).unwrap().fg, Ink::Dim.color(&th), "the label is dim");
+            assert_eq!(buf.cell((col + 5, y)).unwrap().fg, Ink::Amber.color(&th), "the number is amber");
+            found = true;
+        }
+    }
+    assert!(found, "the read row is under the opened block:\n{}", dump(&buf));
+}
+
+#[test]
+fn nothing_is_shown_twice_while_the_model_thinks() {
+    let mut r = Rig::new();
+    reading(&mut r);
+    r.at(2_500, Event::ReasoningDelta { session: sid(), turn: 2, text: "hmm ".into(), tokens: 30 });
+    let mut end = PhaseEvent::end(PhaseKind::Prefill, 1_900).with_done(8_200).with_total(8_200).unit("tok");
+    end.est = false;
+    r.phase(2_600, 2, end);
+    for ms in [2_700, 3_500, 9_000] {
+        r.strip(ms);
+        let text = r.frame(ms + 1);
+        assert_eq!(times(&text, "thinking"), 1, "the strip says thinking, the block is only its handle:\n{text}");
+        assert_eq!(times(&text, "▸ reasoning"), 1, "{text}");
+        assert!(!text.contains("tok") || times(&text, " tok") == 1, "the token count is in one place:\n{text}");
+        assert!(!text.contains("read 8.2k") && !combined(&text), "the read is not shown beside it:\n{text}");
+    }
+}
 #[test]
 fn a_later_step_reads_only_what_is_new_and_says_what_was_cached() {
     let mut r = Rig::new();
@@ -331,10 +408,11 @@ fn a_later_step_reads_only_what_is_new_and_says_what_was_cached() {
     let mut end = PhaseEvent::end(PhaseKind::Prefill, 290).with_done(1_200).with_total(9_400).unit("tok");
     end.est = true;
     r.phase(5_400, 2, end);
-    let text = r.frame(5_401);
-    assert!(text.contains("read +1.2k (~8.2k cached) · 290ms  ›  thinking…"), "{text}");
+    r.open_fold(5_401, 1);
+    let text = r.frame(5_402);
+    assert!(text.contains("read +1.2k (~8.2k cached) · 290ms"), "{text}");
+    assert!(!combined(&text), "{text}");
 }
-
 #[test]
 fn thinking_and_writing_have_their_own_inks_and_a_tool_is_green() {
     let mut r = Rig::new();
@@ -363,9 +441,11 @@ fn thinking_and_writing_have_their_own_inks_and_a_tool_is_green() {
     r.at(3_200, Event::TextDelta { session: sid(), turn: 2, text: "moved.".into() });
     assert_eq!(ink_of(&mut r, 3_201, "writing"), Ink::Accent.color(&th));
     r.at(3_300, Event::ToolStarted { session: sid(), turn: 2, call_id: "c1".into(), tool: "bash".into(), summary: "bash cargo test".into() });
-    assert_eq!(ink_of(&mut r, 15_300, "bash cargo test"), Ink::Green.color(&th));
+    assert_eq!(ink_of(&mut r, 15_300, "running"), Ink::Green.color(&th));
     let (first, _) = r.strip(15_300);
-    assert!(first.contains("bash cargo test · 12.0s"), "the tool's elapsed ticks: {first}");
+    assert!(first.contains("running · 12.0s"), "the tool's elapsed ticks: {first}");
+    let text = r.frame(15_301);
+    assert_eq!(times(&text, "bash cargo test"), 1, "the call is named once, in the transcript:\n{text}");
 }
 
 #[test]
@@ -441,7 +521,7 @@ fn no_layout_shift_across_the_phases_from_enter_to_the_first_token() {
     r.at(4_000, Event::ReasoningDelta { session: sid(), turn: 2, text: "hm".into(), tokens: 1 });
     note(&mut r, 4_001, &mut frames);
 
-    // The strip is two rows the whole way, at the same column, and the message above it never
+    // The strip is one row the whole way, at the same column, and the message above it never
     // moves a cell. (The recall line joins the transcript when it arrives: only that frame
     // changes the rows above the strip, and nothing after it does.)
     let mut strip_x = None;
@@ -465,7 +545,7 @@ fn no_layout_shift_across_the_phases_from_enter_to_the_first_token() {
         let (a, b) = (rows_above(&w[0].1), rows_above(&w[1].1));
         assert_eq!(a[2..], b[2..], "rows above the strip changed between {} and {}", w[0].0, w[1].0);
     }
-    assert_eq!(r.s.viewport.get().strip, 2, "the strip is two rows");
+    assert_eq!(r.s.viewport.get().strip, 1, "the strip is one row");
 }
 
 #[test]
@@ -494,7 +574,7 @@ fn a_reader_scrolled_up_keeps_their_rows_when_the_strip_goes_away_under_them() {
     r.s.scroll = 15;
     let held = r.frame(140);
     let top = r.s.viewport.get().top;
-    assert_eq!(r.s.viewport.get().strip, 2);
+    assert_eq!(r.s.viewport.get().strip, 1);
     // The reply ends while they read: the strip's rows go, and what they were reading stays.
     r.at(200, Event::TurnFinished { session: sid(), turn: 9, usage: usage(), stop: TurnStop::Done });
     r.frame(210);
@@ -512,7 +592,7 @@ fn the_text_stays_put_when_the_strip_goes_away_at_the_end_of_a_turn() {
     r.at(110, Event::TextDelta { session: sid(), turn: 9, text: (1..=80).map(|i| format!("line {i}\n\n")).collect() });
     r.frame(115);
     let before = r.s.viewport.get();
-    assert_eq!(before.strip, 2);
+    assert_eq!(before.strip, 1);
     r.at(120, Event::TurnFinished { session: sid(), turn: 9, usage: usage(), stop: TurnStop::Done });
     r.frame(125);
     r.frame(2_000);
@@ -524,7 +604,32 @@ fn the_text_stays_put_when_the_strip_goes_away_at_the_end_of_a_turn() {
 // ---- the work after and around a turn --------------------------------------------------------------
 
 #[test]
-fn the_memory_write_tail_outlives_the_turn_and_then_goes() {
+fn the_memory_write_is_a_dim_line_after_the_reply_and_never_the_bottom_of_the_conversation() {
+    let mut r = Rig::new();
+    r.enter(2_000, "remember this");
+    r.started(2_005, 2, "remember this");
+    r.at(2_100, Event::TextDelta { session: sid(), turn: 2, text: "Noted.".into() });
+    // The ingest lands while the reply is still being written: nothing on the strip, nothing yet.
+    r.phase(2_150, 2, PhaseEvent::end(PhaseKind::MemoryWrite, 0).stage("ingest").with_done(1).unit("items"));
+    r.phase(2_160, 2, PhaseEvent::start(PhaseKind::MemoryWrite).stage("embed").with_total(1).unit("items"));
+    let (first, _) = r.strip(2_170);
+    assert!(!first.contains("memor") && !first.contains("embed"), "{first}");
+    r.phase(2_180, 2, PhaseEvent::end(PhaseKind::MemoryWrite, 31).stage("embed").with_done(1).unit("items"));
+    r.phase(2_190, 2, PhaseEvent::end(PhaseKind::MemoryWrite, 0).stage("index"));
+    assert!(!r.frame(2_195).contains("+1 memory"), "held until the reply is down");
+    r.at(2_200, Event::TurnFinished { session: sid(), turn: 2, usage: usage(), stop: TurnStop::Done });
+    let text = r.frame(2_250);
+    assert_eq!(times(&text, "+1 memory · embedded 31ms · indexed"), 1, "{text}");
+    let rows: Vec<&str> = text.lines().collect();
+    let reply = rows.iter().position(|l| l.contains("Noted.")).unwrap();
+    let note = rows.iter().position(|l| l.contains("+1 memory")).unwrap();
+    assert!(note > reply, "after the reply it belongs to:\n{text}");
+    assert!(rows.iter().all(|l| !has_spinner(l)), "no strip once the turn is over:\n{text}");
+    assert!(!r.s.strip_up());
+}
+
+#[test]
+fn a_memory_write_after_the_turn_is_the_same_dim_line() {
     let mut r = Rig::new();
     r.enter(2_000, "remember this");
     r.started(2_005, 2, "remember this");
@@ -532,20 +637,16 @@ fn the_memory_write_tail_outlives_the_turn_and_then_goes() {
     r.at(2_200, Event::TurnFinished { session: sid(), turn: 2, usage: usage(), stop: TurnStop::Done });
     r.phase(2_210, 2, PhaseEvent::end(PhaseKind::MemoryWrite, 0).stage("ingest").with_done(1).unit("items"));
     r.phase(2_220, 2, PhaseEvent::start(PhaseKind::MemoryWrite).stage("embed").with_total(2).unit("items"));
-    let (first, second) = r.strip(2_250);
-    assert!(second.contains("+1 memory · embedding 0/2"), "{first} / {second}");
+    let text = r.frame(2_250);
+    assert!(!text.contains("memory") || !text.lines().any(|l| has_spinner(l)), "{text}");
     r.phase(2_300, 2, PhaseEvent::end(PhaseKind::MemoryWrite, 31).stage("embed").with_done(2).unit("items"));
     r.phase(2_310, 2, PhaseEvent::end(PhaseKind::MemoryWrite, 0).stage("index"));
-    let (_, second) = r.strip(2_320);
-    assert!(second.contains("✓ +1 memory · embedded 31ms · indexed"), "{second}");
-    // Lingers for a moment, then the rows are given back.
-    assert!(r.s.strip_up());
-    r.s.now_ms = BASE + 4_000;
-    assert!(!r.s.strip_up(), "the tail is shown briefly and then goes");
+    let text = r.frame(2_320);
+    assert_eq!(times(&text, "+1 memory · embedded 31ms · indexed"), 1, "{text}");
+    assert!(!r.s.strip_up(), "the strip does not linger for it");
 }
-
 #[test]
-fn compaction_shows_progress_then_the_result() {
+fn compaction_is_one_line_with_one_clock_then_a_note() {
     let mut r = Rig::new();
     r.enter(2_000, "go on");
     r.started(2_005, 2, "go on");
@@ -555,14 +656,22 @@ fn compaction_shows_progress_then_the_result() {
     let mut p = PhaseEvent::progress(PhaseKind::Compact, 312, 4_096).unit("tok");
     p.est = true;
     r.phase(2_100, 2, p);
-    let (first, second) = r.strip(2_200);
-    assert!(first.contains("compacting"), "{first}");
-    assert!(second.contains("compacting 28.1k → … · ~312/4,096 tok"), "{second}");
+    for ms in [2_200, 12_000, 170_000] {
+        let (first, _) = r.strip(ms);
+        assert!(first.contains("compacting 28.1k → … · ~312/4,096 tok"), "{first}");
+        let text = r.frame(ms + 1);
+        assert_eq!(times(&text, "compacting"), 1, "two compaction lines look like two compactions:\n{text}");
+        let spinners = text.lines().filter(|l| has_spinner(l)).count();
+        assert_eq!(spinners, 1, "one spinning line:\n{text}");
+    }
+    // The clock is the compaction's own (from its start), not the turn's.
+    let (first, _) = r.strip(12_030);
+    assert!(first.contains("10.0s"), "{first}");
     r.phase(4_300, 2, PhaseEvent::end(PhaseKind::Compact, 2_270).with_done(28_100).with_total(6_200).unit("tok"));
-    let (_, second) = r.strip(4_400);
-    assert!(second.contains("✓ compacted 28.1k → 6.2k · 2.3s"), "{second}");
+    let text = r.frame(4_400);
+    assert_eq!(times(&text, "compacted 28.1k → 6.2k · 2.3s"), 1, "{text}");
+    assert!(!text.lines().any(|l| has_spinner(l) && l.contains("compact")), "the spinner is gone: {text}");
 }
-
 #[test]
 fn a_failed_compaction_is_red_and_not_silent() {
     let mut r = Rig::new();
@@ -571,10 +680,18 @@ fn a_failed_compaction_is_red_and_not_silent() {
     r.phase(2_020, 2, PhaseEvent::end(PhaseKind::Fit, 10).with_done(28_100).unit("tok"));
     r.phase(2_030, 2, ph(PhaseKind::Compact));
     r.phase(2_900, 2, PhaseEvent::end(PhaseKind::Compact, 870).with_done(28_100).with_total(28_100).unit("tok").detail("failed"));
-    let (_, second) = r.strip(2_950);
-    assert!(second.contains("✗ compaction failed · kept 28.1k"), "{second}");
+    let buf = render(&r.s, W, H);
+    let text = dump(&buf);
+    assert_eq!(times(&text, "compaction failed · kept 28.1k"), 1, "{text}");
+    let th = theme();
+    for y in 0..buf.area.height {
+        let row: String = (0..buf.area.width).map(|x| buf.cell((x, y)).unwrap().symbol().to_string()).collect();
+        if let Some(at) = row.find("compaction failed") {
+            let col = row[..at].chars().count() as u16;
+            assert_eq!(buf.cell((col, y)).unwrap().fg, marlowe_surface::chrome::Ink::Red.color(&th));
+        }
+    }
 }
-
 #[test]
 fn a_cold_load_draws_a_measured_bar_against_a_marked_prediction_then_the_result() {
     let mut r = Rig::new();
@@ -582,23 +699,22 @@ fn a_cold_load_draws_a_measured_bar_against_a_marked_prediction_then_the_result(
     let mut start = ph(PhaseKind::Load).stage("model").detail("dusk-27b").with_total(13_100).unit("MiB");
     start.est = true;
     r.phase(2_030, 2, start);
-    let (first, second) = r.strip(2_100);
-    assert!(first.contains("loading the model"), "{first}");
-    assert!(second.contains("loading dusk-27b") && !second.contains('━'), "no bar before any growth is measured: {second}");
+    let (first, _) = r.strip(2_100);
+    assert!(first.contains("loading dusk-27b") && !first.contains('━'), "no bar before any growth is measured: {first}");
     let mut p = PhaseEvent::progress(PhaseKind::Load, 6_246, 13_100).stage("model").unit("MiB");
     p.est = true;
     r.phase(3_000, 2, p);
-    let (_, second) = r.strip(3_001);
-    assert!(second.contains("loading dusk-27b") && second.contains('━') && second.contains("6.1 / ~12.8 GB"), "{second}");
+    let (first, _) = r.strip(3_001);
+    assert!(first.contains("loading dusk-27b") && first.contains('━') && first.contains("6.1 / ~12.8 GB"), "{first}");
+    assert_eq!(times(&r.frame(3_002), "loading"), 1, "one load line");
     r.phase(8_200, 2, PhaseEvent::end(PhaseKind::Load, 6_170).stage("model").detail("dusk-27b").with_done(13_414).unit("MiB"));
-    let (_, second) = r.strip(8_201);
-    assert!(second.contains("✓ loaded dusk-27b · 13.1 GB · 6.2s"), "{second}");
+    let text = r.frame(8_201);
+    assert_eq!(times(&text, "loaded dusk-27b · 13.1 GB · 6.2s"), 1, "{text}");
 }
-
 // ---- after the turn ---------------------------------------------------------------------------------
 
 #[test]
-fn the_thought_header_keeps_the_read_and_the_rate_on_one_row_at_every_width() {
+fn the_thought_header_keeps_the_rate_on_one_row_and_the_read_lives_under_it() {
     let mut r = Rig::new();
     reading(&mut r);
     r.at(2_500, Event::ReasoningDelta { session: sid(), turn: 2, text: "Weighing the gate.\n".repeat(3), tokens: 312 });
@@ -608,17 +724,19 @@ fn the_thought_header_keeps_the_read_and_the_rate_on_one_row_at_every_width() {
     r.at(6_600, Event::TextDelta { session: sid(), turn: 2, text: "Done.".into() });
     r.at(7_100, Event::TurnFinished { session: sid(), turn: 2, usage: usage(), stop: TurnStop::Done });
     let text = r.frame(8_000);
-    assert!(text.contains("▸ read 8.2k · 1.9s  ›  thought 4.1s · 312 tok · 76 tok/s"), "{text}");
+    assert!(text.contains("▸ thought 4.1s · 312 tok · 76 tok/s"), "{text}");
+    assert!(!text.contains("read 8.2k") && !combined(&text), "closed, the block hides the read:\n{text}");
+    r.open_fold(8_001, 0);
+    assert!(r.frame(8_002).contains("read 8.2k · 1.9s"), "opened, it shows the read");
     for (w, h) in [(120u16, 30u16), (140, 40), (200, 50)] {
         let buf = render(&r.s, w, h);
         assert_palette_only(&buf);
         let text = dump(&buf);
         let heads: Vec<&str> = text.lines().filter(|l| l.contains("thought")).collect();
         assert_eq!(heads.len(), 1, "one header row at {w}: {text}");
-        assert!(heads[0].contains("8.2k"), "the read survives at {w}: {}", heads[0]);
+        assert!(text.contains("read 8.2k"), "the read is under the block at {w}: {text}");
     }
 }
-
 #[test]
 fn a_finished_turns_timings_open_with_reasoning_and_sum_to_the_first_token() {
     let mut r = Rig::new();
@@ -681,9 +799,11 @@ fn a_reopened_session_shows_the_stored_read_and_timings() {
     ];
     r.at(9_000, Event::Transcript { session: sid(), turns });
     let text = r.frame(9_001);
-    assert!(text.contains("▸ read 4k · 1.1s"), "{text}");
+    assert!(text.contains("▸ thought") && !text.contains("read 4k"), "{text}");
+    r.open_fold(9_001, 0);
+    assert!(r.frame(9_002).contains("read 4k · 1.1s"), "the stored read is under the opened block");
     r.s.on_key(ctrl('t'));
-    let open = r.frame(9_002);
+    let open = r.frame(9_003);
     assert!(open.contains("recall 90ms · first token 1.4s"), "{open}");
 }
 
