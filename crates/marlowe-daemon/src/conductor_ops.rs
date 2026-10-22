@@ -41,7 +41,7 @@ use marlowe_agent::context::PrefixFit;
 use marlowe_agent::{
     ApprovalGate, ApprovalReq, Conversation, FinalFlow, Services, StepInfo, ToolHost, ToolMiddleware, TurnFlow,
 };
-use marlowe_model::{CancelToken, Effort, ModelRef};
+use marlowe_model::{CancelToken, Effort, ModelInfo, ModelRef, Provider};
 use marlowe_proto::{paths, ApprovalDecision, Event, Question, Request, SessionId, Slot, TodoItem};
 
 use crate::daemon::Core;
@@ -169,6 +169,24 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
         Request::DetachCall { session, call_id } => crate::job_ops::detach(core, client, session, call_id),
         other => crate::client::not_yet(core, client, &other, "F"),
     }
+}
+
+/// The model `session`'s conversation is on now: its `/model` switch, else the conductor's.
+/// Its runs and relays default to it (it is the one already loaded). Never blocks.
+pub(crate) fn session_model(core: &Core, session: &SessionId) -> Option<ModelRef> {
+    if let Some(m) = lock(&state(core).switches).get(session) {
+        return Some(m.info.model_ref());
+    }
+    core.brains.resolve(&Slot::Conductor).ok().map(|(m, _)| m)
+}
+
+/// The conversation's model ready to call, for a turn: its `/model` switch, else the conductor
+/// slot's.
+pub(crate) fn session_parts(core: &Core, session: &SessionId) -> Result<(Arc<dyn Provider>, ModelInfo, Effort), String> {
+    if let Some(m) = lock(&state(core).switches).get(session).cloned() {
+        return Ok((m.provider, m.info, m.effort));
+    }
+    core.brains.agent_parts(&Slot::Conductor).map_err(|e| e.to_string())
 }
 
 /// A library model ready to call, for `/model` and agents' model ids. Its window is the context

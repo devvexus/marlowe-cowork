@@ -50,6 +50,10 @@ pub struct Run {
     /// for every run stored before workflows existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow: Option<marlowe_proto::WorkflowRef>,
+    /// Why the run is not on the model its crew slot names (it could not load there): shown as
+    /// the run's note when it has no other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_note: Option<String>,
 }
 
 impl Run {
@@ -84,6 +88,7 @@ impl Run {
             result: None,
             relay_due: false,
             workflow: None,
+            model_note: None,
         }
     }
 
@@ -103,7 +108,7 @@ impl Run {
             spent: self.spent,
             step: self.step,
             current_action: self.current_action.clone(),
-            note: self.note.clone(),
+            note: self.note.clone().or_else(|| self.model_note.clone()),
             tainted: self.tainted,
             created_ms: self.created_ms,
             updated_ms: self.updated_ms,

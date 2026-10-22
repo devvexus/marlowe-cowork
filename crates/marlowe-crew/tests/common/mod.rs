@@ -244,6 +244,7 @@ pub fn start(home: &Path, p: &Arc<Scripted>, cfg: CrewConfig, allow: bool) -> Fi
         mind: None,
         gpu_busy: Arc::new(|| false),
         research: None,
+        session_model: None,
     };
     let sup = Supervisor::start(home, deps, cfg, tx).unwrap();
     Fixture { sup, events, approvals, writes }

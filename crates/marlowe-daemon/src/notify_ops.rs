@@ -317,6 +317,26 @@ pub(crate) fn notify(core: &Arc<Core>, session: &SessionId, title: &str, body: &
     }
 }
 
+/// Background work's outcome for `session` that nothing else will say now: a line in the
+/// conversation (`Notified`) and a toast when the toast switch is on. Not rate limited (one per
+/// finished run), not spoken (a relay's own turn speaks).
+pub(crate) fn announce(core: &Arc<Core>, session: &SessionId, title: &str, body: &str) {
+    let n = notify_state(core);
+    if lock(&n.state).toast {
+        let toast = Toast { title: title.to_string(), body: body.to_string(), urgent: false, actions: Vec::new(), tag: Some("crew".into()) };
+        let toaster = lock(&n.toaster).clone();
+        if let Err(e) = toaster.show(&toast) {
+            eprintln!("marlowe: no toast for {title}: {e}");
+        }
+    }
+    core.bus.publish(Event::Notified {
+        session: Some(session.clone()),
+        title: title.to_string(),
+        body: body.to_string(),
+        urgency: Urgency::Normal,
+    });
+}
+
 /// `send_file`: copies `path` to the outbox and announces it.
 pub(crate) fn send_file(core: &Arc<Core>, session: &SessionId, path: &Path, note: &str) -> Result<SentFile, String> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or("that path has no file name")?;

@@ -70,6 +70,8 @@ pub(crate) fn start(core: &Arc<Core>, setup: CrewSetup) -> Result<JoinHandle<()>
         gpu_busy: gpu_probe(Arc::downgrade(core)),
         // With channels and the corpus fetcher, deep research runs v2; without them, v1.
         research: setup.research,
+        // A conversation's runs use the model it is on (already loaded), not the library's.
+        session_model: Some(session_model(Arc::downgrade(core))),
     };
     let home = core.home.clone();
     // Before the supervisor can start a requeued workflow run: its hooks come from its session.
@@ -321,6 +323,11 @@ pub(crate) fn relay_text(info: &CrewRunInfo, dispatch: Option<&Dispatch>) -> Str
         Some(d) => {
             lines.push(format!("Outcome: {}", clip(d.summary.trim(), RELAY_SUMMARY_CHARS, &info.id)));
             lines.push(format!("Confidence: {}", confidence_word(d)));
+            // A finished run's note says why it ran where it did (its crew slot's model could
+            // not load).
+            if let Some(note) = info.note.as_deref().filter(|_| info.status == CrewRunStatus::Done) {
+                lines.push(format!("Note: {note}"));
+            }
         }
         None => {
             let why = info.note.as_deref().unwrap_or("no reason was recorded");
@@ -484,6 +491,27 @@ fn gpu_probe(core: Weak<Core>) -> GpuBusy {
         }))
         .unwrap_or(false)
     })
+}
+
+/// What a conversation is on now, for its runs' default model.
+fn session_model(core: Weak<Core>) -> marlowe_crew::SessionModel {
+    Arc::new(move |session| {
+        let core = core.upgrade()?;
+        crate::conductor_ops::session_model(&core, session)
+    })
+}
+
+/// A relay turn could not run now (relays never load a model): the run's outcome still reaches
+/// the user at once, as a line in the conversation and a desktop toast, and the conductor hears
+/// the whole result after the user's next turn.
+pub(crate) fn announce_held(core: &Arc<Core>, session: &SessionId, text: &str) {
+    let mut lines = text.lines();
+    let head = lines.next().unwrap_or("").trim();
+    let title = head.trim_start_matches('[').trim_end_matches(']');
+    let outcome: String = lines.find_map(|l| l.strip_prefix("Outcome: ")).unwrap_or("").trim().chars().take(240).collect();
+    let next = "Marlowe takes it up on your next message";
+    let body = if outcome.is_empty() { next.to_string() } else { format!("{outcome} · {next}") };
+    crate::notify_ops::announce(core, session, title, &body);
 }
 
 /// `compute`: per device index, other processes doing compute only.

@@ -1,7 +1,8 @@
 //! The supervisor: queue, per-provider concurrency, one thread per active run, controls.
 //!
-//! A run thread resolves its model from the role's slot chain (`crew:<role>`, then
-//! `conductor`), creates its sandbox, then drives the playbook through an [`AgentRunner`] whose
+//! A run thread resolves its model: the role's own crew slot when the user set it, else the
+//! model its conversation is on (`CrewDeps::session_model`), else the conductor's. It creates
+//! its sandbox, then drives the playbook through an [`AgentRunner`] whose
 //! hooks checkpoint every finished agent step, drain steers at step boundaries, honour
 //! cancel/pause, and turn a budget overrun into `NeedsYou` with an approval to extend. A panic
 //! in a run is caught (`catch_unwind`) and fails that run only. At start, runs left `queued` or
@@ -58,6 +59,10 @@ pub trait RunApprovals: Send + Sync {
 
 /// Whether the Sentinel reports the GPU busy right now.
 pub type GpuBusy = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// The model a conversation is on now (its `/model` switch, else the conductor's): what its runs
+/// default to. Must not block.
+pub type SessionModel = Arc<dyn Fn(&SessionId) -> Option<ModelRef> + Send + Sync>;
 
 /// Characters of a sender id kept.
 const MAX_SENDER: usize = 80;
@@ -140,6 +145,9 @@ pub struct CrewDeps {
     /// Research channels and the corpus fetcher. With them deep research runs v2; without them,
     /// v1 (scouts search with their own tools).
     pub research: Option<Arc<dyn ResearchIo>>,
+    /// The model each conversation is on; `None` (tests, the CLI) defaults runs to the
+    /// conductor's model.
+    pub session_model: Option<SessionModel>,
 }
 
 /// What the supervisor tells the daemon. The daemon maps these onto the bus.
@@ -259,8 +267,9 @@ pub(crate) struct Inner {
     pub state: Mutex<State>,
     /// Local model streams in flight across every run, by model; at most `crew_slots` each.
     pub local_streams: Mutex<HashMap<String, usize>>,
-    /// Who holds those streams: (run, role), so a waiting turn can name the run it waits behind.
-    pub local_holders: Mutex<Vec<(RunId, String)>>,
+    /// Who holds those streams: (run, role, model), so a waiting turn can name the run it waits
+    /// behind.
+    pub local_holders: Mutex<Vec<(RunId, String, String)>>,
     pub local_free: Condvar,
     /// Research plans waiting on the user, by run.
     pub plans: Mutex<HashMap<RunId, PendingPlan>>,
@@ -273,6 +282,8 @@ pub(crate) struct Inner {
 pub(crate) struct Choice {
     pub model: StepModel,
     pub waits_for_gpu: bool,
+    /// Why the run is not on the model its crew slot names (that model could not load).
+    pub note: Option<String>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -354,17 +365,21 @@ impl Inner {
         Ok(run)
     }
 
-    /// The model for `card`: the first explicitly assigned slot of its chain, else the
-    /// conductor's model. A local model while the GPU is busy moves to the first slot assigned a
-    /// cloud model, or reports that it must wait. A local model that is not loaded loads only when
-    /// the planner says it fits beside what is ([`Priority::Crew`]); otherwise the step is refused
-    /// with the cost. The agent's window is the context gate's (`allowed_ctx`), never above it.
-    pub(crate) fn choose(&self, card: &RoleCard) -> Result<Choice, CrewError> {
+    /// The model for `card` in a run of `session`: the card's own crew slot when the user set
+    /// it, else the model the conversation is on, else the conductor's. A local model while the
+    /// GPU is busy moves to the first slot assigned a cloud model, or reports that it must wait. A
+    /// local model that is not loaded loads only when the planner says it fits beside what is
+    /// ([`Priority::Crew`]); a crew slot's model that does not runs on the conversation's model
+    /// instead, with a note, and any other is refused with the cost. The agent's window is the
+    /// context gate's (`allowed_ctx`), never above it.
+    pub(crate) fn choose(&self, card: &RoleCard, session: Option<&SessionId>) -> Result<Choice, CrewError> {
         let brains = &self.deps.brains;
         let slots = brains.slots().unwrap_or_default();
-        let mut model = self.pick(card, &slots)?;
+        let conversation = self.session_model(session);
+        let (mut model, assigned) = self.pick(card, &slots, conversation.as_ref())?;
         let local = brains.model_info(&model)?.local;
         let mut waits_for_gpu = false;
+        let mut note = None;
         if (local || model.provider.is_local()) && (self.deps.gpu_busy)() {
             let cloud = slots
                 .iter()
@@ -377,35 +392,54 @@ impl Inner {
         }
         if !waits_for_gpu {
             match brains.admit_starting(&model, Priority::Crew) {
-                Admission::Refused(why) => {
-                    return Err(marlowe_brains::BrainsError::Invalid(format!("not loading {model}: {why}")).into());
-                }
+                Admission::Refused(why) => match conversation.filter(|m| assigned && *m != model) {
+                    Some(own) if brains.admit(&own, Priority::Crew).may_run() => {
+                        note = Some(format!(
+                            "{} (its crew slot) could not load: {why}; it ran on this conversation's {} instead",
+                            model.model_id, own.model_id
+                        ));
+                        model = own;
+                    }
+                    _ => return Err(marlowe_brains::BrainsError::Invalid(format!("not loading {model}: {why}")).into()),
+                },
                 // The engine did not say what is loaded: ask again shortly rather than guess.
                 Admission::Wait(_) => waits_for_gpu = true,
                 _ => {}
             }
         }
         let (provider, info, _) = brains.model_parts(&model, marlowe_model::Effort::Medium)?;
-        Ok(Choice { model: StepModel { provider, model: info }, waits_for_gpu })
+        Ok(Choice { model: StepModel { provider, model: info }, waits_for_gpu, note })
     }
 
-    /// The card's model before any GPU or load decision: the first explicitly assigned slot of its
-    /// chain, else the conductor's model.
-    fn pick(&self, card: &RoleCard, slots: &[marlowe_proto::SlotAssignment]) -> Result<ModelRef, CrewError> {
-        let explicit = card
-            .slot_chain()
-            .into_iter()
-            .find_map(|slot| slots.iter().find(|a| a.slot == slot && !a.inherited).and_then(|a| a.model.clone()));
-        Ok(match explicit {
-            Some(m) => m,
-            None => self.deps.brains.resolve(&card.slot)?.0,
+    /// The model `session`'s conversation is on, when the daemon says and the library has it.
+    fn session_model(&self, session: Option<&SessionId>) -> Option<ModelRef> {
+        let f = self.deps.session_model.as_ref()?;
+        f(session?).filter(|m| self.deps.brains.model_info(m).is_ok())
+    }
+
+    /// The card's model before any GPU or load decision, and whether the user assigned it: the
+    /// card's own slot when set (never the conductor's), else the conversation's model, else the
+    /// conductor's.
+    fn pick(
+        &self,
+        card: &RoleCard,
+        slots: &[marlowe_proto::SlotAssignment],
+        conversation: Option<&ModelRef>,
+    ) -> Result<(ModelRef, bool), CrewError> {
+        let own = (card.slot != marlowe_proto::Slot::Conductor)
+            .then(|| slots.iter().find(|a| a.slot == card.slot && !a.inherited).and_then(|a| a.model.clone()))
+            .flatten();
+        Ok(match (own, conversation) {
+            (Some(m), _) => (m, true),
+            (None, Some(m)) => (m.clone(), false),
+            (None, None) => (self.deps.brains.resolve(&card.slot)?.0, false),
         })
     }
 
     /// The card's model as the library stores it, for pricing: a library read, no admission.
-    pub(crate) fn priced_model(&self, card: &RoleCard) -> Option<marlowe_model::ModelInfo> {
+    pub(crate) fn priced_model(&self, card: &RoleCard, session: Option<&SessionId>) -> Option<marlowe_model::ModelInfo> {
         let slots = self.deps.brains.slots().unwrap_or_default();
-        let model = self.pick(card, &slots).ok()?;
+        let (model, _) = self.pick(card, &slots, self.session_model(session).as_ref()).ok()?;
         self.deps.brains.model_info(&model).ok()
     }
 
@@ -424,7 +458,7 @@ impl Inner {
             for id in ids {
                 match st.live.get(&id) {
                     Some(l) if l.run.status == CrewRunStatus::Queued && !l.running => {
-                        queued.push((id, l.run.role.clone(), l.run.current_action.clone()))
+                        queued.push((id, l.run.role.clone(), l.run.current_action.clone(), l.run.session.clone()))
                     }
                     _ => st.queue.retain(|q| *q != id),
                 }
@@ -436,8 +470,11 @@ impl Inner {
         }
         let choices: Vec<(RunId, Option<String>, Result<Choice, CrewError>)> = queued
             .into_iter()
-            .map(|(id, role, action)| {
-                let choice = roles.get(&role).ok_or_else(|| CrewError::UnknownRole(role.clone())).and_then(|card| self.choose(card));
+            .map(|(id, role, action, session)| {
+                let choice = roles
+                    .get(&role)
+                    .ok_or_else(|| CrewError::UnknownRole(role.clone()))
+                    .and_then(|card| self.choose(card, session.as_ref()));
                 (id, action, choice)
             })
             .collect();
@@ -498,6 +535,9 @@ impl Inner {
                     r.status = CrewRunStatus::Running;
                     r.current_action = Some("starting".into());
                     r.note = None;
+                    if choice.note.is_some() {
+                        r.model_note = choice.note.clone();
+                    }
                 }));
                 let inner = Arc::clone(self);
                 let run_id = id.clone();
@@ -665,7 +705,7 @@ log={log_len}
         let mut run = Run::new(session, &card, &args.goal, args.playbook, workspace, budget);
         run.tainted = args.tainted;
         // Pricing only: no admission, no GPU probe, nothing that blocks the conductor.
-        let pricing = self.inner.priced_model(&card).and_then(|m| m.pricing);
+        let pricing = self.inner.priced_model(&card, run.session.as_ref()).and_then(|m| m.pricing);
         let receipt = DispatchReceipt {
             task_id: marlowe_proto::TaskKind::Agent.id(run.id.as_str()),
             run_id: run.id.clone(),
@@ -703,7 +743,7 @@ log={log_len}
         let mut run = Run::new(session, &card, &args.goal, None, workspace, budget);
         run.tainted = args.tainted;
         run.workflow = Some(prepare(&run.id).map_err(|message| CrewError::Step { step: "workflow".into(), message })?);
-        let pricing = self.inner.priced_model(&card).and_then(|m| m.pricing);
+        let pricing = self.inner.priced_model(&card, run.session.as_ref()).and_then(|m| m.pricing);
         let receipt = DispatchReceipt {
             task_id: marlowe_proto::TaskKind::Workflow.id(run.id.as_str()),
             run_id: run.id.clone(),
@@ -734,13 +774,15 @@ log={log_len}
     /// A run streaming from `model` right now (a local stream in flight), if one is. The engine
     /// serves one request at a time per model slot, so a turn on the same model waits behind it.
     pub fn local_stream_on(&self, model: &ModelRef) -> Option<RunId> {
-        let holders = lock(&self.inner.local_holders).clone();
-        let roles = lock(&self.inner.roles).clone();
-        holders.into_iter().find_map(|(run, role)| {
-            let card = roles.get(&role)?;
-            let m = self.inner.priced_model(card)?;
-            (m.model_ref() == *model).then_some(run)
-        })
+        self.local_streams_on(model).0
+    }
+
+    /// The first run streaming from `model` now, and how many crew streams are in flight on it.
+    pub fn local_streams_on(&self, model: &ModelRef) -> (Option<RunId>, usize) {
+        let want = model.to_string();
+        let holders = lock(&self.inner.local_holders);
+        let on: Vec<&RunId> = holders.iter().filter(|(_, _, m)| *m == want).map(|(r, _, _)| r).collect();
+        (on.first().map(|r| (*r).clone()), on.len())
     }
 
     pub fn roles(&self) -> Vec<RoleInfo> {

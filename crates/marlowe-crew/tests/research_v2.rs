@@ -170,6 +170,7 @@ fn start_with(home: &Path, models: bool, gpu_busy: bool, cfg: CrewConfig) -> (Su
         mind: None,
         gpu_busy: Arc::new(move || gpu_busy),
         research: Some(Arc::new(Web)),
+        session_model: None,
     };
     let (tx, rx) = crossbeam_channel::unbounded();
     (Supervisor::start(home, deps, cfg, tx).unwrap(), rx)

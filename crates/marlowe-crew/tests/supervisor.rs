@@ -238,7 +238,7 @@ fn start_with(home: &Path, brains: Arc<Brains>, cfg: CrewConfig, gpu_busy: bool)
 fn start_probe(home: &Path, brains: Arc<Brains>, cfg: CrewConfig, gpu_busy: GpuBusy) -> Fixture {
     let approvals = Arc::new(TestApprovals::default());
     let (tx, events) = crossbeam_channel::unbounded();
-    let deps = CrewDeps { brains, tools: tool_factory(), approvals: approvals.clone(), mind: None, gpu_busy, research: None };
+    let deps = CrewDeps { brains, tools: tool_factory(), approvals: approvals.clone(), mind: None, gpu_busy, research: None, session_model: None };
     let sup = Supervisor::start(home, deps, cfg, tx).unwrap();
     Fixture { sup, events, approvals }
 }

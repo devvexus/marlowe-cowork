@@ -382,7 +382,7 @@ impl Hooks {
         let mut cache = self.pricing.lock().unwrap_or_else(|e| e.into_inner());
         let price = *cache.entry(role.to_string()).or_insert_with(|| {
             let roles = self.inner.roles.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            roles.get(role).and_then(|card| self.inner.priced_model(card)).and_then(|m| m.pricing)
+            roles.get(role).and_then(|card| self.inner.priced_model(card, self.session.as_ref())).and_then(|m| m.pricing)
         });
         price.map_or(0.0, |p| p.cost(usage.input, usage.output))
     }
@@ -477,11 +477,19 @@ spent: {:?}", self.id, run.goal, run.budget, spent),
     fn resolve(&self, card: &RoleCard) -> Result<StepModel, CrewError> {
         let mut waiting = false;
         loop {
-            let choice = self.inner.choose(card)?;
+            let choice = self.inner.choose(card, self.session.as_ref())?;
             if !choice.waits_for_gpu {
                 if !self.model_spun.swap(true, Ordering::SeqCst) {
                     let ev = PhaseEvent::end(PhaseKind::Spinup, 0).stage("model").detail(choice.model.model.id.as_str());
                     self.inner.emit(CrewEvent::Phase(PhaseEvent { run: Some(self.id.clone()), ..ev }));
+                }
+                // A crew slot's model that could not load: said once, kept with the run.
+                if let Some(note) = choice.note {
+                    let new = self.inner.run(&self.id).map_or(true, |r| r.model_note.as_deref() != Some(note.as_str()));
+                    if new {
+                        self.progress(&note);
+                        self.inner.update(&self.id, |r| r.model_note = Some(note));
+                    }
                 }
                 return Ok(choice.model);
             }
@@ -588,7 +596,7 @@ impl StepHooks for Hooks {
                 *n = n.saturating_sub(1);
                 return Err(e);
             }
-            self.inner.local_holders.lock().unwrap_or_else(|e| e.into_inner()).push((self.id.clone(), spec.role.clone()));
+            self.inner.local_holders.lock().unwrap_or_else(|e| e.into_inner()).push((self.id.clone(), spec.role.clone(), model.to_string()));
         }
         Ok(())
     }
@@ -597,7 +605,7 @@ impl StepHooks for Hooks {
     fn after_call(&self, spec: &StepSpec, local: Option<&ModelRef>, usage: Option<&Usage>) {
         if let Some(model) = local {
             let mut holders = self.inner.local_holders.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(i) = holders.iter().position(|(r, role)| *r == self.id && *role == spec.role) {
+            if let Some(i) = holders.iter().position(|(r, role, _)| *r == self.id && *role == spec.role) {
                 holders.remove(i);
             }
             drop(holders);

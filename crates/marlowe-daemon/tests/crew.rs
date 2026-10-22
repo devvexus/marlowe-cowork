@@ -1137,3 +1137,132 @@ fn a_denial_with_a_reason_reaches_the_runs_agent_in_its_tool_result() {
     );
     stop(d);
 }
+
+// ---------------------------------------------------------------- the conversation's model
+
+/// The session of the first `TurnStarted` in `envs`.
+fn started_session(envs: &[Envelope]) -> marlowe_proto::SessionId {
+    envs.iter()
+        .find_map(|e| match &e.event {
+            Event::TurnStarted { session, .. } => Some(session.clone()),
+            _ => None,
+        })
+        .expect("a turn started")
+}
+
+/// Adds `id` to the library as a local Ollama model the engine never has loaded (it never fits).
+fn unloaded_model(home: &Path, id: &str) -> marlowe_model::ModelRef {
+    let info = ModelInfo::bare(ProviderKind::Ollama, id);
+    Library::open(&paths::cowork_db(home)).unwrap().add(&info).unwrap();
+    info.model_ref()
+}
+
+fn scripted_ref() -> marlowe_model::ModelRef {
+    model().model_ref()
+}
+
+/// Session 82cb2e7f, 2026-10-21: the conversation ran on the loaded dusk while the library's
+/// conductor slot still named dawn, which could not load beside it. Its team task's agents and
+/// the failure's relay resolved dawn, so the run failed ("no model for this run") and the relay
+/// waited for the user's next turn. A conversation's runs and relays use the model it is on.
+#[test]
+fn a_conversations_runs_and_relay_use_the_model_it_is_on_not_the_library_conductor() {
+    let home = temp_home("session-model");
+    let dawn = unloaded_model(&home, "dawn");
+    let p = Arc::new(Routed::default());
+    let d = start(&home, p.clone(), true);
+    let mut a = Client::connect(&d.info);
+    a.send(&Request::Ask { session: None, text: "hello".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
+    let session = started_session(&a.until_event(|e| matches!(e, Event::TurnFinished { .. })));
+    // The conductor slot names dawn; this conversation is switched to the loaded model.
+    a.send(&Request::SetSlot { slot: marlowe_proto::Slot::Conductor, model: Some(dawn), effort: Default::default() });
+    a.until_event(|e| matches!(e, Event::LibraryState { .. }));
+    a.send(&Request::SwitchModel { session: session.clone(), model: scripted_ref(), effort: None });
+
+    p.conductor(tool_call("c1", "dispatch", r#"{"role":"tester","goal":"Say the answer"}"#));
+    p.conductor(reply("Sent to the tester."));
+    p.conductor(reply("The tester says 42."));
+    p.crew(reply("The answer is 42.\nConfidence: high"));
+    let before = p.requests().len();
+    a.send(&Request::Ask { session: Some(session.clone()), text: "ask the tester".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
+    let first = a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
+    let run = first
+        .iter()
+        .find_map(|e| match &e.event {
+            Event::RunUpdated(info) => Some(info.id.clone()),
+            _ => None,
+        })
+        .expect("the run was announced");
+    // The relay is its own turn, at once, with no user turn between.
+    let rest = a.until_event(|e| matches!(e, Event::TurnStarted { user, .. } if user.starts_with("[crew · run ")));
+    let failed = first.iter().chain(&rest).find_map(|e| match &e.event {
+        Event::RunUpdated(i) if i.id == run && i.status == CrewRunStatus::Failed => i.note.clone(),
+        _ => None,
+    });
+    assert_eq!(failed, None, "the run did not fail on the library's model");
+    a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
+    let models: Vec<(bool, String)> = p.requests()[before..].iter().map(|(c, r)| (*c, r.model.clone())).collect();
+    assert!(models.iter().any(|(crew, _)| *crew), "the tester ran: {models:?}");
+    assert!(models.iter().all(|(_, m)| m == "scripted"), "every call, crew and relay, on the conversation's model: {models:?}");
+    stop(d);
+}
+
+/// A crew slot set to a model that cannot load beside what is loaded: the run goes ahead on
+/// the conversation's model, and its result says why.
+#[test]
+fn an_unfit_crew_slot_model_falls_back_to_the_conversations_model_with_a_note() {
+    let home = temp_home("slot-fallback");
+    let dawn = unloaded_model(&home, "dawn");
+    let p = Arc::new(Routed::default());
+    let d = start(&home, p.clone(), true);
+    let mut a = Client::connect(&d.info);
+    a.send(&Request::SetSlot { slot: marlowe_proto::Slot::Crew("tester".into()), model: Some(dawn), effort: Default::default() });
+    a.until_event(|e| matches!(e, Event::LibraryState { .. }));
+    p.conductor(tool_call("c1", "dispatch", r#"{"role":"tester","goal":"Say the answer"}"#));
+    p.conductor(reply("Sent to the tester."));
+    p.conductor(reply("The tester says 42."));
+    p.crew(reply("The answer is 42.\nConfidence: high"));
+    a.send(&Request::Ask { session: None, text: "ask the tester".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
+    a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
+    let got = a.until_event(|e| matches!(e, Event::TurnStarted { user, .. } if user.starts_with("[crew · run ")));
+    let Some(Event::TurnStarted { user: relay, .. }) = got.last().map(|e| e.event.clone()) else { unreachable!() };
+    assert!(relay.contains("Outcome: The answer is 42."), "{relay}");
+    assert!(relay.contains("Note: dawn (its crew slot) could not load"), "{relay}");
+    assert!(relay.contains("it ran on this conversation's scripted instead"), "{relay}");
+    a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
+    let crew: Vec<String> = p.requests().iter().filter(|(c, _)| *c).map(|(_, r)| r.model.clone()).collect();
+    assert!(!crew.is_empty() && crew.iter().all(|m| m == "scripted"), "{crew:?}");
+    stop(d);
+}
+
+/// When the relay turn cannot run (the conversation's model is no longer loaded), the finished
+/// task still reaches the user at once: a line in the conversation, not silence until they ask.
+#[test]
+fn a_finished_task_whose_relay_must_wait_still_reaches_the_user_at_once() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let home = temp_home("relay-announce");
+    let p = Arc::new(Routed::default());
+    let up = Arc::new(AtomicBool::new(true));
+    let d = Daemon::start(deps_with(p.clone(), true, up.clone()), &home, DaemonConfig::default()).expect("daemon starts");
+    let d = Running { info: d.info(), join: std::thread::spawn(move || d.wait()) };
+    let (release, gate) = bounded(1);
+    p.conductor(tool_call("c1", "dispatch", r#"{"role":"tester","goal":"Count the failing seeds"}"#));
+    p.conductor(reply("Sent to the tester."));
+    p.crew(vec![Step::Gate(gate), text("Seven of the twenty seeds fail.\nConfidence: high"), usage(), end()]);
+    let mut a = Client::connect(&d.info);
+    a.send(&Request::Ask { session: None, text: "count the failing seeds".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
+    let first = a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
+    let session = started_session(&first);
+    // The model unloads before the run ends: the relay turn may not load it again.
+    up.store(false, Ordering::SeqCst);
+    release.send(()).unwrap();
+    let got = a.until_event(|e| matches!(e, Event::Notified { .. }));
+    let Some(Event::Notified { session: s, title, body, .. }) = got.last().map(|e| e.event.clone()) else { unreachable!() };
+    assert_eq!(s, Some(session));
+    assert!(title.starts_with("crew · run ") && title.ends_with("done"), "{title}");
+    assert!(body.starts_with("Seven of the twenty seeds fail."), "{body}");
+    assert!(body.ends_with("Marlowe takes it up on your next message"), "{body}");
+    assert!(!got.iter().any(|e| matches!(&e.event, Event::TurnStarted { .. })), "no relay turn ran");
+    drop(a);
+    stop(d);
+}

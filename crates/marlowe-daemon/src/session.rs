@@ -7,7 +7,8 @@
 //! Crew results arrive as relays ([`SessionHandle::relay`]): an idle session runs a short relay
 //! turn; a busy one gets the result as a steer at its next step (an untainted result) or as a
 //! relay turn right after the current one (a tainted result, so the exposure is raised before the
-//! conductor acts on it). A relay is never ingested into memory at user trust.
+//! conductor acts on it). A relay is never ingested into memory at user trust. A relay turn runs
+//! on the model the conversation is on.
 
 use std::collections::VecDeque;
 use std::time::Instant;
@@ -505,7 +506,9 @@ fn run_one(
     let clock = TurnClock::start(core, &session, turn, input.extras.received, input.extras.sending_ms);
     clock.emit(PhaseEvent::start(PhaseKind::Admit));
     let admit_started = Instant::now();
-    let parts = guard(|| core.brains.agent_parts(&Slot::Conductor)).and_then(|r| r.map_err(|e| e.to_string()));
+    // The model the conversation is on (its `/model` switch, else the conductor's): a relay turn
+    // runs where the user's turns do, on the model already loaded.
+    let parts = guard(|| crate::conductor_ops::session_parts(core, &session)).and_then(|r| r);
     let (provider, info, effort) = match parts {
         Ok(p) => p,
         Err(e) => {
@@ -528,8 +531,10 @@ fn run_one(
     if let Err(message) = &admitted {
         let message = message.clone();
         if input.relay {
-            // The run stays due; the user's next turn delivers it on a loaded model.
+            // The run stays due; the user's next turn delivers it on a loaded model. The user
+            // hears the outcome now all the same.
             eprintln!("marlowe: a relay waits for the next turn: {message}");
+            crate::crew::announce_held(core, &session, &input.text);
             if !crate::crew::defer(core, &input.text) {
                 // A job notice or an agent's report: held by the session, not dropped.
                 lock(&handle.state).held.push(input.clone());
