@@ -300,7 +300,7 @@ fn parity_c10_the_prompt_prefix_is_stable_across_a_tool_loop() {
             parts: Vec::new(),
         }]));
     }
-    assert_eq!(breaks, 1, "the prefix breaks once, at the reasoning chunk boundary, not every step");
+    assert_eq!(breaks, 0, "every prompt starts with the previous one: the prefix never breaks");
     // The tool schemas are byte-identical from call to call.
     let a = p.build_body(&req, &meta)["tools"].to_string();
     req.messages.push(Message::user("next"));

@@ -4,6 +4,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Prompt cache
+
+- **A local model's prompt cache is never invalidated.** Marlowe stripped old reasoning from the history twice (the agent's context assembly and the Ollama request builder), so each new message rewrote what the model had already read; on hybrid models (qwen35: dusk-22b) that meant re-reading the whole conversation, 16-20k tokens and 8-10 s, on every message. History now goes out exactly as produced and the model's template decides what to render; every request's messages are an exact prefix of the next (tested step to step and across turns). Hosted models (OpenRouter) keep their old behaviour in their own request builder.
+
 ### Green main and follow-ups
 
 - `read` is sized to the session's window and the compaction loop is made hard: one result takes at most 12% of the window (about 11.8 KB, 3.9k tokens on 32k; never over 32 KB) and a cut says the file's lines, tokens, the window and exactly how to continue (a file over twice the window says so first: grep or read sections); compaction pins the files and line ranges already read, and a repeat read of lines read before the last compaction gets a one-line note in its own result.

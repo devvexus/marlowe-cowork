@@ -95,9 +95,18 @@ pub fn request_body_with(req: &ChatRequest, opts: &BodyOptions<'_>) -> Value {
     }
     let anthropic = req.model.starts_with("anthropic/");
 
+    // Hosted models get reasoning back only for the current user turn (the agent now sends the
+    // history as stored, so a local model's prefix cache holds); an earlier assistant message that
+    // was only reasoning is left out, as before.
+    let last_user = req.messages.iter().rposition(|m| m.role == Role::User).unwrap_or(0);
+
     // The conversation after the system message; the system message is put in front last, once
     // the conversation's breakpoints are known (Anthropic allows four in all).
-    for m in &req.messages[lead..] {
+    for (i, m) in req.messages.iter().enumerate().skip(lead) {
+        let earlier = i < last_user;
+        if earlier && m.role == Role::Assistant && m.joined_text().is_empty() && m.tool_calls().next().is_none() {
+            continue;
+        }
         let text = m.joined_text();
         match m.role {
             Role::System => {
@@ -131,7 +140,7 @@ pub fn request_body_with(req: &ChatRequest, opts: &BodyOptions<'_>) -> Value {
                 if !calls.is_empty() {
                     msg.insert("tool_calls".into(), Value::Array(calls));
                 }
-                if let Some(details) = m.thinking().and_then(|t| t.details.clone()) {
+                if let Some(details) = m.thinking().and_then(|t| t.details.clone()).filter(|_| !earlier) {
                     msg.insert("reasoning_details".into(), details);
                 }
                 messages.push(Value::Object(msg));
@@ -358,6 +367,32 @@ mod tests {
         assert_eq!(rf["type"], "json_schema");
         assert_eq!(rf["json_schema"]["strict"], false, "strict mode would reject optional properties");
         assert_eq!(rf["json_schema"]["schema"], schema, "the schema rides unchanged");
+    }
+
+    /// The agent sends the history as stored; hosted models still get reasoning back only for the
+    /// current user turn, and an earlier reasoning-only step is left out.
+    #[test]
+    fn earlier_turns_reasoning_is_not_sent_to_hosted_models() {
+        let think = |text: &str| Part::Thinking(Thinking {
+            text: text.into(),
+            details: Some(json!([{"type": "reasoning.text", "text": text}])),
+            ..Default::default()
+        });
+        let req = ChatRequest::new(
+            "anthropic/claude-sonnet",
+            vec![
+                Message::user("first"),
+                Message { role: Role::Assistant, content: vec![think("only thought")] },
+                Message { role: Role::Assistant, content: vec![think("old"), Part::Text { text: "answer".into() }] },
+                Message::user("second"),
+                Message { role: Role::Assistant, content: vec![think("new"), Part::Text { text: "next".into() }] },
+            ],
+        );
+        let body = request_body(&req, None);
+        let msgs: Vec<&Value> = body["messages"].as_array().unwrap().iter().filter(|m| m["role"] != "system").collect();
+        assert_eq!(msgs.len(), 4, "the earlier reasoning-only step is left out: {msgs:?}");
+        assert!(msgs[1].get("reasoning_details").is_none(), "an earlier turn's reasoning is not sent");
+        assert_eq!(msgs[3]["reasoning_details"][0]["text"], "new");
     }
 
     #[test]

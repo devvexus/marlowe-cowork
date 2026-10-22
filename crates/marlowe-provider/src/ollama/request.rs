@@ -4,11 +4,12 @@
 //! - one system message at position 0 (several chat templates refuse any other placement);
 //! - `tool_calls` on the assistant message with `arguments` as a JSON object, and `tool_name` +
 //!   `tool_call_id` on each tool message, or the model cannot pair results with calls;
-//! - `thinking` is kept only for the assistant messages of the current user turn, and within a
-//!   tool loop only for the current chunk of [`THINKING_CHUNK`] steps. Dropping it step by step
-//!   would change the prompt before the new message every call and defeat Ollama's prefix cache
-//!   (A14); dropping it in chunks breaks the prefix once per chunk, and reasoning from earlier
-//!   turns never comes back (it compounds, and Qwen's own template discards it too);
+//! - `thinking` goes back on every assistant message exactly as the model produced it; the
+//!   model's own template decides what to render. Marlowe never rewrites a message it has sent:
+//!   each prompt starts with the previous one, so Ollama's prefix cache always holds (Matthew,
+//!   2026-10-21: "never invalidate the prompt cache for any local model"). Hybrid models (qwen35's
+//!   recurrent layers) can only reuse an exact prefix, so stripping old reasoning made them
+//!   re-read the whole conversation on every message;
 //! - `num_ctx` always sent (Ollama silently defaults to 2048), and never smaller than the prompt
 //!   plus the output the request asks for ([`plan_request`]);
 //! - `tools` omitted rather than `[]`;
@@ -24,9 +25,6 @@ use serde_json::{json, Map, Value};
 
 use super::leak::defang_tool_markup;
 use crate::wire;
-
-/// Assistant steps of one tool loop that keep their `thinking` together.
-pub const THINKING_CHUNK: usize = 8;
 
 /// Characters per token the estimate assumes. Code and JSON run near 3, prose near 4.2; this
 /// errs a little high so a request near the window fails here rather than being truncated.
@@ -166,8 +164,6 @@ fn build(req: &ChatRequest, opts: &BodyOptions<'_>) -> Built {
     }
 
     let mut names: HashMap<String, String> = HashMap::new();
-    // Where the current user turn starts, for the thinking rule.
-    let mut turn_start = messages.len();
     for m in &req.messages[lead..] {
         let text = m.joined_text();
         match m.role {
@@ -183,7 +179,6 @@ fn build(req: &ChatRequest, opts: &BodyOptions<'_>) -> Built {
                     if !data.is_empty() {
                         msg["images"] = json!(data);
                     }
-                    turn_start = messages.len();
                     messages.push(msg);
                 }
             }
@@ -251,7 +246,6 @@ fn build(req: &ChatRequest, opts: &BodyOptions<'_>) -> Built {
     }
 
     wire::unorphan_tool_messages(&mut messages);
-    drop_old_thinking(&mut messages, turn_start);
 
     let num_predict = req.max_output_tokens.unwrap_or(num_ctx / 4).min(num_ctx / 2).max(1);
     let mut options = json!({ "num_ctx": num_ctx, "num_predict": num_predict });
@@ -286,26 +280,6 @@ fn build(req: &ChatRequest, opts: &BodyOptions<'_>) -> Built {
         body["format"] = schema.clone();
     }
     Built { body, prompt_tokens, num_predict }
-}
-
-/// Removes `thinking` from every assistant message outside the current chunk of the current
-/// user turn. `turn_start` is the index of that turn's user message.
-fn drop_old_thinking(messages: &mut [Value], turn_start: usize) {
-    let in_turn: Vec<usize> = (0..messages.len())
-        .filter(|&i| i >= turn_start && messages[i].get("role").and_then(Value::as_str) == Some("assistant"))
-        .collect();
-    let keep_chunk = in_turn.len().saturating_sub(1) / THINKING_CHUNK;
-    for (i, m) in messages.iter_mut().enumerate() {
-        if m.get("role").and_then(Value::as_str) != Some("assistant") {
-            continue;
-        }
-        let keep = in_turn.iter().position(|&j| j == i).is_some_and(|k| k / THINKING_CHUNK == keep_chunk);
-        if !keep {
-            if let Some(obj) = m.as_object_mut() {
-                obj.remove("thinking");
-            }
-        }
-    }
 }
 
 /// Estimated tokens of the messages and tool schemas as sent (image bytes excluded: they are
@@ -404,23 +378,13 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_from_earlier_user_turns_is_not_sent_back() {
+    fn reasoning_goes_back_on_every_assistant_message() {
         // `convo` ends on a new user message: both assistants belong to the finished turn.
         let body = request_body(&convo(), 32_768, None);
         let msgs = body["messages"].as_array().unwrap();
-        assert!(msgs[2].get("thinking").is_none());
-        assert!(msgs[4].get("thinking").is_none());
-        assert!(body.get("think").is_none());
-    }
-
-    #[test]
-    fn within_a_tool_loop_the_current_chunk_keeps_its_reasoning() {
-        let mut req = convo();
-        req.messages.pop(); // the loop is still inside the first turn
-        let body = request_body(&req, 32_768, None);
-        let msgs = body["messages"].as_array().unwrap();
-        assert_eq!(msgs[2]["thinking"], "old plan", "an earlier step of the same turn keeps it");
+        assert_eq!(msgs[2]["thinking"], "old plan", "an earlier turn's reasoning is sent as produced");
         assert_eq!(msgs[4]["thinking"], "new plan");
+        assert!(body.get("think").is_none());
     }
 
     fn loop_request(steps: usize) -> ChatRequest {
@@ -443,27 +407,21 @@ mod tests {
         ChatRequest::new("dusk", messages)
     }
 
-    /// The A14 mechanism: each step's prompt starts with the previous step's whole prompt, except
-    /// at a chunk boundary, where the earlier chunk's reasoning is dropped in one go.
+    /// Matthew's rule: the prompt cache is never invalidated. Every request's messages are an exact
+    /// prefix of the next request's, step after step and across a new user message.
     #[test]
-    fn the_prompt_is_a_stable_prefix_from_step_to_step_within_a_chunk() {
-        let msgs_of = |steps: usize| request_body(&loop_request(steps), 32_768, None)["messages"].as_array().unwrap().clone();
-        let mut breaks = Vec::new();
-        for steps in 1..(THINKING_CHUNK * 3) {
-            let (prev, next) = (msgs_of(steps), msgs_of(steps + 1));
-            if next[..prev.len()] != prev[..] {
-                breaks.push(steps + 1);
-            }
+    fn every_prompt_starts_with_the_previous_one() {
+        let msgs_of = |req: &ChatRequest| request_body(req, 32_768, None)["messages"].as_array().unwrap().clone();
+        for steps in 1..20 {
+            let (prev, next) = (msgs_of(&loop_request(steps)), msgs_of(&loop_request(steps + 1)));
+            assert_eq!(next[..prev.len()], prev[..], "step {} rewrote an earlier message", steps + 1);
         }
-        // The prefix breaks only when step 9 and step 17 are sent (the first call of a new chunk).
-        assert_eq!(breaks, vec![THINKING_CHUNK + 1, 2 * THINKING_CHUNK + 1]);
-        // And within a chunk every earlier step still carries its reasoning.
-        let m = msgs_of(5);
-        assert!(m.iter().filter(|x| x["role"] == "assistant").all(|x| x.get("thinking").is_some()));
-        // After a boundary only the new chunk does.
-        let m = msgs_of(THINKING_CHUNK + 2);
-        let with: usize = m.iter().filter(|x| x["role"] == "assistant" && x.get("thinking").is_some()).count();
-        assert_eq!(with, 2);
+        let finished = loop_request(12);
+        let mut follow_up = finished.clone();
+        follow_up.messages.push(Message::user("and now?"));
+        let (prev, next) = (msgs_of(&finished), msgs_of(&follow_up));
+        assert_eq!(next[..prev.len()], prev[..], "a new user message rewrote the finished turn");
+        assert!(next.iter().filter(|x| x["role"] == "assistant").all(|x| x.get("thinking").is_some()));
     }
 
     #[test]

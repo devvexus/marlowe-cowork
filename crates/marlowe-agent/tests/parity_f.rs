@@ -1946,13 +1946,9 @@ fn parity_c10_reasoning_and_mid_turn_reminders_keep_requests_extending() {
         assert_eq!(w[0].system, w[1].system);
         assert_eq!(w[0].messages[..], w[1].messages[..w[0].messages.len()], "within a turn, each request extends the last");
     }
-    let strip = |msgs: &[Message]| -> Vec<Message> {
-        msgs.iter()
-            .map(|m| Message { role: m.role, content: m.content.iter().filter(|p| !matches!(p, Part::Thinking(_))).cloned().collect() })
-            .filter(|m| !m.content.is_empty())
-            .collect()
-    };
-    let before = strip(&r[2].messages);
+    // Matthew's rule: the prompt cache is never invalidated. Across turns too, the next request
+    // starts with the whole previous one, reasoning included.
+    let before = &r[2].messages;
     assert_eq!(r[2].system, r[3].system, "the system prompt never changes");
-    assert_eq!(before[..], r[3].messages[..before.len()], "across turns only old reasoning goes");
+    assert_eq!(before[..], r[3].messages[..before.len()], "across turns nothing already sent is rewritten");
 }

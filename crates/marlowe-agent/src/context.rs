@@ -208,8 +208,9 @@ pub fn assemble(system: &SystemPrompt, memory: &[String], convo: &Conversation, 
 ///
 /// System: stable tier (core, blocks, project sections, user, output style), the profile
 /// (cached), the compaction summary, then (unless `volatile_tail`) retrieved memory blocks and
-/// the environment. Messages: the history with thinking dropped from assistant messages before
-/// the turn's query ([`TurnQuery`], else the last user message); with `volatile_tail`, each turn's recorded tail prefixed to its user
+/// the environment. Messages: the history as stored, reasoning included (a provider that must
+/// not resend old reasoning drops it in its own request builder; local models never do, so their
+/// prefix cache holds); with `volatile_tail`, each turn's recorded tail prefixed to its user
 /// message; with [`Masking::Rolling`], all but the last `keep_tool_results` results masked.
 pub fn assemble_with(
     system: &SystemPrompt,
@@ -260,21 +261,6 @@ pub fn assemble_with(
                 m.content.insert(0, Part::Text { text: text.clone() });
             }
         }
-    }
-    let query = convo.ext.get::<TurnQuery>().map(|q| q.0).filter(|&i| messages.get(i).is_some_and(|m| m.role == Role::User));
-    if let Some(last_user) = query.or_else(|| messages.iter().rposition(|m| m.role == Role::User)) {
-        for m in &mut messages[..last_user] {
-            if m.role == Role::Assistant {
-                m.content.retain(|p| !matches!(p, Part::Thinking(_)));
-            }
-        }
-        // An earlier assistant message that was only thinking is now empty; drop it.
-        let mut i = 0;
-        messages.retain(|m| {
-            let keep = i >= last_user || !m.content.is_empty();
-            i += 1;
-            keep
-        });
     }
     if cfg.masking == Masking::Rolling {
         mask_tool_results(&mut messages, cfg.keep_tool_results);
@@ -714,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn assembly_orders_tiers_and_drops_old_thinking() {
+    fn assembly_orders_tiers_and_keeps_old_thinking() {
         let sys = SystemPrompt::with_core("core").environment(crate::Environment {
             now: "now".into(),
             os: "os".into(),
@@ -742,7 +728,7 @@ mod tests {
         assert_eq!(texts[2], "<memory>x</memory>");
         assert!(texts[3].starts_with("<environment>"));
         assert!(!a.system[3].cache);
-        assert!(a.messages[1].thinking().is_none(), "thinking from earlier turns is not resent");
+        assert!(a.messages[1].thinking().is_some(), "an earlier turn's thinking is sent as stored");
         assert_eq!(a.messages[1].joined_text(), "answer");
         assert!(convo.messages[1].thinking().is_some(), "the stored history is untouched");
         assert!(a.tokens > 0);
