@@ -603,6 +603,10 @@ impl ToolMiddleware for RepoMapMiddleware {
     fn before_turn(&self, convo: &mut marlowe_agent::Conversation, text: &mut String) -> marlowe_agent::TurnFlow {
         if convo.ext.get::<RepoMapped>().is_none() {
             convo.ext.insert(RepoMapped);
+            // A session loaded again keeps the map its earlier requests carried (the cache).
+            if convo.ext.get::<marlowe_agent::system::RestoredSections>().is_some() {
+                return marlowe_agent::TurnFlow::Continue;
+            }
             let opts = MapOptions {
                 budget_tokens: repomap::budget_for(self.context_tokens),
                 focus: Vec::new(),

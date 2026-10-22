@@ -29,7 +29,7 @@ use serde_json::Value;
 
 use crate::convo::Conversation;
 use crate::middleware::{StepInfo, ToolMiddleware, TurnFlow};
-use crate::system::PromptSections;
+use crate::system::{PromptSections, RestoredSections};
 use crate::tools::{CallCtx, ToolCallReq, ToolOutcome};
 
 /// Instruction file names, in load order within one directory.
@@ -679,6 +679,11 @@ impl ToolMiddleware for InstructionsMiddleware {
                 convo.ext.insert(trust::TrustService(t.clone()));
             }
             refresh(convo);
+            // A session loaded again keeps the text its earlier requests carried (the cache).
+            if let Some(kept) = convo.ext.get::<RestoredSections>().cloned() {
+                let now = convo.ext.get::<PromptSections>().cloned().unwrap_or_default();
+                convo.ext.insert(PromptSections { warnings: now.warnings, ..kept.0 });
+            }
         }
         TurnFlow::Continue
     }

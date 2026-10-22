@@ -44,3 +44,5 @@ marlowe-journal.workspace = true
 marlowe-memory.workspace = true
 # K: the scripted MCP server the tests connect to.
 marlowe-mcp = { workspace = true, features = ["fake-server"] }
+# The prefix guard builds the Ollama request body a turn would send.
+marlowe-provider.workspace = true

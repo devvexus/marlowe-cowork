@@ -68,6 +68,15 @@ CREATE TABLE IF NOT EXISTS turn_timings (
     numbers TEXT NOT NULL,
     PRIMARY KEY (session, turn)
 );
+CREATE TABLE IF NOT EXISTS turn_context (
+    session TEXT NOT NULL,
+    turn    INTEGER NOT NULL,
+    kind    TEXT NOT NULL,
+    text    TEXT NOT NULL,
+    -- the message the text rides on, counted from the turn's first row (hooks may add messages before the prompt)
+    at_offset INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (session, turn, kind)
+);
 CREATE TABLE IF NOT EXISTS rewound_turns (
     session     TEXT NOT NULL,
     idx         INTEGER NOT NULL,
@@ -166,6 +175,21 @@ pub(crate) struct Dropped {
     pub first_ms: Option<i64>,
 }
 
+/// The per-turn text a turn carried on its user message (`TAIL`: memory and environment, `NOTE`:
+/// teams reminders) and the session's prompt sections, kept so a session that is loaded again
+/// (a restart, an idle eviction, a rewind) sends the same bytes its earlier requests did.
+pub(crate) const TAIL: &str = "tail";
+pub(crate) const NOTE: &str = "note";
+pub(crate) const SECTIONS: &str = "sections";
+
+/// What [`Store::context`] returns: `(position of the turn's user message, kind, text)` and the
+/// prompt sections as JSON.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SavedContext {
+    pub turns: Vec<(usize, String, String)>,
+    pub sections: Option<String>,
+}
+
 enum Cmd {
     Create(SessionSummary, Sender<StoreResult<()>>),
     SetTitle(SessionId, String, Sender<StoreResult<()>>),
@@ -186,6 +210,8 @@ enum Cmd {
     SetKv(String, String, Sender<StoreResult<()>>),
     LastActivity(Sender<StoreResult<Option<i64>>>),
     PutTimings { session: SessionId, turn: u32, spans: Vec<PhaseSpan>, numbers: TurnNumbers, reply: Sender<StoreResult<()>> },
+    PutContext { session: SessionId, turn: u32, kind: String, text: String, offset: u32, reply: Sender<StoreResult<()>> },
+    Context(SessionId, Sender<StoreResult<SavedContext>>),
     Close,
 }
 
@@ -293,6 +319,20 @@ fn serve(conn: &mut Connection, cmd: Cmd) -> bool {
         }
         Cmd::DropFrom { session, turn, at, reply } => {
             let _ = reply.send(drop_from(conn, &session, turn, at).map_err(e));
+        }
+        Cmd::PutContext { session, turn, kind, text, offset, reply } => {
+            let r = conn
+                .execute(
+                    "INSERT INTO turn_context (session, turn, kind, text, at_offset) VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(session, turn, kind) DO UPDATE SET text = excluded.text, at_offset = excluded.at_offset",
+                    params![session.as_str(), turn, kind, text, offset],
+                )
+                .map(|_| ())
+                .map_err(e);
+            let _ = reply.send(r);
+        }
+        Cmd::Context(session, reply) => {
+            let _ = reply.send(saved_context(conn, &session).map_err(e));
         }
         Cmd::Fork { from, to, before_turn, reply } => {
             let _ = reply.send(fork(conn, &from, to, before_turn));
@@ -543,6 +583,7 @@ fn drop_from(conn: &mut Connection, session: &SessionId, turn: u32, at: i64) -> 
     }
     tx.execute("DELETE FROM call_results WHERE session = ?1", [session.as_str()])?;
     tx.execute("DELETE FROM turn_timings WHERE session = ?1 AND turn >= ?2", params![session.as_str(), turn])?;
+    tx.execute("DELETE FROM turn_context WHERE session = ?1 AND kind != ?3 AND turn >= ?2", params![session.as_str(), turn, SECTIONS])?;
     tx.execute(
         "UPDATE sessions SET next_turn = MIN(next_turn, ?2), updated = ?3 WHERE id = ?1",
         params![session.as_str(), turn, at],
@@ -602,8 +643,52 @@ fn fork(conn: &mut Connection, from: &SessionId, to: SessionSummary, before_turn
         params![to.id.as_str(), from.as_str(), next_turn],
     )
     .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO turn_context (session, turn, kind, text, at_offset)
+         SELECT ?1, turn, kind, text, at_offset FROM turn_context WHERE session = ?2 AND (kind = ?4 OR turn < ?3)",
+        params![to.id.as_str(), from.as_str(), next_turn, SECTIONS],
+    )
+    .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(SessionSummary { turns: next_turn, ..to })
+}
+
+/// Puts a session's saved per-turn text and prompt sections back on `convo` (loaded from the store
+/// or rewound): each turn's request is then rebuilt with the bytes it first carried.
+pub(crate) fn restore_context(store: &Store, convo: &mut marlowe_agent::Conversation) {
+    use marlowe_agent::context::{TailReminders, TurnNotes};
+    let Ok(saved) = store.context(&convo.session) else { return };
+    for (pos, kind, text) in saved.turns {
+        match kind.as_str() {
+            TAIL => convo.ext.get_or_default::<TailReminders>().0.push((pos, text)),
+            NOTE => convo.ext.get_or_default::<TurnNotes>().0.push((pos, text)),
+            _ => {}
+        }
+    }
+    if let Some(s) = saved.sections.and_then(|j| serde_json::from_str(&j).ok()) {
+        convo.ext.insert(marlowe_agent::system::RestoredSections(s));
+    }
+}
+
+/// A session's saved per-turn text, each placed at its turn's user message (counted among the rows
+/// as they load), and its prompt sections.
+fn saved_context(conn: &Connection, id: &SessionId) -> rusqlite::Result<SavedContext> {
+    let mut out = SavedContext::default();
+    let mut st = conn.prepare(
+        "SELECT (SELECT COUNT(*) FROM turns t2 WHERE t2.session = c.session
+                   AND t2.idx < (SELECT MIN(t.idx) FROM turns t WHERE t.session = c.session AND COALESCE(t.turn, 0) = c.turn)) + c.at_offset,
+                c.kind, c.text
+         FROM turn_context c
+         WHERE c.session = ?1 AND c.kind != ?2
+           AND EXISTS (SELECT 1 FROM turns t WHERE t.session = c.session AND COALESCE(t.turn, 0) = c.turn)
+         ORDER BY c.turn, c.kind DESC",
+    )?;
+    let rows = st.query_map(params![id.as_str(), SECTIONS], |r| Ok((r.get::<_, i64>(0)? as usize, r.get(1)?, r.get(2)?)))?;
+    out.turns = rows.collect::<Result<_, _>>()?;
+    out.sections = conn
+        .query_row("SELECT text FROM turn_context WHERE session = ?1 AND kind = ?2", params![id.as_str(), SECTIONS], |r| r.get(0))
+        .optional()?;
+    Ok(out)
 }
 
 fn load(conn: &Connection, id: &SessionId) -> StoreResult<Vec<StoredTurn>> {
@@ -747,6 +832,16 @@ impl Store {
         self.call(|r| Cmd::List(limit, r))
     }
 
+    /// Keeps `text` as what `turn` carried of `kind` ([`TAIL`], [`NOTE`]) on the message `offset` rows
+    /// after the turn's first; the sections use turn 0.
+    pub fn put_context(&self, session: &SessionId, turn: u32, kind: &str, text: &str, offset: u32) -> StoreResult<()> {
+        self.call(|r| Cmd::PutContext { session: session.clone(), turn, kind: kind.into(), text: text.into(), offset, reply: r })
+    }
+
+    pub fn context(&self, id: &SessionId) -> StoreResult<SavedContext> {
+        self.call(|r| Cmd::Context(id.clone(), r))
+    }
+
     pub fn load(&self, id: &SessionId) -> StoreResult<Vec<StoredTurn>> {
         self.call(|r| Cmd::Load(id.clone(), r))
     }
@@ -823,6 +918,44 @@ mod tests {
 
     fn row(m: Message, turn: u32, at: i64) -> RowIn {
         RowIn { message: m, turn, step: None, at, meta: None, mem_seq: None }
+    }
+
+    /// What a turn carried beyond its words comes back on the right message after a reload, follows
+    /// a fork, and goes with a rewind; the sections outlive both.
+    #[test]
+    fn a_turns_tail_and_notes_come_back_where_they_rode() {
+        let dir = scratch("context");
+        let (store, handle) = open(&dir.join("cowork.db")).unwrap();
+        let id = SessionId("c1".into());
+        store.create(summary(&id, "C:/w")).unwrap();
+        // Turn 0: the prompt. Turn 1: a reminder ahead of the prompt (offset 1), then the prompt.
+        store.append_rows(&id, vec![row(Message::user("one"), 0, 1), row(Message::assistant("a"), 0, 2)], 1, false, 2).unwrap();
+        store.append_rows(&id, vec![row(Message::user("<system-reminder>files</system-reminder>"), 1, 3), row(Message::user("two"), 1, 4)], 2, false, 4).unwrap();
+        store.put_context(&id, 0, TAIL, "tail0", 0).unwrap();
+        store.put_context(&id, 1, TAIL, "tail1", 1).unwrap();
+        store.put_context(&id, 1, NOTE, "note1", 1).unwrap();
+        store.put_context(&id, 0, SECTIONS, "{\"s\":1}", 0).unwrap();
+        let saved = store.context(&id).unwrap();
+        assert_eq!(
+            saved.turns,
+            vec![(0, TAIL.to_string(), "tail0".to_string()), (3, TAIL.to_string(), "tail1".to_string()), (3, NOTE.to_string(), "note1".to_string())]
+        );
+        assert_eq!(saved.sections.as_deref(), Some("{\"s\":1}"));
+        store.put_context(&id, 1, TAIL, "tail1b", 1).unwrap();
+        assert_eq!(store.context(&id).unwrap().turns[1].2, "tail1b", "a turn's tail is replaced, not repeated");
+
+        let copy = store.fork(&id, summary(&SessionId("c2".into()), "C:/w"), Some(1)).unwrap();
+        let forked = store.context(&copy.id).unwrap();
+        assert_eq!(forked.turns, vec![(0, TAIL.to_string(), "tail0".to_string())], "a fork keeps the tails of the turns it keeps");
+        assert!(forked.sections.is_some());
+
+        store.drop_from(&id, 1, 9).unwrap();
+        let after = store.context(&id).unwrap();
+        assert_eq!(after.turns.len(), 1, "a rewind drops the dropped turns' tails");
+        assert!(after.sections.is_some());
+        store.close();
+        handle.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -270,8 +270,21 @@ fn opened_session(envs: &[Envelope]) -> SessionId {
         .expect("a TurnStarted")
 }
 
+/// The words of each message of `role`; a user message's per-turn tail (memory, environment) is not part of them.
 fn texts(m: &[Message], role: Role) -> Vec<String> {
-    m.iter().filter(|m| m.role == role).map(|m| m.joined_text()).collect()
+    m.iter().filter(|m| m.role == role).map(|m| strip_tail(&m.joined_text())).collect()
+}
+
+fn strip_tail(text: &str) -> String {
+    match text.strip_prefix("<system-reminder>").and_then(|t| t.split_once("</system-reminder>")) {
+        Some((_, words)) => words.to_string(),
+        None => text.to_string(),
+    }
+}
+
+/// Everything a request shows the model: the system prompt and every message with its tail.
+fn whole(req: &ChatRequest) -> String {
+    format!("{}\n{}", req.system_text(), req.messages.iter().map(|m| m.joined_text()).collect::<Vec<_>>().join("\n"))
 }
 
 // ---------------------------------------------------------------- tests
@@ -857,8 +870,8 @@ fn a_statement_in_one_session_is_recalled_in_another_after_a_restart() {
     assert_ne!(sid_a, sid_b, "a different session");
     let (count, summary) = recalled(&log, &sid_b).unwrap_or_else(|| panic!("no Recalled event; saw {log:#?}"));
     assert!(count >= 1 && summary.contains("Tromsø"), "{count} {summary:?}");
-    let system = p2.requests()[0].system_text();
-    assert!(system.contains("Tromsø"), "the injected block reaches the provider:\n{system}");
+    let shown = whole(&p2.requests()[0]);
+    assert!(shown.contains("Tromsø"), "the injected block reaches the provider:\n{shown}");
 
     // Explicit search finds it too, at user trust.
     match b.request(&Request::MemorySearch { query: "Ingrid Tromsø".into(), scope: None, limit: 5 }, |e| {
@@ -1206,9 +1219,14 @@ fn a_denial_with_a_reason_tells_the_model_what_the_user_said() {
 
 // ---------------------------------------------------------------- profile (M2.6)
 
-/// The profile block of a request, if it carries one.
+/// The profile block of a request, if it carries one: it rides in the tail of the turn that first
+/// showed it (the system prompt never holds it, so a memory write cannot break the prompt cache).
 fn profile_block(req: &ChatRequest) -> Option<String> {
-    req.system.iter().find(|b| b.text.starts_with("<profile>")).map(|b| b.text.clone())
+    req.messages.iter().map(|m| m.joined_text()).find_map(|t| {
+        let from = t.find("<profile>\n")?;
+        let to = t[from..].find("</profile>")? + from + "</profile>".len();
+        Some(t[from..to].to_string())
+    })
 }
 
 #[test]
@@ -1241,11 +1259,9 @@ fn parity_c5_c16_a_remembered_preference_is_in_the_first_request_of_the_next_ses
     let sid_b = opened_session(&b.until(is_finished));
     assert_ne!(sid_a, sid_b);
     let reqs = p2.requests();
-    let block = profile_block(&reqs[0]).unwrap_or_else(|| panic!("no profile block:\n{}", reqs[0].system_text()));
+    let block = profile_block(&reqs[0]).unwrap_or_else(|| panic!("no profile block:\n{}", whole(&reqs[0])));
     assert!(block.lines().any(|l| l.starts_with("- preference \u{b7} ") && l.ends_with(": use uv, not pip")), "{block}");
-    let pos = |r: &ChatRequest, prefix: &str| r.system.iter().position(|s| s.text.starts_with(prefix));
-    assert!(pos(&reqs[0], "<profile>") < pos(&reqs[0], "<environment>"), "context tier, before the volatile tier");
-    assert!(reqs[0].system.iter().find(|s| s.text.starts_with("<profile>")).unwrap().cache, "the profile is cached");
+    assert!(!reqs[0].system_text().contains("<profile>\n"), "the profile is not in the system prompt");
 
     // A second turn with no memory change sends a byte-identical block.
     b.send(&Request::Ask { session: Some(sid_b), text: "And for the tests?".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
@@ -1338,7 +1354,7 @@ fn retrieval_in_a_turn_never_repeats_a_profile_item() {
     let block = profile_block(&req).expect("the profile is in context");
     assert!(block.contains("Helix"), "{block}");
     for id in &profile_ids {
-        assert!(!req.system.iter().any(|s| s.text.contains(&format!("[Memory {id} "))), "{id} injected twice:\n{}", req.system_text());
+        assert!(!whole(&req).contains(&format!("[Memory {id} ")), "{id} injected twice:\n{}", whole(&req));
     }
     stop(d, &home);
 }

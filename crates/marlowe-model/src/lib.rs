@@ -11,6 +11,7 @@ mod fold;
 pub mod image;
 mod info;
 mod message;
+pub mod prefix;
 mod provider;
 mod request;
 mod stream;

@@ -157,6 +157,10 @@ The live strip (`marlowe-tui/src/live.rs`, `render/strip.rs`): `Strip` folds pha
 
 Init moments (`seq.rs`, `render/seq.rs`, `render/farewell.rs`): `SeqLine` is the one "initializing mainframe" line (glyph, label, leader dots, value) the boot, the shutdown and in-transcript sequences share. Quitting sends `Detach` and keeps the connection: `Farewell` folds the daemon's `Phase{Shutdown}` steps (`close_ops`/`Daemon::wait` publish them as pause, unload, save and journal really end) until `ShuttingDown`, EOF, a key or a timeout. `Entry::Seq` holds a run's research channels (`Phase{Channel}`) or crew spin-up (`Phase{Spinup}`), updated in place by run id.
 
+## Prompt cache
+
+A local model reuses its cache only for an exact prefix (qwen35 is hybrid, one slot per model), so every request must extend the session's last one. The system prompt and the tools are byte-stable for a session: persona, blocks, instruction files, skills, repo map, user block, output style. Anything that changes per turn (clock, repo state, model line, retrieved memories, the profile when new or changed, the Teams note) rides on the turn's own user message as a tail that is stored (`turn_context`) and never rewritten; the prompt sections and any hook reminder ahead of the prompt are stored too, so a restart, an idle eviction or a rewind rebuilds the same bytes. A deliberate change (`/memory`, a newly connected MCP server) may break the prefix once. `marlowe_model::prefix` compares each local request with the session's last and `daemon.log` names the section that diverged, or that another request used the model's one slot; `daemon/tests/prefix_guard.rs` is the guard.
+
 ## Crew and sandbox model
 
 An agent is a role card (`roles/*.md`, overridden by `<home>\roles\*.md`: slot, effort, tool allowlist, budget, sandbox kind, instructions), and that is all. Depth 1: crew runs never get `dispatch`.

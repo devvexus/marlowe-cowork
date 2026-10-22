@@ -199,6 +199,33 @@ pub fn tail_text(system: &SystemPrompt, memory: &[String]) -> String {
     format!("<system-reminder>\n{}\n</system-reminder>", parts.join("\n\n"))
 }
 
+const PROFILE_OPEN: &str = "<profile>";
+const PROFILE_CLOSE: &str = "</profile>";
+/// What a tail says when the profile was emptied (a forget) after having been shown.
+const PROFILE_EMPTIED: &str = "<profile>\n(nothing is recorded about the user any more)\n</profile>";
+
+/// The profile block the newest tail that carried one holds; `None` when no tail has.
+pub fn profile_shown(convo: &Conversation) -> Option<String> {
+    convo.ext.get::<TailReminders>()?.0.iter().rev().find_map(|(_, text)| {
+        let from = text.rfind(PROFILE_OPEN)?;
+        let to = text[from..].find(PROFILE_CLOSE)? + from + PROFILE_CLOSE.len();
+        Some(text[from..to].to_string())
+    })
+}
+
+/// The profile block this turn's tail must carry: the current one when it differs from what the
+/// conversation last showed (or nothing was shown yet), a note when it was emptied, else nothing.
+pub fn profile_update(now: &str, shown: Option<&str>) -> Option<String> {
+    let now = now.trim();
+    match (now.is_empty(), shown) {
+        (true, None) => None,
+        (true, Some(s)) if s == PROFILE_EMPTIED => None,
+        (true, Some(_)) => Some(PROFILE_EMPTIED.to_string()),
+        (false, Some(s)) if s == now => None,
+        (false, _) => Some(now.to_string()),
+    }
+}
+
 /// [`assemble_with`] without a profile block.
 pub fn assemble(system: &SystemPrompt, memory: &[String], convo: &Conversation, cfg: &ContextConfig) -> Assembled {
     assemble_with(system, "", memory, convo, cfg)
@@ -747,6 +774,24 @@ mod tests {
         let first = a.messages[0].joined_text();
         assert!(first.contains("[Memory m1] x") && first.contains("Now: t1") && first.ends_with("first"), "{first}");
         assert_eq!(convo.messages[0].joined_text(), "first", "the stored history is untouched");
+    }
+
+    #[test]
+    fn the_profile_rides_in_a_tail_only_when_it_is_new_or_changed() {
+        let p1 = "<profile>\n- preference: tabs\n</profile>";
+        let p2 = "<profile>\n- preference: tabs\n- fact: Hyperion\n</profile>";
+        let mut convo = Conversation::new(SessionId::from("s"), None);
+        assert_eq!(profile_update(p1, profile_shown(&convo).as_deref()).as_deref(), Some(p1), "the first turn shows it");
+        assert_eq!(profile_update("", None), None, "nothing recorded, nothing shown");
+        let sys = SystemPrompt::with_core("core");
+        convo.ext.get_or_default::<TailReminders>().0.push((0, tail_text(&sys, &[p1.into(), "[Memory m1] x".into()])));
+        assert_eq!(profile_shown(&convo).as_deref(), Some(p1));
+        assert_eq!(profile_update(p1, profile_shown(&convo).as_deref()), None, "unchanged: not repeated");
+        assert_eq!(profile_update(p2, profile_shown(&convo).as_deref()).as_deref(), Some(p2), "a memory write shows the new one");
+        let emptied = profile_update("", profile_shown(&convo).as_deref()).unwrap();
+        assert!(emptied.contains("nothing is recorded"), "{emptied}");
+        convo.ext.get_or_default::<TailReminders>().0.push((2, tail_text(&sys, &[emptied.clone()])));
+        assert_eq!(profile_update("", profile_shown(&convo).as_deref()), None, "said once");
     }
 
     #[test]

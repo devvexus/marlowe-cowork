@@ -4,6 +4,13 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Prompt cache
+
+- **A local model no longer re-reads the conversation on every message.** The environment block (the clock to the minute, the repo's dirty count and last commit) and the retrieved memories sat at the end of the system prompt, so every turn changed the system prompt a few thousand tokens in and Ollama's common prefix ended there (~7,000 of 12,611 tokens on `marlowe-dusk:22b`). They now ride on the turn's own user message (the `cache_stable` policy, now the default; `[context] cache_stable = false` in `settings.toml` turns it off).
+- **The memory profile rides in the tail too**, on the first turn and again only when it changed (a `remember` used to rewrite the system prompt); an emptied profile is said once.
+- **What a turn carried is stored with the session.** The per-turn tail, the Teams note, the prompt sections (instruction files, skills, repo map) and the reminders a hook put ahead of the prompt (changed files, job output) are saved, so a session loaded again after a restart, an idle eviction or a rewind sends the bytes its earlier requests did. Replay hides those reminder rows.
+- **The daemon log names the section that broke the prefix.** When a local model's request does not extend the session's last one, `daemon.log` says `prompt cache break in session ... system block N / tool X / message N part M changed: was ..., now ...`, and `N other request(s) used the <model> slot` when another request (a subagent, a crew agent, a title) replaced the one-slot cache. Compaction does not log it. `crates/marlowe-daemon/tests/prefix_guard.rs` runs memory writes, file edits, commits, a Teams toggle and a daemon restart through the real daemon and request builder and fails on any break.
+
 ### Live strip
 
 - **Nothing on the live strip is shown twice, and it is one line.** The strip is only the current activity at the bottom of the conversation: read and thinking are separate lines (thinking replaces the read line), the thinking block in the transcript is a fold handle (`reasoning`) while the strip carries the count and clock, a running tool is named once (in the transcript), a load or compaction is one line with one clock, and recall stages use that same line.

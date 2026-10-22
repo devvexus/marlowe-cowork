@@ -26,7 +26,7 @@ fn parity_h1_a_print_run_goes_through_the_shared_daemon_and_prints_only_the_answ
     assert_eq!(o.code, 0, "{}", o.err.text());
     assert_eq!(o.out.text(), "the answer is 4\n");
     assert_eq!(o.err.text(), "", "stdout is the answer and nothing else needs saying");
-    assert_eq!(rig.script.requests()[0].messages.last().unwrap().joined_text(), "what is 2+2?");
+    assert!(rig.script.requests()[0].messages.last().unwrap().joined_text().ends_with("</system-reminder>what is 2+2?"), "the words follow the turn's tail");
 }
 
 #[test]
@@ -35,12 +35,12 @@ fn parity_h1_stdin_is_appended_to_the_prompt() {
     let input: Box<dyn BufRead + Send> = Box::new(std::io::Cursor::new(b"line one\nline two\n".to_vec()));
     let o = rig.print_with(&["summarise this"], Some(input));
     assert_eq!(o.code, 0, "{}", o.err.text());
-    assert_eq!(rig.script.requests()[0].messages.last().unwrap().joined_text(), "summarise this\n\nline one\nline two");
+    assert!(rig.script.requests()[0].messages.last().unwrap().joined_text().ends_with("summarise this\n\nline one\nline two"));
     // No prompt argument: the piped text is the prompt.
     let input: Box<dyn BufRead + Send> = Box::new(std::io::Cursor::new(b"just stdin\n".to_vec()));
     let o = rig.print_with(&[], Some(input));
     assert_eq!(o.code, 0);
-    assert_eq!(rig.script.requests()[1].messages.last().unwrap().joined_text(), "just stdin");
+    assert!(rig.script.requests()[1].messages.last().unwrap().joined_text().ends_with("</system-reminder>just stdin"));
     // Neither: nothing to do, exit 1 and a reason.
     let o = rig.print(&[]);
     assert_eq!(o.code, 1);

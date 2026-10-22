@@ -14,13 +14,15 @@
 
 use std::sync::Mutex;
 
+use marlowe_agent::context::{TailReminders, TurnNotes, TurnQuery};
+use marlowe_agent::system::PromptSections;
 use marlowe_agent::{CallCtx, Conversation, ModelCall, StepInfo, ToolMiddleware, ToolOutcome, TurnFlow, TurnObserver};
 use marlowe_model::{Message, ModelRef, Role, ToolCall, ToolResult, Usage};
 use marlowe_mind::Mind;
 use marlowe_proto::SessionId;
 
 use crate::now_ms;
-use crate::store::{CallMeta, CallResultRow, RowIn, Store};
+use crate::store::{CallMeta, CallResultRow, RowIn, Store, NOTE, SECTIONS, TAIL};
 
 /// What a tool call that was running when the daemon stopped reports on resume.
 pub(crate) const STOPPED_MID_CALL: &str =
@@ -43,6 +45,12 @@ struct Inner {
     provisional: Option<Message>,
     /// The last store failure, for the runner to report; the unwritten rows are retried.
     error: Option<String>,
+    /// The tail and note of this turn already saved, and the sections last saved.
+    saved_tail: Option<String>,
+    saved_note: Option<String>,
+    saved_sections: Option<String>,
+    /// `convo.messages.len()` when the turn began.
+    turn_start: usize,
 }
 
 /// Writes one session's conversation to the store as it happens. Shared (an `Arc`) between the
@@ -67,6 +75,10 @@ impl SessionRecorder {
             first_row_pending: false,
             provisional: None,
             error: None,
+            saved_tail: None,
+            saved_note: None,
+            saved_sections: None,
+            turn_start: stored_len,
         };
         Self { session, store, mind, inner: Mutex::new(inner) }
     }
@@ -80,6 +92,7 @@ impl SessionRecorder {
         let mem_seq = self.mind.as_ref().and_then(|m| m.journal_seq().ok());
         let mut g = self.lock();
         g.cursor = convo.messages.len();
+        g.turn_start = convo.messages.len();
         g.resync = false;
         g.turn = convo.next_turn;
         g.provider = model.provider.as_str().to_string();
@@ -89,6 +102,8 @@ impl SessionRecorder {
         g.first_row_pending = true;
         g.provisional = None;
         g.error = None;
+        g.saved_tail = None;
+        g.saved_note = None;
     }
 
     /// History was replaced from the store (a rewind): everything in `convo` is stored.
@@ -128,6 +143,39 @@ impl SessionRecorder {
         if g.error.is_none() {
             // A turn that stored nothing (it failed before the first call) still moves the session.
             let _ = self.store.append_rows(&self.session, Vec::new(), convo.next_turn, convo.exposure.tainted, now_ms());
+        }
+    }
+
+    /// Keeps what this turn's request carried beyond its words (the per-turn tail, the teams note) and
+    /// the session's prompt sections, so a session loaded again sends the same bytes: a request that
+    /// no longer starts with the last one costs the model a full re-read.
+    fn save_context(&self, g: &mut Inner, convo: &Conversation) {
+        let live = convo.ext.get::<TurnQuery>().map(|q| q.0);
+        let at = |entries: Option<&Vec<(usize, String)>>| {
+            entries.and_then(|v| v.iter().rev().find(|(i, _)| Some(*i) == live).map(|(_, t)| t.clone()))
+        };
+        let tail = at(convo.ext.get::<TailReminders>().map(|t| &t.0));
+        let note = at(convo.ext.get::<TurnNotes>().map(|t| &t.0));
+        let sections = convo.ext.get::<PromptSections>().and_then(|s| serde_json::to_string(s).ok());
+        let put = |g: &mut Inner, turn: u32, kind: &str, text: &str, offset: u32| {
+            if let Err(e) = self.store.put_context(&self.session, turn, kind, text, offset) {
+                g.error = Some(format!("turn context not saved: {e}"));
+            }
+        };
+        let turn = g.turn;
+        // Hooks may put messages ahead of the prompt: the text is placed by its row in the turn.
+        let offset = live.and_then(|l| l.checked_sub(g.turn_start)).unwrap_or(0) as u32;
+        if let Some(t) = tail.filter(|t| g.saved_tail.as_ref() != Some(t)) {
+            put(g, turn, TAIL, &t, offset);
+            g.saved_tail = Some(t);
+        }
+        if let Some(t) = note.filter(|t| g.saved_note.as_ref() != Some(t)) {
+            put(g, turn, NOTE, &t, offset);
+            g.saved_note = Some(t);
+        }
+        if let Some(t) = sections.filter(|t| g.saved_sections.as_ref() != Some(t)) {
+            put(g, 0, SECTIONS, &t, 0);
+            g.saved_sections = Some(t);
         }
     }
 
@@ -199,6 +247,7 @@ impl TurnObserver for SessionRecorder {
             }
         }
         let extra = kept.then(|| (c.to_message(), Some(meta), Some(call.info.step)));
+        self.save_context(&mut g, convo);
         self.write(&mut g, convo, extra);
     }
 
@@ -219,8 +268,13 @@ impl ToolMiddleware for SessionRecorder {
         let mut g = self.lock();
         let message = Message::user(text.as_str());
         let at = now_ms();
-        let row = self.row(&mut g, message.clone(), None, None, at);
-        match self.store.append_rows(&self.session, vec![row], convo.next_turn + 1, convo.exposure.tainted, at) {
+        // Messages a hook pushed ahead of the prompt (a file-change or job reminder) are part of
+        // the turn's request: stored first, or a session loaded again would send a history that
+        // no longer starts with the one the model's cache holds.
+        let ahead: Vec<Message> = convo.messages.get(g.cursor..).map(<[Message]>::to_vec).unwrap_or_default();
+        let mut rows: Vec<RowIn> = ahead.into_iter().map(|m| self.row(&mut g, m, None, None, at)).collect();
+        rows.push(self.row(&mut g, message.clone(), None, None, at));
+        match self.store.append_rows(&self.session, rows, convo.next_turn + 1, convo.exposure.tainted, at) {
             Ok(()) => {
                 g.cursor = convo.messages.len() + 1;
                 g.provisional = Some(message);

@@ -105,7 +105,7 @@ fn os_name() -> String {
 /// persona -> blocks -> [tools] -> instruction files -> project profile -> repo map -> skills
 /// index -> output style). Built per session (track F's instructions middleware keeps it in
 /// `Conversation::ext`), fitted to the prefix budget per model ([`crate::context::fit_prefix`]).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PromptSections {
     /// `<instructions>` block (MARLOWE.md / AGENTS.md / CLAUDE.md, imports, always-on rules).
     pub instructions: String,
@@ -120,6 +120,13 @@ pub struct PromptSections {
     /// Loading problems and budget truncations, surfaced in `/context` and at session start.
     pub warnings: Vec<String>,
 }
+
+/// The sections a session's earlier requests carried, put back when it is loaded again (a restart,
+/// an idle eviction): instruction files, skills and the repo map are not read anew then, or the
+/// system prompt would differ from the one the model's cache holds. `/memory` and `/add-dir` still
+/// reload them on purpose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoredSections(pub PromptSections);
 
 impl PromptSections {
     pub fn is_empty(&self) -> bool {

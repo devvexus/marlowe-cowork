@@ -1671,7 +1671,9 @@ pub fn entries_from_transcript(turns: &[StoredTurn]) -> Vec<Entry> {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                if !text.is_empty() {
+                // Harness text the loop put ahead of the prompt (a changed-file or job note) is the
+                // model's to read, not a line of the conversation.
+                if !text.is_empty() && !text.trim_start().starts_with("<system-reminder>") {
                     out.push(user_entry(text));
                 }
             }

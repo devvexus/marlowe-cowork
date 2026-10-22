@@ -291,6 +291,7 @@ impl Core {
         let workspace = summary.workspace.clone();
         let mut convo = Conversation::from_messages(id.clone(), workspace.as_ref().map(PathBuf::from), messages, summary.turns);
         convo.exposure.tainted = self.store.tainted(id).map_err(refuse)?;
+        crate::store::restore_context(&self.store, &mut convo);
         Ok(self.spawn_session(convo, summary.title, workspace))
     }
 

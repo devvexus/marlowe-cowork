@@ -87,13 +87,14 @@ fn sources(core: &Core, workspace: Option<&Path>) -> Sources {
     Sources::for_session(Some(&core.home), workspace)
 }
 
-/// `[context] cache_stable = true` in `<home>\settings.toml`: per-turn memory and the
-/// environment ride on the turn's message, so every request extends the last byte for byte
-/// (design 3.4, A14). Off by default until the daemon's request-shape tests move with it.
+/// Per-turn memory, the profile and the environment ride on the turn's message, so every request
+/// extends the last byte for byte (design 3.4, A14). On unless `[context] cache_stable = false`
+/// is in `<home>\settings.toml`. It was off by default: the environment's clock sat at the end of
+/// the system prompt and rebroke a local model's cache at the first token of every turn.
 fn cache_stable(core: &Core) -> bool {
-    let Ok(text) = std::fs::read_to_string(core.home.join("settings.toml")) else { return false };
+    let Ok(text) = std::fs::read_to_string(core.home.join("settings.toml")) else { return true };
     let mut section = String::new();
-    text.lines().map(str::trim).any(|l| {
+    let off = text.lines().map(str::trim).any(|l| {
         if l.starts_with('[') {
             section = l.trim_matches(['[', ']']).trim().to_string();
             return false;
@@ -101,8 +102,9 @@ fn cache_stable(core: &Core) -> bool {
         let Some((k, v)) = l.split_once('=') else { return false };
         let key = k.trim();
         let full = if section.is_empty() { key.to_string() } else { format!("{section}.{key}") };
-        full == "context.cache_stable" && v.trim() == "true"
-    })
+        full == "context.cache_stable" && v.trim() == "false"
+    });
+    !off
 }
 
 /// Refuses a request for a session the store does not know.

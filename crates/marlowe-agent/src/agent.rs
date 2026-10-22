@@ -17,7 +17,7 @@ use crossbeam_channel::Receiver;
 use marlowe_proto::{PhaseEvent, PhaseKind};
 use marlowe_model::{
     CancelToken, ChatRequest, Completion, CompletionBuilder, Effort, Message, ModelInfo, Provider, ProviderError,
-    StopReason, StreamEvent, ToolCall, Usage,
+    ProviderKind, StopReason, StreamEvent, ToolCall, Usage,
 };
 
 use crate::approval::{ApprovalGate, DenyAll};
@@ -274,12 +274,20 @@ impl Agent {
         let specs = self.tools.specs();
         let spec_tokens = context::tool_spec_tokens(&specs);
         self.apply_sections(&mut system, convo, spec_tokens, live.context.window_tokens);
-        if live.context.volatile_tail {
-            let tail = context::tail_text(&system, &memory);
+        // With the tail on the user's message, nothing per-turn sits in the system prompt: the
+        // profile rides there too, on the turns where it is new or changed (a memory write used to
+        // rewrite the system prompt and with it every token the model had cached).
+        let profile = if live.context.volatile_tail {
+            let mut blocks: Vec<String> = context::profile_update(&profile, context::profile_shown(convo).as_deref()).into_iter().collect();
+            blocks.extend(memory.iter().cloned());
+            let tail = context::tail_text(&system, &blocks);
             if !tail.is_empty() {
                 convo.ext.get_or_default::<TailReminders>().0.push((user_index, tail));
             }
-        }
+            String::new()
+        } else {
+            profile
+        };
 
         // Teams mode: its reminder rides on this turn's user message, whatever the tail policy.
         if let Some(note) = self.services.get::<crate::teams::TeamsNote>().and_then(|t| t.note(said)) {
@@ -292,6 +300,8 @@ impl Agent {
         let mut truncated = false;
         let mut loop_cuts = 0u32;
         let mut malformed_retried = false;
+        // History was rewritten on purpose since the last request (compaction logs itself).
+        let mut compacted = false;
 
         let stop = loop {
             if cancel.is_cancelled() {
@@ -360,6 +370,7 @@ impl Agent {
                     let pinned = crate::todo::pinned_ids(convo);
                     if context::mask_chunk(&mut convo.messages, cfg.keep_tool_results, &pinned) > 0 {
                         crate::todo::note_compacted(convo);
+                        compacted = true;
                         asm = context::assemble_with(&system, &profile, &memory, convo, &cfg);
                         sink(AgentEvent::Compacted { before_tokens: before, after_tokens: asm.tokens });
                     }
@@ -388,6 +399,7 @@ impl Agent {
                         // Whatever the sizes, history changed when a summary was written: the
                         // request is assembled again from it.
                         Ok((before, after)) => {
+                            compacted = true;
                             if after < before {
                                 sink(AgentEvent::Compacted { before_tokens: before, after_tokens: after });
                             }
@@ -424,10 +436,20 @@ impl Agent {
                 temperature: None,
                 format: None,
             };
+            // A local model keeps its cache only for an exact prefix: say which section broke it.
+            let local = matches!(live.model.provider, ProviderKind::Ollama | ProviderKind::LocalGguf);
+            if local {
+                if let Some(b) = marlowe_model::prefix::check(&convo.session.to_string(), &req, std::mem::take(&mut compacted)) {
+                    eprintln!("{}", b.line(&convo.session.to_string(), &req.model));
+                }
+            }
             let call_started = Instant::now();
             sink(AgentEvent::CallStarted { step: spent.steps + 1, est_prompt_tokens });
             let mut wire = Some(PhaseTimer::start(PhaseKind::Wire, sink));
             let ended = call_model(live.provider.as_ref(), &req, cancel, &mut wire, (call_started, est_prompt_tokens), sink);
+            if local {
+                marlowe_model::prefix::made(&convo.session.to_string(), &req.model);
+            }
             // A call that never produced a frame (failed, cancelled) still closes its phase.
             if let Some(w) = wire.take() {
                 w.end_with(sink, |e| e.detail("no frame"));

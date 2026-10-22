@@ -705,7 +705,7 @@ fn a_result_finished_but_never_relayed_is_relayed_after_a_restart() {
         std::thread::sleep(Duration::from_millis(20));
     }
     let relayed = p.requests().into_iter().filter(|(c, _)| !c).any(|(_, r)| {
-        r.messages.iter().any(|m| m.joined_text().starts_with(&format!("[crew · run {}", run.id.short())))
+        r.messages.iter().any(|m| m.joined_text().contains(&format!("[crew · run {}", run.id.short())))
     });
     assert!(relayed, "the conductor saw the result");
     drop(store);
@@ -842,7 +842,7 @@ fn a_relay_never_loads_the_model_and_waits_for_the_users_next_turn() {
         std::thread::sleep(Duration::from_millis(20));
     }
     let relayed = p.requests()[before..].iter().filter(|(c, _)| !c).any(|(_, r)| {
-        r.messages.iter().any(|m| m.joined_text().starts_with(&format!("[crew · run {}", run.id.short())))
+        r.messages.iter().any(|m| m.joined_text().contains(&format!("[crew · run {}", run.id.short())))
     });
     assert!(relayed, "the conductor saw the result after the user's turn");
     drop(a);
