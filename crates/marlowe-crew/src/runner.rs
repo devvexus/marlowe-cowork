@@ -138,6 +138,10 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
         let brains = inner.deps.brains.clone();
         Arc::new(move |model| brains.context().crew_slots(model))
     };
+    runner.named_model = {
+        let inner = inner.clone();
+        Some(Arc::new(move |card: &RoleCard, name: &str| inner.named(card, name)))
+    };
     runner.slots_note = {
         let brains = inner.deps.brains.clone();
         Arc::new(move |model| brains.context().slots_note(model))
@@ -743,6 +747,16 @@ impl StepHooks for Hooks {
     fn progress(&self, action: &str) {
         let action = clip(action, 120);
         self.inner.update(&self.id, |r| r.current_action = Some(action));
+    }
+
+    fn model_note(&self, note: &str) {
+        self.progress(note);
+        let note = clip(note, 300);
+        self.inner.update(&self.id, |r| match r.model_note.as_deref() {
+            Some(old) if old.contains(note.as_str()) => {}
+            Some(old) => r.model_note = Some(format!("{old}; {note}")),
+            None => r.model_note = Some(note),
+        });
     }
 
     fn partial(&self, key: &str) -> PartialStep {

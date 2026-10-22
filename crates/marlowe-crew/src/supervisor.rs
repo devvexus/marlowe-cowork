@@ -286,6 +286,15 @@ pub(crate) struct Choice {
     pub note: Option<String>,
 }
 
+/// Whether `name` (a full ref, or a model id with or without `:latest`) names `model`.
+fn same_name(model: &ModelRef, name: &str) -> bool {
+    let norm = |s: &str| {
+        let s = s.trim().to_ascii_lowercase();
+        if s.contains(':') { s } else { format!("{s}:latest") }
+    };
+    name.trim().eq_ignore_ascii_case(&model.to_string()) || norm(&model.model_id) == norm(name)
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -409,6 +418,32 @@ impl Inner {
         }
         let (provider, info, _) = brains.model_parts(&model, marlowe_model::Effort::Medium)?;
         Ok(Choice { model: StepModel { provider, model: info }, waits_for_gpu, note })
+    }
+
+    /// The model a script's `agent(model=name)` names: one in the library, else one of Ollama's
+    /// local tags (added to the library), and only when it may run beside what is loaded. `Err`
+    /// says why not; the caller runs the agent on its default model and keeps the reason.
+    pub(crate) fn named(&self, card: &RoleCard, name: &str) -> Result<StepModel, String> {
+        let brains = &self.deps.brains;
+        let found = brains.with_library(|l| l.models()).unwrap_or_default().into_iter().map(|m| m.model).find(|m| same_name(m, name));
+        let model = match found {
+            Some(m) => m,
+            None => {
+                let tag = brains
+                    .catalog(marlowe_model::ProviderKind::Ollama)
+                    .ok()
+                    .and_then(|list| list.into_iter().find(|i| same_name(&i.model_ref(), name)))
+                    .ok_or_else(|| "is not in the model library or Ollama's local models".to_string())?;
+                brains.add_model(tag.provider, &tag.id).map_err(|e| format!("could not be added: {e}"))?.model
+            }
+        };
+        match brains.admit_starting(&model, Priority::Crew) {
+            Admission::Refused(why) => return Err(format!("could not load: {why}")),
+            Admission::Wait(why) => return Err(format!("is not ready: {why}")),
+            _ => {}
+        }
+        let (provider, info, _) = brains.model_parts(&model, card.effort).map_err(|e| e.to_string())?;
+        Ok(StepModel { provider, model: info })
     }
 
     /// The model `session`'s conversation is on, when the daemon says and the library has it.

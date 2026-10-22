@@ -18,7 +18,9 @@ pub struct AgentOpts {
     /// A JSON Schema (the in-house subset, [`crate::schema`]): the agent returns an object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<Value>,
-    /// A model alias (`sonnet`, `opus`, `haiku`, `inherit`) or a library reference.
+    /// A model in the library or Ollama's local models (a full ref, or an id with or without
+    /// `:latest`). One that is unknown or does not fit beside what is loaded runs on the
+    /// conversation's model with a note; `inherit` or none keeps the role's model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// `low`, `medium`, `high`, `xhigh`, `max`.

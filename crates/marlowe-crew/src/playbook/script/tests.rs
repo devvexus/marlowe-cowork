@@ -458,3 +458,66 @@ fn a_read_only_agent_is_the_workflow_role_with_read_tools_only() {
     assert_eq!(look, ["git", "glob", "grep", "read"], "explore is read-only: no write, edit, bash or web");
     assert!(seen[1].contains(&"write".to_string()) && seen[1].contains(&"bash".to_string()), "a plain agent keeps the workflow role's tools: {:?}", seen[1]);
 }
+
+struct Notes(Mutex<Vec<Option<String>>>);
+
+impl RunObserver for Notes {
+    fn agent_stop(&self, _run: &RunId, _call: &AgentCall, result: &AgentResult) {
+        self.0.lock().unwrap().push(result.note.clone());
+    }
+}
+
+const MODEL_SCRIPT: &str = "META = {\"description\": \"one agent\"}\ndef main(args):\n    return agent(\"go\", model = args[\"m\"], effort = \"high\")\n";
+
+fn model_run(r: &AgentRunner, home: &Path, m: &str) -> Vec<Option<String>> {
+    let run = RunId::new_random();
+    let notes = Arc::new(Notes(Mutex::new(Vec::new())));
+    set_observer(&run, notes.clone());
+    let wf = job_script(home, &run, MODEL_SCRIPT, json!({"m": m}), None);
+    go(r, home, &run, &wf).0.unwrap();
+    let seen = notes.0.lock().unwrap().clone();
+    seen
+}
+
+#[test]
+fn an_agent_with_a_model_runs_on_it_and_its_effort_reaches_the_request() {
+    let own = Model::new(false, |_, _| answer("own"));
+    let named = Model::new(false, |_, _| answer("named"));
+    let home = temp("model-ok");
+    let mut r = runner(own.clone(), &home);
+    let named_for_pick = named.clone();
+    r.named_model = Some(Arc::new(move |_card, name| {
+        assert_eq!(name, "big:7b");
+        Ok(StepModel { provider: named_for_pick.clone(), model: info(false) })
+    }));
+    let notes = model_run(&r, &home, "big:7b");
+    assert_eq!(notes, [None]);
+    assert!(own.requests().is_empty(), "the role's model was not used");
+    let sent = named.requests();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].effort, marlowe_model::Effort::High);
+}
+
+#[test]
+fn an_unknown_or_unfit_model_falls_back_with_a_visible_note() {
+    let own = Model::new(false, |_, _| answer("own"));
+    let home = temp("model-fall");
+    let mut r = runner(own.clone(), &home);
+    r.named_model = Some(Arc::new(|_card, _name| Err("could not load: 20 GiB needed, 4 GiB free".to_string())));
+    let notes = model_run(&r, &home, "huge:70b");
+    assert_eq!(own.requests().len(), 1, "ran on the role's model");
+    let note = notes[0].clone().expect("a note");
+    assert!(note.contains("`huge:70b`") && note.contains("could not load") && note.contains("conversation's model"), "{note}");
+}
+
+#[test]
+fn inherit_and_a_runner_that_cannot_name_models_use_the_role_model_silently() {
+    let own = Model::new(false, |_, _| answer("own"));
+    let home = temp("model-inherit");
+    let mut r = runner(own.clone(), &home);
+    r.named_model = Some(Arc::new(|_card, _name| panic!("inherit names nothing")));
+    assert_eq!(model_run(&r, &home, "inherit"), [None]);
+    r.named_model = None;
+    assert_eq!(model_run(&r, &home, "x:1b"), [None]);
+    assert_eq!(own.requests().len(), 2);
+}

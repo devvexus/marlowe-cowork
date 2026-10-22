@@ -198,6 +198,21 @@ fn run_agent(
     worktree: Option<&RunWorktree>,
 ) -> AgentResult {
     let mut runner = base.clone();
+    // `model=`: a model the script names runs this agent when it resolves and fits; otherwise the
+    // agent runs on the role's model and says so, here and on the run.
+    let mut model_note = None;
+    if let Some(name) = call.opts.model.as_deref().map(str::trim).filter(|n| !n.is_empty() && !n.eq_ignore_ascii_case("inherit")) {
+        if let (Some(pick), Ok(card)) = (base.named_model.clone(), base.card(role)) {
+            match pick(card, name) {
+                Ok(chosen) => runner.models = Arc::new(move |_| Ok(chosen.clone())),
+                Err(why) => {
+                    let note = format!("model `{name}` {why}; agent \"{}\" ran on this conversation's model instead", call.display_label());
+                    base.hooks.model_note(&note);
+                    model_note = Some(note);
+                }
+            }
+        }
+    }
     let mut prompt = call.prompt.clone();
     if let Some(extra) = observer.and_then(|o| o.agent_start(run, call)).filter(|e| !e.trim().is_empty()) {
         prompt = format!("{prompt}\n\n{extra}");
@@ -285,6 +300,12 @@ fn run_agent(
         Err(CrewError::Cancelled) if cancel.is_cancelled() => AgentResult::skipped(),
         Err(e) => AgentResult::failed(e.to_string(), 0),
     };
+    if let Some(note) = model_note {
+        result.note = Some(match result.note.take() {
+            Some(old) => format!("{note}; {old}"),
+            None => note,
+        });
+    }
     if let Some(sb) = child_sandbox {
         match sb.diff_summary() {
             Ok(d) if d.files.is_empty() => {

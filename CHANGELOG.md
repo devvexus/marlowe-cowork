@@ -4,6 +4,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Team agents
+
+- **A team task's `agent(model=...)` is honoured.** A name that is in the model library or Ollama's local models (added to the library) runs that agent when the planner says it fits beside what is loaded; an unknown or unfit name runs it on the conversation's model, with a note on the agent's result and on the run (as for an unfit crew slot). `inherit` keeps the role's model. `effort=` already reached the request and is tested. Tests use scripted models only.
+
 ### Workspace paths
 
 - **A workspace path is made real when it is set.** `~` is expanded, a rooted path with no drive (`/Projects/MSFFN`) is found on the home or working drive or under home, the result is absolute and canonical (no `\\?\` prefix), and a path that does not exist or is a file is refused with the reason (`marlowe_proto::workspace`). The picker keeps its `~` display form apart from the stored path. Sessions already stored as `~/Projects/MSFFN` or `/Projects/MSFFN` are rewritten when the daemon starts.

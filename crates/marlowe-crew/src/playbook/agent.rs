@@ -64,6 +64,10 @@ pub struct StepModel {
 /// Resolves a role card to its model: the card's slot chain, with the GPU fallback applied.
 pub type ModelResolver = Arc<dyn Fn(&RoleCard) -> Result<StepModel, CrewError> + Send + Sync>;
 
+/// Resolves a model a workflow's `agent(model=...)` names for `card`: the model when it is in the
+/// library or Ollama's tags and may run beside what is loaded, else why not.
+pub type NamedModelFn = Arc<dyn Fn(&RoleCard, &str) -> Result<StepModel, String> + Send + Sync>;
+
 /// Runs a command in the sandbox. The default is [`sandbox_shell`].
 pub type ShellFn = Arc<dyn Fn(&Sandbox, &str, &CancelToken) -> Result<ShellResult, CrewError> + Send + Sync>;
 
@@ -170,6 +174,9 @@ pub trait StepHooks: Send + Sync {
 
     /// The run's one-line current action.
     fn progress(&self, _action: &str) {}
+
+    /// An agent did not run on the model its script named; kept with the run and shown.
+    fn model_note(&self, _note: &str) {}
 }
 
 /// Hooks that do nothing: no checkpoints, no budget, no events.
@@ -213,6 +220,9 @@ pub struct AgentRunner {
     pub slots_note: Arc<dyn Fn(&ModelRef) -> Option<String> + Send + Sync>,
     /// Wraps each step's tool host; `None` keeps it.
     pub step_tools: Option<StepToolsFn>,
+    /// Finds the model a script's `agent(model=...)` names; `None` runs every agent on the
+    /// role's model.
+    pub named_model: Option<NamedModelFn>,
 }
 
 impl AgentRunner {
@@ -243,6 +253,7 @@ impl AgentRunner {
             local_slots: Arc::new(|_| 1),
             slots_note: Arc::new(|_| None),
             step_tools: None,
+            named_model: None,
         }
     }
 
@@ -307,7 +318,7 @@ impl AgentRunner {
         }
     }
 
-    fn card(&self, role: &str) -> Result<&RoleCard, CrewError> {
+    pub(crate) fn card(&self, role: &str) -> Result<&RoleCard, CrewError> {
         self.roles.get(role).ok_or_else(|| CrewError::UnknownRole(role.to_string()))
     }
 

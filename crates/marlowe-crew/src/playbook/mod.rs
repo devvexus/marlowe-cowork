@@ -11,7 +11,7 @@ pub mod research_v2;
 pub mod script;
 
 pub use agent::{
-    close_dangling, output_cap, sandbox_shell, tail_chars, AgentRunner, CallCheckpoint, ModelResolver, NoHooks, PartialStep,
+    close_dangling, output_cap, sandbox_shell, tail_chars, AgentRunner, CallCheckpoint, ModelResolver, NamedModelFn, NoHooks, PartialStep,
     ShellFn, StepFailure, StepHooks, StepModel, StepToolsFn, CONTINUE_PROMPT, INTERRUPTED_CALL, MAX_CONTINUES, MIN_OUTPUT,
     OUTPUT_MARGIN, RESUME_PROMPT, SHELL_OUTPUT_CHARS, SHELL_TIMEOUT,
 };
