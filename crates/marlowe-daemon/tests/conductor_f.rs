@@ -514,7 +514,7 @@ fn an_interrupt_ends_a_pending_subagent_approval_at_once() {
     let home = temp_home("subcancel");
     seed_models(&home);
     let p = Arc::new(Scripted::default());
-    p.push(call("agent", serde_json::json!({"type": "general", "description": "risky", "prompt": "do the risky thing"})));
+    p.push(call("agent", serde_json::json!({"type": "general", "description": "risky", "prompt": "do the risky thing", "background": false})));
     p.push_sub(call("danger", serde_json::json!({})));
     let r = start(&home, p.clone());
     let mut c = Client::connect(&r.info);

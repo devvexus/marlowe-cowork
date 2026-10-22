@@ -4,6 +4,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Tests
+
+- **Five daemon tests no longer depend on timing.** The subagent-approval interrupt test asked for a foreground agent but got the background default (so its turn had already ended); the crew relay tests let a fast run land inside the turn as a steer, or unloaded the model before the run started. Each now holds the run until the state it needs is reached.
+
 ### Composer and transcript notes
 
 - **Ctrl+Backspace and Ctrl+W join lines.** At the start of a line they delete the newline and then the word before it, as editors do.

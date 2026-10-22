@@ -594,11 +594,20 @@ fn a_busy_session_sees_an_untainted_result_at_its_next_step() {
     p.conductor(tool_call("c1", "dispatch", r#"{"role":"analyst","goal":"Count the failing seeds"}"#));
     p.conductor(vec![Step::Gate(gate), text("Sent to the analyst."), usage(), end()]);
     p.conductor(reply("And it is back already: 7 seeds fail."));
-    p.crew(reply("Seven of the twenty seeds fail.\nConfidence: high"));
+    // Held until the turn's second model call is under way: a result that lands before its request
+    // is built rides in that request, and no third call follows.
+    let (run_go, run_gate) = bounded(1);
+    p.crew(vec![Step::Gate(run_gate), text("Seven of the twenty seeds fail.\nConfidence: high"), usage(), end()]);
     let d = start(&home, p.clone(), true);
     let mut a = Client::connect(&d.info);
 
     a.send(&Request::Ask { session: None, text: "count the failing seeds".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
+    let deadline = Instant::now() + WAIT;
+    while p.requests().iter().filter(|(c, _)| !c).count() < 2 {
+        assert!(Instant::now() < deadline, "the second model call never started");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    run_go.send(()).unwrap();
     // The run finishes while the conductor's turn is still in its second model call.
     let before = a.until_event(|e| matches!(e, Event::RunFinished { .. }));
     assert!(!before.iter().any(|e| matches!(e.event, Event::TurnFinished { .. })));
@@ -1182,7 +1191,9 @@ fn a_conversations_runs_and_relay_use_the_model_it_is_on_not_the_library_conduct
     p.conductor(tool_call("c1", "dispatch", r#"{"role":"tester","goal":"Say the answer"}"#));
     p.conductor(reply("Sent to the tester."));
     p.conductor(reply("The tester says 42."));
-    p.crew(reply("The answer is 42.\nConfidence: high"));
+    // Held until the turn has ended: a result that lands inside the turn steers it, with no relay turn.
+    let (release, gate) = bounded(1);
+    p.crew(vec![Step::Gate(gate), text("The answer is 42.\nConfidence: high"), usage(), end()]);
     let before = p.requests().len();
     a.send(&Request::Ask { session: Some(session.clone()), text: "ask the tester".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let first = a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
@@ -1193,6 +1204,7 @@ fn a_conversations_runs_and_relay_use_the_model_it_is_on_not_the_library_conduct
             _ => None,
         })
         .expect("the run was announced");
+    release.send(()).unwrap();
     // The relay is its own turn, at once, with no user turn between.
     let rest = a.until_event(|e| matches!(e, Event::TurnStarted { user, .. } if user.starts_with("[crew · run ")));
     let failed = first.iter().chain(&rest).find_map(|e| match &e.event {
@@ -1221,9 +1233,12 @@ fn an_unfit_crew_slot_model_falls_back_to_the_conversations_model_with_a_note() 
     p.conductor(tool_call("c1", "dispatch", r#"{"role":"tester","goal":"Say the answer"}"#));
     p.conductor(reply("Sent to the tester."));
     p.conductor(reply("The tester says 42."));
-    p.crew(reply("The answer is 42.\nConfidence: high"));
+    // Held until the turn has ended: a result that lands inside the turn steers it, with no relay turn.
+    let (release, gate) = bounded(1);
+    p.crew(vec![Step::Gate(gate), text("The answer is 42.\nConfidence: high"), usage(), end()]);
     a.send(&Request::Ask { session: None, text: "ask the tester".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
+    release.send(()).unwrap();
     let got = a.until_event(|e| matches!(e, Event::TurnStarted { user, .. } if user.starts_with("[crew · run ")));
     let Some(Event::TurnStarted { user: relay, .. }) = got.last().map(|e| e.event.clone()) else { unreachable!() };
     assert!(relay.contains("Outcome: The answer is 42."), "{relay}");
@@ -1249,10 +1264,13 @@ fn a_finished_task_whose_relay_must_wait_still_reaches_the_user_at_once() {
     p.conductor(tool_call("c1", "dispatch", r#"{"role":"tester","goal":"Count the failing seeds"}"#));
     p.conductor(reply("Sent to the tester."));
     p.crew(vec![Step::Gate(gate), text("Seven of the twenty seeds fail.\nConfidence: high"), usage(), end()]);
+    let reached = p.announce_crew_calls();
     let mut a = Client::connect(&d.info);
     a.send(&Request::Ask { session: None, text: "count the failing seeds".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let first = a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
     let session = started_session(&first);
+    // The run's step is at the gate, so it has its model: only the relay finds it unloaded.
+    reached.recv_timeout(WAIT).expect("the crew step started");
     // The model unloads before the run ends: the relay turn may not load it again.
     up.store(false, Ordering::SeqCst);
     release.send(()).unwrap();
@@ -1292,11 +1310,14 @@ fn an_ask_during_a_relay_turn_gets_its_own_turn_not_a_fold_into_the_relay() {
     p.conductor(reply("Sent to the tester."));
     p.conductor(vec![Step::Gate(gate), text("The tester is done: the summary is in."), usage(), end()]);
     p.conductor(reply("Going well: the summary came back."));
-    p.crew(reply("The workspace is an MSFFN study.\nConfidence: high"));
+    // Held until the first turn has ended: a result that lands inside it steers it, with no relay turn.
+    let (run_go, run_gate) = bounded(1);
+    p.crew(vec![Step::Gate(run_gate), text("The workspace is an MSFFN study.\nConfidence: high"), usage(), end()]);
     let d = start(&home, p.clone(), true);
     let mut a = Client::connect(&d.info);
     a.send(&Request::Ask { session: None, text: "summarize the workspace".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let session = started_session(&a.until_event(|e| matches!(e, Event::TurnFinished { .. })));
+    run_go.send(()).unwrap();
     a.until_event(|e| matches!(e, Event::TurnStarted { user, .. } if user.starts_with("[crew · run ")));
     // The relay turn holds its model call; the user asks meanwhile.
     a.send(&Request::Ask { session: Some(session), text: "Hows it going".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
