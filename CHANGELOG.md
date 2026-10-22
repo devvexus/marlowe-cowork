@@ -4,6 +4,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Compaction
+
+- **After a compaction the model is told what happened.** The summary used to ride in the system prompt in a first-person voice with a one-line label, so the model took it for part of its instructions and could not tell who wrote it (it called it "the condensed system prompt"). It now arrives as one user-role message that says the harness compacted the conversation because the context was full, that the assistant wrote the summary and the user did not say any of it, that the latest user message and recent steps follow verbatim, and not to re-ask or re-read what the summary covers; the pinned working set sits after it, labelled as kept verbatim. The system prompt no longer changes at a compaction.
+
 ### Ollama start
 
 - **Marlowe starts Ollama headless, never the desktop app.** When Ollama is not answering, Marlowe now always runs `ollama serve` hidden and detached (your saved environment applied, credentials removed) and keeps its output in the size-capped `logs\ollama-serve.log`, so the read line gets Ollama's real numbers. A running Ollama or app is used as is.
