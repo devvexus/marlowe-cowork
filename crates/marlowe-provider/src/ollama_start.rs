@@ -2,8 +2,9 @@
 //!
 //! A terminal, and so this process, carries the environment it was opened with; Ollama must read
 //! the one in the registry (`HKCU\Environment` over the system's), so `OLLAMA_NUM_PARALLEL` set
-//! after the terminal opened still applies. The installed app is preferred, else `ollama serve`;
-//! either starts hidden and detached so closing Marlowe never takes it along. A running Ollama is
+//! after the terminal opened still applies. It is always `ollama serve`, never the tray app: hidden
+//! and detached so closing Marlowe never takes it along, with its output kept in Marlowe's own
+//! capped log, where the real prompt-read numbers come from. A running Ollama is
 //! never touched here: restarting one is [`OllamaServerControl::apply`](crate::OllamaServerControl),
 //! behind an approval. Everything outside the decision (the probe, the process start, the
 //! registry, the clock) is behind [`StartIo`], so the logic is tested with fakes.
@@ -25,8 +26,6 @@ const PROBE: Duration = Duration::from_millis(2500);
 pub trait StartIo {
     /// Whether the server answers `/api/version`.
     fn answers(&self) -> bool;
-    /// The installed Ollama tray app, if present.
-    fn app(&self) -> Option<PathBuf>;
     /// The `ollama` command line tool, if found.
     fn cli(&self) -> Option<PathBuf>;
     /// The environment to start it with: this process's, overlaid with the saved one, scrubbed.
@@ -46,15 +45,12 @@ pub fn ensure_running(io: &dyn StartIo, endpoint: &LocalEndpoint, timeout: Durat
     if io.answers() {
         return EngineStart::Running;
     }
-    let (program, args): (PathBuf, &[&str]) = match (io.app(), io.cli()) {
-        (Some(a), _) => (a, &[]),
-        (None, Some(c)) => (c, &["serve"]),
-        (None, None) => {
-            return EngineStart::Failed(format!(
-                "Ollama is not running at {endpoint} and is not installed where Marlowe looks (the Ollama app, or `ollama` on PATH). Install it from ollama.com."
-            ))
-        }
+    let Some(program) = io.cli() else {
+        return EngineStart::Failed(format!(
+            "Ollama is not running at {endpoint} and is not installed where Marlowe looks (`ollama` in its install folder or on PATH). Install it from ollama.com."
+        ));
     };
+    let args: &[&str] = &["serve"];
     let env = io.environment();
     progress("starting Ollama");
     if let Err(e) = io.spawn(&program, args, &env) {
@@ -68,7 +64,7 @@ pub fn ensure_running(io: &dyn StartIo, endpoint: &LocalEndpoint, timeout: Durat
         }
         if waited >= timeout {
             return EngineStart::Failed(format!(
-                "started {} but Ollama did not answer at {endpoint} within {} s. Check %LOCALAPPDATA%\\Ollama\\server.log.",
+                "started {} but Ollama did not answer at {endpoint} within {} s. Check Marlowe's logs\\ollama-serve.log.",
                 program.display(),
                 timeout.as_secs()
             ));
@@ -161,7 +157,7 @@ pub fn overlay_environment(
 pub struct SystemIo {
     pub endpoint: LocalEndpoint,
     pub scrub: Vec<String>,
-    /// Where an `ollama serve` this starts writes its output (the app keeps its own `server.log`).
+    /// Where the `ollama serve` this starts writes its output.
     pub log: Option<PathBuf>,
 }
 
@@ -169,12 +165,6 @@ impl StartIo for SystemIo {
     fn answers(&self) -> bool {
         // Twice: an Ollama busy with a load can be slow to answer, and that is not "stopped".
         (0..2).any(|_| http::get_json(&self.endpoint, "/api/version", PROBE).is_ok())
-    }
-
-    fn app(&self) -> Option<PathBuf> {
-        let local = std::env::var_os("LOCALAPPDATA")?;
-        let p = PathBuf::from(local).join("Programs").join("Ollama").join("ollama app.exe");
-        p.is_file().then_some(p)
     }
 
     fn cli(&self) -> Option<PathBuf> {
@@ -198,13 +188,11 @@ impl StartIo for SystemIo {
         let mut cmd = Command::new(program);
         cmd.args(args).env_clear().envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-        // A bare server's output is what shows the prompt read as it happens: keep it, capped.
-        if !args.is_empty() {
-            let kept = self.log.as_deref().and_then(|p| crate::ollama_log::open_own_log(p, crate::ollama_log::OWN_LOG_CAP).ok());
-            if let Some(out) = kept {
-                if let Ok(err) = out.try_clone() {
-                    cmd.stdout(out).stderr(err);
-                }
+        // The server's output is what shows the prompt read as it happens: keep it, capped.
+        let kept = self.log.as_deref().and_then(|p| crate::ollama_log::open_own_log(p, crate::ollama_log::OWN_LOG_CAP).ok());
+        if let Some(out) = kept {
+            if let Ok(err) = out.try_clone() {
+                cmd.stdout(out).stderr(err);
             }
         }
         #[cfg(windows)]
@@ -262,7 +250,6 @@ mod tests {
         answers_after: Option<u32>,
         probes_since_spawn: Cell<u32>,
         spawned: RefCell<Vec<Spawn>>,
-        app: Option<PathBuf>,
         cli: Option<PathBuf>,
         spawn_fails: bool,
         t0: Instant,
@@ -276,7 +263,6 @@ mod tests {
                 answers_after: Some(2),
                 probes_since_spawn: Cell::new(0),
                 spawned: RefCell::new(Vec::new()),
-                app: Some(PathBuf::from("ollama app.exe")),
                 cli: Some(PathBuf::from("ollama.exe")),
                 spawn_fails: false,
                 t0: Instant::now(),
@@ -296,9 +282,6 @@ mod tests {
             let n = self.probes_since_spawn.get() + 1;
             self.probes_since_spawn.set(n);
             matches!(self.answers_after, Some(k) if n >= k)
-        }
-        fn app(&self) -> Option<PathBuf> {
-            self.app.clone()
         }
         fn cli(&self) -> Option<PathBuf> {
             self.cli.clone()
@@ -336,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn the_app_is_started_with_the_saved_environment_and_waited_for() {
+    fn ollama_serve_is_started_headless_with_the_saved_environment_and_waited_for() {
         let io = Fake::new();
         let mut said = Vec::new();
         let r = ensure_running(&io, &ep(), START_TIMEOUT, &mut |s| said.push(s.to_string()));
@@ -344,25 +327,14 @@ mod tests {
         assert_eq!(said, ["starting Ollama"]);
         let spawned = io.spawned.borrow();
         assert_eq!(spawned.len(), 1);
-        assert_eq!(spawned[0].0, PathBuf::from("ollama app.exe"));
-        assert!(spawned[0].1.is_empty());
-        assert!(spawned[0].2.contains(&("OLLAMA_NUM_PARALLEL".into(), "6".into())), "the saved environment reaches it");
-    }
-
-    #[test]
-    fn without_the_app_it_is_ollama_serve() {
-        let mut io = Fake::new();
-        io.app = None;
-        ensure_running(&io, &ep(), START_TIMEOUT, &mut |_| {});
-        let spawned = io.spawned.borrow();
-        assert_eq!(spawned[0].0, PathBuf::from("ollama.exe"));
+        assert_eq!(spawned[0].0, PathBuf::from("ollama.exe"), "never the tray app");
         assert_eq!(spawned[0].1, ["serve"]);
+        assert!(spawned[0].2.contains(&("OLLAMA_NUM_PARALLEL".into(), "6".into())), "the saved environment reaches it");
     }
 
     #[test]
     fn not_installed_says_so_without_starting_anything() {
         let mut io = Fake::new();
-        io.app = None;
         io.cli = None;
         let mut said = Vec::new();
         let r = ensure_running(&io, &ep(), START_TIMEOUT, &mut |s| said.push(s.to_string()));

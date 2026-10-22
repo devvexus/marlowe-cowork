@@ -4,6 +4,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Ollama start
+
+- **Marlowe starts Ollama headless, never the desktop app.** When Ollama is not answering, Marlowe now always runs `ollama serve` hidden and detached (your saved environment applied, credentials removed) and keeps its output in the size-capped `logs\ollama-serve.log`, so the read line gets Ollama's real numbers. A running Ollama or app is used as is.
+
 ### Tests
 
 - **Five daemon tests no longer depend on timing.** The subagent-approval interrupt test asked for a foreground agent but got the background default (so its turn had already ended); the crew relay tests let a fast run land inside the turn as a steer, or unloaded the model before the run started. Each now holds the run until the state it needs is reached.
