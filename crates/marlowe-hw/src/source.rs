@@ -143,6 +143,18 @@ pub trait ServerControl: Send + Sync {
     fn ensure_running(&self, _progress: &mut dyn FnMut(&str)) -> EngineStart {
         EngineStart::NotApplicable
     }
+
+    /// The engine's own output from now on (the log of a server Marlowe started, or the app's
+    /// `server.log`), or `None` when none can be seen: a server started by hand writes only to
+    /// its console. Read-only.
+    fn log_feed(&self) -> Option<Box<dyn LogFeed>> {
+        None
+    }
+}
+
+/// New whole lines of the engine's output since the last call.
+pub trait LogFeed: Send {
+    fn poll(&mut self) -> Vec<String>;
 }
 
 /// What [`ServerControl::ensure_running`] found or did.

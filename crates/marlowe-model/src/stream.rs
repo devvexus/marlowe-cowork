@@ -19,7 +19,8 @@ pub struct Usage {
     pub cached_input: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
-    /// Prompt tokens the engine actually evaluated (the rest came from its cache), when it says.
+    /// Prompt tokens the engine counted for the call, when it says. Ollama counts the whole prompt,
+    /// cached tokens included, so over `prefill_ms` this is not a read rate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_eval: Option<u64>,
     /// Engine-reported milliseconds for the model load, the prompt read and the decode.

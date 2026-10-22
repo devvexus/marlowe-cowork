@@ -301,11 +301,19 @@ pub struct OllamaServerControl {
     scrub: Vec<String>,
     /// Whether `ensure_running` may start Ollama (off for a remote server or a scripted run).
     auto_start: bool,
+    /// Where a server this starts writes its output, kept for reading the prompt read from it.
+    own_log: Option<PathBuf>,
 }
 
 impl OllamaServerControl {
     pub fn new(endpoint: LocalEndpoint) -> Self {
-        Self { endpoint, scrub: Vec::new(), auto_start: true }
+        Self { endpoint, scrub: Vec::new(), auto_start: true, own_log: None }
+    }
+
+    /// Keeps the output of an `ollama serve` this starts in `path` (size-capped).
+    pub fn with_own_log(mut self, path: PathBuf) -> Self {
+        self.own_log = Some(path);
+        self
     }
 
     /// Whether a stopped Ollama is started when something needs it (default on).
@@ -326,8 +334,17 @@ impl ServerControl for OllamaServerControl {
         if !self.auto_start {
             return marlowe_hw::EngineStart::NotApplicable;
         }
-        let io = crate::ollama_start::SystemIo { endpoint: self.endpoint.clone(), scrub: self.scrub.clone() };
+        let io = crate::ollama_start::SystemIo { endpoint: self.endpoint.clone(), scrub: self.scrub.clone(), log: self.own_log.clone() };
         crate::ollama_start::ensure_running(&io, &self.endpoint, crate::ollama_start::START_TIMEOUT, progress)
+    }
+
+    fn log_feed(&self) -> Option<Box<dyn marlowe_hw::LogFeed>> {
+        // A remote Ollama's files are not on this machine.
+        if !self.auto_start {
+            return None;
+        }
+        let feed = crate::ollama_log::OllamaLogFeed::new(self.own_log.as_deref(), server_log_path().as_deref());
+        (!feed.is_empty()).then(|| Box::new(feed) as Box<dyn marlowe_hw::LogFeed>)
     }
 
     fn apply(&self, change: &ServerChange) -> Result<String, String> {

@@ -96,6 +96,11 @@ pub struct PhaseEvent {
     /// An estimate: the client renders it with `~` until a real number replaces it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub est: bool,
+    /// `Prefill` only: the prompt tokens the engine served from its cache, when it said so. With it,
+    /// `total` is the whole prompt and `done` the tokens the read has reached (cached included);
+    /// without it nothing is known about the split.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached: Option<u64>,
     /// `cpu`, `gpu`, `429 retrying`, `crew run b8ee`, `13.1 GB freed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
@@ -146,6 +151,11 @@ impl PhaseEvent {
 
     pub fn with_total(mut self, total: u64) -> Self {
         self.total = Some(total);
+        self
+    }
+
+    pub fn with_cached(mut self, cached: u64) -> Self {
+        self.cached = Some(cached);
         self
     }
 }

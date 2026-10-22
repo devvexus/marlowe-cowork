@@ -232,9 +232,12 @@ pub struct Prefill {
     pub started: i64,
     /// The whole prompt, estimated, from the start event.
     pub est_total: u64,
-    pub done: u64,
-    /// The tokens it reads fresh, estimated, once the daemon has a stored rate.
+    /// What Ollama's own output has said (unset until it says anything, or when it cannot be
+    /// read): the whole prompt, the tokens the read has reached with the cached part counted, the
+    /// cached part once known, and the engine's rate. None of it is ever estimated.
     pub total: Option<u64>,
+    pub done: u64,
+    pub cached: Option<u64>,
     pub rate: Option<f32>,
 }
 
@@ -454,19 +457,23 @@ impl Strip {
             return;
         }
         let Some(p) = self.call.prefill else { return };
-        // The first token ends the read. Until the engine's own numbers come in with the call's
-        // usage, the read is what we estimated, over the time it actually took.
-        let new = p.total.unwrap_or(p.est_total);
-        let cached = p.total.map_or(0, |t| p.est_total.saturating_sub(t));
+        // The first token ends the read. What the engine's output said of the prompt is exact (the
+        // whole prompt is read by now); without it, the read is what we estimated. The time is
+        // ours until the call's usage brings the engine's.
+        let (new, cached, est, split) = match (p.total, p.cached) {
+            (Some(t), Some(c)) => (t.saturating_sub(c), c, false, true),
+            (Some(t), None) => (t, 0, false, false),
+            _ => (p.est_total, 0, true, false),
+        };
         let from = self.read_from.unwrap_or(p.started);
         self.call.read = Some(Read {
             new,
             cached,
             ms: Some((at - from).max(0) as u64),
-            new_est: true,
+            new_est: est,
             ms_est: true,
-            cached_est: true,
-            later: self.calls > 1,
+            cached_est: est,
+            later: self.calls > 1 && split,
         });
     }
 
@@ -694,7 +701,7 @@ impl Strip {
             PhaseState::Start => {
                 self.calls += 1;
                 self.call = Call {
-                    prefill: Some(Prefill { started: at, est_total: p.total.unwrap_or(0), done: 0, total: None, rate: None }),
+                    prefill: Some(Prefill { started: at, est_total: p.total.unwrap_or(0), total: None, done: 0, cached: None, rate: None }),
                     ..Call::default()
                 };
                 self.read_from = self.load.is_none().then_some(at);
@@ -704,20 +711,22 @@ impl Strip {
                 if let Some(f) = &mut self.call.prefill {
                     f.done = p.done.unwrap_or(f.done);
                     f.total = p.total.or(f.total);
+                    f.cached = p.cached.or(f.cached);
                     f.rate = p.rate.or(f.rate);
                 }
                 None
             }
             PhaseState::End => {
                 let new = p.done?;
+                // Without a cached count the end is the prompt's size only: no split, no `+`.
                 let read = Read {
                     new,
-                    cached: p.total.unwrap_or(new).saturating_sub(new),
+                    cached: p.cached.unwrap_or(0),
                     ms: p.ms.or(self.call.read.and_then(|r| r.ms)),
                     new_est: false,
                     ms_est: p.ms.is_none(),
-                    cached_est: p.est,
-                    later: self.calls > 1,
+                    cached_est: false,
+                    later: self.calls > 1 && p.cached.is_some(),
                 };
                 self.call.read = Some(read);
                 Some(read)
@@ -818,7 +827,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_token_turns_the_estimate_into_an_estimated_read_and_the_engine_replaces_it() {
+    fn the_first_token_turns_what_the_engine_said_into_the_read_and_its_end_replaces_the_time() {
         let mut s = Strip::default();
         let mut start = ev(PhaseKind::Prefill, PhaseState::Start);
         start.total = Some(8_200);
@@ -827,21 +836,43 @@ mod tests {
         let mut p = ev(PhaseKind::Prefill, PhaseState::Progress);
         p.done = Some(3_000);
         p.total = Some(7_000);
-        p.rate = Some(1_900.0);
+        p.cached = Some(1_200);
+        p.rate = Some(95.5);
         s.phase(&p, 1_500);
-        assert_eq!(s.call.prefill.map(|f| (f.done, f.total)), Some((3_000, Some(7_000))));
+        assert_eq!(s.call.prefill.map(|f| (f.done, f.total, f.cached)), Some((3_000, Some(7_000), Some(1_200))));
         assert!(s.call_read().is_none(), "nothing is read yet");
         s.reasoning(2_900, 4);
-        let est = s.call_read().expect("the first token ends the read");
-        assert_eq!((est.new, est.cached, est.ms), (7_000, 1_200, Some(1_900)));
-        assert!(est.new_est && est.ms_est && est.cached_est, "all of it is still an estimate");
+        let first = s.call_read().expect("the first token ends the read");
+        assert_eq!((first.new, first.cached, first.ms), (5_800, 1_200, Some(1_900)));
+        assert!(!first.new_est && !first.cached_est && first.ms_est, "the split is the engine's, the time still ours");
         let mut end = ev(PhaseKind::Prefill, PhaseState::End);
-        end.done = Some(6_950);
-        end.total = Some(8_150);
-        end.ms = Some(1_873);
+        end.done = Some(5_800);
+        end.total = Some(7_000);
+        end.cached = Some(1_200);
+        end.ms = Some(60_873);
         let real = s.phase(&end, 9_000).expect("the engine's numbers come back");
-        assert_eq!((real.new, real.cached, real.ms), (6_950, 1_200, Some(1_873)));
-        assert!(!real.new_est && !real.ms_est, "measured now");
+        assert_eq!((real.new, real.cached, real.ms), (5_800, 1_200, Some(60_873)));
+        assert!(!real.new_est && !real.ms_est && !real.cached_est, "measured now");
+    }
+
+    #[test]
+    fn with_nothing_from_the_engines_output_the_first_token_leaves_the_read_an_estimate() {
+        let mut s = Strip::default();
+        let mut start = ev(PhaseKind::Prefill, PhaseState::Start);
+        start.total = Some(8_200);
+        start.est = true;
+        s.phase(&start, 1_000);
+        s.reasoning(2_900, 4);
+        let first = s.call_read().expect("the first token ends the read");
+        assert_eq!((first.new, first.cached), (8_200, 0));
+        assert!(first.new_est && first.ms_est, "all of it is our estimate");
+        // The end without a split is the prompt's size: not `+` on a later step either.
+        let mut end = ev(PhaseKind::Prefill, PhaseState::End);
+        end.done = Some(8_150);
+        end.total = Some(8_150);
+        end.ms = Some(480);
+        let real = s.phase(&end, 9_000).unwrap();
+        assert_eq!((real.new, real.cached, real.later), (8_150, 0, false));
     }
 
     #[test]

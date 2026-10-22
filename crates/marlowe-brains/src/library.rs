@@ -304,6 +304,11 @@ impl Library {
             .optional()?)
     }
 
+    /// Forgets every calibration whose key starts with `prefix`; how many went.
+    pub fn forget_calibration(&self, prefix: &str) -> Result<usize, BrainsError> {
+        Ok(self.conn.execute("DELETE FROM hw_calibration WHERE substr(key, 1, length(?1)) = ?1", [prefix])?)
+    }
+
     pub fn set_calibration(&self, key: &str, value: f64) -> Result<(), BrainsError> {
         self.conn.execute(
             "INSERT INTO hw_calibration (key, value, observed_at) VALUES (?1, ?2, ?3)

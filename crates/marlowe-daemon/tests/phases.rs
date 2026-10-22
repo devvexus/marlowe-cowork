@@ -345,7 +345,7 @@ fn progress_is_live_only_and_never_replayed() {
 }
 
 #[test]
-fn the_prompt_read_is_a_nested_span_with_the_engines_numbers_and_the_rates_are_kept_for_the_next_estimate() {
+fn the_prompt_read_is_a_nested_span_with_the_engines_numbers_and_no_rate_is_made_up_from_a_cached_count() {
     let home = temp_home("prefill");
     seed_model(&home);
     let usage = Usage {
@@ -361,15 +361,16 @@ fn the_prompt_read_is_a_nested_span_with_the_engines_numbers_and_the_rates_are_k
     let d = start(&home, provider, 0, None);
     let mut a = Client::connect(&d.info, None);
 
-    // First turn: no stored rate, so no estimate is shown; the end carries the engine's numbers.
+    // First turn: nothing of Ollama's own output is readable, so no progress is shown; the end
+    // carries the usage's prompt size and time, with no split and no rate.
     ask(&mut a, None, "first", None);
     let log = a.until(is_finished);
     let ps = phases(&log);
-    assert!(ps.iter().all(|p| !(p.kind == PhaseKind::Prefill && p.state == PhaseState::Progress)), "no rate stored yet: no bar");
+    assert!(ps.iter().all(|p| !(p.kind == PhaseKind::Prefill && p.state == PhaseState::Progress)), "nothing measured: no bar");
     let start_ev = ps.iter().find(|p| p.kind == PhaseKind::Prefill && p.state == PhaseState::Start).expect("prefill starts at the send");
     assert!(start_ev.est && start_ev.total.is_some(), "the prompt size is our estimate: {start_ev:?}");
     let end = ps.iter().find(|p| p.kind == PhaseKind::Prefill && p.state == PhaseState::End).expect("prefill ends");
-    assert_eq!((end.done, end.ms, end.rate), (Some(4000), Some(2000), Some(2000.0)));
+    assert_eq!((end.done, end.total, end.ms, end.rate, end.cached), (Some(4000), Some(4000), Some(2000), None, None));
     assert!(ps.iter().any(|p| p.kind == PhaseKind::Wire && p.stage.as_deref() == Some("prepare") && p.state == PhaseState::End));
     let (spans, numbers) = timings(&log);
     let read = spans.iter().find(|s| s.kind == PhaseKind::Prefill).expect("a prefill span");
@@ -385,19 +386,145 @@ fn the_prompt_read_is_a_nested_span_with_the_engines_numbers_and_the_rates_are_k
     assert!(spans.iter().any(|s| s.kind == PhaseKind::Wire && s.stage.as_deref() == Some("prepare") && s.parent == Some(PhaseKind::Wire)));
     let r = numbers.read.expect("what the first call read");
     assert_eq!((r.new_tok, r.ms), (4000, 2000));
-    // The measured rates are stored per model.
+    // The decode rate is stored per model. The prefill rate is not: the usage counts a cached
+    // prompt as read, so 4000 tokens over 2 s here may be 40 fresh ones, and nothing says which.
     let lib = Library::open(&paths::cowork_db(&home)).unwrap();
-    assert_eq!(lib.calibration("prefill_tok_s:ollama/scripted").unwrap(), Some(2000.0));
     assert_eq!(lib.calibration("decode_tok_s:ollama/scripted").unwrap(), Some(100.0));
+    assert_eq!(lib.calibration("prefill_measured_tok_s:ollama/scripted").unwrap(), None);
+    assert_eq!(lib.calibration("prefill_tok_s:ollama/scripted").unwrap(), None);
 
-    // A new session: the stored rate gives an estimate, marked, capped, with its rate.
+    // A second turn: still no invented progress, however much the first claimed.
     ask(&mut a, None, "second", None);
     let log = a.until(is_finished);
-    let progress: Vec<&PhaseEvent> = phases(&log).into_iter().filter(|p| p.kind == PhaseKind::Prefill && p.state == PhaseState::Progress).collect();
-    assert!(!progress.is_empty(), "an estimate while the engine is silent");
-    assert!(progress.iter().all(|p| p.est && p.rate == Some(2000.0) && p.done < p.total && p.unit.as_deref() == Some("tok")));
+    assert!(phases(&log).iter().all(|p| !(p.kind == PhaseKind::Prefill && p.state == PhaseState::Progress)), "no estimate from a stored rate");
     let (_, numbers) = timings(&log);
-    assert_eq!(numbers.read.map(|r| r.new_tok), Some(4000), "the real count replaces the estimate");
+    assert_eq!(numbers.read.map(|r| r.new_tok), Some(4000));
+    stop(d);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// The engine's view for the log tests: `scripted` is loaded, so nothing is gated on a load.
+struct Engine;
+
+impl marlowe_hw::ModelSource for Engine {
+    fn files(&self, model_id: &str) -> Result<marlowe_hw::ModelFiles, String> {
+        Err(format!("no files for {model_id} in this test"))
+    }
+    fn runtime(&self, _: &str, _: Option<&str>) -> marlowe_hw::RunnerObservation {
+        marlowe_hw::RunnerObservation { loaded: true, ..Default::default() }
+    }
+    fn loaded_models(&self) -> Vec<String> {
+        vec!["scripted".into()]
+    }
+}
+
+struct NoGpu;
+impl marlowe_hw::GpuSource for NoGpu {
+    fn snapshot(&self) -> Option<marlowe_hw::GpuSnapshot> {
+        None
+    }
+}
+
+/// Batches of Ollama output, one handed out per poll, shared by every feed the server makes.
+type Batches = Arc<Mutex<Vec<Vec<String>>>>;
+
+struct LoggedServer(Batches);
+impl marlowe_hw::ServerControl for LoggedServer {
+    fn apply(&self, _: &marlowe_hw::ServerChange) -> Result<String, String> {
+        Err("not in this test".into())
+    }
+    fn log_feed(&self) -> Option<Box<dyn marlowe_hw::LogFeed>> {
+        Some(Box::new(Feed(self.0.clone())))
+    }
+}
+
+struct Feed(Batches);
+impl marlowe_hw::LogFeed for Feed {
+    fn poll(&mut self) -> Vec<String> {
+        let mut b = self.0.lock().unwrap();
+        if b.is_empty() {
+            Vec::new()
+        } else {
+            b.remove(0)
+        }
+    }
+}
+
+fn start_logged(home: &Path, provider: Arc<Slow>, batches: Batches) -> Running {
+    let mut providers = ProviderFactory::new(Arc::new(MemoryStore::new()));
+    providers.register(ProviderKind::Ollama, move |_| Ok(provider.clone() as Arc<dyn Provider>));
+    providers.set_hardware(marlowe_brains::Hardware { models: Arc::new(Engine), gpu: Arc::new(NoGpu), server: Arc::new(LoggedServer(batches)) });
+    let deps = DaemonDeps {
+        providers,
+        tools: Arc::new(|_| Arc::new(FakeTools) as Arc<dyn ToolHost>),
+        user: UserInfo { name: Some("Tester".into()), address: None },
+        mind: None,
+        sentinel: None,
+        voice: None,
+        crew: None,
+    };
+    let d = Daemon::start(deps, home, DaemonConfig { legacy_offer: false, ..DaemonConfig::default() }).expect("daemon starts");
+    let info = d.info();
+    Running { info, join: std::thread::spawn(move || d.wait()) }
+}
+
+#[test]
+fn ollamas_own_output_gives_the_read_its_progress_split_and_rate_and_only_a_full_read_teaches_the_rate() {
+    let home = temp_home("runnerlog");
+    seed_model(&home);
+    // The old stored rates, polluted by cache hits, are forgotten.
+    {
+        let lib = Library::open(&paths::cowork_db(&home)).unwrap();
+        lib.set_calibration("prefill_tok_s:ollama/scripted", 30_000.0).unwrap();
+    }
+    let batches: Batches = Arc::new(Mutex::new(Vec::new()));
+    let usage = Usage { input: 4000, output: 50, prompt_eval: Some(4000), prefill_ms: Some(500), load_ms: Some(0), decode_ms: Some(500), ..Default::default() };
+    let provider = Arc::new(Slow { before_first_frame: 600, requests: Mutex::new(Vec::new()), engine: Some(usage) });
+    let d = start_logged(&home, provider, batches.clone());
+    let mut a = Client::connect(&d.info, None);
+
+    // The first turn only tells us how big our estimate of the prompt is.
+    ask(&mut a, None, "first", None);
+    let log = a.until(is_finished);
+    let est = phases(&log).iter().find(|p| p.kind == PhaseKind::Prefill && p.state == PhaseState::Start).and_then(|p| p.total).expect("an estimate at the send");
+    assert!(est >= 100, "{est}");
+    assert!(phases(&log).iter().all(|p| !(p.kind == PhaseKind::Prefill && p.state == PhaseState::Progress)), "an empty log shows nothing");
+    {
+        let lib = Library::open(&paths::cowork_db(&home)).unwrap();
+        assert_eq!(lib.calibration("prefill_tok_s:ollama/scripted").unwrap(), None, "the polluted rate is purged");
+        assert_eq!(lib.calibration("prefill_measured_tok_s:ollama/scripted").unwrap(), None, "a cached count taught nothing");
+    }
+
+    // The second turn: the runner's lines, as Ollama wrote them. 40 tokens were reused.
+    let line = |rest: String| format!("slot   operator(): id  0 | task 7 | {rest}");
+    let (total, fresh) = (est, est - 40);
+    *batches.lock().unwrap() = vec![
+        vec![
+            line(format!("new prompt, n_ctx_slot = 32768, n_keep = 4, task.n_tokens = {total}")),
+            line("cached n_tokens = 40, memory_seq_rm [40, end)".into()),
+        ],
+        vec![format!("slot print_timing: id  0 | task 7 | prompt processing, n_tokens = {}, progress = 0.50, t = 4.00 s / 95.55 tokens per second", total / 2)],
+        vec![format!(
+            "slot print_timing: id  0 | task 7 | prompt eval time =    2000.00 ms /  {fresh} tokens (    1.00 ms per token,   500.00 tokens per second)"
+        )],
+    ];
+    ask(&mut a, None, "second", None);
+    let log = a.until(is_finished);
+    let ps = phases(&log);
+    let progress: Vec<&PhaseEvent> = ps.iter().copied().filter(|p| p.kind == PhaseKind::Prefill && p.state == PhaseState::Progress).collect();
+    assert!(!progress.is_empty(), "the runner's lines show while the engine is silent: {ps:?}");
+    assert!(progress.iter().all(|p| !p.est && p.total == Some(total) && p.cached == Some(40) && p.unit.as_deref() == Some("tok")), "{progress:?}");
+    assert!(progress.windows(2).all(|w| w[0].done <= w[1].done));
+    let end = ps.iter().find(|p| p.kind == PhaseKind::Prefill && p.state == PhaseState::End).expect("the read ends");
+    assert_eq!((end.done, end.total, end.cached, end.ms, end.est), (Some(fresh), Some(total), Some(40), Some(2000), false), "{end:?}");
+    assert_eq!(end.rate, Some((fresh as f64 * 1000.0 / 2000.0) as f32));
+    let (_, numbers) = timings(&log);
+    let read = numbers.read.expect("what the call read");
+    assert_eq!((read.new_tok, read.cached_tok, read.ms), (fresh, 40, 2000));
+    // The runner timed a full read of the fresh tokens: that is the rate that is kept.
+    let lib = Library::open(&paths::cowork_db(&home)).unwrap();
+    let stored = lib.calibration("prefill_measured_tok_s:ollama/scripted").unwrap().expect("a measured rate");
+    assert!((stored - fresh as f64 / 2.0).abs() < 1e-6, "{stored}");
     stop(d);
     let _ = std::fs::remove_dir_all(&home);
 }

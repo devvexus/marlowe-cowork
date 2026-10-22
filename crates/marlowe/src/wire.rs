@@ -75,6 +75,7 @@ pub fn provider_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> P
                 marlowe_provider::OllamaServerControl::new(endpoint)
                     // A remote Ollama is not ours to start.
                     .auto_start(ollama_url.as_deref().is_none_or(|u| marlowe_provider::LocalEndpoint::parse(u).is_some()))
+                    .with_own_log(home.join("logs").join("ollama-serve.log"))
                     .with_scrub(marlowe_brains::scrubbed_env().iter().copied()),
             ),
         });

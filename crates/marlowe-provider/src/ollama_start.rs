@@ -161,6 +161,8 @@ pub fn overlay_environment(
 pub struct SystemIo {
     pub endpoint: LocalEndpoint,
     pub scrub: Vec<String>,
+    /// Where an `ollama serve` this starts writes its output (the app keeps its own `server.log`).
+    pub log: Option<PathBuf>,
 }
 
 impl StartIo for SystemIo {
@@ -196,6 +198,15 @@ impl StartIo for SystemIo {
         let mut cmd = Command::new(program);
         cmd.args(args).env_clear().envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        // A bare server's output is what shows the prompt read as it happens: keep it, capped.
+        if !args.is_empty() {
+            let kept = self.log.as_deref().and_then(|p| crate::ollama_log::open_own_log(p, crate::ollama_log::OWN_LOG_CAP).ok());
+            if let Some(out) = kept {
+                if let Ok(err) = out.try_clone() {
+                    cmd.stdout(out).stderr(err);
+                }
+            }
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

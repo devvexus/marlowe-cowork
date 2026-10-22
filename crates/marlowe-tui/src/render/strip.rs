@@ -219,29 +219,7 @@ fn activity(state: &State, theme: &Theme, w: usize) -> Option<Line<'static>> {
         return Some(lead(g, Ink::Speech, pick(tails, w), theme));
     }
     if let Some(p) = &c.prefill {
-        let since = s.read_from.unwrap_or(p.started);
-        let tokens = p.total.unwrap_or(p.est_total);
-        let mut head = vec![label("reading ", theme), num(format!("~{}", text::compact(tokens)), theme), label(" tok", theme)];
-        let plain = {
-            let mut v = head.clone();
-            v.push(sep(theme));
-            v.push(num(clock(now - since), theme));
-            v
-        };
-        let mut variants = Vec::new();
-        if let (Some(rate), Some(total)) = (p.rate, p.total.filter(|t| *t > 0)) {
-            let frac = (p.done as f64 / total as f64).min(0.99);
-            head.push(sep(theme));
-            head.push(num(format!("~{} tok/s", text::thousands(rate.round() as u64)), theme));
-            let mut with_bar = head.clone();
-            with_bar.push(Span::raw(" "));
-            with_bar.extend(bar(frac, Ink::Accent, theme));
-            with_bar.push(num(format!(" ~{:>2}%", (frac * 100.0) as u64), theme));
-            variants.push(with_bar);
-            variants.push(head);
-        }
-        variants.push(plain);
-        return Some(lead(g, Ink::Speech, pick(variants, w), theme));
+        return Some(lead(g, Ink::Speech, pick(read_variants(p, now - s.read_from.unwrap_or(p.started), theme), w), theme));
     }
     // Every short phase carries the turn's running time, so a wait with no stage of its own
     // (a remote model before its first frame) still ticks.
@@ -265,6 +243,55 @@ fn activity(state: &State, theme: &Theme, w: usize) -> Option<Line<'static>> {
     // Nothing of the turn's: the daemon's own background work, so no cost runs unseen.
     let (run, others) = state.work.newest()?;
     Some(lead(g, Ink::Hover, pick(work_variants(run, others, now, theme), w), theme))
+}
+
+/// The prompt read from Ollama's own output, shortened until it fits:
+/// `reading 12.6k tok · 6.6k cached · 2,560/6,000 new · 95 tok/s ━━╺━━ 42% · 26.8s`.
+/// Every number is the engine's; the prompt's size is `~` only while it is our estimate. With no
+/// output to read, only the tokens and the elapsed time.
+fn read_variants(p: &live::Prefill, elapsed: i64, theme: &Theme) -> Vec<Vec<Span<'static>>> {
+    let total = p.total.filter(|t| *t > 0);
+    let size = match total {
+        Some(t) => text::compact(t),
+        None => format!("~{}", text::compact(p.est_total)),
+    };
+    let head = vec![label("reading ", theme), num(size, theme), label(" tok", theme)];
+    let with_clock = |mut v: Vec<Span<'static>>| {
+        v.push(sep(theme));
+        v.push(num(clock(elapsed), theme));
+        v
+    };
+    let mut out = Vec::new();
+    if let (Some(total), Some(cached)) = (total, p.cached) {
+        let mut hit = head.clone();
+        hit.push(sep(theme));
+        hit.push(num(text::compact(cached), theme));
+        hit.push(label(" cached", theme));
+        let fresh = total.saturating_sub(cached);
+        if fresh > 0 {
+            let done = p.done.saturating_sub(cached).min(fresh);
+            let mut counts = hit.clone();
+            counts.push(sep(theme));
+            counts.push(num(format!("{}/{}", text::thousands(done), text::thousands(fresh)), theme));
+            counts.push(label(" new", theme));
+            let mut rated = counts.clone();
+            if let Some(rate) = p.rate {
+                rated.push(sep(theme));
+                rated.push(num(format!("{} tok/s", text::thousands(rate.round() as u64)), theme));
+                let frac = done as f64 / fresh as f64;
+                let mut with_bar = rated.clone();
+                with_bar.push(Span::raw(" "));
+                with_bar.extend(bar(frac, Ink::Accent, theme));
+                with_bar.push(num(format!(" {:>2}%", (frac * 100.0) as u64), theme));
+                out.push(with_clock(with_bar));
+                out.push(with_clock(rated));
+            }
+            out.push(with_clock(counts));
+        }
+        out.push(with_clock(hit));
+    }
+    out.push(with_clock(head));
+    out
 }
 
 /// A background job: `embedding 4,300 memories 1,200/4,300 · 3.4s  +1`, shortened until it fits.

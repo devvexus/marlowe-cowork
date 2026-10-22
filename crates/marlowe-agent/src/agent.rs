@@ -652,7 +652,7 @@ fn call_model(
                 }
                 StreamEvent::Usage(u) => {
                     if let Some(p) = prefill.take() {
-                        p.end_with(sink, |e| read_end(e, u, est_prompt));
+                        p.end_with(sink, |e| read_end(e, u));
                     }
                 }
                 _ => {}
@@ -714,20 +714,21 @@ fn call_model(
     }
 }
 
-/// The prefill phase's end: what the call read, from the engine's own counts. The cached part is
-/// the engine's when it reports one, else our prompt estimate less what it evaluated (`est`).
-fn read_end(e: PhaseEvent, u: &Usage, est_prompt: u32) -> PhaseEvent {
-    let (new, cached, est) = match u.prompt_eval {
-        Some(n) => (n, u64::from(est_prompt).saturating_sub(n), true),
-        None => (u.input.saturating_sub(u.cached_input), u.cached_input, false),
-    };
-    let mut e = e.unit("tok").with_done(new).with_total(new + cached);
-    e.est = est;
+/// The prefill phase's end: what the call read, from the engine's own counts. An engine that
+/// reports its cache (`cached_input`) gives the split. Ollama's `prompt_eval_count` is the whole
+/// prompt, cached part included, so without its runner log there is no split here (`cached` unset)
+/// and no rate: only the prompt's size and the time its read took.
+fn read_end(e: PhaseEvent, u: &Usage) -> PhaseEvent {
+    let mut e = e.unit("tok");
+    match u.prompt_eval {
+        Some(total) => e = e.with_done(total).with_total(total),
+        None => {
+            let total = u.input;
+            e = e.with_done(total.saturating_sub(u.cached_input)).with_total(total).with_cached(u.cached_input);
+        }
+    }
     if let Some(ms) = u.prefill_ms {
         e.ms = Some(ms);
-        if ms > 0 {
-            e.rate = Some((new as f64 * 1000.0 / ms as f64) as f32);
-        }
     }
     e
 }

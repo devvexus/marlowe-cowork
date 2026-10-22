@@ -160,8 +160,8 @@ impl<'a> Folder<'a> {
             let n = |k: &str| frame.get(k).and_then(Value::as_u64).unwrap_or(0);
             self.usage.input = n("prompt_eval_count");
             self.usage.output = n("eval_count");
-            // Ollama reports nanoseconds; `prompt_eval_count` is the tokens it evaluated, the
-            // rest of the prompt came from its cache.
+            // Ollama reports nanoseconds; `prompt_eval_count` is the whole prompt, tokens served
+            // from its cache included, while `prompt_eval_duration` times only what it evaluated.
             let ms = |k: &str| frame.get(k).and_then(Value::as_u64).map(|ns| ns / 1_000_000);
             self.usage.prompt_eval = frame.get("prompt_eval_count").and_then(Value::as_u64);
             self.usage.load_ms = ms("load_duration");

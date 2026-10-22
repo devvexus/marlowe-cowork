@@ -211,13 +211,11 @@ fn the_send_starts_an_estimated_prefill_that_the_engines_counts_end() {
     assert_eq!(p.len(), 2);
     let est_prompt = events.iter().find_map(|(_, e)| if let AgentEvent::CallStarted { est_prompt_tokens, .. } = e { Some(*est_prompt_tokens) } else { None }).unwrap();
     assert!(p[0].est && p[0].total == Some(u64::from(est_prompt)), "the start carries our estimate: {:?}", p[0]);
-    // The end is the engine's: tokens it evaluated, its own milliseconds and rate; the cached
-    // part is our estimate (marked), never negative.
+    // The end is the engine's own count and time. Ollama's count is the whole prompt, cached part
+    // included, so there is no split and no rate here: those come from its runner log or not at all.
     let end = p[1];
-    assert_eq!((end.state, end.done, end.ms), (PhaseState::End, Some(300), Some(150)));
-    assert_eq!(end.rate, Some(2000.0));
-    assert_eq!(end.total, Some(300u64.max(u64::from(est_prompt))));
-    assert!(end.est, "the cached split came from our estimate");
+    assert_eq!((end.state, end.done, end.total, end.ms), (PhaseState::End, Some(300), Some(300), Some(150)));
+    assert_eq!((end.cached, end.rate, end.est), (None, None, false));
     assert!(marks.iter().any(|m| m.1 == PhaseKind::Wire && m.2 == PhaseState::End && m.3.is_some()));
 }
 

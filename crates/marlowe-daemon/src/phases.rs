@@ -19,7 +19,7 @@ use marlowe_proto::{
 };
 
 use crate::daemon::Core;
-use crate::live::{self, Emit, LoadPlan, Probes, Watch};
+use crate::live::{self, Emit, LoadPlan, PrefillLog, Probes, Watch};
 use crate::mind::RecallSink;
 use crate::lock;
 use crate::work::Work;
@@ -38,8 +38,14 @@ struct Inner {
     /// The planner's cost for a cold load admitted for this turn.
     load: Option<LoadCost>,
     model: Option<ModelRef>,
-    /// The live meter of the model call in flight (load, prefill estimate, wait reason).
+    /// The live meter of the model call in flight (load, prefill progress, wait reason).
     watch: Option<Arc<Watch>>,
+    /// Ollama's own output for that call, when it can be read.
+    log: Option<Arc<PrefillLog>>,
+    /// The model was not loaded when this turn asked: its first read starts from an empty cache.
+    cold: bool,
+    /// The rate the runner measured on the last full read, until it is stored.
+    measured_rate: Option<f64>,
     /// When each open phase started, so its span begins there and not where its `End` landed.
     starts: HashMap<(PhaseKind, Option<String>), u64>,
 }
@@ -142,10 +148,13 @@ impl TurnClock {
                 if p.kind == PhaseKind::Wire && p.state == PhaseState::End && p.stage.is_none() {
                     self.first_frame();
                 }
+                // The engine's own account of the read replaces the usage's, which counts a
+                // cached prompt as read.
+                let p = if p.kind == PhaseKind::Prefill && p.state == PhaseState::End && p.stage.is_none() { self.measured_read(p.clone()) } else { p.clone() };
                 self.emit(p.clone());
                 match (p.kind, p.state) {
                     (PhaseKind::Prefill, PhaseState::Start) => self.request_sent(p.total.unwrap_or(0)),
-                    (PhaseKind::Prefill, PhaseState::End) => self.read_ended(p),
+                    (PhaseKind::Prefill, PhaseState::End) => self.read_ended(&p),
                     _ => {}
                 }
             }
@@ -186,6 +195,7 @@ impl TurnClock {
         let plan = load.as_ref().filter(|c| c.resident_known && watchable).map(|c| LoadPlan { model: c.model.model_id.clone(), need_mib: c.need_mib });
         let watch = plan.map(|p| self.new_watch(Some(p)));
         let mut g = lock(&self.inner);
+        g.cold = watchable && load.as_ref().is_some_and(|c| c.resident_known);
         g.load = load;
         g.watch = watch;
     }
@@ -198,7 +208,10 @@ impl TurnClock {
                 clock.emit(e);
             }
         });
-        Arc::new(Watch::start(load, probes(&self.core, model), emit, WATCH_TICK))
+        // Ollama's output from now on; none when it cannot be seen (a server started by hand).
+        let log = self.core.brains.factory().hardware().and_then(|h| h.server.log_feed()).map(PrefillLog::new);
+        lock(&self.inner).log = log.clone();
+        Arc::new(Watch::start(load, probes(&self.core, model), log, emit, WATCH_TICK))
     }
 
     /// The request for a model call is on its way: the live meter starts publishing.
@@ -211,6 +224,9 @@ impl TurnClock {
         };
         let waiting = lock(&self.inner).watch.take();
         let watch = waiting.unwrap_or_else(|| self.new_watch(None));
+        if let Some(log) = lock(&self.inner).log.clone() {
+            log.begin(est_prompt);
+        }
         watch.sent(est_prompt.saturating_sub(last));
         lock(&self.inner).watch = Some(watch);
     }
@@ -232,14 +248,56 @@ impl TurnClock {
         self.set_read(ReadStat { new_tok: new, cached_tok: total.saturating_sub(new), ms: p.ms.unwrap_or(0) });
     }
 
-    /// Keeps the engine's measured prefill and decode rates for the next estimate.
-    fn calibrate(&self, u: &Usage) {
-        let Some(model) = lock(&self.inner).model.clone() else { return };
-        let mut samples = Vec::new();
-        if let (Some(n), Some(ms)) = (u.prompt_eval, u.prefill_ms) {
-            if n >= live::MIN_RATE_TOKENS && ms > 0 {
-                samples.push(("prefill", n as f64 * 1000.0 / ms as f64));
+    /// The read's end with what Ollama's own output says about it. The usage reports the whole
+    /// prompt as read, cached part included, so only the runner's lines give the split, the time
+    /// and the rate. Without them the end stays unsplit: the prompt's size and the read's time.
+    fn measured_read(&self, mut p: PhaseEvent) -> PhaseEvent {
+        let Some(log) = lock(&self.inner).log.clone() else { return p };
+        // The finished-read line is written as the call ends; give it a moment to reach the file.
+        let mut seen = log.poll();
+        for _ in 0..12 {
+            if seen.as_ref().is_none_or(|s| s.eval.is_some()) {
+                break;
             }
+            std::thread::sleep(Duration::from_millis(25));
+            seen = log.poll();
+        }
+        let Some(read) = seen else { return p };
+        let Some((new, cached)) = read.split() else { return p };
+        p.done = Some(new);
+        p.total = Some(read.total);
+        p.cached = Some(cached);
+        p.est = false;
+        if let Some((ms, tokens)) = read.eval {
+            p.ms = Some(ms.round() as u64);
+            if ms > 0.0 {
+                let rate = tokens as f64 * 1000.0 / ms;
+                p.rate = Some(rate as f32);
+                if tokens >= live::MIN_RATE_TOKENS {
+                    lock(&self.inner).measured_rate = Some(rate);
+                }
+            }
+        }
+        p
+    }
+
+    /// Keeps the engine's measured prefill and decode rates for the next wait. A prefill rate is
+    /// learned only from a full read: one the runner's log timed, or the first call after a cold
+    /// load (an empty cache). The usage's own count includes cached tokens, so any other call's
+    /// tokens over its time is not a rate.
+    fn calibrate(&self, u: &Usage) {
+        let (model, measured, cold) = {
+            let mut g = lock(&self.inner);
+            let Some(model) = g.model.clone() else { return };
+            (model, g.measured_rate.take(), std::mem::take(&mut g.cold))
+        };
+        let mut samples = Vec::new();
+        let cold_read = match (u.prompt_eval, u.prefill_ms) {
+            (Some(n), Some(ms)) if cold && n >= live::MIN_RATE_TOKENS && ms > 0 => Some(n as f64 * 1000.0 / ms as f64),
+            _ => None,
+        };
+        if let Some(rate) = measured.or(cold_read) {
+            samples.push(("prefill", rate));
         }
         if let Some(ms) = u.decode_ms {
             if u.output >= 16 && ms > 0 {
@@ -305,6 +363,12 @@ impl TurnClock {
 /// What the live meter reads: the GPU and the engine's model list through the planner's hardware
 /// sources, the crew supervisor, and the stored prefill rate.
 fn probes(core: &Arc<Core>, model: Option<ModelRef>) -> Probes {
+    // Once per daemon: the rates stored before only measured full reads counted are forgotten.
+    struct RatesPurged;
+    core.ext.get_or_init(|| {
+        purge_old_prefill_rates(core);
+        RatesPurged
+    });
     let hw = core.brains.factory().hardware().cloned();
     let name = model.as_ref().map(|m| m.model_id.clone()).unwrap_or_default();
     let (gpu, models) = (hw.clone(), hw);
@@ -330,6 +394,14 @@ fn probes(core: &Arc<Core>, model: Option<ModelRef>) -> Probes {
             core.brains.with_library(|l| l.calibration(&key).ok().flatten())
         }),
     }
+}
+
+/// Forgets the prefill rates stored before only measured full reads counted: they were taken from
+/// a usage that counts cached tokens as read, so 16k tokens "in 0.5 s" stored as 30k tok/s.
+pub(crate) fn purge_old_prefill_rates(core: &Arc<Core>) {
+    core.brains.with_library(|l| {
+        let _ = l.forget_calibration(live::OLD_PREFILL_KEYS);
+    });
 }
 
 /// `Recall` sub-stage events for one recall stage the Mind reported.

@@ -4,6 +4,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Prefill progress
+
+- **The read line is Ollama's own numbers, never a guess.** The runner's output (`server.log` for the app; a size-capped `<home>\logs\ollama-serve.log` for an `ollama serve` Marlowe starts) is tailed read-only and matched to the request in flight, so the strip shows `reading 12.6k tok · 6.6k cached · 2,600/6,000 new · 96 tok/s ━━ 43%` with no `~`, and a cache miss shows as `0 cached`. With no output to read (a server started by hand) it shows tokens and elapsed only. `prompt_eval_count` is the whole prompt, so a read with no log has no split and no rate, and the stored prefill rate learns only from a runner-timed full read or the first call after a cold load; the old stored rates are forgotten.
+
 ### Prompt cache
 
 - **A local model no longer re-reads the conversation on every message.** The environment block (the clock to the minute, the repo's dirty count and last commit) and the retrieved memories sat at the end of the system prompt, so every turn changed the system prompt a few thousand tokens in and Ollama's common prefix ended there (~7,000 of 12,611 tokens on `marlowe-dusk:22b`). They now ride on the turn's own user message (the `cache_stable` policy, now the default; `[context] cache_stable = false` in `settings.toml` turns it off).

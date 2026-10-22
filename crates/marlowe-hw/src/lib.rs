@@ -7,6 +7,8 @@
 //! * [`plan`] is the VRAM budget and the linear [`PlanModel`] the daemon and the client share.
 //! * [`log`] parses Ollama's `server.log`: the runner's argv and every buffer it allocated, which
 //!   is the ground truth the plan is calibrated against.
+//! * [`prefill`] parses the runner's prompt-read lines (`prompt processing ... progress`, `cached
+//!   n_tokens`, checkpoint restores, `prompt eval time`) and matches them to the request in flight.
 //!
 //! Ollama's `/api/ps` is **not** ground truth for these runners: on 2026-10-09 it reported
 //! 1,631 MiB for a runner whose dedicated memory was 13,486 MiB (the draft and the recurrent
@@ -22,6 +24,7 @@ pub mod gguf;
 pub mod header;
 pub mod log;
 pub mod plan;
+pub mod prefill;
 pub mod source;
 
 pub use arch::{ArchProfile, LayerRole, Recurrent, Role, Weights};
@@ -29,7 +32,7 @@ pub use ggml::{CacheType, GgmlType, KvType};
 pub use header::{ModelHeader, Tensor};
 pub use plan::{build, ctx_label, Calibration, Fit, GpuBudget, PlanInputs, PlanModel};
 pub use source::{
-    EngineStart, GpuSnapshot, GpuSource, ModelFiles, ModelSource, RunnerObservation, ServerChange, ServerControl, ServerEnv,
+    EngineStart, GpuSnapshot, GpuSource, LogFeed, ModelFiles, ModelSource, RunnerObservation, ServerChange, ServerControl, ServerEnv,
     SlotObservation,
 };
 

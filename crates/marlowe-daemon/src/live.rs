@@ -3,16 +3,17 @@
 //! engine is silent; it publishes through the turn clock and never touches the turn thread.
 //!
 //! Everything here is either measured or marked `est`: the load's done bytes are the engine
-//! runners' real GPU memory growth against the planner's predicted total; the prefill progress
-//! comes from a stored rate (Ollama reports none) and is replaced by the engine's own counts
-//! when they arrive. No per-process data, no stored rate: no bar, elapsed only.
+//! runners' real GPU memory growth against the planner's predicted total; the prefill progress is
+//! Ollama's own (its runner log, [`PrefillLog`]): tokens reached, cached and fresh, its rate. With
+//! no log to read there is no progress, no percentage and no rate: elapsed only.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use marlowe_hw::GpuSource;
+use marlowe_hw::prefill::{Prefill, PrefillTracker};
+use marlowe_hw::{GpuSource, LogFeed};
 use marlowe_proto::{PhaseEvent, PhaseKind};
 
 use crate::lock;
@@ -31,8 +32,56 @@ pub(crate) struct Probes {
     /// run 6f8210de · Ollama runs qwen35 models one request at a time`); `None` when no crew run
     /// holds what the request needs, however slow the read.
     pub queued_behind: Box<dyn Fn() -> Option<String> + Send + Sync>,
-    /// The stored prefill rate for the model, tokens per second.
+    /// The rate measured on full prefills of this model, tokens per second. Never shown: it only
+    /// says how long a silent read may take before the wait gets a reason.
     pub prefill_rate: Box<dyn Fn() -> Option<f64> + Send + Sync>,
+}
+
+/// Ollama's own output for the model call in flight: the request is matched to the runner's task
+/// by when it was sent and how big its prompt is (see [`marlowe_hw::prefill`]).
+pub(crate) struct PrefillLog {
+    feed: Mutex<Box<dyn LogFeed>>,
+    st: Mutex<LogSt>,
+}
+
+#[derive(Default)]
+struct LogSt {
+    /// Lines that arrived before the request was sent (a model load's own output), kept so the
+    /// first prompt after them is not missed.
+    before: Vec<String>,
+    tracker: Option<PrefillTracker>,
+}
+
+/// Most lines held before the request goes out.
+const BEFORE_CAP: usize = 4_000;
+
+impl PrefillLog {
+    pub fn new(feed: Box<dyn LogFeed>) -> Arc<Self> {
+        Arc::new(Self { feed: Mutex::new(feed), st: Mutex::new(LogSt::default()) })
+    }
+
+    /// The request is on the wire; its prompt is about `est_prompt` tokens.
+    pub fn begin(&self, est_prompt: u64) {
+        let mut st = lock(&self.st);
+        let mut tracker = PrefillTracker::new(est_prompt);
+        std::mem::take(&mut st.before).iter().for_each(|l| tracker.feed(l));
+        st.tracker = Some(tracker);
+    }
+
+    /// Reads what the engine has written since the last call; what it says about this request.
+    pub fn poll(&self) -> Option<Prefill> {
+        let lines = lock(&self.feed).poll();
+        let mut st = lock(&self.st);
+        match st.tracker.as_mut() {
+            Some(t) => lines.iter().for_each(|l| t.feed(l)),
+            None => {
+                st.before.extend(lines);
+                let over = st.before.len().saturating_sub(BEFORE_CAP);
+                st.before.drain(..over);
+            }
+        }
+        st.tracker.as_ref().and_then(|t| t.current().cloned())
+    }
 }
 
 /// A cold load the planner predicted.
@@ -66,6 +115,7 @@ struct Shared {
     /// Our estimate of the tokens this call reads fresh.
     est_new: AtomicU64,
     st: Mutex<St>,
+    log: Option<Arc<PrefillLog>>,
     emit: Emit,
 }
 
@@ -77,12 +127,13 @@ pub(crate) struct Watch {
 impl Watch {
     /// Starts the thread. With a `load`, the runners' memory is read once now (the baseline) so
     /// the growth after the request goes out is the model's. Nothing is published until `sent`.
-    pub fn start(load: Option<LoadPlan>, probes: Probes, emit: Emit, tick: Duration) -> Watch {
+    pub fn start(load: Option<LoadPlan>, probes: Probes, log: Option<Arc<PrefillLog>>, emit: Emit, tick: Duration) -> Watch {
         let shared = Arc::new(Shared {
             sent: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             est_new: AtomicU64::new(0),
             st: Mutex::new(St::default()),
+            log,
             emit,
         });
         let s = shared.clone();
@@ -167,6 +218,7 @@ fn run(s: &Shared, load: Option<LoadPlan>, probes: &Probes, tick: Duration) {
     }
     let rate = (probes.prefill_rate)().filter(|r| *r > 0.0 && r.is_finite());
     let mut ticks = 0u32;
+    let mut last: Option<(u64, u64, Option<u64>, Option<u32>)> = None;
     while !s.stop.load(Ordering::SeqCst) {
         thread::sleep(tick);
         ticks += 1;
@@ -201,16 +253,19 @@ fn run(s: &Shared, load: Option<LoadPlan>, probes: &Probes, tick: Duration) {
         let Some(from) = st.prefill_from else { continue };
         let elapsed = from.elapsed();
         let est_new = s.est_new.load(Ordering::SeqCst);
-        let mut est_ms = 0.0;
-        if let (Some(rate), true) = (rate, est_new > 0) {
-            est_ms = est_new as f64 / rate * 1000.0;
-            let secs = elapsed.as_secs_f64();
-            // Capped at 99%: the estimate never claims the read is done.
-            let done = (secs * rate).min(est_new as f64 * 0.99) as u64;
-            let mut p = PhaseEvent::progress(PhaseKind::Prefill, done, est_new).unit("tok");
-            p.rate = Some(rate as f32);
-            p.est = true;
-            (s.emit)(p);
+        // How long the read should take at the rate measured before; used only to decide when a
+        // silent wait needs its reason said, never shown.
+        let est_ms = rate.filter(|_| est_new > 0).map_or(0.0, |r| est_new as f64 / r * 1000.0);
+        // The engine's own numbers, once its output says anything about this request.
+        if let Some(p) = s.log.as_ref().and_then(|l| l.poll()) {
+            let seen = (p.done, p.total, p.cached, p.rate.map(|r| (r * 100.0) as u32));
+            if last != Some(seen) {
+                last = Some(seen);
+                let mut e = PhaseEvent::progress(PhaseKind::Prefill, p.done, p.total).unit("tok");
+                e.cached = p.cached;
+                e.rate = p.rate.map(|r| r as f32);
+                (s.emit)(e);
+            }
         }
         // Silent well past what the read should take, and crew runs hold every request the
         // runner serves on this model: the request is queued behind them, and the line says why.
@@ -248,8 +303,16 @@ pub(crate) fn same_model(a: &str, b: &str) -> bool {
 
 /// Calibration key for a model's measured rates.
 pub(crate) fn rate_key(kind: &str, model: &str) -> String {
-    format!("{kind}_tok_s:{model}")
+    // `prefill_tok_s:` held rates taken from Ollama's usage, which counts cached tokens as read;
+    // they are forgotten ([`OLD_PREFILL_KEYS`]) and this name starts clean.
+    match kind {
+        "prefill" => format!("prefill_measured_tok_s:{model}"),
+        _ => format!("{kind}_tok_s:{model}"),
+    }
 }
+
+/// The stored prefill rates from before the rate was only learned from measured full reads.
+pub(crate) const OLD_PREFILL_KEYS: &str = "prefill_tok_s:";
 
 /// Folds a measured sample into the stored rate (`None`: first sample).
 pub(crate) fn blend(stored: Option<f64>, sample: f64) -> f64 {
@@ -312,7 +375,7 @@ mod tests {
         let steps = [0.0, 3_000.0, 6_246.0, 6_246.0, 13_414.0, 14_000.0, 14_000.0];
         let i = AtomicU64::new(0);
         let runner = move || Some(steps[(i.fetch_add(1, Ordering::SeqCst) as usize).min(steps.len() - 1)]);
-        let w = Watch::start(loading(), probes(runner, || Some(false)), emit, Duration::from_millis(2));
+        let w = Watch::start(loading(), probes(runner, || Some(false)), None, emit, Duration::from_millis(2));
         w.sent(0);
         wait_for(&seen, |e| e.iter().filter(|p| p.state == PhaseState::Progress).count() >= 4);
         w.first_frame();
@@ -334,7 +397,7 @@ mod tests {
     fn no_runner_data_or_no_predicted_bytes_shows_no_bar() {
         // Unified memory: the GPU reading never shows a runner.
         let (emit, seen) = collect();
-        let w = Watch::start(loading(), probes(|| Some(0.0), || Some(false)), emit, Duration::from_millis(2));
+        let w = Watch::start(loading(), probes(|| Some(0.0), || Some(false)), None, emit, Duration::from_millis(2));
         w.sent(0);
         thread::sleep(Duration::from_millis(40));
         w.first_frame();
@@ -344,7 +407,7 @@ mod tests {
         // No reading at all, and no predicted total.
         let (emit, seen) = collect();
         let plan = Some(LoadPlan { model: "m".into(), need_mib: None });
-        let w = Watch::start(plan, probes(|| None, || None), emit, Duration::from_millis(2));
+        let w = Watch::start(plan, probes(|| None, || None), None, emit, Duration::from_millis(2));
         w.sent(0);
         thread::sleep(Duration::from_millis(30));
         w.first_frame();
@@ -357,7 +420,7 @@ mod tests {
     fn growth_without_a_total_reports_done_only() {
         let (emit, seen) = collect();
         let plan = Some(LoadPlan { model: "m".into(), need_mib: None });
-        let w = Watch::start(plan, probes(growing(500.0, 700.0), || Some(false)), emit, Duration::from_millis(2));
+        let w = Watch::start(plan, probes(growing(500.0, 700.0), || Some(false)), None, emit, Duration::from_millis(2));
         w.sent(0);
         wait_for(&seen, |e| e.iter().any(|p| p.state == PhaseState::Progress));
         w.first_frame();
@@ -373,7 +436,7 @@ mod tests {
         let p = polls.clone();
         // Not resident for the pre-check, then resident after a few polls.
         let resident = move || Some(p.fetch_add(1, Ordering::SeqCst) >= 3);
-        let w = Watch::start(loading(), probes(growing(0.0, 100.0), resident), emit, Duration::from_millis(2));
+        let w = Watch::start(loading(), probes(growing(0.0, 100.0), resident), None, emit, Duration::from_millis(2));
         w.sent(0);
         wait_for(&seen, |e| e.iter().any(|p| p.kind == PhaseKind::Load && p.state == PhaseState::End));
         let n = seen.lock().unwrap().len();
@@ -384,7 +447,7 @@ mod tests {
     #[test]
     fn a_model_already_loaded_has_no_load_line() {
         let (emit, seen) = collect();
-        let w = Watch::start(loading(), probes(|| Some(0.0), || Some(true)), emit, Duration::from_millis(2));
+        let w = Watch::start(loading(), probes(|| Some(0.0), || Some(true)), None, emit, Duration::from_millis(2));
         w.sent(0);
         thread::sleep(Duration::from_millis(20));
         w.first_frame();
@@ -400,30 +463,78 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_stored_rate_gives_an_estimated_prefill_capped_below_full() {
-        let (emit, seen) = collect();
-        // 10k tok/s over 100 tokens: the estimate is spent in 10 ms.
-        let w = Watch::start(None, with_rate(Some(10_000.0), None), emit, Duration::from_millis(2));
-        w.sent(100);
-        thread::sleep(Duration::from_millis(60));
-        w.first_frame();
-        let ev = seen.lock().unwrap().clone();
-        let p: Vec<&PhaseEvent> = ev.iter().filter(|p| p.kind == PhaseKind::Prefill).collect();
-        assert!(!p.is_empty());
-        assert!(p.iter().all(|p| p.est && p.rate == Some(10_000.0) && p.total == Some(100) && p.done.unwrap() <= 99));
-        assert!(p.windows(2).all(|w| w[0].done <= w[1].done));
-        assert!(p.last().unwrap().done == Some(99), "capped at 99%");
+    /// A feed that hands out its lines one batch per poll.
+    struct Script(Vec<Vec<&'static str>>);
+    impl LogFeed for Script {
+        fn poll(&mut self) -> Vec<String> {
+            if self.0.is_empty() {
+                return Vec::new();
+            }
+            self.0.remove(0).into_iter().map(str::to_string).collect()
+        }
     }
 
     #[test]
-    fn without_a_stored_rate_there_is_no_progress_at_all() {
+    fn a_stored_rate_alone_shows_no_progress_at_all() {
+        // Whatever was measured before, this read has no numbers of its own: elapsed only.
         let (emit, seen) = collect();
-        let w = Watch::start(None, with_rate(None, None), emit, Duration::from_millis(2));
-        w.sent(8_000);
-        thread::sleep(Duration::from_millis(30));
+        let w = Watch::start(None, with_rate(Some(10_000.0), None), None, emit, Duration::from_millis(2));
+        w.sent(100);
+        thread::sleep(Duration::from_millis(60));
+        w.first_frame();
+        assert!(seen.lock().unwrap().is_empty(), "{:?}", seen.lock().unwrap());
+    }
+
+    #[test]
+    fn the_runner_log_gives_measured_progress_with_the_cached_part_named() {
+        let batches = vec![
+            vec![],
+            vec![
+                "slot   operator(): id  0 | task 3 | new prompt, n_ctx_slot = 32768, n_keep = 4, task.n_tokens = 12611",
+                "slot   operator(): id  0 | task 3 | restored context checkpoint (pos_min = 6646, pos_max = 6646, n_tokens = 6647, n_past = 6647, size = 174.9 MiB)",
+                "slot   operator(): id  0 | task 3 | cached n_tokens = 6647, memory_seq_rm [6647, end)",
+            ],
+            vec!["slot print_timing: id  0 | task 3 | prompt processing, n_tokens = 7671, progress = 0.61, t = 9.88 s / 103.64 tokens per second"],
+        ];
+        let (emit, seen) = collect();
+        let log = PrefillLog::new(Box::new(Script(batches)));
+        log.begin(12_000);
+        let w = Watch::start(None, with_rate(None, None), Some(log), emit, Duration::from_millis(2));
+        w.sent(5_000);
+        wait_for(&seen, |e| e.iter().any(|p| p.done == Some(7_671)));
+        w.first_frame();
+        let ev = seen.lock().unwrap().clone();
+        assert!(ev.iter().all(|p| p.kind == PhaseKind::Prefill && p.state == PhaseState::Progress && !p.est), "measured, never estimated: {ev:?}");
+        let first = ev.first().unwrap();
+        assert_eq!((first.done, first.total, first.cached), (Some(6_647), Some(12_611), Some(6_647)));
+        let last = ev.last().unwrap();
+        assert_eq!((last.done, last.total, last.cached, last.rate), (Some(7_671), Some(12_611), Some(6_647), Some(103.64)));
+        assert!(ev.windows(2).all(|w| w[0].done <= w[1].done));
+    }
+
+    #[test]
+    fn lines_about_another_request_show_nothing() {
+        let batches = vec![vec!["slot   operator(): id  0 | task 9 | new prompt, n_ctx_slot = 32768, n_keep = 4, task.n_tokens = 90"]];
+        let (emit, seen) = collect();
+        let log = PrefillLog::new(Box::new(Script(batches)));
+        log.begin(12_000);
+        let w = Watch::start(None, with_rate(None, None), Some(log), emit, Duration::from_millis(2));
+        w.sent(12_000);
+        thread::sleep(Duration::from_millis(40));
         w.first_frame();
         assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn lines_written_before_the_request_goes_out_are_kept_for_it() {
+        let log = PrefillLog::new(Box::new(Script(vec![vec![
+            "slot   operator(): id  0 | task 1 | new prompt, n_ctx_slot = 32768, n_keep = 4, task.n_tokens = 8000",
+            "slot   operator(): id  0 | task 1 | cached n_tokens = 0, memory_seq_rm [0, end)",
+        ]])));
+        assert!(log.poll().is_none(), "no request yet");
+        log.begin(8_000);
+        let p = log.poll().unwrap();
+        assert_eq!((p.total, p.cached), (8_000, Some(0)));
     }
 
     #[test]
@@ -431,7 +542,7 @@ mod tests {
         // Silent past the estimate and queued behind a crew run: the reason is stated, then ended.
         let line = "waiting for crew run b8ee1234 · Ollama runs qwen35 models one request at a time";
         let (emit, seen) = collect();
-        let w = Watch::start(None, with_rate(Some(1_000_000.0), Some(line)), emit, Duration::from_millis(100));
+        let w = Watch::start(None, with_rate(Some(1_000_000.0), Some(line)), None, emit, Duration::from_millis(100));
         w.sent(10);
         wait_for(&seen, |e| e.iter().any(|p| p.kind == PhaseKind::Admit));
         w.first_frame();
@@ -442,7 +553,7 @@ mod tests {
         assert!(ev.iter().any(|p| p.kind == PhaseKind::Admit && p.state == PhaseState::End && p.ms.is_some()));
         // Not queued (the runner serves more than the crew holds): nothing is said, however long.
         let (emit, seen) = collect();
-        let w = Watch::start(None, with_rate(Some(1_000_000.0), None), emit, Duration::from_millis(100));
+        let w = Watch::start(None, with_rate(Some(1_000_000.0), None), None, emit, Duration::from_millis(100));
         w.sent(10);
         thread::sleep(Duration::from_millis(700));
         w.first_frame();
@@ -452,7 +563,7 @@ mod tests {
     #[test]
     fn a_stopped_watch_ends_its_thread_and_a_watch_never_sent_publishes_nothing() {
         let (emit, seen) = collect();
-        let w = Watch::start(loading(), probes(|| Some(0.0), || Some(false)), emit, Duration::from_millis(2));
+        let w = Watch::start(loading(), probes(|| Some(0.0), || Some(false)), None, emit, Duration::from_millis(2));
         drop(w);
         thread::sleep(Duration::from_millis(30));
         assert!(seen.lock().unwrap().is_empty());
@@ -462,7 +573,7 @@ mod tests {
     fn calibration_helpers() {
         assert!(same_model("marlowe-dawn", "marlowe-dawn:latest"));
         assert!(!same_model("a:9b", "a:22b"));
-        assert_eq!(rate_key("prefill", "ollama/x"), "prefill_tok_s:ollama/x");
+        assert_eq!(rate_key("prefill", "ollama/x"), "prefill_measured_tok_s:ollama/x");
         assert_eq!(blend(None, 1000.0), 1000.0);
         assert!((blend(Some(1000.0), 2000.0) - 1300.0).abs() < 1e-9);
         assert_eq!(freed_mib(Some(13_414.0), Some(300.0)), Some(13_114.0));

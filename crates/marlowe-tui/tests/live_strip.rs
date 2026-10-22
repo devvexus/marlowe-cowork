@@ -310,23 +310,47 @@ fn reading(r: &mut Rig) {
 }
 
 #[test]
-fn the_read_is_an_estimate_with_a_tilde_until_the_engines_numbers_arrive() {
+fn the_read_shows_only_what_the_engine_said_and_the_prompt_is_a_tilde_until_it_says_its_size() {
     let mut r = Rig::new();
     reading(&mut r);
-    // No stored rate yet (a first run): elapsed only, no bar, no rate.
+    // Nothing from Ollama's output (a server started by hand): tokens and elapsed only.
     let (first, _) = r.strip(2_220);
     assert!(first.contains("reading ~8.2k tok"), "{first}");
-    assert!(!first.contains("tok/s") && !first.contains('━'), "no invented rate or bar: {first}");
+    assert!(!first.contains("tok/s") && !first.contains('━') && !first.contains('%') && !first.contains("cached"), "nothing invented: {first}");
     assert!(first.contains("200ms"), "the elapsed ticks: {first}");
 
-    let mut p = PhaseEvent::progress(PhaseKind::Prefill, 5_100, 8_200).unit("tok");
-    p.rate = Some(1_900.0);
-    p.est = true;
+    // Ollama's runner log: the whole prompt, where the read started (the reused part), how far it is
+    // and its own rate. No tildes: all of it was measured.
+    let mut p = PhaseEvent::progress(PhaseKind::Prefill, 9_200, 12_600).unit("tok").with_cached(6_600);
+    p.rate = Some(95.55);
     r.phase(2_300, 2, p);
     let (first, _) = r.strip(2_301);
-    assert!(first.contains("reading ~8.2k tok · ~1,900 tok/s"), "{first}");
-    assert!(first.contains('━') && first.contains("~62%"), "the bar and its estimated percentage: {first}");
+    assert!(first.contains("reading 12.6k tok · 6.6k cached · 2,600/6,000 new · 96 tok/s"), "{first}");
+    assert!(first.contains('━') && first.contains("43%"), "the bar and its percentage of the fresh tokens: {first}");
+    assert!(!first.contains('~'), "{first}");
 
+    // A cache miss is visible: nothing was reused.
+    let mut p = PhaseEvent::progress(PhaseKind::Prefill, 2_560, 7_200).unit("tok").with_cached(0);
+    p.rate = Some(95.55);
+    r.phase(2_400, 2, p);
+    let (first, _) = r.strip(2_401);
+    assert!(first.contains("reading 7.2k tok · 0 cached · 2,560/7,200 new"), "{first}");
+
+    // Before it has said where the read starts: the size alone.
+    let mut r = Rig::new();
+    reading(&mut r);
+    r.phase(2_300, 2, PhaseEvent::progress(PhaseKind::Prefill, 0, 12_600).unit("tok"));
+    let (first, _) = r.strip(2_301);
+    assert!(first.contains("reading 12.6k tok") && !first.contains("cached") && !first.contains('~'), "{first}");
+}
+
+#[test]
+fn the_first_token_ends_the_read_and_the_engines_end_replaces_the_time() {
+    let mut r = Rig::new();
+    reading(&mut r);
+    let mut p = PhaseEvent::progress(PhaseKind::Prefill, 9_200, 12_600).unit("tok").with_cached(6_600);
+    p.rate = Some(95.55);
+    r.phase(2_300, 2, p);
     // The first token ends the read: thinking replaces the read line entirely.
     r.at(3_900, Event::ReasoningDelta { session: sid(), turn: 2, text: "Let me look.".into(), tokens: 4 });
     let (first, _) = r.strip(3_901);
@@ -334,19 +358,31 @@ fn the_read_is_an_estimate_with_a_tilde_until_the_engines_numbers_arrive() {
     assert!(!first.contains("read") && !first.contains('›'), "no combined read › thinking line: {first}");
     assert!(!combined(&r.frame(3_901)));
     let text = r.frame(3_902);
-    assert!(!text.contains("read ~8.2k") && !combined(&text), "the read is not on screen until the block is opened:\n{text}");
+    assert!(!text.contains("read 6k") && !combined(&text), "the read is not on screen until the block is opened:\n{text}");
 
-    // Opened, the block carries the read: still estimated, so still tilde'd.
+    // Opened, the block carries the read: the split is the engine's, only the time is still ours.
     r.open_fold(3_903, 0);
     let text = r.frame(3_904);
-    assert!(text.contains("read ~8.2k · ~1.9s"), "{text}");
+    assert!(text.contains("read 6k (6.6k cached) · ~1.9s"), "{text}");
 
-    // The engine's own numbers arrive with the call's usage: no more tildes on what it measured.
-    let mut end = PhaseEvent::end(PhaseKind::Prefill, 1_873).with_done(8_123).with_total(8_123).unit("tok");
-    end.est = false;
+    // The engine's own numbers arrive with the call's usage.
+    let mut end = PhaseEvent::end(PhaseKind::Prefill, 61_873).with_done(6_000).with_total(12_600).with_cached(6_600).unit("tok");
+    end.rate = Some(97.0);
     r.phase(9_000, 2, end);
     let text = r.frame(9_002);
-    assert!(text.contains("read 8.1k · 1.9s") && !text.contains("~8.1k"), "{text}");
+    assert!(text.contains("read 6k (6.6k cached) · 1m") && !text.contains('~'), "{text}");
+}
+
+#[test]
+fn a_read_with_no_split_is_the_prompts_size_and_the_time_only() {
+    let mut r = Rig::new();
+    reading(&mut r);
+    r.at(2_500, Event::ReasoningDelta { session: sid(), turn: 2, text: "a".into(), tokens: 2 });
+    let end = PhaseEvent::end(PhaseKind::Prefill, 480).with_done(16_000).with_total(16_000).unit("tok");
+    r.phase(2_600, 2, end);
+    r.open_fold(2_700, 0);
+    let text = r.frame(2_701);
+    assert!(text.contains("read 16k · 480ms") && !text.contains("cached") && !text.contains('~'), "{text}");
 }
 
 #[test]
@@ -405,12 +441,11 @@ fn a_later_step_reads_only_what_is_new_and_says_what_was_cached() {
     start.est = true;
     r.phase(5_010, 2, start);
     r.at(5_300, Event::ReasoningDelta { session: sid(), turn: 2, text: "b".into(), tokens: 2 });
-    let mut end = PhaseEvent::end(PhaseKind::Prefill, 290).with_done(1_200).with_total(9_400).unit("tok");
-    end.est = true;
+    let end = PhaseEvent::end(PhaseKind::Prefill, 290).with_done(1_200).with_total(9_400).with_cached(8_200).unit("tok");
     r.phase(5_400, 2, end);
     r.open_fold(5_401, 1);
     let text = r.frame(5_402);
-    assert!(text.contains("read +1.2k (~8.2k cached) · 290ms"), "{text}");
+    assert!(text.contains("read +1.2k (8.2k cached) · 290ms"), "{text}");
     assert!(!combined(&text), "{text}");
 }
 #[test]
