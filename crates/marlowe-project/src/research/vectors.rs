@@ -168,7 +168,7 @@ pub fn register(t: &mut Toolbox, deps: &Arc<ResearchDeps>) {
             "You are the search planner on a research project. Do exactly one task: say where to look for ONE question, and answer with the form only, a JSON object.\n\
              Objective: {}\n\
              Today is {}. Your own knowledge ends well before today and may be more than a year old. What is asked about may have newer versions, releases or results than you know of. \
-             Make one angle aim at what you do not know, and list in `unknown_names` any names or versions you suspect exist but cannot confirm (a newer model number, a successor), each with a question mark.\n\
+             Make one angle aim at what you do not know, and list in `unknown_names` any names or versions you suspect exist but cannot confirm (a newer version, a successor), each with a question mark.\n\
              {online_note}\n\
              Keywords are plain search words, never web addresses. Write at most {} angles.",
             fence::clean(&input.plan.objective, 500, false),

@@ -71,7 +71,7 @@ implementations (memory engine, journal, executors, renderers, theme) and replac
 | `marlowe-provider` (Ollama), `-openrouter`, `-exec` (BuiltinTools), `marlowe` (bin) | ported onto `marlowe-model` (M1) |
 | `marlowe-model`, `-proto`, `-agent`, `-brains`, `-daemon`, `-tui` | new (M1) |
 | `marlowe-os`, `-crew`, `-sentinel`, `-voice` | new, M2–M6 |
-| `marlowe-project` | projects (plan, state JSON, forms with display hints, generic view-model, store; the phase engine and employee runner); stages A and B of `docs/research/projects-design.md` |
+| `marlowe-project` | projects (plan, state JSON, forms with display hints, generic view-model, store; the phase engine and employee runner, the research phases); stages A to C of `docs/research/projects-design.md` |
 | `legacy/*` (old loop, daemon, stub, bin, exec) | reference only (`exclude = ["legacy"]`) |
 
 ## Commands
