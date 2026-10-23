@@ -3528,6 +3528,7 @@ dependencies = [
  "marlowe-hw",
  "marlowe-model",
  "marlowe-os",
+ "serde",
  "serde_json",
  "thiserror 2.0.19",
 ]

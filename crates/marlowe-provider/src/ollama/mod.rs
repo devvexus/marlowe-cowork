@@ -24,6 +24,7 @@ use marlowe_model::{
 use serde_json::{json, Value};
 
 use crate::http::{self, HttpError, LocalEndpoint, NdjsonError, NdjsonStream};
+use crate::llama::render::RenderGuard;
 use crate::llama::{chat as llama_chat, conversation_key, LlamaEngine, Want};
 
 pub use leak::{defang_tool_markup, recover_leaked_call};
@@ -59,6 +60,8 @@ pub struct OllamaProvider {
     stats: Arc<RepairStats>,
     /// Marlowe's own llama-server, for the models the planner gave it (see [`crate::llama`]).
     llama: Option<LlamaEngine>,
+    /// Checks that each request to the engine renders as the last prompt plus its reply.
+    render: RenderGuard,
 }
 
 impl Default for OllamaProvider {
@@ -78,6 +81,7 @@ impl OllamaProvider {
             blobs: None,
             stats: Arc::new(RepairStats::new()),
             llama: None,
+            render: RenderGuard::default(),
         }
     }
 
@@ -346,12 +350,45 @@ impl OllamaProvider {
         let want = Want { model: req.model.clone(), shape, lane: req.lane, key: conversation_key(req) };
         let lease = engine.acquire(&want, cancel)?;
         let body = llama_chat::chat_body(&planned.body, lease.sampling.as_ref(), lease.slot);
+        // The prompt must extend the last one plus its reply, as the model's template renders it.
+        self.render.before(&lease.endpoint, &req.model, want.key, &body);
         on(StreamEvent::Sent);
         let reader = http::post_stream(&lease.endpoint, "/v1/chat/completions", &body, "text/event-stream", cancel, LLAMA_IDLE_TIMEOUT)
             .map_err(|e| llama_error(e))?;
         let mut folder = Folder::new(thinking, on).with_tools(&req.tools).with_stats(self.stats.clone());
         llama_chat::read_stream(reader, &mut folder, cancel)?;
-        Ok(folder.finish())
+        let done = folder.finish();
+        let (endpoint, sampling, slot) = (lease.endpoint.clone(), lease.sampling.clone(), lease.slot);
+        drop(lease);
+        self.hold_reply(&endpoint, want.key, req, &opts, &body, &done, sampling.as_ref(), slot);
+        Ok(done)
+    }
+
+    /// Renders the conversation with the model's reply on the end: the prompt its cache holds now.
+    #[allow(clippy::too_many_arguments)]
+    fn hold_reply(
+        &self,
+        endpoint: &LocalEndpoint,
+        key: u64,
+        req: &ChatRequest,
+        opts: &BodyOptions<'_>,
+        body: &Value,
+        done: &Completion,
+        sampling: Option<&crate::ollama_store::Sampling>,
+        slot: u32,
+    ) {
+        let Some(message) = done.kept_message() else { return };
+        let mut next = req.clone();
+        next.messages.push(message);
+        let Ok(planned) = plan_request(&next, opts) else { return };
+        let sent = llama_chat::chat_body(&planned.body, sampling, slot);
+        let Some(reply) = sent.get("messages").and_then(Value::as_array).and_then(|m| m.last()).cloned() else { return };
+        let tail = if done.text.trim().is_empty() {
+            done.thinking.as_ref().map(|t| t.text.as_str()).unwrap_or("")
+        } else {
+            done.text.as_str()
+        };
+        self.render.after(endpoint, &req.model, key, body, &reply, tail, !done.tool_calls.is_empty());
     }
 }
 

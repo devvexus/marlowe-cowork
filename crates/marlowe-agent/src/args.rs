@@ -235,14 +235,15 @@ pub fn signature(spec: &ToolSpec) -> String {
 }
 
 /// `url, offset?: int, part?: text|references`: a schema's arguments, required ones first and
-/// bare, the rest in key order (the workspace keeps JSON keys sorted).
+/// bare, the rest sorted by name (JSON keys keep the order they were written in).
 pub fn arg_list(schema: &Value) -> String {
     let required: Vec<&str> = schema.get("required").and_then(Value::as_array).map(|r| r.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
     let Some(props) = schema.get("properties").and_then(Value::as_object) else { return String::new() };
     let first = required.iter().filter_map(|k| props.get_key_value(*k));
-    let rest = props.iter().filter(|(k, _)| !required.contains(&k.as_str()));
+    let mut rest: Vec<_> = props.iter().filter(|(k, _)| !required.contains(&k.as_str())).collect();
+    rest.sort_by(|a, b| a.0.cmp(b.0));
     first
-        .chain(rest)
+        .chain(rest.into_iter())
         .map(|(k, v)| {
             let opt = if required.contains(&k.as_str()) { "" } else { "?" };
             match type_label(v) {

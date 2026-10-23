@@ -205,10 +205,13 @@ fn apply_rewind(core: &Arc<Core>, convo: &mut Conversation, turn: u32, scope: Re
         }
         let rows = core.store.rows(&session)?;
         convo.messages = rows.iter().map(RowOut::message).collect();
+        // A rewind rewrites the history on purpose: the cache watch starts over for this session.
+        marlowe_model::prefix::forget(&session.to_string());
         convo.summary = None;
         convo.next_turn = turn;
         convo.ext = Extensions::new();
         crate::store::restore_context(&core.store, convo);
+        convo.ext.insert(marlowe_agent::context::Rewritten);
         if let Some(r) = crate::checkpoint::recorder_of(core, &session) {
             r.reset(convo);
         }

@@ -14,15 +14,14 @@
 //! by the same count, so it rarely does. The conductor never waits for slot 0: when another
 //! request holds it, it takes any free slot.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, Weak};
 use std::time::{Duration, Instant};
 
-use marlowe_model::{CancelToken, ChatRequest, ContextAllocations, EngineObserver, EngineShape, Lane, ProviderError};
+use marlowe_model::{CancelToken, ContextAllocations, EngineObserver, EngineShape, Lane, ProviderError};
 
 use super::launch::{self, Spec};
+use super::persist;
 use super::server::{offloaded, Process, Spawner};
 use crate::http::{self, LocalEndpoint};
 use crate::ollama_runtime::{parse_ps, unload_body};
@@ -48,6 +47,9 @@ pub struct EngineConfig {
     /// Longest a load may take.
     pub start_timeout: Duration,
     pub ubatch: u32,
+    /// Where each slot's cache is written when the server stops and read back when it starts
+    /// again; `None` keeps no caches across a stop.
+    pub slots_dir: Option<PathBuf>,
     /// The server binary; `None` finds the one Ollama bundles.
     pub binary: Option<PathBuf>,
     /// How often a starting server is asked whether it is ready.
@@ -65,6 +67,7 @@ impl EngineConfig {
             keep_alive: Some(Duration::from_secs(300)),
             start_timeout: Duration::from_secs(240),
             ubatch: 512,
+            slots_dir: None,
             binary: None,
             poll: Duration::from_millis(250),
             idle_tick: Duration::from_secs(2),
@@ -104,15 +107,7 @@ pub struct Want {
     pub key: u64,
 }
 
-/// A hash of what identifies a conversation: its system prompt and its first message.
-pub fn conversation_key(req: &ChatRequest) -> u64 {
-    let mut h = DefaultHasher::new();
-    req.system_text().hash(&mut h);
-    if let Some(m) = req.messages.first() {
-        serde_json::to_string(m).unwrap_or_default().hash(&mut h);
-    }
-    h.finish()
-}
+pub use marlowe_model::prefix::conversation_key;
 
 /// `marlowe-dawn` and `marlowe-dawn:latest` are the same model to Ollama.
 pub fn same_model(a: &str, b: &str) -> bool {
@@ -137,6 +132,7 @@ struct Running {
     model: String,
     shape: EngineShape,
     port: u16,
+    blob: PathBuf,
     proc: Box<dyn Process>,
     epoch: u64,
     load_secs: f64,
@@ -187,6 +183,22 @@ struct Inner {
     st: Mutex<State>,
     cv: Condvar,
     events: RwLock<Option<ContextAllocations>>,
+}
+
+impl Inner {
+    /// Stops a server on purpose: first its slots' caches are written to disk, so the next load of
+    /// the model gives each conversation its cache back (see [`persist`]). Called under the lock.
+    fn retire(&self, r: &mut Running) {
+        if let Some(dir) = &self.cfg.slots_dir {
+            if r.proc.exited().is_none() {
+                let used: Vec<(u32, u64)> =
+                    r.slots.iter().enumerate().filter(|(_, s)| !s.busy).filter_map(|(i, s)| s.key.map(|k| (i as u32, k))).collect();
+                let endpoint = LocalEndpoint::new("127.0.0.1", r.port).expect("loopback");
+                persist::save(&endpoint, dir, &r.model, &r.blob, &r.shape, &used);
+            }
+        }
+        r.proc.kill();
+    }
 }
 
 /// What the engine runs now.
@@ -289,7 +301,7 @@ impl LlamaEngine {
         let mut g = lock(&self.inner.st);
         let stopped = match g.running.take_if(|r| model.is_none_or(|m| same_model(&r.model, m))) {
             Some(mut r) => {
-                r.proc.kill();
+                self.inner.retire(&mut r);
                 true
             }
             None => false,
@@ -348,7 +360,7 @@ impl LlamaEngine {
                     }
                     // Under the lock, so nothing starts a second server while this one is dying.
                     let mut old = g.running.take().expect("checked");
-                    old.proc.kill();
+                    inner.retire(&mut old);
                 }
                 None => {
                     if let Some((m, s, at, e)) = &g.failed {
@@ -436,17 +448,28 @@ impl LlamaEngine {
             match self.try_start(&binary, backend.as_deref(), &resolved.blob, want, cancel) {
                 Ok((proc, port, on_gpu)) => {
                     let n = usize::from(want.shape.slots.max(1));
+                    let mut slots: Vec<Slot> = (0..n).map(|_| Slot { busy: false, key: None, last: Instant::now() }).collect();
+                    // The conversations this model served before it was stopped read their caches back.
+                    if let Some(dir) = &cfg.slots_dir {
+                        let endpoint = LocalEndpoint::new("127.0.0.1", port).expect("loopback");
+                        for (i, key) in persist::restore(&endpoint, dir, &want.model, &resolved.blob, &want.shape) {
+                            if let Some(s) = slots.get_mut(i as usize) {
+                                s.key = Some(key);
+                            }
+                        }
+                    }
                     return Ok(Running {
                         model: want.model.clone(),
                         shape: want.shape.clone(),
                         port,
+                        blob: resolved.blob.clone(),
                         proc,
                         epoch,
                         load_secs: began.elapsed().as_secs_f64(),
                         last_used: Instant::now(),
                         on_gpu,
                         sampling: resolved.sampling.clone(),
-                        slots: (0..n).map(|_| Slot { busy: false, key: None, last: Instant::now() }).collect(),
+                        slots,
                     });
                 }
                 Err(Tried::Next(m)) => why.push(m),
@@ -467,6 +490,9 @@ impl LlamaEngine {
         let cfg = &self.inner.cfg;
         let io = |e: std::io::Error| Tried::Fatal(ProviderError::server(format!("could not start llama-server: {e}")));
         let port = self.inner.spawner.free_port().map_err(io)?;
+        if let Some(dir) = &cfg.slots_dir {
+            std::fs::create_dir_all(dir).map_err(io)?;
+        }
         let spec = Spec {
             blob: blob.to_path_buf(),
             port,
@@ -474,6 +500,7 @@ impl LlamaEngine {
             ctx_per_slot: want.shape.ctx_per_slot,
             kv: want.shape.kv.clone(),
             ubatch: cfg.ubatch,
+            slot_save: cfg.slots_dir.clone(),
         };
         let plan = launch::plan(binary, backend, &spec);
         // The same line Ollama logs for its runners, so the planner reads this load like any other.
@@ -561,7 +588,7 @@ fn idle_loop(weak: Weak<Inner>, tick: Duration) {
             let mut g = lock(&inner.st);
             let mut gone = g.running.take_if(|r| r.busy() == 0 && r.last_used.elapsed() >= keep);
             if let Some(r) = gone.as_mut() {
-                r.proc.kill();
+                inner.retire(r);
             }
             gone
         };
@@ -689,6 +716,38 @@ mod tests {
         assert_eq!(fx.spawner.killed(), 1);
         assert_eq!(e.status().unwrap().shape.slots, 2);
         drop(b);
+    }
+
+    #[test]
+    fn a_stop_writes_each_conversations_cache_and_the_next_load_gives_it_back_on_its_own_slot() {
+        let fx = Fixture::new("dusk:22b");
+        let mut cfg = fx.config();
+        cfg.slots_dir = Some(fx.dir.path().join("slots"));
+        let e = LlamaEngine::new(cfg.clone(), fx.spawner.clone());
+        let c = CancelToken::new();
+        let a = e.acquire(&want("dusk:22b", Lane::Conductor, 11), &c).unwrap();
+        let x = e.acquire(&want("dusk:22b", Lane::Other, 22), &c).unwrap();
+        let (a_slot, x_slot) = (a.slot, x.slot);
+        drop((a, x));
+        assert!(e.unload(None));
+        let calls = fx.spawner.seen.slot_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(calls.iter().all(|c| c.starts_with("save ")), "{calls:?}");
+        // A new engine (the next run of Marlowe) loads the model again and restores both.
+        let again = LlamaEngine::new(cfg, fx.spawner.clone());
+        let a2 = again.acquire(&want("dusk:22b", Lane::Conductor, 11), &c).unwrap();
+        let x2 = again.acquire(&want("dusk:22b", Lane::Other, 22), &c).unwrap();
+        assert_eq!((a2.slot, x2.slot), (a_slot, x_slot), "each conversation is on the slot that holds its cache");
+        let calls = fx.spawner.seen.slot_calls.lock().unwrap().clone();
+        assert_eq!(calls.iter().filter(|c| c.starts_with("restore ")).count(), 2, "{calls:?}");
+        // A different shape is a different cache: nothing is restored into it.
+        drop((a2, x2));
+        assert!(again.unload(None));
+        let mut other = want("dusk:22b", Lane::Conductor, 11);
+        other.shape.slots = 2;
+        let before = fx.spawner.seen.slot_calls.lock().unwrap().len();
+        again.acquire(&other, &c).unwrap();
+        assert!(fx.spawner.seen.slot_calls.lock().unwrap()[before..].iter().all(|c| !c.starts_with("restore ")));
     }
 
     #[test]

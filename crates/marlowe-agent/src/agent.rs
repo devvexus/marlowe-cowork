@@ -17,7 +17,7 @@ use crossbeam_channel::Receiver;
 use marlowe_proto::{PhaseEvent, PhaseKind};
 use marlowe_model::{
     CancelToken, ChatRequest, Completion, CompletionBuilder, Effort, Message, ModelInfo, Provider, ProviderError,
-    ProviderKind, StopReason, StreamEvent, ToolCall, Usage,
+    ProviderKind, StopReason, StreamEvent, ToolCall, ToolResult, Usage,
 };
 
 use crate::approval::{ApprovalGate, DenyAll};
@@ -129,11 +129,13 @@ pub struct Agent {
 /// How one model call ended.
 enum CallEnd {
     Done(Completion),
-    /// Interrupted; carries the text streamed before the interrupt.
-    Cancelled(String),
-    /// Cut by the harness because the reply (or its reasoning) was repeating itself; carries one
-    /// copy of the text.
-    Looped(String),
+    /// Interrupted; carries what the model had produced before the interrupt (reasoning and
+    /// text), which goes into the history exactly as generated.
+    Cancelled(Completion),
+    /// Cut by the harness because the reply (or its reasoning) was repeating itself. `kept` is
+    /// one copy of the text (what the turn reports); `made` is everything generated up to the
+    /// cut, which is what the history keeps, so the model's cache is extended, not rewritten.
+    Looped { kept: String, made: Completion },
     /// The call failed; the flag says whether any reply text had been shown.
     Failed(ProviderError, bool),
 }
@@ -275,9 +277,16 @@ impl Agent {
         let mut env = Environment::current(workspace, live.model.model_ref().to_string());
         env.repo = self.system.env().and_then(|e| e.repo.clone());
         system.set_environment(env);
-        let specs = self.tools.specs();
+        // Teams mode: its reminder rides on this turn's user message, whatever the tail policy.
+        if let Some(note) = self.services.get::<crate::teams::TeamsNote>().and_then(|t| t.note(said)) {
+            convo.ext.get_or_default::<context::TurnNotes>().0.push((user_index, note));
+        }
+        // The tool list is fixed for the conversation (until it is compacted): a tool that
+        // appears later is announced on this message and joins the list at the next compaction.
+        let specs = crate::toolset::for_turn(convo, self.tools.specs(), user_index);
         let spec_tokens = context::tool_spec_tokens(&specs);
         self.apply_sections(&mut system, convo, spec_tokens, live.context.window_tokens);
+        context::freeze_system(convo, &system, false);
         // With the tail on the user's message, nothing per-turn sits in the system prompt: the
         // profile rides there too, on the turns where it is new or changed (a memory write used to
         // rewrite the system prompt and with it every token the model had cached).
@@ -292,11 +301,6 @@ impl Agent {
         } else {
             profile
         };
-
-        // Teams mode: its reminder rides on this turn's user message, whatever the tail policy.
-        if let Some(note) = self.services.get::<crate::teams::TeamsNote>().and_then(|t| t.note(said)) {
-            convo.ext.get_or_default::<context::TurnNotes>().0.push((user_index, note));
-        }
 
         let mut spent = Spent::default();
         let mut texts: Vec<String> = Vec::new();
@@ -332,6 +336,10 @@ impl Agent {
                 if reload && convo.ext.get::<crate::instructions::InstructionState>().is_some() {
                     crate::instructions::refresh(convo);
                     self.apply_sections(&mut system, convo, spec_tokens, live.context.window_tokens);
+                    context::freeze_system(convo, &system, true);
+                    // The user asked for the instructions to be read again: the one deliberate
+                    // change to the system prompt, like a compaction.
+                    compacted = true;
                 }
             }
             if let Some(dim) = self.budget.exhausted(&spent) {
@@ -348,6 +356,7 @@ impl Agent {
             if next.model.id != live.model.id || next.model.provider != live.model.provider {
                 live = next;
                 self.apply_sections(&mut system, convo, spec_tokens, live.context.window_tokens);
+                context::freeze_system(convo, &system, true);
             }
             let cfg = live.context;
 
@@ -357,7 +366,8 @@ impl Agent {
             }
             let fit = PhaseTimer::start(PhaseKind::Fit, sink);
             let mut asm = context::assemble_with(&system, &profile, &memory, convo, &cfg);
-            let compact_now = forced_compact.is_some() || context::needs_compaction(asm.tokens + spec_tokens, &cfg);
+            let compact_now =
+                forced_compact.is_some() || context::needs_compaction(context::scaled_tokens(asm.tokens + spec_tokens, convo), &cfg);
             fit.end_with(sink, |e| e.unit("tok").with_done(u64::from(asm.tokens + spec_tokens)));
             if compact_now {
                 let compacting = PhaseTimer::start(PhaseKind::Compact, sink);
@@ -379,7 +389,9 @@ impl Agent {
                         sink(AgentEvent::Compacted { before_tokens: before, after_tokens: asm.tokens });
                     }
                 }
-                if forced_compact.is_some() || context::needs_compaction(asm.tokens + spec_tokens, &cfg) {
+                if forced_compact.is_some()
+                    || context::needs_compaction(context::scaled_tokens(asm.tokens + spec_tokens, convo), &cfg)
+                {
                     let pinned = crate::todo::pin_for_compaction(convo);
                     // Progress counts the summary as it streams; the cap is an upper bound (est).
                     let mut last: Option<Instant> = None;
@@ -443,17 +455,38 @@ impl Agent {
             };
             // A local model keeps its cache only for an exact prefix: say which section broke it.
             let local = matches!(live.model.provider, ProviderKind::Ollama | ProviderKind::LocalGguf);
+            let rewrote = std::mem::take(&mut compacted) | convo.ext.remove::<context::Rewritten>();
             if local {
-                if let Some(b) = marlowe_model::prefix::check(&convo.session.to_string(), &req, std::mem::take(&mut compacted)) {
-                    eprintln!("{}", b.line(&convo.session.to_string(), &req.model));
+                let session = convo.session.to_string();
+                if let Some(b) = marlowe_model::prefix::check(&session, &req, rewrote) {
+                    if b.diverged() {
+                        violation(b.line(&session, &req.model));
+                    } else {
+                        // The prompt extends the last one; another request used the model's slot.
+                        eprintln!("{}", b.line(&session, &req.model));
+                    }
                 }
+            }
+            for o in &self.observers {
+                o.on_request(convo, &req);
             }
             let call_started = Instant::now();
             sink(AgentEvent::CallStarted { step: spent.steps + 1, est_prompt_tokens });
             let mut wire = Some(PhaseTimer::start(PhaseKind::Wire, sink));
             let ended = call_model(live.provider.as_ref(), &req, cancel, &mut wire, (call_started, est_prompt_tokens), sink);
             if local {
-                marlowe_model::prefix::made(&convo.session.to_string(), &req.model);
+                let session = convo.session.to_string();
+                marlowe_model::prefix::made(&session, &req.model);
+                // The engine's own template rendering of this request, checked against the last one.
+                for what in marlowe_model::prefix::take_render_breaks(&req.model, marlowe_model::prefix::conversation_key(&req)) {
+                    if let Some(inherent) = what.strip_prefix(marlowe_model::prefix::TEMPLATE_DROP) {
+                        // The model's own template prints less of the earlier reasoning than it did:
+                        // no switch keeps it, so the turn that just ended is read again. Said, not a bug.
+                        eprintln!("marlowe: note: {}'s chat template drops earlier reasoning from the prompt (session {session}): {inherent}", req.model);
+                    } else if !rewrote {
+                        violation(format!("marlowe: prompt cache break in session {session} on {}: {what}", req.model));
+                    }
+                }
             }
             // A call that never produced a frame (failed, cancelled) still closes its phase.
             if let Some(w) = wire.take() {
@@ -461,19 +494,26 @@ impl Agent {
             }
             let mut c = match ended {
                 CallEnd::Done(c) => c,
-                CallEnd::Cancelled(partial) => {
+                CallEnd::Cancelled(mut made) => {
                     spent.steps += 1;
-                    if !partial.is_empty() {
-                        convo.push(Message::assistant(partial.clone()));
-                        texts.push(partial);
+                    // A call cut mid-way is not a call: only the reasoning and text are kept.
+                    made.tool_calls.clear();
+                    if let Some(m) = made.kept_message() {
+                        convo.push(m);
+                    }
+                    if !made.text.is_empty() {
+                        texts.push(made.text);
                     }
                     break TurnStop::Interrupted;
                 }
-                CallEnd::Looped(kept) => {
+                CallEnd::Looped { kept, mut made } => {
                     spent.steps += 1;
                     loop_cuts += 1;
+                    made.tool_calls.clear();
+                    if let Some(m) = made.kept_message() {
+                        convo.push(m);
+                    }
                     if !kept.trim().is_empty() {
-                        convo.push(Message::assistant(kept.clone()));
                         texts.push(kept);
                     }
                     if loop_cuts > MAX_LOOP_CUTS {
@@ -498,6 +538,12 @@ impl Agent {
                 }
             };
             spent.record(&c.usage);
+            // What the prompt really came to, against what was estimated, for the next check.
+            if local {
+                if let Some(scale) = context::TokenScale::learned(c.usage.input, est_prompt_tokens) {
+                    convo.ext.insert(scale);
+                }
+            }
             // A `+500k` target counts every generated token of the request (WF8).
             if let Some(pool) = self.services.get::<crate::directive::TokenPool>() {
                 pool.charge(c.usage.output);
@@ -506,12 +552,16 @@ impl Agent {
             truncated = c.stop == StopReason::MaxTokens;
 
             let interrupted = cancel.is_cancelled() || c.stop == StopReason::Cancelled;
+            assign_ids(&mut c.tool_calls, turn, spent.steps);
+            // What the model produced, kept for the history and the stored row exactly as it
+            // wrote it (names, argument keys and their order): the prompt it reads next must
+            // start with the one it just read plus this, or a local model re-reads it all.
+            let produced = c.clone();
             if interrupted {
                 c.tool_calls.clear();
             }
-            assign_ids(&mut c.tool_calls, turn, spent.steps);
             // Names and the arguments container become canonical before the transcript, hooks
-            // and approvals see them (the forgiving layer, `args.rs`).
+            // and approvals see them (the forgiving layer, `args.rs`); they run the canonical call.
             for call in &mut c.tool_calls {
                 crate::args::prepare_call(self.tools.as_ref(), call);
             }
@@ -520,7 +570,7 @@ impl Agent {
                 let call = ModelCall {
                     info,
                     request: &req,
-                    completion: &c,
+                    completion: &produced,
                     latency_ms: call_started.elapsed().as_millis() as u64,
                 };
                 for o in &self.observers {
@@ -530,10 +580,17 @@ impl Agent {
             if !c.text.is_empty() {
                 texts.push(c.text.clone());
             }
-            if !c.text.is_empty() || !c.tool_calls.is_empty() {
-                convo.push(c.to_message());
+            if let Some(m) = produced.kept_message() {
+                convo.push(m);
             }
             if interrupted {
+                // Calls the model finished writing stay in the history, answered as not run, so
+                // the next request extends this one.
+                if !produced.tool_calls.is_empty() {
+                    convo.push(Message::tool_results(
+                        produced.tool_calls.iter().map(|call| ToolResult::text(call.id.clone(), run_tools::INTERRUPTED, true)),
+                    ));
+                }
                 break TurnStop::Interrupted;
             }
             if c.stop == StopReason::Error && c.tool_calls.is_empty() {
@@ -612,6 +669,13 @@ impl Agent {
             FinalFlow::Continue(reminder) => Some(reminder),
         })
     }
+}
+
+/// A request that did not extend the last one outside a compaction: a bug, said loudly in the
+/// daemon log and kept for the tests that fail on it ([`marlowe_model::prefix::violations`]).
+fn violation(line: String) {
+    eprintln!("marlowe: PROMPT CACHE VIOLATION (a bug: only a compaction may rewrite what the model has read): {line}");
+    marlowe_model::prefix::record_violation(line);
 }
 
 /// One model call, forwarding deltas to `sink`. Retries a retriable error only when nothing
@@ -714,16 +778,16 @@ fn call_model(
             p.end_with(sink, |e| e.detail("no report"));
         }
         if let Some(kept) = looped.filter(|_| !cancel.is_cancelled()) {
-            return CallEnd::Looped(kept);
+            return CallEnd::Looped { kept, made: partial.finish() };
         }
         match result {
             Ok(c) => return CallEnd::Done(c),
             Err(e) if e.is_cancelled() || cancel.is_cancelled() => {
-                return CallEnd::Cancelled(partial.finish().text);
+                return CallEnd::Cancelled(partial.finish());
             }
             Err(e) if e.retriable && !emitted && attempt < RETRY_BACKOFF.len() => {
                 if !sleep_unless_cancelled(RETRY_BACKOFF[attempt], cancel) {
-                    return CallEnd::Cancelled(String::new());
+                    return CallEnd::Cancelled(Completion::default());
                 }
                 attempt += 1;
             }

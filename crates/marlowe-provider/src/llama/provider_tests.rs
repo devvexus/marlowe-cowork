@@ -178,3 +178,41 @@ fn llama_servers_own_context_error_becomes_the_same_overflow_the_loop_compacts_o
     let e = r.provider.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |_| {}).err().unwrap();
     assert!(crate::ollama::is_context_overflow(&e), "{e:?}");
 }
+
+/// Two requests of one conversation through the provider, the second carrying the first's reply as
+/// the loop keeps it, against a fake template that does (`keep`) or does not honour the switch.
+fn two_requests(keep: bool) -> (Vec<Value>, Vec<String>) {
+    let r = rig(Some(shape(2, 16_384)));
+    r.fx.spawner.answer_chat(|_| {
+        Reply::sse(&[
+            json!({"choices": [{"index": 0, "finish_reason": null, "delta": {"reasoning_content": "weighing it"}}]}),
+            json!({"choices": [{"index": 0, "finish_reason": "stop", "delta": {"content": "an answer"}}],
+                   "timings": {"cache_n": 0, "prompt_n": 9, "prompt_ms": 1.0, "predicted_n": 7, "predicted_ms": 3.0}}),
+        ])
+    });
+    r.fx.spawner.apply_template(move |b| Reply::json(json!({"prompt": super::testkit::chatml(b, keep)})));
+    let first = request(Lane::Conductor, "hi");
+    let done = r.provider.stream(&first, &CancelToken::new(), &mut |_| {}).unwrap();
+    let mut second = first.clone();
+    second.messages.push(done.kept_message().expect("a reply"));
+    second.messages.push(Message::user("and then?"));
+    r.provider.stream(&second, &CancelToken::new(), &mut |_| {}).unwrap();
+    let sent = r.fx.spawner.seen.chats.lock().unwrap().clone();
+    let key = marlowe_model::prefix::conversation_key(&second);
+    (sent, marlowe_model::prefix::take_render_breaks(MODEL, key))
+}
+
+#[test]
+fn the_engine_asks_the_template_to_keep_earlier_reasoning_and_a_template_that_obeys_extends_the_prompt() {
+    let (sent, breaks) = two_requests(true);
+    assert_eq!(sent[1]["chat_template_kwargs"]["preserve_thinking"], true);
+    assert_eq!(sent[1]["messages"][1]["reasoning_content"], "weighing it", "the reply goes back with its reasoning");
+    assert!(breaks.is_empty(), "{breaks:?}");
+}
+
+#[test]
+fn a_template_that_drops_earlier_reasoning_anyway_is_reported_with_the_byte() {
+    let (_, breaks) = two_requests(false);
+    assert_eq!(breaks.len(), 1, "{breaks:?}");
+    assert!(breaks[0].contains("weighing it"), "{}", breaks[0]);
+}

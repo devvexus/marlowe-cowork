@@ -10,6 +10,7 @@
 //! the section that produced it.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::io::BufReader;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -36,15 +37,39 @@ const MODEL: &str = "marlowe-dusk:22b";
 
 // ---------------------------------------------------------------- scripted provider
 
+/// A call that streams `before`, says it has started, then waits: for a cancel (the interrupt
+/// the user sends) or for `release`, after which it streams `after` and ends.
+struct Hold {
+    before: Vec<StreamEvent>,
+    after: Vec<StreamEvent>,
+    started: Arc<AtomicBool>,
+    release: Arc<AtomicBool>,
+}
+
+enum Item {
+    Events(Vec<StreamEvent>),
+    Hold(Hold),
+}
+
 #[derive(Default)]
 struct Recording {
-    script: Mutex<VecDeque<Vec<StreamEvent>>>,
+    script: Mutex<VecDeque<Item>>,
     requests: Mutex<Vec<ChatRequest>>,
+    /// Each conductor request and the message the model's reply made, as the loop must carry it.
+    replies: Mutex<Vec<(ChatRequest, Option<marlowe_model::Message>)>>,
+    /// A tool the host starts offering once this is set (an MCP server that connected late).
+    late_tool: Arc<AtomicBool>,
 }
 
 impl Recording {
     fn push(&self, evs: Vec<StreamEvent>) {
-        self.script.lock().unwrap().push_back(evs);
+        self.script.lock().unwrap().push_back(Item::Events(evs));
+    }
+
+    fn hold(&self, before: Vec<StreamEvent>, after: Vec<StreamEvent>) -> (Arc<AtomicBool>, Arc<AtomicBool>) {
+        let (started, release) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        self.script.lock().unwrap().push_back(Item::Hold(Hold { before, after, started: started.clone(), release: release.clone() }));
+        (started, release)
     }
 
     /// The conductor's requests, in order (a title or summary call has no tools).
@@ -82,11 +107,44 @@ impl Provider for Recording {
         Ok(vec![model()])
     }
 
-    fn stream(&self, req: &ChatRequest, _: &CancelToken, on: &mut dyn FnMut(StreamEvent)) -> Result<Completion, ProviderError> {
+    fn stream(&self, req: &ChatRequest, cancel: &CancelToken, on: &mut dyn FnMut(StreamEvent)) -> Result<Completion, ProviderError> {
         self.requests.lock().unwrap().push(req.clone());
-        let evs = self.script.lock().unwrap().pop_front().unwrap_or_else(|| answer("ok"));
-        for e in &evs {
-            on(e.clone());
+        let item = self.script.lock().unwrap().pop_front().unwrap_or_else(|| Item::Events(answer("ok")));
+        let evs = match item {
+            Item::Events(evs) => {
+                for e in &evs {
+                    on(e.clone());
+                }
+                evs
+            }
+            Item::Hold(h) => {
+                for e in &h.before {
+                    on(e.clone());
+                }
+                h.started.store(true, Ordering::SeqCst);
+                let until = Instant::now() + WAIT;
+                while !h.release.load(Ordering::SeqCst) {
+                    if cancel.is_cancelled() {
+                        // What it had streamed when the interrupt came is what the next request must carry.
+                        if !req.tools.is_empty() {
+                            self.replies.lock().unwrap().push((req.clone(), fold_events(&h.before).kept_message()));
+                        }
+                        return Err(ProviderError::cancelled());
+                    }
+                    assert!(Instant::now() < until, "a held call was never released or cancelled");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                let mut all = h.before.clone();
+                all.extend(h.after.iter().cloned());
+                for e in &h.after {
+                    on(e.clone());
+                }
+                all
+            }
+        };
+        if !req.tools.is_empty() {
+            let c = fold_events(&evs);
+            self.replies.lock().unwrap().push((req.clone(), c.kept_message()));
         }
         Ok(fold_events(&evs))
     }
@@ -94,11 +152,19 @@ impl Provider for Recording {
 
 // ---------------------------------------------------------------- the real tools, every call allowed
 
-struct Free(BuiltinTools);
+struct Free(BuiltinTools, Arc<AtomicBool>);
 
 impl ToolHost for Free {
     fn specs(&self) -> Vec<ToolSpec> {
-        self.0.specs()
+        let mut specs = self.0.specs();
+        if self.1.load(Ordering::SeqCst) {
+            specs.push(ToolSpec {
+                name: "mcp__late__ping".into(),
+                description: "Pings the late server.".into(),
+                input_schema: serde_json::json!({"type": "object", "properties": {}}),
+            });
+        }
+        specs
     }
 
     fn call(&self, call: &ToolCallReq, ctx: &ToolCtx) -> ToolOutcome {
@@ -196,6 +262,7 @@ struct Running {
 }
 
 fn start(home: &Path, provider: Arc<Recording>, mind: Mind) -> Running {
+    let late = provider.late_tool.clone();
     let mut providers = ProviderFactory::new(Arc::new(MemoryStore::new()));
     providers.register(ProviderKind::Ollama, move |_| Ok(provider.clone() as Arc<dyn Provider>));
     providers.set_hardware(marlowe_brains::Hardware { models: Arc::new(Engine), gpu: Arc::new(NoGpu), server: Arc::new(NoServer) });
@@ -204,7 +271,7 @@ fn start(home: &Path, provider: Arc<Recording>, mind: Mind) -> Running {
         providers,
         tools: Arc::new(move |req| {
             let t = specs::configure(BuiltinTools::new(req.workspace.clone()), &HostSetup { home: &tools_home, workspace: req.workspace.as_deref() });
-            Arc::new(Free(t)) as Arc<dyn ToolHost>
+            Arc::new(Free(t, late.clone())) as Arc<dyn ToolHost>
         }),
         user: UserInfo { name: Some("Tester".into()), address: None },
         mind: Some(mind),
@@ -449,4 +516,185 @@ fn the_comparison_names_the_section_that_broke() {
     let mut rewritten = longer.clone();
     rewritten.messages[0] = marlowe_model::Message::user("HELLO");
     assert!(broken(&longer, &rewritten).unwrap().starts_with("message 1 (user)"));
+}
+
+// ---------------------------------------------------------------- the audit's scenario
+
+fn think(thought: &str, mut rest: Vec<StreamEvent>) -> Vec<StreamEvent> {
+    let mut evs = vec![StreamEvent::ReasoningDelta { text: thought.into(), tokens: 4 }];
+    evs.append(&mut rest);
+    evs
+}
+
+fn wait_for(flag: &AtomicBool) {
+    let until = Instant::now() + WAIT;
+    while !flag.load(Ordering::SeqCst) {
+        assert!(Instant::now() < until, "the held call never started");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+impl Client {
+    fn send_ask(&mut self, session: &SessionId, text: &str, workspace: &Path) {
+        self.send(&Request::Ask {
+            session: Some(session.clone()),
+            text: text.into(),
+            workspace: Some(workspace.display().to_string()),
+            images: Vec::new(),
+            options: None,
+            client_ms: None,
+        });
+    }
+
+    fn finished(&mut self) {
+        self.until(|e| matches!(e, Event::TurnFinished { .. }));
+    }
+}
+
+/// Every cause the live audit found, through the real daemon: reasoning on every reply, tool
+/// calls whose argument keys are not alphabetical (nested too), a tool error, a tool result with
+/// trailing whitespace, a memory write and a recall, a reply interrupted while it was thinking,
+/// a steer in the middle of a turn, a file changed outside, Teams on and off, a tool that appears
+/// late, and a restart. Each request must extend the one before, and the message the loop keeps
+/// for each reply must be what the model wrote, byte for byte.
+#[test]
+fn the_audit_scenario_extends_every_request_and_keeps_every_reply_as_the_model_wrote_it() {
+    marlowe_model::prefix::clear_violations();
+    let home = temp("audit");
+    Library::open(&paths::cowork_db(&home)).unwrap().add(&model()).unwrap();
+    let work = repo(&home);
+    let provider = Arc::new(Recording::default());
+    let mind = open_mind(&home);
+    let r = start(&home, provider.clone(), mind.clone());
+    let mut c = Client::connect(&r.info);
+
+    // Turn 1: thinking, a write whose keys are not sorted, a multi_edit with nested keys not
+    // sorted, a read that fails, a read, then an answer.
+    provider.push(think("I will make the notes file.", call("w1", "write", serde_json::json!({
+        "path": "notes.txt", "content": "line one\nline two  \n\ttabbed  \n\n"
+    }))));
+    provider.push(think("Now fix the second line.", call("e1", "multi_edit", serde_json::json!({
+        "path": "notes.txt",
+        "edits": [{"old_string": "line two", "new_string": "line 2", "replace_all": false}]
+    }))));
+    provider.push(think("Does the missing file exist?", call("r1", "read", serde_json::json!({"path": "missing.txt"}))));
+    provider.push(think("Read the notes back.", call("r2", "read", serde_json::json!({"path": "notes.txt", "offset": 1, "limit": 5}))));
+    provider.push(think("All of it worked.", answer("Notes written, edited and read back.")));
+    let session = c.ask(None, "Write notes.txt, fix it, and read it back.", &work);
+
+    // Turn 2: a memory write and a recall, then an answer; a new user message after the thinking.
+    provider.push(think("Worth remembering.", call("m1", "remember", serde_json::json!({
+        "text": "The notes live in notes.txt.", "kind": "fact", "scope": "project"
+    }))));
+    provider.push(think("Check it is found.", call("m2", "recall", serde_json::json!({"query": "notes", "limit": 3}))));
+    provider.push(think("It is.", answer("Remembered.")));
+    c.ask(Some(session.clone()), "Remember where the notes are.", &work);
+
+    // Turn 3: a reply interrupted while it is still thinking and has said half an answer.
+    let (started, _release) = provider.hold(
+        think("A long line of reasoning that never finished because", vec![StreamEvent::TextDelta("Half an answ".into())]),
+        Vec::new(),
+    );
+    c.send_ask(&session, "Write a very long essay.", &work);
+    wait_for(&started);
+    c.send(&Request::Interrupt { session: session.clone() });
+    c.finished();
+
+    // Turn 4: the next message must carry the interrupted reply exactly. A file the model wrote is
+    // changed outside; Teams goes on. A steer arrives while the first call is held.
+    std::fs::write(work.join("notes.txt"), "changed outside\n").unwrap();
+    c.teams(&session, true);
+    let (started, release) = provider.hold(
+        think("Looking.", Vec::new()),
+        call("g1", "grep", serde_json::json!({"pattern": "changed", "path": "notes.txt", "-i": true})),
+    );
+    provider.push(think("Both noted.", answer("Done.")));
+    c.send_ask(&session, "What changed in the notes?", &work);
+    wait_for(&started);
+    c.send_ask(&session, "Also say whether anything else did.", &work);
+    release.store(true, Ordering::SeqCst);
+    c.finished();
+    c.teams(&session, false);
+
+    // A tool appears late (an MCP server connected); the next turn still sends the same tool list.
+    provider.late_tool.store(true, Ordering::SeqCst);
+    provider.push(think("Fine.", answer("Still here.")));
+    c.ask(Some(session.clone()), "Anything new?", &work);
+
+    // Restart: the reloaded history must be what the model read.
+    drop(c);
+    stop(r);
+    mind.shutdown().ok();
+    let mind = open_mind(&home);
+    let r = start(&home, provider.clone(), mind.clone());
+    let mut c = Client::connect(&r.info);
+    provider.push(think("After the restart.", answer("Back.")));
+    c.ask(Some(session.clone()), "Carry on after the restart.", &work);
+    provider.push(think("Once more.", answer("Yes.")));
+    c.ask(Some(session.clone()), "One more.", &work);
+    drop(c);
+    stop(r);
+    mind.shutdown().ok();
+
+    let replies = provider.replies.lock().unwrap().clone();
+    let _ = std::fs::remove_dir_all(&home);
+    let shape: Vec<String> = replies
+        .iter()
+        .map(|(r, _)| format!("{} msgs, last {:?}", r.messages.len(), r.messages.last().map(|m| m.joined_text().chars().take(40).collect::<String>())))
+        .collect();
+    assert!(replies.len() >= 14, "{} conductor requests:
+{}", replies.len(), shape.join("
+"));
+
+    // 1. Each request extends the one before.
+    let mut breaks = Vec::new();
+    for i in 1..replies.len() {
+        if let Some(why) = broken(&replies[i - 1].0, &replies[i].0) {
+            breaks.push(format!("request {i}: {why}"));
+        }
+    }
+    assert!(breaks.is_empty(), "the prompt cache would break:\n{}", breaks.join("\n"));
+
+    // 2. The message kept for each complete reply is the one the model wrote: reasoning, text and
+    //    the arguments with their keys in the order it wrote them.
+    for i in 1..replies.len() {
+        let (prev, made) = (&replies[i - 1].0, &replies[i - 1].1);
+        let Some(made) = made else { continue };
+        let next = &replies[i].0;
+        let kept = next.messages.get(prev.messages.len()).unwrap_or_else(|| panic!("request {i} is shorter than the one before plus its reply"));
+        if kept.role != marlowe_model::Role::Assistant {
+            continue;
+        }
+        assert_eq!(
+            serde_json::to_string(kept).unwrap(),
+            serde_json::to_string(made).unwrap(),
+            "request {i} does not carry the reply to request {} as the model wrote it",
+            i - 1
+        );
+    }
+
+    // 3. The interrupted reply is in the history, reasoning and half answer both.
+    let last = &replies.last().unwrap().0;
+    let partial = last
+        .messages
+        .iter()
+        .find(|m| m.thinking().is_some_and(|t| t.text.starts_with("A long line of reasoning")))
+        .expect("the interrupted reply is in the history");
+    assert_eq!(partial.joined_text(), "Half an answ");
+
+    // 4. The tool list never changed, and the late tool was announced on a newest message.
+    let tools = |r: &ChatRequest| r.tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+    let first_tools = tools(&replies[0].0);
+    for (i, (req, _)) in replies.iter().enumerate() {
+        assert_eq!(tools(req), first_tools, "request {i} lists other tools");
+    }
+    assert!(!first_tools.contains(&"mcp__late__ping".to_string()));
+    assert!(last.messages.iter().any(|m| m.joined_text().contains("mcp__late__ping")), "the model was told about the late tool");
+    let told = last.messages.iter().filter(|m| m.joined_text().contains("These tools became available")).count();
+    assert_eq!(told, 1, "told once, not again after the restart");
+
+    // 5. The loop's own watch saw no break outside a compaction.
+    let id = session.to_string();
+    let seen: Vec<String> = marlowe_model::prefix::violations().into_iter().filter(|v| v.contains(&id)).collect();
+    assert!(seen.is_empty(), "the watch recorded:\n{}", seen.join("\n"));
 }

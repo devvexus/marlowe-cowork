@@ -114,9 +114,80 @@ pub fn diverges(prev: &Fingerprint, next: &Fingerprint) -> Option<String> {
     None
 }
 
+/// A hash of what identifies a conversation: its system prompt and its first message.
+pub fn conversation_key(req: &ChatRequest) -> u64 {
+    let mut h = DefaultHasher::new();
+    req.system_text().hash(&mut h);
+    if let Some(m) = req.messages.first() {
+        serde_json::to_string(m).unwrap_or_default().hash(&mut h);
+    }
+    h.finish()
+}
+
+fn render_breaks() -> &'static Mutex<HashMap<(String, u64), Vec<String>>> {
+    static BREAKS: OnceLock<Mutex<HashMap<(String, u64), Vec<String>>>> = OnceLock::new();
+    BREAKS.get_or_init(Default::default)
+}
+
+/// The engine's own chat template rendered a request that does not start with the previous
+/// prompt plus the model's reply (the provider found it: it renders both through llama-server's
+/// `/apply-template`). `detail` names the first differing byte and the message.
+pub fn report_render_break(model: &str, key: u64, detail: String) {
+    let mut map = render_breaks().lock().unwrap_or_else(|p| p.into_inner());
+    if map.len() > 256 {
+        map.clear();
+    }
+    map.entry((model.to_string(), key)).or_default().push(detail);
+}
+
+/// Starts a render break the model's own chat template caused: the request carried the earlier
+/// reasoning and the template printed less of it than before (Qwen's prints only the newest
+/// turn's reasoning, with no switch to keep more). Not Marlowe's to fix and not a violation: it
+/// costs a re-read of the turn that just ended, once per user message.
+pub const TEMPLATE_DROP: &str = "template-drop: ";
+
+/// The render breaks reported for this conversation since the last call.
+pub fn take_render_breaks(model: &str, key: u64) -> Vec<String> {
+    render_breaks().lock().unwrap_or_else(|p| p.into_inner()).remove(&(model.to_string(), key)).unwrap_or_default()
+}
+
+fn violations_log() -> &'static Mutex<Vec<String>> {
+    static V: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    V.get_or_init(Default::default)
+}
+
+/// A prefix break outside compaction is a bug: it is kept here (as well as logged) so a test can
+/// fail on it. Bounded; the oldest are dropped.
+pub fn record_violation(line: String) {
+    let mut v = violations_log().lock().unwrap_or_else(|p| p.into_inner());
+    if v.len() >= 256 {
+        v.remove(0);
+    }
+    v.push(line);
+}
+
+/// Every violation recorded in this process, oldest first.
+pub fn violations() -> Vec<String> {
+    violations_log().lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
+
+/// Forgets the recorded violations (a test starts clean).
+pub fn clear_violations() {
+    violations_log().lock().unwrap_or_else(|p| p.into_inner()).clear();
+}
+
+/// Panics, naming each one, when a violation was recorded: the end of a test that must not break
+/// the cache.
+pub fn assert_no_violations() {
+    let v = violations();
+    assert!(v.is_empty(), "the prompt cache was broken {} time(s) outside compaction:\n{}", v.len(), v.join("\n"));
+}
+
 /// What the watch remembers per session and model.
 struct Seen {
     print: Fingerprint,
+    /// What the conversation began with ([`anchor`]); another start is another conversation.
+    anchor: u64,
     /// [`slot_seq`] once the request had been made.
     slot: u64,
 }
@@ -140,6 +211,9 @@ fn slot_seq(model: &str) -> u64 {
     slots().lock().unwrap_or_else(|p| p.into_inner()).get(model).copied().unwrap_or(0)
 }
 
+/// The cause given when the prompt extends the last one but another request used the slot.
+const SLOT_ONLY: &str = "the prompt itself extends the last one";
+
 /// A break in a session's prefix, as the daemon log words it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Broken {
@@ -149,6 +223,11 @@ pub struct Broken {
 }
 
 impl Broken {
+    /// True when the request itself no longer starts with the last one (not merely a slot shared).
+    pub fn diverged(&self) -> bool {
+        self.cause != SLOT_ONLY
+    }
+
     pub fn line(&self, session: &str, model: &str) -> String {
         let slot = if self.others > 0 {
             format!("; {} other request(s) used the {model} slot since (one slot per model: its cache was replaced)", self.others)
@@ -159,13 +238,28 @@ impl Broken {
     }
 }
 
+/// The words the conversation began with: the last text of its first user message (a tail or note
+/// rides ahead of it, a compaction summary replaces it). Crew steps share one session id and each
+/// begins with its own prompt, so a request that starts elsewhere is not compared with the last.
+fn anchor(req: &ChatRequest) -> u64 {
+    let first = req.messages.iter().find(|m| m.role == Role::User);
+    let text = first
+        .and_then(|m| m.content.iter().rev().find_map(|p| if let Part::Text { text } = p { Some(text.as_str()) } else { None }))
+        .unwrap_or("");
+    hash_of(text)
+}
+
 /// Before a request: compares it with the session's last one on the same model. `compacted` says
 /// history was rewritten on purpose since (compaction logs itself). Returns the break, if any; the
 /// request becomes the one to extend either way. Call [`made`] once the request has returned.
 pub fn check(session: &str, req: &ChatRequest, compacted: bool) -> Option<Broken> {
     let print = Fingerprint::of(req);
+    let anchor = anchor(req);
     let mut map = seen().lock().unwrap_or_else(|p| p.into_inner());
     let key = (session.to_string(), req.model.clone());
+    if map.get(&key).is_some_and(|prev| prev.anchor != anchor) {
+        map.remove(&key);
+    }
     let found = map.get(&key).and_then(|prev| {
         let cause = diverges(&prev.print, &print)?;
         let others = slot_seq(&req.model).saturating_sub(prev.slot);
@@ -175,12 +269,12 @@ pub fn check(session: &str, req: &ChatRequest, compacted: bool) -> Option<Broken
     let found = found.or_else(|| {
         let prev = map.get(&key)?;
         let others = slot_seq(&req.model).saturating_sub(prev.slot);
-        (others > 0 && !compacted).then_some(Broken { cause: "the prompt itself extends the last one".into(), others })
+        (others > 0 && !compacted).then_some(Broken { cause: SLOT_ONLY.into(), others })
     });
     if map.len() > 256 {
         map.clear();
     }
-    map.insert(key, Seen { print, slot: slot_seq(&req.model) });
+    map.insert(key, Seen { print, anchor, slot: slot_seq(&req.model) });
     found
 }
 

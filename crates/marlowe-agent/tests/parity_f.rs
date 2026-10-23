@@ -1275,7 +1275,9 @@ fn parity_b3_loop_guards_cut_repetition_note_repeated_failures_and_nudge_promise
     let r = p.requests();
     assert!(last_user(&r[1]).contains("started repeating itself"), "the model is told");
     let kept = r[1].messages.iter().rev().find(|m| m.role == Role::Assistant).unwrap().joined_text();
-    assert_eq!(kept.matches("I will read the config file now.").count(), 1, "one copy kept: {kept}");
+    // The history keeps what the model generated up to the cut (a local model's cache holds those
+    // bytes); the loop guard only tells the model it repeated itself.
+    assert_eq!(kept.matches("I will read the config file now.").count(), 3, "everything generated before the cut is kept: {kept}");
     let res = tool_results(&r[4]);
     assert!(!res[1].contains("same failure") && res[2].contains("same failure 3 calls in a row"), "{res:?}");
     assert!(messages_text(&r[4]).contains("same tool calls with the same arguments 3 steps in a row"));

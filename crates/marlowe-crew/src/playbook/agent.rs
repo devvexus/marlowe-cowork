@@ -574,9 +574,8 @@ impl CallRecorder {
 impl TurnObserver for CallRecorder {
     fn on_model_call(&self, convo: &Conversation, call: &ModelCall<'_>) {
         let c = call.completion;
-        // The loop keeps an answer only when it has text or tool calls.
-        let kept = !c.text.is_empty() || !c.tool_calls.is_empty();
-        self.write(convo, kept.then(|| c.to_message()));
+        // The loop keeps whatever the model produced (reasoning alone included).
+        self.write(convo, c.kept_message());
     }
 
     fn on_tools_done(&self, convo: &Conversation, _info: StepInfo, _calls: &[ToolCall], results: &[ToolResult]) {

@@ -13,6 +13,8 @@ pub mod eligible;
 pub mod engine;
 pub mod hw;
 pub mod launch;
+pub mod persist;
+pub mod render;
 pub mod server;
 
 #[cfg(test)]

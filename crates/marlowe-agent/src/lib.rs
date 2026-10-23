@@ -36,6 +36,7 @@ pub mod teams;
 pub mod tasklist;
 pub mod tasks;
 pub mod todo;
+pub mod toolset;
 pub mod tools;
 pub mod web_digest;
 pub mod workflow_prompts;

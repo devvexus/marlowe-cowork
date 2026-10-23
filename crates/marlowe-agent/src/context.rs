@@ -23,8 +23,29 @@ use marlowe_model::{
 use crate::convo::Conversation;
 use crate::system::{PromptSections, SystemPrompt};
 
-/// Fraction of the effective window at which history is compacted.
-pub const COMPACTION_TRIGGER: f32 = 0.70;
+/// Fraction of the effective window at which history is compacted. Compaction (masking old tool
+/// results, then a summary) is the one thing allowed to rewrite what a local model has read, so
+/// it waits until the window is nearly full; the estimate it is judged on is corrected by the
+/// last real prompt size ([`TokenScale`]) so it does not fire early on a rough guess.
+pub const COMPACTION_TRIGGER: f32 = 0.90;
+
+/// Real prompt tokens per estimated token, learned from the last call that reported its prompt
+/// size (the estimate is about three characters per token; code and JSON run higher, prose lower).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TokenScale(pub f32);
+
+impl TokenScale {
+    /// The scale from one call: `real` prompt tokens against the `estimated` ones sent.
+    pub fn learned(real: u64, estimated: u32) -> Option<Self> {
+        (real > 0 && estimated > 0).then(|| Self((real as f32 / estimated as f32).clamp(0.4, 2.5)))
+    }
+}
+
+/// `estimated` tokens corrected by what the conversation has learned of its own size.
+pub fn scaled_tokens(estimated: u32, convo: &Conversation) -> u32 {
+    let scale = convo.ext.get::<TokenScale>().map_or(1.0, |s| s.0);
+    (estimated as f32 * scale).round() as u32
+}
 
 /// Tool results that keep their full body through a masking chunk; older ones are masked.
 pub const KEEP_TOOL_RESULTS: usize = 8;
@@ -216,6 +237,34 @@ pub struct TurnNotes(pub Vec<(usize, String)>);
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TurnQuery(pub usize);
 
+/// The history was rewritten on purpose outside the loop (a rewind): the next request may differ
+/// from the last, as after a compaction. The loop clears it when it sends that request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rewritten;
+
+/// The stable system blocks a conversation sends, frozen when it begins (and again after a
+/// compaction, a `/model` switch or a deliberate reload of the instructions). The persona's
+/// capability blocks and the user block come from the live host and profile; read again after a
+/// restart they could differ from what the model's cache holds, so a conversation keeps its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrozenSystem {
+    pub blocks: Vec<SystemBlock>,
+    /// The compaction summary the blocks were frozen under.
+    pub for_summary: Option<String>,
+}
+
+/// Freezes `system`'s stable blocks on `convo` unless it already holds a current set (`refresh`
+/// replaces it). A fork inherits its parent's blocks and freezes nothing.
+pub fn freeze_system(convo: &mut Conversation, system: &SystemPrompt, refresh: bool) {
+    if convo.ext.get::<crate::fork::ForkPrefix>().is_some() {
+        return;
+    }
+    let current = convo.ext.get::<FrozenSystem>().is_some_and(|f| f.for_summary == convo.summary);
+    if refresh || !current {
+        convo.ext.insert(FrozenSystem { blocks: system.render_stable(), for_summary: convo.summary.clone() });
+    }
+}
+
 /// The per-turn tail text: retrieved memory blocks and the environment.
 pub fn tail_text(system: &SystemPrompt, memory: &[String]) -> String {
     let mut parts: Vec<String> = memory.iter().filter(|m| !m.trim().is_empty()).map(|m| m.trim().to_string()).collect();
@@ -281,7 +330,10 @@ pub fn assemble_with(
     let inherited = convo.ext.get::<crate::fork::ForkPrefix>();
     let mut blocks = match inherited {
         Some(p) => p.system.clone(),
-        None => system.render_stable(),
+        None => match convo.ext.get::<FrozenSystem>().filter(|f| f.for_summary == convo.summary) {
+            Some(f) => f.blocks.clone(),
+            None => system.render_stable(),
+        },
     };
     if inherited.is_none() && !profile.trim().is_empty() {
         blocks.push(SystemBlock { text: profile.trim().to_string(), cache: true });
@@ -432,40 +484,67 @@ pub fn compact_observed(
     let dropped: Vec<&Message> =
         convo.messages.iter().enumerate().filter(|(i, _)| !keep.contains(i)).map(|(_, m)| m).collect();
 
-    // Leave room for the instructions and the reply; about three characters per token.
-    let budget_chars = (cfg.effective_window() as usize * 3 * 6 / 10).max(4_000);
-    let mut prompt = String::new();
-    if let Some(s) = convo.summary.as_deref() {
-        prompt.push_str("<earlier_summary>\n");
-        prompt.push_str(s.trim());
-        prompt.push_str("\n</earlier_summary>\n\n");
-    }
-    if let Some(live) = keep.first().map(|&i| &convo.messages[i]).filter(|m| m.role == Role::User).map(|m| m.joined_text()).filter(|t| !t.trim().is_empty()) {
-        prompt.push_str("<current_request>\n");
-        prompt.push_str(&live.trim().chars().take(CURRENT_REQUEST_CHARS).collect::<String>());
-        prompt.push_str("\n</current_request>\n\n");
-    }
-    prompt.push_str("<transcript>\n");
-    prompt.push_str(&transcript(&dropped, budget_chars));
-    prompt.push_str("\n</transcript>\n\n");
-    prompt.push_str(SUMMARY_PROMPT);
-    if let Some(f) = focus.map(str::trim).filter(|f| !f.is_empty()) {
-        prompt.push_str(&format!("\n\nThe user asked this summary to focus on: {f}"));
-    }
-
-    let mut req = ChatRequest::new(model, vec![Message::user(prompt)]);
-    req.effort = Effort::Off;
+    // The summary call is its own request and must always fit: it gets 60% of the window at most,
+    // by the real tokens-per-estimate this conversation has measured (dense code and JSON run
+    // well over three characters a token), and halves its transcript and tries again when the
+    // server still says the prompt does not fit.
+    let scale = convo.ext.get::<TokenScale>().map_or(1.0, |s| s.0).max(1.0);
+    let mut budget_chars = (((cfg.effective_window() as f32 * 3.0 * 0.6) / scale) as usize).max(4_000);
     let cap = cfg.reserve_output.clamp(256, 4_096);
-    req.max_output_tokens = Some(cap);
-    req.system =
-        vec![SystemBlock { text: "You condense conversations into faithful working notes.".to_string(), cache: false }];
-    let mut chars = 0usize;
-    let completion = provider.stream(&req, cancel, &mut |ev| {
-        if let StreamEvent::TextDelta(t) = ev {
-            chars += t.chars().count();
-            on_progress(((chars + 2) / 3).min(cap as usize) as u32, cap);
+    let mut attempt = 0;
+    let completion = loop {
+        let mut prompt = String::new();
+        if let Some(s) = convo.summary.as_deref() {
+            prompt.push_str("<earlier_summary>
+");
+            prompt.push_str(s.trim());
+            prompt.push_str("
+</earlier_summary>
+
+");
         }
-    })?;
+        if let Some(live) = keep.first().map(|&i| &convo.messages[i]).filter(|m| m.role == Role::User).map(|m| m.joined_text()).filter(|t| !t.trim().is_empty()) {
+            prompt.push_str("<current_request>
+");
+            prompt.push_str(&live.trim().chars().take(CURRENT_REQUEST_CHARS).collect::<String>());
+            prompt.push_str("
+</current_request>
+
+");
+        }
+        prompt.push_str("<transcript>
+");
+        prompt.push_str(&transcript(&dropped, budget_chars));
+        prompt.push_str("
+</transcript>
+
+");
+        prompt.push_str(SUMMARY_PROMPT);
+        if let Some(f) = focus.map(str::trim).filter(|f| !f.is_empty()) {
+            prompt.push_str(&format!("
+
+The user asked this summary to focus on: {f}"));
+        }
+
+        let mut req = ChatRequest::new(model, vec![Message::user(prompt)]);
+        req.effort = Effort::Off;
+        req.max_output_tokens = Some(cap);
+        req.system =
+            vec![SystemBlock { text: "You condense conversations into faithful working notes.".to_string(), cache: false }];
+        let mut chars = 0usize;
+        match provider.stream(&req, cancel, &mut |ev| {
+            if let StreamEvent::TextDelta(t) = ev {
+                chars += t.chars().count();
+                on_progress(((chars + 2) / 3).min(cap as usize) as u32, cap);
+            }
+        }) {
+            Err(e) if is_overflow(&e) && attempt < 3 && budget_chars > 1_000 => {
+                attempt += 1;
+                budget_chars /= 2;
+            }
+            other => break other?,
+        }
+    };
     if cancel.is_cancelled() {
         return Err(ProviderError::cancelled());
     }
@@ -497,6 +576,11 @@ pub fn compact_observed(
         t.0 = live.map(|s| vec![(0, s)]).unwrap_or_default();
     }
     Ok((before, history_tokens(convo)))
+}
+
+/// The error a provider returns when the prompt does not fit the model's window.
+fn is_overflow(e: &ProviderError) -> bool {
+    e.kind == marlowe_model::ProviderErrorKind::BadRequest && e.detail.starts_with("context_overflow")
 }
 
 /// Renders messages as a plain transcript, keeping the most recent `max_chars`.

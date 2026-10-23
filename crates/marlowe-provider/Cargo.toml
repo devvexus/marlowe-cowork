@@ -9,6 +9,7 @@ license.workspace = true
 marlowe-model.workspace = true
 marlowe-hw.workspace = true
 marlowe-os.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 

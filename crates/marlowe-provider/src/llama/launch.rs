@@ -21,6 +21,8 @@ pub struct Spec {
     pub kv: String,
     /// `-b` / `-ub`: Ollama's own default is 512 for the cards it sees as small.
     pub ubatch: u32,
+    /// Where the server may write and read slot caches (`--slot-save-path`).
+    pub slot_save: Option<PathBuf>,
 }
 
 impl Spec {
@@ -33,7 +35,7 @@ impl Spec {
 /// The argument list, in Ollama's order.
 pub fn args(spec: &Spec) -> Vec<String> {
     let s = |v: &str| v.to_string();
-    vec![
+    let mut a = vec![
         s("--model"),
         spec.blob.display().to_string(),
         s("--port"),
@@ -68,7 +70,13 @@ pub fn args(spec: &Spec) -> Vec<String> {
         s("off"),
         s("-ngl"),
         s("99"),
-    ]
+    ];
+    if let Some(dir) = &spec.slot_save {
+        // A conversation's cache survives a stop of the server (see `persist`).
+        a.push(s("--slot-save-path"));
+        a.push(dir.display().to_string());
+    }
+    a
 }
 
 /// The launch as values: binary, argv, the backend DLL and the directories its imports need.
@@ -109,7 +117,7 @@ mod tests {
     use super::*;
 
     fn spec() -> Spec {
-        Spec { blob: PathBuf::from("C:/m/blob"), port: 18080, slots: 6, ctx_per_slot: 49_152, kv: "q8_0".into(), ubatch: 512 }
+        Spec { blob: PathBuf::from("C:/m/blob"), port: 18080, slots: 6, ctx_per_slot: 49_152, kv: "q8_0".into(), ubatch: 512, slot_save: None }
     }
 
     fn after<'a>(a: &'a [String], flag: &str) -> &'a str {
@@ -136,6 +144,14 @@ mod tests {
         assert_eq!(after(&a, "--host"), "127.0.0.1");
         // None of the flags Ollama adds only for the models it renders itself.
         assert!(!a.iter().any(|x| x == "--no-jinja" || x == "--chat-template" || x.starts_with("--spec")));
+    }
+
+    #[test]
+    fn the_slot_cache_directory_is_passed_when_there_is_one() {
+        let mut s = spec();
+        assert!(!args(&s).iter().any(|x| x == "--slot-save-path"));
+        s.slot_save = Some(PathBuf::from("C:/m/slots"));
+        assert_eq!(after(&args(&s), "--slot-save-path"), "C:/m/slots");
     }
 
     #[test]

@@ -84,6 +84,12 @@ pub fn chat_body(planned: &Value, sampling: Option<&Sampling>, slot: u32) -> Val
     if let Some(level) = think.and_then(Value::as_str).filter(|l| !l.is_empty()) {
         kwargs.insert("reasoning_effort".into(), json!(level));
     }
+    // What the model has thought stays in the prompt it reads next: the template's own switches
+    // for that (`preserve_thinking`, `clear_thinking`) are set, and a template without one ignores
+    // them. Without this a template that prints only the newest turn's reasoning rewrites every
+    // earlier assistant message when a user message arrives, and the model re-reads the history.
+    kwargs.insert("preserve_thinking".into(), json!(true));
+    kwargs.insert("clear_thinking".into(), json!(false));
     body.insert("chat_template_kwargs".into(), Value::Object(kwargs));
     if let Some(f) = planned.get("format").filter(|f| !f.is_null()) {
         let format = if f == "json" {
@@ -333,6 +339,9 @@ mod tests {
         assert_eq!((b["temperature"].as_f64(), b["top_k"].as_i64(), b["top_p"].as_f64()), (Some(1.0), Some(20), Some(0.95)));
         assert_eq!(b["repeat_penalty"].as_f64(), Some(1.0));
         assert_eq!(b["chat_template_kwargs"]["enable_thinking"], true);
+        // Earlier reasoning stays in the prompt wherever the template has a switch for it.
+        assert_eq!(b["chat_template_kwargs"]["preserve_thinking"], true);
+        assert_eq!(b["chat_template_kwargs"]["clear_thinking"], false);
         assert_eq!(b["tools"][0]["function"]["name"], "read");
         // Without a `.params` layer the defaults are Ollama's.
         let d = chat_body(&planned, None, 0);
@@ -355,7 +364,7 @@ mod tests {
         let planned = json!({"messages": [
             {"role": "user", "content": "go"},
             {"role": "assistant", "content": "", "thinking": "I should read it",
-             "tool_calls": [{"id": "call_1", "function": {"name": "read", "arguments": {"path": "a.rs"}}}]},
+             "tool_calls": [{"id": "call_1", "function": {"name": "read", "arguments": {"path": "a.rs", "offset": 2, "limit": 3}}}]},
             {"role": "tool", "content": "fn main() {}", "tool_call_id": "call_1", "tool_name": "read"},
         ], "options": {}});
         let b = chat_body(&planned, None, 0);
@@ -363,7 +372,7 @@ mod tests {
         assert_eq!(m[1]["reasoning_content"], "I should read it");
         let call = &m[1]["tool_calls"][0];
         assert_eq!((call["id"].as_str(), call["type"].as_str(), call["index"].as_u64()), (Some("call_1"), Some("function"), Some(0)));
-        assert_eq!(call["function"]["arguments"], "{\"path\":\"a.rs\"}");
+        assert_eq!(call["function"]["arguments"], "{\"path\":\"a.rs\",\"offset\":2,\"limit\":3}", "keys in the order the model wrote them");
         assert_eq!((m[2]["tool_call_id"].as_str(), m[2]["name"].as_str()), (Some("call_1"), Some("read")));
     }
 

@@ -77,6 +77,10 @@ impl ModelSource for LlamaModels {
         self.ollama.unload(model_id)
     }
 
+    fn runs_on_own_server(&self, model_id: &str) -> bool {
+        self.engine.serves(model_id)
+    }
+
     fn engine_eligibility(&self, model_id: &str) -> Result<(), String> {
         match facts_in(&self.store, model_id)?.why_not() {
             None => Ok(()),

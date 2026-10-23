@@ -22,7 +22,7 @@ use marlowe_mind::Mind;
 use marlowe_proto::SessionId;
 
 use crate::now_ms;
-use crate::store::{CallMeta, CallResultRow, RowIn, Store, NOTE, SECTIONS, TAIL};
+use crate::store::{CallMeta, CallResultRow, RowIn, Store, NOTE, SECTIONS, SYSTEM, TAIL, TOOLS};
 
 /// What a tool call that was running when the daemon stopped reports on resume.
 pub(crate) const STOPPED_MID_CALL: &str =
@@ -47,6 +47,8 @@ struct Inner {
     error: Option<String>,
     /// The tail and note of this turn already saved, and the sections last saved.
     saved_tail: Option<String>,
+    saved_tools: Option<String>,
+    saved_system: Option<String>,
     saved_note: Option<String>,
     saved_sections: Option<String>,
     /// `convo.messages.len()` when the turn began.
@@ -76,6 +78,8 @@ impl SessionRecorder {
             provisional: None,
             error: None,
             saved_tail: None,
+            saved_tools: None,
+            saved_system: None,
             saved_note: None,
             saved_sections: None,
             turn_start: stored_len,
@@ -173,6 +177,20 @@ impl SessionRecorder {
             put(g, turn, NOTE, &t, offset);
             g.saved_note = Some(t);
         }
+        let tools = convo
+            .ext
+            .get::<marlowe_agent::toolset::FrozenTools>()
+            .and_then(|f| serde_json::to_string(&serde_json::json!({"specs": f.specs, "told": f.told})).ok());
+        let system =
+            convo.ext.get::<marlowe_agent::context::FrozenSystem>().and_then(|f| serde_json::to_string(&f.blocks).ok());
+        if let Some(t) = system.filter(|t| g.saved_system.as_ref() != Some(t)) {
+            put(g, 0, SYSTEM, &t, 0);
+            g.saved_system = Some(t);
+        }
+        if let Some(t) = tools.filter(|t| g.saved_tools.as_ref() != Some(t)) {
+            put(g, 0, TOOLS, &t, 0);
+            g.saved_tools = Some(t);
+        }
         if let Some(t) = sections.filter(|t| g.saved_sections.as_ref() != Some(t)) {
             put(g, 0, SECTIONS, &t, 0);
             g.saved_sections = Some(t);
@@ -229,6 +247,11 @@ impl SessionRecorder {
 }
 
 impl TurnObserver for SessionRecorder {
+    fn on_request(&self, convo: &Conversation, _req: &marlowe_model::ChatRequest) {
+        let mut g = self.lock();
+        self.save_context(&mut g, convo);
+    }
+
     fn on_model_call(&self, convo: &Conversation, call: &ModelCall<'_>) {
         let mut g = self.lock();
         let c = call.completion;
@@ -238,15 +261,15 @@ impl TurnObserver for SessionRecorder {
             usage: c.usage,
             latency_ms: call.latency_ms,
         };
-        // The loop keeps an answer only when it has text or tool calls; one with neither has no
-        // row to carry its usage, but it was billed all the same.
-        let kept = !c.text.is_empty() || !c.tool_calls.is_empty();
-        if !kept && meta.usage != Usage::default() {
+        // The loop keeps whatever the model produced (reasoning alone included); an empty answer
+        // has no row to carry its usage, but it was billed all the same.
+        let message = c.kept_message();
+        if message.is_none() && meta.usage != Usage::default() {
             if let Err(e) = self.store.put_spend(&self.session, g.turn, Some(call.info.step), meta.clone(), now_ms()) {
                 g.error = Some(format!("usage not saved: {e}"));
             }
         }
-        let extra = kept.then(|| (c.to_message(), Some(meta), Some(call.info.step)));
+        let extra = message.map(|m| (m, Some(meta), Some(call.info.step)));
         self.save_context(&mut g, convo);
         self.write(&mut g, convo, extra);
     }

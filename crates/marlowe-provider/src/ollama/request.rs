@@ -599,4 +599,31 @@ mod tests {
         let i = plan_request(&pic, &vision_opts(&store)).unwrap().prompt_tokens;
         assert!(i >= base + 1_000, "an image costs about {} tokens: {base} -> {i}", image::estimate_tokens(1000, 1000));
     }
+
+    #[test]
+    fn what_the_model_wrote_goes_back_untouched_arguments_in_order_reasoning_whitespace_and_all() {
+        let args = json!({"path": "a.rs", "edits": [{"old_string": "x", "new_string": "y", "replace_all": false}], "limit": 3});
+        let req = ChatRequest::new(
+            "m",
+            vec![
+                Message::user("go"),
+                Message {
+                    role: Role::Assistant,
+                    content: vec![
+                        Part::Thinking(Thinking { text: "first I think.\n".into(), signature: None, details: None }),
+                        Part::Text { text: "  Reading.\n".into() },
+                        Part::ToolCall(ToolCall { id: "c1".into(), name: "multi_edit".into(), args: args.clone() }),
+                    ],
+                },
+                Message::tool_results([ToolResult::text("c1", "ok  \n\n", false)]),
+                Message::user("again"),
+            ],
+        );
+        let body = request_body(&req, 32_768, None);
+        let m = body["messages"].as_array().unwrap();
+        assert_eq!(m[1]["thinking"], "first I think.\n", "reasoning stays on every assistant message, even after a new user message");
+        assert_eq!(m[1]["content"], "  Reading.\n");
+        assert_eq!(m[1]["tool_calls"][0]["function"]["arguments"].to_string(), args.to_string(), "keys and nested keys in the order written");
+        assert_eq!(m[2]["content"], "ok  \n\n", "a tool result is not trimmed");
+    }
 }

@@ -161,6 +161,11 @@ pub trait TurnObserver: Send + Sync {
     /// conversation.
     fn on_notification(&self, _session: &SessionId, _note: &Notification) {}
 
+    /// Just before each model call, with the request about to be sent. Whatever the request
+    /// carries beyond the stored messages (the turn's tail, the frozen tool list) is saved here,
+    /// so a session loaded again sends the same bytes even if this call never completes.
+    fn on_request(&self, _convo: &Conversation, _req: &marlowe_model::ChatRequest) {}
+
     /// After each model call that returned a completion, with call ids assigned (a call that
     /// failed or was cut off by an interrupt before completing is not reported).
     fn on_model_call(&self, _convo: &Conversation, _call: &ModelCall<'_>) {}

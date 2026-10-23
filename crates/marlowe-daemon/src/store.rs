@@ -187,6 +187,10 @@ pub(crate) struct Dropped {
 pub(crate) const TAIL: &str = "tail";
 pub(crate) const NOTE: &str = "note";
 pub(crate) const SECTIONS: &str = "sections";
+/// The tool list the session sends, frozen when the conversation began (session-wide, like the sections).
+pub(crate) const TOOLS: &str = "tools";
+/// The stable system blocks the session sends, frozen when the conversation began.
+pub(crate) const SYSTEM: &str = "system";
 
 /// What [`Store::context`] returns: `(position of the turn's user message, kind, text)` and the
 /// prompt sections as JSON.
@@ -194,6 +198,8 @@ pub(crate) const SECTIONS: &str = "sections";
 pub(crate) struct SavedContext {
     pub turns: Vec<(usize, String, String)>,
     pub sections: Option<String>,
+    pub tools: Option<String>,
+    pub system: Option<String>,
 }
 
 enum Cmd {
@@ -617,7 +623,7 @@ fn drop_from(conn: &mut Connection, session: &SessionId, turn: u32, at: i64) -> 
     }
     tx.execute("DELETE FROM call_results WHERE session = ?1", [session.as_str()])?;
     tx.execute("DELETE FROM turn_timings WHERE session = ?1 AND turn >= ?2", params![session.as_str(), turn])?;
-    tx.execute("DELETE FROM turn_context WHERE session = ?1 AND kind != ?3 AND turn >= ?2", params![session.as_str(), turn, SECTIONS])?;
+    tx.execute("DELETE FROM turn_context WHERE session = ?1 AND kind != ?3 AND kind != ?4 AND kind != ?5 AND turn >= ?2", params![session.as_str(), turn, SECTIONS, TOOLS, SYSTEM])?;
     tx.execute(
         "UPDATE sessions SET next_turn = MIN(next_turn, ?2), updated = ?3 WHERE id = ?1",
         params![session.as_str(), turn, at],
@@ -679,8 +685,8 @@ fn fork(conn: &mut Connection, from: &SessionId, to: SessionSummary, before_turn
     .map_err(|e| e.to_string())?;
     tx.execute(
         "INSERT INTO turn_context (session, turn, kind, text, at_offset)
-         SELECT ?1, turn, kind, text, at_offset FROM turn_context WHERE session = ?2 AND (kind = ?4 OR turn < ?3)",
-        params![to.id.as_str(), from.as_str(), next_turn, SECTIONS],
+         SELECT ?1, turn, kind, text, at_offset FROM turn_context WHERE session = ?2 AND (kind = ?4 OR kind = ?5 OR kind = ?6 OR turn < ?3)",
+        params![to.id.as_str(), from.as_str(), next_turn, SECTIONS, TOOLS, SYSTEM],
     )
     .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -702,6 +708,20 @@ pub(crate) fn restore_context(store: &Store, convo: &mut marlowe_agent::Conversa
     if let Some(s) = saved.sections.and_then(|j| serde_json::from_str(&j).ok()) {
         convo.ext.insert(marlowe_agent::system::RestoredSections(s));
     }
+    if let Some(blocks) = saved.system.and_then(|j| serde_json::from_str::<Vec<marlowe_model::SystemBlock>>(&j).ok()) {
+        convo.ext.insert(marlowe_agent::context::FrozenSystem { blocks, for_summary: convo.summary.clone() });
+    }
+    // The frozen tool list and which late tools the model was told about (said once, not again after a restart).
+    if let Some(v) = saved.tools.and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok()) {
+        let specs = v.get("specs").cloned().and_then(|s| serde_json::from_value::<Vec<marlowe_model::ToolSpec>>(s).ok());
+        let told: std::collections::BTreeSet<String> =
+            v.get("told").cloned().and_then(|t| serde_json::from_value(t).ok()).unwrap_or_default();
+        if let Some(specs) = specs {
+            let mut frozen = marlowe_agent::toolset::FrozenTools::new(specs, convo.summary.clone());
+            frozen.told = told;
+            convo.ext.insert(frozen);
+        }
+    }
 }
 
 /// A session's saved per-turn text, each placed at its turn's user message (counted among the rows
@@ -713,14 +733,20 @@ fn saved_context(conn: &Connection, id: &SessionId) -> rusqlite::Result<SavedCon
                    AND t2.idx < (SELECT MIN(t.idx) FROM turns t WHERE t.session = c.session AND COALESCE(t.turn, 0) = c.turn)) + c.at_offset,
                 c.kind, c.text
          FROM turn_context c
-         WHERE c.session = ?1 AND c.kind != ?2
+         WHERE c.session = ?1 AND c.kind != ?2 AND c.kind != ?3 AND c.kind != ?4
            AND EXISTS (SELECT 1 FROM turns t WHERE t.session = c.session AND COALESCE(t.turn, 0) = c.turn)
          ORDER BY c.turn, c.kind DESC",
     )?;
-    let rows = st.query_map(params![id.as_str(), SECTIONS], |r| Ok((r.get::<_, i64>(0)? as usize, r.get(1)?, r.get(2)?)))?;
+    let rows = st.query_map(params![id.as_str(), SECTIONS, TOOLS, SYSTEM], |r| Ok((r.get::<_, i64>(0)? as usize, r.get(1)?, r.get(2)?)))?;
     out.turns = rows.collect::<Result<_, _>>()?;
     out.sections = conn
         .query_row("SELECT text FROM turn_context WHERE session = ?1 AND kind = ?2", params![id.as_str(), SECTIONS], |r| r.get(0))
+        .optional()?;
+    out.tools = conn
+        .query_row("SELECT text FROM turn_context WHERE session = ?1 AND kind = ?2", params![id.as_str(), TOOLS], |r| r.get(0))
+        .optional()?;
+    out.system = conn
+        .query_row("SELECT text FROM turn_context WHERE session = ?1 AND kind = ?2", params![id.as_str(), SYSTEM], |r| r.get(0))
         .optional()?;
     Ok(out)
 }
@@ -1028,24 +1054,27 @@ mod tests {
         store.put_context(&id, 1, TAIL, "tail1", 1).unwrap();
         store.put_context(&id, 1, NOTE, "note1", 1).unwrap();
         store.put_context(&id, 0, SECTIONS, "{\"s\":1}", 0).unwrap();
+        store.put_context(&id, 0, TOOLS, "[]", 0).unwrap();
+        store.put_context(&id, 0, SYSTEM, "[]", 0).unwrap();
         let saved = store.context(&id).unwrap();
         assert_eq!(
             saved.turns,
             vec![(0, TAIL.to_string(), "tail0".to_string()), (3, TAIL.to_string(), "tail1".to_string()), (3, NOTE.to_string(), "note1".to_string())]
         );
         assert_eq!(saved.sections.as_deref(), Some("{\"s\":1}"));
+        assert_eq!((saved.tools.as_deref(), saved.system.as_deref()), (Some("[]"), Some("[]")), "the frozen tool list and system blocks are session-wide");
         store.put_context(&id, 1, TAIL, "tail1b", 1).unwrap();
         assert_eq!(store.context(&id).unwrap().turns[1].2, "tail1b", "a turn's tail is replaced, not repeated");
 
         let copy = store.fork(&id, summary(&SessionId("c2".into()), "C:/w"), Some(1)).unwrap();
         let forked = store.context(&copy.id).unwrap();
         assert_eq!(forked.turns, vec![(0, TAIL.to_string(), "tail0".to_string())], "a fork keeps the tails of the turns it keeps");
-        assert!(forked.sections.is_some());
+        assert!(forked.sections.is_some() && forked.tools.is_some() && forked.system.is_some());
 
         store.drop_from(&id, 1, 9).unwrap();
         let after = store.context(&id).unwrap();
         assert_eq!(after.turns.len(), 1, "a rewind drops the dropped turns' tails");
-        assert!(after.sections.is_some());
+        assert!(after.sections.is_some() && after.tools.is_some() && after.system.is_some());
         store.close();
         handle.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);

@@ -101,8 +101,10 @@ crossterm = "0.29"
 regex = "1"
 
 serde = { version = "1", features = ["derive"] }
-# No `preserve_order`: keys serialize sorted, which journal signatures depend on.
-serde_json = "1"
+# `preserve_order`: a tool call's arguments go back to the model in the order it wrote them (a
+# re-sorted key list changes the prompt and costs a local model its cache). Journal signatures
+# are over the stored payload string, not a re-serialisation, so they do not depend on key order.
+serde_json = { version = "1", features = ["preserve_order"] }
 blake3 = "1"
 hmac = "0.12"
 sha2 = "0.10"

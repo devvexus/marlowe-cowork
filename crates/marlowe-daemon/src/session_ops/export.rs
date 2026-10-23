@@ -59,7 +59,22 @@ fn json_text(session: &SessionSummary, rows: &[RowOut], cost: &CostReport) -> St
         "cost": cost,
         "messages": messages,
     });
-    serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".into())
+    serde_json::to_string_pretty(&sorted(doc)).unwrap_or_else(|_| "{}".into())
+}
+
+/// The export lists keys alphabetically, as it always has (the workspace's JSON keeps the order
+/// it was written in, which the model's prompt needs, not a file people diff).
+fn sorted(v: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match v {
+        Value::Object(m) => {
+            let mut entries: Vec<(String, Value)> = m.into_iter().map(|(k, v)| (k, sorted(v))).collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            Value::Object(entries.into_iter().collect())
+        }
+        Value::Array(a) => Value::Array(a.into_iter().map(sorted).collect()),
+        other => other,
+    }
 }
 
 fn markdown(session: &SessionSummary, rows: &[RowOut], cost: &CostReport) -> String {

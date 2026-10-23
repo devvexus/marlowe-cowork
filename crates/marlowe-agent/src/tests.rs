@@ -792,6 +792,9 @@ fn an_output_cap_override_reaches_the_request() {
 mod seam;
 #[path = "tests_phases.rs"]
 mod phases;
+// The prompt cache never breaks (one test per cause the live audit found).
+#[path = "tests_cache.rs"]
+mod cache;
 
 // ---------------------------------------------------------------- the forgiving layer in the loop
 
@@ -842,14 +845,15 @@ fn the_loop_runs_the_canonical_call_and_answers_a_bad_one_with_its_signature() {
     assert!(ran.contains(&("task_output".into(), json!({"id": "j1", "watch": true}))), "legacy job_watch: {ran:?}");
     assert_eq!(ran.len(), 2, "the invalid call did not run: {ran:?}");
 
-    // The transcript shows the canonical names and arguments.
+    // The history keeps the calls as the model wrote them (a local model's cache holds those
+    // bytes); only what ran is canonical.
     let called: Vec<(String, Value)> = c.messages[1]
         .content
         .iter()
         .filter_map(|p| if let Part::ToolCall(t) = p { Some((t.name.clone(), t.args.clone())) } else { None })
         .collect();
-    assert_eq!(called[0].0, "web_fetch");
-    assert_eq!(called[2], ("task_output".into(), json!({"task_id": "j1", "watch": true})));
+    assert_eq!(called[0].0, "WebFetch");
+    assert_eq!(called[2], ("job_watch".into(), json!({"task_id": "j1"})));
 
     let results = tool_results(&c.messages[2]);
     assert!(results[1].is_error && results[1].content.starts_with("web_fetch was not run: missing `url`; unknown `query`"), "{}", results[1].content);

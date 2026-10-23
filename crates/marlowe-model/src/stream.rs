@@ -140,4 +140,11 @@ impl Completion {
         content.extend(self.tool_calls.iter().cloned().map(Part::ToolCall));
         Message { role: Role::Assistant, content }
     }
+
+    /// [`to_message`](Self::to_message) when the model produced anything at all (reasoning alone
+    /// counts: a local model's cache holds it, so the next request must carry it), else `None`.
+    pub fn kept_message(&self) -> Option<Message> {
+        let m = self.to_message();
+        (!m.content.is_empty()).then_some(m)
+    }
 }

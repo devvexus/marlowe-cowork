@@ -151,6 +151,8 @@ fn serve(conn: TcpStream, handler: &Handler) {
 #[derive(Default)]
 pub struct Seen {
     pub chats: Mutex<Vec<Value>>,
+    /// `save 0 file` / `restore 0 file`, in order.
+    pub slot_calls: Mutex<Vec<String>>,
 }
 
 type Chat = dyn Fn(&Value) -> Reply + Send + Sync;
@@ -164,7 +166,11 @@ pub struct FakeSpawner {
     chat: Mutex<Arc<Chat>>,
     pub seen: Arc<Seen>,
     pub plans: Mutex<Vec<LaunchPlan>>,
+    /// How `/apply-template` renders a request (none: the server has no such route).
+    apply: Mutex<Option<Arc<Apply>>>,
 }
+
+type Apply = dyn Fn(&Value) -> Reply + Send + Sync;
 
 impl FakeSpawner {
     pub fn new() -> Arc<Self> {
@@ -175,6 +181,7 @@ impl FakeSpawner {
             chat: Mutex::new(Arc::new(|_| Reply::sse(&[json!({"choices": [{"index": 0, "finish_reason": "stop", "delta": {"content": "ok"}}], "timings": {"prompt_n": 1, "cache_n": 0, "prompt_ms": 1.0, "predicted_n": 1, "predicted_ms": 1.0}})]))),
             seen: Arc::new(Seen::default()),
             plans: Mutex::new(Vec::new()),
+            apply: Mutex::new(None),
         })
     }
 
@@ -188,6 +195,10 @@ impl FakeSpawner {
 
     pub fn die_at_start(&self, log_line: &str) {
         *self.dying.lock().unwrap() = Some(log_line.to_string());
+    }
+
+    pub fn apply_template(&self, f: impl Fn(&Value) -> Reply + Send + Sync + 'static) {
+        *self.apply.lock().unwrap() = Some(Arc::new(f));
     }
 
     pub fn answer_chat(&self, f: impl Fn(&Value) -> Reply + Send + Sync + 'static) {
@@ -241,7 +252,9 @@ impl Spawner for FakeSpawner {
             writeln!(f, "load_tensors: offloaded 33/33 layers to GPU")?;
         }
         let chat = self.chat.lock().unwrap().clone();
+        let apply = self.apply.lock().unwrap().clone();
         let seen = self.seen.clone();
+        let slot_dir = PathBuf::from(arg("--slot-save-path"));
         let handler: Arc<Handler> = Arc::new(move |method, path, body| match (method, path) {
             ("GET", "/health") => Reply::json(json!({"status": "ok"})),
             ("GET", "/props") => Reply::json(json!({"total_slots": slots})),
@@ -251,6 +264,27 @@ impl Spawner for FakeSpawner {
             ("POST", "/v1/chat/completions") => {
                 seen.chats.lock().unwrap().push(body.clone());
                 chat(body)
+            }
+            ("POST", "/apply-template") => match &apply {
+                Some(f) => f(body),
+                None => Reply::status(404, json!({"error": "not found"})),
+            },
+            ("POST", p) if p.starts_with("/slots/") => {
+                // `/slots/{id}?action=save|restore` with a file name inside `--slot-save-path`.
+                let (id, action) = p["/slots/".len()..].split_once("?action=").unwrap_or(("", ""));
+                let file = body["filename"].as_str().unwrap_or("");
+                if slot_dir.as_os_str().is_empty() {
+                    return Reply::status(501, json!({"error": "slot save is not enabled"}));
+                }
+                seen.slot_calls.lock().unwrap().push(format!("{action} {id} {file}"));
+                match action {
+                    "save" => {
+                        let _ = std::fs::write(slot_dir.join(file), b"kv");
+                        Reply::json(json!({"id_slot": id, "filename": file}))
+                    }
+                    "restore" if slot_dir.join(file).is_file() => Reply::json(json!({"id_slot": id, "filename": file})),
+                    _ => Reply::status(404, json!({"error": "no such file"})),
+                }
             }
             _ => Reply::status(404, json!({"error": "not found"})),
         });
@@ -362,4 +396,36 @@ impl Fixture {
     pub fn engine(&self) -> LlamaEngine {
         LlamaEngine::new(self.config(), self.spawner.clone())
     }
+}
+
+/// A ChatML-ish template, as llama-server's `/apply-template` would answer: an assistant
+/// turn's reasoning is printed only after the newest user message, unless `keep` is set.
+pub fn chatml(body: &Value, keep: bool) -> String {
+    let messages = body["messages"].as_array().cloned().unwrap_or_default();
+    let kept = body["chat_template_kwargs"]["preserve_thinking"] == true && keep;
+    let last_user = messages.iter().rposition(|m| m["role"] == "user").unwrap_or(0);
+    let mut out = String::new();
+    for (i, m) in messages.iter().enumerate() {
+        let role = m["role"].as_str().unwrap_or("user");
+        let text = m["content"].as_str().unwrap_or("");
+        match role {
+            "assistant" => {
+                out.push_str("<|im_start|>assistant\n");
+                if let Some(r) = m["reasoning_content"].as_str().filter(|_| kept || i > last_user) {
+                    out.push_str(&format!("<think>\n{r}\n</think>\n\n"));
+                }
+                out.push_str(text);
+                for c in m["tool_calls"].as_array().into_iter().flatten() {
+                    out.push_str(&format!("<tool_call>{}</tool_call>", c["function"]["arguments"].as_str().unwrap_or("")));
+                }
+                out.push_str("<|im_end|>\n");
+            }
+            "tool" => out.push_str(&format!("<|im_start|>user\n<tool_response>\n{text}\n</tool_response><|im_end|>\n")),
+            other => out.push_str(&format!("<|im_start|>{other}\n{text}<|im_end|>\n")),
+        }
+    }
+    if body.get("add_generation_prompt") != Some(&json!(false)) {
+        out.push_str("<|im_start|>assistant\n<think>\n");
+    }
+    out
 }

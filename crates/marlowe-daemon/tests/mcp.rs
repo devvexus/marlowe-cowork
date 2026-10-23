@@ -277,8 +277,8 @@ fn parity_t31_eighty_tools_reach_the_model_as_one_search_tool() {
         assert!(!names(0).iter().any(|n| n.starts_with("mcp__web__")), "80 tools are not listed up front: {:?}", names(0));
         assert_eq!(reqs.len(), 3);
     }
-    // The call by name worked in the same turn (the loop lists tools once per turn, so the schema
-    // joins the list from the next turn on).
+    // The call by name worked in the same turn (the host runs a call by name whether or not it is
+    // listed).
     let finished: Vec<bool> = events.iter().filter_map(|e| if let Event::ToolFinished { ok, .. } = &e.event { Some(*ok) } else { None }).collect();
     assert_eq!(finished, [true, true], "tool_search and the loaded tool both ran");
     provider.scripts.lock().unwrap().push_back(say("again"));
@@ -286,7 +286,11 @@ fn parity_t31_eighty_tools_reach_the_model_as_one_search_tool() {
     c.send(&Request::Ask { session: Some(session), text: "and again".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     approve_all(&mut c);
     let reqs = provider.requests.lock().unwrap();
-    assert!(reqs[3].tools.iter().any(|t| t.name == "mcp__web__tool_003"), "the loaded tool is listed from the next turn");
+    // The list a conversation sends is fixed until it is compacted (a local model's cache holds it):
+    // the loaded tool is announced on the newest message, schema included, and called by name.
+    assert!(!reqs[3].tools.iter().any(|t| t.name == "mcp__web__tool_003"), "the list did not change");
+    assert_eq!(reqs[3].tools.iter().map(|t| &t.name).collect::<Vec<_>>(), reqs[0].tools.iter().map(|t| &t.name).collect::<Vec<_>>());
+    assert!(reqs[3].messages.last().unwrap().joined_text().contains("mcp__web__tool_003"), "the model is told about the loaded tool");
     drop(reqs);
     stop(&info, join);
 }
