@@ -197,9 +197,11 @@ def main(args):
     for k in per_question:
         if k:
             claims.extend(k)
+    for n in range(len(claims)):
+        claims[n]["id"] = "C" + str(n + 1)
     log(str(len(claims)) + " checked claim(s) from " + str(len(args["questions"])) + " question(s)")
     phase("report")
-    return agent("Write the report on " + args["topic"] + " as your answer. Use only these checked claims, cite each sentence with its url as a markdown link, and say what they leave open:\n" + json.encode(claims), label = "writer", phase = "report", agent_type = "researcher")
+    return agent("Write the report on " + args["topic"] + " as your answer. Use only these checked claims, cite each sentence as [C1] with the claim ids, end with a References list that gives each id its url, and say what the claims leave open:\n" + json.encode(claims), label = "writer", phase = "report", agent_type = "researcher")
 ```
 
 `args["questions"]` are the sub-questions you wrote yourself: a handful, each answerable from a few sources. `agent_type = "researcher"` gives an agent only the reading, searching and writing tools; leave it off and the agent gets a shell and wanders.
