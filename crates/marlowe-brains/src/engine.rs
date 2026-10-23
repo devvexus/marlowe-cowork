@@ -133,8 +133,12 @@ impl Brains {
             return Some(p);
         }
         // No GPU measurement: one agent with the default window, which needs no promise.
+        // Kept like any other choice: asking the machine again on every request would be slow, and
+        // a shape that changes between two requests restarts the server.
         let kv = KvType::F16;
-        Some(ContextPolicy { max_ctx: self.default_window(model).ok()?, kv_type: kv, parallel: 1, source: PolicySource::Auto, updated_ms: 0 })
+        let p = ContextPolicy { max_ctx: self.default_window(model).ok()?, kv_type: kv, parallel: 1, source: PolicySource::Auto, updated_ms: 0 };
+        self.ctx.engine_auto.lock().unwrap_or_else(|e| e.into_inner()).insert(model.clone(), p);
+        Some(p)
     }
 
     /// Says on `e` which engine serves `model`: the llama.cpp engine takes over the Ollama-only

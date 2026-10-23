@@ -12,7 +12,7 @@
 //!
 //! `OLLAMA_KV_CACHE_TYPE`, `OLLAMA_NUM_PARALLEL` and `OLLAMA_FLASH_ATTENTION` are read once, when
 //! the server starts, and apply to every model. [`OllamaServerControl::apply`] sets them in the
-//! user environment and restarts the tray app. The daemon calls it only after the user approved
+//! user environment and restarts `ollama serve`. The daemon calls it only after the user approved
 //! that exact change; nothing in this crate's tests runs it.
 
 use std::path::{Path, PathBuf};
@@ -35,8 +35,6 @@ pub const PROJECTOR_MEDIA_TYPE: &str = "application/vnd.ollama.image.projector";
 /// How much of the end of `server.log` is read (it grows for the server's lifetime).
 const LOG_TAIL_BYTES: u64 = 16 << 20;
 const QUICK: Duration = Duration::from_millis(1500);
-/// The server-wide settings the planner reads and may change.
-const SERVER_VARS: [&str; 3] = ["OLLAMA_KV_CACHE_TYPE", "OLLAMA_NUM_PARALLEL", "OLLAMA_FLASH_ATTENTION"];
 
 /// `%LOCALAPPDATA%\Ollama\server.log` (Windows), `~/.ollama/logs/server.log` elsewhere.
 pub fn server_log_path() -> Option<PathBuf> {
@@ -294,7 +292,7 @@ pub fn unload_body(model: &str) -> Value {
     json!({ "model": model, "keep_alive": 0 })
 }
 
-/// Sets Ollama's user environment variables and restarts the tray app. See the module docs.
+/// Sets Ollama's user environment variables and restarts `ollama serve`. See the module docs.
 pub struct OllamaServerControl {
     endpoint: LocalEndpoint,
     /// Variables removed from every process this starts (API keys never reach Ollama).
@@ -358,35 +356,25 @@ impl ServerControl for OllamaServerControl {
                 return Err(format!("could not set {k} in your user environment (setx failed)"));
             }
         }
-        // Quit the tray app and the server (its runners go with it), then start the app again so
+        // Quit the tray app and the server (its runners go with it), then start `ollama serve` again so
         // the server reads the new environment.
         let _ = hidden("taskkill", &["/IM", "ollama app.exe", "/F"], &self.scrub);
         let _ = hidden("taskkill", &["/IM", "ollama.exe", "/F", "/T"], &self.scrub);
         std::thread::sleep(Duration::from_millis(800));
-        let app = std::env::var("LOCALAPPDATA")
-            .map(|l| PathBuf::from(l).join("Programs").join("Ollama").join("ollama app.exe"))
-            .map_err(|_| "LOCALAPPDATA is not set".to_string())?;
-        if !app.is_file() {
-            return Err(format!("set {}; start Ollama yourself (no app at {})", names(&vars), app.display()));
+        // Always `ollama serve`, hidden and detached, never the tray app. The environment is the
+        // saved one (the values just set included, which this process predates), credentials
+        // scrubbed, and the server's output goes to Marlowe's capped log.
+        use crate::ollama_start::StartIo as _;
+        let io = crate::ollama_start::SystemIo { endpoint: self.endpoint.clone(), scrub: self.scrub.clone(), log: self.own_log.clone() };
+        let Some(cli) = io.cli() else {
+            return Err(format!("set {}; start Ollama yourself (`ollama` is not installed where Marlowe looks)", names(&vars)));
+        };
+        let mut env = io.environment();
+        for (k, v) in &vars {
+            env.retain(|(name, _)| name != k);
+            env.push((k.to_string(), v.clone()));
         }
-        // The new values go in explicitly: this process's environment predates them. Credentials
-        // are scrubbed (Ollama is a child like any other), and the app is detached so it outlives
-        // Marlowe: out of any job Marlowe runs in when the job allows it.
-        let mut cmd = Command::new(&app);
-        // The settings this change leaves alone come from the saved user environment too, not
-        // from this process's copy, which may predate a change made by hand.
-        for name in SERVER_VARS {
-            if !vars.iter().any(|(k, _)| *k == name) {
-                if let Some(v) = saved_user_env(name) {
-                    cmd.env(name, v);
-                }
-            }
-        }
-        cmd.envs(vars.iter().map(|(k, v)| (*k, v.as_str())));
-        for k in &self.scrub {
-            cmd.env_remove(k);
-        }
-        spawn_detached(&mut cmd).map_err(|e| format!("starting Ollama: {e}"))?;
+        io.spawn(&cli, &["serve"], &env).map_err(|e| format!("starting Ollama: {e}"))?;
         let t = Instant::now();
         while t.elapsed() < Duration::from_secs(30) {
             if http::get_json(&self.endpoint, "/api/tags", QUICK).is_ok() {
@@ -414,32 +402,6 @@ fn hidden(program: &str, args: &[&str], scrub: &[String]) -> std::io::Result<std
         c.creation_flags(0x0800_0000);
     }
     c.output().map(|o| o.status)
-}
-
-/// Starts `cmd` with no console, in its own process group, and (when the job Marlowe runs in
-/// allows it) outside that job, so closing Marlowe never takes Ollama with it.
-fn spawn_detached(cmd: &mut Command) -> std::io::Result<std::process::Child> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-        let base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
-        cmd.creation_flags(base | CREATE_BREAKAWAY_FROM_JOB);
-        match cmd.spawn() {
-            Ok(c) => Ok(c),
-            // A job without JOB_OBJECT_LIMIT_BREAKAWAY_OK refuses the flag.
-            Err(_) => {
-                cmd.creation_flags(base);
-                cmd.spawn()
-            }
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        cmd.spawn()
-    }
 }
 
 #[cfg(test)]

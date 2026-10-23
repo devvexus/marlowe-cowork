@@ -431,7 +431,8 @@ fn parity_c8_c15_compact_and_model_switch_apply_at_the_next_step() {
     assert!(messages_text(summariser).contains("focus on: the parser"), "{}", messages_text(summariser));
     let last = reqs.last().unwrap();
     assert_eq!(last.model, "other", "the switched model answers");
-    assert!(last.system.iter().any(|b| b.text.contains("SUMMARY")));
+    assert!(messages_text(last).contains("SUMMARY"), "the summary arrives as a framed user message");
+    assert!(!last.system.iter().any(|b| b.text.contains("SUMMARY")), "and not as a system block");
     c.send(&Request::SwitchModel { session: sid.clone(), model: ModelRef::new(ProviderKind::Ollama, "missing"), effort: None });
     assert!(matches!(c.until(|e| matches!(e, Event::Error { .. })).pop().unwrap().event, Event::Error { .. }));
     c.send(&Request::AddDir { session: sid, path: home.join("nope").display().to_string() });
@@ -565,7 +566,7 @@ fn parity_c15_a_switched_model_works_against_the_gated_window() {
     let last = p.requests().pop().unwrap();
     assert_eq!(last.model, "big");
     assert!(
-        last.system.iter().any(|b| b.text.contains("SUMMARY-OF-EARLIER")),
+        messages_text(&last).contains("SUMMARY-OF-EARLIER"),
         "the turn was not compacted, so the agent sized it against the advertised 262k window"
     );
     drop(c);

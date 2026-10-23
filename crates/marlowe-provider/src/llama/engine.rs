@@ -284,22 +284,19 @@ impl LlamaEngine {
     /// Stops the server if it runs `model` (or anything, for `None`). Requests in flight fail.
     /// Returns whether a server was stopped.
     pub fn unload(&self, model: Option<&str>) -> bool {
-        let taken = {
-            let mut g = lock(&self.inner.st);
-            if g.running.as_ref().is_some_and(|r| model.is_none_or(|m| same_model(&r.model, m))) {
-                g.running.take()
-            } else {
-                None
-            }
-        };
-        self.inner.cv.notify_all();
-        match taken {
+        // Killed under the lock: a request that finds nothing running starts a load at once, and
+        // that must not overlap a server still letting go of the GPU.
+        let mut g = lock(&self.inner.st);
+        let stopped = match g.running.take_if(|r| model.is_none_or(|m| same_model(&r.model, m))) {
             Some(mut r) => {
                 r.proc.kill();
                 true
             }
             None => false,
-        }
+        };
+        drop(g);
+        self.inner.cv.notify_all();
+        stopped
     }
 
     /// Takes a slot for the request, loading (or switching) the model first when it must.
@@ -349,10 +346,9 @@ impl LlamaEngine {
                         g = self.wait(g, cancel);
                         continue;
                     }
+                    // Under the lock, so nothing starts a second server while this one is dying.
                     let mut old = g.running.take().expect("checked");
-                    drop(g);
                     old.proc.kill();
-                    g = lock(&inner.st);
                 }
                 None => {
                     if let Some((m, s, at, e)) = &g.failed {
@@ -563,15 +559,13 @@ fn idle_loop(weak: Weak<Inner>, tick: Duration) {
         let Some(keep) = inner.cfg.keep_alive else { continue };
         let expired = {
             let mut g = lock(&inner.st);
-            let idle = g.running.as_ref().is_some_and(|r| r.busy() == 0 && r.last_used.elapsed() >= keep);
-            if idle {
-                g.running.take()
-            } else {
-                None
+            let mut gone = g.running.take_if(|r| r.busy() == 0 && r.last_used.elapsed() >= keep);
+            if let Some(r) = gone.as_mut() {
+                r.proc.kill();
             }
+            gone
         };
-        if let Some(mut r) = expired {
-            r.proc.kill();
+        if let Some(r) = expired {
             if let Some(o) = inner.events.read().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(ContextAllocations::engine_observer) {
                 o.note(&format!("llama.cpp unloaded {} after {} idle", r.model, humanize(keep)));
             }

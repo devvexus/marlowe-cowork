@@ -62,9 +62,8 @@ pub fn args(spec: &Spec) -> Vec<String> {
         spec.ubatch.to_string(),
         s("-ub"),
         spec.ubatch.to_string(),
-        s("--context-shift"),
-        s("--keep"),
-        s("4"),
+        // No `--context-shift`: Ollama's launch has it, but a server that quietly slides a
+        // conversation's window rewrites its prefix. The loop compacts; an overflow is a clean error.
         s("--fit"),
         s("off"),
         s("-ngl"),
@@ -132,9 +131,8 @@ mod tests {
         assert_eq!(after(&a, "--cache-type-k"), "q8_0");
         assert_eq!(after(&a, "--cache-type-v"), "q8_0");
         assert_eq!(after(&a, "--flash-attn"), "on");
-        assert_eq!(after(&a, "--keep"), "4");
         assert_eq!((after(&a, "-ngl"), after(&a, "--fit")), ("99", "off"));
-        assert!(a.iter().any(|x| x == "--context-shift") && a.iter().any(|x| x == "--no-mmap") && a.iter().any(|x| x == "--jinja"));
+        assert!(!a.iter().any(|x| x == "--context-shift") && a.iter().any(|x| x == "--no-mmap") && a.iter().any(|x| x == "--jinja"));
         assert_eq!(after(&a, "--host"), "127.0.0.1");
         // None of the flags Ollama adds only for the models it renders itself.
         assert!(!a.iter().any(|x| x == "--no-jinja" || x == "--chat-template" || x.starts_with("--spec")));
