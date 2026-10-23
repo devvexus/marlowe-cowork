@@ -290,9 +290,10 @@ fn the_catalog_carries_each_tasks_args_and_clips_to_its_budget() {
     assert_eq!(names, ["code-review", "simplify", "web-research"]);
     assert!(entries.iter().all(|e| e.args.is_some()), "every built-in says what args it takes");
     let text = marlowe_workflow::saved::catalog_text(&entries, 100_000);
-    assert!(text.contains("- web-research:") && text.contains("args: topic (required"), "{text}");
-    let tight = marlowe_workflow::saved::catalog_text(&entries, 300);
-    assert!(tight.len() < 460 && tight.contains("more: call team with the name"), "{tight}");
+    assert!(text.contains("- web-research: cited web research report; args topic*, questions, file"), "{text}");
+    assert!(text.contains("- code-review: bug review of a diff, PR or branch; args target, level, fix"), "{text}");
+    let tight = marlowe_workflow::saved::catalog_text(&entries, 100);
+    assert!(tight.len() < 160 && tight.contains("more: /teams"), "{tight}");
     let fit = marlowe_workflow::saved::best_match(&entries, "research the latest kimi models on the web").unwrap();
     assert_eq!(fit.name, "web-research");
     assert!(marlowe_workflow::saved::best_match(&entries, "zzz qqq").is_none());

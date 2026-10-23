@@ -77,7 +77,7 @@ fn workflow_spec() -> marlowe_model::ToolSpec {
 }
 
 /// Most characters of the saved-task list in the `team` description.
-const CATALOG_CHARS: usize = 900;
+const CATALOG_CHARS: usize = 600;
 
 /// The `team` description with this host's saved team tasks (built-in, the user's, the workspace's)
 /// under it: the model runs one by name instead of writing a script. Read on first use and kept.
@@ -88,7 +88,7 @@ fn with_catalog(t: &BuiltinTools, spec: &mut marlowe_model::ToolSpec) {
         marlowe_workflow::saved::catalog_text(&roots.catalog(), CATALOG_CHARS)
     });
     if !text.is_empty() {
-        spec.description.push_str("\nSaved team tasks:\n");
+        spec.description.push_str("\nSaved tasks:\n");
         spec.description.push_str(text.trim_end());
     }
 }
@@ -279,7 +279,15 @@ fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
             return ToolOutcome::error(SEQUENTIAL_NOTE);
         }
     }
-    let args = a.get("args").cloned().unwrap_or(Value::Null);
+    let args = match a.get("args") {
+        None => Value::Null,
+        // An object sent as a JSON string (a local model's habit) is the object it holds.
+        Some(Value::String(s)) if s.trim_start().starts_with('{') => match serde_json::from_str(s) {
+            Ok(v) => v,
+            Err(e) => return ToolOutcome::error(format!("`args` must be a JSON object; the string given is not valid JSON ({e})")),
+        },
+        Some(other) => other.clone(),
+    };
     if !(args.is_null() || args.is_object()) {
         return ToolOutcome::error("`args` must be a JSON object");
     }

@@ -67,6 +67,10 @@ pub struct Meta {
     /// questions (optional list)"`, or a dict of name to description).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
+    /// A few words for the saved-task list the model reads (`"cited web research report"`); the
+    /// description is used, cut, when there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 impl Meta {
@@ -104,7 +108,7 @@ impl Meta {
             ),
             Some(_) => return Err("META[\"args\"] must be a string, or a dict of argument name to description".into()),
         };
-        Ok(Meta { name: s("name")?, description, when_to_use: s("when_to_use")?.or(s("whenToUse")?), phases, args })
+        Ok(Meta { name: s("name")?, description, when_to_use: s("when_to_use")?.or(s("whenToUse")?), phases, args, summary: s("summary")? })
     }
 }
 
@@ -190,7 +194,7 @@ pub fn static_checks(filename: &str, source: &str) -> Result<Validated, Vec<Diag
 /// it may have run past, and a hint when the failing line itself is JavaScript.
 fn parse_error(e: &starlark::Error, source: &str) -> Diagnostic {
     let mut d = from_starlark(e);
-    d.message = diagnose::explain_parse(&d.message, source);
+    d.message = diagnose::explain_parse(&d.message, source, d.line);
     let src_line = d.line.and_then(|l| source.lines().nth((l as usize).saturating_sub(1))).unwrap_or("");
     if looks_like_js(src_line) {
         d.message.push_str(

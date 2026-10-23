@@ -488,22 +488,20 @@ mod skill_tests {
     }
 
     #[test]
-    fn a_copy_from_an_earlier_build_without_a_record_is_recognised_by_its_digest() {
+    fn the_digests_of_earlier_shipped_skills_are_well_formed_and_none_is_the_current_one() {
+        let current = skill_digest(AUTHORING_SKILL);
+        for d in PREVIOUS_SKILLS {
+            assert_eq!(d.len(), 64, "{d}");
+            assert!(d.chars().all(|c| c.is_ascii_hexdigit()), "{d}");
+            assert_ne!(d, current, "the current text is not an earlier one");
+        }
+        // A copy whose digest is listed is refreshed with no record beside it: pretend the text on
+        // disk is the shipped one of a moment ago by recording it, then ship another.
         let h = home("b");
-        let dir = h.join("skills").join("team-task-authoring");
-        std::fs::create_dir_all(&dir).unwrap();
-        // The copy the preview home held (shipped by the build of 0caa917), written before any record existed.
-        let old = std::process::Command::new("git")
-            .args(["show", "0caa917:workflows/workflow-authoring.md"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .output();
-        let Ok(old) = old.map(|o| o.stdout).map(|b| String::from_utf8_lossy(&b).into_owned()).and_then(|t| if t.is_empty() { Err(std::io::Error::other("no git history")) } else { Ok(t) }) else {
-            let _ = std::fs::remove_dir_all(&h);
-            return;
-        };
-        std::fs::write(dir.join("SKILL.md"), old.replace('\n', "\r\n")).unwrap();
-        install_skill_text(&h, "the new version");
-        assert_eq!(skill(&h), "the new version");
+        install_skill_text(&h, "an earlier text");
+        let _ = std::fs::remove_file(h.join("skills").join("team-task-authoring").join(".shipped"));
+        install_skill_text(&h, "a later text");
+        assert_eq!(skill(&h), "an earlier text", "an unrecorded copy that matches no shipped version is the user's");
         let _ = std::fs::remove_dir_all(&h);
     }
 

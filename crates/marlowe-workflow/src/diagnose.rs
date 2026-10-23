@@ -122,7 +122,8 @@ pub fn unbalanced(source: &str) -> Option<Unbalanced> {
         }
         i += 1;
     }
-    stack.pop().map(|(o, at)| Unbalanced {
+    // The earliest one left open: everything after it sits inside it, so it is the one to close.
+    stack.first().copied().map(|(o, at)| Unbalanced {
         line: at,
         message: format!("the `{o}` opened on line {at} is never closed: add `{}` where its expression ends", closer(o)),
         bracket: true,
@@ -143,7 +144,7 @@ pub fn shorten_expected(msg: &str) -> String {
         return format!("{head}this line must be indented under the line above it (the block after a `:` is indented by four spaces){tail}");
     }
     if items > 8 {
-        return format!("{head}the statement cannot continue here; expected an operator, `,`, a closing bracket or the end of the line{tail}");
+        return format!("{head}the statement cannot continue here; expected an operator, `,`, a closing bracket or the end of the line (look just above for an unclosed `(` or `[`, or a missing `,`){tail}");
     }
     format!("{head}expected one of {list}{tail}")
 }
@@ -154,10 +155,11 @@ pub fn wants_indent(msg: &str) -> bool {
 }
 
 /// The parse error, completed: shortened token list, the bracket or quote mistake the parser may
-/// have run past, and a balanced example for brackets.
-pub fn explain_parse(msg: &str, source: &str) -> String {
+/// have run past, and a balanced example for brackets. A mistake that begins after the line the
+/// parser stopped on is a second problem, not the cause: it is left for the next check.
+pub fn explain_parse(msg: &str, source: &str, line: Option<u32>) -> String {
     let mut out = shorten_expected(msg.trim_end());
-    if let Some(u) = unbalanced(source) {
+    if let Some(u) = unbalanced(source).filter(|u| line.is_none_or(|l| u.line <= l)) {
         out.push_str(&format!("; {}", u.message));
         if u.bracket {
             out.push_str(&format!("\n{EXAMPLE}"));

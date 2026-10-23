@@ -229,7 +229,7 @@ fn the_team_description_carries_the_opt_in_rule_and_dispatch_is_one_specialist()
         assert!(d.contains(want), "team description lacks `{want}`: {d}");
     }
     assert!(!d.to_lowercase().contains("workflow"), "{d}");
-    let base = d.split("\nSaved team tasks").next().unwrap();
+    let base = d.split("\nSaved tasks").next().unwrap();
     assert!(base.len() < 2_400, "the description stays compact: {} chars", base.len());
     let dispatch = marlowe_agent::compact_specs::spec("dispatch").description;
     assert!(dispatch.contains("One specialist: a prompt given to one crew subagent in its own sandbox — not a team, no script"), "{dispatch}");
@@ -348,7 +348,7 @@ name = \"x\"
         let t = host(&home, &ws);
         assert!(t.middleware().iter().any(|m| m.name() == "star-validator"));
         let d = t.specs().into_iter().find(|s| s.name == "team").unwrap().description;
-        assert!(d.contains("inline (save a .star only when asked)"), "{d}");
+        assert!(d.contains("inline (a .star only when asked)"), "{d}");
     }
 }
 
@@ -552,7 +552,7 @@ fn the_description_lists_the_saved_team_tasks_with_their_args_and_stays_fixed() 
     .unwrap();
     let t = host(&home, &ws);
     let d = team_description(&t);
-    for want in ["Saved team tasks", "- web-research:", "- code-review:", "- simplify:", "- audit-deps: Check each dependency", "args: crate (limit to one crate)", "args: topic (required"] {
+    for want in ["Saved tasks:", "- web-research:", "- code-review:", "- simplify:", "- audit-deps: Check each dependency", "args crate", "- web-research: cited web research report; args topic*, questions, file"] {
         assert!(d.contains(want), "`{want}` missing: {d}");
     }
     // A task saved after the session's tool list was read does not change it.
@@ -560,7 +560,7 @@ fn the_description_lists_the_saved_team_tasks_with_their_args_and_stays_fixed() 
     assert_eq!(team_description(&t), d, "the list is read once per session");
     assert!(team_description(&host(&home, &ws)).contains("- later:"), "a new session reads it");
     // The conductor's budget: three built-ins and a project task stay small.
-    assert!(d.len() < 4_200, "{} chars", d.len());
+    assert!(d.len() < 3_000, "{} chars", d.len());
 }
 
 #[test]
@@ -637,4 +637,18 @@ fn refused_scripts_are_capped_per_turn_three_to_stop_writing_five_to_end_the_tur
     let script = "META = {\"description\": \"d\"}\ndef main(args):\n    x = agent(\"a\"\n    return x\n";
     let out = t.call_scoped(&req("team", json!({"script": script})), &next);
     assert!(out.is_error && !out.content.contains("[harness"), "{}", out.content);
+}
+
+#[test]
+fn args_sent_as_a_json_string_are_the_object_they_hold_and_a_broken_string_is_said_to_be() {
+    let (home, ws) = (temp("home14"), temp("ws14"));
+    let t = host(&home, &ws);
+    let fake = Arc::new(FakeLauncher::default());
+    let services = Services::new().with(Workflows(fake.clone()));
+    let ok = t.call_scoped(&req("team", json!({"name": "simplify", "args": r#"{"target": "diff"}"#})), &cx(&ws, services.clone()));
+    assert!(!ok.is_error, "{}", ok.content);
+    assert_eq!(fake.launched.lock().unwrap()[0].args, json!({"target": "diff"}));
+    let bad = t.call_scoped(&req("team", json!({"name": "simplify", "args": r#"{"target": "#})), &cx(&ws, services));
+    assert!(bad.is_error && bad.content.contains("not valid JSON"), "{}", bad.content);
+    assert_eq!(fake.launched.lock().unwrap().len(), 1, "nothing launched for the broken one");
 }

@@ -176,6 +176,8 @@ pub fn for_tool(name: &str) -> ArgRules {
                 ("code", "script"), ("source", "script"), ("starlark", "script"), ("script_path", "path"), ("file", "path"), ("workflow", "name"), ("team", "name"), ("team_task", "name"), ("input", "args"), ("params", "args"),
             ],
             ignore: &["role", "label", "phase", "phase_name", "description", "title"],
+            example: Some(r#"team{"name": "<a saved team task>", "args": {"<input>": "<value>"}}"#),
+            see_also: Some("A saved task's inputs go under `args`, not beside `name`."),
             ..ArgRules::NONE
         },
         "report_findings" => ArgRules {

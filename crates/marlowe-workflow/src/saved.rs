@@ -199,8 +199,8 @@ impl Roots {
                     Origin::Builtin => builtin(&s.name).map(str::to_string),
                     other => other.path().and_then(|p| std::fs::read_to_string(p).ok()),
                 };
-                let args = source.and_then(|src| meta_of(&s.name, &src).args);
-                CatalogEntry { name: s.name, description: s.description, when_to_use: s.when_to_use, args }
+                let meta = source.map(|src| meta_of(&s.name, &src)).unwrap_or_default();
+                CatalogEntry { name: s.name, description: s.description, when_to_use: s.when_to_use, args: meta.args, summary: meta.summary }
             })
             .collect()
     }
@@ -299,6 +299,8 @@ pub struct CatalogEntry {
     pub when_to_use: Option<String>,
     /// What `args` the task takes (its META `args`).
     pub args: Option<String>,
+    /// Its META `summary`: a few words for the list.
+    pub summary: Option<String>,
 }
 
 /// The names that share a word with `wanted`, or contain it or are contained in it (after [`fold`]).
@@ -360,16 +362,38 @@ pub fn best_match<'a>(entries: &'a [CatalogEntry], text: &str) -> Option<&'a Cat
         .map(|(_, e)| e)
 }
 
-/// The saved-task list for the `team` tool's description: one short line each (what it does, when
-/// to use it, what `args` it takes), within `budget` characters; the rest are counted. Built once
-/// per session, so the tool list (and the prompt cache) does not change while it runs.
+/// The argument names of a META `args` text ("topic (required: ...); questions (optional list)"):
+/// `topic*, questions`, `*` marking a required one. Free text with no names is cut instead.
+fn arg_names(args: &str) -> String {
+    let mut names = Vec::new();
+    for item in args.split(';').map(str::trim).filter(|i| !i.is_empty()) {
+        let name: String = item.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+        // `name`, `name (what it is)` or `name: what it is`; anything else is prose.
+        let rest = item[name.len()..].trim_start();
+        if name.is_empty() || !(rest.is_empty() || rest.starts_with('(') || rest.starts_with(':')) {
+            return clip(args, 50);
+        }
+        names.push(if item.contains("required") { format!("{name}*") } else { name });
+    }
+    names.join(", ")
+}
+
+/// The saved-task list for the `team` tool's description: one short line each (what it is, the
+/// `args` it takes, `*` for a required one), within `budget` characters; the rest are counted. The
+/// tool list is the most budgeted text in the prompt, so a line is a few words, not the
+/// description. Built once per session, so the tool list (and the prompt cache) does not change
+/// while it runs.
 pub fn catalog_text(entries: &[CatalogEntry], budget: usize) -> String {
     let mut out = String::new();
     let mut left = 0usize;
     for e in entries {
-        let mut line = format!("- {}: {}", e.name, clip(first_sentence(&e.description), 75));
+        let what = match e.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(s) => clip(s, 48),
+            None => clip(first_sentence(&e.description), 48),
+        };
+        let mut line = format!("- {}: {}", e.name, what);
         if let Some(a) = e.args.as_deref().filter(|a| !a.trim().is_empty()) {
-            line.push_str(&format!(" args: {}", clip(a, 100)));
+            line.push_str(&format!("; args {}", arg_names(a)));
         }
         line.push('\n');
         if out.len() + line.len() > budget {
@@ -379,7 +403,7 @@ pub fn catalog_text(entries: &[CatalogEntry], budget: usize) -> String {
         out.push_str(&line);
     }
     if left > 0 {
-        out.push_str(&format!("- ({left} more: call team with the name; /teams lists them)\n"));
+        out.push_str(&format!("- ({left} more: /teams)\n"));
     }
     out
 }

@@ -8,7 +8,8 @@ META = {
     "description": "Review the pending diff, a pull request or a branch for bugs: finders per lens, adversarial verification, optional fixes",
     "when_to_use": "The user asks to review changes, a PR or a branch for correctness bugs (/code-review).",
     "phases": ["find", "verify", "fix"],
-    "args": "target (diff, PR number or base ref); level (low..max); fix; comment; max_findings",
+    "summary": "bug review of a diff, PR or branch",
+    "args": "target (diff, PR number or base ref); level (low..max); fix",
 }
 
 LENSES = ["correctness", "security", "performance", "reuse", "tests"]
