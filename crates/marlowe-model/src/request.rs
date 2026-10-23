@@ -79,6 +79,24 @@ pub struct SystemBlock {
     pub cache: bool,
 }
 
+/// Whose conversation a request carries. An engine with several slots keeps the conductor's
+/// prompt cache on a slot of its own, so crew and side calls never evict it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Lane {
+    /// Crew agents, briefs, digests: any call that is not the user's own conversation.
+    #[default]
+    Other,
+    /// The user's conversation with the conductor.
+    Conductor,
+}
+
+impl Lane {
+    pub fn is_other(&self) -> bool {
+        *self == Lane::Other
+    }
+}
+
 /// A complete request to a provider.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatRequest {
@@ -99,6 +117,9 @@ pub struct ChatRequest {
     /// A workflow agent's finalisation call uses it (WF3); providers without it ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<Value>,
+    /// Whose conversation this is; only an engine with several slots reads it.
+    #[serde(default, skip_serializing_if = "Lane::is_other")]
+    pub lane: Lane,
 }
 
 impl ChatRequest {
@@ -113,6 +134,7 @@ impl ChatRequest {
             tools: Vec::new(),
             temperature: None,
             format: None,
+            lane: Lane::Other,
         }
     }
 

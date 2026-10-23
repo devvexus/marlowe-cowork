@@ -24,6 +24,7 @@ use marlowe_model::{
 use serde_json::{json, Value};
 
 use crate::http::{self, HttpError, LocalEndpoint, NdjsonError, NdjsonStream};
+use crate::llama::{chat as llama_chat, conversation_key, LlamaEngine, Want};
 
 pub use leak::{defang_tool_markup, recover_leaked_call};
 pub use models::{
@@ -33,7 +34,7 @@ pub use repair::{RepairSnapshot, RepairStats};
 pub use request::{
     is_context_overflow, plan_request, request_body, request_body_with, BodyOptions, Planned, CONTEXT_OVERFLOW,
 };
-pub use stream::Folder;
+pub use stream::{clip_detail, is_tool_parse_error, Folder};
 
 /// Context window sent as `num_ctx` when the model allows it. Ollama's own default is 2048.
 pub const DEFAULT_CONTEXT_TOKENS: u32 = 32_768;
@@ -56,6 +57,8 @@ pub struct OllamaProvider {
     /// Where image bytes live (`<home>\blobs`). Without one, images are sent as a text note.
     blobs: Option<Arc<dyn BlobStore>>,
     stats: Arc<RepairStats>,
+    /// Marlowe's own llama-server, for the models the planner gave it (see [`crate::llama`]).
+    llama: Option<LlamaEngine>,
 }
 
 impl Default for OllamaProvider {
@@ -74,7 +77,15 @@ impl OllamaProvider {
             meta: Mutex::new(HashMap::new()),
             blobs: None,
             stats: Arc::new(RepairStats::new()),
+            llama: None,
         }
+    }
+
+    /// Serves the models the context policy assigns to Marlowe's own llama-server through
+    /// `engine`; every other model stays on Ollama.
+    pub fn with_llama_engine(mut self, engine: LlamaEngine) -> Self {
+        self.llama = Some(engine);
+        self
     }
 
     /// The blob store `Part::Image` bytes are read from (the one `read` and paste write to).
@@ -261,6 +272,15 @@ impl Provider for OllamaProvider {
             return Err(ProviderError::cancelled());
         }
         let meta = self.meta(&req.model)?;
+        if let Some(engine) = &self.llama {
+            match self.alloc.engine_shape(&req.model) {
+                Some(shape) => return self.stream_llama(engine, shape, req, &meta, cancel, on),
+                // Ollama serves it now (the setting was turned off): never in memory twice.
+                None => {
+                    engine.unload(Some(&req.model));
+                }
+            }
+        }
         let body = self.plan(req, &meta)?.body;
         let thinking = body.get("think").is_some_and(|t| t != &Value::Bool(false));
 
@@ -304,6 +324,58 @@ impl Provider for OllamaProvider {
             return Err(ProviderError::network("Ollama closed the stream before it finished"));
         }
         Ok(folder.finish())
+    }
+}
+
+impl OllamaProvider {
+    /// One call on Marlowe's own llama-server: the window check at the slot's size, a slot for the
+    /// conversation, the request Ollama would have sent llama-server, its answer through the same
+    /// folder as Ollama's.
+    fn stream_llama(
+        &self,
+        engine: &LlamaEngine,
+        shape: marlowe_model::EngineShape,
+        req: &ChatRequest,
+        meta: &ModelMeta,
+        cancel: &CancelToken,
+        on: &mut dyn FnMut(StreamEvent),
+    ) -> Result<Completion, ProviderError> {
+        let opts = BodyOptions::new(shape.ctx_per_slot, think_value(meta.think_mode(), req.effort));
+        let planned = plan_request(req, &opts)?;
+        let thinking = planned.body.get("think").is_some_and(|t| t != &Value::Bool(false));
+        let want = Want { model: req.model.clone(), shape, lane: req.lane, key: conversation_key(req) };
+        let lease = engine.acquire(&want, cancel)?;
+        let body = llama_chat::chat_body(&planned.body, lease.sampling.as_ref(), lease.slot);
+        on(StreamEvent::Sent);
+        let reader = http::post_stream(&lease.endpoint, "/v1/chat/completions", &body, "text/event-stream", cancel, LLAMA_IDLE_TIMEOUT)
+            .map_err(|e| llama_error(e))?;
+        let mut folder = Folder::new(thinking, on).with_tools(&req.tools).with_stats(self.stats.clone());
+        llama_chat::read_stream(reader, &mut folder, cancel)?;
+        Ok(folder.finish())
+    }
+}
+
+/// Longest a llama.cpp stream may stay silent: a prefill reports progress per batch, so a long
+/// read is never this quiet.
+const LLAMA_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+fn llama_error(e: HttpError) -> ProviderError {
+    match e {
+        HttpError::Cancelled => ProviderError::cancelled(),
+        HttpError::Unreachable { detail, .. } => {
+            ProviderError::network(format!("the llama.cpp server did not answer ({detail}); the next request starts it again"))
+        }
+        HttpError::Status { status, body, .. } => match serde_json::from_str::<Value>(&body) {
+            Ok(v) if v.get("error").is_some() => {
+                let mut e = llama_chat::error_from(&v["error"]);
+                if e.kind == marlowe_model::ProviderErrorKind::Server && status < 500 {
+                    e = ProviderError::from_status(status, e.detail);
+                }
+                e
+            }
+            _ => ProviderError::from_status(status, format!("llama.cpp returned HTTP {status}: {body}")),
+        },
+        HttpError::Malformed { detail, .. } => ProviderError::server(format!("malformed response from llama.cpp: {detail}")),
     }
 }
 

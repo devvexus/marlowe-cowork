@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod http;
+pub mod llama;
 pub mod ollama;
 pub mod ollama_log;
 pub mod ollama_runtime;

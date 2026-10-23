@@ -121,6 +121,9 @@ pub struct Agent {
     /// Caps every reply of this agent (thinking included), overriding the catalog's
     /// `max_output`. A no-tool step sizes it to the room its prompt leaves in the window.
     pub max_output: Option<u32>,
+    /// Whose conversation this agent carries: the daemon marks the user's own as the conductor's,
+    /// so an engine with several slots keeps its prompt cache apart from the crew's.
+    pub lane: marlowe_model::Lane,
 }
 
 /// How one model call ended.
@@ -167,6 +170,7 @@ impl Agent {
             observers: Vec::new(),
             services: Services::default(),
             max_output: None,
+            lane: marlowe_model::Lane::Other,
         }
     }
 
@@ -435,6 +439,7 @@ impl Agent {
                 tools: specs.clone(),
                 temperature: None,
                 format: None,
+                lane: self.lane,
             };
             // A local model keeps its cache only for an exact prefix: say which section broke it.
             let local = matches!(live.model.provider, ProviderKind::Ollama | ProviderKind::LocalGguf);
@@ -654,6 +659,19 @@ fn call_model(
                     if let Some(p) = prefill.take() {
                         p.end_with(sink, |e| read_end(e, u));
                     }
+                }
+                // The engine's own count of the read so far (llama.cpp reports it per batch): the
+                // live read line shows it as it is, with nothing estimated.
+                StreamEvent::ReadProgress { total, cached, processed } => {
+                    if let Some(w) = wire.take() {
+                        w.end(sink);
+                    }
+                    if prefill.is_some() {
+                        let mut p = PhaseEvent::progress(PhaseKind::Prefill, *processed, *total).unit("tok");
+                        p.cached = Some(*cached);
+                        sink(AgentEvent::Phase(p));
+                    }
+                    return;
                 }
                 _ => {}
             }

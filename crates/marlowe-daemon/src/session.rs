@@ -591,6 +591,7 @@ fn run_one(
         system = system.append(a.clone());
     }
     let mut agent = Agent::new(provider, info, tools.clone(), system);
+    agent.lane = marlowe_model::Lane::Conductor;
     agent.effort = effort;
     // `marlowe -p`'s limits for this turn (H4).
     if let Some(n) = options.max_steps {

@@ -151,6 +151,10 @@ impl TurnClock {
                 // The engine's own account of the read replaces the usage's, which counts a
                 // cached prompt as read.
                 let p = if p.kind == PhaseKind::Prefill && p.state == PhaseState::End && p.stage.is_none() { self.measured_read(p.clone()) } else { p.clone() };
+                // An engine that reports the read itself ends the estimates: the numbers are its own.
+                if p.kind == PhaseKind::Prefill && p.state == PhaseState::Progress && p.stage.is_none() {
+                    self.first_frame();
+                }
                 self.emit(p.clone());
                 match (p.kind, p.state) {
                     (PhaseKind::Prefill, PhaseState::Start) => self.request_sent(p.total.unwrap_or(0)),

@@ -75,6 +75,11 @@ pub trait ModelSource: Send + Sync {
     fn unload(&self, _model_id: &str) -> Result<(), String> {
         Err("this engine cannot unload a model".into())
     }
+    /// Whether Marlowe's own llama-server may serve `model_id` (Ollama itself hands the model to
+    /// llama-server whole): `Ok`, or why Ollama must keep it. The default has no such engine.
+    fn engine_eligibility(&self, _model_id: &str) -> Result<(), String> {
+        Err("this build has no llama.cpp engine".into())
+    }
 }
 
 /// The GPU and system memory now.

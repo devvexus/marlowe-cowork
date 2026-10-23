@@ -117,6 +117,11 @@ impl<'a> Folder<'a> {
         }
     }
 
+    /// Passes an event on that is not part of the answer (the engine's read progress).
+    pub fn passthrough(&mut self, ev: StreamEvent) {
+        (self.on)(ev);
+    }
+
     /// True once the final (`done`) frame has been seen.
     pub fn is_done(&self) -> bool {
         self.done
@@ -164,6 +169,12 @@ impl<'a> Folder<'a> {
             // from its cache included, while `prompt_eval_duration` times only what it evaluated.
             let ms = |k: &str| frame.get(k).and_then(Value::as_u64).map(|ns| ns / 1_000_000);
             self.usage.prompt_eval = frame.get("prompt_eval_count").and_then(Value::as_u64);
+            // An engine that counts its cache (llama.cpp) splits the read: the whole prompt in
+            // `input`, the part it already held in `cached_input`.
+            if let Some(cached) = frame.get("cached_tokens").and_then(Value::as_u64) {
+                self.usage.cached_input = cached;
+                self.usage.prompt_eval = None;
+            }
             self.usage.load_ms = ms("load_duration");
             self.usage.prefill_ms = ms("prompt_eval_duration");
             self.usage.decode_ms = ms("eval_duration");

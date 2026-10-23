@@ -219,6 +219,48 @@ fn the_send_starts_an_estimated_prefill_that_the_engines_counts_end() {
     assert!(marks.iter().any(|m| m.1 == PhaseKind::Wire && m.2 == PhaseState::End && m.3.is_some()));
 }
 
+/// An engine that reports the read as it goes (llama.cpp) and then the split of the whole prompt.
+struct Reading {
+    inner: Arc<ScriptedProvider>,
+}
+
+impl Provider for Reading {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Ollama
+    }
+    fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        self.inner.list_models()
+    }
+    fn stream(&self, req: &ChatRequest, cancel: &CancelToken, on: &mut dyn FnMut(StreamEvent)) -> Result<Completion, ProviderError> {
+        on(StreamEvent::Sent);
+        on(StreamEvent::ReadProgress { total: 9_000, cached: 6_000, processed: 6_000 });
+        on(StreamEvent::ReadProgress { total: 9_000, cached: 6_000, processed: 9_000 });
+        let usage = Usage { input: 9_000, cached_input: 6_000, prefill_ms: Some(900), output: 5, ..Default::default() };
+        self.inner.stream(req, cancel, &mut |e| match e {
+            StreamEvent::Stop(s) => {
+                on(StreamEvent::Usage(usage));
+                on(StreamEvent::Stop(s));
+            }
+            other => on(other),
+        })
+    }
+}
+
+#[test]
+fn an_engine_that_reports_the_read_gives_exact_progress_and_the_cached_split() {
+    let mut a = Agent::new(Arc::new(Reading { inner: ScriptedProvider::new(vec![answer("hello")]) }), model(), TestTools::new(), SystemPrompt::with_core("core"));
+    a.memory = Arc::new(NoMemory);
+    let (_, events) = timed_run(&a, &mut convo(), "hi");
+    let p = prefill(&events);
+    assert_eq!(p.len(), 4, "start, two progress, end: {p:?}");
+    assert!(p[0].est, "the send still starts with our estimate");
+    for (seen, reached) in [(p[1], 6_000), (p[2], 9_000)] {
+        assert_eq!((seen.state, seen.done, seen.total, seen.cached, seen.est), (PhaseState::Progress, Some(reached), Some(9_000), Some(6_000), false));
+    }
+    let end = p[3];
+    assert_eq!((end.state, end.done, end.total, end.cached, end.ms, end.est), (PhaseState::End, Some(3_000), Some(9_000), Some(6_000), Some(900), false));
+}
+
 #[test]
 fn a_provider_that_cannot_say_when_it_sent_has_no_prefill_phase() {
     let a = Agent::new(ScriptedProvider::new(vec![answer("hello")]), model(), TestTools::new(), SystemPrompt::with_core("core"));

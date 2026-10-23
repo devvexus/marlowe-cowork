@@ -105,6 +105,9 @@ pub enum StreamEvent {
     ToolArgsDelta { index: u32, json: String },
     ToolCallEnd { index: u32 },
     Usage(Usage),
+    /// The engine's own count of the prompt read so far, while it reads (llama.cpp reports it per
+    /// batch). `processed` includes the `cached` tokens, so the new tokens read are the difference.
+    ReadProgress { total: u64, cached: u64, processed: u64 },
     Stop(StopReason),
 }
 

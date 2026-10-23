@@ -16,14 +16,14 @@ mod provider;
 mod request;
 mod stream;
 
-pub use alloc::ContextAllocations;
+pub use alloc::{ContextAllocations, EngineAdvisor, EngineObserver, EngineShape};
 pub use cancel::{CancelHook, CancelToken};
 pub use error::{ProviderError, ProviderErrorKind};
 pub use fold::{fold_events, CompletionBuilder};
 pub use info::{ModelInfo, ModelRef, ModelRefError, Pricing, ProviderKind};
 pub use message::{ImageRef, Message, Part, ResultPart, Role, Thinking, ToolCall, ToolResult};
 pub use provider::Provider;
-pub use request::{ChatRequest, Effort, SystemBlock, ToolSpec};
+pub use request::{ChatRequest, Effort, Lane, SystemBlock, ToolSpec};
 pub use stream::{Completion, StopReason, StreamEvent, Usage};
 
 #[cfg(test)]
