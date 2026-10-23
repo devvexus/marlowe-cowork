@@ -1,6 +1,6 @@
 # Projects: design
 
-Status: **Stage A built** (the core crate `marlowe-project`, section 10); stages B to D are design. Supersedes [deep-research-teams-design.md](deep-research-teams-design.md) as the plan of record; that file stays as the source of the research invariants and the v2 stage map. Tags: (m) measured, (e) estimate, (u) unmeasured.
+Status: **Stages A and B built** (the core crate `marlowe-project` and its phase engine, `marlowe_project::engine`; section 10); stages C and D are design. Supersedes [deep-research-teams-design.md](deep-research-teams-design.md) as the plan of record; that file stays as the source of the research invariants and the v2 stage map. Tags: (m) measured, (e) estimate, (u) unmeasured.
 
 ## 0. Summary
 
@@ -366,74 +366,77 @@ Edges: `{ "after": "analyze", "edge": "stream" }` (default) or `"barrier"`; a ba
 
 ### 4.2 Declaring a phase (menu entries)
 
+*Built (stage B).* The menu is `crates/marlowe-project/registry/phases/*.json`, one file per phase type (`plan`, `data_collection`, `data_validation`, `thinking`, `checkin`, `report`, `finish`), loaded into `Registry::menu()`. `spec::validate_menu` checks the whole menu in a test: step ids are unique across the menu (so the two gates are `plan_card` and `checkin_card`, not two `card`s), every `after` and `watch` names a step declared earlier, there is no cycle, every form is registered, an employee step has a role and a form, a thinking step has a `think_budget`, a merge watches a fan-out that is upstream of it, a gate names its card. A step has these keys:
+
+| Key | Meaning |
+|---|---|
+| `id`, `kind` | the step's name, and `fanout`, `code`, `merge` or `gate` |
+| `over` | the item kind it runs over; `project` or nothing means one task for the whole project |
+| `scope` | for a step with no upstream step: every item of the kind (`all`, default) or only this round's (`round`: a continuation's new questions) |
+| `after` | upstream steps: a name, or `{step, edge: stream\|barrier, per: "sub"}` |
+| `form`, `role`, `prompt`, `class`, `effort`, `think_budget`, `max_output`, `attempts` | the employee: its form, role card, prompt builder (defaults to the role), `employee` or `lead` model, `off` or `think`, the reasoning bound, the answer bound, tries |
+| `emit` | the kind of item the step makes. A fan-out with `emit` makes one item per input (id derived from step and input, filled with the form's data, shown `running` while the employee works); without it the data fills the input item |
+| `fn` | a code step's function; for a fan-out or merge, its *finish* function (the form's rules and the code-filled fields) |
+| `lane`, `concurrency` | a code step's lane (`cpu` default, `io`, `fetch`, `search`) and a cap on its tasks at once; a fan-out or merge is always on the `model` lane |
+| `watch`, `thresholds`, `min_new`, `group_by` | a merge: the fan-out that sets the pace, the shares it fires at, the fewest new items worth a non-final pass, the group (`sub`: per question) |
+| `gate`, `payload_fn`, `answer_fn` | a gate: its kind, the function that builds the card, the one that acts on the answer |
+| `important` | more than `failure_share` of this step's items failing raises a `failures` checkin |
+
+DataCollection and DataValidation as shipped (the files are the source of truth):
+
 ```json
-{ "phase":"DataCollection", "output":null, "steps":[
-  { "id":"vectors", "kind":"fanout", "over":"question", "form":"attack_vectors@1", "role":"attack-vectors", "class":"employee", "effort":"off", "max_output":900 },
-  { "id":"fetch",   "kind":"code",   "fn":"search_and_fetch", "after":[{"step":"vectors","edge":"stream"}], "lane":"fetch", "emit":"page" },
-  { "id":"analyze", "kind":"fanout", "over":"page", "after":[{"step":"fetch","edge":"stream"}], "form":"analyze@1", "role":"analyst", "class":"employee", "effort":"off", "max_output":1800, "attempts":3, "emit":"source" } ] }
+{ "phase":"DataCollection", "steps":[
+  { "id":"vectors", "kind":"fanout", "over":"question", "scope":"round", "form":"attack_vectors@1", "role":"attack-vectors", "effort":"off", "max_output":900, "emit":"vector" },
+  { "id":"fetch",   "kind":"code", "fn":"search_and_fetch", "over":"vector", "after":[{"step":"vectors","edge":"stream"}], "lane":"fetch", "emit":"page" },
+  { "id":"analyze", "kind":"fanout", "over":"page", "after":[{"step":"fetch","edge":"stream"}], "form":"analyze@1", "role":"analyst", "effort":"off", "max_output":1800, "attempts":3, "emit":"source", "fn":"analyze_finish", "important":true } ] }
 
 { "phase":"DataValidation", "output":"validated@1", "steps":[
-  { "id":"extract",  "kind":"code",   "fn":"extract_claims",  "over":"source", "after":[{"step":"analyze","edge":"stream"}], "lane":"cpu", "emit":"claim" },
-  { "id":"condense", "kind":"merge",  "watch":"analyze", "thresholds":[0.25,0.5,0.75,1.0], "form":"condense@1", "role":"condenser", "class":"employee", "effort":"off", "group_by":"sub", "emit":"cclaim" },
-  { "id":"verify",   "kind":"fanout", "over":"cclaim", "after":[{"step":"condense","edge":"stream"}], "form":"verify@1", "role":"verifier", "class":"employee", "effort":"think", "think_budget":600, "max_output":1200 },
-  { "id":"collect",  "kind":"code",   "fn":"validated_output", "after":[{"step":"verify","edge":"barrier"}], "lane":"cpu" } ] }
-
-{ "phase":"Thinking", "steps":[
-  { "id":"decide", "kind":"fanout", "over":"project", "form":"lead_decision@1", "role":"lead", "class":"lead", "effort":"think", "think_budget":1500 },
-  { "id":"route",  "kind":"code", "fn":"route_after_thinking" } ] }
-
-{ "phase":"Checkin", "steps":[ { "id":"card", "kind":"gate", "gate":"checkin", "payload_fn":"checkin_card" } ] }
-{ "phase":"Plan", "steps":[
-  { "id":"expand", "kind":"code", "fn":"plan_expand", "lane":"cpu" },
-  { "id":"card",   "kind":"gate", "gate":"plan", "payload_fn":"plan_card" } ] }
-
-{ "phase":"Report", "output":"report@1", "steps":[
-  { "id":"sections", "kind":"fanout", "over":"question", "form":"section@1", "role":"writer", "class":"employee", "effort":"off", "max_output":1600 },
-  { "id":"answer",   "kind":"fanout", "over":"project", "after":[{"step":"sections","edge":"barrier"}], "form":"answer@1", "role":"writer", "class":"employee", "effort":"off", "max_output":1100 },
-  { "id":"cite",     "kind":"code", "fn":"cited_batches", "after":[{"step":"answer","edge":"barrier"}], "lane":"cpu", "emit":"sentence_batch" },
-  { "id":"audit",    "kind":"fanout", "over":"sentence_batch", "after":[{"step":"cite","edge":"stream"}], "form":"audit@1", "role":"verifier", "class":"employee", "effort":"off", "max_output":700 },
-  { "id":"assemble", "kind":"code", "fn":"assemble_report", "after":[{"step":"audit","edge":"barrier"}], "lane":"cpu" } ] }
-
-{ "phase":"Finish", "steps":[
-  { "id":"deliver",  "kind":"code", "fn":"deliver",  "lane":"io" },
-  { "id":"archive",  "kind":"code", "fn":"archive",  "after":[{"step":"deliver","edge":"barrier"}], "lane":"io" },
-  { "id":"dispose",  "kind":"code", "fn":"dispose",  "after":[{"step":"archive","edge":"barrier"}], "lane":"io" },
-  { "id":"remember", "kind":"code", "fn":"remember", "after":[{"step":"dispose","edge":"barrier"}], "lane":"cpu" } ] }
+  { "id":"extract",  "kind":"code", "fn":"extract_claims", "over":"source", "after":[{"step":"analyze","edge":"stream"}], "lane":"cpu", "emit":"claim" },
+  { "id":"condense", "kind":"merge", "over":"claim", "after":[{"step":"extract","edge":"stream"}], "watch":"analyze", "thresholds":[0.25,0.5,0.75,1.0], "group_by":"sub",
+                      "form":"condense@1", "role":"condenser", "max_output":1500, "emit":"cclaim", "fn":"condense_apply" },
+  { "id":"verify",   "kind":"fanout", "over":"cclaim", "after":[{"step":"condense","edge":"stream"}], "form":"verify@1", "role":"verifier",
+                      "effort":"think", "think_budget":600, "max_output":1200, "fn":"verify_finish", "important":true },
+  { "id":"collect",  "kind":"code", "fn":"validated_output", "after":[{"step":"verify","edge":"barrier"}], "lane":"cpu" } ] }
 ```
 
-The Plan phase has the same shape as every other: a continuation plan is another Plan phase instance (`round` 2) whose `plan_expand` inherits the last plan. **Dynamic phase list.** `route_after_thinking` and the Checkin answer append phase instances to `phases[]` (`Report` then `Finish`; or `Plan` round N+1 followed by DataCollection, DataValidation and Thinking again); phase ids carry the round (`ph_dc_2`). Nothing else mutates the list.
+Plan is `expand` then `plan_card` (a gate); Thinking is `decide` (a lead fan-out over the project, making a `decision` item) then `route`; Checkin is the gate `checkin_card`; Report is `sections`, `answer`, `cite`, `audit`, `assemble`; Finish is `deliver`, `archive`, `dispose`, `remember`. Differences from the first sketch: `vectors` makes `vector` items (so `fetch` runs per vector), `condense` names the item kind it merges (`over: claim`) and where its input comes from (`after: extract`) as well as the step that sets its pace (`watch: analyze`), and the gates carry an `answer_fn`.
 
-`class` picks a model through project settings (`employee`, `lead`), resolved with `named_model`; both default to the conductor's model, so by default no second model is loaded; a separate `employee` model is an opt-in setting (decision 6). `route_after_thinking` is a code step that writes the next phase list: `Report` (then `Finish`) or `Checkin` (then, on keep_researching, a new round of DataCollection built by the continuation plan).
+**Dynamic phase list.** A continuation and a checkin add phase instances with `Effect::InsertPhase` (`Mutation::InsertPhase`: it goes in ahead of the Report that waits, so the order stays the order of running). Ids carry the round (`ph_dc_2`). The Plan gate of a continuation round is answered by the engine (`approve`, journaled) because the user has just chosen to continue. `class` picks a model through the engine config (`employee_model`, `lead_model`, both default to the conductor's model); stage D resolves them from settings with `named_model`.
 
 ### 4.3 Pipelining and the scheduler
 
-- One scheduler per project over a priority queue of ready tasks `(step, item)`. A task is ready when its input item is `done` along its edges.
-- **Priority is drain-first**: later phases and later steps run before earlier ones, so started work finishes; ties go round-robin across questions so one question cannot starve another.
-- **Lanes.** `model` (employees, at most `crew_slots`, section 4.4), `fetch` (8 wide), `search` (4 wide), `cpu` (2). Fetch and search hold no model slot, so Analyze starts the moment a page lands and a full model lane never blocks a fetch (head-of-line avoided by scanning the queue for the first runnable task per lane).
-- **No global barriers** except gates and the explicit ones above. Extract runs per finished Analyze; Condense fires on thresholds while Analyze is still running; Verify starts on a condensed claim as soon as its pass returns (a claim merged later gets re-verified only if its member set changed).
+*Built.* `Engine::run` (`engine/core.rs`) is **level-triggered**: every round it reads a small index of the state (built on the state actor's thread, nothing cloned), works out which items are ready for which step, queues the tasks it has not queued, replays those the journal holds, and launches the best queued task of each lane with room. Because a round starts from the state and the journal and not from remembered events, a fresh start, a resume after a crash and the run after a user's answer are one code path.
+
+- **Phases overlap where the data does.** A pending phase becomes active when everything before it is done, or earlier when every unfinished phase before it is one it streams from and that is running (DataValidation extracts the moment the first source is analysed; Thinking, with no cross-phase `after`, waits for DataValidation to finish). A step is *closed* when its upstream steps are closed and none of its tasks is queued or running; a phase is done when its steps are closed. A step may close only on a fresh index (a replay in the same round could have put the very items it waits for).
+- **Ready.** A task over an item is ready when the item is `done` and was made by an `after` step in the same round (or, with no `after`, matches `scope`); a `barrier` edge also needs the upstream step closed, or with `per: sub` only that question's group (no queued or running task of the upstream steps for it). A task over the project needs all its `after` steps closed.
+- **Priority is drain-first**: later phase, then later step, then the question least recently served, then the oldest. Ties go round-robin across questions (test: six pages land at once on one slot, the questions take turns). The best *runnable* task is chosen, so a full model lane never blocks a fetch (head-of-line).
+- **Lanes.** `model:<model>` per model (width: `ModelGate::width`, the crew's slots), `fetch` 8, `search` 4, `cpu` 2, `io` 2 (`EngineConfig::lanes`). Fetch holds no model slot. Each task runs on a worker thread; the loop only reads, queues and launches.
+- **Delta merge.** A merge pass per group (question) fires when the *watched* step's finished share reaches the next threshold and the group has at least `min_new` unconsumed items; the final pass fires when everything upstream of the merge is idle for the group and takes what is left. The share is finished / (the step's tasks so far + tasks still queued or running upstream of it), an estimate (a page not yet fetched will become one more analysis). One pass per crossed threshold, never one per finished employee; one pass in flight per group; a pass's input is only the claims no earlier pass took, plus the items earlier passes made (`TaskInput.existing`, offered compactly by the prompt builder). A pass the employee could not make still reaches its finish function with `None`, which may build a degraded result (singletons), so no claim is lost.
+- **A project that cannot advance** (a misdeclared menu, a gate nothing answers) ends `Failed` with the waiting phases and open steps named, instead of spinning.
 
 ### 4.4 Slots and the conductor
 
-- The project runs on its own thread (a third branch beside workflow and playbook in `runner.rs::execute`) owned by the supervisor. `project{create}` returns before any employee exists.
-- Employees take a slot per call from the existing shared pool (`Hooks::local_slot`, limit `ContextGate::crew_slots` = planner slots minus the conductor's one) and release it after the call. The conductor never takes a slot from itself and never waits on an employee.
-- `before_call` and `after_call` run unchanged: the commit-memory check (`room_for_a_call`) and the "waiting for the GPU" hold while the GPU is busy.
-- Parked runs (plan, checkin) hold no thread and no slot.
+*Built.* The engine runs on its own thread (`Engine::spawn` returns at once; test: the call returns in under 200 ms with the model not yet called). Employees take a slot per call through `ModelGate`: `enter(model, cancel)` blocks (honouring cancel) and returns a `Permit` that frees the slot on `finish(usage)` or drop. `SlotPool` is a self-contained pool (tests, headless runs); `marlowe_crew::project_gate::ProjectGate` is the crew's: it calls the run's `StepHooks::before_call` and `after_call`, so a project's calls share the one pool across every run (`crew_slots`, the conductor's slot left alone), the commit-memory check, the "waiting for the GPU" hold and the run's budget. The conductor never takes a slot from itself and never waits on an employee. A gate that refuses (out of memory) fails the employee with its own words; the model is not called. Parked runs hold no thread and no slot (test: the thread has ended and the pool is empty). *Not yet:* the third branch in `runner.rs::execute` and `Run.project` that start an engine from a crew run (stage D, with the `project` tool).
 
 ### 4.5 One writer for the state
 
-All changes to project state are `Mutation` messages (set a path, push an item, patch live fields) sent over a crossbeam channel to one state actor. It applies them in order, bumps `rev`, emits patches, and writes `project.json` atomically (temp file and rename) at most every 250 ms and at every phase boundary. Workers never touch the file.
+All changes to project state are `Mutation` messages sent over a crossbeam channel to one state actor. It applies them in order, bumps `rev`, emits patches, and writes `project.json` atomically (temp file and rename) at most every 250 ms and at every phase boundary. Workers never touch the file. Stage B adds `ProjectHandle::read(f)`: `f` runs on the actor's thread against the current state (nothing cloned) and a panic in it is an error, not the end of the writer.
 
 ### 4.6 Journal and resume
 
-Every task has a key `p:<phase>:<step>:<item>:<blake3(input)[..12]>`. Results are appended, one JSON line per finished task, to `phases/<phase>/<step>.jsonl` (the result, the attempts, tokens, finish reason). On resume the engine replays the journal into the state, skips every key it finds, and re-runs only what has no line (a task that was running when the process died). A `merge` task's key hashes its member ids, and its journal line records the membership it used; replay uses the recorded batch, so a different threshold timing on resume cannot re-run a finished pass. Replay never re-asks a model and never refetches a page: fetched page text is content-addressed in `sources/`. Per-attempt model usage is also written to `crew_run_steps` so the crew watch counts tokens.
+*Built.* Every task has a key `p:<phase>:<step>:<item>:<hash12>` (`record::task_key`: the hash covers the item id, which derives from content, the step's form and function, and the phase's round; a merge pass hashes its member ids, `merge_key`; an answered gate has `answer_key`). When a task finishes, the coordinator appends one `Record` line to `phases/<phase>/<step>.jsonl` (`_gates/answers.jsonl` for gates the engine raised itself) **before** the result touches the state. A record holds everything the task changed: the items as they end, the agent, the effects, the phase output, the taint, tokens, and for a merge the members and the threshold. On start the engine loads every journal; an input whose key has a line is *replayed* (the record applied again: every part is idempotent) and never asked or fetched again; only a task with no line runs. A merge's recorded membership is replayed as it was, so a different threshold timing cannot re-run a finished pass. Replay of effects is idempotent by construction (`InsertPhase` skips an existing phase, `NetGrant` only raises the quota, `RaiseBudget` is absolute). On start, items and agents left `running` by a dead process are set back to `queued` and `failed`. Per-attempt usage reaches the crew watch through the permit's `finish(usage)` (the run's spend); `crew_run_steps` rows are stage D.
 
 ### 4.7 Cancellation, budgets, failure
 
-- **Cancel.** A cancel token is checked between tasks and passed to the provider stream and the fetcher. In-flight items become `cancelled`, the state is saved, the project is `cancelled` and can be reopened from a stage.
-- **Budgets.** The plan carries `max_sources`, `max_fetches`, a token budget and a minutes budget (the quote on the plan card is an estimate, e). Reaching a budget raises a `budget` Checkin: continue (raises the budget by the plan's quote), report with what exists, or cancel. Budget overrun needs approval (non-negotiable 5), so this is that approval.
-- **Employee failure.** `attempts` default 3 (section 5.5). After the last, the item is `failed` with a harness-written reason, the run continues, coverage records it. A phase that finishes with more than 25% of an important step's items failed raises a `failures` Checkin instead of moving on silently.
-- **Fetch failure** is data: an unreadable page is an item with a status and a reason, counted, never refetched.
-- **Restart.** A restart changes nothing: parked runs stay parked, running ones resume from the journal (boot recovery rebuilds open gates from `project.json`).
+*Built.*
+- **Cancel.** `Control::cancel` fires the token the providers and gate waits watch; the loop waits for the workers (they return at once), marks every `queued` or `running` item `cancelled`, running agents `failed`, unfinished phases `skipped`, the project `cancelled`, and saves. A cancelled project is terminal until reopened.
+- **Budgets.** `EngineConfig::budget` (`tokens`, `minutes`; the plan card's quote in stage D). Before a model task launches the engine checks tokens used (journaled usage, persisted in `metrics`) and active minutes (`metrics.active_ms`, parked time excluded) against the cap times `1 + budget_raises`. Over the cap, nothing new launches, what is in flight finishes, and the project parks on a `budget` checkin: Continue (adds one quote, `RaiseBudget{to}`), Report with what exists, Cancel.
+- **Forced checkin.** `Control::request_checkin` stops launching, lets in-flight employees finish (none is killed), then parks on a `user_forced` checkin: Approve (jump to the Report), Keep researching (go on as it was; the tasks that were queued are re-derived), Steer (the text is kept on the plan as data), Cancel. A checkin at Thinking (`lead_decision`) starts a continuation round instead.
+- **Jump to report** (`Effect::JumpToReport`): every unfinished phase before the next Report (else Finish) is `skipped`.
+- **Employee failure.** After `attempts` the item is `failed` with a harness-written reason (section 5.5), the run goes on. When a phase's steps are all closed and more than `failure_share` (25%) of an `important` step's tasks failed, the project parks on a `failures` checkin (Continue, Report, Cancel), once per phase (the gate records the phase).
+- **A function that panics** fails its task (`step ... stopped unexpectedly`); it never leaves the engine waiting.
+- **Fetch failure** is data: the fetch function returns a page item with a status; an `Err` fails the task and is counted.
+- **Restart.** A restart changes nothing: a parked project parks on the same card with no call, a project that was running resumes from the journal.
 
 ### 4.8 Stable ids and determinism
 
@@ -454,11 +457,24 @@ Claim, source, and item ids come from content (identity key, quote offsets, form
 | Approvals | Merge, push, deletes outside the workspace, new hosts beyond the grant, budget overrun still ask. Employees have no tools, and Finish writes only inside the Marlowe home. |
 | Keys | No credentials in any employee environment; none are needed. |
 
+### 4.10 The toolbox: what a phase declaration points at
+
+*Built (`engine/functions.rs`, `engine/builtin.rs`).* A phase names functions; the `Toolbox` holds them. `Toolbox::missing_for(menu)` lists every code function, gate card and finish function the project's phases name that is not registered, and the engine ends `Failed` with that list rather than start. Prompt builders are optional (a step without one gets `default_prompt`: role, objective, today's date, the item fenced as data), so a new phase type runs before anyone tunes its wording.
+
+| Kind | Registered under | Does |
+|---|---|---|
+| prompt | the step's `prompt`, else `role` | system blocks (role card and plan context, shared by siblings so the cache holds) and the one user message (the item, last, fenced) |
+| finish | the step's `fn` on a fan-out or merge | the form's rules and the code-filled fields: model output in, `Finished{data, label, emits, effects, output, rejected, tainted}` out, or a `RuleFailure` the model is told (design 5.5) |
+| code | the step's `fn` on a code step | `Fn(&TaskInput, &CancelToken) -> Result<Finished, String>`; `Err` is a harness-written reason |
+| payload, answer | a gate's `payload_fn`, `answer_fn` | the card from the state; the `Effect`s of an answer |
+
+`Effect` is the only way a function changes the project beyond its own items: `InsertPhase`, `SetPlan`, `PlanRecord`, `NetGrant`, `PhaseStatus`, `JumpToReport`, `RaiseBudget`. Effects are serialised into the journal record, so they replay. Generic functions ship in `Toolbox::new()`: `plan_expand` (makes the question items a continuation plan adds), `plan_card` (with the network grant in plain words), `plan_answer` (approve records the decision and installs the run-scoped grant, quota = fetches used + the plan's `max_fetches`), `checkin_card`, `checkin_answer` (by reason), `archive`; `builtin::continuation_effects` builds a round (next plan, plan record, the round's phases inserted before the waiting Report). Research-specific functions (`search_and_fetch`, `analyze_finish`, `extract_claims`, `condense_apply`, `verify_finish`, `validated_output`, `route_after_thinking`, `cited_batches`, `assemble_report`, `deliver`, `dispose`, `remember`) are stage C; the stage B tests register fakes under those names. The form `rules` strings (`claim_in_one_group`, ...) name checks a finish function runs.
+
 ## 5. Constrained output
 
 ### 5.1 What the code does today
 
-`ChatRequest.format: Option<Value>` carries a JSON Schema. Ollama: `provider/src/ollama/request.rs` sends `body["format"] = schema`. llama engine: `provider/src/llama/chat.rs` sends `response_format = {"type":"json_schema","json_schema":{"name":"schema","schema":...}}` and `chat_template_kwargs.enable_thinking` from `Effort`. No agent-loop request sets `format` (`marlowe-agent` hardcodes `None`); only the workflow finalisation call does. Projects need a request builder of their own.
+`ChatRequest.format: Option<Value>` carries a JSON Schema. Ollama: `provider/src/ollama/request.rs` sends `body["format"] = schema`. llama engine: `provider/src/llama/chat.rs` sends `response_format = {"type":"json_schema","json_schema":{"name":"schema","schema":...}}` and `chat_template_kwargs.enable_thinking` from `Effort`. No agent-loop request sets `format` (`marlowe-agent` hardcodes `None`); only the workflow finalisation call does. Projects need a request builder of their own (built in stage B: section 5.6).
 
 ### 5.2 Measured on the llama engine (m)
 
@@ -498,6 +514,18 @@ Three layers, in order:
 | Provider error or empty content | immediate retry once, then a short pause | | failed |
 
 A `failed` item stores the attempts' error classes, never model text. The run continues.
+
+### 5.6 Built (stage B)
+
+`engine/runner.rs::run_employee(provider, gate, cancel, cfg, call, finish, observe)` is the employee.
+
+- **The request** is built by the runner, never by the agent loop: the role and plan context as system blocks (the shared prefix, first), the one item as the single user message (last), `format` = the form's `model_schema`, `tools = []`, `lane = Other`, `max_output_tokens` = the form's bound (plus the reasoning allowance when it thinks), `think_budget`. A fresh context every time.
+- **Thinking by engine** (`RunnerConfig.think`, set by the caller because `OllamaProvider` reports `ProviderKind::Ollama` for both of its engines): `Budgeted` (the llama.cpp engine) sends effort medium and `think_budget`, and the output limit includes the reasoning tokens; `WithFormat` (a probe found thinking plus a grammar works on that Ollama model) sends effort medium and no budget, the output limit being the only bound; `ReasonFirst` (the default, Ollama until probed) answers with thinking off and lets the form's own first field, `reason`, carry the reasoning. A step with `effort: think` and no `think_budget` never thinks. The probe itself is stage D.
+- **`ChatRequest.think_budget`** is `Option<u32>`, absent from the wire when none; `OllamaProvider::stream_llama` sends it as `thinking_budget_tokens` (`llama::chat::set_think_budget`); Ollama proper and the cloud providers ignore it; the `marlowe-agent` loop still sends none and `format: None`.
+- **Validation** is the three layers of 5.4: the grammar, `serde_json` plus `marlowe_contract::schema::validate`, then the finish function's rules.
+- **Retry** is the table of 5.5. The length retry resends the *same* messages (a cut reply is never appended) with the limit doubled up to the window room and thinking off; the others append the reply exactly as produced, thinking included, then one user turn, so earlier turns are never rewritten. The first provider error or empty reply is retried at once, later ones after `retry_pause`; an error that cannot be retried (auth, bad request) fails at once.
+- **The failure reason is harness-written** from classes and validator pointers: `form did not validate after 3 attempts: /relevancy: must be one of ...`, `the reply was cut off by the output limit on all 3 attempts`, ``form rule `quotes_found` rejected the reply on all 3 attempts``, `the model call failed (network) on 3 attempts`, `the model could not be used: <the gate's words>`. A test feeds an employee an injection string as its answer and asserts it appears nowhere in the stored state.
+- **Observation**: the first admitted attempt puts an agent on the screen (listed on the input item and on the emitted item, which shows `running`); every attempt updates the agent's attempt number and tokens.
 
 ## 6. The manager
 
@@ -627,17 +655,17 @@ The model never writes a URL; quotes are verbatim; page text is data; independen
 
 ## 9. Built now, built later, and adding a phase type
 
-**Built now (core plus the research slice):** `marlowe-project` core; the employee runner and constrained output; the phase engine with the four primitives; Plan; DataCollection; DataValidation; Thinking limited to the lead decision and routing; Checkin; Report; Finish; the `project` tool, routing, approval, relay; the view-model that resolves display hints (headless, tested).
+**Built now (core plus the research slice):** `marlowe-project` core (stage A); the employee runner and constrained output; the phase engine with the four primitives (stage B, both built); Plan; DataCollection; DataValidation; Thinking limited to the lead decision and routing; Checkin; Report; Finish; the `project` tool, routing, approval, relay; the view-model that resolves display hints (headless, tested).
 
 **Later:** Engineering (code and experiments in parallel, its own tree, GPU locks, disk awareness; its experiment form is in section 3 as the proof the data model carries it); Thinking beyond the decision (multi-round planning by the lead); the TUI renderer and design previews (after the code is nailed, per Matthew); extra kinds.
 
 **Adding a phase type** (a guide):
 
 1. Write the **forms** it produces and consumes (fields, `w`, `show`). That is already its screen.
-2. Add **role cards** in `roles/*.md` (`tools: []`) for each model step; the prompt template id and any new code functions go into the registries.
-3. Declare the **phase** as steps in the menu JSON, wiring edges (`stream` unless it must wait) and its `output` form.
+2. Name what each model step needs: a **role** (and, if the default wording is not good enough, a prompt builder registered in the `Toolbox` under that name), a **finish function** if the form has rules or code-filled fields, and any new **code functions**. A step with none of these runs on `default_prompt` and the model's output as it is.
+3. Declare the **phase** as steps in `registry/phases/<name>.json` (one line in `registry.rs` lists the file), wiring edges (`stream` unless it must wait) and its `output` form. `validate_menu` checks it.
 4. Add the phase to a **kind template** (default phase list, rollups, `supersedes`).
-5. Add **tests**: a scripted fake provider run of the phase, a resume test, a render snapshot. No change to the engine, the store, the manager tool or the renderer is needed unless a new primitive is.
+5. Add **tests**: a scripted fake provider run of the phase, a resume test, a render snapshot. No change to the engine, the store, the manager tool or the renderer is needed unless a new primitive is. Proof: `a_project_of_a_different_shape_runs_and_draws_with_no_code_beyond_its_json` registers a form, two phases and a kind as data, and the engine runs and draws it.
 
 ## 10. Build plan
 
@@ -683,26 +711,51 @@ Acceptance, as tested (86 unit tests and one end-to-end test in `tests/flow.rs`;
 7. Crash safety: `a_write_that_stops_before_the_rename_leaves_the_old_state_whole`, `the_index_can_be_rebuilt_by_scanning`, `the_journal_appends_lines_and_ignores_a_torn_last_line`.
 8. Reopen: `archive_then_reopen_restores_the_snapshot_and_truncates_the_journal`, `a_finished_project_reopens_from_final_even_when_its_archive_was_deleted`.
 
-### Stage B: employee runner, constrained output, phase engine
+### Stage B: employee runner, constrained output, phase engine (built)
 
-- `FormRunner` in `marlowe-crew`: builds the `ChatRequest` itself (`format`, `tools=[]`, `Effort`, `max_output` via `output_cap`), takes a slot with `Hooks::local_slot`, runs `before_call`/`after_call`, parses and validates through `marlowe_contract::schema`, applies the retry table of 5.5, writes a `StepRecord` for the crew watch.
-- `ChatRequest.think_budget: Option<u32>` (serde default, skipped when none): the llama provider sends `thinking_budget_tokens`; Ollama ignores it. The `marlowe-agent` loop still sends `format: None` (unchanged).
-- The engine: menu JSON, scheduler, lanes, drain-first, journal and resume, cancel, budgets, park/resume as a third branch in `runner.rs::execute`.
-- Generalise `PendingPlan` to `PendingGate` and `ApprovePlan` to `AnswerGate` (the research playbook keeps working through a shim).
+The engine lives in `marlowe_project::engine`, not in `marlowe-crew` as first sketched: crew depends on project, not the other way, so the engine sees the crew's slots through the `ModelGate` trait and `marlowe_crew::project_gate::ProjectGate` adapts them. `marlowe-project` now depends on `marlowe-model` (serde only).
 
-Sub-steps: **B1** `think_budget` plumbing and `FormRunner` with the retry table (acceptance 1, 2, 3, 10); **B2** scheduler, lanes, journal and resume, cancel (4, 5, 6, 7, 9); **B3** gates and park/resume, `AnswerGate` shim (8). B1 needs no engine; B2 runs on a scripted step list.
+| Module | Built |
+|---|---|
+| `spec` | `PhaseSpec`, `StepSpec`, `After`, `Edge`, `Lane`, `Think`, `Scope`; `validate_menu`. Menu in `registry/phases/*.json`, loaded by `Registry`. |
+| `engine::runner` | `run_employee`, `EmployeeCall`, `RuleFailure`, `ThinkSupport`, `RunnerConfig`, `Observer`: section 5.6. |
+| `engine::gate` | `ModelGate`, `Permit`, `SlotPool`, `Unlimited`. |
+| `engine::fence` | `fence`, `clean`: free text from an earlier step enters a prompt as capped, control-stripped data inside `<<< >>>`, a literal `>>>` rewritten. |
+| `engine::functions` | `Toolbox`, `TaskInput`, `Finished`, `Effect`, `GateCard`, `default_prompt`: section 4.10. |
+| `engine::builtin` | the generic plan and checkin functions, `continuation_effects`. |
+| `engine::record` | `Record`, `task_key`, `merge_key`, `answer_key`: section 4.6. |
+| `engine` (`core`) | `Engine` (`run`, `spawn`, `answer`, `control`), `Control` (`cancel`, `request_checkin`), `RunOutcome` (`Finished`, `Parked{gate}`, `Cancelled`, `Failed{reason}`), `EngineConfig`, `answer_gate`: sections 4.3 to 4.7. |
+| `marlowe-model` | `ChatRequest.think_budget`. |
+| `marlowe-provider` | `llama::chat::set_think_budget`, called from `stream_llama`. |
+| `marlowe-crew` | `project_gate::ProjectGate` over `StepHooks`; `runner::project_gate` builds one from a run's hooks (unused until stage D calls it). |
+| `marlowe-project` state | `Mutation::InsertPhase`, `ProjectHandle::read`, `Gate.phase`/`Gate.step`, `Metrics.active_ms`/`budget_raises`. |
 
-Acceptance (scripted fake `Provider` through the `marlowe-model` seam):
-1. An employee that fails validation twice then succeeds: three requests, the second and third contain the earlier turns unchanged and the error text; item `done`, attempts 3.
-2. An employee that always fails: item `failed` with a harness-written reason, the run finishes, coverage counts it, no model text in the error.
-3. Truncation: `finish=length` reply, attempt 2 sends a doubled `max_output`.
-4. Pipelining: with a channel-controlled fake, item 1's Analyze starts before item 2's fetch ends; no step waits for a sibling on a `stream` edge.
-5. Conductor non-blocking: `create` returns before the fake provider is called once; slot count never exceeds `crew_slots`; the fetch lane runs while all model slots are held.
-6. Resume: kill after N journal lines, resume; the fake counts no call for a finished key and no refetch.
-7. Cancel mid-run leaves `cancelled` items and a loadable state.
-8. Park: a plan gate holds no thread and no slot (thread count and slot count asserted); restart rebuilds the open gate.
-9. Delta merge: thresholds fire at 25/50/75/100% of the watched step with only new items sent; the last always fires.
-10. Optional ignored live test against the CPU `marlowe-mini:4b-super` llama-server: a form call returns valid JSON with thinking off and with `think_budget` set.
+Settled while building (the design above is amended where it differed):
+
+- **The engine returns, it does not wait.** A park is `RunOutcome::Parked`: the thread ends. `Engine::answer` (or `answer_gate(handle, ...)`) records the answer and the next `run` carries on; nothing is remembered between runs except the state and the journal.
+- **Gates by step or by engine.** A gate step (`plan_card`, `checkin_card`) parks when reached; forced, budget and failures checkins belong to no step (`Gate.step` empty, `payload.phase` names what they are about) and their answers are handled by `checkin_answer` and journaled under `_gates`. A `cancel` answer cancels the engine. An answer function that refuses leaves the gate answered and the project going on without effects (the record is `failed`, with the reason).
+- **Fill or emit.** A fan-out with `emit` writes a new item; without it the data is merged into the input item (Verify fills the claim it checked) and a failure marks that item `failed`. A code step that returns data fills its input item the same way. The data an item gets is the finish function's `data`; with no finish function it is the model's output as it is.
+- **An item whose data breaks its form** when the record is applied (the finish function made something the form refuses) is stored `failed` with the validator's first two pointers, never `done`.
+- **Parents.** A new item's parent is the question it belongs to (the input's parent, or the input itself when it is a question; a merge's first member's parent), so the tree stays question-rooted however deep the pipeline.
+- **Group.** `sub` is the id of the nearest question ancestor; per-question barriers and merges key on it.
+- **Agents.** `a_<n>` numbers continue from the highest in the state. The employee's record ends in the journal with its tokens; the agent is listed on its input and its emitted item (a merge's agent on the items it made, not on the claims it read).
+- **Budgets and rounds are stored.** `Metrics.active_ms` and `budget_raises` persist, so a parked project neither loses its running time nor its raised budget.
+- **The first sketch's `FormRunner` in `marlowe-crew`** and "generalise `PendingPlan` to `PendingGate`, `ApprovePlan` to `AnswerGate`" move to stage D: they exist to start an engine from a crew run and answer from the TUI, and need the `project` tool and `Run.project` to be reachable at all.
+
+Acceptance, as tested (the 10 in `tests/engine.rs` and `tests/engine_flow.rs` are scripted fake `Provider`s through the `marlowe-model` seam; the real research menu runs with fake code steps under the names stage C will fill):
+1. *Retry:* `two_invalid_replies_then_a_good_one_is_three_requests_that_keep_the_earlier_turns`, `a_form_rule_that_rejects_sends_its_own_turn_and_the_attempt_after_can_pass`, `a_provider_error_or_an_empty_reply_retries_the_same_request`.
+2. *Always fails:* `an_employee_that_always_fails_ends_failed_with_a_reason_that_holds_no_model_text`; at engine level `employees_that_keep_failing_are_recorded_failed_without_model_text_and_the_run_asks_the_user` (four sources `failed` after 3 attempts, a `failures` checkin, then the run finishes), `a_gate_that_refuses_fails_the_employee_with_the_gates_words_and_never_calls_the_model`.
+3. *Truncation:* `a_reply_cut_by_the_limit_retries_the_same_request_with_the_limit_doubled_then_capped`.
+4. *Pipelining:* `an_analysis_starts_while_another_questions_fetch_is_still_running`; scheduling order: `ties_go_round_robin_across_questions_so_none_is_starved`.
+5. *Conductor and lanes:* `spawning_returns_before_the_model_is_called_and_the_slot_limit_holds`, `a_fetch_runs_while_every_model_slot_is_held`; crew side `a_permit_takes_a_crew_slot_and_gives_it_back_booking_the_spend`, `the_pool_is_the_crews_so_a_third_call_waits_for_a_slot`.
+6. *Resume:* `a_restart_replays_the_journal_and_never_asks_a_model_or_refetches_a_page` (state at the plan card, journal whole: zero model and fetch calls, same items and data), `a_task_with_no_journal_line_is_the_only_thing_that_runs_again` (the lines of Verify, Thinking, Report and Finish removed: exactly those six plus the lead, sections, answer and audit run).
+7. *Cancel:* `cancelling_mid_run_leaves_cancelled_items_and_a_state_that_loads`.
+8. *Park:* `the_research_menu_parks_on_its_plan_card_then_runs_to_a_finished_project`, `a_parked_project_survives_a_restart_and_resumes_in_place`.
+9. *Delta merge:* `a_delta_merge_fires_at_each_quarter_of_the_watched_step_and_sends_only_what_is_new` (eight writers released a few at a time: no pass at 1 of 8, one each at 2, 4, 6, the last when the rest finish; every claim in exactly one pass).
+10. *Live, CPU (ignored test `tests/live_cpu.rs`):* a real llama-server on `marlowe-mini:4b-super`, `-ngl 0`, idle priority: with thinking off the `analyze@1` form came back valid in one attempt (170 prompt and 281 output tokens, 21 s); with `think_budget` 200 the `verify@1` form came back valid in one attempt after 752 characters of reasoning (24 s), and the request body carried `thinking_budget_tokens` and `n_predict` = answer bound plus reasoning allowance. One sample each, on the provider's own body builder; see section 12 for what it did not show.
+Beyond the list: `the_research_menu_parks_on_its_plan_card_then_runs_to_a_finished_project` also checks agents on items, the grant, snapshots and the painted screen; budgets (`a_token_budget_stops_new_calls_and_parks_on_a_budget_checkin_that_continue_raises`, `choosing_report_at_a_budget_checkin_skips_ahead_to_the_report`); forced checkins (`a_forced_checkin_lets_in_flight_work_finish_then_parks_and_resumes_on_keep_going`, `approving_a_forced_checkin_writes_the_report_with_what_exists`); the lead's loop (`the_leads_keep_researching_goes_through_a_checkin_and_a_continuation_round`: phases `ph_plan_2` to `ph_think_2` inserted, only the new question researched, the report covers all four questions); `a_project_of_a_different_shape_runs_and_draws_with_no_code_beyond_its_json` (a kind, a form and two phases registered as data run on `Toolbox::new()` and a model that answers from the schema, and draw with badge and agent chip); `a_function_that_panics_fails_its_task_and_the_run_goes_on`; `a_read_runs_against_the_current_state_and_a_panicking_read_leaves_the_actor_alive`.
+
+Not in stage B: the stage C functions; the plan card's cost estimate; cpu/gpu/disk probes feeding `metrics` and `live` (the `metrics` and `live` slots exist; nothing samples yet); the Ollama thinking probe; the `execute` branch, `Run.project`, `AnswerGate` and the events to the TUI (stage D); the model plan from settings.
 
 ### Stage C: research phases
 
@@ -755,8 +808,12 @@ Acceptance:
 
 ## 12. Not verified
 
-Stage A (built): `cargo check --workspace --all-targets` is clean (the warnings in `marlowe`, `marlowe-tui` and `marlowe-memory` were there before) and the tests of `marlowe-project`, `marlowe-proto`, `marlowe-contract` and `marlowe-workflow` pass. Not run: the rest of the workspace's tests, any model, any GPU. The store and actor were exercised on a local temp directory only; concurrent access from two processes, a real crash (power loss) and a very large state (thousands of items) were not tried. The painter was checked as plain text; no terminal was involved.
+**Stage B (built).** `cargo check --workspace --all-targets` is clean (the warnings in `marlowe`, `marlowe-tui` and `marlowe-memory` were there before). Tests that passed: `marlowe-project` 117 unit tests, 1 stage A end to end, 3 engine and 16 scheduler tests (four runs in a row, no flake), `marlowe-crew` all 8 binaries (103 unit tests, 4 of them the `ProjectGate`), `marlowe-model` 37; the two live tests are ignored by default and were run once by hand against a CPU llama-server on `marlowe-mini:4b-super` (nothing on the GPU, Matthew's preview and Ollama untouched, the server I started was stopped).
 
-No cargo build, no test and no GPU were run. Measured: llama-server on CPU with `marlowe-mini:4b-super`, section 5.2 only. Not measured: Ollama `format` with and without `think` on any model; llama-server on the project's real engine flags; whether the tool slice has room for a fourth long description; the time estimates (all (e)). Every statement about existing code comes from reading source and the maps, not from running it.
-
-Second review pass (docs only, no cargo, no GPU): file paths, the headless Edge flags and the dependency weight of `marlowe-workflow` (Starlark; its `schema.rs` is pure `serde_json`) were checked against source. Open and unmeasured: the real fit of a fourth long tool description; whether a 4b employee fills `analyze@1` with valid, useful forms (the 90% probe in decision 6); Ollama behaviour of `format` with `think`; whether two models fit on one GPU together; time estimates.
+Not verified:
+- **Quality of a 4b employee.** The live Verify sample was *valid* and *wrong*: the passage says 256k, the model answered `refuted` and invented a `corrected_claim` of 32768, and its `reason` slipped into Chinese. The grammar guarantees the shape, not the judgement. Stage C needs finish rules (a `refuted` or a `corrected_claim` must name a passage; a `corrected_claim` only on `partial`) and the 90% probe of decision 6 before a 4b model is trusted with Verify; the lead model may need to be the verifier.
+- **Ollama proper.** `format` with and without `think` was not probed; `ThinkSupport::ReasonFirst` is the safe default, not a measurement. Whether `Budgeted` holds for the other models the llama engine serves is one model's worth of evidence.
+- **The crew's real pool.** `ProjectGate` was tested against a fake `StepHooks` that behaves like the pool (a counting pool, a refusal, booked usage). It was not run inside a real `Supervisor` run: nothing starts an engine from a crew run until stage D.
+- **Scale and time.** The scheduler re-reads an index of every item each round; it was run with tens of items, not thousands. Wall-clock for a real project, and the cost estimate on the plan card, are unmeasured (e).
+- **Crash fidelity.** Resume was tested by giving a new process the journal and an older `project.json`; a kill at an arbitrary instant, a torn journal line inside a record and two engines on one project were not tried (the journal reader ignores a torn last line, tested in stage A; nothing stops two engines).
+- **Not built:** the stage C functions, the cpu/gpu/disk probes that fill `metrics` and `live`, the Ollama thinking probe, the `project` tool and everything in stage D.
