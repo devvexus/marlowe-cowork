@@ -114,18 +114,18 @@ fn a_well_formed_store_resolves_to_the_blob_and_the_published_sampler() {
     assert_eq!(s.presence_penalty, Some(1.5));
 }
 
-/// A model with **no** `.params` layer is a reported state, not a failure. `marlowe-red:9b` is
+/// A model with **no** `.params` layer is a reported state, not a failure. `qwen3.5:9b` is
 /// like this, and refusing it would make an ordinary Ollama model unusable through this provider.
 #[test]
 fn a_model_with_no_params_layer_resolves_with_no_sampler_rather_than_refusing() {
     let store = Store::new("no-params");
     store.manifest(
-        "manifests/registry.ollama.ai/library/marlowe-red/9b",
+        "manifests/registry.ollama.ai/library/qwen3.5/9b",
         &[(MODEL_MEDIA_TYPE, MODEL_DIGEST)],
     );
     store.blob(MODEL_DIGEST, "GGUF");
 
-    let r = ollama_store::resolve_in(store.root(), "marlowe-red:9b").expect("this is legitimate");
+    let r = ollama_store::resolve_in(store.root(), "qwen3.5:9b").expect("this is legitimate");
     assert!(r.sampling.is_none(), "absent is not the same fact as unreadable");
 }
 

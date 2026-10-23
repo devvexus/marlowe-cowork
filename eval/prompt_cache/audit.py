@@ -1,7 +1,7 @@
 """The prompt-cache audit: does any request rewrite what the model already read?
 
   python -I eval/prompt_cache/audit.py --go --models marlowe-dawn:9b-super --engines ollama
-  python -I eval/prompt_cache/audit.py --go --models marlowe-dusk:22b-r1.5_Q4KM,marlowe-red:9b --engines ollama,llama
+  python -I eval/prompt_cache/audit.py --go --models marlowe-dusk:22b-r1.5_Q4KM --engines ollama,llama
   python -I eval/prompt_cache/audit.py --templates                  every model's own chat template and what it does with old reasoning
   python -I eval/prompt_cache/audit.py --analyze DIR                judge the records of an earlier run again
 
@@ -39,7 +39,7 @@ import tap as tp  # noqa: E402
 NO_WINDOW = 0x08000000
 QUIET = ROOT / "target" / "cargo-quiet"
 OLLAMA = ("127.0.0.1", 11434)
-DEFAULT_MODELS = "marlowe-dawn:9b-super,marlowe-mini:4b-super,marlowe-dusk:22b-r1.5_Q4KM,marlowe-red:9b"
+DEFAULT_MODELS = "marlowe-dawn:9b-super,marlowe-mini:4b-super"
 OLLAMA_LOG = Path(os.environ.get("LOCALAPPDATA", "")) / "Ollama" / "server.log"
 OLLAMA_LIB = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "lib" / "ollama"
 

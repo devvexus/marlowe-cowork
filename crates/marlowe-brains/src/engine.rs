@@ -31,7 +31,7 @@ fn disabled_by_env() -> bool {
 /// [`ENGINE_SLOTS`]) that each still get [`ENGINE_MIN_CTX`] on the GPU beside the weights, with
 /// the largest window that many fit; one agent with whatever fits when even that is small.
 pub fn engine_choice(plan: &PlanModel, kv: KvType) -> Option<(u16, u32)> {
-    // Measured live (marlowe-red:9b, six slots): the planner's own estimate came out 1.1 GiB under
+    // Measured live (a 9b model, six slots): the planner's own estimate came out 1.1 GiB under
     // what the server took, and past about 15.5 GiB in all the driver starts spilling to system
     // memory. The engine keeps a GiB more in reserve than the planner's usual headroom.
     let mut plan = plan.clone();

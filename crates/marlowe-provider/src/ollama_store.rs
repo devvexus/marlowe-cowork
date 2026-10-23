@@ -27,7 +27,7 @@
 //! keeps deleting.
 //!
 //! So a `llama-server` driver reads the layer and sends it, and announces where it came
-//! from. A model with **no** `.params` layer is a legitimate, reported state (`marlowe-red:9b` has
+//! from. A model with **no** `.params` layer is a legitimate, reported state (`qwen3.5:9b` has
 //! none); a store that could not be read at all is not, and refuses.
 
 use std::path::{Path, PathBuf};
@@ -227,7 +227,7 @@ pub struct ResolvedModel {
     /// The manifest this was read from, so an announcement can say where it looked.
     pub manifest: PathBuf,
     /// `None` when the model has **no** `.params` layer. A reported state, not a failure —
-    /// `marlowe-red:9b` is like this — and the announcement says so rather than implying Ollama's
+    /// `qwen3.5:9b` is like this — and the announcement says so rather than implying Ollama's
     /// sampling was applied.
     pub sampling: Option<Sampling>,
 }

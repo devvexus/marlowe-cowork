@@ -368,7 +368,7 @@ fn invalid_args(c: &ToolCall, cut: Option<OutputCut>) -> Option<ToolOutcome> {
     }
     match &c.args {
         Value::String(_) if cut.is_some() => Some(ToolOutcome::error(format!(
-            "your reply stopped at the output limit ({} tokens) while you were writing this {} call, so its arguments were cut off and nothing ran.              Make the call much shorter: put less in it, or split the content over several calls.",
+            "your reply stopped at the output limit ({} tokens) while you were writing this {} call, so its arguments were cut off and nothing ran. Make the call much shorter: put less in it, or split the content over several calls.",
             cut.map_or(0, |c| c.0),
             c.name
         ))),

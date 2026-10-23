@@ -8,7 +8,7 @@ when the window is full.
 This harness checks that against the **real daemon**, with the server's own numbers, and says where and why it fails.
 
 ```bash
-python -I eval/prompt_cache/audit.py --go --models marlowe-dawn:9b-super,marlowe-red:9b --engines ollama,llama
+python -I eval/prompt_cache/audit.py --go --models marlowe-dawn:9b-super,marlowe-mini:4b-super --engines ollama,llama
 python -I eval/prompt_cache/audit.py --templates          # CPU only: each model's chat template and its reasoning rules
 python -I eval/prompt_cache/audit.py --analyze DIR        # judge the records of an earlier run again
 python -I -m pytest eval/prompt_cache                     # offline checks, no model
