@@ -2094,3 +2094,72 @@ fn parity_c10_reasoning_and_mid_turn_reminders_keep_requests_extending() {
     assert_eq!(r[2].system, r[3].system, "the system prompt never changes");
     assert_eq!(before[..], r[3].messages[..before.len()], "across turns nothing already sent is rewritten");
 }
+
+/// A tool that refuses every call with a differently worded error of one class, and asks the loop
+/// to end the turn at its fifth (the shape of `team` refusing scripts).
+struct Refuser {
+    calls: Mutex<u32>,
+    class: Option<&'static str>,
+}
+
+impl ToolHost for Refuser {
+    fn specs(&self) -> Vec<ToolSpec> {
+        vec![ToolSpec { name: "team".into(), description: "team".into(), input_schema: json!({"type": "object"}) }]
+    }
+    fn call(&self, _call: &ToolCallReq, _ctx: &ToolCtx) -> ToolOutcome {
+        ToolOutcome::error("detached")
+    }
+    fn call_scoped(&self, _call: &ToolCallReq, cx: &CallCtx) -> ToolOutcome {
+        let n = {
+            let mut c = self.calls.lock().unwrap();
+            *c += 1;
+            *c
+        };
+        let msg = format!("line {n}: unexpected symbol at column {}", n * 7);
+        if n >= 5 {
+            cx.scope.with_ext(|e| e.insert(guard::EndTurn("five scripts refused; stopped".into())));
+        }
+        match self.class {
+            Some(c) => ToolOutcome::error_of(c, msg),
+            None => ToolOutcome::error(msg),
+        }
+    }
+    fn consequence(&self, _call: &ToolCallReq) -> Consequence {
+        Consequence::Free
+    }
+}
+
+#[test]
+fn a_tool_can_end_the_turn_with_a_message_after_its_step_is_recorded() {
+    let p = Script::new((0..12).map(|i| call("team", json!({"script": format!("s{i}")}))).collect());
+    let mut a = agent(p.clone(), local32k(), Arc::new(Refuser { calls: Mutex::new(0), class: Some("script-invalid") }));
+    a.middleware.push(guard::LoopGuard::new());
+    let out = run(&a, &mut convo(None), "go");
+    assert_eq!(out.stop, TurnStop::Error);
+    assert_eq!(out.error.as_deref(), Some("five scripts refused; stopped"));
+    assert_eq!(out.steps, 5, "the fifth refusal ended it");
+}
+
+#[test]
+fn failures_of_one_class_count_together_however_each_is_worded() {
+    for (class, noted) in [(Some("script-invalid"), true), (None, false)] {
+        let mut replies: Vec<Vec<StreamEvent>> = (0..3).map(|i| call("team", json!({"script": format!("s{i}")}))).collect();
+        replies.push(answer("I cannot do that."));
+        let p = Script::new(replies);
+        let mut a = agent(p.clone(), local32k(), Arc::new(Refuser { calls: Mutex::new(0), class }));
+        a.middleware.push(guard::LoopGuard::new());
+        run(&a, &mut convo(None), "go");
+        let r = p.requests();
+        let third = tool_results(&r[3]);
+        assert_eq!(third.last().unwrap().contains("same failure 3 calls in a row"), noted, "{class:?}: {third:?}");
+    }
+}
+
+#[test]
+fn attempts_are_counted_per_turn() {
+    let mut ext = marlowe_agent::middleware::Extensions::new();
+    assert_eq!(guard::count_attempt(&mut ext, 1, "team-script"), 1);
+    assert_eq!(guard::count_attempt(&mut ext, 1, "team-script"), 2);
+    assert_eq!(guard::count_attempt(&mut ext, 1, "other"), 1);
+    assert_eq!(guard::count_attempt(&mut ext, 2, "team-script"), 1, "a new turn starts again");
+}

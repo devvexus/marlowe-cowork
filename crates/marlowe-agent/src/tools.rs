@@ -175,17 +175,25 @@ pub struct ToolOutcome {
     /// Images and other non-text output (a PNG `read`, a screenshot); becomes
     /// `ToolResult::parts`.
     pub parts: Vec<ResultPart>,
+    /// What kind of failure this is, when the tool can say (`"script-invalid"`): the loop guard
+    /// counts failures of one class together however each one is worded or numbered.
+    pub class: Option<&'static str>,
 }
 
 impl ToolOutcome {
     pub fn ok(content: impl Into<String>, summary: impl Into<String>) -> Self {
-        Self { content: content.into(), is_error: false, summary: summary.into(), parts: Vec::new() }
+        Self { content: content.into(), is_error: false, summary: summary.into(), parts: Vec::new(), class: None }
+    }
+
+    /// An error of the given class (see [`ToolOutcome::class`]).
+    pub fn error_of(class: &'static str, message: impl Into<String>) -> Self {
+        Self { class: Some(class), ..Self::error(message) }
     }
 
     pub fn error(message: impl Into<String>) -> Self {
         let m = message.into();
         let summary = m.lines().next().unwrap_or("").chars().take(80).collect();
-        Self { content: m, is_error: true, summary, parts: Vec::new() }
+        Self { content: m, is_error: true, summary, parts: Vec::new(), class: None }
     }
 
     /// Adds a non-text part.

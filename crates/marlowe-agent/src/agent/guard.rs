@@ -290,6 +290,33 @@ pub fn stuck_on_one_failure(convo: &Conversation) -> Option<u32> {
     convo.ext.get::<GuardState>()?.failure.as_ref().map(|(_, n)| *n).filter(|n| *n >= STUCK_FAILURE_AT)
 }
 
+/// Failed attempts of one kind within the current turn, by the tool's own key: a tool that can
+/// tell a model to stop (`team` refusing scripts) counts here and asks the loop to end the turn
+/// with [`EndTurn`] when it has said so enough.
+#[derive(Debug, Clone, Default)]
+pub struct TurnAttempts {
+    turn: u32,
+    counts: HashMap<String, u32>,
+}
+
+/// Counts one failed attempt of `key` in `turn` (a new turn starts again at 1) and returns how many
+/// this turn has had.
+pub fn count_attempt(ext: &mut crate::middleware::Extensions, turn: u32, key: &str) -> u32 {
+    let a = ext.get_or_default::<TurnAttempts>();
+    if a.turn != turn {
+        a.turn = turn;
+        a.counts.clear();
+    }
+    let n = a.counts.entry(key.to_string()).or_insert(0);
+    *n += 1;
+    *n
+}
+
+/// A tool's request that the turn end now, with this message for the user. The loop honours it
+/// after the step's results are in, so the conversation stays well formed.
+#[derive(Debug, Clone)]
+pub struct EndTurn(pub String);
+
 /// Sent once per turn when the model said what it would do next and ended the turn instead.
 pub const PROMISE_NUDGE: &str = "<system-reminder>\nYou said what you would do next but ended your turn without \
 doing it. Make that tool call now.\n</system-reminder>";
@@ -437,9 +464,10 @@ impl ToolMiddleware for LoopGuard {
                 .map(|l| l.chars().take(120).collect::<String>())
                 .collect::<Vec<_>>()
                 .join(" | ");
-            let key = match missing_path(&first) {
-                Some(path) => format!("missing:{path}"),
-                None => format!("{}: {head}", call.name),
+            let key = match (outcome.class, missing_path(&first)) {
+                (Some(class), _) => format!("{}: [{class}]", call.name),
+                (None, Some(path)) => format!("missing:{path}"),
+                (None, None) => format!("{}: {head}", call.name),
             };
             let n = match st.failure.take() {
                 Some((k, n)) if k == key => n + 1,

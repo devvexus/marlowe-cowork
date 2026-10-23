@@ -666,6 +666,11 @@ impl Agent {
             }
             // The same call failing the same way this many times running is a loop the model will
             // not leave (91 `team{}` calls in one live turn): end the turn and say so.
+            if let Some(guard::EndTurn(why)) = convo.ext.get::<guard::EndTurn>().cloned() {
+                convo.ext.remove::<guard::EndTurn>();
+                error = Some(why);
+                break TurnStop::Error;
+            }
             if let Some(n) = guard::stuck_on_one_failure(convo) {
                 error = Some(format!("the same tool call failed the same way {n} times in a row; the turn was stopped"));
                 break TurnStop::Error;

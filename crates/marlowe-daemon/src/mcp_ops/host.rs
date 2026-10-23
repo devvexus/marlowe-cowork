@@ -221,7 +221,7 @@ impl McpTools {
     fn outcome(text: String, is_error: bool, note: &str) -> ToolOutcome {
         let first: String = text.lines().next().unwrap_or("").chars().take(80).collect();
         let summary = if note.is_empty() { first } else { note.to_string() };
-        ToolOutcome { content: text, is_error, summary, parts: Vec::new() }
+        ToolOutcome { content: text, is_error, summary, parts: Vec::new(), class: None }
     }
 
     fn fail(e: McpError) -> ToolOutcome {

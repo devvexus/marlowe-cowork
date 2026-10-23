@@ -162,7 +162,7 @@ pub(crate) fn run_background(
             let out = summarize::clean(&raw);
             let body = summarize::summarize(&out, code != 0, 3_000);
             text.push_str(&format!("it has already exited with code {code}:\n{}", if body.text.is_empty() { "(no output)" } else { &body.text }));
-            return Ok(ToolOutcome { content: text, is_error: code != 0, summary: format!("{id} · exit {code}"), parts: Vec::new() });
+            return Ok(ToolOutcome { content: text, is_error: code != 0, summary: format!("{id} · exit {code}"), parts: Vec::new(), class: None });
         }
         None if jobs.delivers_notices() => text.push_str(&format!(
             "you will be told when it exits. task_output {{\"id\":\"{id}\"}} reads its output, task_output {{\"id\":\"{id}\",\"watch\":true,\"until\":\"...\"}} \
