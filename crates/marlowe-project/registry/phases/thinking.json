@@ -11,7 +11,8 @@
       "effort": "think",
       "think_budget": 1500,
       "max_output": 900,
-      "emit": "decision"
+      "emit": "decision",
+      "fn": "lead_finish"
     },
     {
       "id": "route",

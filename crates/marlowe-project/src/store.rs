@@ -442,6 +442,30 @@ impl ProjectStore {
         Ok(hash)
     }
 
+    /// Stores a small file that belongs to a stored page (`<hash>.links.json`, the page's link
+    /// table) next to it. Idempotent.
+    pub fn put_source_aux(&self, id: &str, hash: &str, suffix: &str, text: &str) -> Result<(), StoreError> {
+        let h = safe_name(hash)?;
+        let s = safe_name(suffix)?;
+        let path = self.dir(id)?.join("sources").join(format!("{h}.{s}.json"));
+        if !path.exists() {
+            fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
+            write_atomic(&path, text.as_bytes())?;
+        }
+        Ok(())
+    }
+
+    /// Reads the file [`ProjectStore::put_source_aux`] stored.
+    pub fn get_source_aux(&self, id: &str, hash: &str, suffix: &str) -> Result<Option<String>, StoreError> {
+        let h = safe_name(hash)?;
+        let s = safe_name(suffix)?;
+        match fs::read_to_string(self.dir(id)?.join("sources").join(format!("{h}.{s}.json"))) {
+            Ok(t) => Ok(Some(t)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Reads stored page text by hash.
     pub fn get_source(&self, id: &str, hash: &str) -> Result<Option<String>, StoreError> {
         let h = safe_name(hash)?;

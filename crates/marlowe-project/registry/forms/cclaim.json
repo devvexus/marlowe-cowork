@@ -110,6 +110,38 @@
           "w": "C",
           "min": 0,
           "max": 1
+        },
+        {
+          "key": "text_ref",
+          "type": "string",
+          "w": "C",
+          "show": {
+            "as": "hidden"
+          }
+        },
+        {
+          "key": "start",
+          "type": "integer",
+          "w": "C",
+          "show": {
+            "as": "hidden"
+          }
+        },
+        {
+          "key": "end",
+          "type": "integer",
+          "w": "C",
+          "show": {
+            "as": "hidden"
+          }
+        },
+        {
+          "key": "source_item",
+          "type": "string",
+          "w": "C",
+          "show": {
+            "as": "hidden"
+          }
         }
       ],
       "show": {
@@ -119,6 +151,26 @@
           "source",
           "credibility"
         ]
+      }
+    },
+    {
+      "key": "reason",
+      "type": "text",
+      "w": "C",
+      "nullable": true,
+      "label": "checked",
+      "show": {
+        "as": "text",
+        "lines": 2
+      }
+    },
+    {
+      "key": "original_claim",
+      "type": "text",
+      "w": "C",
+      "nullable": true,
+      "show": {
+        "as": "hidden"
       }
     },
     {

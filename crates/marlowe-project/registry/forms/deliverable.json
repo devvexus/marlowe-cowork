@@ -1,0 +1,38 @@
+{
+  "form": "deliverable",
+  "version": 1,
+  "title": "Delivered",
+  "item_label": "Delivered to {data.dir}",
+  "fields": [
+    {
+      "key": "dir",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "path",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "files",
+      "type": "list",
+      "w": "C",
+      "of": "string"
+    },
+    {
+      "key": "send",
+      "type": "bool",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    }
+  ]
+}

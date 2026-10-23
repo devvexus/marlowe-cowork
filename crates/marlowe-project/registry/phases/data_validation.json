@@ -49,7 +49,8 @@
       "after": [
         {
           "step": "condense",
-          "edge": "stream"
+          "edge": "barrier",
+          "per": "sub"
         }
       ],
       "form": "verify@1",

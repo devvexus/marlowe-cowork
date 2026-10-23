@@ -1,0 +1,16 @@
+{
+  "form": "note",
+  "version": 1,
+  "title": "Note",
+  "item_label": "{data.text}",
+  "fields": [
+    {
+      "key": "text",
+      "type": "text",
+      "w": "C",
+      "show": {
+        "as": "text"
+      }
+    }
+  ]
+}

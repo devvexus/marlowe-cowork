@@ -70,7 +70,7 @@ macro_rules! embedded_forms {
 
 const FORMS: &[&str] = embedded_forms![
     "question", "attack_vectors", "page", "analyze", "claim", "cclaim", "condense", "verify", "lead_decision", "section", "answer", "audit",
-    "validated", "experiment"
+    "validated", "experiment", "hit", "batch", "note", "report", "deliverable"
 ];
 
 const KINDS: &[&str] = &[include_str!("../registry/kinds/research.json"), include_str!("../registry/kinds/engineering.json")];

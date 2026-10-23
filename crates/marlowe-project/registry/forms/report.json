@@ -1,0 +1,87 @@
+{
+  "form": "report",
+  "version": 1,
+  "title": "Report",
+  "item_label": "Report ({data.confidence} confidence)",
+  "fields": [
+    {
+      "key": "path",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "confidence",
+      "type": "enum",
+      "w": "C",
+      "values": [
+        {
+          "v": "high",
+          "tone": "ok"
+        },
+        {
+          "v": "medium",
+          "tone": "warn"
+        },
+        {
+          "v": "low",
+          "tone": "bad"
+        }
+      ]
+    },
+    {
+      "key": "first_paragraph",
+      "type": "text",
+      "w": "C",
+      "max_len": 600,
+      "show": {
+        "as": "text",
+        "lines": 4
+      }
+    },
+    {
+      "key": "chars",
+      "type": "integer",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "claims",
+      "type": "integer",
+      "w": "C",
+      "label": "verified claims",
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "sources",
+      "type": "integer",
+      "w": "C",
+      "label": "sources cited",
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "cited_sentences",
+      "type": "integer",
+      "w": "C",
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "removed_sentences",
+      "type": "integer",
+      "w": "C",
+      "show": {
+        "as": "text"
+      }
+    }
+  ]
+}

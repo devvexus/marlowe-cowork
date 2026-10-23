@@ -162,7 +162,14 @@ fn checkin_answer(st: &ProjectState, gate: &Gate, answer: &GateAnswer) -> Result
             } else {
                 return Err("there are no questions to continue with; steer with a sentence of at least ten characters".into());
             };
-            let spec = Continuation { questions, inherit: Vec::new(), seed_sources: Vec::new(), steer: answer.text.clone() };
+            // Sources a kind's card offered to read first (the generic card offers none).
+            let seeds: Vec<String> = gate
+                .payload
+                .get("seed_sources")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).take(40).collect())
+                .unwrap_or_default();
+            let spec = Continuation { questions, inherit: Vec::new(), seed_sources: seeds, steer: answer.text.clone() };
             continuation_effects(st, &spec, gate.answered_ms.unwrap_or(gate.asked_ms))
         }
         ("budget" | "failures", other) => Err(format!("`{other}` is not an answer to a {reason} checkin")),

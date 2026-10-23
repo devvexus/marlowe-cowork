@@ -113,7 +113,8 @@
         {
           "key": "since_year",
           "type": "integer",
-          "w": "C"
+          "w": "C",
+          "nullable": true
         }
       ],
       "show": {

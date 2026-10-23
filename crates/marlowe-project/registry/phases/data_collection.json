@@ -11,16 +11,32 @@
       "class": "employee",
       "effort": "off",
       "max_output": 900,
-      "emit": "vector"
+      "emit": "vector",
+      "fn": "vectors_finish",
+      "important": true
     },
     {
-      "id": "fetch",
+      "id": "search",
       "kind": "code",
-      "fn": "search_and_fetch",
+      "fn": "search_sources",
       "over": "vector",
       "after": [
         {
           "step": "vectors",
+          "edge": "stream"
+        }
+      ],
+      "lane": "search",
+      "emit": "hit"
+    },
+    {
+      "id": "fetch",
+      "kind": "code",
+      "fn": "fetch_page",
+      "over": "hit",
+      "after": [
+        {
+          "step": "search",
           "edge": "stream"
         }
       ],

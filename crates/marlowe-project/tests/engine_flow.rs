@@ -65,11 +65,11 @@ fn an_analysis_starts_while_another_questions_fetch_is_still_running() {
         let mut t = research_tools();
         let base = {
             let b = research_tools();
-            b.get_code("search_and_fetch").unwrap().clone()
+            b.get_code("fetch_page").unwrap().clone()
         };
         let rel = rel3.clone();
         // The second question's fetch does not return until the test says so.
-        t.code("search_and_fetch", move |input, cancel| {
+        t.code("fetch_page", move |input, cancel| {
             if input.sub == "q2" {
                 while !rel.load(Ordering::SeqCst) && !cancel.is_cancelled() {
                     std::thread::sleep(Duration::from_millis(5));
@@ -112,9 +112,9 @@ fn a_fetch_runs_while_every_model_slot_is_held() {
     let f2 = fetches.clone();
     let tools = move || {
         let mut t = research_tools();
-        let base = research_tools().get_code("search_and_fetch").unwrap().clone();
+        let base = research_tools().get_code("fetch_page").unwrap().clone();
         let f = f2.clone();
-        t.code("search_and_fetch", move |input, cancel| {
+        t.code("fetch_page", move |input, cancel| {
             f.fetch_add(1, Ordering::SeqCst);
             base(input, cancel)
         });
@@ -150,9 +150,9 @@ fn ties_go_round_robin_across_questions_so_none_is_starved() {
     let s2 = started.clone();
     let tools = move || {
         let mut t = research_tools();
-        let base = research_tools().get_code("search_and_fetch").unwrap().clone();
+        let base = research_tools().get_code("fetch_page").unwrap().clone();
         let started = s2.clone();
-        t.code("search_and_fetch", move |input, cancel| {
+        t.code("fetch_page", move |input, cancel| {
             started.fetch_add(1, Ordering::SeqCst);
             while started.load(Ordering::SeqCst) < 3 && !cancel.is_cancelled() {
                 std::thread::sleep(Duration::from_millis(2));
@@ -244,10 +244,10 @@ fn a_delta_merge_fires_at_each_quarter_of_the_watched_step_and_sends_only_what_i
         t.prompt("condenser", |input| {
             let new: Vec<String> = input.members.iter().map(|m| m.id.clone()).collect();
             let old: Vec<String> = input.existing.iter().map(|m| m.id.clone()).collect();
-            Ok(marlowe_project::engine::Prompt {
-                system: vec![marlowe_model::SystemBlock { text: "Merge claims.".into(), cache: true }],
-                user: format!("PASS {} NEW {} EXISTING {}", input.pass, new.join(","), old.join(",")),
-            })
+            Ok(marlowe_project::engine::Prompt::new(
+                vec![marlowe_model::SystemBlock { text: "Merge claims.".into(), cache: true }],
+                format!("PASS {} NEW {} EXISTING {}", input.pass, new.join(","), old.join(",")),
+            ))
         });
         t
     };
@@ -340,8 +340,8 @@ fn a_restart_replays_the_journal_and_never_asks_a_model_or_refetches_a_page() {
     let fetches = Arc::new(AtomicUsize::new(0));
     let f2 = fetches.clone();
     let mut tools = research_tools();
-    let base = research_tools().get_code("search_and_fetch").unwrap().clone();
-    tools.code("search_and_fetch", move |i, c| {
+    let base = research_tools().get_code("fetch_page").unwrap().clone();
+    tools.code("fetch_page", move |i, c| {
         f2.fetch_add(1, Ordering::SeqCst);
         base(i, c)
     });
@@ -662,8 +662,8 @@ fn a_function_that_panics_fails_its_task_and_the_run_goes_on() {
     let rig = Rig::new("panic", 2, 2, Fake::schema());
     let tools = || {
         let mut t = research_tools();
-        let base = research_tools().get_code("search_and_fetch").unwrap().clone();
-        t.code("search_and_fetch", move |input, cancel| {
+        let base = research_tools().get_code("fetch_page").unwrap().clone();
+        t.code("fetch_page", move |input, cancel| {
             if input.sub == "q2" {
                 panic!("a bug in a fetcher");
             }
@@ -677,7 +677,7 @@ fn a_function_that_panics_fails_its_task_and_the_run_goes_on() {
     let st = rig.p.state();
     assert_eq!(st.items_of_kind("source").len(), 2, "q1 was read, q2 was not");
     let fetch = st.phase("ph_dc").unwrap().steps.iter().find(|s| s.id == "fetch").unwrap().counts;
-    assert_eq!((fetch.done, fetch.failed), (1, 1));
+    assert_eq!((fetch.done, fetch.failed), (2, 2), "q1's two hits were read, q2's two fetches stopped unexpectedly");
 }
 
 /// A gate that refuses every call, as a memory-starved machine would.
@@ -701,9 +701,11 @@ fn a_gate_that_refuses_fails_the_employee_with_the_gates_words_and_never_calls_t
     assert!(matches!(join_within(e.spawn().unwrap(), 20), RunOutcome::Parked { .. }));
     let e = p.engine(model.clone(), Arc::new(Refusing), research_tools(), config("mini"));
     e.answer("g_1", "approve", None).unwrap();
-    assert_eq!(join_within(e.spawn().unwrap(), 60), RunOutcome::Finished);
+    // Every question's first step failed: the user is asked before anything else is attempted.
+    assert!(matches!(join_within(e.spawn().unwrap(), 60), RunOutcome::Parked { .. }));
     assert_eq!(model.count(), 0);
     let st = p.state();
+    assert_eq!(st.open_gate().unwrap().payload["reason"], "failures");
     let vectors = st.items_of_kind("vector");
     assert_eq!(vectors.len(), 2);
     assert!(vectors.iter().all(|v| v.status == ItemStatus::Failed && v.error.as_deref() == Some("the model could not be used: Windows is out of memory")));

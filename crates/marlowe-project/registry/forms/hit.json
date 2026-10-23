@@ -1,0 +1,126 @@
+{
+  "form": "hit",
+  "version": 1,
+  "title": "Search result",
+  "item_label": "{data.title}",
+  "fields": [
+    {
+      "key": "url",
+      "type": "url",
+      "w": "C",
+      "show": {
+        "as": "link",
+        "label_from": "title"
+      }
+    },
+    {
+      "key": "title",
+      "type": "string",
+      "w": "C",
+      "max_len": 200,
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "channel",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "date",
+      "type": "string",
+      "w": "C",
+      "nullable": true,
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "snippet",
+      "type": "text",
+      "w": "C",
+      "max_len": 400,
+      "show": {
+        "as": "text",
+        "lines": 2
+      }
+    },
+    {
+      "key": "origin",
+      "type": "enum",
+      "w": "C",
+      "values": [
+        {
+          "v": "search",
+          "tone": "info"
+        },
+        {
+          "v": "seed",
+          "tone": "accent"
+        }
+      ]
+    },
+    {
+      "key": "identity",
+      "type": "string",
+      "w": "C",
+      "nullable": true,
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "identity_confirmed",
+      "type": "bool",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "retracted",
+      "type": "bool",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "stars",
+      "type": "integer",
+      "w": "C",
+      "nullable": true,
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "rank",
+      "type": "integer",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "question",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "round",
+      "type": "integer",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    }
+  ]
+}

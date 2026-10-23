@@ -1,6 +1,5 @@
 {
   "phase": "Report",
-  
   "steps": [
     {
       "id": "sections",
@@ -11,7 +10,9 @@
       "class": "employee",
       "effort": "off",
       "max_output": 1600,
-      "emit": "section"
+      "emit": "section",
+      "fn": "section_finish",
+      "prompt": "section-writer"
     },
     {
       "id": "answer",
@@ -28,7 +29,9 @@
       "class": "employee",
       "effort": "off",
       "max_output": 1100,
-      "emit": "answer"
+      "emit": "answer",
+      "fn": "answer_finish",
+      "prompt": "answer-writer"
     },
     {
       "id": "cite",
@@ -58,7 +61,9 @@
       "class": "employee",
       "effort": "off",
       "max_output": 700,
-      "emit": "audit"
+      "emit": "audit",
+      "fn": "audit_finish",
+      "prompt": "auditor"
     },
     {
       "id": "assemble",

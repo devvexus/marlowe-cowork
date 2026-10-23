@@ -1,0 +1,78 @@
+{
+  "form": "batch",
+  "version": 1,
+  "title": "Cited sentences",
+  "item_label": "Sentences {data.batch}",
+  "fields": [
+    {
+      "key": "batch",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "sentences",
+      "type": "table",
+      "w": "C",
+      "max_items": 6,
+      "columns": [
+        {
+          "key": "n",
+          "type": "integer",
+          "w": "C"
+        },
+        {
+          "key": "where",
+          "type": "string",
+          "w": "C"
+        },
+        {
+          "key": "start",
+          "type": "integer",
+          "w": "C",
+          "show": {
+            "as": "hidden"
+          }
+        },
+        {
+          "key": "end",
+          "type": "integer",
+          "w": "C",
+          "show": {
+            "as": "hidden"
+          }
+        },
+        {
+          "key": "text",
+          "type": "text",
+          "w": "C"
+        },
+        {
+          "key": "claims",
+          "type": "list",
+          "w": "C",
+          "of": "integer"
+        },
+        {
+          "key": "refs",
+          "type": "list",
+          "w": "C",
+          "of": "string",
+          "label": "where the passages are",
+          "show": {
+            "as": "hidden"
+          }
+        }
+      ],
+      "show": {
+        "as": "table",
+        "columns": [
+          "n",
+          "text"
+        ]
+      }
+    }
+  ]
+}

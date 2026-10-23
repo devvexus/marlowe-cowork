@@ -332,6 +332,15 @@ fn run_model(sh: &Shared, t: &Task, ctx: &Ctx, rec: &mut Record) -> Result<(Fini
         Some(f) => f(&ctx.input).map_err(|e| Stop::Failed(format!("the prompt could not be built: {e}"), None))?,
         None => default_prompt(&ctx.input, &form.title),
     };
+    if let Some(answer) = prompt.canned.clone() {
+        // Code already knows the answer: the finish function sees it as it sees a reply.
+        let map = answer.as_object().cloned().unwrap_or_default();
+        let fin = match step.func.as_deref().and_then(|n| sh.tools.get_finish(n)) {
+            Some(f) => f(&ctx.input, Some(map.clone())).map_err(|e| Stop::Failed(format!("form rule `{}` rejected the known answer", e.rule), None))?,
+            None => Finished { data: map.clone(), ..Default::default() },
+        };
+        return Ok((fin, Some(map)));
+    }
     let model = sh.model_for(step.class).to_string();
     let call = EmployeeCall {
         model: model.clone(),

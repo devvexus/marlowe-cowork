@@ -23,7 +23,12 @@
     "section@1",
     "answer@1",
     "audit@1",
-    "validated@1"
+    "validated@1",
+    "hit@1",
+    "batch@1",
+    "note@1",
+    "report@1",
+    "deliverable@1"
   ],
   "supersedes": [
     "web-research",

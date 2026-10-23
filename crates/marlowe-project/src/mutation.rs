@@ -195,6 +195,28 @@ pub enum Mutation {
     SetMetrics(Metrics),
     /// Replace the grants.
     SetGrants(Grants),
+    /// What the engine owns of the live numbers: tokens, running time and budget raises. The
+    /// other numbers (fetch counts, machine load) are left as they are.
+    SetRunMetrics {
+        /// Tokens used by every agent.
+        tokens: crate::state::Tokens,
+        /// Milliseconds the project has spent running.
+        active_ms: u64,
+        /// Times the user raised a budget.
+        budget_raises: u32,
+    },
+    /// Count page reads: added to the fetch outcomes, and `used` to the network grant's count.
+    /// Atomic, so parallel fetches cannot lose each other's counts.
+    AddFetch {
+        /// Pages read.
+        ok: u32,
+        /// Pages that failed.
+        failed: u32,
+        /// Fetches a rule refused.
+        blocked: u32,
+        /// Fetches charged to the grant's quota.
+        used: u32,
+    },
     /// Latch the taint flag (setting `false` is ignored: taint is never cleared).
     SetTainted(bool),
 }
@@ -281,6 +303,8 @@ impl ProjectState {
             Mutation::PushGate(_) | Mutation::AnswerGate { .. } => vec![Part::Top("gates")],
             Mutation::SetMetrics(_) => vec![Part::Top("metrics")],
             Mutation::SetGrants(_) => vec![Part::Top("grants")],
+            Mutation::SetRunMetrics { .. } => vec![Part::Top("metrics")],
+            Mutation::AddFetch { .. } => vec![Part::Top("metrics"), Part::Top("grants")],
             Mutation::SetTainted(_) => vec![Part::Top("tainted")],
         }
     }
@@ -459,6 +483,19 @@ impl ProjectState {
             }
             Mutation::SetMetrics(m) => self.metrics = m,
             Mutation::SetGrants(g) => self.grants = g,
+            Mutation::SetRunMetrics { tokens, active_ms, budget_raises } => {
+                self.metrics.tokens = tokens;
+                self.metrics.active_ms = active_ms;
+                self.metrics.budget_raises = budget_raises;
+            }
+            Mutation::AddFetch { ok, failed, blocked, used } => {
+                self.metrics.fetch.ok += ok;
+                self.metrics.fetch.failed += failed;
+                self.metrics.fetch.blocked += blocked;
+                if let Some(n) = self.grants.net.as_mut() {
+                    n.used += used;
+                }
+            }
             Mutation::SetTainted(t) => self.tainted = self.tainted || t,
         }
         Ok(())
@@ -593,6 +630,8 @@ mod tests {
             Mutation::AnswerGate { id: "g_1".into(), choice: "approve".into(), text: None },
             Mutation::SetGrants(Grants { net: Some(NetGrant { scope: "run".into(), public_https_get: true, robots: true, quota: 60, used: 0 }) }),
             Mutation::SetMetrics(Metrics { cpu_pct: 12.5, ..Metrics::default() }),
+            Mutation::AddFetch { ok: 2, failed: 1, blocked: 1, used: 3 },
+            Mutation::SetRunMetrics { tokens: Tokens { input: 5, out: 6 }, active_ms: 7, budget_raises: 1 },
             Mutation::SetTainted(true),
             Mutation::SetStatus(ProjectStatus::Running),
             Mutation::SetStatus(ProjectStatus::Finished),

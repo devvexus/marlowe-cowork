@@ -177,6 +177,39 @@
       "show": {
         "as": "hidden"
       }
+    },
+    {
+      "key": "identity_confirmed",
+      "type": "bool",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "retracted",
+      "type": "bool",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "stars",
+      "type": "integer",
+      "w": "C",
+      "nullable": true,
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "chars",
+      "type": "integer",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
     }
   ]
 }

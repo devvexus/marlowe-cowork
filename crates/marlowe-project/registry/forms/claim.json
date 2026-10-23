@@ -53,6 +53,14 @@
       }
     },
     {
+      "key": "text_ref",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
       "key": "credibility",
       "type": "number",
       "w": "C",

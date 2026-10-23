@@ -138,6 +138,23 @@ pub struct Prompt {
     pub system: Vec<SystemBlock>,
     /// The one item's data, fenced, last.
     pub user: String,
+    /// An answer code already knows (a claim none of whose quotes is still in its page can only be
+    /// `unsupported`; a question no verified claim speaks to has nothing to write). The form's
+    /// finish function runs on it exactly as on a model's reply, but no model is called, no slot
+    /// is taken and no agent appears.
+    pub canned: Option<Value>,
+}
+
+impl Prompt {
+    /// A prompt for the model: `system` blocks, then the one `user` message.
+    pub fn new(system: Vec<SystemBlock>, user: String) -> Prompt {
+        Prompt { system, user, canned: None }
+    }
+
+    /// No call: `answer` stands in for the model's reply.
+    pub fn canned(answer: Value) -> Prompt {
+        Prompt { system: Vec::new(), user: String::new(), canned: Some(answer) }
+    }
 }
 
 /// What a function made.
@@ -334,5 +351,5 @@ pub fn default_prompt(input: &TaskInput, form_title: &str) -> Prompt {
     if user.is_empty() {
         user.push_str("Answer the form for the project as a whole.");
     }
-    Prompt { system: vec![SystemBlock { text: system, cache: true }], user }
+    Prompt::new(vec![SystemBlock { text: system, cache: true }], user)
 }

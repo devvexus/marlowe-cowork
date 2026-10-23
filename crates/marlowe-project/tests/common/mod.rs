@@ -262,20 +262,31 @@ pub fn asks_for(req: &ChatRequest, property: &str) -> bool {
 /// Fake versions of every function the research menu names (stage C writes the real ones).
 pub fn research_tools() -> Toolbox {
     let mut t = Toolbox::new();
-    t.code("search_and_fetch", |input, _| {
+    t.code("search_sources", |input, _| {
         let v = input.item.as_ref().expect("a vector");
         let mut out = Finished::default();
         for n in 1..=2 {
-            let mut p = input.new_item("page", "page@1", &[&v.id, &n.to_string()]);
-            p.label = format!("Page {n} for {}", input.sub);
-            p.data = json!({"source_id": format!("s_{}_{n}", v.id), "url": format!("https://example.org/{}/{n}", input.sub), "title": p.label,
-                            "channel": "web", "status": "ok", "credibility": 0.5, "links": 0, "question": input.sub})
+            let mut h = input.new_item("hit", "hit@1", &[&v.id, &n.to_string()]);
+            h.label = format!("Hit {n} for {}", input.sub);
+            h.data = json!({"url": format!("https://example.org/{}/{n}", input.sub), "title": h.label, "channel": "web", "origin": "search",
+                            "identity_confirmed": false, "retracted": false, "rank": n, "question": input.sub, "round": 1})
             .as_object()
             .cloned()
             .unwrap();
-            out.emits.push(p);
+            out.emits.push(h);
         }
         Ok(out)
+    });
+    t.code("fetch_page", |input, _| {
+        let h = input.item.as_ref().expect("a hit");
+        let mut p = input.new_item("page", "page@1", &[&h.id]);
+        p.label = h.data["title"].as_str().unwrap_or("").to_string();
+        p.data = json!({"source_id": format!("s_{}", h.id), "url": h.data["url"], "title": p.label,
+                        "channel": "web", "status": "ok", "credibility": 0.5, "links": 0, "question": input.sub})
+        .as_object()
+        .cloned()
+        .unwrap();
+        Ok(Finished { emits: vec![p], ..Default::default() })
     });
     let index = Arc::new(AtomicUsize::new(0));
     t.finish("analyze_finish", move |input, map| {
@@ -380,6 +391,10 @@ pub fn research_tools() -> Toolbox {
         out.emits.push(b);
         Ok(out)
     });
+    // Forms with no rules in the fake: the model's reply is the data as it is.
+    for name in ["vectors_finish", "lead_finish", "section_finish", "answer_finish", "audit_finish"] {
+        t.finish(name, |_, map| Ok(Finished { data: map.unwrap_or_default(), ..Default::default() }));
+    }
     for name in ["assemble_report", "deliver", "dispose", "remember"] {
         t.code(name, |_, _| Ok(Finished::default()));
     }

@@ -294,6 +294,12 @@ pub fn answer_gate(handle: &ProjectHandle, gate: &str, choice: &str, text: Optio
         })
 }
 
+/// The part of the live numbers the engine owns, as a mutation: it must not overwrite what task
+/// functions count (fetches) from their own threads.
+fn run_metrics(m: &Metrics) -> Mutation {
+    Mutation::SetRunMetrics { tokens: m.tokens, active_ms: m.active_ms, budget_raises: m.budget_raises }
+}
+
 fn fail<E: std::fmt::Display>(what: &str) -> impl FnOnce(E) -> String + '_ {
     move |e| format!("{what}: {e}")
 }
@@ -436,7 +442,7 @@ impl Engine {
         // Booked once, whatever the outcome: running time (parked time excluded) is what the
         // minutes budget counts.
         rt.metrics.active_ms = rt.base_active_ms + rt.began.elapsed().as_millis() as u64;
-        let _ = self.handle.send(Mutation::SetMetrics(rt.metrics));
+        let _ = self.handle.send(run_metrics(&rt.metrics));
         let _ = self.handle.flush();
         outcome
     }
@@ -506,7 +512,7 @@ impl Engine {
             if rt.metrics_dirty {
                 rt.metrics_dirty = false;
                 rt.metrics.active_ms = rt.base_active_ms + rt.began.elapsed().as_millis() as u64;
-                let _ = self.handle.send(Mutation::SetMetrics(rt.metrics));
+                let _ = self.handle.send(run_metrics(&rt.metrics));
             }
             // Parked: nothing may run; the gate is raised (or found open) once the last worker is back.
             if let Some(p) = rt.park.clone() {
@@ -1395,7 +1401,7 @@ impl Engine {
             Effect::RaiseBudget { to } => {
                 rt.metrics.budget_raises = rt.metrics.budget_raises.max(*to);
                 rt.metrics_dirty = true;
-                self.mutate(Mutation::SetMetrics(rt.metrics))?;
+                self.mutate(run_metrics(&rt.metrics))?;
             }
         }
         Ok(())

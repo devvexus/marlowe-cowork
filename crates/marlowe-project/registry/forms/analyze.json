@@ -182,6 +182,22 @@
           "show": {
             "as": "hidden"
           }
+        },
+        {
+          "key": "start",
+          "type": "integer",
+          "w": "C",
+          "show": {
+            "as": "hidden"
+          }
+        },
+        {
+          "key": "end",
+          "type": "integer",
+          "w": "C",
+          "show": {
+            "as": "hidden"
+          }
         }
       ],
       "show": {
@@ -309,6 +325,23 @@
       "key": "rejected",
       "type": "json",
       "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "page",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "text_ref",
+      "type": "string",
+      "w": "C",
+      "nullable": true,
       "show": {
         "as": "hidden"
       }
