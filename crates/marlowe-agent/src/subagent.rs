@@ -801,6 +801,15 @@ impl Lane {
     }
 }
 
+/// Admission to a local model's stream slots, shared with the crew: a subagent on a local model
+/// takes one of the same slots a crew agent would (the model's slots less the conductor's), so the
+/// two together never oversubscribe the runner. The guard it returns frees the slot on drop.
+pub trait LocalGate: Send + Sync {
+    /// Waits for a slot on `model`; `waiting` is told why when it has to wait. `None` when
+    /// `cancelled` fired first.
+    fn acquire(&self, model: &ModelInfo, cancelled: &dyn Fn() -> bool, waiting: &dyn Fn(&str)) -> Option<Box<dyn Send>>;
+}
+
 #[derive(Default)]
 struct Slots {
     used: Mutex<HashMap<Lane, usize>>,
@@ -898,6 +907,8 @@ impl AgentNames {
 pub struct Subagents {
     cfg: SubagentConfig,
     state: Arc<State>,
+    /// Where a local model's slots come from; without one a local lane runs one agent at a time.
+    gate: Option<Arc<dyn LocalGate>>,
 }
 
 /// Appended to every subagent's system prompt.
@@ -912,7 +923,13 @@ const MESSAGE_FRAME: &str = "[message from the main agent]";
 
 impl Subagents {
     pub fn new(cfg: SubagentConfig) -> Self {
-        Self { cfg, state: Arc::new(State::default()) }
+        Self { cfg, state: Arc::new(State::default()), gate: None }
+    }
+
+    /// Takes local-model slots from `gate` (the crew's pool) instead of one agent per lane.
+    pub fn with_local_gate(mut self, gate: Arc<dyn LocalGate>) -> Self {
+        self.gate = Some(gate);
+        self
     }
 
     /// The agent names, for tools that need them.
@@ -1031,9 +1048,27 @@ impl Subagents {
     ) -> Result<String, String> {
         let lane = Lane::of(&agent.model, background);
         let c = cancel.clone();
-        if !self.state.slots.acquire(lane, self.cfg.cloud_slots, &|| c.is_cancelled()) {
-            return Err("interrupted before the agent started".into());
-        }
+        let say = |why: &str| {
+            let started_ms = crate::tasks::now_ms();
+            lock(&self.state.progress).entry(id.to_string()).or_insert_with(|| Progress { started_ms, ..Progress::default() }).doing = why.to_string();
+        };
+        // A local model's slots are the crew's pool; a cloud lane keeps its own count.
+        let gate = self.gate.as_ref().filter(|_| lane != Lane::Cloud);
+        let permit = match gate {
+            Some(g) => match g.acquire(&agent.model, &|| c.is_cancelled(), &say) {
+                Some(p) => {
+                    lock(&self.state.progress).entry(id.to_string()).and_modify(|p| p.doing.clear());
+                    Some(p)
+                }
+                None => return Err("interrupted before the agent started".into()),
+            },
+            None => {
+                if !self.state.slots.acquire(lane, self.cfg.cloud_slots, &|| c.is_cancelled()) {
+                    return Err("interrupted before the agent started".into());
+                }
+                None
+            }
+        };
         let state = self.state.clone();
         let mut note = |e: AgentEvent| {
             let mut all = lock(&state.progress);
@@ -1051,7 +1086,10 @@ impl Subagents {
             p.doing.clear();
             p.ended_ms = crate::tasks::now_ms();
         });
-        self.state.slots.release(lane);
+        match permit {
+            Some(p) => drop(p),
+            None => self.state.slots.release(lane),
+        }
         // A report handed back is the result as written; the handback ended the run by cancelling
         // its own token, which is not an interrupt.
         let handed = convo.ext.get::<Handback>().map(|h| h.0.clone());

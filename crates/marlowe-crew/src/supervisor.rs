@@ -215,6 +215,23 @@ pub struct Supervisor {
     inner: Arc<Inner>,
 }
 
+/// A local stream slot held for a subagent; freed on drop.
+pub struct LocalStream {
+    inner: Arc<Inner>,
+    key: String,
+}
+
+impl Drop for LocalStream {
+    fn drop(&mut self) {
+        let mut n = lock(&self.inner.local_streams);
+        if let Some(held) = n.get_mut(&self.key) {
+            *held = held.saturating_sub(1);
+        }
+        drop(n);
+        self.inner.local_free.notify_all();
+    }
+}
+
 /// One run's live controls. Cancel is final; pause and stop end the run thread at its next step
 /// boundary (stop = shutdown, the store keeps the run `running` so the next start resumes it).
 /// `user_cancel` marks a cancel the user asked for, which outranks pause and stop when the run
@@ -818,6 +835,38 @@ log={log_len}
         let holders = lock(&self.inner.local_holders);
         let on: Vec<&RunId> = holders.iter().filter(|(_, _, m)| *m == want).map(|(r, _, _)| r).collect();
         (on.first().map(|r| (*r).clone()), on.len())
+    }
+
+    /// A stream slot on local `model` for something that is not a crew run (an `agent` subagent):
+    /// the same pool and limit as the crew's own calls (`crew_slots`, the conductor's slot left
+    /// out), so both together never oversubscribe the runner. Waits for one, telling `waiting`
+    /// why once when the runner serves fewer than planned; `None` when `cancelled` fires first.
+    /// The slot is freed when the permit drops.
+    pub fn acquire_local_stream(&self, model: &ModelRef, cancelled: &dyn Fn() -> bool, waiting: &dyn Fn(&str)) -> Option<LocalStream> {
+        let inner = &self.inner;
+        let key = model.to_string();
+        let mut said = false;
+        let mut n = lock(&inner.local_streams);
+        loop {
+            let limit = inner.deps.brains.context().crew_slots(model);
+            let held = n.entry(key.clone()).or_default();
+            if *held < limit {
+                *held += 1;
+                return Some(LocalStream { inner: Arc::clone(inner), key });
+            }
+            if cancelled() {
+                return None;
+            }
+            if !said {
+                said = true;
+                let why = inner.deps.brains.context().slots_note(model);
+                waiting(&match why {
+                    Some(note) => format!("waiting for a model slot: {note}"),
+                    None => format!("waiting for a model slot: all {limit} agent slot{} on {model} are busy", if limit == 1 { "" } else { "s" }),
+                });
+            }
+            n = inner.local_free.wait_timeout(n, Duration::from_millis(100)).unwrap_or_else(|e| e.into_inner()).0;
+        }
     }
 
     pub fn roles(&self) -> Vec<RoleInfo> {

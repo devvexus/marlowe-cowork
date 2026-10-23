@@ -1821,6 +1821,72 @@ fn parity_a4_a_foreground_local_agent_does_not_wait_behind_a_background_one() {
     wakes.recv_timeout(Duration::from_secs(5)).expect("the background agent still reports");
 }
 
+/// A pool of `limit` local slots, as the crew's supervisor offers it, that records its peak.
+struct FakePool {
+    limit: usize,
+    state: Arc<(Mutex<(usize, usize)>, std::sync::Condvar)>,
+}
+
+struct Held(Arc<(Mutex<(usize, usize)>, std::sync::Condvar)>);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.0 .0.lock().unwrap().0 -= 1;
+        self.0 .1.notify_all();
+    }
+}
+
+impl subagent::LocalGate for FakePool {
+    fn acquire(&self, _m: &ModelInfo, cancelled: &dyn Fn() -> bool, waiting: &dyn Fn(&str)) -> Option<Box<dyn Send>> {
+        let mut g = self.state.0.lock().unwrap();
+        let mut said = false;
+        while g.0 >= self.limit {
+            if cancelled() {
+                return None;
+            }
+            if !said {
+                said = true;
+                waiting("waiting for a model slot: all slots are busy");
+            }
+            g = self.state.1.wait_timeout(g, Duration::from_millis(20)).unwrap().0;
+        }
+        g.0 += 1;
+        g.1 = g.1.max(g.0);
+        Some(Box::new(Held(self.state.clone())))
+    }
+}
+
+/// Local subagents take slots from the shared pool: as many run at once as it has free, the next
+/// waits (and says why), and every one still finishes and reports.
+#[test]
+fn local_subagents_run_in_parallel_up_to_the_pools_free_slots() {
+    let root = tmp("pool");
+    let sub = Script::with(ProviderKind::Ollama, Vec::new(), Duration::from_millis(400));
+    let (services, wakes, host) = ledgered(&root, Arc::new(LocalResolver(sub.clone())), Arc::new(FakeLedger::default()));
+    let state = Arc::new((Mutex::new((0usize, 0usize)), std::sync::Condvar::new()));
+    let pool = Arc::new(FakePool { limit: 2, state: state.clone() });
+    let subs = services.get::<Subagents>().unwrap().clone().with_local_gate(pool);
+    let services = Services::new().with(subs.clone());
+    let call_bg = |n: &str| call("agent", json!({"type": "general", "description": n, "prompt": "work", "background": true}));
+    let p = Script::new(vec![call_bg("a"), call_bg("b"), call_bg("c"), answer("ok")]);
+    let mut a = agent(p, frontier(), host);
+    a.services = services;
+    let started = Instant::now();
+    run(&a, &mut convo(Some(&root)), "go");
+    assert!(started.elapsed() < Duration::from_millis(300), "the caller keeps talking: nothing waits on the agents");
+    let waits = (0..60).any(|_| {
+        std::thread::sleep(Duration::from_millis(10));
+        subs.agents().iter().any(|s| s.progress.doing.contains("waiting for a model slot"))
+    });
+    assert!(waits, "the third says it waits for a slot: {:?}", subs.agents());
+    for _ in 0..3 {
+        wakes.recv_timeout(Duration::from_secs(10)).expect("every agent reports");
+    }
+    assert_eq!(state.0.lock().unwrap().1, 2, "two at once, never three");
+    assert_eq!(state.0.lock().unwrap().0, 0, "every slot freed");
+    assert!(subs.agents().iter().all(|s| s.progress.doing.is_empty()));
+}
+
 // ================================================================ review fixes, round 2
 
 /// The daemon's trust as a test sees it: answers one way, remembers a yes by digest, and

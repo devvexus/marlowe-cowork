@@ -625,6 +625,20 @@ impl ToolMiddleware for GoodMark {
     }
 }
 
+/// Gives `agent` subagents on a local model the slots the crew's agents use (the model's slots
+/// less the conductor's), so they run in parallel and never oversubscribe the runner.
+struct CrewGate {
+    core: Arc<Core>,
+}
+
+impl marlowe_agent::subagent::LocalGate for CrewGate {
+    fn acquire(&self, model: &marlowe_model::ModelInfo, cancelled: &dyn Fn() -> bool, waiting: &dyn Fn(&str)) -> Option<Box<dyn Send>> {
+        let Some(link) = self.core.crew.get() else { return Some(Box::new(())) };
+        let permit = link.supervisor.acquire_local_stream(&model.model_ref(), cancelled, waiting)?;
+        Some(Box::new(permit))
+    }
+}
+
 /// F's services for one session, added by `stack.rs`.
 pub(crate) fn services(core: &Arc<Core>, convo: &Conversation, services: Services) -> Services {
     let session = convo.session.clone();
@@ -650,6 +664,7 @@ pub(crate) fn services(core: &Arc<Core>, convo: &Conversation, services: Service
         cloud_slots: CLOUD_SLOTS,
         ledger: Some(Arc::new(Ledger { core: core.clone() })),
     });
+    let sub = sub.with_local_gate(Arc::new(CrewGate { core: core.clone() }));
     let todo_core = core.clone();
     let todos = TodoSink(Arc::new(move |s: &SessionId, items: &[TodoItem]| {
         todo_core.bus.publish(Event::Todos { session: s.clone(), items: items.to_vec() });

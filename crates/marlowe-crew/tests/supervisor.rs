@@ -975,6 +975,66 @@ sandbox: scratch
 }
 
 #[test]
+fn subagents_and_crew_runs_share_one_pool_of_local_slots() {
+    let home = home("slots-subagents");
+    let release = Arc::new(AtomicBool::new(false));
+    let (now, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (r, n, p) = (release.clone(), now.clone(), peak.clone());
+    let provider = Scripted::new(ProviderKind::Ollama, move |_, _, cancel| {
+        p.fetch_max(n.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+        let end = Instant::now() + Duration::from_secs(30);
+        while !r.load(Ordering::SeqCst) && !cancel.is_cancelled() {
+            assert!(Instant::now() < end, "never released");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        n.fetch_sub(1, Ordering::SeqCst);
+        Ok(answer("done"))
+    });
+    let b = brains(&[("cond", provider)]);
+    b.with_library(|l| l.add(&ModelInfo::bare(ProviderKind::Ollama, "alpha"))).unwrap();
+    with_slots(&b, "cond", 4);
+    let alpha = with_slots(&b, "alpha", 3);
+    b.set_slot(&Slot::Crew("tester".into()), Some(&alpha), Effort::Low).unwrap();
+    let fx = start_with(&home, b, CrewConfig::default(), false);
+    let never = || false;
+    let quiet = |_: &str| {};
+
+    // Three slots: three subagents hold them at once, and a fourth waits and says why.
+    let a = fx.sup.acquire_local_stream(&alpha, &never, &quiet).expect("first");
+    let b2 = fx.sup.acquire_local_stream(&alpha, &never, &quiet).expect("second");
+    let c = fx.sup.acquire_local_stream(&alpha, &never, &quiet).expect("third");
+    let said = Arc::new(Mutex::new(String::new()));
+    let (sup, model, said2) = (fx.sup.clone(), alpha.clone(), said.clone());
+    let fourth = std::thread::spawn(move || {
+        sup.acquire_local_stream(&model, &|| false, &|w| *said2.lock().unwrap() = w.to_string()).is_some()
+    });
+    wait("the fourth says it waits", || !said.lock().unwrap().is_empty());
+    assert!(said.lock().unwrap().contains("waiting for a model slot"), "{}", said.lock().unwrap());
+    assert!(!fourth.is_finished(), "no slot is free");
+    // A cancelled wait gives up with nothing held.
+    assert!(fx.sup.acquire_local_stream(&alpha, &|| true, &quiet).is_none());
+    drop(a);
+    assert!(fourth.join().unwrap(), "a freed slot goes to the waiter");
+    drop((b2, c));
+
+    // Two subagents hold two of the three: a crew run gets the third, and never a fourth stream.
+    let s1 = fx.sup.acquire_local_stream(&alpha, &never, &quiet).unwrap();
+    let s2 = fx.sup.acquire_local_stream(&alpha, &never, &quiet).unwrap();
+    let ids = dispatch_n(&fx.sup, "tester", 3);
+    wait("a crew run streams", || now.load(Ordering::SeqCst) >= 1);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(now.load(Ordering::SeqCst), 1, "the crew shares what the subagents left");
+    drop((s1, s2));
+    wait("the others start once the subagents are done", || now.load(Ordering::SeqCst) == 3);
+    release.store(true, Ordering::SeqCst);
+    for id in &ids {
+        wait_status(&fx.sup, id, CrewRunStatus::Done);
+    }
+    assert_eq!(peak.load(Ordering::SeqCst), 3, "never more streams than slots");
+    finish(fx, &[&home]);
+}
+
+#[test]
 fn cloud_runs_still_obey_per_provider() {
     let home = home("slots-cloud");
     let (now, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));

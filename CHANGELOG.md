@@ -4,6 +4,8 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+- **`agent` subagents on a local model run in parallel, like crew agents.** They used to queue one at a time per session (one foreground, one background) even on the llama.cpp engine with several slots. They now take slots from the crew's pool for that model (its slots less the conductor's, foreground and background alike), so subagents and crew together never exceed the real slots or touch the conductor's; with one slot (Ollama) they share it and the agent's line says "waiting for a model slot" and why. Cloud lanes are unchanged.
+
 ### Prompt cache
 
 - **No test, default or comment names the cyber model.** The prompt-cache audit runs only dawn and mini by default, store-resolution tests use a neutral model name, and a stray run of spaces in a cut-off tool-call message is a single space.
