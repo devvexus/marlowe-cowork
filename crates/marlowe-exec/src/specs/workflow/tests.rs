@@ -448,6 +448,55 @@ mod launch_forms {
     }
 
     #[test]
+    fn a_missing_path_beside_a_saved_name_runs_the_saved_task_and_an_empty_call_names_the_star_files() {
+        let (home, ws) = fixture("lf5");
+        let t = host(&home, &ws);
+        // The model wrote `.marl owe/...` for `.marlowe/...` and also gave the saved name.
+        std::fs::create_dir_all(ws.join(".marlowe/workflows")).unwrap();
+        std::fs::write(ws.join(".marlowe/workflows/saved.star"), SCRIPT).unwrap();
+        let roots = marlowe_workflow::service::roots(&home, Some(&ws), vec![]);
+        let p = marlowe_workflow::service::prepare(&roots, None, None, Some("saved")).unwrap();
+        marlowe_workflow::service::trust(&home, &p).unwrap();
+        let l = RunLauncher::new(&home, &ws);
+        let out = t.call_scoped(&req("team", json!({"name": "saved", "path": ".marl owe/workflows/saved.star"})), &cx(&ws, svc(&l)));
+        assert!(!out.is_error && out.content.contains("does not exist; ran the saved team task `saved`"), "{}", out.content);
+        assert_eq!(l.seen.lock().unwrap()[0].name.as_deref(), Some("saved"));
+        // `team{}` after the model wrote scripts to files: the refusal lists them.
+        std::fs::write(ws.join("plan.star"), SCRIPT).unwrap();
+        let out = t.call_scoped(&req("team", json!({})), &cx(&ws, Services::new()));
+        assert!(out.is_error && out.content.contains("`plan.star`") && out.content.contains("as `path`"), "{}", out.content);
+    }
+
+    #[test]
+    fn three_agents_in_a_row_with_no_parallel_are_sent_back_once() {
+        let (home, ws) = fixture("lf6");
+        let t = host(&home, &ws);
+        let seq = "META = {\"name\": \"seq\", \"description\": \"d\"}
+def main(args):
+    a = agent(\"1\")
+    b = agent(\"2\")
+    c = agent(\"3\")
+    return [a, b, c]
+";
+        trust_script(&home, &ws, Some(seq), None);
+        let l = RunLauncher::new(&home, &ws);
+        let first = t.call_scoped(&req("team", json!({"script": seq})), &cx(&ws, svc(&l)));
+        assert!(first.is_error && first.content.contains("parallel(") && first.content.contains("send the same call again"), "{}", first.content);
+        assert!(l.seen.lock().unwrap().is_empty(), "nothing launched");
+        let second = t.call_scoped(&req("team", json!({"script": seq})), &cx(&ws, svc(&l)));
+        assert!(!second.is_error, "{}", second.content);
+        assert_eq!(l.seen.lock().unwrap().len(), 1);
+        // A script that fans out is not sent back.
+        let par = "META = {\"name\": \"par\", \"description\": \"d\"}
+def main(args):
+    return parallel([lambda: agent(\"1\"), lambda: agent(\"2\"), lambda: agent(\"3\")])
+";
+        trust_script(&home, &ws, Some(par), None);
+        let out = t.call_scoped(&req("team", json!({"script": par})), &cx(&ws, svc(&l)));
+        assert!(!out.is_error, "{}", out.content);
+    }
+
+    #[test]
     fn a_script_error_is_the_validators_and_nothing_else() {
         let (home, ws) = fixture("lf4");
         let t = host(&home, &ws);

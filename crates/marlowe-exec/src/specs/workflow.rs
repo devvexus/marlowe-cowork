@@ -107,6 +107,20 @@ fn present(a: &Value, k: &str) -> bool {
     a.get(k).is_some_and(|v| !v.is_null())
 }
 
+/// [`plan`], except that a `path` that does not exist beside the name of a saved team task means the
+/// saved one (the model wrote `.marl owe/...` for `.marlowe/...`): that runs, and the result says so.
+fn resolved_plan(a: &Value, roots: &marlowe_workflow::saved::Roots) -> Result<Plan, String> {
+    let mut p = plan(a)?;
+    if let (Some(path), Some(n)) = (p.path.clone(), s(a, "name")) {
+        if !service::resolve_path(roots, &path).exists() && roots.resolve(n).is_ok() {
+            p.path = None;
+            p.name = Some(n.to_string());
+            p.ignored = vec![format!("`path` ({path} does not exist; ran the saved team task `{n}`)")];
+        }
+    }
+    Ok(p)
+}
+
 fn plan(a: &Value) -> Result<Plan, String> {
     let (script, path, name) = (script(a), path(a), s(a, "name"));
     let mut p = Plan::default();
@@ -177,7 +191,7 @@ fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
     let Some(roots) = roots(t, cx.workspace.as_deref()) else {
         return ToolOutcome::error("team tasks are not available on this host");
     };
-    let plan = match plan(a) {
+    let plan = match resolved_plan(a, &roots) {
         Ok(p) => p,
         Err(e) => return ToolOutcome::error(format!("{e}{}", star_files_hint(cx.workspace.as_deref()))),
     };
@@ -271,7 +285,7 @@ fn workflow_consequence(t: &BuiltinTools, c: &ToolCallReq) -> Consequence {
     };
     let mut approved = g.approved.lock().unwrap_or_else(|e| e.into_inner());
     // Nothing will run when the call names nothing: it returns the error.
-    let Ok(plan) = plan(a) else { return Consequence::Free };
+    let Ok(plan) = resolved_plan(a, &roots) else { return Consequence::Free };
     let key = call_key(&plan);
     match service::prepare(&roots, plan.script.as_deref(), plan.path.as_deref(), plan.name.as_deref()) {
         // Nothing will run: the call returns the errors. A script that appears by the time the
