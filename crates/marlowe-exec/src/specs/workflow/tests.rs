@@ -445,6 +445,13 @@ mod launch_forms {
         assert!(out.content.starts_with("code-review.star is valid"), "{}", out.content);
         let out = t.call_scoped(&req("team", json!({"name": "no-such-workflow", "validate_only": true})), &cx(&ws, Services::new()));
         assert!(out.is_error, "{}", out.content);
+        // The built-in web-research task is there by name in any workspace, with its args passed on.
+        let out = t.call_scoped(&req("team", json!({"name": "web-research", "validate_only": true})), &cx(&ws, Services::new()));
+        assert!(out.content.starts_with("web-research.star is valid"), "{}", out.content);
+        let l = RunLauncher::new(&home, &ws);
+        let out = t.call_scoped(&req("team", json!({"name": "web-research", "args": {"topic": "kv cache"}})), &cx(&ws, svc(&l)));
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(l.seen.lock().unwrap().last().unwrap().args, json!({"topic": "kv cache"}));
     }
 
     #[test]

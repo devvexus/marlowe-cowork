@@ -3,7 +3,7 @@
 //! 1. the project's `.marlowe\workflows\<name>.star`,
 //! 2. the user's `<home>\workflows\<name>.star`,
 //! 3. plugin bundles' `<plugin>\workflows\<name>.star` (X17),
-//! 4. the built-ins (`code-review`, `simplify`; `workflows/` in this repository).
+//! 4. the built-ins (`code-review`, `simplify`, `web-research`; `workflows/` in this repository).
 //!
 //! Claude Code's `.claude\workflows\*.js` are listed read-only (9.2-q) with a note to convert
 //! them once (`/workflow convert <name>` writes `.marlowe\workflows\<name>.star`); running one by
@@ -16,9 +16,10 @@ use marlowe_proto::SavedWorkflow;
 use crate::validate::{self, Meta};
 
 /// The built-in workflows: name and source.
-pub const BUILTINS: [(&str, &str); 2] = [
+pub const BUILTINS: [(&str, &str); 3] = [
     ("code-review", include_str!("../../../workflows/code-review.star")),
     ("simplify", include_str!("../../../workflows/simplify.star")),
+    ("web-research", include_str!("../../../workflows/web-research.star")),
 ];
 
 /// The source of the built-in `name`.

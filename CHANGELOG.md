@@ -4,6 +4,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+- **`web-research` ships as a built-in team task.** Run it by name from any workspace (`team{name: "web-research", args: {topic}}`): one researcher per sub-question in parallel, each claim checked against its page in parallel, one writer that saves the cited report (claims numbered, References list) to `research/<topic>.md`. It is listed with the other saved tasks, and a workspace `.marlowe/workflows/web-research.star` overrides it. A local model could not yet write this script itself reliably; the rehearsed one ran 35 agents with up to 6 slots busy.
 - **`agent` subagents on a local model run in parallel, like crew agents.** They used to queue one at a time per session (one foreground, one background) even on the llama.cpp engine with several slots. They now take slots from the crew's pool for that model (its slots less the conductor's, foreground and background alike), so subagents and crew together never exceed the real slots or touch the conductor's; with one slot (Ollama) they share it and the agent's line says "waiting for a model slot" and why. Cloud lanes are unchanged.
 
 ### Prompt cache

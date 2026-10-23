@@ -132,7 +132,7 @@ fn parity_wf6_project_shadows_user_and_builtins() {
     assert!(roots.resolve("simplify").unwrap().origin == saved::Origin::Builtin);
     let list = roots.list();
     let names: Vec<&str> = list.iter().map(|(s, _)| s.name.as_str()).collect();
-    assert_eq!(names, ["code-review", "triage", "only-user", "simplify"]);
+    assert_eq!(names, ["code-review", "triage", "only-user", "simplify", "web-research"]);
     assert_eq!(list[1].0.description, "project triage");
     // The index for the prompt stays within its budget.
     let idx = saved::index(&list.iter().map(|(s, _)| s.clone()).collect::<Vec<_>>(), 120);
@@ -205,4 +205,56 @@ fn builtins_validate() {
     for (name, src) in saved::BUILTINS {
         marlowe_workflow::check(&format!("{name}.star"), src).unwrap_or_else(|d| panic!("{name}: {}", marlowe_workflow::validate::render(&d)));
     }
+}
+
+/// The built-in web-research team task: found by name, the topic arrives as an argument, the
+/// researchers and checkers are separate agents and one writer saves the cited report.
+#[test]
+fn web_research_is_built_in_listed_overridable_and_takes_a_topic() {
+    let ws = temp("wr-ws");
+    let home = temp("wr-home");
+    let roots = Roots { workspaces: vec![ws.clone()], home: Some(home), plugins: vec![] };
+    let found = roots.resolve("web-research").unwrap();
+    assert!(found.origin == saved::Origin::Builtin);
+    let list = roots.list();
+    let listed = list.iter().find(|(s, _)| s.name == "web-research").expect("listed");
+    assert!(listed.0.description.starts_with("Web research on a topic") && listed.0.source == "builtin", "{:?}", listed.0);
+    assert_eq!(listed.0.phases, ["research", "report"]);
+
+    let host = ScriptedHost::new(|c| {
+        let label = c.opts.label.clone().unwrap_or_default();
+        if label.starts_with("researcher") {
+            let f = json!({"claim": format!("claim from {label}"), "url": "https://example.org/a"});
+            return Scripted::now(AgentResult::object(json!({"findings": [f]}), 10));
+        }
+        if label == "checker" {
+            return Scripted::now(AgentResult::object(json!({"supported": true}), 5));
+        }
+        Scripted::now(AgentResult::text("report saved", 5))
+    });
+    let out = run(&found.source, RunConfig::new("web-research.star", json!({"topic": "Speculative Decoding on Mamba!"})), host.clone(), &mut marlowe_workflow::NoObserver, &unbounded().1).unwrap();
+    assert_eq!(out.value, "report saved");
+    let calls = host.calls();
+    let count = |p: &str| calls.iter().filter(|c| c.call.opts.label.as_deref().unwrap_or("").starts_with(p)).count();
+    assert_eq!((count("researcher"), count("checker"), count("writer")), (5, 5, 1), "{:?}", host.prompts());
+    assert!(host.prompts().iter().any(|p| p.contains("Speculative Decoding on Mamba!")), "the topic reaches the researchers");
+    let writer = calls.iter().find(|c| c.call.opts.label.as_deref() == Some("writer")).unwrap();
+    assert!(writer.call.prompt.contains("research/speculative-decoding-on-mamba.md") && writer.call.prompt.contains("References list"));
+    assert!(writer.call.prompt.contains("\"id\":\"C5\""), "claims are numbered: {}", writer.call.prompt);
+
+    // `question` works as the topic; a call with none says what to pass.
+    let r = run(&found.source, RunConfig::new("web-research.star", json!({})), ScriptedHost::echo(), &mut marlowe_workflow::NoObserver, &unbounded().1);
+    assert!(format!("{r:?}").contains("needs a topic"), "{r:?}");
+
+    // A workspace file of the same name wins.
+    std::fs::create_dir_all(ws.join(".marlowe/workflows")).unwrap();
+    std::fs::write(ws.join(".marlowe/workflows/web-research.star"), "META = {\"description\": \"mine\"}
+def main(args):
+    return 1
+").unwrap();
+    let over = roots.resolve("web-research").unwrap();
+    assert!(matches!(over.origin, saved::Origin::Project(_)) && over.source.contains("mine"));
+    let list = roots.list();
+    assert_eq!(list.iter().filter(|(s, _)| s.name == "web-research").count(), 1);
+    assert_eq!(list.iter().find(|(s, _)| s.name == "web-research").unwrap().0.description, "mine");
 }
