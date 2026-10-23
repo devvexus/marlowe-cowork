@@ -13,12 +13,13 @@ pub mod scan;
 mod stream;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use marlowe_model::image::BlobStore;
 use marlowe_model::{
-    CancelToken, ChatRequest, Completion, ContextAllocations, ModelInfo, Provider, ProviderError, ProviderKind,
+    CancelToken, ChatRequest, Completion, ContextAllocations, Lane, ModelInfo, Provider, ProviderError, ProviderKind,
     StreamEvent,
 };
 use serde_json::{json, Value};
@@ -62,6 +63,9 @@ pub struct OllamaProvider {
     llama: Option<LlamaEngine>,
     /// Checks that each request to the engine renders as the last prompt plus its reply.
     render: RenderGuard,
+    /// Whether the conductor's requests to the engine ask for the generated tokens (the exact text
+    /// of the reply). Cleared for good when the server refuses them.
+    raw_capture: AtomicBool,
 }
 
 impl Default for OllamaProvider {
@@ -82,6 +86,7 @@ impl OllamaProvider {
             stats: Arc::new(RepairStats::new()),
             llama: None,
             render: RenderGuard::default(),
+            raw_capture: AtomicBool::new(true),
         }
     }
 
@@ -349,46 +354,73 @@ impl OllamaProvider {
         let thinking = planned.body.get("think").is_some_and(|t| t != &Value::Bool(false));
         let want = Want { model: req.model.clone(), shape, lane: req.lane, key: conversation_key(req) };
         let lease = engine.acquire(&want, cancel)?;
-        let body = llama_chat::chat_body(&planned.body, lease.sampling.as_ref(), lease.slot);
+        // The user's conversation is the one that can be read ahead, so it is the one whose exact
+        // generated text is worth asking the server for.
+        let mut raw_asked = req.lane == Lane::Conductor && self.raw_capture.load(Ordering::Relaxed);
+        let mut body = llama_chat::chat_body(&planned.body, lease.sampling.as_ref(), lease.slot, &lease.thinking, raw_asked);
         // The prompt must extend the last one plus its reply, as the model's template renders it.
         self.render.before(&lease.endpoint, &req.model, want.key, &body);
         on(StreamEvent::Sent);
-        let reader = http::post_stream(&lease.endpoint, "/v1/chat/completions", &body, "text/event-stream", cancel, LLAMA_IDLE_TIMEOUT)
-            .map_err(|e| llama_error(e))?;
+        let post = |body: &Value| http::post_stream(&lease.endpoint, "/v1/chat/completions", body, "text/event-stream", cancel, LLAMA_IDLE_TIMEOUT);
+        let reader = match post(&body) {
+            Err(e) if raw_asked && refuses_token_probs(&e) => {
+                // This server cannot send the tokens with the stream: the template's printing of
+                // the reply stands in for them from now on.
+                self.raw_capture.store(false, Ordering::Relaxed);
+                raw_asked = false;
+                body = llama_chat::chat_body(&planned.body, lease.sampling.as_ref(), lease.slot, &lease.thinking, false);
+                post(&body)
+            }
+            other => other,
+        }
+        .map_err(llama_error)?;
         let mut folder = Folder::new(thinking, on).with_tools(&req.tools).with_stats(self.stats.clone());
-        llama_chat::read_stream(reader, &mut folder, cancel)?;
+        let mut raw = llama_chat::RawText::default();
+        llama_chat::read_stream_raw(reader, &mut folder, cancel, &mut raw)?;
         let done = folder.finish();
-        let (endpoint, sampling, slot) = (lease.endpoint.clone(), lease.sampling.clone(), lease.slot);
-        drop(lease);
-        self.hold_reply(&endpoint, want.key, req, &opts, &body, &done, sampling.as_ref(), slot);
+        let generated = raw.text().filter(|_| raw_asked);
+        let ahead = self.hold_reply(&lease, want.key, req, &opts, &body, &done, generated.as_deref());
+        match ahead.filter(|_| req.lane == Lane::Conductor) {
+            Some(prefix) => lease.read_ahead(prefix),
+            None => drop(lease),
+        }
         Ok(done)
     }
 
     /// Renders the conversation with the model's reply on the end: the prompt its cache holds now.
+    /// Returns the text to read into the slot ahead of the next request, when the turn ended and
+    /// the template will print it differently once the next user message follows it.
     #[allow(clippy::too_many_arguments)]
     fn hold_reply(
         &self,
-        endpoint: &LocalEndpoint,
+        lease: &crate::llama::engine::Lease,
         key: u64,
         req: &ChatRequest,
         opts: &BodyOptions<'_>,
         body: &Value,
         done: &Completion,
-        sampling: Option<&crate::ollama_store::Sampling>,
-        slot: u32,
-    ) {
-        let Some(message) = done.kept_message() else { return };
+        generated: Option<&str>,
+    ) -> Option<String> {
+        let message = done.kept_message()?;
         let mut next = req.clone();
         next.messages.push(message);
-        let Ok(planned) = plan_request(&next, opts) else { return };
-        let sent = llama_chat::chat_body(&planned.body, sampling, slot);
-        let Some(reply) = sent.get("messages").and_then(Value::as_array).and_then(|m| m.last()).cloned() else { return };
+        let planned = plan_request(&next, opts).ok()?;
+        let sent = llama_chat::chat_body(&planned.body, lease.sampling.as_ref(), lease.slot, &lease.thinking, false);
+        let reply = sent.get("messages").and_then(Value::as_array).and_then(|m| m.last()).cloned()?;
         let tail = if done.text.trim().is_empty() {
             done.thinking.as_ref().map(|t| t.text.as_str()).unwrap_or("")
         } else {
             done.text.as_str()
         };
-        self.render.after(endpoint, &req.model, key, body, &reply, tail, !done.tool_calls.is_empty());
+        self.render.after(&lease.endpoint, &req.model, key, body, &reply, tail, !done.tool_calls.is_empty(), generated)
+    }
+}
+
+/// Whether the server turned the request down for asking for the generated tokens.
+fn refuses_token_probs(e: &HttpError) -> bool {
+    match e {
+        HttpError::Status { status, body, .. } => (400..500).contains(status) && body.to_ascii_lowercase().contains("prob"),
+        _ => false,
     }
 }
 

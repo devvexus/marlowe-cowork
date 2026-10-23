@@ -59,6 +59,8 @@ fn llama_engine(home: &Path, endpoint: &marlowe_provider::LocalEndpoint) -> Opti
     cfg.log = Some(home.join("logs").join("llama-server.log"));
     // Each conversation's cache is written here when the server stops and read back on the next load.
     cfg.slots_dir = Some(home.join("llama-slots"));
+    // What each model file's own chat template does with earlier thinking, asked once per file.
+    cfg.thinking_cache = Some(home.join("llama-thinking.json"));
     // Ollama's own keep-alive: the setting it was started with, else five minutes.
     let keep = marlowe_provider::ollama_runtime::saved_user_env("OLLAMA_KEEP_ALIVE").or_else(|| std::env::var("OLLAMA_KEEP_ALIVE").ok());
     cfg.keep_alive = keep_alive_from(keep.as_deref());

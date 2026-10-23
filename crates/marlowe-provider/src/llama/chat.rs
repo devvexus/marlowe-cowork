@@ -21,6 +21,7 @@ use std::io::BufRead;
 use marlowe_model::{CancelToken, ProviderError, StreamEvent};
 use serde_json::{json, Map, Value};
 
+use super::template::Thinking;
 use crate::ollama::{Folder, CONTEXT_OVERFLOW};
 use crate::ollama_store::Sampling;
 use crate::sse::{Frame, SseStream};
@@ -43,7 +44,9 @@ impl Defaults {
 }
 
 /// llama-server's body for `planned` (the Ollama-shaped body from `plan_request`) on `slot`.
-pub fn chat_body(planned: &Value, sampling: Option<&Sampling>, slot: u32) -> Value {
+/// `thinking` is what the model file's template needs to keep earlier thinking; `raw` asks the
+/// server for the tokens it generated, so the exact text of the reply is known.
+pub fn chat_body(planned: &Value, sampling: Option<&Sampling>, slot: u32, thinking: &Thinking, raw: bool) -> Value {
     let s = sampling.cloned().unwrap_or_default();
     let options = planned.get("options").cloned().unwrap_or(Value::Null);
     let opt_f = |k: &str| options.get(k).and_then(Value::as_f64);
@@ -84,12 +87,16 @@ pub fn chat_body(planned: &Value, sampling: Option<&Sampling>, slot: u32) -> Val
     if let Some(level) = think.and_then(Value::as_str).filter(|l| !l.is_empty()) {
         kwargs.insert("reasoning_effort".into(), json!(level));
     }
-    // What the model has thought stays in the prompt it reads next: the template's own switches
-    // for that (`preserve_thinking`, `clear_thinking`) are set, and a template without one ignores
-    // them. Without this a template that prints only the newest turn's reasoning rewrites every
-    // earlier assistant message when a user message arrives, and the model re-reads the history.
-    kwargs.insert("preserve_thinking".into(), json!(true));
-    kwargs.insert("clear_thinking".into(), json!(false));
+    // What the model has thought stays in the prompt it reads next where the template can: its own
+    // switch for that was found by asking it (`thinking`), and a template with none is followed
+    // as it is.
+    for (name, value) in thinking.kwargs() {
+        kwargs.insert(name, value);
+    }
+    if raw {
+        // The sampled tokens come back with each chunk: the text the model wrote, to the byte.
+        body.insert("n_probs".into(), json!(1));
+    }
     body.insert("chat_template_kwargs".into(), Value::Object(kwargs));
     if let Some(f) = planned.get("format").filter(|f| !f.is_null()) {
         let format = if f == "json" {
@@ -165,11 +172,54 @@ fn timings(t: &Value) -> Timings {
     Timings { prompt_n: n("prompt_n"), cache_n: n("cache_n"), prompt_ms: f("prompt_ms"), predicted_n: n("predicted_n"), predicted_ms: f("predicted_ms") }
 }
 
+/// The text the model generated, token by token, when the server sent the tokens back.
+#[derive(Debug, Default)]
+pub struct RawText {
+    bytes: Vec<u8>,
+    seen: bool,
+}
+
+impl RawText {
+    /// The reply as generated (thinking, answer and any tool-call text, end token excluded), or
+    /// `None` when the server sent no tokens or they are not text.
+    pub fn text(&self) -> Option<String> {
+        if !self.seen {
+            return None;
+        }
+        String::from_utf8(self.bytes.clone()).ok()
+    }
+
+    /// Takes the tokens one chunk carries (`choices[0].logprobs.content`, or llama.cpp's own
+    /// `completion_probabilities`).
+    fn take(&mut self, chunk: &Value) {
+        let from_choice = chunk.pointer("/choices/0/logprobs/content").and_then(Value::as_array);
+        let from_server = chunk.get("completion_probabilities").and_then(Value::as_array);
+        for t in from_choice.into_iter().chain(from_server).flatten() {
+            self.seen = true;
+            if let Some(b) = t.get("bytes").and_then(Value::as_array) {
+                self.bytes.extend(b.iter().filter_map(|b| b.as_u64().map(|b| b as u8)));
+            } else if let Some(s) = t.get("token").or_else(|| t.get("content")).and_then(Value::as_str) {
+                self.bytes.extend_from_slice(s.as_bytes());
+            }
+        }
+    }
+}
+
 /// Reads one SSE stream into the folder. Returns the call's timings.
 pub fn read_stream(
     reader: Box<dyn BufRead + Send>,
     folder: &mut Folder<'_>,
     cancel: &CancelToken,
+) -> Result<Timings, ProviderError> {
+    read_stream_raw(reader, folder, cancel, &mut RawText::default())
+}
+
+/// [`read_stream`], also collecting the generated tokens into `raw`.
+pub fn read_stream_raw(
+    reader: Box<dyn BufRead + Send>,
+    folder: &mut Folder<'_>,
+    cancel: &CancelToken,
+    raw: &mut RawText,
 ) -> Result<Timings, ProviderError> {
     let mut sse = SseStream::new(reader);
     let mut calls: Vec<Call> = Vec::new();
@@ -199,6 +249,7 @@ pub fn read_stream(
         if let Some(err) = v.get("error") {
             return Err(error_from(err));
         }
+        raw.take(&v);
         if let Some(p) = v.get("prompt_progress") {
             let n = |k: &str| p.get(k).and_then(Value::as_u64).unwrap_or(0);
             folder.passthrough(StreamEvent::ReadProgress { total: n("total"), cached: n("cache"), processed: n("processed") });
@@ -332,30 +383,41 @@ mod tests {
             "tools": [{"type": "function", "function": {"name": "read", "description": "", "parameters": {}}}],
         });
         let s = Sampling { temperature: Some(1.0), top_k: Some(20), top_p: Some(0.95), presence_penalty: Some(0.0), repeat_penalty: Some(1.0), min_p: Some(0.0), ..Default::default() };
-        let b = chat_body(&planned, Some(&s), 3);
+        let b = chat_body(&planned, Some(&s), 3, &Thinking::Switch(vec![("preserve_thinking".into(), true)]), false);
         assert_eq!(b["id_slot"], 3);
+        assert!(b.get("n_probs").is_none(), "the sampled tokens are asked for only when the caller wants them");
         assert_eq!(b["cache_prompt"], true);
         assert_eq!(b["n_predict"], 800);
         assert_eq!((b["temperature"].as_f64(), b["top_k"].as_i64(), b["top_p"].as_f64()), (Some(1.0), Some(20), Some(0.95)));
         assert_eq!(b["repeat_penalty"].as_f64(), Some(1.0));
         assert_eq!(b["chat_template_kwargs"]["enable_thinking"], true);
-        // Earlier reasoning stays in the prompt wherever the template has a switch for it.
+        // Earlier reasoning stays in the prompt wherever the template has a switch for it, and only
+        // the switch the template was found to have is set.
         assert_eq!(b["chat_template_kwargs"]["preserve_thinking"], true);
-        assert_eq!(b["chat_template_kwargs"]["clear_thinking"], false);
+        assert!(b["chat_template_kwargs"].get("clear_thinking").is_none());
         assert_eq!(b["tools"][0]["function"]["name"], "read");
+        // A template that keeps thinking, or drops it with no switch, is sent no switch at all.
+        for t in [Thinking::Keeps, Thinking::Drops, Thinking::Ignores] {
+            let k = chat_body(&planned, Some(&s), 3, &t, false);
+            assert_eq!(k["chat_template_kwargs"], json!({"enable_thinking": true}), "{t:?}");
+        }
+        // One that could not be asked gets the usual switches; a template without them ignores them.
+        let u = chat_body(&planned, Some(&s), 3, &Thinking::Unknown, false);
+        assert_eq!((u["chat_template_kwargs"]["preserve_thinking"].as_bool(), u["chat_template_kwargs"]["clear_thinking"].as_bool()), (Some(true), Some(false)));
+        assert_eq!(chat_body(&planned, Some(&s), 3, &Thinking::Keeps, true)["n_probs"], 1);
         // Without a `.params` layer the defaults are Ollama's.
-        let d = chat_body(&planned, None, 0);
+        let d = chat_body(&planned, None, 0, &Thinking::Keeps, false);
         assert_eq!((d["temperature"].as_f64(), d["top_k"].as_i64(), d["repeat_penalty"].as_f64()), (Some(0.8), Some(40), Some(1.1)));
     }
 
     #[test]
     fn a_request_temperature_wins_and_think_off_reaches_the_template() {
         let planned = json!({"messages": [], "options": {"num_predict": 8, "temperature": 0.0}, "think": false});
-        let b = chat_body(&planned, Some(&Sampling { temperature: Some(1.0), ..Default::default() }), 0);
+        let b = chat_body(&planned, Some(&Sampling { temperature: Some(1.0), ..Default::default() }), 0, &Thinking::Keeps, false);
         assert_eq!(b["temperature"].as_f64(), Some(0.0));
         assert_eq!(b["chat_template_kwargs"]["enable_thinking"], false);
         assert!(b.get("tools").is_none());
-        let lv = chat_body(&json!({"messages": [], "options": {}, "think": "high"}), None, 0);
+        let lv = chat_body(&json!({"messages": [], "options": {}, "think": "high"}), None, 0, &Thinking::Keeps, false);
         assert_eq!(lv["chat_template_kwargs"]["reasoning_effort"], "high");
     }
 
@@ -367,7 +429,7 @@ mod tests {
              "tool_calls": [{"id": "call_1", "function": {"name": "read", "arguments": {"path": "a.rs", "offset": 2, "limit": 3}}}]},
             {"role": "tool", "content": "fn main() {}", "tool_call_id": "call_1", "tool_name": "read"},
         ], "options": {}});
-        let b = chat_body(&planned, None, 0);
+        let b = chat_body(&planned, None, 0, &Thinking::Keeps, false);
         let m = b["messages"].as_array().unwrap();
         assert_eq!(m[1]["reasoning_content"], "I should read it");
         let call = &m[1]["tool_calls"][0];
@@ -422,6 +484,29 @@ mod tests {
         assert_eq!(c.tool_calls[0].args, json!({"path": "a.rs"}));
         assert_eq!(c.tool_calls[1].args, json!({"q": "x"}));
         let _ = CompletionBuilder::new();
+    }
+
+    #[test]
+    fn the_generated_tokens_are_the_replys_exact_text() {
+        let tok = |t: &str| json!({"token": t, "bytes": t.as_bytes(), "logprob": -0.1, "top_logprobs": []});
+        let with = |d: Value, toks: Vec<Value>| json!({"choices": [{"index": 0, "finish_reason": null, "delta": d, "logprobs": {"content": toks}}]});
+        let chunks = [
+            with(json!({"reasoning_content": "hm"}), vec![tok("hm"), tok("\n")]),
+            with(json!({"reasoning_content": "\n"}), vec![tok("</think>"), tok("\n\n")]),
+            with(json!({"content": "Hi"}), vec![tok("Hi")]),
+            last("stop", json!({"cache_n": 0, "prompt_n": 5, "prompt_ms": 1.0, "predicted_n": 3, "predicted_ms": 1.0})),
+        ];
+        let mut raw = RawText::default();
+        let mut on = |_: StreamEvent| {};
+        let mut folder = Folder::new(true, &mut on);
+        read_stream_raw(sse(&chunks), &mut folder, &CancelToken::new(), &mut raw).unwrap();
+        assert_eq!(raw.text().as_deref(), Some("hm\n</think>\n\nHi"));
+        // A server that sends no tokens leaves nothing to compare with.
+        let mut none = RawText::default();
+        let mut on2 = |_: StreamEvent| {};
+        let mut folder2 = Folder::new(false, &mut on2);
+        read_stream_raw(sse(&[delta(json!({"content": "x"}))]), &mut folder2, &CancelToken::new(), &mut none).unwrap();
+        assert_eq!(none.text(), None);
     }
 
     #[test]

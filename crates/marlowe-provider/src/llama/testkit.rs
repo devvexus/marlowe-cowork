@@ -153,6 +153,10 @@ pub struct Seen {
     pub chats: Mutex<Vec<Value>>,
     /// `save 0 file` / `restore 0 file`, in order.
     pub slot_calls: Mutex<Vec<String>>,
+    /// The bodies of `/completion` requests (a pre-read of a prefix), in order.
+    pub completions: Mutex<Vec<Value>>,
+    /// The moments `/completion` requests began and ended, as `(began, ended)` instants.
+    pub completion_times: Mutex<Vec<(std::time::Instant, Option<std::time::Instant>)>>,
 }
 
 type Chat = dyn Fn(&Value) -> Reply + Send + Sync;
@@ -168,6 +172,8 @@ pub struct FakeSpawner {
     pub plans: Mutex<Vec<LaunchPlan>>,
     /// How `/apply-template` renders a request (none: the server has no such route).
     apply: Mutex<Option<Arc<Apply>>>,
+    /// How long a `/completion` request takes, and what it answers.
+    completion: Mutex<(Duration, u16)>,
 }
 
 type Apply = dyn Fn(&Value) -> Reply + Send + Sync;
@@ -182,6 +188,7 @@ impl FakeSpawner {
             seen: Arc::new(Seen::default()),
             plans: Mutex::new(Vec::new()),
             apply: Mutex::new(None),
+            completion: Mutex::new((Duration::ZERO, 200)),
         })
     }
 
@@ -199,6 +206,11 @@ impl FakeSpawner {
 
     pub fn apply_template(&self, f: impl Fn(&Value) -> Reply + Send + Sync + 'static) {
         *self.apply.lock().unwrap() = Some(Arc::new(f));
+    }
+
+    /// Makes `/completion` (a pre-read) take `took` and answer with `status`.
+    pub fn completion_takes(&self, took: Duration, status: u16) {
+        *self.completion.lock().unwrap() = (took, status);
     }
 
     pub fn answer_chat(&self, f: impl Fn(&Value) -> Reply + Send + Sync + 'static) {
@@ -254,6 +266,7 @@ impl Spawner for FakeSpawner {
         let chat = self.chat.lock().unwrap().clone();
         let apply = self.apply.lock().unwrap().clone();
         let seen = self.seen.clone();
+        let completion = *self.completion.lock().unwrap();
         let slot_dir = PathBuf::from(arg("--slot-save-path"));
         let handler: Arc<Handler> = Arc::new(move |method, path, body| match (method, path) {
             ("GET", "/health") => Reply::json(json!({"status": "ok"})),
@@ -264,6 +277,19 @@ impl Spawner for FakeSpawner {
             ("POST", "/v1/chat/completions") => {
                 seen.chats.lock().unwrap().push(body.clone());
                 chat(body)
+            }
+            ("POST", "/tokenize") => Reply::json(fake_tokenize(body)),
+            ("POST", "/completion") => {
+                let at = seen.completion_times.lock().unwrap().len();
+                seen.completions.lock().unwrap().push(body.clone());
+                seen.completion_times.lock().unwrap().push((std::time::Instant::now(), None));
+                std::thread::sleep(completion.0);
+                seen.completion_times.lock().unwrap()[at].1 = Some(std::time::Instant::now());
+                if completion.1 == 200 {
+                    Reply::json(json!({"content": "", "tokens_predicted": 0}))
+                } else {
+                    Reply::status(completion.1, json!({"error": {"message": "refused"}}))
+                }
             }
             ("POST", "/apply-template") => match &apply {
                 Some(f) => f(body),
@@ -398,11 +424,29 @@ impl Fixture {
     }
 }
 
+/// What a fake template does with an earlier turn's thinking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tpl {
+    /// Printed always.
+    Keeps,
+    /// Printed after the newest user message, and everywhere when `preserve_thinking` is set.
+    Switch,
+    /// Printed after the newest user message only, whatever is set.
+    Drops,
+    /// Never printed.
+    Ignores,
+}
+
 /// A ChatML-ish template, as llama-server's `/apply-template` would answer: an assistant
 /// turn's reasoning is printed only after the newest user message, unless `keep` is set.
 pub fn chatml(body: &Value, keep: bool) -> String {
+    chatml_with(body, if keep { Tpl::Switch } else { Tpl::Drops })
+}
+
+/// [`chatml`] for a template that does what `tpl` says with earlier thinking.
+pub fn chatml_with(body: &Value, tpl: Tpl) -> String {
     let messages = body["messages"].as_array().cloned().unwrap_or_default();
-    let kept = body["chat_template_kwargs"]["preserve_thinking"] == true && keep;
+    let switched = body["chat_template_kwargs"]["preserve_thinking"] == true;
     let last_user = messages.iter().rposition(|m| m["role"] == "user").unwrap_or(0);
     let mut out = String::new();
     for (i, m) in messages.iter().enumerate() {
@@ -410,22 +454,69 @@ pub fn chatml(body: &Value, keep: bool) -> String {
         let text = m["content"].as_str().unwrap_or("");
         match role {
             "assistant" => {
-                out.push_str("<|im_start|>assistant\n");
-                if let Some(r) = m["reasoning_content"].as_str().filter(|_| kept || i > last_user) {
-                    out.push_str(&format!("<think>\n{r}\n</think>\n\n"));
+                out.push_str("<|im_start|>assistant
+");
+                let shown = match tpl {
+                    Tpl::Keeps => true,
+                    Tpl::Switch => switched || i > last_user,
+                    Tpl::Drops => i > last_user,
+                    Tpl::Ignores => false,
+                };
+                if let Some(r) = m["reasoning_content"].as_str().filter(|_| shown) {
+                    out.push_str(&format!("<think>
+{r}
+</think>
+
+"));
                 }
                 out.push_str(text);
                 for c in m["tool_calls"].as_array().into_iter().flatten() {
                     out.push_str(&format!("<tool_call>{}</tool_call>", c["function"]["arguments"].as_str().unwrap_or("")));
                 }
-                out.push_str("<|im_end|>\n");
+                out.push_str("<|im_end|>
+");
             }
-            "tool" => out.push_str(&format!("<|im_start|>user\n<tool_response>\n{text}\n</tool_response><|im_end|>\n")),
-            other => out.push_str(&format!("<|im_start|>{other}\n{text}<|im_end|>\n")),
+            "tool" => out.push_str(&format!("<|im_start|>user
+<tool_response>
+{text}
+</tool_response><|im_end|>
+")),
+            other => out.push_str(&format!("<|im_start|>{other}
+{text}<|im_end|>
+")),
         }
     }
     if body.get("add_generation_prompt") != Some(&json!(false)) {
-        out.push_str("<|im_start|>assistant\n<think>\n");
+        out.push_str("<|im_start|>assistant
+<think>
+");
     }
     out
+}
+
+/// The fake server's tokenizer: `<|im_start|>` and `<|im_end|>` are one token each (when special
+/// tokens are parsed), every other character is its own.
+pub(crate) fn fake_tokenize(body: &Value) -> Value {
+    let text = body["content"].as_str().unwrap_or("");
+    let special = body["parse_special"] == true;
+    let mut tokens: Vec<(u64, String)> = Vec::new();
+    let mut rest = text;
+    while let Some(c) = rest.chars().next() {
+        let hit = special.then(|| [("<|im_start|>", 1u64), ("<|im_end|>", 2)].into_iter().find(|(s, _)| rest.starts_with(s))).flatten();
+        match hit {
+            Some((s, id)) => {
+                tokens.push((id, s.to_string()));
+                rest = &rest[s.len()..];
+            }
+            None => {
+                tokens.push((c as u64 + 10, c.to_string()));
+                rest = &rest[c.len_utf8()..];
+            }
+        }
+    }
+    if body["with_pieces"] == true {
+        json!({"tokens": tokens.iter().map(|(id, p)| json!({"id": id, "piece": p})).collect::<Vec<_>>()})
+    } else {
+        json!({"tokens": tokens.iter().map(|(id, _)| json!(id)).collect::<Vec<_>>()})
+    }
 }

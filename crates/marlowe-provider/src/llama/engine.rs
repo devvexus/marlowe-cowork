@@ -12,7 +12,8 @@
 //! by a hash of its system prompt and first message) and otherwise takes a free one, least
 //! recently used first. A request waits when every slot it may use is busy: the crew is bounded
 //! by the same count, so it rarely does. The conductor never waits for slot 0: when another
-//! request holds it, it takes any free slot.
+//! request holds it, it takes any free slot, unless the slot is reading ahead for that very
+//! conversation ([`super::warm`]): its next request then follows the read.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, Weak};
@@ -23,6 +24,8 @@ use marlowe_model::{CancelToken, ContextAllocations, EngineObserver, EngineShape
 use super::launch::{self, Spec};
 use super::persist;
 use super::server::{offloaded, Process, Spawner};
+use super::template::{self, Thinking, ThinkingCache};
+use super::warm;
 use crate::http::{self, LocalEndpoint};
 use crate::ollama_runtime::{parse_ps, unload_body};
 use crate::ollama_store::{self, Sampling};
@@ -50,6 +53,9 @@ pub struct EngineConfig {
     /// Where each slot's cache is written when the server stops and read back when it starts
     /// again; `None` keeps no caches across a stop.
     pub slots_dir: Option<PathBuf>,
+    /// Where what each model file's template does with earlier thinking is kept; `None` asks again
+    /// at every start of the engine.
+    pub thinking_cache: Option<PathBuf>,
     /// The server binary; `None` finds the one Ollama bundles.
     pub binary: Option<PathBuf>,
     /// How often a starting server is asked whether it is ready.
@@ -68,6 +74,7 @@ impl EngineConfig {
             start_timeout: Duration::from_secs(240),
             ubatch: 512,
             slots_dir: None,
+            thinking_cache: None,
             binary: None,
             poll: Duration::from_millis(250),
             idle_tick: Duration::from_secs(2),
@@ -124,6 +131,9 @@ pub fn same_model(a: &str, b: &str) -> bool {
 
 struct Slot {
     busy: bool,
+    /// Reading the next request's prefix for the conversation `key`: that conversation's next
+    /// request waits for it, any other may not take the slot.
+    warming: bool,
     key: Option<u64>,
     last: Instant,
 }
@@ -140,6 +150,8 @@ struct Running {
     on_gpu: Option<(u32, u32)>,
     sampling: Option<Sampling>,
     slots: Vec<Slot>,
+    /// What the model file's template does with earlier thinking.
+    thinking: Thinking,
 }
 
 impl Running {
@@ -153,6 +165,11 @@ impl Running {
 
     /// The slot a request takes, if one is free for it.
     fn pick(&self, lane: Lane, key: u64) -> Option<usize> {
+        // The conversation's own cache is being brought up to date: wait for it, never go
+        // around it to a slot that holds something else.
+        if self.slots.iter().any(|s| s.warming && s.key == Some(key)) {
+            return None;
+        }
         let free = |i: &usize| !self.slots[*i].busy;
         if self.slots.len() == 1 {
             return Some(0).filter(free);
@@ -183,6 +200,18 @@ struct Inner {
     st: Mutex<State>,
     cv: Condvar,
     events: RwLock<Option<ContextAllocations>>,
+    thinking: ThinkingCache,
+    reads: Mutex<ReadAheads>,
+}
+
+/// How the background reads of the next request's prefix went.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReadAheads {
+    pub started: u32,
+    pub finished: u32,
+    pub failed: u32,
+    /// The server's last complaint.
+    pub last_error: Option<String>,
 }
 
 impl Inner {
@@ -230,6 +259,45 @@ pub struct Lease {
     pub sampling: Option<Sampling>,
     /// The model's per-slot window, for the request's own check.
     pub ctx_per_slot: u32,
+    /// What the model file's template does with earlier thinking.
+    pub thinking: Thinking,
+}
+
+impl Lease {
+    /// Keeps the slot and reads `prefix` into it in the background, then lets it go. The
+    /// conversation's next request waits for the read instead of going to another slot.
+    pub fn read_ahead(self, prefix: String) {
+        {
+            let mut g = lock(&self.inner.st);
+            if let Some(s) = g.running.as_mut().filter(|r| r.epoch == self.epoch).and_then(|r| r.slots.get_mut(self.slot as usize)) {
+                s.warming = true;
+            }
+        }
+        lock(&self.inner.reads).started += 1;
+        // If the thread cannot start, the closure is dropped with the lease and the slot is free.
+        let _ = std::thread::Builder::new().name("llama-read-ahead".into()).spawn(move || {
+            let result = warm::read_ahead(&self.endpoint, self.slot, &prefix);
+            let inner = self.inner.clone();
+            let failed = {
+                let mut reads = lock(&inner.reads);
+                match &result {
+                    Ok(()) => reads.finished += 1,
+                    Err(e) => {
+                        reads.failed += 1;
+                        reads.last_error = Some(e.clone());
+                    }
+                }
+                result.err().filter(|_| reads.failed == 1)
+            };
+            drop(self);
+            if let Some(e) = failed {
+                // Once is enough: the next request simply reads what it needs, as before.
+                if let Some(o) = inner.events.read().unwrap_or_else(|p| p.into_inner()).as_ref().and_then(ContextAllocations::engine_observer) {
+                    o.note(&format!("llama.cpp could not read the next prompt ahead of time: {e}"));
+                }
+            }
+        });
+    }
 }
 
 impl Drop for Lease {
@@ -238,6 +306,7 @@ impl Drop for Lease {
         if let Some(r) = g.running.as_mut().filter(|r| r.epoch == self.epoch) {
             if let Some(s) = r.slots.get_mut(self.slot as usize) {
                 s.busy = false;
+                s.warming = false;
                 s.last = Instant::now();
             }
             r.last_used = Instant::now();
@@ -252,7 +321,16 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl LlamaEngine {
     pub fn new(cfg: EngineConfig, spawner: Arc<dyn Spawner>) -> Self {
-        let inner = Arc::new(Inner { cfg, spawner, st: Mutex::new(State::default()), cv: Condvar::new(), events: RwLock::new(None) });
+        let thinking = ThinkingCache::new(cfg.thinking_cache.clone());
+        let inner = Arc::new(Inner {
+            cfg,
+            spawner,
+            st: Mutex::new(State::default()),
+            cv: Condvar::new(),
+            events: RwLock::new(None),
+            thinking,
+            reads: Mutex::new(ReadAheads::default()),
+        });
         let weak = Arc::downgrade(&inner);
         let tick = inner.cfg.idle_tick;
         std::thread::Builder::new()
@@ -281,6 +359,16 @@ impl LlamaEngine {
             on_gpu: r.on_gpu,
             busy: r.busy(),
         })
+    }
+
+    /// How the background reads of the next request's prefix have gone.
+    pub fn read_aheads(&self) -> ReadAheads {
+        lock(&self.inner.reads).clone()
+    }
+
+    /// What the loaded model's template does with earlier thinking, if a model is loaded.
+    pub fn thinking(&self) -> Option<Thinking> {
+        lock(&self.inner.st).running.as_ref().map(|r| r.thinking.clone())
     }
 
     /// The end of the server's log (at most `max` bytes), for the planner.
@@ -343,6 +431,7 @@ impl LlamaEngine {
                             slot: i as u32,
                             sampling: r.sampling.clone(),
                             ctx_per_slot: r.shape.ctx_per_slot,
+                            thinking: r.thinking.clone(),
                         });
                     }
                     g = self.wait(g, cancel);
@@ -448,10 +537,11 @@ impl LlamaEngine {
             match self.try_start(&binary, backend.as_deref(), &resolved.blob, want, cancel) {
                 Ok((proc, port, on_gpu)) => {
                     let n = usize::from(want.shape.slots.max(1));
-                    let mut slots: Vec<Slot> = (0..n).map(|_| Slot { busy: false, key: None, last: Instant::now() }).collect();
+                    let mut slots: Vec<Slot> = (0..n).map(|_| Slot { busy: false, warming: false, key: None, last: Instant::now() }).collect();
+                    let endpoint = LocalEndpoint::new("127.0.0.1", port).expect("loopback");
+                    let thinking = self.thinking_of(&endpoint, want, &resolved.blob);
                     // The conversations this model served before it was stopped read their caches back.
                     if let Some(dir) = &cfg.slots_dir {
-                        let endpoint = LocalEndpoint::new("127.0.0.1", port).expect("loopback");
                         for (i, key) in persist::restore(&endpoint, dir, &want.model, &resolved.blob, &want.shape) {
                             if let Some(s) = slots.get_mut(i as usize) {
                                 s.key = Some(key);
@@ -470,6 +560,7 @@ impl LlamaEngine {
                         on_gpu,
                         sampling: resolved.sampling.clone(),
                         slots,
+                        thinking,
                     });
                 }
                 Err(Tried::Next(m)) => why.push(m),
@@ -477,6 +568,23 @@ impl LlamaEngine {
             }
         }
         Err(ProviderError::server(format!("llama-server for {} did not start on the GPU: {}", want.model, why.join("; "))))
+    }
+
+    /// What the template of this model file does with earlier thinking: asked of the loaded server
+    /// once per file, remembered by the file's digest.
+    fn thinking_of(&self, endpoint: &LocalEndpoint, want: &Want, blob: &Path) -> Thinking {
+        let digest = template::digest_of(blob);
+        if let Some(t) = self.inner.thinking.get(&digest) {
+            return t;
+        }
+        let t = template::probe(endpoint);
+        self.inner.thinking.put(&digest, &t);
+        if t != Thinking::Unknown {
+            if let Some(o) = self.observer() {
+                o.note(&format!("{}: {}", want.model, t.describe()));
+            }
+        }
+        t
     }
 
     fn try_start(

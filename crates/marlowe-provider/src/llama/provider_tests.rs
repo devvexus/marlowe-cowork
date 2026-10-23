@@ -9,7 +9,8 @@ use marlowe_model::{
 };
 use serde_json::{json, Value};
 
-use super::testkit::{Fixture, Reply};
+use super::engine::LlamaEngine;
+use super::testkit::{chatml_with, Fixture, Reply, Tpl};
 use crate::ollama::OllamaProvider;
 
 const MODEL: &str = "dusk:22b";
@@ -30,6 +31,7 @@ struct Rig {
     fx: Fixture,
     provider: OllamaProvider,
     advice: Arc<Advice>,
+    engine: LlamaEngine,
 }
 
 fn rig(initial: Option<EngineShape>) -> Rig {
@@ -37,8 +39,9 @@ fn rig(initial: Option<EngineShape>) -> Rig {
     let alloc = ContextAllocations::new();
     let advice = Arc::new(Advice(Mutex::new(initial)));
     alloc.set_engine_advisor(advice.clone());
-    let provider = OllamaProvider::new(fx.ollama.endpoint()).with_allocations(alloc).with_llama_engine(fx.engine());
-    Rig { fx, provider, advice }
+    let engine = fx.engine();
+    let provider = OllamaProvider::new(fx.ollama.endpoint()).with_allocations(alloc).with_llama_engine(engine.clone());
+    Rig { fx, provider, advice, engine }
 }
 
 fn request(lane: Lane, first: &str) -> ChatRequest {
@@ -215,4 +218,225 @@ fn a_template_that_drops_earlier_reasoning_anyway_is_reported_with_the_byte() {
     let (_, breaks) = two_requests(false);
     assert_eq!(breaks.len(), 1, "{breaks:?}");
     assert!(breaks[0].contains("weighing it"), "{}", breaks[0]);
+}
+
+// ---- reading the next request's prefix ahead of time ----
+
+const ASK: &str = "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n";
+
+fn thinking_answer() -> Vec<Value> {
+    vec![
+        json!({"choices": [{"index": 0, "finish_reason": null, "delta": {"reasoning_content": "weighing it"}}]}),
+        json!({"choices": [{"index": 0, "finish_reason": "stop", "delta": {"content": "an answer"}}],
+               "timings": {"cache_n": 0, "prompt_n": 9, "prompt_ms": 1.0, "predicted_n": 7, "predicted_ms": 3.0}}),
+    ]
+}
+
+/// A rig whose server answers like `tpl` and says `thinking_answer`.
+fn rig_with(tpl: Tpl) -> Rig {
+    let r = rig(Some(shape(2, 16_384)));
+    r.fx.spawner.answer_chat(|_| Reply::sse(&thinking_answer()));
+    r.fx.spawner.apply_template(move |b| Reply::json(json!({"prompt": chatml_with(b, tpl)})));
+    r
+}
+
+fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while !ready() {
+        assert!(std::time::Instant::now() < until, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn the_engine_finds_out_what_the_template_does_with_thinking_and_sends_only_what_it_needs() {
+    for (tpl, want) in [
+        (Tpl::Keeps, super::Thinking::Keeps),
+        (Tpl::Switch, super::Thinking::Switch(vec![("preserve_thinking".into(), true)])),
+        (Tpl::Drops, super::Thinking::Drops),
+        (Tpl::Ignores, super::Thinking::Ignores),
+    ] {
+        let r = rig_with(tpl);
+        r.provider.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |_| {}).unwrap();
+        assert_eq!(r.engine.thinking(), Some(want), "{tpl:?}");
+        let sent = r.fx.spawner.seen.chats.lock().unwrap()[0].clone();
+        let kw = &sent["chat_template_kwargs"];
+        assert_eq!(kw.get("preserve_thinking").is_some(), tpl == Tpl::Switch, "{tpl:?}: {kw}");
+        assert!(kw.get("clear_thinking").is_none(), "{tpl:?}: {kw}");
+    }
+}
+
+#[test]
+fn a_turn_whose_thinking_the_template_will_drop_is_read_ahead_exactly_as_the_next_request_prints_it() {
+    let r = rig_with(Tpl::Drops);
+    r.provider.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |_| {}).unwrap();
+    wait_for("the read-ahead", || r.engine.read_aheads().finished == 1);
+    let reads = r.fx.spawner.seen.completions.lock().unwrap().clone();
+    assert_eq!(reads.len(), 1);
+    let expect = format!("{ASK}an answer<|im_end|>\n");
+    assert_eq!(reads[0]["prompt"].as_str().unwrap(), expect, "the turn as it prints once a user message follows (no thinking), up to where that message begins");
+    assert_eq!(
+        (reads[0]["id_slot"].as_u64(), reads[0]["n_predict"].as_u64(), reads[0]["cache_prompt"].as_bool()),
+        (Some(0), Some(0), Some(true)),
+        "the conversation's own slot, nothing generated"
+    );
+    assert_eq!(r.engine.read_aheads().failed, 0);
+}
+
+#[test]
+fn the_next_request_follows_the_read_ahead_on_the_same_slot_and_starts_with_what_was_read() {
+    let r = rig_with(Tpl::Drops);
+    r.fx.spawner.completion_takes(Duration::from_millis(500), 200);
+    let first = request(Lane::Conductor, "follow the read");
+    let done = r.provider.stream(&first, &CancelToken::new(), &mut |_| {}).unwrap();
+    // The user answers at once, while the read is still going.
+    let mut second = first.clone();
+    second.messages.push(done.kept_message().unwrap());
+    second.messages.push(Message::user("and then?"));
+    r.provider.stream(&second, &CancelToken::new(), &mut |_| {}).unwrap();
+    let chats = r.fx.spawner.seen.chats.lock().unwrap().clone();
+    assert_eq!(chats.len(), 2);
+    assert_eq!(chats[1]["id_slot"], 0, "it did not go around the read to another slot");
+    let times = r.fx.spawner.seen.completion_times.lock().unwrap().clone();
+    assert_eq!(times.len(), 1);
+    assert!(times[0].1.is_some(), "the read had ended when the request began");
+    // What the second request renders to starts with what was read.
+    let mut sent = chats[1].clone();
+    sent["add_generation_prompt"] = json!(false);
+    let rendered = chatml_with(&sent, Tpl::Drops);
+    let read = r.fx.spawner.seen.completions.lock().unwrap()[0]["prompt"].as_str().unwrap().to_string();
+    assert!(rendered.starts_with(&read), "{rendered:?} does not start with {read:?}");
+}
+
+#[test]
+fn nothing_is_read_ahead_when_the_next_request_will_start_with_the_cache_anyway() {
+    for tpl in [Tpl::Keeps, Tpl::Switch, Tpl::Ignores] {
+        let r = rig_with(tpl);
+        r.provider.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |_| {}).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(r.fx.spawner.seen.completions.lock().unwrap().is_empty(), "{tpl:?}");
+        assert_eq!(r.engine.read_aheads().started, 0, "{tpl:?}");
+    }
+}
+
+#[test]
+fn a_reply_that_calls_a_tool_and_a_crew_agents_answer_are_not_read_ahead() {
+    // A tool result follows a tool call, and every template prints that turn the same way.
+    let r = rig_with(Tpl::Drops);
+    r.fx.spawner.answer_chat(|_| {
+        Reply::sse(&[
+            json!({"choices": [{"index": 0, "finish_reason": null, "delta": {"reasoning_content": "plan"}}]}),
+            json!({"choices": [{"index": 0, "finish_reason": null, "delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function", "function": {"name": "read", "arguments": "{\"path\":\"a\"}"}}]}}]}),
+            json!({"choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {}}], "timings": {"cache_n": 0, "prompt_n": 9, "prompt_ms": 1.0, "predicted_n": 7, "predicted_ms": 3.0}}),
+        ])
+    });
+    let mut req = request(Lane::Conductor, "hi");
+    req.tools = vec![ToolSpec { name: "read".into(), description: "Read".into(), input_schema: json!({"type": "object", "properties": {"path": {"type": "string"}}}) }];
+    let c = r.provider.stream(&req, &CancelToken::new(), &mut |_| {}).unwrap();
+    assert_eq!(c.tool_calls.len(), 1);
+    // A crew agent's answer ends its conversation: no user message follows it.
+    r.fx.spawner.answer_chat(|_| Reply::sse(&thinking_answer()));
+    r.provider.stream(&request(Lane::Other, "do a task"), &CancelToken::new(), &mut |_| {}).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(r.fx.spawner.seen.completions.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_server_that_cannot_read_ahead_costs_one_note_and_the_next_request_just_reads() {
+    let r = rig_with(Tpl::Drops);
+    r.fx.spawner.completion_takes(Duration::ZERO, 400);
+    let first = request(Lane::Conductor, "cannot read ahead");
+    let done = r.provider.stream(&first, &CancelToken::new(), &mut |_| {}).unwrap();
+    wait_for("the failed read", || r.engine.read_aheads().failed == 1);
+    assert!(r.engine.read_aheads().last_error.is_some());
+    let mut second = first.clone();
+    second.messages.push(done.kept_message().unwrap());
+    second.messages.push(Message::user("and then?"));
+    let c = r.provider.stream(&second, &CancelToken::new(), &mut |_| {}).unwrap();
+    assert_eq!(c.text, "an answer", "the conversation goes on");
+}
+
+/// An answer whose generated tokens come back with it.
+fn answer_with_tokens(generated: &[&str]) -> Vec<Value> {
+    let toks: Vec<Value> = generated.iter().map(|t| json!({"token": t, "bytes": t.as_bytes(), "logprob": -0.1, "top_logprobs": []})).collect();
+    vec![
+        json!({"choices": [{"index": 0, "finish_reason": null, "delta": {"reasoning_content": "weighing it"}, "logprobs": {"content": toks}}]}),
+        json!({"choices": [{"index": 0, "finish_reason": "stop", "delta": {"content": "an answer"}}],
+               "timings": {"cache_n": 0, "prompt_n": 9, "prompt_ms": 1.0, "predicted_n": 7, "predicted_ms": 3.0}}),
+    ]
+}
+
+#[test]
+fn a_reply_the_template_prints_differently_from_how_it_was_generated_is_read_ahead_even_when_the_template_keeps_thinking() {
+    // The template prints a blank line after the thinking; the model wrote a single newline.
+    let r = rig_with(Tpl::Keeps);
+    r.fx.spawner.answer_chat(|_| Reply::sse(&answer_with_tokens(&["weighing it", "\n</think>\n", "an answer"])));
+    r.provider.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |_| {}).unwrap();
+    wait_for("the read-ahead", || r.engine.read_aheads().finished == 1);
+    let chats = r.fx.spawner.seen.chats.lock().unwrap().clone();
+    assert_eq!(chats[0]["n_probs"], 1, "the conductor asks for the generated tokens");
+    let reads = r.fx.spawner.seen.completions.lock().unwrap().clone();
+    assert_eq!(
+        reads[0]["prompt"].as_str().unwrap(),
+        format!("{ASK}<think>\nweighing it\n</think>\n\nan answer<|im_end|>\n"),
+        "what the next request will print, not what was generated"
+    );
+}
+
+#[test]
+fn a_reply_the_template_prints_as_generated_needs_no_read_ahead() {
+    let r = rig_with(Tpl::Keeps);
+    r.fx.spawner.answer_chat(|_| Reply::sse(&answer_with_tokens(&["weighing it", "\n</think>\n\n", "an answer"])));
+    r.provider.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |_| {}).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(r.fx.spawner.seen.completions.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_server_that_refuses_the_token_probabilities_is_not_asked_again() {
+    let r = rig_with(Tpl::Keeps);
+    r.fx.spawner.answer_chat(|b| {
+        if b.get("n_probs").is_some() {
+            return Reply::status(400, json!({"error": {"code": 400, "type": "invalid_request_error", "message": "n_probs / logprobs is not supported with tools in streaming mode"}}));
+        }
+        Reply::sse(&thinking_answer())
+    });
+    let c = r.provider.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |_| {}).unwrap();
+    assert_eq!(c.text, "an answer", "the same request went out again without them");
+    r.provider.stream(&request(Lane::Conductor, "hi again"), &CancelToken::new(), &mut |_| {}).unwrap();
+    let chats = r.fx.spawner.seen.chats.lock().unwrap().clone();
+    assert_eq!(chats.iter().filter(|b| b.get("n_probs").is_some()).count(), 1, "only the first request asked");
+    assert_eq!(chats.len(), 3);
+}
+
+#[test]
+fn a_models_template_is_asked_once_per_file_even_across_engine_restarts() {
+    let r = rig_with(Tpl::Drops);
+    let asks = Arc::new(AtomicUsize::new(0));
+    let a = asks.clone();
+    r.fx.spawner.apply_template(move |b| {
+        if b["messages"].as_array().is_some_and(|m| m.iter().any(|x| x["reasoning_content"] == "RSN-ALPHA")) {
+            a.fetch_add(1, Ordering::SeqCst);
+        }
+        Reply::json(json!({"prompt": chatml_with(b, Tpl::Drops)}))
+    });
+    let mut cfg = r.fx.config();
+    cfg.thinking_cache = Some(r.fx.dir.path().join("thinking.json"));
+    let mut after_first = 0;
+    for load in 0..2 {
+        let engine = LlamaEngine::new(cfg.clone(), r.fx.spawner.clone());
+        let alloc = ContextAllocations::new();
+        alloc.set_engine_advisor(r.advice.clone());
+        let p = OllamaProvider::new(r.fx.ollama.endpoint()).with_allocations(alloc).with_llama_engine(engine.clone());
+        p.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |_| {}).unwrap();
+        assert_eq!(engine.thinking(), Some(super::Thinking::Drops));
+        engine.unload(None);
+        if load == 0 {
+            after_first = asks.load(Ordering::SeqCst);
+        }
+    }
+    // The first load renders the probe conversation (plain, with each switch, and the shorter one
+    // that tells a dropping template from a silent one); the second reads the answer from the file.
+    assert!(after_first > 0, "the first load asked the template");
+    assert_eq!(asks.load(Ordering::SeqCst), after_first, "the second load did not ask again");
 }

@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 
+use super::warm::{self, common_prefix};
 use crate::http::{self, LocalEndpoint};
 
 const RENDER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -85,25 +86,54 @@ impl RenderGuard {
     /// After a successful call: what the model's cache holds now. `reply` is the model's reply as
     /// the next request will carry it (an OpenAI-shaped assistant message appended to `body`'s
     /// messages), `tail` the end of its text or reasoning, and `calls` whether it called tools.
+    /// `raw` is the text the model generated, when the server sent its tokens back: the cache then
+    /// holds the prompt and exactly that, not the template's printing of the parsed reply.
+    ///
+    /// Returns the text to read ahead when the reply ended a turn and the next request, however
+    /// the template prints this turn once a user message follows, will not start with what the
+    /// cache holds ([`warm`]).
     #[allow(clippy::too_many_arguments)]
-    pub fn after(&self, endpoint: &LocalEndpoint, model: &str, key: u64, body: &Value, reply: &Value, tail: &str, calls: bool) {
+    pub fn after(
+        &self,
+        endpoint: &LocalEndpoint,
+        model: &str,
+        key: u64,
+        body: &Value,
+        reply: &Value,
+        tail: &str,
+        calls: bool,
+        raw: Option<&str>,
+    ) -> Option<String> {
         if !enabled() {
-            return;
+            return None;
         }
         let ideal = ideal_prompt(endpoint, body, reply, tail, calls);
-        let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
-        if held.len() > 256 {
-            held.clear();
-        }
-        match ideal {
-            Some(prompt) => {
-                let messages = body.get("messages").and_then(Value::as_array).cloned().unwrap_or_default();
-                held.insert((model.to_string(), key), Held { messages, prompt });
+        // The cache holds the prompt as sent and the tokens the model generated after it.
+        let cache = match raw.and_then(|g| Some((render(endpoint, body, &[], true)?, g))) {
+            Some((prompt, generated)) => Some(format!("{prompt}{generated}")),
+            None => ideal,
+        };
+        {
+            let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+            if held.len() > 256 {
+                held.clear();
             }
-            None => {
-                held.remove(&(model.to_string(), key));
+            match &cache {
+                Some(prompt) => {
+                    let messages = body.get("messages").and_then(Value::as_array).cloned().unwrap_or_default();
+                    held.insert((model.to_string(), key), Held { messages, prompt: prompt.clone() });
+                }
+                None => {
+                    held.remove(&(model.to_string(), key));
+                }
             }
         }
+        // A reply that calls tools is followed by the tool's result, which every template prints
+        // after it as it printed it: nothing to read ahead. A reply that ends the turn is followed
+        // by a user message, which some templates answer by printing the turn differently.
+        let cache = cache.filter(|_| !calls)?;
+        let next = warm::next_prefix(endpoint, &|extra| render(endpoint, body, extra, false), reply)?;
+        (!warm::covers(&next, &cache)).then_some(next)
     }
 
     /// Forgets a conversation (a server restart empties the cache it described).
@@ -176,18 +206,6 @@ fn render(endpoint: &LocalEndpoint, body: &Value, extra: &[Value], generation_pr
     v.get("prompt").and_then(Value::as_str).map(str::to_string)
 }
 
-/// Length in bytes of the longest common prefix, on a character boundary.
-fn common_prefix(a: &str, b: &str) -> usize {
-    let mut n = 0;
-    for (x, y) in a.chars().zip(b.chars()) {
-        if x != y {
-            break;
-        }
-        n += x.len_utf8();
-    }
-    n
-}
-
 fn clip(s: &str, from: usize, forward: bool) -> String {
     let text: String = if forward {
         s[from..].chars().take(SNIPPET).collect()
@@ -244,7 +262,7 @@ mod tests {
         let model = format!("render-test-{keep}");
         let first = body(vec![user("one")]);
         g.before(&ep, &model, key, &first);
-        g.after(&ep, &model, key, &first, &reply("pondering", "answer one"), "answer one", false);
+        g.after(&ep, &model, key, &first, &reply("pondering", "answer one"), "answer one", false, None);
         // The next request carries the reply and a new user message.
         let second = body(vec![user("one"), reply("pondering", "answer one"), user("two")]);
         g.before(&ep, &model, key, &second);
@@ -270,7 +288,7 @@ mod tests {
         let first = body(vec![user("go")]);
         let call = json!({"role": "assistant", "content": "", "reasoning_content": "plan",
             "tool_calls": [{"id": "c1", "index": 0, "type": "function", "function": {"name": "write", "arguments": "{\"path\":\"a\",\"content\":\"b\"}"}}]});
-        g.after(&ep, "render-calls", 9_001, &first, &call, "", true);
+        g.after(&ep, "render-calls", 9_001, &first, &call, "", true, None);
         let sorted = json!({"role": "assistant", "content": "", "reasoning_content": "plan",
             "tool_calls": [{"id": "c1", "index": 0, "type": "function", "function": {"name": "write", "arguments": "{\"content\":\"b\",\"path\":\"a\"}"}}]});
         let result = json!({"role": "tool", "tool_call_id": "c1", "name": "write", "content": "ok"});
@@ -290,7 +308,7 @@ mod tests {
         let (_http, ep) = server(false);
         let g = RenderGuard::default();
         let first = body(vec![user("one")]);
-        g.after(&ep, "render-other", 8_001, &first, &reply("pondering", "answer one"), "answer one", false);
+        g.after(&ep, "render-other", 8_001, &first, &reply("pondering", "answer one"), "answer one", false, None);
         g.before(&ep, "render-other", 8_001, &body(vec![user("another start"), reply("something else", "x"), user("two")]));
         g.before(&ep, "render-other", 8_001, &body(vec![user("one")]));
         assert!(marlowe_model::prefix::take_render_breaks("render-other", 8_001).is_empty());
@@ -301,7 +319,7 @@ mod tests {
         let ep = LocalEndpoint::new("127.0.0.1", 9).unwrap();
         let g = RenderGuard::default();
         let b = body(vec![user("x")]);
-        g.after(&ep, "render-none", 5, &b, &reply("t", "a"), "a", false);
+        g.after(&ep, "render-none", 5, &b, &reply("t", "a"), "a", false, None);
         g.before(&ep, "render-none", 5, &b);
         assert!(marlowe_model::prefix::take_render_breaks("render-none", 5).is_empty());
     }

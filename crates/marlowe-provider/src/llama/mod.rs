@@ -16,12 +16,15 @@ pub mod launch;
 pub mod persist;
 pub mod render;
 pub mod server;
+pub mod template;
+pub mod warm;
 
 #[cfg(test)]
 mod provider_tests;
 #[cfg(test)]
 pub(crate) mod testkit;
 
-pub use engine::{conversation_key, keep_alive_from, same_model, EngineConfig, LlamaEngine, Status, Want};
+pub use engine::{conversation_key, keep_alive_from, same_model, EngineConfig, LlamaEngine, ReadAheads, Status, Want};
+pub use template::Thinking;
 pub use hw::LlamaModels;
 pub use server::{Spawner, SystemSpawner};
