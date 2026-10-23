@@ -16,7 +16,7 @@
 //! `structured_output` is not in this table: the crew adds it to a workflow agent with a schema.
 //! `report_findings` is offered everywhere, crew agents included.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -36,11 +36,13 @@ pub struct WorkflowGroup {
     /// The digest each pending call's consequence checked, by [`call_key`]: the launch runs that
     /// script or nothing.
     approved: Mutex<HashMap<String, String>>,
+    /// Calls whose script was sent back once for running its agents one after another.
+    warned: Mutex<HashSet<String>>,
 }
 
 impl WorkflowGroup {
     fn new(home: &Path, conductor: bool) -> WorkflowGroup {
-        WorkflowGroup { home: Some(home.to_path_buf()), conductor, approved: Mutex::default() }
+        WorkflowGroup { home: Some(home.to_path_buf()), conductor, approved: Mutex::default(), warned: Mutex::default() }
     }
 }
 
@@ -153,6 +155,15 @@ fn star_files_hint(workspace: Option<&std::path::Path>) -> String {
     format!(" This workspace holds {}: pass the one you mean as `path`.", names.join(", "))
 }
 
+/// A script with several `agent(` calls and no `parallel(` or `pipeline(` runs its agents one after
+/// another, which is rarely what "a team working in parallel" means (dawn wrote six researchers in
+/// a row). Sent back once with how to fix it; the same call again runs as written.
+fn sequential_agents(source: &str) -> bool {
+    source.matches("agent(").count() >= 3 && !source.contains("parallel(") && !source.contains("pipeline(")
+}
+
+const SEQUENTIAL_NOTE: &str = "Not run yet: this script calls agent() several times but never parallel() or pipeline(), so its agents would run one after another. Agents that do not need each other's answers run together inside parallel([lambda: agent(...), lambda: agent(...)]) (bind loop variables with lambda f = f), or pipeline(items, stage) for one agent per item. If one after another is what you want, send the same call again and it runs as written.";
+
 /// The ignored keys, as the line after a result.
 fn notes(p: &Plan) -> String {
     if p.ignored.is_empty() {
@@ -181,6 +192,11 @@ fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
     let Some(Workflows(launcher)) = cx.scope.services.get::<Workflows>().cloned() else {
         return ToolOutcome::error("team tasks run in the daemon; this session has no team task launcher");
     };
+    if let Some(source) = plan.script.clone().or_else(|| plan.path.as_deref().and_then(|p| std::fs::read_to_string(cx.workspace.as_deref().map_or_else(|| PathBuf::from(p), |w| w.join(p))).ok())) {
+        if sequential_agents(&source) && group(t).warned.lock().unwrap_or_else(|e| e.into_inner()).insert(call_key(&plan)) {
+            return ToolOutcome::error(SEQUENTIAL_NOTE);
+        }
+    }
     let args = a.get("args").cloned().unwrap_or(Value::Null);
     if !(args.is_null() || args.is_object()) {
         return ToolOutcome::error("`args` must be a JSON object");

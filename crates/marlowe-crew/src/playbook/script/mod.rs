@@ -250,6 +250,11 @@ pub fn run_workflow(runner: &AgentRunner, job: ScriptJob<'_>, emit: &dyn Fn(Scri
             if text.len() > shown.len() {
                 summary.push_str(&format!("\n(The whole value is in the journal: {}.)", journal.display()));
             }
+            if out.agents == 0 {
+                summary.push_str(
+                    "\nNo agent ran: `main` returned without reaching an `agent(...)` call, so nothing was done. A script written in one go often stops part-way: read it, finish it, and run it again.",
+                );
+            }
             let made = job.worktree.as_ref().and_then(|w| w.made());
             let sandbox = made.as_ref().unwrap_or_else(|| crate::playbook::StepRunner::sandbox(runner));
             let diff = if sandbox.kind == SandboxKind::Worktree { sandbox.diff_summary().ok().filter(|d| !d.files.is_empty()) } else { None };
