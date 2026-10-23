@@ -62,6 +62,16 @@ pub enum ProjectEvent {
         /// The new status.
         status: ProjectStatus,
     },
+    /// The whole state was replaced (a plan revised while its card was open): clients refetch
+    /// instead of following patches.
+    Replaced {
+        /// The project.
+        project: String,
+        /// The new revision.
+        rev: u64,
+        /// The new state.
+        state: serde_json::Value,
+    },
 }
 
 impl ProjectEvent {
@@ -74,6 +84,7 @@ impl ProjectEvent {
                 Event::ProjectGateRaised { project, gate, kind: kind.as_str().to_string(), summary, options }
             }
             ProjectEvent::GateAnswered { project, gate, choice } => Event::ProjectGateAnswered { project, gate, choice },
+            ProjectEvent::Replaced { project, rev, state } => Event::ProjectState { project, rev, state },
             ProjectEvent::StatusChanged { .. } => return None,
         })
     }

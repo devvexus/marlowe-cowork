@@ -124,6 +124,9 @@ pub enum RunOutcome {
     },
     /// Cancelled: nothing is running, unfinished items are `cancelled`, the state is saved.
     Cancelled,
+    /// Stopped for shutdown by [`Control::suspend`]: nothing is running, the state is saved as it
+    /// stands (the status is still `running`), and the next start resumes from the journal.
+    Suspended,
     /// The engine could not go on; the reason is harness-written.
     Failed {
         /// Why.
@@ -148,6 +151,7 @@ pub struct Control {
     tx: Sender<Msg>,
     cancel: CancelToken,
     checkin: Arc<AtomicBool>,
+    suspend: Arc<AtomicBool>,
 }
 
 impl Control {
@@ -155,6 +159,13 @@ impl Control {
     pub fn cancel(&self) {
         self.cancel.cancel();
         let _ = self.tx.send(Msg::Wake);
+    }
+
+    /// Stops the run for shutdown without cancelling the project: in-flight calls stop, their
+    /// results are dropped, and the project stays `running` on disk so the next start resumes it.
+    pub fn suspend(&self) {
+        self.suspend.store(true, Ordering::SeqCst);
+        self.cancel();
     }
 
     /// Asks for a checkin at the next safe point: nothing new starts, what is in flight finishes
@@ -278,6 +289,7 @@ pub struct Engine {
     rx: Receiver<Msg>,
     cancel: CancelToken,
     checkin: Arc<AtomicBool>,
+    suspend: Arc<AtomicBool>,
     specs: HashMap<String, Arc<StepSpec>>,
 }
 
@@ -318,12 +330,12 @@ impl Engine {
     ) -> Engine {
         let (tx, rx) = unbounded();
         let specs = registry.menu().values().flat_map(|p| p.steps.iter()).map(|s| (s.id.clone(), Arc::new(s.clone()))).collect();
-        Engine { handle, store, registry, provider, gate, tools, cfg, tx, rx, cancel: CancelToken::new(), checkin: Arc::new(AtomicBool::new(false)), specs }
+        Engine { handle, store, registry, provider, gate, tools, cfg, tx, rx, cancel: CancelToken::new(), checkin: Arc::new(AtomicBool::new(false)), suspend: Arc::new(AtomicBool::new(false)), specs }
     }
 
     /// The handle other threads use to cancel the run or ask for a checkin.
     pub fn control(&self) -> Control {
-        Control { tx: self.tx.clone(), cancel: self.cancel.clone(), checkin: self.checkin.clone() }
+        Control { tx: self.tx.clone(), cancel: self.cancel.clone(), checkin: self.checkin.clone(), suspend: self.suspend.clone() }
     }
 
     /// Runs on a thread of its own and returns at once: the conversation never waits for a
@@ -491,7 +503,7 @@ impl Engine {
         let mut idle_rounds = 0u32;
         loop {
             if self.cancel.is_cancelled() {
-                return self.finish_cancel(rt);
+                return if self.suspend.load(Ordering::SeqCst) { self.finish_suspend(rt) } else { self.finish_cancel(rt) };
             }
             // Results first, so a finished task's successors are queued this round.
             while let Ok(m) = self.rx.try_recv() {
@@ -1487,6 +1499,21 @@ impl Engine {
             return Ok(Some(RunOutcome::Finished));
         }
         Ok(None)
+    }
+
+    fn finish_suspend(&self, rt: &mut Rt) -> Result<RunOutcome, String> {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !rt.running.is_empty() && Instant::now() < deadline {
+            match self.rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(Msg::Done(d)) => {
+                    rt.running.remove(&d.id);
+                }
+                Ok(Msg::Wake) | Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        self.handle.flush().map_err(fail("could not save"))?;
+        Ok(RunOutcome::Suspended)
     }
 
     fn finish_cancel(&self, rt: &mut Rt) -> Result<RunOutcome, String> {

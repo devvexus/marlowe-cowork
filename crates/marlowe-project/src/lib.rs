@@ -16,6 +16,7 @@
 //! | [`view`] | The view-model: **one renderer over any project's JSON** (badge, link, table, bar, meter, duration, agent chips), a plain-text painter, and the overview rollups. |
 //! | [`store`] | Files under the Marlowe home (atomic `project.json`, journal, content-addressed sources, archive, reopen, disposal) and the `projects` index in `cowork.db`. |
 //! | [`actor`] | The single writer for a running project: applies mutations, coalesces events, saves. |
+//! | [`service`] | What the manager calls: create, revise, answer, check in, cancel, reopen, recover. A card parks the project with no thread held; the host (the daemon) supplies the model, the events and the relay. |
 //! | [`engine`] | The phase engine: the employee runner (one fresh-context, tool-less model call forced into its form, validated and retried), the scheduler (lanes, pipelining, delta merges, gates, budgets, cancel), the journal that makes a restart a replay, and the toolbox of named functions a phase points at. |
 //!
 //! Two rules shape everything here. The screen is derived from the JSON: nothing in [`view`]
@@ -35,6 +36,7 @@ pub mod plan;
 pub mod registry;
 pub mod replica;
 pub mod research;
+pub mod service;
 pub mod spec;
 pub mod state;
 pub mod store;
@@ -51,5 +53,6 @@ pub use state::{
     Agent, AgentStatus, Gate, GateAnswer, GateKind, GateStatus, Item, ItemStatus, Live, Phase, ProjectState, ProjectStatus, StageStatus,
     STATE_SCHEMA,
 };
+pub use service::{Answered, Created, Ended, ProjectError, ProjectHost, ProjectService, Recovered, RunParts, ServiceConfig};
 pub use store::{IndexRow, ProjectStore, Snapshot, StoreError};
 pub use view::{overview, paint, paint_overview, view, view_tree, Cell, Overview, Row};
