@@ -300,3 +300,17 @@ fn reopen_runs_a_finished_project_again_from_a_stage_and_says_when_there_is_no_s
     let st = svc.state(&id).unwrap();
     assert!(st.status == ProjectStatus::Finished || st.open_gate().is_some(), "{:?}", st.status);
 }
+
+#[test]
+fn a_project_started_in_a_workspace_leaves_a_pointer_there() {
+    let home = Home::new("svc-link");
+    let ws = Home::new("svc-link-ws");
+    let host = Host::new(Fake::schema());
+    let svc = service(&home, &host);
+    let id = svc.create(None, Some(&ws.0), &plan()).unwrap().id;
+    parked(&svc, &id);
+    let ptr = ws.0.join(".marlowe").join("projects").join(format!("{id}.json"));
+    let body: Value = serde_json::from_str(&std::fs::read_to_string(&ptr).expect("the pointer")).unwrap();
+    let target = std::path::PathBuf::from(body["project"].as_str().unwrap());
+    assert!(target.join("project.json").is_file(), "the pointer leads to the project: {target:?}");
+}
