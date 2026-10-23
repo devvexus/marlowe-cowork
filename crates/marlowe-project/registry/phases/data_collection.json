@@ -1,0 +1,51 @@
+{
+  "phase": "DataCollection",
+  "steps": [
+    {
+      "id": "vectors",
+      "kind": "fanout",
+      "over": "question",
+      "scope": "round",
+      "form": "attack_vectors@1",
+      "role": "attack-vectors",
+      "class": "employee",
+      "effort": "off",
+      "max_output": 900,
+      "emit": "vector"
+    },
+    {
+      "id": "fetch",
+      "kind": "code",
+      "fn": "search_and_fetch",
+      "over": "vector",
+      "after": [
+        {
+          "step": "vectors",
+          "edge": "stream"
+        }
+      ],
+      "lane": "fetch",
+      "emit": "page"
+    },
+    {
+      "id": "analyze",
+      "kind": "fanout",
+      "over": "page",
+      "after": [
+        {
+          "step": "fetch",
+          "edge": "stream"
+        }
+      ],
+      "form": "analyze@1",
+      "role": "analyst",
+      "class": "employee",
+      "effort": "off",
+      "max_output": 1800,
+      "attempts": 3,
+      "emit": "source",
+      "fn": "analyze_finish",
+      "important": true
+    }
+  ]
+}

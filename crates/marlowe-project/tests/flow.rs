@@ -67,6 +67,8 @@ fn a_plan_becomes_a_project_that_runs_parks_draws_and_reopens() {
         answer: None,
         asked_ms: 1_100,
         answered_ms: None,
+    phase: String::new(),
+    step: String::new(),
     })))
     .unwrap();
     h.mutate(Mutation::AnswerGate { id: "g_1".into(), choice: "approve".into(), text: None }).unwrap();

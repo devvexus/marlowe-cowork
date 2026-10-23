@@ -108,11 +108,15 @@ pub enum ActorError {
     /// The actor has stopped.
     #[error("the project's state actor has stopped")]
     Gone,
+    /// A query run on the actor's thread panicked (the actor itself is fine).
+    #[error("a query of the project state panicked")]
+    ReadPanicked,
 }
 
 enum Msg {
     Mutate(Box<Mutation>, Option<Sender<Result<Applied, MutationError>>>),
     Snapshot(Sender<Box<ProjectState>>),
+    Read(Box<dyn FnOnce(&ProjectState) + Send>),
     Archive(String, Sender<Result<Snapshot, StoreError>>),
     Flush(Sender<Option<String>>),
     Stop(Sender<Option<String>>),
@@ -239,6 +243,7 @@ impl Core {
                 Ok(Msg::Snapshot(tx)) => {
                     let _ = tx.send(Box::new(self.st.clone()));
                 }
+                Ok(Msg::Read(f)) => f(&self.st),
                 Ok(Msg::Archive(label, tx)) => {
                     self.flush_all();
                     let _ = tx.send(self.store.archive(&self.st, &label));
@@ -330,6 +335,21 @@ impl ProjectHandle {
         let (tx, rx) = unbounded();
         self.tx.send(Msg::Snapshot(tx)).map_err(|_| ActorError::Gone)?;
         Ok(*rx.recv().map_err(|_| ActorError::Gone)?)
+    }
+
+    /// Runs `f` on the actor's thread against the state as it stands after every mutation sent
+    /// before this call, and returns its result. Cheap queries only: the writer waits while `f`
+    /// runs, and nothing is cloned.
+    pub fn read<R: Send + 'static>(&self, f: impl FnOnce(&ProjectState) -> R + Send + 'static) -> Result<R, ActorError> {
+        let (tx, rx) = unbounded();
+        self.tx
+            .send(Msg::Read(Box::new(move |st| {
+                // A query that panics must not take the writer down with it.
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(st)));
+                let _ = tx.send(r.map_err(|_| ()));
+            })))
+            .map_err(|_| ActorError::Gone)?;
+        rx.recv().map_err(|_| ActorError::Gone)?.map_err(|()| ActorError::ReadPanicked)
     }
 
     /// Emits pending updates and writes `project.json`. Returns the save error, if the write failed.
@@ -449,6 +469,8 @@ mod tests {
             answer: None,
             asked_ms: 1,
             answered_ms: None,
+        phase: String::new(),
+        step: String::new(),
         })))
         .unwrap();
         let evs = drain(&rx);
@@ -514,6 +536,18 @@ mod tests {
         let snap = h.snapshot().unwrap();
         assert_eq!(snap.rev, st.rev + 100);
         assert_eq!(snap.items_of_kind("source").len(), 100);
+        a.stop();
+    }
+
+    #[test]
+    fn a_read_runs_against_the_current_state_and_a_panicking_read_leaves_the_actor_alive() {
+        let (_t, a, _rx, st) = start(fixed());
+        let h = a.handle();
+        h.mutate(Mutation::SetTainted(true)).unwrap();
+        // The read sees every mutation sent before it, without cloning the state.
+        assert_eq!(h.read(|s| (s.tainted, s.rev, s.items.len())).unwrap(), (true, st.rev + 1, st.items.len()));
+        assert!(matches!(h.read(|_| -> u8 { panic!("a bug in a query") }), Err(ActorError::ReadPanicked)));
+        assert_eq!(h.read(|s| s.rev).unwrap(), st.rev + 1, "the writer is still there");
         a.stop();
     }
 }

@@ -1,0 +1,47 @@
+{
+  "phase": "Finish",
+  "steps": [
+    {
+      "id": "deliver",
+      "kind": "code",
+      "fn": "deliver",
+      "lane": "io"
+    },
+    {
+      "id": "archive",
+      "kind": "code",
+      "fn": "archive",
+      "after": [
+        {
+          "step": "deliver",
+          "edge": "barrier"
+        }
+      ],
+      "lane": "io"
+    },
+    {
+      "id": "dispose",
+      "kind": "code",
+      "fn": "dispose",
+      "after": [
+        {
+          "step": "archive",
+          "edge": "barrier"
+        }
+      ],
+      "lane": "io"
+    },
+    {
+      "id": "remember",
+      "kind": "code",
+      "fn": "remember",
+      "after": [
+        {
+          "step": "dispose",
+          "edge": "barrier"
+        }
+      ],
+      "lane": "cpu"
+    }
+  ]
+}

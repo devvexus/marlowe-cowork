@@ -1,0 +1,29 @@
+{
+  "phase": "Thinking",
+  "steps": [
+    {
+      "id": "decide",
+      "kind": "fanout",
+      "over": "project",
+      "form": "lead_decision@1",
+      "role": "lead",
+      "class": "lead",
+      "effort": "think",
+      "think_budget": 1500,
+      "max_output": 900,
+      "emit": "decision"
+    },
+    {
+      "id": "route",
+      "kind": "code",
+      "fn": "route_after_thinking",
+      "after": [
+        {
+          "step": "decide",
+          "edge": "barrier"
+        }
+      ],
+      "lane": "cpu"
+    }
+  ]
+}

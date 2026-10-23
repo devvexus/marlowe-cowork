@@ -1,7 +1,7 @@
 //! The form and kind registry: every form and project kind the build knows, as data.
 //!
-//! Forms live in `registry/forms/*.json` and kinds in `registry/kinds/*.json`, embedded at build
-//! time. A kind is a template (default phases, the forms it uses, overview rollups, which saved
+//! Forms live in `registry/forms/*.json`, kinds in `registry/kinds/*.json` and phase declarations
+//! in `registry/phases/*.json` ([`crate::spec`]), embedded at build time. A kind is a template (default phases, the forms it uses, overview rollups, which saved
 //! team tasks it supersedes); adding one is a JSON file and an entry in the lists below, not code
 //! in the engine, the store or the renderer. A project state embeds the forms it uses, so a
 //! project (and its screen) outlives a registry change.
@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::form::{Form, ShowAs};
+use crate::spec::PhaseSpec;
 
 /// The phase menu: the only phase names a plan may list.
 pub const PHASE_MENU: [&str; 8] = ["Plan", "DataCollection", "DataValidation", "Thinking", "Checkin", "Report", "Finish", "Engineering"];
@@ -58,6 +59,7 @@ pub struct KindTemplate {
 pub struct Registry {
     forms: BTreeMap<String, Form>,
     kinds: BTreeMap<String, KindTemplate>,
+    phases: BTreeMap<String, PhaseSpec>,
 }
 
 macro_rules! embedded_forms {
@@ -72,6 +74,16 @@ const FORMS: &[&str] = embedded_forms![
 ];
 
 const KINDS: &[&str] = &[include_str!("../registry/kinds/research.json"), include_str!("../registry/kinds/engineering.json")];
+
+const PHASES: &[&str] = &[
+    include_str!("../registry/phases/plan.json"),
+    include_str!("../registry/phases/data_collection.json"),
+    include_str!("../registry/phases/data_validation.json"),
+    include_str!("../registry/phases/thinking.json"),
+    include_str!("../registry/phases/checkin.json"),
+    include_str!("../registry/phases/report.json"),
+    include_str!("../registry/phases/finish.json"),
+];
 
 impl Registry {
     /// An empty registry (tests that bring their own forms).
@@ -93,7 +105,32 @@ impl Registry {
                 r.register_kind(k);
             }
         }
+        for src in PHASES {
+            if let Ok(p) = serde_json::from_str::<PhaseSpec>(src) {
+                r.register_phase(p);
+            }
+        }
         r
+    }
+
+    /// Adds (or replaces) a phase declaration.
+    pub fn register_phase(&mut self, phase: PhaseSpec) {
+        self.phases.insert(phase.phase.clone(), phase);
+    }
+
+    /// The declaration of a phase type.
+    pub fn phase_spec(&self, ty: &str) -> Option<&PhaseSpec> {
+        self.phases.get(ty)
+    }
+
+    /// Every phase declaration by phase type.
+    pub fn menu(&self) -> &BTreeMap<String, PhaseSpec> {
+        &self.phases
+    }
+
+    /// The phase type that holds the step `id`.
+    pub fn phase_of_step(&self, id: &str) -> Option<&str> {
+        self.phases.values().find(|p| p.step(id).is_some()).map(|p| p.phase.as_str())
     }
 
     /// Adds (or replaces) a form.
@@ -163,6 +200,22 @@ mod tests {
         let r = Registry::builtin();
         assert_eq!(r.form_ids().len(), FORMS.len());
         assert_eq!(r.kinds.len(), KINDS.len());
+    }
+
+    #[test]
+    fn the_shipped_phase_menu_is_sound_and_covers_every_phase_a_kind_runs() {
+        let r = Registry::builtin();
+        assert_eq!(r.menu().len(), PHASES.len(), "a phase file failed to parse");
+        let problems = crate::spec::validate_menu(r.menu(), &r);
+        assert!(problems.is_empty(), "{problems:#?}");
+        for k in r.kinds.values().filter(|k| k.available) {
+            for p in &k.phases {
+                assert!(r.phase_spec(p).is_some(), "{} runs {p}, which has no declaration", k.kind);
+            }
+        }
+        // Every phase output names a form, and a gate's answer function is declared with its card.
+        assert_eq!(r.phase_of_step("analyze"), Some("DataCollection"));
+        assert_eq!(r.phase_of_step("verify"), Some("DataValidation"));
     }
 
     #[test]

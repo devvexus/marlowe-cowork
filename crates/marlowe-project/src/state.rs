@@ -419,6 +419,12 @@ pub struct Gate {
     pub asked_ms: u64,
     /// When it was answered.
     pub answered_ms: Option<u64>,
+    /// The phase instance whose step raised it (empty for a gate made outside the engine).
+    #[serde(default)]
+    pub phase: String,
+    /// The step that raised it.
+    #[serde(default)]
+    pub step: String,
 }
 
 /// Where an agent is.
@@ -494,6 +500,12 @@ pub struct Metrics {
     pub fetch: FetchCounts,
     /// Tokens used by every agent.
     pub tokens: Tokens,
+    /// Milliseconds the project has spent running, parked time excluded (the minutes budget).
+    #[serde(default)]
+    pub active_ms: u64,
+    /// How many times the user raised a budget at a budget checkin (each adds one quote).
+    #[serde(default)]
+    pub budget_raises: u32,
 }
 
 /// The run-scoped network grant the user gives by approving the plan (design 4.9).
@@ -729,6 +741,8 @@ pub(crate) mod tests {
             answer: None,
             asked_ms: 5,
             answered_ms: None,
+        phase: String::new(),
+        step: String::new(),
         });
         st.grants.net = Some(NetGrant { scope: "run".into(), public_https_get: true, robots: true, quota: 60, used: 3 });
         let s = serde_json::to_string(&st).unwrap();

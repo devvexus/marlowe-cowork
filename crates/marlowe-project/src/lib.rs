@@ -9,6 +9,7 @@
 //! | [`plan`] | The plan the manager writes: validated for a 9b model (three errors at most, each with its fix), expanded by code, revised, continued. |
 //! | [`form`] | A form is the JSON Schema an employee is forced into **and** how each field is drawn: who writes it, its type, its display hint. [`form::model_schema`] and [`form::data_schema`] come from it. |
 //! | [`registry`] | Every form and project kind as JSON under `registry/`; a new kind or phase type is data. |
+//! | [`spec`] | Phase declarations as data: the four step primitives (fan-out, code, merge, gate), their edges and lanes, and the menu check. |
 //! | [`state`] | The one JSON document that holds a project: phases, items, gates, agents, grants, live numbers. |
 //! | [`mutation`] | The only way the state changes; each change bumps `rev` and returns JSON-pointer patches. A `done` item whose data breaks its form is refused. |
 //! | [`replica`] | A client's copy that follows the patch stream and detects a revision gap. |
@@ -31,6 +32,7 @@ pub mod mutation;
 pub mod plan;
 pub mod registry;
 pub mod replica;
+pub mod spec;
 pub mod state;
 pub mod store;
 pub mod view;

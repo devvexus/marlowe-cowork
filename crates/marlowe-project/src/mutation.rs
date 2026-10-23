@@ -146,6 +146,15 @@ pub enum Mutation {
     RegisterForm(Box<Form>),
     /// Append a phase instance.
     PushPhase(Phase),
+    /// Insert a phase instance before the phase `before` (appended when `before` is `None` or no
+    /// longer exists). A continuation round and a checkin go in ahead of the Report and Finish
+    /// phases that are already waiting.
+    InsertPhase {
+        /// The phase id to go in front of.
+        before: Option<String>,
+        /// The new instance.
+        phase: Phase,
+    },
     /// Change a phase.
     UpdatePhase {
         /// The phase id.
@@ -264,7 +273,7 @@ impl ProjectState {
             Mutation::SetPlan(_) => vec![Part::Top("plan"), Part::Top("title")],
             Mutation::PushPlanRecord(_) => vec![Part::Top("plans")],
             Mutation::RegisterForm(f) => vec![Part::Form(f.id())],
-            Mutation::PushPhase(_) | Mutation::UpdatePhase { .. } => vec![Part::Top("phases")],
+            Mutation::PushPhase(_) | Mutation::InsertPhase { .. } | Mutation::UpdatePhase { .. } => vec![Part::Top("phases")],
             Mutation::PutItem(i) => vec![Part::Item(i.id.clone()), Part::Order(i.kind.clone())],
             Mutation::UpdateItem { id, .. } => vec![Part::Item(id.clone())],
             Mutation::AssignAgent { item, .. } => vec![Part::Item(item.clone())],
@@ -335,6 +344,15 @@ impl ProjectState {
                     return Err(MutationError::Other(format!("phase `{}` already exists", p.id)));
                 }
                 self.phases.push(p);
+            }
+            Mutation::InsertPhase { before, phase } => {
+                if self.phases.iter().any(|x| x.id == phase.id) {
+                    return Err(MutationError::Other(format!("phase `{}` already exists", phase.id)));
+                }
+                match before.and_then(|b| self.phases.iter().position(|x| x.id == b)) {
+                    Some(at) => self.phases.insert(at, phase),
+                    None => self.phases.push(phase),
+                }
             }
             Mutation::UpdatePhase { id, update } => {
                 let p = self.phases.iter_mut().find(|p| p.id == id).ok_or(MutationError::UnknownPhase(id))?;
@@ -569,6 +587,8 @@ mod tests {
                 answer: None,
                 asked_ms: 1_500,
                 answered_ms: None,
+            phase: String::new(),
+            step: String::new(),
             })),
             Mutation::AnswerGate { id: "g_1".into(), choice: "approve".into(), text: None },
             Mutation::SetGrants(Grants { net: Some(NetGrant { scope: "run".into(), public_https_get: true, robots: true, quota: 60, used: 0 }) }),
@@ -667,7 +687,7 @@ mod tests {
     fn gates_open_one_at_a_time_and_answers_are_checked() {
         let mut st = sample();
         let gate = |id: &str, kind: GateKind| {
-            Box::new(Gate { id: id.into(), kind, status: GateStatus::Open, payload: json!({}), options: kind.options(2), answer: None, asked_ms: 1, answered_ms: None })
+            Box::new(Gate { id: id.into(), kind, status: GateStatus::Open, payload: json!({}), options: kind.options(2), answer: None, asked_ms: 1, answered_ms: None, phase: String::new(), step: String::new(), })
         };
         st.apply(Mutation::PushGate(gate("g_1", GateKind::Checkin)), 1).unwrap();
         assert!(matches!(st.apply(Mutation::PushGate(gate("g_2", GateKind::Plan)), 2), Err(MutationError::GateAlreadyOpen(_))));

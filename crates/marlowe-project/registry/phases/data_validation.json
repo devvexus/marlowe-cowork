@@ -1,0 +1,77 @@
+{
+  "phase": "DataValidation",
+  "output": "validated@1",
+  "steps": [
+    {
+      "id": "extract",
+      "kind": "code",
+      "fn": "extract_claims",
+      "over": "source",
+      "after": [
+        {
+          "step": "analyze",
+          "edge": "stream"
+        }
+      ],
+      "lane": "cpu",
+      "emit": "claim"
+    },
+    {
+      "id": "condense",
+      "kind": "merge",
+      "over": "claim",
+      "after": [
+        {
+          "step": "extract",
+          "edge": "stream"
+        }
+      ],
+      "watch": "analyze",
+      "thresholds": [
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ],
+      "group_by": "sub",
+      "form": "condense@1",
+      "role": "condenser",
+      "class": "employee",
+      "effort": "off",
+      "max_output": 1500,
+      "emit": "cclaim",
+      "fn": "condense_apply"
+    },
+    {
+      "id": "verify",
+      "kind": "fanout",
+      "over": "cclaim",
+      "after": [
+        {
+          "step": "condense",
+          "edge": "stream"
+        }
+      ],
+      "form": "verify@1",
+      "role": "verifier",
+      "class": "employee",
+      "effort": "think",
+      "think_budget": 600,
+      "max_output": 1200,
+      "fn": "verify_finish",
+      "important": true
+    },
+    {
+      "id": "collect",
+      "kind": "code",
+      "fn": "validated_output",
+      "after": [
+        {
+          "step": "verify",
+          "edge": "barrier"
+        }
+      ],
+      "lane": "cpu"
+    }
+  ]
+}

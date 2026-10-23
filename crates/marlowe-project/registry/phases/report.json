@@ -1,0 +1,76 @@
+{
+  "phase": "Report",
+  
+  "steps": [
+    {
+      "id": "sections",
+      "kind": "fanout",
+      "over": "question",
+      "form": "section@1",
+      "role": "writer",
+      "class": "employee",
+      "effort": "off",
+      "max_output": 1600,
+      "emit": "section"
+    },
+    {
+      "id": "answer",
+      "kind": "fanout",
+      "over": "project",
+      "after": [
+        {
+          "step": "sections",
+          "edge": "barrier"
+        }
+      ],
+      "form": "answer@1",
+      "role": "writer",
+      "class": "employee",
+      "effort": "off",
+      "max_output": 1100,
+      "emit": "answer"
+    },
+    {
+      "id": "cite",
+      "kind": "code",
+      "fn": "cited_batches",
+      "after": [
+        {
+          "step": "answer",
+          "edge": "barrier"
+        }
+      ],
+      "lane": "cpu",
+      "emit": "sentence_batch"
+    },
+    {
+      "id": "audit",
+      "kind": "fanout",
+      "over": "sentence_batch",
+      "after": [
+        {
+          "step": "cite",
+          "edge": "stream"
+        }
+      ],
+      "form": "audit@1",
+      "role": "verifier",
+      "class": "employee",
+      "effort": "off",
+      "max_output": 700,
+      "emit": "audit"
+    },
+    {
+      "id": "assemble",
+      "kind": "code",
+      "fn": "assemble_report",
+      "after": [
+        {
+          "step": "audit",
+          "edge": "barrier"
+        }
+      ],
+      "lane": "cpu"
+    }
+  ]
+}

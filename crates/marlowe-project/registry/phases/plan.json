@@ -1,0 +1,24 @@
+{
+  "phase": "Plan",
+  "steps": [
+    {
+      "id": "expand",
+      "kind": "code",
+      "fn": "plan_expand",
+      "lane": "cpu"
+    },
+    {
+      "id": "plan_card",
+      "kind": "gate",
+      "gate": "plan",
+      "payload_fn": "plan_card",
+      "answer_fn": "plan_answer",
+      "after": [
+        {
+          "step": "expand",
+          "edge": "barrier"
+        }
+      ]
+    }
+  ]
+}

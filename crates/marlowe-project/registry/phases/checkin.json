@@ -1,0 +1,12 @@
+{
+  "phase": "Checkin",
+  "steps": [
+    {
+      "id": "checkin_card",
+      "kind": "gate",
+      "gate": "checkin",
+      "payload_fn": "checkin_card",
+      "answer_fn": "checkin_answer"
+    }
+  ]
+}
