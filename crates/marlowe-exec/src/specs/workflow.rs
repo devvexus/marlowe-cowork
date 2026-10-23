@@ -137,8 +137,31 @@ fn resolved_plan(a: &Value, roots: &marlowe_workflow::saved::Roots) -> Result<Pl
             p.name = Some(n.to_string());
             p.ignored = vec![format!("`path` ({path} does not exist; ran the saved team task `{n}`)")];
         }
+    } else if let (Some(path), None) = (p.path.clone(), s(a, "name")) {
+        // A `path` that is not a file but is a saved task's name (`web-research.star`, `web_research`).
+        let stem = std::path::Path::new(&path).file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+        if !service::resolve_path(roots, &path).exists() && roots.resolve(&stem).is_ok() {
+            p.path = None;
+            p.name = Some(stem.clone());
+            p.ignored = vec![format!("`path` ({path} does not exist; ran the saved team task `{stem}`)")];
+        }
     }
     Ok(p)
+}
+
+/// What a `path` that is not a file is told: a saved team task runs by `name`, and which ones there are.
+fn missing_path(roots: &marlowe_workflow::saved::Roots, path: &str) -> String {
+    let catalog = roots.catalog();
+    let mut msg = format!("No file {path}.");
+    if catalog.is_empty() {
+        return msg;
+    }
+    let list: Vec<String> = catalog.iter().map(marlowe_workflow::saved::describe).collect();
+    msg.push_str(&format!(" A saved team task runs by `name`, not `path`: team{{name: \"{}\", args: {{...}}}}. Saved: {}.", catalog[0].name, list.join("; ")));
+    if let Some(fit) = marlowe_workflow::saved::best_match(&catalog, path) {
+        msg.push_str(&format!(" Closest to that path: `{}`.", fit.name));
+    }
+    msg
 }
 
 fn plan(a: &Value) -> Result<Plan, String> {
@@ -259,6 +282,11 @@ fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
         Ok(p) => p,
         Err(e) => return ToolOutcome::error(format!("{e}{}", star_files_hint(cx.workspace.as_deref()))),
     };
+    if let (None, Some(path)) = (&plan.script, &plan.path) {
+        if !service::resolve_path(&roots, path).exists() {
+            return ToolOutcome::error_of("team-name", missing_path(&roots, path));
+        }
+    }
     let from_script = plan.script.is_some() || plan.path.is_some();
     let fail = |e: String| ToolOutcome::error(if from_script { script_error(e) } else { e });
     let source = plan.script.clone().or_else(|| plan.path.as_deref().and_then(|p| std::fs::read_to_string(service::resolve_path(&roots, p)).ok()));

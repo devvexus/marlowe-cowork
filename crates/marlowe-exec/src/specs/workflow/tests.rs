@@ -652,3 +652,20 @@ fn args_sent_as_a_json_string_are_the_object_they_hold_and_a_broken_string_is_sa
     assert!(bad.is_error && bad.content.contains("not valid JSON"), "{}", bad.content);
     assert_eq!(fake.launched.lock().unwrap().len(), 1, "nothing launched for the broken one");
 }
+
+#[test]
+fn a_path_that_is_no_file_is_told_the_saved_tasks_and_one_named_like_a_saved_task_runs_it() {
+    let (home, ws) = (temp("home14"), temp("ws14"));
+    let t = host(&home, &ws);
+    let fake = Arc::new(FakeLauncher::default());
+    let services = Services::new().with(Workflows(fake.clone()));
+    let out = t.call_scoped(&req("team", json!({"path": "star/team/research_ai_models.star"})), &cx(&ws, services.clone()));
+    assert!(out.is_error && out.content.contains("No file star/team/research_ai_models.star") && out.content.contains("runs by `name`"), "{}", out.content);
+    assert!(out.content.contains("`web-research` (cited web research report; args topic*"), "{}", out.content);
+    assert!(out.content.contains("Closest to that path: `web-research`"), "{}", out.content);
+    assert_eq!(out.class, Some("team-name"));
+    assert!(fake.launched.lock().unwrap().is_empty());
+    let ok = t.call_scoped(&req("team", json!({"path": "web_research.star", "args": {"topic": "kimi"}})), &cx(&ws, services));
+    assert!(!ok.is_error && ok.content.contains("ran the saved team task `web_research`"), "{}", ok.content);
+    assert_eq!(fake.launched.lock().unwrap()[0].name.as_deref(), Some("web-research"));
+}

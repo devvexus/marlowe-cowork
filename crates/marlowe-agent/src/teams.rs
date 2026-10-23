@@ -12,12 +12,19 @@ pub const OFF_NOTICE: &str =
 
 /// The reminder every user turn carries while Teams is on. `size` is the team-size guideline.
 pub fn on_reminder(size: u32) -> String {
+    on_reminder_naming(size, None)
+}
+
+/// [`on_reminder`], plus (when the user's message names a saved team task) a line saying which one
+/// and how to run it: the model that was told the list may still reach for `path` or `script`.
+pub fn on_reminder_naming(size: u32, named: Option<&str>) -> String {
+    let named = named.map(|n| format!(" The user named a saved team task: {n}. Run that one now: team{{name, args}}, taking the args from their words; write no script and pass no path.")).unwrap_or_default();
     format!(
         "<system-reminder>Teams is on: form a team task for every substantive request (several in sequence for \
          multi-phase work: understand, design, build, review, staying in the loop between them); solo only for \
          conversation and trivial edits. When the user names a saved team task, or one in the team tool's list \
          fits, run it by name with its args (team{{name, args}}) and write no script; write one only when none \
-         fits. Keep a team under {size} specialists. Load the team-task-authoring skill before writing a script.</system-reminder>"
+         fits. Keep a team under {size} specialists. Load the team-task-authoring skill before writing a script.{named}</system-reminder>"
     )
 }
 

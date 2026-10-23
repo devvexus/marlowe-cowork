@@ -298,3 +298,17 @@ fn the_catalog_carries_each_tasks_args_and_clips_to_its_budget() {
     assert_eq!(fit.name, "web-research");
     assert!(marlowe_workflow::saved::best_match(&entries, "zzz qqq").is_none());
 }
+
+#[test]
+fn a_message_names_a_saved_task_by_its_words_and_a_common_word_alone_does_not() {
+    let entries = Roots { workspaces: vec![], home: None, plugins: vec![] }.catalog();
+    let named = |t: &str| marlowe_workflow::saved::named_in(&entries, t).map(|e| e.name.as_str());
+    assert_eq!(named("Run the web research team task. Focus on kimi"), Some("web-research"));
+    assert_eq!(named("use WEB_RESEARCH for this"), Some("web-research"));
+    assert_eq!(named("please run the code review task on my branch"), Some("code-review"));
+    assert_eq!(named("simplify this function"), None, "a one-word name needs to be called a task");
+    assert_eq!(named("run the simplify task on src"), Some("simplify"));
+    assert_eq!(named("do some web searching about review"), None);
+    let line = marlowe_workflow::saved::describe(entries.iter().find(|e| e.name == "web-research").unwrap());
+    assert_eq!(line, "`web-research` (cited web research report; args topic*, questions, file)");
+}

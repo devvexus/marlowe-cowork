@@ -10,7 +10,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use marlowe_agent::teams::{on_reminder, TeamsNote, OFF_NOTICE};
+use marlowe_agent::teams::{on_reminder_naming, TeamsNote, OFF_NOTICE};
 use marlowe_agent::{Conversation, Services};
 use marlowe_proto::{Event, Request, SessionId};
 use marlowe_settings::Settings;
@@ -94,6 +94,13 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
     }
 }
 
+/// The saved team task the user's message names, described for the reminder.
+fn named_task(core: &Core, workspace: Option<&Path>, text: &str) -> Option<String> {
+    let roots = marlowe_workflow::service::roots(&core.home, workspace, marlowe_agent::commands::plugin::bundle_roots(Some(&core.home), workspace));
+    let catalog = roots.catalog();
+    marlowe_workflow::saved::named_in(&catalog, text).map(marlowe_workflow::saved::describe)
+}
+
 /// A session's turn reminder: the on-reminder while Teams is on, the off notice once after it is
 /// switched off. A crew result relayed into the conversation is not a user turn and gets none.
 pub(crate) fn services(core: &Arc<Core>, convo: &Conversation, services: Services) -> Services {
@@ -107,7 +114,7 @@ pub(crate) fn services(core: &Arc<Core>, convo: &Conversation, services: Service
         let core = weak.upgrade()?;
         let ws = workspace.as_deref();
         match mode(&core, &session, ws) {
-            Mode::On => Some(on_reminder(size(&core, ws))),
+            Mode::On => Some(on_reminder_naming(size(&core, ws), named_task(&core, ws, text).as_deref())),
             Mode::OffPending => {
                 write(&core, &session, Mode::Off);
                 Some(OFF_NOTICE.to_string())

@@ -340,6 +340,57 @@ fn first_sentence(s: &str) -> &str {
     }
 }
 
+/// Lower case, every run of other characters one `-`, padded with `-` at both ends: the shape
+/// in which a saved name is looked for in a sentence ("Run the web research task" holds `web-research`).
+fn dashed(s: &str) -> String {
+    let mut out = String::from("-");
+    for c in s.chars().flat_map(char::to_lowercase) {
+        if c.is_alphanumeric() {
+            out.push(c);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    if !out.ends_with('-') {
+        out.push('-');
+    }
+    out
+}
+
+/// The saved task a user's message names, if it does: its name (spaces for dashes, any case) is in
+/// the text. A one-word name must also be called a task or workflow ("simplify task"), because
+/// the word alone is ordinary speech.
+pub fn named_in<'a>(entries: &'a [CatalogEntry], text: &str) -> Option<&'a CatalogEntry> {
+    let text = dashed(text);
+    entries
+        .iter()
+        .filter(|e| {
+            let name = dashed(&e.name);
+            let bare = name.trim_matches('-');
+            if bare.is_empty() {
+                return false;
+            }
+            if bare.contains('-') {
+                return text.contains(&name);
+            }
+            ["-task-", "-workflow-", "-team-task-"].iter().any(|suffix| text.contains(&format!("{}{}", name.trim_end_matches('-'), suffix)))
+                || ["-task-", "-workflow-"].iter().any(|prefix| text.contains(&format!("{}{}", prefix.trim_end_matches('-'), name)))
+        })
+        .max_by_key(|e| e.name.len())
+}
+
+/// `web-research (cited report; args topic*, questions)`: one saved task as a sentence names it.
+pub fn describe(e: &CatalogEntry) -> String {
+    let what = match e.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => clip(s, 60),
+        None => clip(first_sentence(&e.description), 60),
+    };
+    match e.args.as_deref().filter(|a| !a.trim().is_empty()) {
+        Some(a) => format!("`{}` ({what}; args {})", e.name, arg_names(a)),
+        None => format!("`{}` ({what})", e.name),
+    }
+}
+
 /// The saved task whose name and description share the most words with `text` (a script that
 /// would not pass, or a request): the one worth running instead. `None` when nothing is shared.
 pub fn best_match<'a>(entries: &'a [CatalogEntry], text: &str) -> Option<&'a CatalogEntry> {
