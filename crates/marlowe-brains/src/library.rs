@@ -32,6 +32,9 @@ CREATE TABLE IF NOT EXISTS context_policy (
     source     TEXT NOT NULL CHECK (source IN ('auto','user')),
     updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS engine_off (
+    model_ref TEXT PRIMARY KEY
+);
 CREATE TABLE IF NOT EXISTS hw_calibration (
     key         TEXT PRIMARY KEY,
     value       REAL NOT NULL,
@@ -117,6 +120,7 @@ impl Library {
         self.conn.execute("UPDATE slots SET model_ref = NULL WHERE model_ref = ?1", [&key])?;
         self.conn.execute("DELETE FROM context_policy WHERE model_ref = ?1", [&key])?;
         self.conn.execute("DELETE FROM edit_formats WHERE model_ref = ?1", [&key])?;
+        self.conn.execute("DELETE FROM engine_off WHERE model_ref = ?1", [&key])?;
         Ok(self.conn.execute("DELETE FROM models WHERE ref = ?1", [&key])? > 0)
     }
 
@@ -208,6 +212,25 @@ impl Library {
 }
 
 impl Library {
+    /// Whether the user turned Marlowe's llama.cpp engine off for `model` (Ollama serves it).
+    pub fn engine_off(&self, model: &ModelRef) -> Result<bool, BrainsError> {
+        let hit: Option<i64> = self
+            .conn
+            .query_row("SELECT 1 FROM engine_off WHERE model_ref = ?1", [model.to_string()], |r| r.get(0))
+            .optional()?;
+        Ok(hit.is_some())
+    }
+
+    /// Turns the llama.cpp engine off (or back on) for `model`.
+    pub fn set_engine_off(&self, model: &ModelRef, off: bool) -> Result<(), BrainsError> {
+        if off {
+            self.conn.execute("INSERT OR IGNORE INTO engine_off (model_ref) VALUES (?1)", [model.to_string()])?;
+        } else {
+            self.conn.execute("DELETE FROM engine_off WHERE model_ref = ?1", [model.to_string()])?;
+        }
+        Ok(())
+    }
+
     /// The saved context policy of `model`, if any.
     pub fn policy(&self, model: &ModelRef) -> Result<Option<ContextPolicy>, BrainsError> {
         let row: Option<(i64, String, i64, String, i64)> = self

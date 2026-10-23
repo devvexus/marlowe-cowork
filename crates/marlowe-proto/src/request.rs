@@ -305,6 +305,9 @@ pub enum Request {
     /// Saves `model`'s policy. Answered with `ContextPolicySaved` (broadcast), listing what
     /// changed now and what waits for a server restart. Refused above the model's maximum.
     SetContextPolicy { model: ModelRef, policy: ContextPolicy },
+    /// Turns Marlowe's own llama.cpp engine on or off for `model` (on is the default for a model
+    /// the engine may serve). Answered with `ContextPlan` to this client and `ContextPolicies`.
+    SetModelEngine { model: ModelRef, llama: bool },
     /// Changes Ollama's server-wide settings and restarts it. Always goes through an approval
     /// (`SERVER_RESTART_TOOL`) that says what restarts; `None` leaves a setting as it is.
     ApplyOllamaServer {

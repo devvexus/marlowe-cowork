@@ -50,6 +50,25 @@ pub enum Engine {
     Ollama,
     /// A hosted model: the planner offers the context choice only.
     Cloud,
+    /// Marlowe's own llama-server (Ollama's bundled binary): the policy's window and agent count
+    /// are its launch, so changing them needs no Ollama restart.
+    LlamaCpp,
+}
+
+impl Engine {
+    /// A local engine whose context, KV type and agents the planner sets.
+    pub fn is_local(self) -> bool {
+        matches!(self, Engine::Ollama | Engine::LlamaCpp)
+    }
+
+    /// The name the header and the planner show.
+    pub fn label(self) -> &'static str {
+        match self {
+            Engine::Ollama => "Ollama",
+            Engine::Cloud => "hosted",
+            Engine::LlamaCpp => "llama.cpp",
+        }
+    }
 }
 
 /// One runner slot as `/slots` reports it.
@@ -107,6 +126,13 @@ pub struct EngineSettings {
     /// time, whatever `OLLAMA_NUM_PARALLEL` says (qwen35 on Ollama 0.32).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serial_arch: Option<String>,
+    /// Why Ollama serves a model that Marlowe's llama-server could not (or was turned off for):
+    /// the planner says it plainly beside the engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_note: Option<String>,
+    /// The user turned the llama.cpp engine off for this model (it can be turned back on).
+    #[serde(default)]
+    pub engine_user_off: bool,
 }
 
 impl EngineSettings {
@@ -296,6 +322,8 @@ pub fn planned_changes(old_max_ctx: u32, in_effect: &EngineSettings, new: &Conte
     if new.max_ctx != old_max_ctx {
         let reload = match (in_effect.engine, in_effect.load_secs) {
             (Engine::Cloud, _) => String::new(),
+            (Engine::LlamaCpp, Some(s)) => format!("; the llama.cpp server restarts with it on the next request (~{s:.0} s)"),
+            (Engine::LlamaCpp, None) => "; the llama.cpp server restarts with it on the next request".into(),
             (_, Some(s)) => format!("; Ollama reloads it on the next request (~{s:.0} s)"),
             (_, None) => "; Ollama reloads it on the next request (~6–14 s)".into(),
         };
@@ -306,6 +334,15 @@ pub fn planned_changes(old_max_ctx: u32, in_effect: &EngineSettings, new: &Conte
         ctx_label(new.max_ctx),
         new.parallel
     )));
+    if in_effect.engine == Engine::LlamaCpp {
+        v.push(now(format!(
+            "llama.cpp serves {} slot{} of {} each ({} in all); the conductor keeps one, the crew runs on the rest",
+            new.parallel,
+            if new.parallel == 1 { "" } else { "s" },
+            ctx_label(new.max_ctx),
+            ctx_label(new.max_ctx.saturating_mul(u32::from(new.parallel)))
+        )));
+    }
     let (kv, parallel, flash) = server_change(in_effect, new);
     let running = in_effect.slots.iter().filter(|s| s.is_processing).count();
     let detail = format!(
@@ -371,6 +408,19 @@ mod tests {
         mc.in_effect.kv_type = Some(KvType::Q4_0);
         assert_eq!(mc.pending(), None);
         assert_eq!(policy_label(&p), "46k · q4 · 1×");
+    }
+
+    #[test]
+    fn llama_cpp_changes_restart_nothing_and_say_what_each_agent_gets() {
+        let running = EngineSettings { engine: Engine::LlamaCpp, loaded: true, kv_type: Some(KvType::Q8_0), parallel: Some(6), load_secs: Some(9.4), ..Default::default() };
+        let p = ContextPolicy { max_ctx: 49_152, kv_type: KvType::Q4_0, parallel: 6, source: PolicySource::User, updated_ms: 0 };
+        let c = planned_changes(32_768, &running, &p);
+        assert!(c.iter().all(|c| c.when == ChangeWhen::Now), "{c:?}");
+        assert!(c[0].text.contains("the llama.cpp server restarts with it on the next request (~9 s)"), "{}", c[0].text);
+        assert_eq!(c[2].text, "llama.cpp serves 6 slots of 48k each (288k in all); the conductor keeps one, the crew runs on the rest");
+        assert_eq!(server_change(&running, &p), (None, None, None));
+        assert!(Engine::LlamaCpp.is_local() && !Engine::Cloud.is_local());
+        assert_eq!(serde_json::to_string(&Engine::LlamaCpp).unwrap(), "\"llama_cpp\"");
     }
 
     #[test]

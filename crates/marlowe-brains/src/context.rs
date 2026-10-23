@@ -52,6 +52,12 @@ pub(crate) struct ContextState {
     pub seen: Mutex<HashMap<ModelRef, EngineSettings>>,
     /// When [`Brains::serving`] last looked at each model's runner.
     pub looked: Mutex<HashMap<ModelRef, Instant>>,
+    /// Whether the llama.cpp engine may serve a model, by Ollama model id (the manifest, read once).
+    pub eligibility: Mutex<HashMap<String, Result<(), String>>>,
+    /// Models the user turned the engine off for.
+    pub engine_off: Mutex<HashMap<ModelRef, bool>>,
+    /// The planner's slots and window for an engine model with no saved policy.
+    pub engine_auto: Mutex<HashMap<ModelRef, ContextPolicy>>,
 }
 
 /// How long what a runner serves is taken as known before it is looked at again.
@@ -184,6 +190,9 @@ impl ContextGate<'_> {
         if let Some(p) = self.b.with_library(|l| l.policy(model))? {
             return Ok(p);
         }
+        if let Some(p) = self.b.engine_auto_policy(model) {
+            return Ok(p);
+        }
         let seen = self.b.ctx.seen.lock().unwrap_or_else(|e| e.into_inner()).get(model).cloned().unwrap_or_default();
         Ok(ContextPolicy {
             max_ctx: self.b.default_window(model)?,
@@ -248,6 +257,8 @@ fn engine_settings(rt: &RunnerObservation, has_draft: bool, arch: Option<&str>) 
         decode_tok_s: own.and_then(|l| l.decode_tok_s),
         load_secs: own.and_then(|l| l.started_secs),
         serial_arch: arch.filter(|a| rt.serial_archs.iter().any(|s| s == a)).map(str::to_string),
+        engine_note: None,
+        engine_user_off: false,
     }
 }
 
@@ -292,6 +303,8 @@ impl Brains {
     /// Forgets cached model files (a model was added, removed or re-pulled).
     pub(crate) fn forget_files(&self) {
         self.ctx.analyzed.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.ctx.eligibility.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.ctx.engine_auto.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     pub(crate) fn analyzed(&self, model: &ModelRef) -> Result<Arc<Analyzed>, BrainsError> {
@@ -319,7 +332,8 @@ impl Brains {
         let a = self.analyzed(model).ok();
         let blob = a.as_ref().and_then(|a| a.files.blob.clone());
         let rt = hw.models.runtime(&model.model_id, blob.as_deref());
-        let e = engine_settings(&rt, a.as_ref().is_some_and(|a| a.draft.is_some()), a.as_ref().map(|a| a.main.arch.as_str()));
+        let mut e = engine_settings(&rt, a.as_ref().is_some_and(|a| a.draft.is_some()), a.as_ref().map(|a| a.main.arch.as_str()));
+        self.mark_engine(model, &mut e);
         self.ctx.seen.lock().unwrap_or_else(|e| e.into_inner()).insert(model.clone(), e.clone());
         e
     }
@@ -361,7 +375,9 @@ impl Brains {
         let a = self.analyzed(model)?;
         let blob = a.files.blob.clone();
         let rt = hw.models.runtime(&model.model_id, blob.as_deref());
-        let in_effect = engine_settings(&rt, a.draft.is_some(), Some(a.main.arch.as_str()));
+        let mut in_effect = engine_settings(&rt, a.draft.is_some(), Some(a.main.arch.as_str()));
+        self.mark_engine(model, &mut in_effect);
+        let engine_on = in_effect.engine == Engine::LlamaCpp;
         self.ctx.seen.lock().unwrap_or_else(|e| e.into_inner()).insert(model.clone(), in_effect.clone());
         let snap = hw.gpu.snapshot();
         let mut warnings: Vec<String> = a.main.warnings.clone();
@@ -426,15 +442,29 @@ impl Brains {
         });
 
         let saved = self.with_library(|l| l.policy(model))?;
-        let kv = in_effect.next_kv_type().unwrap_or(KvType::F16);
-        let parallel = in_effect.next_parallel().unwrap_or(1).max(1);
-        let auto = plan.auto_ctx(kv, parallel).filter(|c| *c >= MIN_CTX).map(|c| ContextPolicy {
-            max_ctx: c.min(plan.ctx_limit),
-            kv_type: kv,
-            parallel,
-            source: PolicySource::Auto,
-            updated_ms: 0,
-        });
+        // The engine's own start: q8_0 where the head size allows, and as many agents as still get
+        // a useful window. Ollama's models keep what the server runs (the saved environment).
+        let kv = if engine_on {
+            if a.main.quantizable() { KvType::Q8_0 } else { KvType::F16 }
+        } else {
+            in_effect.next_kv_type().unwrap_or(KvType::F16)
+        };
+        let (parallel, auto) = if engine_on {
+            match crate::engine::engine_choice(&plan, kv) {
+                Some((n, c)) => (n, Some(ContextPolicy { max_ctx: c, kv_type: kv, parallel: n, source: PolicySource::Auto, updated_ms: 0 })),
+                None => (1, None),
+            }
+        } else {
+            let parallel = in_effect.next_parallel().unwrap_or(1).max(1);
+            let auto = plan.auto_ctx(kv, parallel).filter(|c| *c >= MIN_CTX).map(|c| ContextPolicy {
+                max_ctx: c.min(plan.ctx_limit),
+                kv_type: kv,
+                parallel,
+                source: PolicySource::Auto,
+                updated_ms: 0,
+            });
+            (parallel, auto)
+        };
         if let Some(a) = auto.filter(|a| a.max_ctx < SMALL_AUTO_CTX) {
             warnings.push(format!(
                 "the automatic choice is only {}k with {} agent{} at {}: long tasks will compact often",
@@ -446,9 +476,24 @@ impl Brains {
         }
         let policy = match saved {
             Some(p) => p,
+            None if engine_on => auto.unwrap_or(ContextPolicy {
+                max_ctx: self.default_window(model)?,
+                kv_type: kv,
+                parallel: 1,
+                source: PolicySource::Auto,
+                updated_ms: 0,
+            }),
             None => ContextPolicy { max_ctx: self.default_window(model)?, kv_type: kv, parallel, source: PolicySource::Auto, updated_ms: 0 },
         };
-        if in_effect.loaded {
+        if engine_on {
+            warnings.push(format!(
+                "llama.cpp serves {} slot{} of {} each; the conductor keeps one and the crew runs on the rest",
+                policy.parallel,
+                if policy.parallel == 1 { "" } else { "s" },
+                marlowe_proto::ctx_label(policy.max_ctx)
+            ));
+        }
+        if in_effect.loaded && !engine_on {
             if let (Some(n), Some(slot)) = (in_effect.num_ctx, in_effect.slots.iter().find(|s| s.n_ctx != in_effect.slots[0].n_ctx)) {
                 warnings.push(format!("runner slots differ in size ({} and {n} tokens)", slot.n_ctx));
             }
@@ -466,7 +511,7 @@ impl Brains {
                 ));
             }
         }
-        if let Some(note) = in_effect.parallel_shortfall(policy.parallel.max(1)) {
+        if let Some(note) = in_effect.parallel_shortfall(policy.parallel.max(1)).filter(|_| !engine_on) {
             warnings.push(note);
         }
         if kv != KvType::F16 && !a.main.quantizable() {
@@ -519,7 +564,11 @@ impl Brains {
         let mut out = Vec::with_capacity(models.len());
         for lm in models {
             let m = lm.model;
-            let policy = self.with_library(|l| l.policy(&m))?;
+            let mut policy = self.with_library(|l| l.policy(&m))?;
+            // The conductor's engine model shows the planner's slots and window as its policy.
+            if policy.is_none() && conductor.as_ref() == Some(&m) {
+                policy = self.engine_auto_policy(&m);
+            }
             let max_ctx = match policy {
                 Some(p) => p.max_ctx,
                 None => self.default_window(&m)?,

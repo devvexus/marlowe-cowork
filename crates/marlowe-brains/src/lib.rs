@@ -11,6 +11,7 @@
 
 mod brains;
 pub mod context;
+pub mod engine;
 pub mod credentials;
 mod detect;
 mod error;
