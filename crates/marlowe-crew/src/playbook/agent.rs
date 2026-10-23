@@ -27,6 +27,47 @@ use marlowe_model::{
 use marlowe_proto::{RunId, SandboxKind, SessionId};
 
 use super::{ShellResult, StepResult, StepRunner, StepSpec};
+
+/// The tools the user allowed "for the session" in a run's agents, and the hosts they approved, by
+/// run: one answer covers the run's other agents (35 agents asked 131 times for 3 tools in one live
+/// team task). Tripwires are never recorded: the agent loop only grants a call that is not one.
+type Grants = std::collections::HashMap<String, (std::collections::HashSet<String>, std::collections::HashSet<String>)>;
+
+fn grants() -> &'static Mutex<Grants> {
+    static G: std::sync::OnceLock<Mutex<Grants>> = std::sync::OnceLock::new();
+    G.get_or_init(Default::default)
+}
+
+/// The tools and the hosts the run's agents were allowed so far.
+fn run_grants(run: &str) -> (Vec<String>, Vec<String>) {
+    grants()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(run)
+        .map(|(tools, hosts)| (tools.iter().cloned().collect(), hosts.iter().cloned().collect()))
+        .unwrap_or_default()
+}
+
+/// Shares an agent's session grants with the run's other agents at each step boundary.
+struct ShareGrants {
+    run: String,
+}
+
+impl marlowe_agent::ToolMiddleware for ShareGrants {
+    fn name(&self) -> &str {
+        "run-grants"
+    }
+
+    fn after_step(&self, _info: marlowe_agent::StepInfo, convo: &mut Conversation) -> Vec<marlowe_model::Message> {
+        let mut all = grants().lock().unwrap_or_else(|e| e.into_inner());
+        let (tools, hosts) = all.entry(self.run.clone()).or_default();
+        tools.extend(convo.session_allows.iter().cloned());
+        convo.session_allows.extend(tools.iter().cloned());
+        hosts.extend(convo.exposure.approved_hosts.iter().cloned());
+        convo.exposure.approved_hosts.extend(hosts.iter().cloned());
+        Vec::new()
+    }
+}
 use crate::role::{RoleCard, Roles};
 use crate::sandbox::Sandbox;
 use crate::tools::{CrewToolFactory, CrewTools};
@@ -411,6 +452,7 @@ impl AgentRunner {
         agent.effort = spec.effort.unwrap_or(card.effort);
         agent.approvals = self.approvals.clone();
         agent.middleware.push(marlowe_agent::agent::guard::LoopGuard::for_crew());
+        agent.middleware.push(Arc::new(ShareGrants { run: self.run.to_string() }));
         // A sized step gets the room its prompt leaves, not the provider's default (Ollama's is
         // a quarter of the window, which a thinking model can spend before it answers).
         if let Some(want) = spec.max_output {
@@ -422,6 +464,9 @@ impl AgentRunner {
         let session = SessionId::from(format!("crew:{}", self.run).as_str());
         let mut convo = Conversation::new(session, Some(sandbox.root.clone()));
         convo.exposure.tainted = self.hooks.tainted();
+        let (granted_tools, granted_hosts) = run_grants(&self.run.to_string());
+        convo.session_allows.extend(granted_tools);
+        convo.exposure.approved_hosts.extend(granted_hosts);
         // A step the run stopped in continues from its per-call checkpoints: completed model
         // calls and tool batches are never repeated.
         let seeded = self.hooks.partial(&spec.key);
@@ -870,5 +915,28 @@ mod tests {
         assert_eq!(output_cap(12_288, 32_768, 9_000), 12_288);
         assert_eq!(output_cap(24_576, 32_768, 9_000), 32_768 - 9_000 - OUTPUT_MARGIN);
         assert_eq!(output_cap(12_288, 32_768, 31_500), MIN_OUTPUT);
+    }
+}
+
+#[cfg(test)]
+mod grant_tests {
+    use super::*;
+    use marlowe_agent::ToolMiddleware;
+
+    #[test]
+    fn what_one_agent_was_allowed_the_runs_other_agents_share() {
+        let share = ShareGrants { run: "grant-test-run".into() };
+        let mut first = Conversation::new(SessionId::from("crew:a"), None);
+        first.allow_for_session("web_search");
+        first.exposure.approved_hosts.insert("arxiv.org".into());
+        share.after_step(StepInfo { turn: 0, step: 1 }, &mut first);
+        // A later agent of the same run starts with it; another run's agent does not.
+        let (tools, hosts) = run_grants("grant-test-run");
+        assert_eq!((tools, hosts), (vec!["web_search".to_string()], vec!["arxiv.org".to_string()]));
+        assert_eq!(run_grants("another-run"), (vec![], vec![]));
+        // A running agent picks up what the others were allowed at its next step.
+        let mut second = Conversation::new(SessionId::from("crew:b"), None);
+        share.after_step(StepInfo { turn: 0, step: 1 }, &mut second);
+        assert!(second.is_allowed_for_session("web_search") && second.exposure.approved_hosts.contains("arxiv.org"));
     }
 }

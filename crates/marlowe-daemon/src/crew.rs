@@ -410,7 +410,10 @@ fn relay_taints(link: &CrewLink, info: &CrewRunInfo, dispatch: Option<&Dispatch>
 /// Raises `ApprovalRequested` for a run (or a merge/discard of one) and waits for the answer.
 /// Denies on timeout and shutdown. `AllowForSession` counts as `Allow`.
 pub(crate) fn ask(core: &Core, run: &RunId, session: Option<&SessionId>, tool: String, summary: String, detail: String) -> ApprovalDecision {
-    ask_call(core, run, session, tool, summary, detail, None)
+    match ask_call(core, run, session, tool, summary, detail, None) {
+        ApprovalDecision::AllowForSession => ApprovalDecision::Allow,
+        d => d,
+    }
 }
 
 /// [`ask`] for a tool call of the run's agent: a denial's reason is kept for `call_id`.
@@ -439,10 +442,9 @@ fn ask_call(core: &Core, run: &RunId, session: Option<&SessionId>, tool: String,
         }
     }
     core.bus.publish(Event::ApprovalResolved { approval: id, decision });
-    match decision {
-        ApprovalDecision::AllowForSession => ApprovalDecision::Allow,
-        d => d,
-    }
+    // A tool call's `AllowForSession` goes back as it is: the agent loop records it, and the run's
+    // other agents share it (`ShareGrants`).
+    decision
 }
 
 /// The session an approval names when the run has no parent (dispatched from the CLI).
