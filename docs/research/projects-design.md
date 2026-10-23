@@ -22,24 +22,19 @@ Matthew: "Run the web research team task. Focus on the latest upcoming AI models
 
 ```json
 {"action":"create","plan":{
-  "title":"Upcoming AI models: Kimi, DeepSeek, Qwen4",
-  "kind":"research",
   "objective":"Find the newest and upcoming Kimi, DeepSeek and Qwen models (including Qwen4) and say what is confirmed and what is rumoured.",
   "questions":[
-    {"q":"Which Kimi models (Moonshot AI) are newest or upcoming?"},
-    {"q":"Which DeepSeek models are newest or upcoming?"},
-    {"q":"Is Qwen4 released or announced, and what is known about it?"}],
+    "Which Kimi models (Moonshot AI) are newest or upcoming?",
+    "Which DeepSeek models are newest or upcoming?",
+    "Is Qwen4 released or announced, and what is known about it?"],
   "fields":[
-    {"key":"model_name","label":"Model","type":"string","key_field":true},
-    {"key":"vendor","label":"Vendor","type":"string"},
-    {"key":"status","label":"Status","type":"enum","values":["released","announced","rumoured","unknown"]},
-    {"key":"release_date","label":"Release date","type":"string"},
-    {"key":"size","label":"Size","type":"string"}],
-  "deliverable":{"kind":"report","send":true},
-  "workspace":"compact"}}
+    {"key":"model_name"}, {"key":"vendor"},
+    {"key":"status","values":["released","announced","rumoured","unknown"]},
+    {"key":"release_date"}, {"key":"size"}],
+  "send":true}}
 ```
 
-2. **Plan phase (code).** Validates and expands the plan (question ids `q1..q3`, defaults for limits), creates the project directory, builds the plan card (3 questions, up to 40 sources, 5 fields, estimated model calls, the network grant in plain words) and parks. The tool returns `{"id":"p_7f3a91c2","status":"awaiting_plan"}`. The manager tells Matthew in two lines that a plan is ready; he approves in the card or says "go" and the manager calls `project{action:"answer",answer:"approve"}`. Approving also grants the run its public-https reads (decision 1).
+2. **Plan phase (code).** Validates and expands the plan (title from the objective, `kind: research`, question ids `q1..q3`, field labels from keys, `status` typed enum because it has `values`, the first field as the record key, defaults for limits, phases, workspace and deliverable), creates the project directory, builds the plan card (3 questions, up to 40 sources, 5 fields, estimated model calls, the network grant in plain words) and parks. The tool returns `{"id":"p_7f3a91c2","status":"awaiting_plan"}`. The manager tells Matthew in two lines that a plan is ready; he approves in the card or says "go" and the manager calls `project{action:"answer",answer:"approve"}`. Approving also grants the run its public-https reads (decision 1).
 3. **DataCollection.** Per question an AttackVectors employee (mini model, fresh context, told today's date and that its knowledge is old) writes up to 5 search angles and up to 4 names it suspects exist but does not know ("qwen4?"). Code turns these into queries plus date-worded variants, searches the keyless channels, dedups, picks sources by quota, fetches with robots.txt and per-host spacing, extracts markdown with numbered links `[L12]`, stores the text. Each readable page starts an Analyze employee at once (no waiting for the others). Analyze returns the form in section 2.4: relevancy, one line, credibility inputs, claims with verbatim quotes, additional sources by link number, and one `records` row per model it found with the five fields above.
 4. **DataValidation.** Each finished Analyze triggers Extract (code): quotes located verbatim in the stored page or the claim is dropped; claim ids derived from source and position. At 25/50/75/100% of Analyze, Condense merges only the new claims into condensed claims (code attaches the verbatim originals, counts independent roots, scores). A Verify employee per condensed claim re-reads the corroborating passages and returns a verdict. Output: verified claims and sources.
 5. **Thinking.** The lead (the larger model) receives forms only: the plan, verified claims by question, coverage, the best flagged additional sources. It returns `report` or `keep_researching` with new questions. If it has flagged sources it always recommends keep_researching at a Checkin (Matthew's rule).
@@ -53,7 +48,7 @@ Work size for that run (e): 3 AttackVectors calls, about 30 Analyze, 4 Condense 
 | Term | Meaning |
 |---|---|
 | **Project** | One durable unit of work: a plan, a state JSON, a run, a directory. Replaces Crew/teams/workflows as the product concept. Has a `kind` (a template: research now, engineering later). |
-| **Plan** | The manager's JSON: objective, questions, fields, deliverable, limits, workspace disposal. Small enough for a 9b model to fill. Always version-numbered (`plan_no`). |
+| **Plan** | The manager's JSON: objective and questions (required), optional fields, deliverable, limits, workspace disposal. Small enough for a 9b model to fill (section 2.1 counts the keys). Always version-numbered (`plan_no`). |
 | **Phase** | A named stage from the menu (Plan, DataCollection, ...). Declared as data: an ordered list of steps. Has a status, progress and one declared **output** (the only thing the next phase reads). |
 | **Step** | One primitive inside a phase: `fanout`, `code`, `merge` or `gate`. Steps connect by edges that are either `stream` (an item flows on the moment it is done) or `barrier` (wait for all). |
 | **Employee** | One model call with a fresh context, one task, no tools, one form. It lives for one call (plus its retries). The manager and the lead are the only long-lived models. |
@@ -70,24 +65,25 @@ Conventions. `W` = who writes a field: **M** model (forced by grammar), **C** co
 
 ### 2.1 Plan (what the manager fills)
 
-Minimal for a 9b model: five required keys, the rest defaulted by code.
+Two required keys. Everything else is optional and defaulted by code, so the smallest valid plan is an objective and a list of question strings.
 
 ```json
 {
-  "title":      "string, 3-80 chars, required",
-  "kind":       "research",
-  "objective":  "string, 20-500 chars, required",
-  "questions":  [ {"q": "string, 10-200 chars"} ],
-  "fields":     [ {"key":"snake_case<=32", "label":"<=40", "type":"string|text|integer|number|bool|date|url|enum|list",
-                   "values":["only for enum, 2-8 strings"], "key_field": false} ],
-  "deliverable":{ "kind":"report|answer|files", "send": false },
-  "workspace":  "compact",
-  "phases":     ["DataCollection","DataValidation","Thinking","Report","Finish"],
-  "limits":     { "max_sources":40, "max_fetches":60, "vectors_per_question":5, "max_rounds":3 }
+  "objective": "string, 20-500 chars, REQUIRED",
+  "questions": [ "string, 10-200 chars each, 1-8 items, REQUIRED" ],
+  "fields":    [ {"key":"snake_case<=32", "type":"string (default)|text|integer|number|bool|date|url|list", "values":["makes it an enum, 2-8 strings"]} ],
+  "send":      false,
+  "title": "optional, 3-80 chars",  "kind": "optional, research",  "workspace": "optional: keep|compact|delete",
+  "deliverable": "optional: report (default)|answer|files",  "phases": ["optional, from the menu"],
+  "limits": { "max_sources":40, "max_fetches":60, "vectors_per_question":5, "max_rounds":3 }
 }
 ```
 
-Rules. `questions` 1-8 (required). `fields` 0-12; types limited to the list; `key_field` marks the field that identifies a record (at most one, default the first). `phases` optional, defaults from the kind template; unknown names are rejected with the menu. `workspace` is `keep`, `compact` (default) or `delete` (section 7.4). `limits` all optional, bounded by code (`max_sources` 1-120, `max_fetches` at least `max_sources`, `max_rounds` 1-5). Code adds: `plan_no`, `question ids`, `created_ms`, the model quote (calls and tokens, e), the grant text. A continuation plan adds `parent_plan`, `inherit` (item ids carried), `seed_sources` (additional-source items to fetch first), `steer` (user text, data).
+**What a 9b model has to write** (count): for a plain question set, 2 keys plus N strings. Each project-specific field costs one key (`key`); `type` is needed only when it is not a string, `values` only for an enum. Matthew's models example is 2 keys, 3 question strings, 5 field objects (6 keys) and `send`: 9 keys and 8 strings, about 250 tokens. A model that also writes `title`, `kind`, `workspace`, `deliverable`, `phases` or `limits` is accepted, but nothing requires it and the tool description does not advertise them (they ride in the persona block). `{"q": "..."}` question objects and `label` / `key_field` on a field are tolerated and ignored beyond that.
+
+Code derives: `title` (first 60 chars of the objective), `kind` (`research`), `deliverable` (`report`), `workspace` (`compact`), `phases` (from the kind template), `limits`, field `label` (the key with spaces, capitalised), field `max_len` (string 120, text 400), `key_field` (the first field), `plan_no`, question ids, `created_ms`, the model quote (calls and tokens, e) and the grant text. Unknown keys are rejected with the list of known ones (a 9b model must not invent keys that silently do nothing). A continuation plan adds `parent_plan`, `inherit` (item ids carried), `seed_sources` (additional-source items to fetch first), `steer` (user text, data).
+
+Rules. `fields` 0-12 (13 is an error); unknown `phases` names are rejected with the menu; `max_fetches` at least `max_sources`; `max_sources` 1-120; `max_rounds` 1-5. Everything the manager writes (objective, questions, keys, enum values) is length-capped; it reaches employee prompts fenced as data, but it is user-directed text, not untrusted web content.
 
 ### 2.2 Project state
 
@@ -139,13 +135,15 @@ All of `rev`, `updated_ms`, `phases[].progress/steps/counts`, `agents`, `metrics
 ```json
 { "form": "analyze", "version": 1, "title": "Source analysis",
   "item_label": "{data.index}. {data.title}",
-  "fields": [ { "key":"...", "label":"...", "type":"...", "w":"M|C|P", "required":true,
+  "fields": [ { "key":"...", "label":"...", "type":"...", "w":"M|C|P", "required":true, "from":"data.<key> (default) | live.<key> | agents",
                 "max_len":140, "max_items":8, "min":0, "max":1,
                 "values":[ {"v":"Critical","def":"...","weight":1.0,"tone":"bad","glyph":"!"} ],
                 "of":"string", "columns":[ { "...field..." } ],
                 "show": { "as":"badge" } } ],
   "rules": [ "named code checks run after the grammar, see 5.4" ] }
 ```
+
+`from` says where `view` reads the value: `data.<key>` by default, `live.<key>` for code-filled live slots (cpu, gpu, size, runtime), or `agents` for the item's assigned agents. A `w:"C"` field with `from: live.*` is never stored in `data` and never reaches `model_schema`.
 
 Field types: `string`, `text` (multi-line), `integer`, `number`, `bool`, `enum`, `url`, `timestamp`, `duration` (ms), `list` (`of` a scalar type), `table` (list of objects, `columns` are fields), `agents` (list of agent ids), `json` (anything, code-written only).
 
@@ -155,10 +153,10 @@ Field types: `string`, `text` (multi-line), `integer`, `number`, `bool`, `enum`,
 |---|---|---|---|
 | `text` | any scalar | plain text, wrapped, clipped with `...` | `lines` |
 | `badge` | enum, bool | glyph plus colour from the value's `tone` and `glyph` | none (values carry them) |
-| `link` | url | clickable `label ↗`; activating it opens the system browser; the raw url is one key away | `label_from` (field key) |
+| `link` | url | clickable `label ↗`; activating it asks the host to open the system browser (`Action::OpenUrl`, only `https`/`http` urls, the host name shown first); the raw url is one key away | `label_from` (field key) |
 | `table` | table, list of objects | table with the schema-named `columns` | `columns` (keys, in order), `sort` |
 | `progress` | number 0..1, or object `{done,total}` | `n/m` and a bar | `unit` |
-| `meter` | number | bar against a range with warn and crit colouring | `min`, `max`, `unit`, `warn_at`, `crit_at` |
+| `meter` | number | bar against a range with warn and crit colouring; with `max: null` the value is shown without a bar (a size) | `min`, `max`, `unit`, `warn_at`, `crit_at` |
 | `duration` | duration, timestamp pair | `00:42:10`, live while the item runs | none |
 | `time` | timestamp | relative ("3 min ago") with absolute on hover | none |
 | `agent_ref` | agents | agent chips; activating one opens that agent from anywhere | none |
@@ -200,7 +198,7 @@ Vector row: `angle` (M, enum `official`, `news`, `paper`, `code`, `discussion`, 
 | `one_line` | M | string, max_len 140 | what this source offers this project |
 | `notes` | M | string, max_len 300 | short |
 | `claims` | M | table, max_items 8 | `text` (M, max_len 240), `quote` (M, max_len 300, verbatim from the page), `sub` (C, question id) |
-| `additional_sources` | M | table, max_items 8 | `link` (M, integer: a `[L<n>]` number on the page, or null), `reference` (M, string, max_len 160: a citation or name when there is no link, or null), `opportunity` (M, same labels as relevancy), `notes` (M, max_len 160, how it was referenced); `source` (C, url) filled by code |
+| `additional_sources` | M | table, max_items 8 | `link` (M, integer: a `[L<n>]` number on the page, or null), `reference` (M, string, max_len 160: a citation or name when there is no link, or null), `opportunity` (M, same labels as relevancy), `notes` (M, max_len 160, how it was referenced); `index` (C, 1-based within the source) and `source` (C, url) filled by code |
 | `records` | M | table, max_items 10 | one row per entity found, columns are the plan's `fields` (each nullable: null when the page does not say). This is the project-specific section |
 | `relevance` | C | number 0..1 | weight of `relevancy` |
 | `credibility` | C | number 0..1 | 2.4 below |
@@ -319,11 +317,11 @@ The `relevancy` field has `show: badge` (values carry tone and glyph), `source` 
    {"key":"n","type":"integer","w":"C","show":{"as":"hidden"}},
    {"key":"name","label":"Name","type":"string","w":"P","max_len":80,"show":{"as":"text"}},
    {"key":"overview","label":"Overview","type":"text","w":"M","max_len":600,"show":{"as":"text","lines":4}},
-   {"key":"size_bytes","label":"size","type":"integer","w":"C","show":{"as":"meter","unit":"bytes","min":0,"max":null}},
-   {"key":"cpu_pct","label":"cpu","type":"number","w":"C","show":{"as":"meter","unit":"%","min":0,"max":100,"warn_at":85}},
-   {"key":"gpu_pct","label":"gpu","type":"number","w":"C","show":{"as":"meter","unit":"%","min":0,"max":100,"warn_at":90}},
-   {"key":"runtime_ms","label":"runtime","type":"duration","w":"C","show":{"as":"duration"}},
-   {"key":"agents","label":"agents","type":"agents","w":"C","show":{"as":"agent_ref"}}]}
+   {"key":"size_bytes","label":"size","type":"integer","w":"C","from":"live.size_bytes","show":{"as":"meter","unit":"bytes","min":0,"max":null}},
+   {"key":"cpu_pct","label":"cpu","type":"number","w":"C","from":"live.cpu_pct","show":{"as":"meter","unit":"%","min":0,"max":100,"warn_at":85}},
+   {"key":"gpu_pct","label":"gpu","type":"number","w":"C","from":"live.gpu_pct","show":{"as":"meter","unit":"%","min":0,"max":100,"warn_at":90}},
+   {"key":"runtime_ms","label":"runtime","type":"duration","w":"C","from":"live.runtime_ms","show":{"as":"duration"}},
+   {"key":"agents","label":"agents","type":"agents","w":"C","from":"agents","show":{"as":"agent_ref"}}]}
 ```
 
 Rendered:
@@ -336,7 +334,7 @@ Experiment #1 (Trellis Encoder Compression) [running]   size 1.2 GB   cpu ▰▰
 
 The `[running]` badge is the item's status; `{...}` in `item_label` is filled from `data`. The live slots are code-filled from `marlowe-os` process info and the GPU probe the daemon already has; the runtime counts from `live.started_ms`. A kind the manager invents mid-project, or fields it adds to the plan, render the same way because the renderer only reads the form.
 
-**Overview tab.** The kind template lists rollups, e.g. `{"title":"Sources","over":{"kind":"source"},"by":"data.relevancy","show":"badge"}`, `{"title":"Claims","over":{"kind":"cclaim"},"by":"data.verdict"}`, `{"title":"Agents","over":"agents","by":"status"}`. The overview is counts and bars computed from every project's JSON.
+**Overview tab.** The kind template lists rollups, e.g. `{"title":"Sources","over":{"kind":"source"},"by":"data.relevancy","show":"badge"}`, `{"title":"Claims","over":{"kind":"cclaim"},"by":"data.verdict"}`, `{"title":"Agents","over":"agents","by":"status"}`. The overview is counts and bars computed from every project's JSON. A kind with no `rollups` falls back to counting its items by kind and status, so an unregistered kind still has an overview. Text from pages (titles, anchors) has control and escape characters stripped when it is stored, so a hostile page cannot drive the terminal.
 
 **Live updates.** Clients receive `Event::ProjectUpdated { project, rev, patches }` (path-set and path-remove operations, coalesced to about 100 ms) and ask for the full state when `rev` skips. A client that attaches late asks for the state.
 
@@ -353,7 +351,7 @@ All four are generic. A phase is data; the engine and the registries (forms, rol
 | `merge` | `watch` (a fanout step), `thresholds` (default 0.25, 0.5, 0.75, 1.0), `min_new`, `form`, `role` | Delta merge: fires when the watched step's finished share reaches the next threshold and there are new unmerged items; sends only the new items plus the compact existing merged items; the last threshold always fires. |
 | `gate` | `kind` (`plan`, `checkin`), `payload_fn` | Builds a card, parks the run, resumes with the user's answer. |
 
-Edges: `{ "after": "analyze", "edge": "stream" }` (default) or `"barrier"`. A `stream` edge hands over each item the moment it is `done`. Only gates, merges at 100%, and the Thinking input are barriers, and a barrier is per question where it can be (a question's validation does not wait for another question's collection).
+Edges: `{ "after": "analyze", "edge": "stream" }` (default) or `"barrier"`; a barrier may add `"per":"sub"` to wait per group (per question) instead of for everything. A `stream` edge hands over each item the moment it is `done`. Only gates, merges at 100%, and the Thinking input are barriers, and a barrier carries `per:"sub"` where it can (a question's validation does not wait for another question's collection).
 
 ### 4.2 Declaring a phase (menu entries)
 
@@ -374,11 +372,27 @@ Edges: `{ "after": "analyze", "edge": "stream" }` (default) or `"barrier"`. A `s
   { "id":"route",  "kind":"code", "fn":"route_after_thinking" } ] }
 
 { "phase":"Checkin", "steps":[ { "id":"card", "kind":"gate", "gate":"checkin", "payload_fn":"checkin_card" } ] }
-{ "phase":"Report",  "steps":[ "sections (fanout, per question)", "answer (fanout)", "audit (fanout, batches)", "assemble (code)" ] }
-{ "phase":"Finish",  "steps":[ "deliver", "archive", "dispose", "remember" ] }
+{ "phase":"Plan", "steps":[
+  { "id":"expand", "kind":"code", "fn":"plan_expand", "lane":"cpu" },
+  { "id":"card",   "kind":"gate", "gate":"plan", "payload_fn":"plan_card" } ] }
+
+{ "phase":"Report", "output":"report@1", "steps":[
+  { "id":"sections", "kind":"fanout", "over":"question", "form":"section@1", "role":"writer", "class":"employee", "effort":"off", "max_output":1600 },
+  { "id":"answer",   "kind":"fanout", "over":"project", "after":[{"step":"sections","edge":"barrier"}], "form":"answer@1", "role":"writer", "class":"employee", "effort":"off", "max_output":1100 },
+  { "id":"cite",     "kind":"code", "fn":"cited_batches", "after":[{"step":"answer","edge":"barrier"}], "lane":"cpu", "emit":"sentence_batch" },
+  { "id":"audit",    "kind":"fanout", "over":"sentence_batch", "after":[{"step":"cite","edge":"stream"}], "form":"audit@1", "role":"verifier", "class":"employee", "effort":"off", "max_output":700 },
+  { "id":"assemble", "kind":"code", "fn":"assemble_report", "after":[{"step":"audit","edge":"barrier"}], "lane":"cpu" } ] }
+
+{ "phase":"Finish", "steps":[
+  { "id":"deliver",  "kind":"code", "fn":"deliver",  "lane":"io" },
+  { "id":"archive",  "kind":"code", "fn":"archive",  "after":[{"step":"deliver","edge":"barrier"}], "lane":"io" },
+  { "id":"dispose",  "kind":"code", "fn":"dispose",  "after":[{"step":"archive","edge":"barrier"}], "lane":"io" },
+  { "id":"remember", "kind":"code", "fn":"remember", "after":[{"step":"dispose","edge":"barrier"}], "lane":"cpu" } ] }
 ```
 
-`class` picks a model through project settings (`employee`, `lead`), resolved with `named_model`; both default to the conductor's model. `route_after_thinking` is a code step that writes the next phase list: `Report` (then `Finish`) or `Checkin` (then, on keep_researching, a new round of DataCollection built by the continuation plan).
+The Plan phase has the same shape as every other: a continuation plan is another Plan phase instance (`round` 2) whose `plan_expand` inherits the last plan. **Dynamic phase list.** `route_after_thinking` and the Checkin answer append phase instances to `phases[]` (`Report` then `Finish`; or `Plan` round N+1 followed by DataCollection, DataValidation and Thinking again); phase ids carry the round (`ph_dc_2`). Nothing else mutates the list.
+
+`class` picks a model through project settings (`employee`, `lead`), resolved with `named_model`; both default to the conductor's model, so by default no second model is loaded; a separate `employee` model is an opt-in setting (decision 6). `route_after_thinking` is a code step that writes the next phase list: `Report` (then `Finish`) or `Checkin` (then, on keep_researching, a new round of DataCollection built by the continuation plan).
 
 ### 4.3 Pipelining and the scheduler
 
@@ -400,7 +414,7 @@ All changes to project state are `Mutation` messages (set a path, push an item, 
 
 ### 4.6 Journal and resume
 
-Every task has a key `p:<phase>:<step>:<item>:<blake3(input)[..12]>`. Results are appended, one JSON line per finished task, to `phases/<phase>/<step>.jsonl` (the result, the attempts, tokens, finish reason). On resume the engine replays the journal into the state, skips every key it finds, and re-runs only what has no line (a task that was running when the process died). Replay never re-asks a model and never refetches a page: fetched page text is content-addressed in `sources/`. Per-attempt model usage is also written to `crew_run_steps` so the crew watch counts tokens.
+Every task has a key `p:<phase>:<step>:<item>:<blake3(input)[..12]>`. Results are appended, one JSON line per finished task, to `phases/<phase>/<step>.jsonl` (the result, the attempts, tokens, finish reason). On resume the engine replays the journal into the state, skips every key it finds, and re-runs only what has no line (a task that was running when the process died). A `merge` task's key hashes its member ids, and its journal line records the membership it used; replay uses the recorded batch, so a different threshold timing on resume cannot re-run a finished pass. Replay never re-asks a model and never refetches a page: fetched page text is content-addressed in `sources/`. Per-attempt model usage is also written to `crew_run_steps` so the crew watch counts tokens.
 
 ### 4.7 Cancellation, budgets, failure
 
@@ -424,6 +438,7 @@ Claim, source, and item ids come from content (identity key, quote offsets, form
 | The model never writes a URL | Analyze points at `[L<n>]` numbers, the `LinkTable` supplies the exact url; a citation with no link is searched by code (`registry.lookup` by DOI/arXiv/title) and shown without a link when unresolved; keywords pass through `query_text`; any url string in model output is dropped; the bibliography comes from stored identity. |
 | Quotes are verbatim | `Locator` match at Extract; re-read at Verify, audit and bundle; no match, no claim. |
 | Network | The plan's grant (decision 1): `GrantedPages`, a wrapper in front of `NetPages` that admits a GET only if the url is `https`, the host resolves to public addresses (the `marlowe-net` SSRF guard, redirects re-adjudicated each hop), the url came from this run (a search result, a link table of a page this run fetched, an extracted reference), robots.txt and per-host spacing admit it (`HostGate`), and quota remains (atomic, shared). Anything else becomes an item `blocked` with the reason and is listed on the next Checkin; `http`, raw ips and private hosts still ask. |
+| What can still travel up | Stage isolation confines a hostile page to one employee's form; it does not make the fields trustworthy. A claim text (240 chars) can reach the lead through Condense and Verify, so the lead's inputs are fenced, its `gaps` and `focus` carry no urls, and every `keep_researching` goes through a Checkin card that shows the proposed questions and flagged sources to the user before anything new is read. Follow-up fetches use only urls from link tables of pages this run fetched, never a string a model composed, so a page can steer a fetch to a public page but cannot encode data into a url. |
 | Taint | The project is tainted from its first network result and stays tainted across resume (latched from the journal). Remember uses worst-case lineage trust. |
 | Approvals | Merge, push, deletes outside the workspace, new hosts beyond the grant, budget overrun still ask. Employees have no tools, and Finish writes only inside the Marlowe home. |
 | Keys | No credentials in any employee environment; none are needed. |
@@ -457,7 +472,7 @@ Not measured. Ollama has no per-request thinking budget. I did not probe it: it 
 Three layers, in order:
 
 1. **Grammar** (engine): shape, enums, lengths, counts.
-2. **Parse and schema check** (code): `serde_json` parse of `content`; `marlowe_workflow::schema::validate` against the same schema (it supports `type`, `properties`, `required`, `items`, `enum`, numeric bounds, string and array lengths, `additionalProperties`). Catches truncation and engines that ignore `format`.
+2. **Parse and schema check** (code): `serde_json` parse of `content`; `schema::validate` (from `marlowe-contract` after the Stage A move; today `marlowe_workflow::schema`) against the same schema (it supports `type`, `properties`, `required`, `items`, `enum`, numeric bounds, string and array lengths, `additionalProperties`). Catches truncation and engines that ignore `format`.
 3. **Form rules** (code, named in the form): drops and checks that need data the grammar cannot see: quote found verbatim (drop the claim), link number within the table (drop), url strings (drop), `end` equals `END`, relevancy consistency (lower the label). Dropped items are counted in `rejected`; they fail the employee only when a rule says the form is empty of the thing it exists to produce (an Analyze with relevancy Critical or High and no surviving claim).
 
 ### 5.5 Retry
@@ -505,11 +520,11 @@ The `team` tool, Starlark tasks and `dispatch` stay as a hidden advanced route, 
 
 ### 6.3 Plan approval
 
-The plan card is built by code (questions, fields, limits, estimated calls and minutes (e), channels that are down, and the network grant in plain words: "approving lets this project read public https pages it finds, up to 60, honouring robots.txt; anything else asks"). The run parks: `ctl.parked`, status `awaiting_plan`, `CrewEvent::GateRaised`, thread ends. The manager tells the user in two lines; the user approves in the card, or in chat via `answer`. Both paths converge on `Request::AnswerGate { project, gate, answer }`, a generalisation of `ApprovePlan` (today typed to `ResearchPlan`), which re-queues the run. The user may also say "change question 2": the manager calls `revise`, the card is rebuilt, the gate stays open. Approval installs the run-scoped grant and raises the budget to the quote.
+The plan card is built by code from cached channel readiness (no probing inside the tool call, so `create` stays instant; the card refreshes if a probe finishes while it is open) (questions, fields, limits, estimated calls and minutes (e), channels that are down, the search services it will query, and the network grant in plain words: "approving lets this project read public https pages it finds, up to 60, honouring robots.txt; anything else asks"). The run parks: `ctl.parked`, status `awaiting_plan`, `CrewEvent::GateRaised`, thread ends. The manager tells the user in two lines; the user approves in the card, or in chat via `answer`. Both paths converge on `Request::AnswerGate { project, gate, answer }`, a generalisation of `ApprovePlan` (today typed to `ResearchPlan`), which re-queues the run. The user may also say "change question 2": the manager calls `revise`, the card is rebuilt, the gate stays open. Approval installs the run-scoped grant and raises the budget to the quote.
 
 ### 6.4 Checkins
 
-Raised by the lead (reason `lead_decision`), by the user at any time (`checkin`, or the key in the TUI), or by code (`failures`, `budget`). A forced checkin stops launching new tasks, lets in-flight employees finish (none is killed), then parks with the state as it is. Answers: **Approve** goes to Report. **Keep researching** builds the continuation plan from the lead's `gaps` and `focus` (or the user's flagged choice) and starts a new DataCollection round, inheriting items and the seen-source set. **Steer** passes the user's text to the lead as data (user trust, unfenced but length-capped) and asks it for a new `LeadDecision` that must be `keep_researching` with gaps. **Cancel** ends the project. Rounds are bounded by `max_rounds`.
+Raised by the lead (reason `lead_decision`: always when it says `keep_researching`, and when it says `report` but flagged sources exist), by the user at any time (`checkin`, or the key in the TUI), or by code (`failures`, `budget`). A forced checkin stops launching new tasks, lets in-flight employees finish (none is killed), then parks with the state as it is. Answers: **Approve** goes to Report. **Keep researching** builds the continuation plan from the lead's `gaps` and `focus` (or the user's flagged choice) and starts a new DataCollection round, inheriting items and the seen-source set. **Steer** passes the user's text to the lead as data (user trust, unfenced but length-capped) and asks it for a new `LeadDecision` that must be `keep_researching` with gaps. **Cancel** ends the project. Rounds are bounded by `max_rounds`.
 
 ### 6.5 Result
 
@@ -562,7 +577,7 @@ New. The prompt states today's date (from the clock), that the model's knowledge
 
 - **Search.** `marlowe-research/src/registry.rs` (`keyless_with`, `search_observed`, `ready`, `skipped`): arxiv, scholarly, pubmed, wiki, community, feeds, web; keyless only; cache first, limiter, 429 holds the limiter. Channels not online are dropped at plan time and reported ("Not searched").
 - **Dedup and quota.** `dedup.rs` `Deduper` behind one actor; `source.rs` `canonical_url`, `normalize_doi`, `normalize_arxiv`; a `SourceBudget`-style atomic quota (copy of `research_v2/types.rs:148`) shared by every question; sources already fetched are filtered before quota is taken, which keeps fetches at 1.0 per unique page.
-- **Fetch.** `marlowe-exec/src/corpus.rs` `Corpus` (round-robin hosts, one request in flight per host, every redirect hop through `politeness.rs` `HostGate`, 429/503 retry once, thin pages rendered by Edge when present). `marlowe-exec` is too heavy a dependency, so `marlowe-project` takes a `PageFetch` trait and the binary injects `CorpusPages` (`marlowe/src/research_wire.rs`), as crew does with `PageFetcher`. Edge render opens a process; confirm it is headless (`marlowe-exec/src/render.rs`, not yet read) before enabling it; until then render is off.
+- **Fetch.** `marlowe-exec/src/corpus.rs` `Corpus` (round-robin hosts, one request in flight per host, every redirect hop through `politeness.rs` `HostGate`, 429/503 retry once, thin pages rendered by Edge when present). `marlowe-exec` is too heavy a dependency, so `marlowe-project` takes a `PageFetch` trait and the binary injects `CorpusPages` (`marlowe/src/research_wire.rs`), as crew does with `PageFetcher`. Edge render is headless (`--headless=new`, scrubbed environment, kill-on-close job object, read in `marlowe-exec/src/render.rs`), so it may render thin pages and never opens a window.
 - **Grant.** `GrantedPages` (section 4.9) wraps the fetcher. Each redirect hop is re-checked because `read_one` calls the fetcher per hop.
 - **Numbered text.** New `to_markdown_numbered` in `marlowe-extract/src/main_content/markdown.rs`: renders `anchor [L12]` instead of `[anchor](url)`, with indexes from `marlowe-research/src/links.rs` `LinkTable` (1-based, deduped by canonical url, capped 400, anchors capped 120), and returns the in-content link list. Gaps it fixes: the model would otherwise see raw urls; `doc.links` and `LinkTable` indexes differ after dedup (map by canonical url); `MainText` does not expose which links are boilerplate. The stored text is exactly the text the model sees, so quotes can be located and re-read byte for byte (the v2 `store_doc` pattern).
 - **References.** `marlowe-extract/src/paper.rs` (`Paper`, `Reference`, `from_html`, `from_text`) is not wired into the fetch today: add `references: Vec<Reference>` to `FetchedPage` (`research_v2/host.rs:15`); each reference with a DOI, arXiv id or url becomes a numbered additional-source candidate via `attribution_route`.
@@ -593,7 +608,7 @@ Rework of the claim loop in `research_v2/compress.rs` (lines 119-205) into `extr
 - **Citation audit** `cited_sentences`, `audit` (`verify.rs`), `repair`, `mark_partial`, `renumber` (`synth.rs`), standing words `standing.rs` (`backing`, `correct`, `correct_text`: "two independent sources" is rewritten to what the root count supports). `markers`/`sentences` (`parse.rs`) are exported with the audit as one module taking a closure for "is this claim usable".
 - **Confidence and coverage** `types.rs` `derive_confidence`, `Coverage` (caps at `MIN_READ_SHARE` 0.6, `MAX_FAILED_SHARE` 0.25, blind sub-questions, empty and truncated sections), generalised to project stages.
 - **Bundle** `bundle.rs` `marlowe.research-bundle/1`, kept; the final project state is embedded or referenced.
-- **Remember** `remember.rs` (`tainted`, `lineage`, `remember`), extractive and no LLM; Established only for on-goal groups with two or more roots; idempotent through a checkpoint. Memory numerics are not touched.
+- **Remember** `remember.rs` (`tainted`, `lineage`, `remember`), extractive and no LLM; Established only for on-goal groups with two or more roots; idempotent through a checkpoint. Page-derived memories enter with web and agent trust, untrusted lineage and the normal maturation delay; "Established" is a label, not a bypass (a Stage C test asserts no project memory skips maturation). Memory numerics are not touched.
 
 ### 8.8 Invariants kept from v2
 
@@ -619,7 +634,7 @@ Stages A to D follow; each ends with its acceptance tests green and `cargo check
 
 ### Stage A: core crate `marlowe-project`
 
-Depends on `marlowe-model`, `marlowe-proto`, `marlowe-workflow` (validator). No agent loop.
+Depends on `marlowe-model`, `marlowe-proto` and the JSON-schema validator. `marlowe-workflow` pulls in the Starlark interpreter, so first move `schema.rs` (pure `serde_json`, `check_shape` and `validate`) into `marlowe-contract` and re-export it from `marlowe-workflow`; no behaviour change. No agent loop.
 
 - Types: `Plan`, `ProjectState`, `Item`, `Form`, `Field`, `Gate`, `Mutation`.
 - Plan validator with the error messages of 6.1; `model_schema(form, plan)`; item validator via `marlowe_workflow::schema::validate`.
@@ -627,6 +642,8 @@ Depends on `marlowe-model`, `marlowe-proto`, `marlowe-workflow` (validator). No 
 - State actor (single writer), path-patch format, `rev`, atomic `project.json`, archive snapshots, `reopen`.
 - `projects` index table and migration; `ProjectUpdated` and gate event types in `marlowe-proto`.
 - Form and kind registry with the research forms and the experiment form.
+
+Sub-steps, each buildable and testable alone: **A1** the schema move and the types with golden round-trips (acceptance 1); **A2** plan validator and `model_schema` (2, 3); **A3** view-model and painter (4, 5); **A4** state actor, patches, atomic write, archive, reopen, index (6, 7, 8).
 
 Acceptance:
 1. Golden round-trips of Plan, state and every form (serde in, out, equal).
@@ -640,10 +657,12 @@ Acceptance:
 
 ### Stage B: employee runner, constrained output, phase engine
 
-- `FormRunner` in `marlowe-crew`: builds the `ChatRequest` itself (`format`, `tools=[]`, `Effort`, `max_output` via `output_cap`), takes a slot with `Hooks::local_slot`, runs `before_call`/`after_call`, parses and validates, applies the retry table of 5.5, writes a `StepRecord` for the crew watch.
+- `FormRunner` in `marlowe-crew`: builds the `ChatRequest` itself (`format`, `tools=[]`, `Effort`, `max_output` via `output_cap`), takes a slot with `Hooks::local_slot`, runs `before_call`/`after_call`, parses and validates through `marlowe_contract::schema`, applies the retry table of 5.5, writes a `StepRecord` for the crew watch.
 - `ChatRequest.think_budget: Option<u32>` (serde default, skipped when none): the llama provider sends `thinking_budget_tokens`; Ollama ignores it. The `marlowe-agent` loop still sends `format: None` (unchanged).
 - The engine: menu JSON, scheduler, lanes, drain-first, journal and resume, cancel, budgets, park/resume as a third branch in `runner.rs::execute`.
 - Generalise `PendingPlan` to `PendingGate` and `ApprovePlan` to `AnswerGate` (the research playbook keeps working through a shim).
+
+Sub-steps: **B1** `think_budget` plumbing and `FormRunner` with the retry table (acceptance 1, 2, 3, 10); **B2** scheduler, lanes, journal and resume, cancel (4, 5, 6, 7, 9); **B3** gates and park/resume, `AnswerGate` shim (8). B1 needs no engine; B2 runs on a scripted step list.
 
 Acceptance (scripted fake `Provider` through the `marlowe-model` seam):
 1. An employee that fails validation twice then succeeds: three requests, the second and third contain the earlier turns unchanged and the error text; item `done`, attempts 3.
@@ -660,6 +679,8 @@ Acceptance (scripted fake `Provider` through the `marlowe-model` seam):
 ### Stage C: research phases
 
 Prerequisite refactor (no behaviour change): export the pure parts of `research_v2` into `marlowe-research` (`locate`, `passage`, `markers`, `sentences`, `Passages`, `standing`, `repair`, `renumber`, `derive_confidence`, `Coverage`, the graph builder), re-exported by crew. Then: forms and prompts; `to_markdown_numbered`; `FetchedPage.references`; `GrantedPages`; code steps (`expand_vectors`, `search_and_fetch`, `extract_claims`, `credibility`, condense merge, `score`, `tabulate`, `assemble_report`); the research phase JSON.
+
+Sub-steps: **C1** the export refactor with the differential test as its only gate (acceptance 1); **C2** numbered text, references, `GrantedPages`, search and fetch (2 for links, 7); **C3** Analyze, Extract, credibility, Condense, Verify (2, 3, 4, 5, 6, 8); **C4** Tabulate, Thinking, Report, Finish, remember and the end to end (9, and the maturation test). Each sub-step ends with `cargo check --workspace --all-targets` and its tests.
 
 Acceptance:
 1. The v2 differential test (same recorded replies in, identical report and bundle out) and `eval/` (R@1 0.6725, R@5 0.8865) are unchanged; no reference fixture regenerated.
@@ -678,6 +699,8 @@ Acceptance:
 - `CrewEvent`/`Event` forwarding for `ProjectUpdated` and gates; `Request::AnswerGate`; relay text for projects; boot recovery of open gates and running projects; taint latch on resume.
 - Live proof on dawn (GPU free, Matthew's go): his prompt unaided on the local model, and a second project of a different shape whose view renders with no UI code.
 
+Sub-steps: **D1** tool, spec, persona block, reminders (acceptance 1, 2, 3); **D2** events, `AnswerGate`, relay, boot recovery (4, 5, 6); **D3** the live proof (7).
+
 Acceptance:
 1. The `project` description is at most 600 characters and the tool slice test passes with a fourth long tool; `persona/v3.md` is byte-identical.
 2. Validation error messages are snapshot-tested.
@@ -694,7 +717,7 @@ Acceptance:
 3. **Thinking for Verify and the lead.** (a) Thinking with a token budget (llama), reason-first forms with thinking off elsewhere (Ollama, until probed). (b) Always thinking. Recommend (a): unbounded thinking ate a whole window on a trivial form (m).
 4. **Credibility inputs.** (a) The model writes only `source_kind`; code owns the table and caps it by channel. (b) Code only from channel and metadata. Recommend (a): code alone cannot tell an official post from a blog on the plain web.
 5. **Cluster score.** (a) `min(1, sum of best credibility per independent root)`. (b) Noisy-or `1 - prod(1 - c)`. Recommend (a): it is your weighted sum, independence applied, capped.
-6. **Employee and lead models.** Employees on `marlowe-mini:4b-super` if the form probe passes (valid forms on 90% of a test set), else `marlowe-dawn:9b-super`; the lead on `marlowe-dawn:9b-super`. Settings keys `projects.model.employee` and `.lead`. Recommend this, tonight's allowed set.
+6. **Employee and lead models.** Default: both are the conductor's model (no second model loaded, one KV cache). Opt-in: employees on `marlowe-mini:4b-super` once the form probe passes (valid forms on 90% of a test set) and the GPU has room for both; the lead stays on `marlowe-dawn:9b-super`. Settings keys `projects.model.employee` and `.lead`. A two-model run on one GPU is checked against the GPU-idle gate and VRAM before the live proof.
 7. **Failure tolerance.** 3 attempts per employee, Checkin when more than 25% of an important step's items failed. Recommend; tunable in the plan limits.
 8. **Network grant size.** `max_fetches` default 60 per approval; a blocked fetch is listed on the next Checkin, not asked one by one. Recommend; asking per fetch would stall a parallel run.
 9. **Workspace disposal default.** `compact`. Recommend; `delete` makes reopen impossible before Finish.
@@ -702,6 +725,8 @@ Acceptance:
 11. **Existing team tasks and `dispatch deep_research`.** Stay as a hidden advanced route and untouched; the model is pointed at `project`. This is the default you may veto.
 12. **Tabulate.** Include the small code-only records merge in the first slice (it is what makes the "newest AI models" example useful). Recommend yes.
 
-## 12. Not verified in this stage
+## 12. Not verified
 
-No cargo build, no test and no GPU were run. Measured: llama-server on CPU with `marlowe-mini:4b-super`, section 5.2 only. Not measured: Ollama `format` with and without `think` on any model; llama-server on the project's real engine flags; whether the Edge renderer is headless; whether the tool slice has room for a fourth long description; the time estimates (all (e)). Every statement about existing code comes from reading source and the maps, not from running it.
+No cargo build, no test and no GPU were run. Measured: llama-server on CPU with `marlowe-mini:4b-super`, section 5.2 only. Not measured: Ollama `format` with and without `think` on any model; llama-server on the project's real engine flags; whether the tool slice has room for a fourth long description; the time estimates (all (e)). Every statement about existing code comes from reading source and the maps, not from running it.
+
+Second review pass (docs only, no cargo, no GPU): file paths, the headless Edge flags and the dependency weight of `marlowe-workflow` (Starlark; its `schema.rs` is pure `serde_json`) were checked against source. Open and unmeasured: the real fit of a fourth long tool description; whether a 4b employee fills `analyze@1` with valid, useful forms (the 90% probe in decision 6); Ollama behaviour of `format` with `think`; whether two models fit on one GPU together; time estimates.
