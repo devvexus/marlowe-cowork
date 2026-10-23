@@ -128,6 +128,31 @@ fn plan(a: &Value) -> Result<Plan, String> {
     Ok(p)
 }
 
+/// A call with nothing to run is usually a script the model wrote to a file and then forgot to
+/// name: say which `.star` files the workspace holds (two levels down, newest first).
+fn star_files_hint(workspace: Option<&std::path::Path>) -> String {
+    let Some(root) = workspace else { return String::new() };
+    let mut found: Vec<(std::time::SystemTime, String)> = Vec::new();
+    let mut dirs = vec![(root.to_path_buf(), 0)];
+    while let Some((dir, depth)) = dirs.pop() {
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = e.path();
+            if path.is_dir() && depth < 2 && !e.file_name().to_string_lossy().starts_with('.') {
+                dirs.push((path, depth + 1));
+            } else if path.extension().is_some_and(|x| x == "star") {
+                let at = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+                found.push((at, path.strip_prefix(root).unwrap_or(&path).display().to_string()));
+            }
+        }
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    if found.is_empty() {
+        return String::new();
+    }
+    let names: Vec<String> = found.into_iter().take(5).map(|(_, p)| format!("`{p}`")).collect();
+    format!(" This workspace holds {}: pass the one you mean as `path`.", names.join(", "))
+}
+
 /// The ignored keys, as the line after a result.
 fn notes(p: &Plan) -> String {
     if p.ignored.is_empty() {
@@ -143,7 +168,7 @@ fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
     };
     let plan = match plan(a) {
         Ok(p) => p,
-        Err(e) => return ToolOutcome::error(e),
+        Err(e) => return ToolOutcome::error(format!("{e}{}", star_files_hint(cx.workspace.as_deref()))),
     };
     let from_script = plan.script.is_some() || plan.path.is_some();
     let fail = |e: String| ToolOutcome::error(if from_script { script_error(e) } else { e });

@@ -17,7 +17,7 @@ use crossbeam_channel::Receiver;
 use marlowe_proto::{PhaseEvent, PhaseKind};
 use marlowe_model::{
     CancelToken, ChatRequest, Completion, CompletionBuilder, Effort, Message, ModelInfo, Provider, ProviderError,
-    ProviderKind, StopReason, StreamEvent, ToolCall, ToolResult, Usage,
+    Part, ProviderKind, Role, StopReason, StreamEvent, ToolCall, ToolResult, Usage,
 };
 
 use crate::approval::{ApprovalGate, DenyAll};
@@ -382,7 +382,8 @@ impl Agent {
                 if forced_compact.is_none() && cfg.masking == context::Masking::AppendOnly {
                     let before = asm.tokens;
                     let pinned = crate::todo::pinned_ids(convo);
-                    if context::mask_chunk(&mut convo.messages, cfg.keep_tool_results, &pinned) > 0 {
+                    let keep = context::keep_within(&convo.messages, cfg.keep_tool_results, cfg.window_tokens / 4);
+                    if context::mask_chunk(&mut convo.messages, keep, &pinned) > 0 {
                         crate::todo::note_compacted(convo);
                         compacted = true;
                         asm = context::assemble_with(&system, &profile, &memory, convo, &cfg);
@@ -440,7 +441,9 @@ impl Agent {
                 });
             }
 
-            let max_output_tokens = self.max_output.or(live.model.max_output.map(|_| cfg.reserve_output));
+            let max_output_tokens = self.max_output.or(live.model.max_output.map(|_| {
+                context::reply_room(context::scaled_tokens(asm.tokens + spec_tokens, convo), &cfg)
+            }));
             let est_prompt_tokens = asm.tokens + spec_tokens;
             let req = ChatRequest {
                 model: live.model.id.clone(),
@@ -645,9 +648,15 @@ impl Agent {
             if convo.ext.get::<crate::subagent_tools::Handback>().is_some() {
                 break TurnStop::Done;
             }
+            // A local model's template treats any user message as the start of a new question and
+            // drops the thinking before it, so a reminder after a tool result rides on that result
+            // (which no request has carried yet) instead of becoming a message of its own.
+            let local = matches!(live.model.provider, ProviderKind::Ollama | ProviderKind::LocalGguf);
             for m in &self.middleware {
                 for extra in m.after_step(info, convo) {
-                    convo.push(extra);
+                    if !(local && fold_into_last_result(convo, &extra)) {
+                        convo.push(extra);
+                    }
                 }
             }
         };
@@ -669,6 +678,27 @@ impl Agent {
             FinalFlow::Continue(reminder) => Some(reminder),
         })
     }
+}
+
+/// Appends a harness reminder (a lone text message) to the last tool result of the step that just
+/// ran. False when `extra` is anything else or the step left no result to carry it.
+fn fold_into_last_result(convo: &mut Conversation, extra: &Message) -> bool {
+    let [Part::Text { text }] = extra.content.as_slice() else { return false };
+    if extra.role != Role::User {
+        return false;
+    }
+    let Some(last) = convo.messages.last_mut().filter(|m| m.role == Role::Tool) else { return false };
+    let Some(result) = last.content.iter_mut().rev().find_map(|p| match p {
+        Part::ToolResult(r) => Some(r),
+        _ => None,
+    }) else {
+        return false;
+    };
+    result.content.push_str("
+
+");
+    result.content.push_str(text);
+    true
 }
 
 /// A request that did not extend the last one outside a compaction: a bug, said loudly in the
@@ -858,4 +888,39 @@ fn sleep_unless_cancelled(d: Duration, cancel: &CancelToken) -> bool {
         std::thread::sleep(Duration::from_millis(25).min(end.saturating_duration_since(Instant::now())));
     }
     !cancel.is_cancelled()
+}
+
+#[cfg(test)]
+mod fold_tests {
+    use super::*;
+    use crate::convo::Conversation;
+    use marlowe_proto::SessionId;
+
+    fn convo_with_result() -> Conversation {
+        let mut c = Conversation::new(SessionId::from("s"), None);
+        c.push(Message::user("go"));
+        c.push(Message::tool_results([ToolResult { call_id: "a".into(), content: "output".into(), is_error: false, parts: vec![] }]));
+        c
+    }
+
+    #[test]
+    fn a_reminder_after_a_tool_result_rides_on_that_result() {
+        let mut c = convo_with_result();
+        assert!(fold_into_last_result(&mut c, &Message::user("<system-reminder>stop repeating</system-reminder>")));
+        assert_eq!(c.messages.len(), 2, "no message of its own");
+        let got = c.messages[1].tool_results_iter().next().unwrap().content.clone();
+        assert_eq!(got, "output
+
+<system-reminder>stop repeating</system-reminder>");
+    }
+
+    #[test]
+    fn nothing_folds_when_there_is_no_result_or_the_message_is_not_a_lone_user_text() {
+        let mut c = Conversation::new(SessionId::from("s"), None);
+        c.push(Message::user("go"));
+        assert!(!fold_into_last_result(&mut c, &Message::user("reminder")), "the last message is the user's");
+        let mut c = convo_with_result();
+        assert!(!fold_into_last_result(&mut c, &Message::assistant("an answer")));
+        assert_eq!(c.messages[1].tool_results_iter().next().unwrap().content, "output");
+    }
 }

@@ -418,9 +418,20 @@ impl ToolMiddleware for LoopGuard {
                 return;
             }
             let first: String = outcome.content.lines().next().unwrap_or("").chars().take(120).collect();
+            // A checker's header ("x is not valid; fix these:") is the same on every call: the first
+            // two non-empty lines tell a new mistake from the same one.
+            let head: String = outcome
+                .content
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .take(2)
+                .map(|l| l.chars().take(120).collect::<String>())
+                .collect::<Vec<_>>()
+                .join(" | ");
             let key = match missing_path(&first) {
                 Some(path) => format!("missing:{path}"),
-                None => format!("{}: {first}", call.name),
+                None => format!("{}: {head}", call.name),
             };
             let n = match st.failure.take() {
                 Some((k, n)) if k == key => n + 1,

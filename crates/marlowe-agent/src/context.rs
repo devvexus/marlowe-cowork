@@ -29,6 +29,12 @@ use crate::system::{PromptSections, SystemPrompt};
 /// last real prompt size ([`TokenScale`]) so it does not fire early on a rough guess.
 pub const COMPACTION_TRIGGER: f32 = 0.90;
 
+/// Most of the reply reserve the trigger holds back. A local model's default reply cap is a quarter
+/// of its window (13k of 53k), and holding all of it back compacted at 67% of the window, which
+/// threw away a long cache for nothing. The request's own reply cap shrinks to the room left
+/// instead ([`reply_room`]).
+pub const TRIGGER_RESERVE_CAP: u32 = 4_096;
+
 /// Real prompt tokens per estimated token, learned from the last call that reported its prompt
 /// size (the estimate is about three characters per token; code and JSON run higher, prose lower).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -387,6 +393,26 @@ pub fn mask_tool_results(messages: &mut [Message], keep: usize) -> usize {
     mask_chunk(messages, keep, &HashSet::new())
 }
 
+/// How many of the newest tool results a masking chunk keeps: up to `max_keep`, fewer when they
+/// would together take more than `budget` estimated tokens (a research step's pages run to
+/// thousands of tokens each, and eight of them left a small window as full after the chunk as
+/// before it). The newest result is always kept.
+pub fn keep_within(messages: &[Message], max_keep: usize, budget: u32) -> usize {
+    let mut kept = 0usize;
+    let mut used = 0u32;
+    for r in messages.iter().rev().flat_map(|m| m.content.iter().rev()).filter_map(|p| match p {
+        Part::ToolResult(r) => Some(r),
+        _ => None,
+    }) {
+        used = used.saturating_add(estimate_tokens(&r.content));
+        if kept >= max_keep || (kept >= 1 && used > budget) {
+            break;
+        }
+        kept += 1;
+    }
+    kept
+}
+
 /// Masks every tool result except the last `keep` and those whose call id is in `pinned`, in one
 /// pass (the append-only chunk). Returns how many were newly masked.
 pub fn mask_chunk(messages: &mut [Message], keep: usize, pinned: &HashSet<String>) -> usize {
@@ -408,7 +434,14 @@ pub fn mask_chunk(messages: &mut [Message], keep: usize, pinned: &HashSet<String
 
 /// True when `tokens` crosses the compaction trigger.
 pub fn needs_compaction(tokens: u32, cfg: &ContextConfig) -> bool {
-    tokens as f32 >= cfg.effective_window() as f32 * cfg.compaction_trigger
+    let window = cfg.window_tokens.saturating_sub(cfg.reserve_output.min(TRIGGER_RESERVE_CAP));
+    tokens as f32 >= window as f32 * cfg.compaction_trigger
+}
+
+/// The reply cap a request can use: the configured reserve, or the room the prompt leaves in the
+/// window when that is less (never below 1024, which compaction keeps possible).
+pub fn reply_room(prompt_tokens: u32, cfg: &ContextConfig) -> u32 {
+    cfg.reserve_output.min(cfg.window_tokens.saturating_sub(prompt_tokens + 256).max(1_024))
 }
 
 /// Estimated tokens of what compaction acts on: the summary plus the messages.
@@ -931,6 +964,40 @@ mod tests {
         };
         assert!(!needs_compaction(699, &cfg));
         assert!(needs_compaction(700, &cfg));
+    }
+
+    #[test]
+    fn a_big_reply_cap_does_not_move_the_trigger_and_the_cap_shrinks_to_the_room() {
+        let cfg = ContextConfig {
+            window_tokens: 53_248,
+            reserve_output: 13_312,
+            keep_tool_results: 8,
+            compaction_trigger: COMPACTION_TRIGGER,
+            masking: Masking::AppendOnly,
+            volatile_tail: false,
+        };
+        // 90% of the window less the capped reserve, not of the window less a quarter of it.
+        assert!(!needs_compaction(44_000, &cfg));
+        assert!(needs_compaction(44_300, &cfg));
+        assert_eq!(reply_room(10_000, &cfg), 13_312, "plenty of room: the configured cap");
+        assert_eq!(reply_room(44_000, &cfg), 8_992, "the room the prompt leaves");
+        assert_eq!(reply_room(53_000, &cfg), 1_024, "never below the floor");
+    }
+
+    #[test]
+    fn a_masking_chunk_keeps_fewer_results_when_they_are_big() {
+        let big = "x".repeat(30_000); // about 10k tokens
+        let mut msgs = vec![Message::user("go")];
+        for i in 0..6 {
+            msgs.push(call(&format!("c{i}")));
+            msgs.push(Message::tool_results([ToolResult { call_id: format!("c{i}"), content: big.clone(), is_error: false, parts: vec![] }]));
+        }
+        assert_eq!(keep_within(&msgs, 8, 13_000), 1, "the newest, then the budget is spent");
+        assert_eq!(keep_within(&msgs, 8, 25_000), 2);
+        assert_eq!(keep_within(&msgs, 3, 1_000_000), 3, "never above the cap");
+        let small = vec![Message::user("go"), call("a"), result("a")];
+        assert_eq!(keep_within(&small, 8, 13_000), 1);
+        assert_eq!(keep_within(&[Message::user("go")], 8, 13_000), 0);
     }
 
     #[test]

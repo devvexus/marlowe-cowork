@@ -159,6 +159,7 @@ pub fn static_checks(filename: &str, source: &str) -> Result<Validated, Vec<Diag
     diags.extend(recursion(&toks, source));
     diags.extend(late_binding(&toks, source));
     diags.extend(reserved(&toks, source));
+    diags.extend(defined_twice(&toks, source));
     diags.extend(top_level_host_calls(source, ast.statement()));
     match meta {
         Some(meta) if diags.is_empty() => Ok(Validated { meta, main_params }),
@@ -745,6 +746,35 @@ fn reserved(toks: &[Tok], source: &str) -> Vec<Diagnostic> {
             Token::StarEqual => out.push(Diagnostic::new(line, "write `x = x * n`: `*=` is not available in team task scripts")),
             Token::LessLessEqual => out.push(Diagnostic::new(line, "write `x = x << n`: `<<=` is not available in team task scripts")),
             _ => {}
+        }
+    }
+    out
+}
+
+/// A top-level `def` (or `META`) given twice: the later one silently replaces the first, so a
+/// script that ends in a stub `def main(args): pass` runs nothing and still passes every other check.
+fn defined_twice(toks: &[Tok], source: &str) -> Vec<Diagnostic> {
+    let lv = levels(toks);
+    let mut seen: BTreeMap<String, u32> = BTreeMap::new();
+    let mut out = Vec::new();
+    for i in 0..toks.len() {
+        if lv[i] != 0 || !starts_statement(toks, i) {
+            continue;
+        }
+        let name = match &toks[i].tok {
+            Token::Def => toks.get(i + 1).and_then(|t| ident(&t.tok)).map(str::to_string),
+            Token::Identifier(s) if matches!(s.as_str(), "META" | "meta") && toks.get(i + 1).is_some_and(|t| matches!(t.tok, Token::Equal)) => {
+                Some("META".to_string())
+            }
+            _ => None,
+        };
+        let Some(name) = name else { continue };
+        let line = line_of(source, toks[i].start);
+        if let Some(first) = seen.get(&name) {
+            let what = if name == "META" { "`META` is set twice".to_string() } else { format!("`{name}` is defined twice") };
+            out.push(Diagnostic::new(Some(line), format!("{what} (lines {first} and {line}): the later one replaces the first, so the first never takes effect; keep one")));
+        } else {
+            seen.insert(name, line);
         }
     }
     out

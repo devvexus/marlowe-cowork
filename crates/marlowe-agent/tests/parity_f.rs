@@ -167,7 +167,11 @@ impl ToolHost for Fake {
             "write" => ToolOutcome::ok("written", "written"),
             "bash" => {
                 let cmd = a["command"].as_str().unwrap_or("");
-                if cmd.contains("fail") {
+                if let Some(problem) = cmd.strip_prefix("check ") {
+                    // A checker: the same header on every call, the mistake on the next line.
+                    ToolOutcome::error(format!("script is not valid; nothing ran. Fix these and call again:
+- {problem}"))
+                } else if cmd.contains("fail") {
                     ToolOutcome::error(format!("error: {cmd} failed"))
                 } else {
                     ToolOutcome::ok(format!("ran {cmd}"), "exit 0")
@@ -1285,6 +1289,26 @@ fn parity_b3_loop_guards_cut_repetition_note_repeated_failures_and_nudge_promise
     assert_eq!(out.stop, TurnStop::Done);
 }
 
+#[test]
+fn a_checkers_new_mistake_is_not_the_same_failure_three_times_running() {
+    let p = Script::new(vec![
+        call("bash", json!({"command": "check line 1: first mistake"})),
+        call("bash", json!({"command": "check line 2: second mistake"})),
+        call("bash", json!({"command": "check line 3: third mistake"})),
+        call("bash", json!({"command": "check line 3: third mistake"})),
+        call("bash", json!({"command": "check line 3: third mistake"})),
+        answer("Done."),
+    ]);
+    let mut a = agent(p.clone(), frontier(), Fake::new());
+    a.middleware.push(guard::LoopGuard::new());
+    run(&a, &mut convo(None), "fix the script");
+    let r = p.requests();
+    // Three different mistakes behind one header are three tries, not a stuck loop.
+    assert!(tool_results(&r[3]).iter().all(|t| !t.contains("same failure")), "{:?}", tool_results(&r[3]));
+    // The same mistake three times running is.
+    assert!(tool_results(&r[5]).last().unwrap().contains("same failure 3 calls in a row"), "{:?}", tool_results(&r[5]));
+}
+
 /// A step that only thinks: reasoning, no text, no call.
 fn thinking_only(t: &str) -> Vec<StreamEvent> {
     vec![StreamEvent::ReasoningDelta { text: t.into(), tokens: 4 }, StreamEvent::Stop(StopReason::EndTurn)]
@@ -1967,7 +1991,8 @@ fn parity_c10_reasoning_and_mid_turn_reminders_keep_requests_extending() {
     run(&a, &mut c, "turn two");
     let r = p.requests();
     assert_eq!(r.len(), 4);
-    assert!(messages_text(&r[1]).contains("RUST-RULE"), "the rule fired mid-turn as a user-role reminder");
+    let in_results = |req: &ChatRequest| req.messages.iter().flat_map(|m| m.tool_results_iter().map(|t| t.content.clone())).collect::<String>();
+    assert!(in_results(&r[1]).contains("RUST-RULE"), "the rule fired mid-turn, on the tool result a local model's template does not treat as a question");
     let thinking = |req: &ChatRequest| req.messages.iter().filter(|m| m.thinking().is_some()).count();
     assert_eq!((thinking(&r[1]), thinking(&r[2])), (1, 2), "the turn's reasoning survives the reminder");
     for w in r[..3].windows(2) {

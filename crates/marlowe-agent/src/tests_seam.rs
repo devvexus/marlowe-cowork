@@ -128,7 +128,10 @@ fn middleware_wraps_calls_and_steps_and_observers_see_everything() {
     assert_eq!(tools.ran("echo"), 1);
     let results = tool_results(&c.messages[2]);
     assert_eq!(results[0].content, "rewritten +diag");
-    assert_eq!(results[1].content, "blocked by middleware");
+    // A local model's after_step reminder rides on the step's last tool result, not a message of its own.
+    assert_eq!(results[1].content, "blocked by middleware
+
+<reminder>job 1 exited</reminder>");
     assert!(results[1].is_error);
     let log = rec.log();
     assert_eq!(&log[..2], ["approve echo", "approve fail"], "before_approval runs first, in call order: {log:?}");
@@ -138,7 +141,7 @@ fn middleware_wraps_calls_and_steps_and_observers_see_everything() {
     assert_eq!(log.iter().filter(|l| l.starts_with("final")).count(), 2);
     // The after_step reminder and the before_final reminder both reached the next request.
     let reqs = p.requests();
-    let second: String = reqs[1].messages.iter().map(|m| m.joined_text()).collect();
+    let second: String = reqs[1].messages.iter().flat_map(|m| m.tool_results_iter().map(|r| r.content.clone()).chain([m.joined_text()])).collect();
     assert!(second.contains("job 1 exited"), "{second}");
     let third: String = reqs[2].messages.iter().map(|m| m.joined_text()).collect();
     assert!(third.contains("You have open todos."), "{third}");

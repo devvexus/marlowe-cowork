@@ -35,3 +35,14 @@ fn a_valid_script_with_those_words_in_strings_is_untouched() {
         assert!(!e.contains("Starlark has no"), "{e}");
     }
 }
+
+#[test]
+fn a_function_or_meta_given_twice_is_refused_with_both_lines() {
+    let e = errors(&format!("{HEAD}def main(args):\n    return agent(\"work\")\n\ndef main(args): pass\n"));
+    assert!(e.contains("`main` is defined twice (lines 2 and 5)"), "{e}");
+    let e = errors(&format!("{HEAD}{HEAD}def main(args):\n    return 1\n"));
+    assert!(e.contains("`META` is set twice (lines 1 and 2)"), "{e}");
+    // Different functions, and a nested def of the same name, are fine.
+    let ok = format!("{HEAD}def a():\n    def b():\n        return 1\n    return b()\n\ndef b():\n    return 2\n\ndef main(args):\n    return a() + b()\n");
+    assert!(marlowe_workflow::check("x.star", &ok).is_ok());
+}

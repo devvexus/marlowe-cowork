@@ -16,7 +16,10 @@ cost and ask.
 
 1. **The objective**: one sentence on what the finished work is, and what "done" looks like.
 2. **Scout inline first.** List the files, read the manifest, find the real work-list with your own
-   tools. Never put a path, name or count in a script that you have not seen.
+   tools. Never put a path, name or count in a script that you have not seen. Research on the web or
+   a topic has no work-list in the workspace, so do not look there: write the sub-questions yourself
+   (one `web_search` first if you need a map of the topic) and let the researchers search, fetch and
+   cite.
 3. **Then the specialists**: one concrete task each, with everything it needs in its prompt (paths,
    the exact question, the answer's shape). Agents cannot ask questions mid-run.
 4. **Scale to the request.** A modest team (under 10 specialists) unless the user or the session's
@@ -156,6 +159,47 @@ def main(args):
 ```
 
 `args["files"]` comes from your own scouting (`glob`, `grep`), never from a guess.
+
+## Example: web research with a source check
+
+```python
+META = {"name": "web-research", "description": "Researchers take one sub-question each, a checker tests each claim against its source, one writer drafts the cited report", "phases": ["research", "report"]}
+
+FINDINGS = {
+    "type": "object",
+    "properties": {"findings": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"claim": {"type": "string"}, "url": {"type": "string"}},
+        "required": ["claim", "url"],
+    }}},
+    "required": ["findings"],
+}
+CHECK = {"type": "object", "properties": {"supported": {"type": "boolean"}}, "required": ["supported"]}
+
+def research(prev, question, i):
+    found = agent("Answer this with web_search, web_fetch and arxiv. Report only claims that a page you fetched supports, each with that page's url: " + question, label = "researcher " + str(i + 1), phase = "research", schema = FINDINGS, agent_type = "researcher")
+    if found == None:
+        log("the researcher for question " + str(i + 1) + " failed; it is unanswered")
+        return []
+    checks = parallel([lambda f = f: agent("Fetch " + f["url"] + " and say whether the page supports this claim: " + f["claim"], phase = "research", schema = CHECK, agent_type = "researcher") for f in found["findings"]])
+    kept = []
+    for j in range(len(found["findings"])):
+        if checks[j] != None and checks[j]["supported"]:
+            kept.append(found["findings"][j])
+    return kept
+
+def main(args):
+    per_question = pipeline(args["questions"], research)
+    claims = []
+    for k in per_question:
+        if k:
+            claims.extend(k)
+    log(str(len(claims)) + " checked claim(s) from " + str(len(args["questions"])) + " question(s)")
+    phase("report")
+    return agent("Write the report on " + args["topic"] + " as your answer. Use only these checked claims, cite each sentence with its url as a markdown link, and say what they leave open:\n" + json.encode(claims), label = "writer", phase = "report", agent_type = "researcher")
+```
+
+`args["questions"]` are the sub-questions you wrote yourself: a handful, each answerable from a few sources. `agent_type = "researcher"` gives an agent only the reading, searching and writing tools; leave it off and the agent gets a shell and wanders.
 
 ## Example: judge panel
 
