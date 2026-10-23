@@ -30,7 +30,10 @@ pub mod net;
 pub mod page_identity;
 pub mod politeness;
 pub mod registry;
+pub mod queries;
 pub mod source;
+pub mod standing;
+pub mod text;
 pub mod xml;
 
 pub use cache::{CacheKey, ResearchCache};
