@@ -258,3 +258,42 @@ def main(args):
     assert_eq!(list.iter().filter(|(s, _)| s.name == "web-research").count(), 1);
     assert_eq!(list.iter().find(|(s, _)| s.name == "web-research").unwrap().0.description, "mine");
 }
+
+#[test]
+fn a_name_is_matched_loosely_and_an_exact_one_always_wins() {
+    use marlowe_workflow::saved::fold;
+    for loose in ["Web Research", "web_research", "web research team task", "The Web-Research Task", " WEB--RESEARCH ", "web-research-workflow"] {
+        assert_eq!(fold(loose), "web-research", "{loose}");
+    }
+    assert_eq!(fold("task"), "task", "a name that is only the suffix stays");
+    let dir = std::env::temp_dir().join(format!("marlowe-fold-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(".marlowe").join("workflows")).unwrap();
+    // A project task named like the folded form of another exact name: the exact name is taken.
+    std::fs::write(dir.join(".marlowe").join("workflows").join("build.star"), "META = {\"description\": \"b\"}\ndef main(args):\n    return 1\n").unwrap();
+    std::fs::write(dir.join(".marlowe").join("workflows").join("build-task.star"), "META = {\"description\": \"bt\"}\ndef main(args):\n    return 2\n").unwrap();
+    let roots = Roots { workspaces: vec![dir.clone()], home: None, plugins: vec![] };
+    assert_eq!(roots.resolve("build-task").unwrap().name, "build-task");
+    assert_eq!(roots.resolve("build").unwrap().name, "build");
+    assert_eq!(roots.resolve("Build").unwrap().name.to_lowercase(), "build");
+    assert_eq!(roots.resolve("simplify team task").unwrap().name, "simplify");
+    let e = roots.resolve("code reviews").unwrap_err();
+    assert!(e.contains("no team task named `code reviews`") && e.contains("Closest: `code-review`") && e.contains("`web-research`"), "{e}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_catalog_carries_each_tasks_args_and_clips_to_its_budget() {
+    let roots = Roots { workspaces: vec![], home: None, plugins: vec![] };
+    let entries = roots.catalog();
+    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["code-review", "simplify", "web-research"]);
+    assert!(entries.iter().all(|e| e.args.is_some()), "every built-in says what args it takes");
+    let text = marlowe_workflow::saved::catalog_text(&entries, 100_000);
+    assert!(text.contains("- web-research:") && text.contains("args: topic (required"), "{text}");
+    let tight = marlowe_workflow::saved::catalog_text(&entries, 300);
+    assert!(tight.len() < 460 && tight.contains("more: call team with the name"), "{tight}");
+    let fit = marlowe_workflow::saved::best_match(&entries, "research the latest kimi models on the web").unwrap();
+    assert_eq!(fit.name, "web-research");
+    assert!(marlowe_workflow::saved::best_match(&entries, "zzz qqq").is_none());
+}

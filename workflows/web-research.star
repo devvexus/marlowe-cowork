@@ -8,6 +8,7 @@ META = {
     "description": "Web research on a topic: researchers take one sub-question each in parallel, a checker tests each claim against its source, one writer drafts the cited report and saves it to a file. Args: topic.",
     "when_to_use": "The user asks for researched, cited work on a topic or question.",
     "phases": ["research", "report"],
+    "args": "topic (required: the subject and focus, in the user's words); questions (optional list); file (optional)",
 }
 
 FINDINGS = {

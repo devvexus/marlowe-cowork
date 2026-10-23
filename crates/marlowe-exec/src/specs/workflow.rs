@@ -18,7 +18,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use marlowe_agent::{CallCtx, Consequence, Effects, ToolCallReq, ToolGroup, ToolOutcome};
 use marlowe_workflow::service::{self, LaunchRequest, Waited};
@@ -38,11 +38,14 @@ pub struct WorkflowGroup {
     approved: Mutex<HashMap<String, String>>,
     /// Calls whose script was sent back once for running its agents one after another.
     warned: Mutex<HashSet<String>>,
+    /// The saved team tasks listed in the tool's description, read once so the tool list does not
+    /// change while the session lives.
+    catalog: OnceLock<String>,
 }
 
 impl WorkflowGroup {
     fn new(home: &Path, conductor: bool) -> WorkflowGroup {
-        WorkflowGroup { home: Some(home.to_path_buf()), conductor, approved: Mutex::default(), warned: Mutex::default() }
+        WorkflowGroup { home: Some(home.to_path_buf()), conductor, approved: Mutex::default(), warned: Mutex::default(), catalog: OnceLock::new() }
     }
 }
 
@@ -71,6 +74,23 @@ fn roots(t: &BuiltinTools, workspace: Option<&std::path::Path>) -> Option<marlow
 
 fn workflow_spec() -> marlowe_model::ToolSpec {
     marlowe_agent::compact_specs::spec("team")
+}
+
+/// Most characters of the saved-task list in the `team` description.
+const CATALOG_CHARS: usize = 900;
+
+/// The `team` description with this host's saved team tasks (built-in, the user's, the workspace's)
+/// under it: the model runs one by name instead of writing a script. Read on first use and kept.
+fn with_catalog(t: &BuiltinTools, spec: &mut marlowe_model::ToolSpec) {
+    let g = group(t);
+    let text = g.catalog.get_or_init(|| {
+        let Some(roots) = roots(t, None) else { return String::new() };
+        marlowe_workflow::saved::catalog_text(&roots.catalog(), CATALOG_CHARS)
+    });
+    if !text.is_empty() {
+        spec.description.push_str("\nSaved team tasks:\n");
+        spec.description.push_str(text.trim_end());
+    }
 }
 
 fn report_findings_spec() -> marlowe_model::ToolSpec {
@@ -176,7 +196,51 @@ fn sequential_agents(source: &str) -> bool {
     source.matches("agent(").count() >= 3 && !source.contains("parallel(") && !source.contains("pipeline(")
 }
 
-const SEQUENTIAL_NOTE: &str = "Not run yet: this script calls agent() several times but never parallel() or pipeline(), so its agents would run one after another. Agents that do not need each other's answers run together inside parallel([lambda: agent(...), lambda: agent(...)]) (bind loop variables with lambda f = f), or pipeline(items, stage) for one agent per item. If one after another is what you want, send the same call again and it runs as written.";
+const SEQUENTIAL_NOTE: &str = "Not run yet (the script is valid): it calls agent() several times but never parallel() or pipeline(), so its agents would run one after another. Agents that do not need each other's answers run together: parallel([\"prompt a\", \"prompt b\"]) takes the prompts as strings (or parallel([lambda: agent(...), ...]) when a call needs options), or pipeline(items, stage) for one agent per item. If one after another is what you want, send the same call again and it runs as written.";
+
+/// Refused scripts in one turn after which the tool tells the model to stop writing them.
+const STOP_WRITING_AT: u32 = 3;
+/// Refused scripts in one turn after which the turn ends with a message to the user.
+const END_TURN_AT: u32 = 5;
+
+/// A call the checker refused. A script that keeps being refused is the model fighting the
+/// language, not fixing one mistake: after [`STOP_WRITING_AT`] refusals in a turn the answer names
+/// the saved team task that fits best (or lists them) and says to stop, and after [`END_TURN_AT`]
+/// the turn ends with a plain message to the user.
+fn refuse(cx: &CallCtx, roots: &marlowe_workflow::saved::Roots, plan: &Plan, source: Option<&str>, e: String) -> ToolOutcome {
+    if plan.script.is_none() && plan.path.is_none() {
+        return ToolOutcome::error_of("team-name", e);
+    }
+    let n = cx.scope.with_ext(|x| marlowe_agent::agent::guard::count_attempt(x, cx.turn, "team-script"));
+    let mut msg = script_error(e);
+    if n < STOP_WRITING_AT {
+        return ToolOutcome::error_of("script-invalid", msg);
+    }
+    let catalog = roots.catalog();
+    let fit = source.and_then(|s| marlowe_workflow::saved::best_match(&catalog, s));
+    let way_out = match (fit, catalog.is_empty()) {
+        (Some(c), _) => format!(
+            "The closest saved team task is `{}`{}: run it with team{{name: \"{}\", args: {{...}}}}.",
+            c.name,
+            c.args.as_deref().map(|a| format!(" (args: {a})")).unwrap_or_default(),
+            c.name
+        ),
+        (None, false) => format!("Saved team tasks: {}.", catalog.iter().map(|c| format!("`{}`", c.name)).collect::<Vec<_>>().join(", ")),
+        (None, true) => "There is no saved team task to fall back on.".to_string(),
+    };
+    if n >= END_TURN_AT {
+        let why = format!(
+            "The team tool refused {n} scripts this turn, so Marlowe stopped here instead of trying more. Ask for a saved team task by name (/teams lists them), or give a simpler plan. {way_out}"
+        );
+        msg.push_str(&format!("\n\n[harness: {why}]"));
+        cx.scope.with_ext(|x| x.insert(marlowe_agent::agent::guard::EndTurn(why)));
+    } else {
+        msg.push_str(&format!(
+            "\n\n[harness: {n} scripts refused this turn. Stop writing scripts. {way_out} Otherwise tell the user plainly what you could not do; do not send another script.]"
+        ));
+    }
+    ToolOutcome::error_of("script-invalid", msg)
+}
 
 /// The ignored keys, as the line after a result.
 fn notes(p: &Plan) -> String {
@@ -197,17 +261,21 @@ fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
     };
     let from_script = plan.script.is_some() || plan.path.is_some();
     let fail = |e: String| ToolOutcome::error(if from_script { script_error(e) } else { e });
+    let source = plan.script.clone().or_else(|| plan.path.as_deref().and_then(|p| std::fs::read_to_string(service::resolve_path(&roots, p)).ok()));
+    // Checked first, whatever else the call would be told: a note about a script that cannot run
+    // would promise a run that never comes.
+    let prepared = match service::prepare(&roots, plan.script.as_deref(), plan.path.as_deref(), plan.name.as_deref()) {
+        Ok(p) => p,
+        Err(e) => return refuse(cx, &roots, &plan, source.as_deref(), e),
+    };
     if a.get("validate_only").and_then(Value::as_bool).unwrap_or(false) {
-        return match service::prepare(&roots, plan.script.as_deref(), plan.path.as_deref(), plan.name.as_deref()) {
-            Ok(p) => ToolOutcome::ok(format!("{} is valid. META: {}{}", p.filename, serde_json::to_string(&p.meta).unwrap_or_default(), notes(&plan)), "valid"),
-            Err(e) => fail(e),
-        };
+        return ToolOutcome::ok(format!("{} is valid. META: {}{}", prepared.filename, serde_json::to_string(&prepared.meta).unwrap_or_default(), notes(&plan)), "valid");
     }
     let Some(Workflows(launcher)) = cx.scope.services.get::<Workflows>().cloned() else {
         return ToolOutcome::error("team tasks run in the daemon; this session has no team task launcher");
     };
-    if let Some(source) = plan.script.clone().or_else(|| plan.path.as_deref().and_then(|p| std::fs::read_to_string(cx.workspace.as_deref().map_or_else(|| PathBuf::from(p), |w| w.join(p))).ok())) {
-        if sequential_agents(&source) && group(t).warned.lock().unwrap_or_else(|e| e.into_inner()).insert(call_key(&plan)) {
+    if let Some(source) = &source {
+        if sequential_agents(source) && group(t).warned.lock().unwrap_or_else(|e| e.into_inner()).insert(call_key(&plan)) {
             return ToolOutcome::error(SEQUENTIAL_NOTE);
         }
     }
@@ -221,7 +289,7 @@ fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
         workspace: cx.workspace.clone(),
         script: plan.script.clone(),
         script_path: plan.path.clone(),
-        name: plan.name.clone(),
+        name: plan.name.as_ref().map(|_| prepared.name.clone()),
         args,
         background,
         resume_from: s(a, "resume_from").map(str::to_string),
@@ -350,6 +418,7 @@ pub fn tools() -> Vec<ToolDef> {
             // A waited-on run puts agent output (web pages, repository text) into the result.
             .taints(|_, c| c.args.get("background").and_then(Value::as_bool) == Some(false))
             .describe(describe_workflow)
+            .spec_for(with_catalog)
             .enabled(|t| group(t).conductor),
         ToolDef::new(report_findings_spec(), ToolGroup::Workflow, Effects::NONE, report_findings_call)
             .describe(|c| {

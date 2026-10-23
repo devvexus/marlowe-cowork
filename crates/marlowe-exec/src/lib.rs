@@ -328,7 +328,18 @@ pub(crate) fn first_line(s: &str, max: usize) -> String {
 
 impl ToolHost for BuiltinTools {
     fn specs(&self) -> Vec<ToolSpec> {
-        specs::table().defs.iter().filter(|d| self.exposes(d) && (d.enabled)(self)).map(|d| d.spec.clone()).collect()
+        specs::table()
+            .defs
+            .iter()
+            .filter(|d| self.exposes(d) && (d.enabled)(self))
+            .map(|d| {
+                let mut spec = d.spec.clone();
+                if let Some(f) = d.spec_for {
+                    f(self, &mut spec);
+                }
+                spec
+            })
+            .collect()
     }
 
     fn call(&self, call: &ToolCallReq, ctx: &ToolCtx) -> ToolOutcome {

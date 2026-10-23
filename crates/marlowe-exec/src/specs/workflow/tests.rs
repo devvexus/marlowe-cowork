@@ -229,7 +229,8 @@ fn the_team_description_carries_the_opt_in_rule_and_dispatch_is_one_specialist()
         assert!(d.contains(want), "team description lacks `{want}`: {d}");
     }
     assert!(!d.to_lowercase().contains("workflow"), "{d}");
-    assert!(d.len() < 2_400, "the description stays compact: {} chars", d.len());
+    let base = d.split("\nSaved team tasks").next().unwrap();
+    assert!(base.len() < 2_400, "the description stays compact: {} chars", base.len());
     let dispatch = marlowe_agent::compact_specs::spec("dispatch").description;
     assert!(dispatch.contains("One specialist: a prompt given to one crew subagent in its own sandbox — not a team, no script"), "{dispatch}");
     for name in ["agent", "dispatch", "team"] {
@@ -347,7 +348,7 @@ name = \"x\"
         let t = host(&home, &ws);
         assert!(t.middleware().iter().any(|m| m.name() == "star-validator"));
         let d = t.specs().into_iter().find(|s| s.name == "team").unwrap().description;
-        assert!(d.contains("`script` inline") && d.contains("save a .star only when asked"), "{d}");
+        assert!(d.contains("inline (save a .star only when asked)"), "{d}");
     }
 }
 
@@ -532,4 +533,108 @@ def main(args):
             assert!(!props.contains_key(k), "{k}");
         }
     }
+}
+
+// ---------------------------------------------------------------- saved tasks are found, refused scripts are bounded
+
+fn team_description(t: &BuiltinTools) -> String {
+    t.specs().into_iter().find(|s| s.name == "team").unwrap().description
+}
+
+#[test]
+fn the_description_lists_the_saved_team_tasks_with_their_args_and_stays_fixed() {
+    let (home, ws) = (temp("home10"), temp("ws10"));
+    std::fs::create_dir_all(ws.join(".marlowe").join("workflows")).unwrap();
+    std::fs::write(
+        ws.join(".marlowe").join("workflows").join("audit-deps.star"),
+        "META = {\"description\": \"Check each dependency for a newer major\", \"when_to_use\": \"The user asks which dependencies are outdated.\", \"args\": {\"crate\": \"limit to one crate\"}}\ndef main(args):\n    return agent(\"x\")\n",
+    )
+    .unwrap();
+    let t = host(&home, &ws);
+    let d = team_description(&t);
+    for want in ["Saved team tasks", "- web-research:", "- code-review:", "- simplify:", "- audit-deps: Check each dependency", "args: crate (limit to one crate)", "args: topic (required"] {
+        assert!(d.contains(want), "`{want}` missing: {d}");
+    }
+    // A task saved after the session's tool list was read does not change it.
+    std::fs::write(ws.join(".marlowe").join("workflows").join("later.star"), "META = {\"description\": \"Later\"}\ndef main(args):\n    return 1\n").unwrap();
+    assert_eq!(team_description(&t), d, "the list is read once per session");
+    assert!(team_description(&host(&home, &ws)).contains("- later:"), "a new session reads it");
+    // The conductor's budget: three built-ins and a project task stay small.
+    assert!(d.len() < 4_200, "{} chars", d.len());
+}
+
+#[test]
+fn a_saved_task_is_found_by_a_loose_name_and_an_unknown_name_returns_the_list() {
+    let (home, ws) = (temp("home11"), temp("ws11"));
+    let t = host(&home, &ws);
+    let fake = Arc::new(FakeLauncher::default());
+    let services = Services::new().with(Workflows(fake.clone()));
+    for loose in ["Web Research", "web_research", "web research team task", "the Web-Research task", "WEB-RESEARCH"] {
+        let out = t.call_scoped(&req("team", json!({"name": loose, "args": {"topic": "kimi"}})), &cx(&ws, services.clone()));
+        assert!(!out.is_error, "{loose}: {}", out.content);
+    }
+    let sent = fake.launched.lock().unwrap().clone();
+    assert_eq!(sent.len(), 5);
+    assert!(sent.iter().all(|r| r.name.as_deref() == Some("web-research") && r.args == json!({"topic": "kimi"})), "{sent:?}");
+    let out = t.call_scoped(&req("team", json!({"name": "web scraping"})), &cx(&ws, services));
+    assert!(out.is_error && out.content.contains("no team task named `web scraping`"), "{}", out.content);
+    assert!(out.content.contains("Closest:") == false || out.content.contains("web-research"), "{}", out.content);
+    for name in ["code-review", "simplify", "web-research"] {
+        assert!(out.content.contains(&format!("`{name}`")), "the list names {name}: {}", out.content);
+    }
+    assert_eq!(out.class, Some("team-name"));
+}
+
+#[test]
+fn a_script_the_checker_refuses_is_not_told_it_will_run() {
+    let (home, ws) = (temp("home12"), temp("ws12"));
+    let t = host(&home, &ws);
+    let services = Services::new().with(Workflows(Arc::new(FakeLauncher::default())));
+    let cx = cx(&ws, services);
+    // Three agents, no parallel(): the sequential note applies to a valid script only.
+    let broken = "META = {\"description\": \"d\"}\ndef main(args):\n    a = agent(\"a\"\n    b = agent(\"b\")\n    c = agent(\"c\")\n    return [a, b, c]\n";
+    let out = t.call_scoped(&req("team", json!({"script": broken})), &cx);
+    assert!(out.is_error && !out.content.contains("Not run yet") && out.content.contains("never closed"), "{}", out.content);
+    assert_eq!(out.class, Some("script-invalid"));
+    let valid = "META = {\"description\": \"d\"}\ndef main(args):\n    a = agent(\"a\")\n    b = agent(\"b\")\n    c = agent(\"c\")\n    return [a, b, c]\n";
+    let first = t.call_scoped(&req("team", json!({"script": valid})), &cx);
+    assert!(first.is_error && first.content.contains("Not run yet (the script is valid)"), "{}", first.content);
+    let again = t.call_scoped(&req("team", json!({"script": valid})), &cx);
+    assert!(!again.is_error, "{}", again.content);
+}
+
+#[test]
+fn refused_scripts_are_capped_per_turn_three_to_stop_writing_five_to_end_the_turn() {
+    use marlowe_agent::agent::guard::EndTurn;
+    let (home, ws) = (temp("home13"), temp("ws13"));
+    let t = host(&home, &ws);
+    let services = Services::new().with(Workflows(Arc::new(FakeLauncher::default())));
+    let cx = cx(&ws, services);
+    let attempt = |i: usize| {
+        // Each script is wrong a different way, so the loop guard's wording key never repeats.
+        let script = format!("META = {{\"description\": \"Research kimi models on the web\"}}\ndef main(args):\n    x{i} = agent(\"research the web {i}\"\n    return x{i}\n");
+        t.call_scoped(&req("team", json!({"script": script})), &cx)
+    };
+    for i in 1..=2 {
+        let out = attempt(i);
+        assert!(out.is_error && !out.content.contains("[harness"), "{i}: {}", out.content);
+    }
+    let third = attempt(3);
+    assert!(third.content.contains("3 scripts refused this turn") && third.content.contains("Stop writing scripts"), "{}", third.content);
+    assert!(third.content.contains("The closest saved team task is `web-research`") && third.content.contains("topic (required"), "{}", third.content);
+    assert!(cx.scope.with_ext(|e| e.get::<EndTurn>().is_none()), "not yet");
+    let fourth = attempt(4);
+    assert!(fourth.content.contains("4 scripts refused") && cx.scope.with_ext(|e| e.get::<EndTurn>().is_none()));
+    let fifth = attempt(5);
+    let ended = cx.scope.with_ext(|e| e.get::<EndTurn>().map(|x| x.0.clone()));
+    let ended = ended.expect("the fifth refusal ends the turn");
+    assert!(ended.contains("refused 5 scripts") && ended.contains("/teams") && ended.contains("web-research"), "{ended}");
+    assert!(fifth.content.contains("refused 5 scripts"), "{}", fifth.content);
+    // A new turn starts again from one.
+    cx.scope.with_ext(|e| e.remove::<EndTurn>());
+    let mut next = cx.clone();
+    next.tool.turn = 2;
+    let script = "META = {\"description\": \"d\"}\ndef main(args):\n    x = agent(\"a\"\n    return x\n";
+    let out = t.call_scoped(&req("team", json!({"script": script})), &next);
+    assert!(out.is_error && !out.content.contains("[harness"), "{}", out.content);
 }

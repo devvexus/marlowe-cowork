@@ -160,15 +160,51 @@ pub(crate) fn on_boot(core: &Arc<Core>) {
 /// skill on first start; a copy the user edited is left alone.
 pub(crate) const AUTHORING_SKILL: &str = include_str!("../../../workflows/workflow-authoring.md");
 
+/// blake3 of the skill text earlier builds shipped (line endings normalised), so a copy that was
+/// never edited is recognised and refreshed by a build that ships a better one.
+const PREVIOUS_SKILLS: [&str; 9] = [
+    "82a08b1cc6283dfb5c8c9833a57cbd94cd4ff35ffb91820586d698648fbb77b6",
+    "0ddbc269b66650b87081847903191410f781bc326c091a9a24570d9915adff2e",
+    "04de08b503be9a1c4fb411ad59d5ef37c1087ebe4ee24862520d4e181607cb89",
+    "02f52fbd34819b51545c740ccec8cc9b3d190aca79ed04b78f42ef0daa6c66aa",
+    "c4216511a872a3f7a1428185f1b98bbe4200d5cfe5f140e8abd9a4c34e4bd4e6",
+    "6abd02280e75b400d50acdb5cafb0e79b5ba30d031c414565f57745fa7d94c51",
+    "9d663d85f52b634305fb63a37ccbbffab828977398e57a038e8bd8f6120e1ee3",
+    "d2757d91af120dd54543bf3e11a118d2a8827a10be2f6308884ed02e791373ed",
+    "721c1d681b9996e1030f8ea11361e10d899fc78c268265ea3dc9399edeed0f0e",
+];
+
+fn skill_digest(text: &str) -> String {
+    marlowe_workflow::digest(&text.replace("\r\n", "\n"))
+}
+
+/// Installs the skill: written when missing, and refreshed when the copy on disk is one this
+/// program shipped and the user never edited (it matches a shipped version or the digest recorded
+/// beside it). A copy the user edited is left alone.
 pub(crate) fn install_skill(home: &Path) {
-    let path = home.join("skills").join("team-task-authoring").join("SKILL.md");
-    if path.exists() {
-        return;
+    install_skill_text(home, AUTHORING_SKILL);
+}
+
+pub(crate) fn install_skill_text(home: &Path, shipped: &str) {
+    let dir = home.join("skills").join("team-task-authoring");
+    let (path, marker) = (dir.join("SKILL.md"), dir.join(".shipped"));
+    let current = skill_digest(shipped);
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        let have = skill_digest(&existing);
+        let recorded = std::fs::read_to_string(&marker).unwrap_or_default();
+        let ours = have == current || have == recorded.trim() || PREVIOUS_SKILLS.contains(&have.as_str());
+        if !ours {
+            return;
+        }
+        if have == current {
+            let _ = std::fs::write(&marker, &current);
+            return;
+        }
     }
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+    let _ = std::fs::create_dir_all(&dir);
+    if std::fs::write(&path, shipped).is_ok() {
+        let _ = std::fs::write(&marker, &current);
     }
-    let _ = std::fs::write(&path, AUTHORING_SKILL);
 }
 
 /// Gives workflow runs under this home their session's hooks when none were set for them (a run
@@ -418,5 +454,61 @@ impl TaskSource for WorkflowTasks {
 
     fn output(&self, _id: &str, _since: Option<u64>, _filter: Option<&str>) -> Option<Result<TaskChunk, String>> {
         None
+    }
+}
+
+#[cfg(test)]
+mod skill_tests {
+    use super::*;
+
+    fn home(tag: &str) -> PathBuf {
+        let h = std::env::temp_dir().join(format!("marlowe-skill-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&h);
+        h
+    }
+
+    fn skill(h: &Path) -> String {
+        std::fs::read_to_string(h.join("skills").join("team-task-authoring").join("SKILL.md")).unwrap()
+    }
+
+    #[test]
+    fn a_shipped_copy_is_refreshed_and_an_edited_one_is_left_alone() {
+        let h = home("a");
+        install_skill_text(&h, "version one");
+        assert_eq!(skill(&h), "version one");
+        // Never edited: the recorded digest says it is ours, so a better version replaces it.
+        install_skill_text(&h, "version two");
+        assert_eq!(skill(&h), "version two");
+        // Edited by the user: left alone, whatever ships next.
+        let path = h.join("skills").join("team-task-authoring").join("SKILL.md");
+        std::fs::write(&path, "my own notes").unwrap();
+        install_skill_text(&h, "version three");
+        assert_eq!(skill(&h), "my own notes");
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn a_copy_from_an_earlier_build_without_a_record_is_recognised_by_its_digest() {
+        let h = home("b");
+        let dir = h.join("skills").join("team-task-authoring");
+        std::fs::create_dir_all(&dir).unwrap();
+        // The copy the preview home held (shipped by the build of 0caa917), written before any record existed.
+        let old = std::process::Command::new("git")
+            .args(["show", "0caa917:workflows/workflow-authoring.md"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output();
+        let Ok(old) = old.map(|o| o.stdout).map(|b| String::from_utf8_lossy(&b).into_owned()).and_then(|t| if t.is_empty() { Err(std::io::Error::other("no git history")) } else { Ok(t) }) else {
+            let _ = std::fs::remove_dir_all(&h);
+            return;
+        };
+        std::fs::write(dir.join("SKILL.md"), old.replace('\n', "\r\n")).unwrap();
+        install_skill_text(&h, "the new version");
+        assert_eq!(skill(&h), "the new version");
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn the_shipped_skill_tells_the_model_to_run_a_saved_task_by_name() {
+        assert!(AUTHORING_SKILL.contains("Saved team tasks come first") && AUTHORING_SKILL.contains("team{name:"));
     }
 }

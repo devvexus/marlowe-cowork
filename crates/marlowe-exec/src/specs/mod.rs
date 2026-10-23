@@ -87,6 +87,9 @@ pub type EgressFn = fn(&BuiltinTools, &ToolCallReq) -> Option<String>;
 pub type MutationFn = fn(&BuiltinTools, &ToolCallReq, &ToolCtx) -> Mutation;
 /// Whether the host offers the tool to the model (e.g. web_search needs a backend).
 pub type EnabledFn = fn(&BuiltinTools) -> bool;
+/// Adds what this host knows to the spec the model is shown (the `team` tool's saved-task list).
+/// It must give the same answer for as long as the host lives, so the tool list stays fixed.
+pub type SpecFn = fn(&BuiltinTools, &mut ToolSpec);
 
 /// One registered tool.
 pub struct ToolDef {
@@ -101,6 +104,7 @@ pub struct ToolDef {
     pub egress: EgressFn,
     pub mutation: MutationFn,
     pub enabled: EnabledFn,
+    pub spec_for: Option<SpecFn>,
     /// Argument names, requirements and examples for the forgiving layer (default: `rules.rs`).
     pub rules: marlowe_agent::args::ArgRules,
     /// A second group that also offers the tool (`task_output` rides with the shell group).
@@ -125,6 +129,7 @@ impl ToolDef {
             egress: |_, _| None,
             mutation: |_, _, _| Mutation::None,
             enabled: |_| true,
+            spec_for: None,
         }
     }
 
@@ -174,6 +179,11 @@ impl ToolDef {
 
     pub fn enabled(mut self, f: EnabledFn) -> Self {
         self.enabled = f;
+        self
+    }
+
+    pub fn spec_for(mut self, f: SpecFn) -> Self {
+        self.spec_for = Some(f);
         self
     }
 

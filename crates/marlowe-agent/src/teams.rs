@@ -15,8 +15,9 @@ pub fn on_reminder(size: u32) -> String {
     format!(
         "<system-reminder>Teams is on: form a team task for every substantive request (several in sequence for \
          multi-phase work: understand, design, build, review, staying in the loop between them); solo only for \
-         conversation and trivial edits. Keep a team under {size} specialists. Load the team-task-authoring skill \
-         before writing the script.</system-reminder>"
+         conversation and trivial edits. When the user names a saved team task, or one in the team tool's list \
+         fits, run it by name with its args (team{{name, args}}) and write no script; write one only when none \
+         fits. Keep a team under {size} specialists. Load the team-task-authoring skill before writing a script.</system-reminder>"
     )
 }
 

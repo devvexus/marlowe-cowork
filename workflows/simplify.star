@@ -8,6 +8,7 @@ META = {
     "description": "Review the changed code for reuse, simplification, efficiency and altitude cleanups, then apply them",
     "when_to_use": "The user asks to simplify or clean up recent changes (/simplify); not for finding bugs.",
     "phases": ["find", "apply"],
+    "args": "target (diff or base ref); apply (bool)",
 }
 
 LENSES = {

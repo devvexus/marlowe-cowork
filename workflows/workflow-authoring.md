@@ -12,6 +12,15 @@ are crew steps in a sandbox, journalled and resumable. Only the user's own words
 skill or Teams being on make you form one; otherwise work yourself, or say what a team would do and
 cost and ask.
 
+## Saved team tasks come first
+
+The `team` tool's description lists the saved team tasks (built-in, the user's, the project's) with
+what each does and the `args` it takes. When the user names one ("run the web research team task"),
+or one fits the request, call `team{name: "<name>", args: {...}}` and stop: put the user's subject,
+focus and wishes in the args the list names, in their words. Write a script only when none fits. A
+name that is not exact still finds its task (case, spaces, underscores and a trailing "team task"
+do not matter), and an unknown name returns the list.
+
 ## Plan before you write
 
 1. **The objective**: one sentence on what the finished work is, and what "done" looks like.
@@ -54,7 +63,7 @@ start in `main`.
 | Call | Returns |
 |---|---|
 | `agent(prompt, label=, phase=, schema=, model=, effort=, isolation="worktree", agent_type=)` | the agent's final text; with `schema`, a dict matching it; `None` when it failed or was skipped |
-| `parallel([f, g, ...])` | a barrier: each function's result in order, once all are done; a function that fails gives `None` |
+| `parallel([f, g, ...])` | a barrier: each function's result in order, once all are done; a function that fails gives `None`; an item may be a prompt string, which stands for `lambda: agent(prompt)` |
 | `pipeline(items, stage1, stage2, ...)` | no barrier: each item through the stages independently; a stage is `stage(prev, item, index)` (fewer parameters are fine; `prev` is the item for the first stage); a failing stage gives `None` for that item |
 | `phase(name)` | enters a phase: later agents are grouped under it |
 | `log(...)`, `print(...)` | a line in the progress view and the journal |
@@ -68,15 +77,17 @@ comprehension iterations and lambda calls, for at most 120 s, and holds at most 
 gives at most 100000 numbers; `*` and `+` build at most 16 MB; a prompt is at most 1 MB; a `log`
 line is cut at 4000 characters. The top level runs only once the run starts, never during the check.
 
-## Starlark gotchas (the checker names each one with its line)
+## Starlark gotchas (the checker names the line and the fix)
 
 | Python habit | Starlark |
 |---|---|
 | `import json` | none: `json`, `budget`, `args` are already there. A script cannot read files or run commands; agents do, and lists come in through `args` |
 | `x is None`, `x is not None` | `x == None`, `x != None` |
+| `parallel` of lambdas written over many lines | a list of prompt strings: `parallel(["first question", "second question"])` does what `parallel([lambda: agent("first question"), ...])` does, with nothing to close wrongly |
 | `f"{r['n']} {len(xs)}"` | an f-string holds only a plain name: assign first, or join: `"n=" + str(r["n"])` |
 | `"abc" "def"` (neighbouring strings) | `"abc" + "def"`, or one string; use `\n` or triple quotes for several lines |
 | `while cond:` / recursion | `for i in range(n):` with `break`; extend a list between rounds |
+| `class`, `del`, `assert`, `with`, `global`, `else if` | none: use a dict, a new list, an `if`, a parameter, `elif` |
 | `[lambda: agent(f) for f in files]` | bind the variable: `lambda f = f: agent(f)`, or `pipeline(files, lambda prev, f, i: agent(f))` |
 | `x *= n`, `x <<= n` | `x = x * n`, `x = x << n` |
 | `try`/`except` | a failed or skipped agent returns `None`: test it |
@@ -302,6 +313,10 @@ def main(args):
   `team{path: "..."}`, `team{name: "code-review", args: {...}}`.
 - `validate_only: true` checks without running. `background: false` waits for the result.
 - Saved team tasks: `.marlowe/workflows/<name>.star` (project), `<home>/workflows/<name>.star`
-  (user), plugins' `workflows/`, and the built-ins `code-review` and `simplify`.
+  (user), plugins' `workflows/`, and the built-ins `code-review`, `simplify` and `web-research`.
+  Call one by `name` whenever it fits (see "Saved team tasks come first").
+- After a few refused scripts in one turn the tool tells you to stop and run the closest saved
+  task, and after five the turn ends: if the checker keeps refusing, simplify (fewer agents, no
+  nested brackets, prompt strings in `parallel`) or use a saved task.
 - A Claude Code `.claude/workflows/<name>.js` is converted once with `/team convert <name>`.
 - The call returns at once with a task id; the result arrives as a notice; `/teams` shows it live.
