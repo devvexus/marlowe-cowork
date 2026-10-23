@@ -687,9 +687,6 @@ pub fn status_text(st: &ProjectState, running: bool) -> String {
         Some(g) => {
             let ids: Vec<&str> = g.options.iter().map(|o| o.id.as_str()).collect();
             out.push_str(&format!("Waiting for the user: card {} ({}). Answers: {}.", g.id, g.kind.as_str(), ids.join(", ")));
-            if let Some(note) = g.payload.get("lead_note").and_then(Value::as_str) {
-                out.push_str(&format!("\nThe lead says: {}", clip(note, 400)));
-            }
             if let Some(rec) = g.payload.get("recommended").and_then(Value::as_str) {
                 out.push_str(&format!("\nRecommended: {rec}."));
             }

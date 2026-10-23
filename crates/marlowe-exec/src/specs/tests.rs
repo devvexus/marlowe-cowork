@@ -251,7 +251,7 @@ fn every_tool_is_registered_once_in_its_group_in_the_old_order() {
         let schema = &d.spec.input_schema;
         assert_eq!(schema["type"], json!("object"), "{} schema is an object", d.name());
         for (key, p) in schema["properties"].as_object().into_iter().flatten() {
-            assert!(!matches!(p.get("type").and_then(Value::as_str), Some("object")) || key == "args" || key == "budget", "{}.{key} is flat", d.name());
+            assert!(!matches!(p.get("type").and_then(Value::as_str), Some("object")) || key == "args" || key == "budget" || key == "plan", "{}.{key} is flat", d.name());
         }
     }
     let host = BuiltinTools::new(None);
@@ -443,7 +443,7 @@ fn every_group_file_registers_its_hooks() {
             (g.persona_block)().is_some(),
             matches!(
                 g.group,
-                marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Verify | marlowe_agent::ToolGroup::Agent
+                marlowe_agent::ToolGroup::Git | marlowe_agent::ToolGroup::Verify | marlowe_agent::ToolGroup::Agent | marlowe_agent::ToolGroup::Workflow
             ),
             "{:?}: a block needs its capability live first",
             g.group

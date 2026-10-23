@@ -448,7 +448,7 @@ fn report_findings_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcom
 }
 
 pub fn tools() -> Vec<ToolDef> {
-    vec![
+    let mut defs = vec![
         ToolDef::new(workflow_spec(), ToolGroup::Workflow, Effects::RUN, workflow_call)
             .consequence(|t, c, _| workflow_consequence(t, c))
             // A waited-on run puts agent output (web pages, repository text) into the result.
@@ -464,7 +464,10 @@ pub fn tools() -> Vec<ToolDef> {
             // Configured hosts (the conductor's and the crew's) only: findings are stored under
             // the profile home.
             .enabled(|t| group(t).home.is_some()),
-    ]
+    ];
+    // `manage_project` rides with `team`: the conductor's, and it supersedes it for big requests.
+    defs.extend(super::project::tools());
+    defs
 }
 
 /// Loop middleware for this group (see `specs/mod.rs`): the `.star` validator.
@@ -473,9 +476,10 @@ pub fn middleware(tools: &crate::BuiltinTools) -> Vec<std::sync::Arc<dyn marlowe
     vec![std::sync::Arc::new(star::StarValidator::default())]
 }
 
-/// No block: the `team` description carries the script API and the rules for using it.
+/// The projects block: the `team` description carries the script API, and projects (which a
+/// conductor uses first for big requests) carry their few rules here.
 pub fn persona_block() -> Option<&'static str> {
-    None
+    Some(super::project::persona_block())
 }
 
 /// The conductor's hosts: `team` is live and findings are stored under the profile home.

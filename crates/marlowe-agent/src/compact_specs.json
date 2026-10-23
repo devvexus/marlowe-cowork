@@ -1073,6 +1073,50 @@
   }
  },
  {
+  "name": "manage_project",
+  "description": "Start and steer a project: staged work done by many single-task agents in the background while you stay free. Use it for research and any request too big for one reply; you only design it. create: plan {objective, questions[\"..\"], fields[{key, values?}], send?} returns an id and a plan card to show the user; nothing runs until they approve (answer approve). Also revise (id, plan: only the keys that change), status, list, answer (id, answer, text for steer), checkin, cancel, reopen (id, phase). The result arrives as a notice.",
+  "input_schema": {
+   "type": "object",
+   "properties": {
+    "action": {
+     "enum": [
+      "create",
+      "revise",
+      "status",
+      "list",
+      "answer",
+      "checkin",
+      "cancel",
+      "reopen"
+     ]
+    },
+    "id": {
+     "description": "project id, p_xxxxxxxx"
+    },
+    "plan": {
+     "type": "object"
+    },
+    "answer": {
+     "enum": [
+      "approve",
+      "keep_researching",
+      "steer",
+      "cancel"
+     ]
+    },
+    "text": {
+     "description": "the user's steer"
+    },
+    "phase": {
+     "description": "stage to rerun from, e.g. DataValidation"
+    }
+   },
+   "required": [
+    "action"
+   ]
+  }
+ },
+ {
   "name": "report_findings",
   "description": "Show review findings in the findings panel; refused entries say what to fix (resend the whole list).",
   "input_schema": {

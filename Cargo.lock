@@ -3342,6 +3342,7 @@ dependencies = [
  "marlowe-model",
  "marlowe-net",
  "marlowe-os",
+ "marlowe-project",
  "marlowe-proto",
  "marlowe-research",
  "marlowe-verify",

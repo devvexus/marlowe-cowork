@@ -15,7 +15,7 @@
 //! | `git.rs` | git | J | (git, gh, ci_status) |
 //! | `ml.rs` | ml | J2 | (train_launch, experiments) |
 //! | `mcp.rs` | mcp | K | (nothing; `mcp__srv__tool` and `tool_search` come from the MCP host) |
-//! | `workflow.rs` | workflow | W | (workflow, structured_output, report_findings) |
+//! | `workflow.rs` | workflow | W | (team, report_findings; `manage_project` from `project.rs`) |
 //! | `tasks.rs` | tasks | N | (task_list, task_output, task_stop, monitor, cron_*, schedule_wakeup, list_agents) |
 //! | `notify.rs` | notify | N | (notify, send_file, notices) |
 //!
@@ -46,6 +46,7 @@ pub mod git;
 pub mod mcp;
 pub mod ml;
 pub mod notify;
+pub mod project;
 pub mod rules;
 pub mod search;
 pub mod shell;
