@@ -362,7 +362,7 @@ fn plan_lines(
     out: &mut Vec<(Line<'static>, Option<Target>)>,
 ) {
     let push = |out: &mut Vec<(Line<'static>, Option<Target>)>, l: Line<'static>| out.push((l, None));
-    let local = p.in_effect.engine == Engine::Ollama;
+    let local = p.in_effect.engine.is_local();
     let Some(m) = p.plan.as_ref().filter(|_| local) else {
         push(out, fact("Model", vec![body(format!("hosted · up to {} tokens of context", text::thousands(u64::from(p.ctx_limit))), theme)], theme));
         push(out, Line::from(dim("Nothing loads on this machine: the planner sets the window agents get, nothing else.", theme)));
@@ -372,6 +372,8 @@ fn plan_lines(
         out.push((Line::from(c), Some(Target::PlanField(PlanField::Ctx))));
         return;
     };
+    // Engine.
+    push(out, engine_fact(p, d, theme));
     // GPU.
     match &m.gpu {
         Some(g) => {
@@ -548,7 +550,16 @@ fn plan_lines(
     for wn in &p.warnings {
         push(out, Line::from(Span::styled(text::truncate(&format!("! {}", text::clean(wn)), tw), ink(Ink::Amber, theme))));
     }
-    if d.parallel > 1 || p.in_effect.parallel.unwrap_or(1) > 1 {
+    if p.in_effect.engine == Engine::LlamaCpp {
+        let crew = d.parallel.saturating_sub(1).max(1);
+        let said = format!(
+            "Each agent gets its own slot of {}: you keep one, the crew runs on the other {crew}. Agents may ask for less, never more.",
+            ctx_label(d.max_ctx)
+        );
+        for l in text::wrap(&said, tw) {
+            push(out, Line::from(dim(l, theme)));
+        }
+    } else if d.parallel > 1 || p.in_effect.parallel.unwrap_or(1) > 1 {
         push(out, Line::from(dim("Each agent gets its own slot of max context; agents may ask for less, never more.", theme)));
     }
     push(out, Line::from(""));
@@ -556,10 +567,36 @@ fn plan_lines(
         Line::from(vec![
             Span::styled("↵", ink(Ink::Accent, theme)),
             dim(" review changes", theme),
-            Span::styled("   ←→ adjust · ↑↓ context · tab field · esc close", ink(Ink::Dimmer, theme)),
+            Span::styled("   ←→ adjust · ↑↓ context · tab field · e engine · esc close", ink(Ink::Dimmer, theme)),
         ]),
         Some(Target::Button(0)),
     ));
+}
+
+/// `Engine  llama.cpp · Marlowe's server (Ollama's llama-server) · 6 slots of 48k` or why Ollama
+/// serves the model.
+fn engine_fact(p: &ContextPlan, d: &ContextPolicy, theme: &Theme) -> Line<'static> {
+    let e = &p.in_effect;
+    let spans = match e.engine {
+        Engine::LlamaCpp => vec![
+            body("llama.cpp", theme),
+            dim(" · Marlowe starts Ollama's llama-server itself", theme),
+            sep(theme),
+            body(format!("{} slot{} of {} each", d.parallel, if d.parallel == 1 { "" } else { "s" }, ctx_label(d.max_ctx)), theme),
+            dim("   e turns it off", theme),
+        ],
+        _ => {
+            let mut v = vec![body("Ollama", theme)];
+            if let Some(note) = &e.engine_note {
+                v.push(dim(format!(" · {}", text::clean(note)), theme));
+            }
+            if e.engine_user_off {
+                v.push(dim("   e turns llama.cpp on", theme));
+            }
+            v
+        }
+    };
+    fact("Engine", spans, theme)
 }
 
 fn review_lines(state: &State, p: &ContextPlan, d: &ContextPolicy, tw: usize, theme: &Theme, out: &mut Vec<(Line<'static>, Option<Target>)>) {

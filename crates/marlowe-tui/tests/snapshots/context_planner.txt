@@ -2,8 +2,8 @@
 ╭ Conversation · kv planning ────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
 │                                                                                                ││ marlowe-dusk:27b-super ▾        medium │
 │                                                                                                ││ ctx 12.4k / 32k · kv q8 · 1 slot       │
-│                                                                                                │╰────────────────────────────────── (m) ─╯
-│                 ╭─ Context & hardware · marlowe-dusk:27b-super ────────────────────────────────────────────────── esc ─╮─────────────────╮
+│                 ╭─ Context & hardware · marlowe-dusk:27b-super ────────────────────────────────────────────────── esc ─╮─────────── (m) ─╯
+│                 │ Engine Ollama                                                                                        │─────────────────╮
 │                 │ GPU    RTX 4080 SUPER 16.0 GiB · other apps 1.3 · free for Marlowe 14.7 · keep 1.0                   │                 │
 │                 │ Load   weights 9.8 (IQ3_XXS 27.3B) · draft MTP 0.8 · compute 0.4 · driver 0.5 = 11.4 fixed           │─────────── (w) ─╯
 │                 │ Arch   64 layers, 16 keep a KV cache, 48 Gated DeltaNet, 1 MTP                                       │─────────────────╮
@@ -26,7 +26,7 @@
 │                 │ Loads fully on the GPU with 2.3 GiB for agents: one at 45k, two at 15k, or three at 5k (q8_0). This  │                 │
 │                 │ setting leaves 0.5 GiB spare.                                                                        │                 │
 │                 │                                                                                                      │                 │
-│                 │ ↵ review changes   ←→ adjust · ↑↓ context · tab field · esc close                                    │                 │
+│                 │ ↵ review changes   ←→ adjust · ↑↓ context · tab field · e engine · esc close                         │                 │
 │                 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯                 │
 │                                                                                                ││                                        │
 │                                                                                                │╰────────────────────────────────── (2) ─╯

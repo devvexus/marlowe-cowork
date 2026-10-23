@@ -96,16 +96,26 @@ impl State {
             || mc.is_some_and(|c| c.in_effect.engine == Engine::Cloud)
             || self.library.info(&model).is_some_and(|i| !i.local);
         let e = mc.map(|c| &c.in_effect);
+        // The llama.cpp engine runs the policy: its slots and cache type are the planner's, loaded or not.
+        let llama = e.is_some_and(|e| e.engine == Engine::LlamaCpp);
+        let policy = mc.and_then(|c| c.policy).filter(|_| llama);
         Some(Meter {
             used,
             window,
-            kv: if cloud { None } else { e.and_then(|e| e.kv_type) },
-            slots: if cloud { None } else { e.and_then(|e| e.parallel) },
+            kv: if cloud { None } else { policy.map(|p| p.kv_type).or_else(|| e.and_then(|e| e.kv_type)) },
+            slots: if cloud { None } else { policy.map(|p| p.parallel).or_else(|| e.and_then(|e| e.parallel)) },
             partial: e.and_then(|e| e.gpu_layers).filter(|(n, m)| n < m),
             pending: mc.and_then(ModelContext::pending),
             loaded: e.is_some_and(|e| e.loaded),
             cloud,
         })
+    }
+
+    /// `llama.cpp` when the conductor's model runs on Marlowe's own engine: the Model box says so.
+    pub fn engine_label(&self) -> Option<&'static str> {
+        let model = self.library.conductor()?;
+        let e = &self.context.model(&model)?.in_effect;
+        (e.engine == Engine::LlamaCpp).then(|| e.engine.label())
     }
 
     /// Opens the planner for `model` and asks the daemon for its plan.
@@ -178,7 +188,7 @@ impl State {
             return;
         }
         let before = d;
-        let local = plan.in_effect.engine == Engine::Ollama && plan.plan.is_some();
+        let local = plan.in_effect.engine.is_local() && plan.plan.is_some();
         let rows: Vec<u32> = self.plan_rows().into_iter().filter(|c| *c <= plan.ctx_limit).collect();
         match k.code {
             KeyCode::Tab | KeyCode::BackTab if !local => field = PlanField::Ctx,
@@ -222,6 +232,21 @@ impl State {
                 None => self.flash("no automatic choice without a GPU measurement", NoteTone::Amber),
             },
             KeyCode::Char('f') if local => d.kv_type = KvType::F16,
+            // The engine switch for this model: llama.cpp (Marlowe's server) or Ollama.
+            KeyCode::Char('e') => {
+                let e = &plan.in_effect;
+                match (e.engine, e.engine_user_off) {
+                    (Engine::LlamaCpp, _) => {
+                        out.push(Request::SetModelEngine { model: model.clone(), llama: false });
+                        self.flash("llama.cpp off for this model · Ollama serves it", NoteTone::Dim);
+                    }
+                    (_, true) => {
+                        out.push(Request::SetModelEngine { model: model.clone(), llama: true });
+                        self.flash("llama.cpp on for this model", NoteTone::Dim);
+                    }
+                    _ => self.flash(e.engine_note.as_deref().unwrap_or("Ollama serves this model"), NoteTone::Amber),
+                }
+            }
             KeyCode::Enter => {
                 self.overlay = Some(Overlay::ContextPlan { model, field, draft: Some(d), review: true });
                 return;

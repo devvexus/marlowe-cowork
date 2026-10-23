@@ -56,6 +56,8 @@ fn running() -> EngineSettings {
         decode_tok_s: Some(81.99),
         load_secs: Some(6.84),
         serial_arch: None,
+        engine_note: None,
+        engine_user_off: false,
     }
 }
 
@@ -347,4 +349,63 @@ fn find(buf: &ratatui::buffer::Buffer, needle: &str) -> (u16, u16) {
         }
     }
     panic!("{needle} not on screen");
+}
+
+/// The conductor's model runs on Marlowe's llama.cpp engine: six slots of 48k.
+fn llama_state() -> State {
+    let mut s = with_dusk();
+    let mut e = running();
+    e.engine = Engine::LlamaCpp;
+    e.parallel = Some(6);
+    e.slots = (0..6).map(|id| RunnerSlot { id, n_ctx: 49_152, n_prompt_tokens: 0, is_processing: false }).collect();
+    let pol = ContextPolicy { max_ctx: 49_152, kv_type: KvType::Q8_0, parallel: 6, source: PolicySource::Auto, updated_ms: 0 };
+    feed(&mut s, 0, Event::ContextPolicies { models: vec![ModelContext { model: dusk_ref(), max_ctx: 49_152, policy: Some(pol), in_effect: e }] });
+    s
+}
+
+#[test]
+fn the_model_box_names_the_llama_cpp_engine_and_its_slots() {
+    let s = llama_state();
+    let buf = render(&s, 160, 45);
+    assert_palette_only(&buf);
+    let t = dump(&buf);
+    let name = t.lines().find(|l| l.contains("marlowe-dusk:27b-super") && l.contains("llama.cpp")).unwrap_or_else(|| panic!("{t}"));
+    assert!(name.contains("medium"), "{name}");
+    let meter = t.lines().find(|l| l.contains("12.4k / 48k")).unwrap_or_else(|| panic!("{t}"));
+    assert!(meter.contains("6 slots") && meter.contains("kv q8"), "{meter}");
+}
+
+#[test]
+fn the_planner_says_what_each_agent_gets_and_e_hands_the_model_back_to_ollama() {
+    let mut s = llama_state();
+    s.on_key(ctrl('k'));
+    type_str(&mut s, "context");
+    s.on_key(key(KeyCode::Enter));
+    let mut plan = dusk_plan();
+    plan.in_effect = s.context.model(&dusk_ref()).unwrap().in_effect.clone();
+    plan.policy = ContextPolicy { max_ctx: 49_152, kv_type: KvType::Q8_0, parallel: 6, source: PolicySource::Auto, updated_ms: 0 };
+    feed(&mut s, 0, Event::ContextPlan(Box::new(plan)));
+    let buf = render(&s, W, H);
+    assert_palette_only(&buf);
+    let t = dump(&buf);
+    for want in ["Engine", "llama.cpp", "6 slots of 48k each", "you keep one, the crew runs on the other 5", "e engine"] {
+        assert!(t.contains(want), "{want}
+{t}");
+    }
+    let out = s.on_key(key(KeyCode::Char('e')));
+    assert_eq!(out, vec![Request::SetModelEngine { model: dusk_ref(), llama: false }]);
+}
+
+#[test]
+fn a_model_ollama_keeps_says_why_and_e_explains() {
+    let mut s = with_dusk();
+    s.on_key(ctrl('k'));
+    type_str(&mut s, "context");
+    s.on_key(key(KeyCode::Enter));
+    let mut plan = dusk_plan();
+    plan.in_effect.engine_note = Some("Ollama keeps this model: its manifest has a template layer".into());
+    feed(&mut s, 0, Event::ContextPlan(Box::new(plan)));
+    let t = dump(&render(&s, W, H));
+    assert!(t.contains("Ollama · Ollama keeps this model: its manifest has a template layer"), "{t}");
+    assert!(s.on_key(key(KeyCode::Char('e'))).is_empty(), "nothing to switch");
 }

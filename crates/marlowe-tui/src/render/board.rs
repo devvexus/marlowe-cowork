@@ -61,6 +61,10 @@ fn model_box(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     if conductor.is_some() {
         facts.push(state.library.slot_rows()[0].effort.as_str().to_string());
     }
+    // Marlowe's own engine, when the model runs on it (the slots are on the meter below).
+    if let Some(engine) = state.engine_label() {
+        facts.insert(0, engine.to_string());
+    }
     if fast.is_some() {
         facts.insert(0, "fast".to_string());
     }

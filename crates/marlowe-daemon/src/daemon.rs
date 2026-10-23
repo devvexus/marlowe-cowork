@@ -502,7 +502,13 @@ impl Daemon {
         // the old spelling stays (tools then say the workspace is missing).
         let _ = store.repair_workspaces(&marlowe_proto::workspace::Where::current());
         let brains = match Brains::open(&db, deps.providers) {
-            Ok(b) => Arc::new(b),
+            Ok(b) => {
+                let b = Arc::new(b);
+                // From now on the Ollama provider asks which models Marlowe's own llama.cpp
+                // engine serves.
+                b.install_engine_advisor();
+                b
+            }
             Err(e) => {
                 store.close();
                 let _ = store_thread.join();
@@ -544,6 +550,7 @@ impl Daemon {
             writers: Mutex::new(Vec::new()),
         });
         crate::phases::attach_mind(&core);
+        crate::engine_work::attach(&core);
         if let Some(link) = deps.sentinel {
             core.add_writer(crate::watch_ops::forward_sentinel(core.clone(), link.events)?);
         }

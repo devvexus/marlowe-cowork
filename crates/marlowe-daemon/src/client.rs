@@ -180,6 +180,7 @@ fn dispatch(core: &Arc<Core>, client: u64, client_name: &str, req: Request) {
         ctx @ (Request::ContextPlan { .. }
         | Request::ContextPolicies
         | Request::SetContextPolicy { .. }
+        | Request::SetModelEngine { .. }
         | Request::ApplyOllamaServer { .. }) => crate::context_ops::dispatch(core, client, ctx),
         // M4.6: one arm per owning track (design section 7). The stubs answer `Error` until the
         // track fills its `*_ops.rs`; no track edits this match.

@@ -29,14 +29,39 @@ pub fn repair_stats() -> Arc<RepairStats> {
     STATS.get_or_init(|| Arc::new(RepairStats::new())).clone()
 }
 
-fn make_ollama(cfg: &ProviderConfig, blobs: Arc<dyn BlobStore>) -> Result<Arc<dyn Provider>, ProviderError> {
+fn make_ollama(
+    cfg: &ProviderConfig,
+    blobs: Arc<dyn BlobStore>,
+    engine: Option<marlowe_provider::llama::LlamaEngine>,
+) -> Result<Arc<dyn Provider>, ProviderError> {
     // Every request for a model sends that model's context policy window (one allocation per
     // model), so Ollama never reloads a runner because two agents asked for different sizes.
-    let p = marlowe_provider::OllamaProvider::from_base_url(cfg.base_url.as_deref())?
+    let mut p = marlowe_provider::OllamaProvider::from_base_url(cfg.base_url.as_deref())?
         .with_allocations(cfg.context.clone())
         .with_blobs(blobs)
         .with_repair_stats(repair_stats());
+    // The models the context policy gives Marlowe's own llama-server run there, not on Ollama.
+    if let Some(e) = engine {
+        p = p.with_llama_engine(e);
+    }
     Ok(Arc::new(p))
+}
+
+/// Marlowe's parallel local engine: Ollama's bundled llama-server, started by Marlowe for the
+/// models Ollama hands to llama-server whole. Off for a scripted run, a remote Ollama and
+/// `MARLOWE_LLAMA_ENGINE=0`.
+fn llama_engine(home: &Path, endpoint: &marlowe_provider::LocalEndpoint) -> Option<marlowe_provider::llama::LlamaEngine> {
+    use marlowe_provider::llama::{keep_alive_from, EngineConfig, LlamaEngine, SystemSpawner};
+    if scripted() || std::env::var("MARLOWE_LLAMA_ENGINE").is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "off" | "false" | "no")) {
+        return None;
+    }
+    let mut cfg = EngineConfig::new(endpoint.clone(), marlowe_provider::ollama_store::store_root());
+    cfg.log = Some(home.join("logs").join("llama-server.log"));
+    // Ollama's own keep-alive: the setting it was started with, else five minutes.
+    let keep = marlowe_provider::ollama_runtime::saved_user_env("OLLAMA_KEEP_ALIVE").or_else(|| std::env::var("OLLAMA_KEEP_ALIVE").ok());
+    cfg.keep_alive = keep_alive_from(keep.as_deref());
+    let scrub = marlowe_brains::scrubbed_env().iter().map(|s| s.to_string()).collect();
+    Some(LlamaEngine::new(cfg, Arc::new(SystemSpawner::new(scrub))))
 }
 
 /// Never fails: the catalog works without a key; `stream` then returns an Auth error.
@@ -54,9 +79,19 @@ pub fn provider_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> P
     let mut f = ProviderFactory::new(credentials);
     let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::new(home.join("blobs")));
     let b = blobs.clone();
-    f.register(ProviderKind::Ollama, move |cfg| make_ollama(cfg, b.clone()));
-    f.register(ProviderKind::OpenRouter, move |cfg| make_openrouter(cfg, blobs.clone()));
     let ollama_url = std::env::var("MARLOWE_OLLAMA_ADDR").ok();
+    let endpoint = ollama_url
+        .as_deref()
+        .and_then(marlowe_provider::LocalEndpoint::parse)
+        .unwrap_or_else(marlowe_provider::LocalEndpoint::default_ollama);
+    let engine = llama_engine(home, &endpoint);
+    if let Some(e) = &engine {
+        // Loads and idle unloads show as background work once the daemon is listening.
+        e.follow(f.allocations().clone());
+    }
+    let for_provider = engine.clone();
+    f.register(ProviderKind::Ollama, move |cfg| make_ollama(cfg, b.clone(), for_provider.clone()));
+    f.register(ProviderKind::OpenRouter, move |cfg| make_openrouter(cfg, blobs.clone()));
     if let Some(url) = &ollama_url {
         f.set_base_url(ProviderKind::Ollama, url.clone());
     }
@@ -64,12 +99,14 @@ pub fn provider_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> P
     // but the server settings, and only after an approval. A scripted run has no engine to read:
     // nothing loads, so nothing is gated.
     if !scripted() {
-        let endpoint = ollama_url
-            .as_deref()
-            .and_then(marlowe_provider::LocalEndpoint::parse)
-            .unwrap_or_else(marlowe_provider::LocalEndpoint::default_ollama);
+        let ollama_hw = marlowe_provider::OllamaHw::new(endpoint.clone());
+        // With the engine in the build the planner also sees what it runs and which models it may.
+        let models: Arc<dyn marlowe_hw::ModelSource> = match engine {
+            Some(e) => Arc::new(marlowe_provider::llama::LlamaModels::new(ollama_hw, e, marlowe_provider::ollama_store::store_root())),
+            None => Arc::new(ollama_hw),
+        };
         f.set_hardware(marlowe_brains::Hardware {
-            models: Arc::new(marlowe_provider::OllamaHw::new(endpoint.clone())),
+            models,
             gpu: Arc::new(marlowe_sentinel::vram::SentinelGpu::open()),
             server: Arc::new(
                 marlowe_provider::OllamaServerControl::new(endpoint)

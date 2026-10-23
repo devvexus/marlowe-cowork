@@ -26,6 +26,7 @@ mod context_ops;
 mod crew;
 mod crew_ops;
 mod daemon;
+mod engine_work;
 mod exp_ops;
 mod f3_ops;
 mod job_ops;

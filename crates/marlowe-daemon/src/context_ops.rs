@@ -51,6 +51,18 @@ fn handle(core: &Core, client: u64, req: Request) {
             }
             Err(e) => core.bus.reply(client, error(e.to_string())),
         },
+        Request::SetModelEngine { model, llama } => match b.set_model_engine(&model, llama) {
+            Ok(()) => {
+                if let Ok(models) = b.context_policies() {
+                    core.bus.publish(Event::ContextPolicies { models });
+                }
+                match b.context_plan(&model) {
+                    Ok(p) => core.bus.reply(client, Event::ContextPlan(Box::new(p))),
+                    Err(e) => core.bus.reply(client, error(format!("context plan for {model}: {e}"))),
+                }
+            }
+            Err(e) => core.bus.reply(client, error(e.to_string())),
+        },
         Request::ApplyOllamaServer { kv_type, parallel, flash_attn } => {
             let change = ServerChange { kv_type, parallel, flash_attn };
             apply(core, change);
