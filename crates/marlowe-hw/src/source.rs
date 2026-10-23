@@ -75,6 +75,11 @@ pub trait ModelSource: Send + Sync {
     fn unload(&self, _model_id: &str) -> Result<(), String> {
         Err("this engine cannot unload a model".into())
     }
+    /// Whether `model_id` runs on Marlowe's own llama-server (which saves each conversation's cache
+    /// when it stops) rather than on the engine's runner (which loses it when unloaded).
+    fn runs_on_own_server(&self, _model_id: &str) -> bool {
+        false
+    }
     /// Whether Marlowe's own llama-server may serve `model_id` (Ollama itself hands the model to
     /// llama-server whole): `Ok`, or why Ollama must keep it. The default has no such engine.
     fn engine_eligibility(&self, _model_id: &str) -> Result<(), String> {

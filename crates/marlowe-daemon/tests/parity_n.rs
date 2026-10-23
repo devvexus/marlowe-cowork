@@ -1298,7 +1298,7 @@ fn a_window_that_stays_connected_sees_the_close_step_by_step() {
 }
 
 #[test]
-fn a_plain_shutdown_still_unloads_first_but_leaves_runs_to_resume_by_themselves() {
+fn a_plain_shutdown_leaves_the_runner_loaded_and_leaves_runs_to_resume_by_themselves() {
     let home = temp_home("close-plain");
     let p = Arc::new(Routed::default());
     let calls_rx = p.announce_crew_calls();
@@ -1312,8 +1312,9 @@ fn a_plain_shutdown_still_unloads_first_but_leaves_runs_to_resume_by_themselves(
     drop(c);
     stop(d);
     let log = hooks.log();
-    assert!(log.iter().position(|l| l == "unload: scripted").unwrap() < log.iter().position(|l| l == "save").unwrap(), "{log:#?}");
-    assert!(!up.load(Ordering::SeqCst));
+    // A restart keeps the runner's prompt cache: the model stays loaded (a window close, above, unloads it).
+    assert!(!log.iter().any(|l| l == "unload: scripted"), "{log:#?}");
+    assert!(up.load(Ordering::SeqCst), "the model was not unloaded");
     let stored = marlowe_crew::RunStore::open(&paths::cowork_db(&home)).unwrap().get(&run).unwrap().unwrap();
     assert!(matches!(stored.status, CrewRunStatus::Running | CrewRunStatus::Queued), "{:?}", stored.status);
 }

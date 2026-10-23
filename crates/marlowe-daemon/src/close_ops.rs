@@ -336,7 +336,7 @@ pub(crate) fn unload(core: &Arc<Core>) {
             // reading the line says unloaded and no byte count.
             let gpu = core.brains.factory().hardware().map(|h| h.gpu.clone());
             let mut began: Option<(Instant, Option<f64>)> = None;
-            let (done, failed) = core.brains.unload_local_models_observed(&mut |name, after| match after {
+            let (done, failed) = core.brains.unload_local_models_observed(!c.window_close.load(Ordering::SeqCst), &mut |name, after| match after {
                 None => {
                     let before = gpu.as_deref().and_then(crate::live::runners_mib);
                     began = Some((Instant::now(), before));

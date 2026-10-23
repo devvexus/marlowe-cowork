@@ -594,12 +594,12 @@ impl Brains {
     /// before anything else shuts down (the window closed). A model the library does not list is
     /// someone else's and stays. Returns what was unloaded and what could not be.
     pub fn unload_local_models(&self) -> (Vec<String>, Vec<String>) {
-        self.unload_local_models_observed(&mut |_, _| {})
+        self.unload_local_models_observed(false, &mut |_, _| {})
     }
 
     /// [`Brains::unload_local_models`], telling `step` about each model: `(name, None)` just
     /// before it is unloaded and `(name, Some(ok))` just after.
-    pub fn unload_local_models_observed(&self, step: &mut dyn FnMut(&str, Option<bool>)) -> (Vec<String>, Vec<String>) {
+    pub fn unload_local_models_observed(&self, keep_runner_caches: bool, step: &mut dyn FnMut(&str, Option<bool>)) -> (Vec<String>, Vec<String>) {
         let Some(hw) = self.factory().hardware() else { return (Vec::new(), Vec::new()) };
         let ours: Vec<String> = self
             .with_library(|l| l.models())
@@ -608,6 +608,11 @@ impl Brains {
         let (mut done, mut failed) = (Vec::new(), Vec::new());
         for name in hw.models.loaded_models() {
             if !ours.iter().any(|o| same_model(o, &name)) {
+                continue;
+            }
+            // A restart keeps the engine runner's prompt cache by leaving the model loaded (it
+            // frees itself after Ollama's own keep-alive); Marlowe's own server saves its caches.
+            if keep_runner_caches && !hw.models.runs_on_own_server(&name) {
                 continue;
             }
             step(&name, None);
