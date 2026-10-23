@@ -521,3 +521,31 @@ fn inherit_and_a_runner_that_cannot_name_models_use_the_role_model_silently() {
     assert_eq!(model_run(&r, &home, "x:1b"), [None]);
     assert_eq!(own.requests().len(), 2);
 }
+
+#[test]
+fn a_finished_run_hands_over_the_files_its_agents_made_and_its_whole_result() {
+    let model = Model::new(false, |_, _| answer("x"));
+    let home = temp("deliver-home");
+    let sandbox = temp("deliver-sandbox");
+    // What a writer agent saved in the run's scratch folder (the test's tools cannot write).
+    std::fs::create_dir_all(sandbox.join("research")).unwrap();
+    std::fs::write(sandbox.join("research").join("kimi-models.md"), "# Kimi\nclaim [C1]\n").unwrap();
+    let r = runner(model, &sandbox);
+    let run = RunId::new_random();
+    let src = "META = {\"name\": \"web-research\", \"description\": \"d\"}\ndef main(args):\n    return \"report line\\n\" * 800\n";
+    let wf = job_script(&home, &run, src, json!({}), None);
+    let (out, _) = go(&r, &home, &run, &wf);
+    let d = out.unwrap();
+    // The files first, copied to the output folder under the home, then the whole result, then the journal.
+    assert_eq!(d.artifacts.len(), 3, "{:?}", d.artifacts);
+    let made = PathBuf::from(&d.artifacts[0]);
+    assert!(made.starts_with(home.join("output")) && made.file_name().unwrap() == "kimi-models.md", "{made:?}");
+    assert_eq!(std::fs::read_to_string(&made).unwrap(), "# Kimi\nclaim [C1]\n");
+    let whole = PathBuf::from(&d.artifacts[1]);
+    assert!(whole.file_name().unwrap() == "result.md" && std::fs::read_to_string(&whole).unwrap().matches("report line").count() == 800);
+    assert!(d.artifacts[2].ends_with("journal.jsonl"));
+    // A text result is shown as text, with its newlines, and names the file that holds all of it.
+    assert!(d.summary.contains("Return value:\nreport line\nreport line"), "{}", &d.summary[..200]);
+    assert!(d.summary.contains(&format!("(The whole value is in {}.)", whole.display())), "{}", &d.summary[d.summary.len() - 200..]);
+    assert!(sandbox.join("research").join("kimi-models.md").is_file(), "the sandbox keeps its own copy");
+}

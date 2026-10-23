@@ -11,6 +11,7 @@
 //! - Hooks: the daemon registers a [`RunObserver`] per run ([`set_observer`]); it fires
 //!   SubagentStart/SubagentStop (X22) around every agent on that agent's thread.
 
+pub mod deliver;
 pub mod host;
 pub mod structured;
 
@@ -135,6 +136,10 @@ const KEPT_VIEWS: usize = 64;
 /// Longest return value the relay carries (the journal keeps it whole).
 const SUMMARY_CHARS: usize = 12_000;
 
+/// A return value longer than this is also written whole to a file beside the journal, named in
+/// the result: the relay cuts what it carries.
+const WHOLE_VALUE_FROM: usize = 4_000;
+
 struct JournalObserver<'a> {
     path: PathBuf,
     progress: Progress,
@@ -241,13 +246,22 @@ pub fn run_workflow(runner: &AgentRunner, job: ScriptJob<'_>, emit: &dyn Fn(Scri
                     }
                 }
             }
-            let text = serde_json::to_string_pretty(&out.value).unwrap_or_default();
+            // A text result is shown as text (not as an escaped JSON string); anything else as JSON.
+            let text = match &out.value {
+                serde_json::Value::String(s) => s.clone(),
+                other => serde_json::to_string_pretty(other).unwrap_or_default(),
+            };
             let shown = clip(&text, SUMMARY_CHARS);
+            let body = if out.value.is_string() { shown.clone() } else { format!("```json\n{shown}\n```") };
             let mut summary = format!(
-                "Team task `{name}` finished: {} agent(s), {} from cache, {} output tokens.\nReturn value:\n```json\n{shown}\n```",
+                "Team task `{name}` finished: {} agent(s), {} from cache, {} output tokens.\nReturn value:\n{body}",
                 out.agents, out.cached, out.tokens
             );
-            if text.len() > shown.len() {
+            // A long result is kept whole in a file the user and the conductor can open.
+            let whole = deliver::save_long_value(&run_dir(job.home, job.run), &out.value, WHOLE_VALUE_FROM);
+            if let Some(file) = &whole {
+                summary.push_str(&format!("\n(The whole value is in {}.)", file.display()));
+            } else if text.len() > shown.len() {
                 summary.push_str(&format!("\n(The whole value is in the journal: {}.)", journal.display()));
             }
             if out.agents == 0 {
@@ -258,7 +272,12 @@ pub fn run_workflow(runner: &AgentRunner, job: ScriptJob<'_>, emit: &dyn Fn(Scri
             let made = job.worktree.as_ref().and_then(|w| w.made());
             let sandbox = made.as_ref().unwrap_or_else(|| crate::playbook::StepRunner::sandbox(runner));
             let diff = if sandbox.kind == SandboxKind::Worktree { sandbox.diff_summary().ok().filter(|d| !d.files.is_empty()) } else { None };
-            Ok(Dispatch { summary, artifacts: vec![journal.display().to_string()], confidence: Confidence::Medium, citations: vec![], diff })
+            // What the user asked for first: the files the agents made, where they can be opened
+            // without waiting on a merge; then the whole result, then the journal.
+            let mut artifacts = deliver::made_files(job.home, job.run, &name, sandbox, diff.as_ref());
+            artifacts.extend(whole.map(|f| f.display().to_string()));
+            artifacts.push(journal.display().to_string());
+            Ok(Dispatch { summary, artifacts, confidence: Confidence::Medium, citations: vec![], diff })
         }
         Err(e) => {
             let _ = journal::append(&journal, &Line::Ended { message: e.to_string() });

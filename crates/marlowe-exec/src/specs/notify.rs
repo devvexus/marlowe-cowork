@@ -20,6 +20,10 @@ use crate::{first_line, int_arg, paths, str_arg, BuiltinTools};
 #[derive(Debug, Default)]
 pub struct NotifyGroup {
     pub enabled: bool,
+    /// Where crew runs keep what they made (under the profile home): `send_file` takes files from
+    /// there as well as from the workspace, so a finished team task's report can be sent to the
+    /// user from its worktree or output folder without a merge.
+    pub run_roots: Vec<std::path::PathBuf>,
 }
 
 fn live(t: &BuiltinTools) -> bool {
@@ -62,9 +66,10 @@ fn send_file_call(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutco
     };
     let root = tools.shell_root(cx);
     let abs = paths::resolve(root.as_deref(), raw);
-    if !tools.trusted_read(&abs.to_string_lossy()) && tools.shell_dir.as_deref().is_none_or(|d| !paths::inside(d, &abs)) {
+    let in_a_run = tools.state::<NotifyGroup>().run_roots.iter().any(|r| paths::inside(r, &abs));
+    if !in_a_run && !tools.trusted_read(&abs.to_string_lossy()) && tools.shell_dir.as_deref().is_none_or(|d| !paths::inside(d, &abs)) {
         return ToolOutcome::error(format!(
-            "{} is outside the workspace and the sandbox; send_file only sends files from inside them",
+            "{} is outside the workspace and the sandbox; send_file only sends files from inside them or from a crew run's folders",
             abs.display()
         ));
     }
@@ -156,13 +161,16 @@ pub fn persona_block() -> Option<&'static str> {
 }
 
 /// Turns the group on for a host the binary builds (the conductor's).
-pub fn configure(tools: BuiltinTools, _setup: &super::HostSetup<'_>) -> BuiltinTools {
-    tools.with_state(NotifyGroup { enabled: true })
+pub fn configure(tools: BuiltinTools, setup: &super::HostSetup<'_>) -> BuiltinTools {
+    let run_roots = ["output", "scratch", "worktrees", "workflows"].iter().map(|d| setup.home.join(d)).collect();
+    tools.with_state(NotifyGroup { enabled: true, run_roots })
 }
 
-/// Every workspace, like the tasks group.
-pub fn detect(root: Option<&Path>) -> bool {
-    root.is_some()
+/// Every conductor session, with or without a workspace (like the tasks group): a result the user
+/// asked to be sent must be sendable from a conversation that has no workspace. A host that is not
+/// the conductor's never configures the group, so its tools stay off ([`live`]).
+pub fn detect(_root: Option<&Path>) -> bool {
+    true
 }
 
 #[cfg(test)]

@@ -85,16 +85,35 @@ pub(crate) struct TurnInput {
     pub relay: bool,
     /// The relayed result carries untrusted content; the conversation is tainted before the turn.
     pub tainted: bool,
+    /// A relay of a run that ended while the daemon was up (not a catch-up at start): the user
+    /// asked for that work, so its turn may load the conductor's model when it fits.
+    pub live: bool,
     pub extras: AskExtras,
 }
 
 impl TurnInput {
     pub fn user(text: String) -> Self {
-        Self { text, relay: false, tainted: false, extras: AskExtras::default() }
+        Self { text, relay: false, tainted: false, live: false, extras: AskExtras::default() }
     }
 
     pub fn relay(text: String, tainted: bool) -> Self {
-        Self { text, relay: true, tainted, extras: AskExtras::default() }
+        Self { text, relay: true, tainted, live: false, extras: AskExtras::default() }
+    }
+
+    fn live(mut self, live: bool) -> Self {
+        self.live = live;
+        self
+    }
+
+    /// How a turn from this input is admitted: the user's own turn may ask to load a model, a
+    /// live relay loads one that fits without asking, any other relay (at start, at 3am) never
+    /// loads one.
+    pub fn priority(&self) -> Priority {
+        match (self.relay, self.live) {
+            (false, _) => Priority::Foreground,
+            (true, true) => Priority::Crew,
+            (true, false) => Priority::Background,
+        }
     }
 }
 
@@ -247,6 +266,15 @@ impl SessionHandle {
     /// Busy: an untainted result steers the running turn at its next step; a tainted one (or one
     /// behind queued asks) runs as a relay turn after it.
     pub fn relay(&self, text: String, tainted: bool) -> Result<(), Enqueue> {
+        self.relay_as(text, tainted, false)
+    }
+
+    /// [`SessionHandle::relay`] for a run that just ended: see [`TurnInput::live`].
+    pub fn relay_live(&self, text: String, tainted: bool) -> Result<(), Enqueue> {
+        self.relay_as(text, tainted, true)
+    }
+
+    fn relay_as(&self, text: String, tainted: bool, live: bool) -> Result<(), Enqueue> {
         let mut st = lock(&self.state);
         if st.closed {
             return Err(Enqueue::Closed);
@@ -256,13 +284,13 @@ impl SessionHandle {
             // Set now: an ask arriving before the runner picks the turn up must not steer into it.
             st.relay_turn = true;
             st.cancel = CancelToken::new();
-            return self.cmd_tx.send(RunnerCmd::Turn(TurnInput::relay(text, tainted))).map_err(|_| Enqueue::Closed);
+            return self.cmd_tx.send(RunnerCmd::Turn(TurnInput::relay(text, tainted).live(live))).map_err(|_| Enqueue::Closed);
         }
         if !tainted && st.queued.is_empty() {
             // Built directly: a relay is not user text and is not held to the steer length cap.
             return self.inbox_tx.send(Steer { text }).map_err(|_| Enqueue::Closed);
         }
-        st.relays.push(TurnInput::relay(text, tainted));
+        st.relays.push(TurnInput::relay(text, tainted).live(live));
         Ok(())
     }
 
@@ -532,16 +560,21 @@ fn run_one(
     };
     let model = info.model_ref();
     clock.set_model(&model);
-    // A relay turn runs with nobody waiting on it (at start, at 3am): it never loads a model.
-    let who = if input.relay { Priority::Background } else { Priority::Foreground };
-    // The user's own turn on a local model: a stopped Ollama is started first, not reported.
-    if !input.relay {
-        if let Err(message) = ensure_engine(core, &clock, &model) {
+    // A relay turn runs with nobody waiting on it: one caught up at start never loads a model; one
+    // for a run that just ended loads the conductor's model when it fits, so a result the user asked
+    // to be sent is not stranded until their next message.
+    let who = input.priority();
+    // The user's own turn on a local model, and a relay of a run that just ended: a stopped Ollama
+    // is started first, not reported. A relay that cannot start it waits like any held relay.
+    let started = if !input.relay || input.live { ensure_engine(core, &clock, &model) } else { Ok(()) };
+    let admitted = match started {
+        Err(message) if !input.relay => {
             core.bus.publish(Event::Error { session: Some(session), message });
             return;
         }
-    }
-    let admitted = admit_conductor(core, &session, &model, cancel, who);
+        Err(message) => Err(message),
+        Ok(()) => admit_conductor(core, &session, &model, cancel, who),
+    };
     if let Err(message) = &admitted {
         let message = message.clone();
         if input.relay {
@@ -890,6 +923,24 @@ mod tests {
         assert!(h.inbox_rx.is_empty());
         assert_eq!(lock(&h.state).relays.len(), 2, "an interrupt keeps crew results");
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_relay_of_a_run_that_just_ended_may_load_the_model_and_a_caught_up_one_may_not() {
+        let relay = |s: &str| format!("{RELAY_PREFIX}{s}");
+        let (h, rx) = SessionHandle::new(SessionId("s".into()), String::new(), None);
+        h.relay_live(relay("a"), false).unwrap();
+        let Ok(RunnerCmd::Turn(live)) = rx.try_recv() else { panic!("a relay turn") };
+        assert_eq!(live.priority(), Priority::Crew, "loads a model that fits, never asks");
+        // Behind a busy turn it keeps its kind.
+        h.relay_live(relay("b"), true).unwrap();
+        assert_eq!(lock(&h.state).relays.iter().map(TurnInput::priority).collect::<Vec<_>>(), vec![Priority::Crew]);
+        lock(&h.state).relays.clear();
+        lock(&h.state).busy = false;
+        h.relay(relay("c"), false).unwrap();
+        let Ok(RunnerCmd::Turn(caught_up)) = rx.try_recv() else { panic!("a relay turn") };
+        assert_eq!(caught_up.priority(), Priority::Background, "a relay caught up at start never loads one");
+        assert_eq!(TurnInput::user("hi".into()).priority(), Priority::Foreground);
     }
 
     #[test]

@@ -32,7 +32,7 @@ fn the_wave2_groups_follow_mcp_and_each_declares_only_what_its_track_landed() {
     let tasks = specs::group(ToolGroup::Tasks).unwrap();
     assert!((tasks.detect)(None), "the background-work notice names task_list, so it is there with no workspace too");
     let notify = specs::group(ToolGroup::Notify).unwrap();
-    assert!(!(notify.detect)(None) && (notify.detect)(Some(std::path::Path::new("C:/work/valiance"))));
+    assert!((notify.detect)(None) && (notify.detect)(Some(std::path::Path::new("C:/work/valiance"))), "a conversation with no workspace can still be sent a file");
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn a_frontier_session_exposes_the_wave2_groups_and_a_local_one_waits_for_detecti
     let local = BuiltinTools::new(None).with_exposure(ExposureProfile::Local, specs::exposed_groups(ExposureProfile::Local, None));
     assert!(local.exposure().1.contains(&ToolGroup::Workflow), "W: workflows are detected everywhere");
     assert!(local.exposure().1.contains(&ToolGroup::Tasks), "the notice names task_list: offered with no workspace");
-    assert!(!local.exposure().1.contains(&ToolGroup::Notify), "notify: not core, and there is no workspace to detect it in");
+    assert!(local.exposure().1.contains(&ToolGroup::Notify), "notify: offered with no workspace, so a finished run's file can be sent");
     // Adding the groups changed no existing tool's schema or position.
     let names: Vec<String> = frontier.specs().into_iter().map(|s| s.name).collect();
     assert!(names.iter().position(|n| n == "read") < names.iter().position(|n| n == "bash"));

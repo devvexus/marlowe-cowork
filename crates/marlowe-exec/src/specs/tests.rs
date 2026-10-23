@@ -448,8 +448,9 @@ fn every_group_file_registers_its_hooks() {
             "{:?}: a block needs its capability live first",
             g.group
         );
-        // Workflows are offered to a local model in any workspace (W).
-        let anywhere = matches!(g.group, marlowe_agent::ToolGroup::Workflow | marlowe_agent::ToolGroup::Tasks);
+        // Workflows are offered to a local model in any workspace (W), and so are the notify tools
+        // (a finished run's report is sent from a conversation that has no workspace).
+        let anywhere = matches!(g.group, marlowe_agent::ToolGroup::Workflow | marlowe_agent::ToolGroup::Tasks | marlowe_agent::ToolGroup::Notify);
         assert_eq!((g.detect)(None), anywhere, "{:?}", g.group);
     }
     assert!(super::group(marlowe_agent::ToolGroup::Memory).is_none(), "memory tools are the daemon's");

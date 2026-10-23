@@ -143,7 +143,7 @@ fn on_event(core: &Arc<Core>, ev: CrewEvent) {
             crate::tasks::crew_changed(core, &info);
             if let (true, Some(session)) = (failed, info.session.clone()) {
                 let id = info.id.clone();
-                relay(core, &session, &id, None, Some(info));
+                relay(core, &session, &id, None, Some(info), true);
             }
         }
         CrewEvent::Step { run, step, action, text_delta } => {
@@ -153,7 +153,7 @@ fn on_event(core: &Arc<Core>, ev: CrewEvent) {
         CrewEvent::Finished { run, session, dispatch } => {
             // Into the session first, so whoever sees `RunFinished` finds the result already there.
             if let Some(session) = session {
-                relay(core, &session, &run, Some(dispatch.clone()), None);
+                relay(core, &session, &run, Some(dispatch.clone()), None, true);
             }
             core.bus.publish(Event::RunFinished { run, dispatch });
         }
@@ -210,7 +210,7 @@ pub(crate) fn relay_due(core: &Arc<Core>) {
     for info in link.supervisor.relays_due().unwrap_or_default() {
         if let Some(session) = info.session.clone() {
             let id = info.id.clone();
-            relay(core, &session, &id, None, Some(info));
+            relay(core, &session, &id, None, Some(info), false);
         }
     }
 }
@@ -262,14 +262,14 @@ pub(crate) fn wait_ends(core: &Arc<Core>, run: &RunId, delivered: bool) {
     if !delivered {
         for info in link.supervisor.relays_due().unwrap_or_default().into_iter().filter(|i| i.id == *run) {
             if let Some(session) = info.session.clone() {
-                relay(core, &session, run, None, Some(info));
+                relay(core, &session, run, None, Some(info), true);
             }
         }
     }
 }
 
 /// Posts a finished (or failed) run into its parent session, once per run.
-fn relay(core: &Arc<Core>, session: &SessionId, run: &RunId, dispatch: Option<Dispatch>, info: Option<CrewRunInfo>) {
+fn relay(core: &Arc<Core>, session: &SessionId, run: &RunId, dispatch: Option<Dispatch>, info: Option<CrewRunInfo>, live: bool) {
     let Some(link) = core.crew.get() else { return };
     // A waiting tool call takes the result itself (it stays due until then).
     if lock(&link.waited).contains(run) {
@@ -290,7 +290,11 @@ fn relay(core: &Arc<Core>, session: &SessionId, run: &RunId, dispatch: Option<Di
     let tainted = relay_taints(link, &info, dispatch.as_ref());
     let deliver = |core: &Arc<Core>| -> Result<(), Enqueue> {
         let handle = core.session(session).map_err(|(_, m)| Enqueue::Refused(m))?;
-        handle.relay(text.clone(), tainted)
+        if live {
+            handle.relay_live(text.clone(), tainted)
+        } else {
+            handle.relay(text.clone(), tainted)
+        }
     };
     lock(&link.awaiting).insert(text.clone(), run.clone());
     let result = match deliver(core) {
@@ -321,7 +325,7 @@ pub(crate) fn relay_text(info: &CrewRunInfo, dispatch: Option<&Dispatch>) -> Str
     lines.push(format!("{RELAY_PREFIX}{} · {kind} · {}{playbook} · {}]", info.id.short(), info.role, info.status.as_str().replace('_', " ")));
     match dispatch {
         Some(d) => {
-            lines.push(format!("Outcome: {}", clip(d.summary.trim(), RELAY_SUMMARY_CHARS, &info.id)));
+            lines.push(format!("Outcome: {}", clip_to(d.summary.trim(), RELAY_SUMMARY_CHARS, &info.id, whole_value(d))));
             lines.push(format!("Confidence: {}", confidence_word(d)));
             // A finished run's note says why it ran where it did (its crew slot's model could
             // not load).
@@ -334,15 +338,26 @@ pub(crate) fn relay_text(info: &CrewRunInfo, dispatch: Option<&Dispatch>) -> Str
             lines.push(format!("Outcome: the run {} without a result: {why}", info.status.as_str().replace('_', " ")));
         }
     }
+    // A team task's files are handed over as they are: delivery never waits on a merge.
+    let files = if info.workflow.is_some() { dispatch.map(made_files).unwrap_or_default() } else { Vec::new() };
+    if !files.is_empty() {
+        let where_ = if dispatch.is_some_and(|d| d.diff.is_some()) { ", in the run's worktree until merged" } else { "" };
+        lines.push(format!("Files made (full paths{where_}; open or send them as they are, no approval needed):"));
+        for f in &files {
+            let size = std::fs::metadata(f).map(|m| format!(" ({})", human_bytes(m.len()))).unwrap_or_default();
+            lines.push(format!("- {f}{size}"));
+        }
+    }
     let mut needs = Vec::new();
     if let Some(diff) = dispatch.and_then(|d| d.diff.as_ref()) {
         needs.push(format!(
-            "merge approval for {} ({} files, +{} −{}): `marlowe crew merge {}` or m in the Run view; never pushed",
+            "merge approval for {} ({} files, +{} −{}): `marlowe crew merge {}` or m in the Run view; never pushed{}",
             diff.branch,
             diff.files.len(),
             diff.insertions,
             diff.deletions,
-            info.id.short()
+            info.id.short(),
+            if files.is_empty() { "" } else { " (offer it; the files above do not wait for it)" }
         ));
     } else if info.status == CrewRunStatus::NeedsYou {
         needs.push(info.note.clone().unwrap_or_else(|| "a decision in the Run view".into()));
@@ -354,8 +369,9 @@ pub(crate) fn relay_text(info: &CrewRunInfo, dispatch: Option<&Dispatch>) -> Str
         lines.push(format!("Needs the user: {}", needs.join("; ")));
     }
     if let Some(d) = dispatch {
-        if !d.artifacts.is_empty() {
-            lines.push(format!("Artifacts: {}", d.artifacts.join(", ")));
+        let others: Vec<&String> = d.artifacts.iter().filter(|a| files.is_empty() || !files.contains(a)).collect();
+        if !others.is_empty() {
+            lines.push(format!("Artifacts: {}", others.iter().map(|a| a.as_str()).collect::<Vec<_>>().join(", ")));
         }
         if !d.citations.is_empty() {
             lines.push("Citations:".into());
@@ -369,6 +385,9 @@ pub(crate) fn relay_text(info: &CrewRunInfo, dispatch: Option<&Dispatch>) -> Str
     }
     lines.push(format!("Goal was: {}", clip(info.goal.trim(), RELAY_GOAL_CHARS, &info.id)));
     lines.push("Tell the user now, briefly: the outcome first, then what needs them, then where the artifacts are.".into());
+    if !files.is_empty() {
+        lines.push("If the user asked for a file or report to be sent to them, send it now (send_file takes these paths) and say where it is.".into());
+    }
     lines.join("\n")
 }
 
@@ -381,13 +400,43 @@ fn confidence_word(d: &Dispatch) -> &'static str {
 }
 
 fn clip(s: &str, max: usize, run: &RunId) -> String {
+    clip_to(s, max, run, None)
+}
+
+/// [`clip`], pointing at `whole` (a file holding the complete text) when there is one.
+fn clip_to(s: &str, max: usize, run: &RunId, whole: Option<&str>) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
     let mut t: String = s.chars().take(max).collect();
     t = t.trim_end().to_string();
-    t.push_str(&format!("… (the rest: `marlowe crew show {}`)", run.short()));
+    match whole {
+        Some(file) => t.push_str(&format!("… (the rest: {file})")),
+        None => t.push_str(&format!("… (the rest: `marlowe crew show {}`)", run.short())),
+    }
     t
+}
+
+/// The file a team task wrote its whole result to, among its artifacts.
+fn whole_value(d: &Dispatch) -> Option<&str> {
+    d.artifacts.iter().map(String::as_str).find(|a| {
+        std::path::Path::new(a).file_stem().is_some_and(|s| s == "result")
+    })
+}
+
+/// A team task's artifacts that are what it made, not its journal.
+fn made_files(d: &Dispatch) -> Vec<String> {
+    d.artifacts.iter().filter(|a| !a.ends_with("journal.jsonl")).cloned().collect()
+}
+
+fn human_bytes(n: u64) -> String {
+    if n < 1024 {
+        format!("{n} B")
+    } else if n < 1 << 20 {
+        format!("{:.1} KB", n as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", n as f64 / f64::from(1u32 << 20))
+    }
 }
 
 /// A result relays tainted when the run read untrusted content, its role could, or it cites the
@@ -723,6 +772,39 @@ mod tests {
         assert_eq!(lines[2], "Confidence: high");
         assert!(lines[3].starts_with("Needs the user: merge approval for crew/01234567 (1 files, +3 −1)"), "{text}");
         assert!(text.contains("- tests/net.rs — tests/net.rs"));
+    }
+
+    #[test]
+    fn a_team_tasks_files_are_named_in_full_and_never_wait_on_the_merge() {
+        let mut run = info(CrewRunStatus::NeedsYou);
+        run.workflow = Some(marlowe_proto::WorkflowRef {
+            name: Some("web-research".into()),
+            script_path: "s.star".into(),
+            digest: "d".into(),
+            args: serde_json::Value::Null,
+            foreground: false,
+            resumed_from: None,
+        });
+        let report = std::env::temp_dir().join(format!("marlowe-relay-{}.md", std::process::id()));
+        std::fs::write(&report, "# Report ".repeat(500)).unwrap();
+        let d = Dispatch {
+            summary: "Team task `web-research` finished: 3 agent(s).".into(),
+            artifacts: vec![report.display().to_string(), "C:/h/workflows/runs/r/journal.jsonl".into()],
+            confidence: Confidence::Medium,
+            citations: vec![],
+            diff: Some(DiffSummary { branch: "crew/01234567".into(), files: vec!["research/a.md".into()], insertions: 9, deletions: 0 }),
+        };
+        let text = relay_text(&run, Some(&d));
+        let at = |s: &str| text.find(s).unwrap_or_else(|| panic!("`{s}` missing: {text}"));
+        assert!(at("Files made (full paths, in the run's worktree until merged;") < at("Needs the user: merge approval"), "{text}");
+        assert!(text.contains(&format!("- {} (4.4 KB)", report.display())), "{text}");
+        assert!(text.contains("(offer it; the files above do not wait for it)") && text.contains("send_file takes these paths"), "{text}");
+        assert!(text.contains("Artifacts: C:/h/workflows/runs/r/journal.jsonl") && !text.contains("Artifacts: C:/h/workflows/runs/r/journal.jsonl,"), "{text}");
+        let _ = std::fs::remove_file(&report);
+        // A long result points at the file that holds it, not at a command the conductor cannot run.
+        let long = Dispatch { summary: "y".repeat(7000), artifacts: vec!["C:/h/workflows/runs/r/result.md".into()], ..Dispatch::default() };
+        let text = relay_text(&run, Some(&long));
+        assert!(text.contains("… (the rest: C:/h/workflows/runs/r/result.md)") && !text.contains("marlowe crew show 01234567)"), "{text}");
     }
 
     #[test]

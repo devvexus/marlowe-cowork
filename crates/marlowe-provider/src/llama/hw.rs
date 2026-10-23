@@ -61,8 +61,16 @@ impl ModelSource for LlamaModels {
     }
 
     fn resident(&self) -> Option<Vec<String>> {
-        let mut v = self.ollama.resident()?;
-        if let Some(s) = self.engine.status() {
+        let engine = self.engine.status();
+        // Ollama not answering says nothing about the engine, which holds its model on its own
+        // server: with the engine serving, Ollama counts as holding nothing; with neither
+        // answering, what is loaded is unknown.
+        let mut v = match (self.ollama.resident(), &engine) {
+            (Some(v), _) => v,
+            (None, Some(_)) => Vec::new(),
+            (None, None) => return None,
+        };
+        if let Some(s) = engine {
             if !v.iter().any(|m| same_model(m, &s.model)) {
                 v.push(s.model);
             }
@@ -120,6 +128,19 @@ mod tests {
         assert!(rt.slots.iter().all(|s| s.n_ctx == 8192), "{:?}", rt.slots);
         assert_eq!(hw.resident(), Some(vec![MODEL.to_string()]));
         assert_eq!(hw.loaded_models(), vec![MODEL.to_string()]);
+    }
+
+    #[test]
+    fn the_engines_model_is_loaded_even_when_ollama_does_not_answer() {
+        let fx = Fixture::new(MODEL);
+        let engine = fx.engine();
+        let store = fx.dir.path().join("store");
+        let down = OllamaHw::with_paths(LocalEndpoint::new("127.0.0.1", 1).unwrap(), store.clone(), None);
+        let hw = LlamaModels::new(down, engine.clone(), store);
+        assert_eq!(hw.resident(), None, "neither answering: unknown");
+        let want = Want { model: MODEL.into(), shape: EngineShape { slots: 2, ctx_per_slot: 8192, kv: "q8_0".into() }, lane: Lane::Conductor, key: 1 };
+        let _lease = engine.acquire(&want, &CancelToken::new()).unwrap();
+        assert_eq!(hw.resident(), Some(vec![MODEL.to_string()]), "the engine serves it");
     }
 
     #[test]

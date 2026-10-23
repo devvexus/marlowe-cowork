@@ -542,6 +542,31 @@ fn parity_bg8_send_file_takes_only_files_inside_the_workspace() {
     assert_eq!(r.bg.sent.lock().unwrap().len(), 1);
 }
 
+#[test]
+fn a_crew_runs_folders_are_sendable_from_a_session_with_no_workspace_files_in_them() {
+    // The profile home is outside the workspace, as it is for real: a finished team task's report
+    // sits in its output folder or worktree and is sent as it is, without a merge.
+    let ws = Ws::new("bg8b");
+    let home = std::env::temp_dir().join(format!("marlowe-bg8b-home-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    for (dir, file) in [("output/web-research-abc", "research/kimi.md"), ("worktrees/abc", "research/other.md"), ("cache", "secret.txt")] {
+        let p = home.join(dir).join(file);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "# report").unwrap();
+    }
+    let tools = specs::configure(ws.tools(), &HostSetup { home: &home, workspace: Some(&ws.root) });
+    let r = Rig { ws, tools, tasks: Arc::new(MemoryTaskRegistry::new()), bg: Arc::new(FakeBackground::default()), questions: None, lists: marlowe_agent::tasklist::TaskLists::in_memory() };
+    for rel in ["output/web-research-abc/research/kimi.md", "worktrees/abc/research/other.md"] {
+        let path = home.join(rel);
+        let ok = r.call("send_file", json!({"path": path.to_string_lossy(), "note": "the report"}));
+        assert!(!ok.is_error, "{rel}: {}", ok.content);
+    }
+    let refused = r.call("send_file", json!({"path": home.join("cache/secret.txt").to_string_lossy()}));
+    assert!(refused.is_error && refused.content.contains("crew run's folders"), "{}", refused.content);
+    assert_eq!(r.bg.sent.lock().unwrap().len(), 2);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 fn notice(id: &str, source: NoticeSource, title: &str, at_ms: i64) -> Notice {
     Notice {
         id: id.into(),
