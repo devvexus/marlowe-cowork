@@ -27,6 +27,8 @@ marlowe-exec.workspace = true
 marlowe-code.workspace = true
 # Deep research v2's channels and cache (src/research_wire.rs).
 marlowe-research.workspace = true
+marlowe-project.workspace = true
+marlowe-extract.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

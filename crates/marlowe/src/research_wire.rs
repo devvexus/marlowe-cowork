@@ -205,6 +205,115 @@ impl SearchBackend for KeylessSearch {
     }
 }
 
+// ---- projects ------------------------------------------------------------------------------------
+
+/// Channel search for a project: the keyless registry behind `marlowe_project::research::Web`.
+#[allow(dead_code)] // wired by the project tool
+pub struct ProjectWeb {
+    registry: Arc<ChannelRegistry>,
+    http: Arc<dyn HttpGet>,
+    cache: Option<Arc<ResearchCache>>,
+}
+
+impl ProjectWeb {
+    /// Over `registry`, searching through `http` and caching under `cache`.
+    pub fn new(registry: Arc<ChannelRegistry>, http: Arc<dyn HttpGet>, cache: Option<Arc<ResearchCache>>) -> Self {
+        Self { registry, http, cache }
+    }
+}
+
+impl marlowe_project::research::Web for ProjectWeb {
+    fn channels(&self) -> Vec<ChannelId> {
+        self.registry.ids().into_iter().filter(|c| c.is_network()).collect()
+    }
+
+    fn search(&self, channel: ChannelId, query: &ChannelQuery, cancel: &CancelToken) -> Result<Vec<marlowe_research::SourceRef>, ChannelError> {
+        let ctx = ChannelCtx { http: self.http.as_ref(), cache: self.cache.as_deref(), cancel };
+        self.registry.search(channel, query, &ctx)
+    }
+
+    fn unavailable(&self) -> Vec<(ChannelId, String)> {
+        self.registry.skipped().to_vec()
+    }
+}
+
+/// The corpus fetcher as a project's page reader. The corpus keeps what it always did (https
+/// only, robots.txt and per-host spacing on every hop, the SSRF guard at connect time, Edge for
+/// thin pages); the project's network grant is asked first, for the address and for every
+/// redirect hop, through [`Admitting`].
+#[allow(dead_code)] // wired by the project tool
+pub struct ProjectPages(pub Corpus);
+
+/// A network that asks the grant before each request, and remembers if it said no.
+struct Admitting<'a> {
+    inner: &'a dyn marlowe_exec::corpus::PageFetch,
+    admit: marlowe_project::research::Admit<'a>,
+    refused: &'a std::sync::Mutex<Option<String>>,
+}
+
+impl marlowe_exec::corpus::PageFetch for Admitting<'_> {
+    fn fetch(&self, url: &str, cancel: &CancelToken) -> Result<marlowe_exec::corpus::RawResponse, String> {
+        if let Err(why) = (self.admit)(url) {
+            *self.refused.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
+            return Err("not requested".into());
+        }
+        self.inner.fetch(url, cancel)
+    }
+}
+
+impl marlowe_project::research::PageFetch for ProjectPages {
+    fn read(&self, url: &str, admit: marlowe_project::research::Admit<'_>, cancel: &CancelToken) -> marlowe_project::research::Fetched {
+        use marlowe_project::research::{Failure, Fetched};
+        let refused = std::sync::Mutex::new(None);
+        let net = Admitting { inner: self.0.net.as_ref(), admit, refused: &refused };
+        let selector = marlowe_extract::main_content::Selector::with_defaults();
+        let out = marlowe_exec::corpus::read_one(url, &self.0.config, &net, &selector, cancel);
+        if let Some(why) = refused.into_inner().unwrap_or_else(|e| e.into_inner()) {
+            return Fetched::failed(url, Failure::Blocked, why);
+        }
+        let why = out.why_not().unwrap_or_else(|| "not read".into());
+        match out {
+            Outcome::Read(p) => Fetched {
+                url: p.url.clone(),
+                final_url: p.final_url.clone(),
+                title: p.document.title.clone(),
+                text: p.markdown.clone(),
+                links: p.links().to_vec(),
+                meta: p.document.meta.clone(),
+                references: Vec::new(),
+                failure: None,
+            },
+            Outcome::Refused { reason: marlowe_research::Refusal::NotHttp(_), .. } => Fetched::failed(url, Failure::Blocked, why),
+            Outcome::Refused { reason: marlowe_research::Refusal::Cancelled, .. } => Fetched::failed(url, Failure::Unreachable, why),
+            Outcome::Refused { .. } => Fetched::failed(url, Failure::Robots, why),
+            Outcome::Status { .. } => Fetched::failed(url, Failure::Http, why),
+            Outcome::Unreachable { .. } => Fetched::failed(url, Failure::Unreachable, why),
+            Outcome::Unreadable { .. } => Fetched::failed(url, Failure::Unreadable, why),
+            Outcome::Redirect { .. } => Fetched::failed(url, Failure::Blocked, why),
+        }
+    }
+}
+
+/// The research dependencies of a project run in `home`: keyless channels with the research
+/// cache, the corpus fetcher under the run-scoped grant, projects under `<home>\projects`,
+/// deliverables under `<home>\output`.
+#[allow(dead_code)] // wired by the project tool
+pub fn project_research(home: &Path, settings: &ResearchSettings, memory: Arc<dyn marlowe_project::research::MemorySink>) -> Arc<marlowe_project::research::ResearchDeps> {
+    let web = ProjectWeb::new(
+        Arc::new(ChannelRegistry::keyless_with(&settings.keyless(), None)),
+        Arc::new(NetHttp::new()),
+        Some(Arc::new(ResearchCache::at_home(home))),
+    );
+    Arc::new(marlowe_project::research::ResearchDeps::new(
+        home.join("projects"),
+        home.join("output"),
+        Arc::new(web),
+        Arc::new(ProjectPages(Corpus::product())),
+        Arc::new(marlowe_project::research::SystemResolver),
+        memory,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,5 +441,83 @@ mod tests {
         let s: ResearchSettings = serde_json::from_str(r#"{"duckduckgo": true, "hosted_search": true}"#).unwrap();
         assert_eq!(s.hosted_search, Some(true));
         assert_eq!(s.keyless().web, WebConfig::default());
+    }
+
+    // ---- projects -------------------------------------------------------------------------
+
+    use marlowe_exec::corpus::{CorpusConfig, ExtractMode, PageFetch as CorpusNet, RawResponse};
+    use marlowe_project::research::{Failure, PageFetch as ProjectFetch};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    const ARTICLE: &str = include_str!("../../marlowe-extract/tests/fixtures/article.html");
+
+    /// Pages by URL; records what was requested.
+    struct Net(HashMap<&'static str, RawResponse>, Mutex<Vec<String>>);
+
+    impl CorpusNet for Net {
+        fn fetch(&self, url: &str, _: &CancelToken) -> Result<RawResponse, String> {
+            self.1.lock().unwrap().push(url.to_string());
+            self.0.get(url).cloned().ok_or_else(|| format!("no route for {url}"))
+        }
+    }
+
+    struct Robots(&'static str);
+
+    impl HttpGet for Robots {
+        fn get(&self, r: &marlowe_research::HttpRequest, _: &CancelToken) -> Result<marlowe_research::HttpResponse, String> {
+            Ok(marlowe_research::HttpResponse { status: 200, content_type: Some("text/plain".into()), bytes: self.0.as_bytes().to_vec(), final_url: r.url.clone(), retry_after: None })
+        }
+    }
+
+    fn pages(routes: Vec<(&'static str, RawResponse)>, robots: &'static str) -> (ProjectPages, Arc<Net>) {
+        let net = Arc::new(Net(routes.into_iter().collect(), Mutex::new(Vec::new())));
+        let cfg = CorpusConfig { concurrency: 1, mode: ExtractMode::MainContent, gate: marlowe_research::HostGate::new(), robots_http: Arc::new(Robots(robots)), renderer: None, same_host_redirects_only: false };
+        (ProjectPages(Corpus { config: cfg, net: net.clone() }), net)
+    }
+
+    fn ok(body: &str) -> RawResponse {
+        RawResponse { status: 200, content_type: Some("text/html".into()), bytes: body.as_bytes().to_vec(), ..Default::default() }
+    }
+
+    fn redirect(to: &str) -> RawResponse {
+        RawResponse { status: 301, location: Some(to.into()), ..Default::default() }
+    }
+
+    #[test]
+    fn a_project_reads_a_page_through_the_corpus_and_the_grant_is_asked_for_the_address() {
+        let (p, net) = pages(vec![("https://a.example/post", ok(ARTICLE))], "");
+        let asked = Mutex::new(Vec::new());
+        let admit = |u: &str| -> Result<(), String> {
+            asked.lock().unwrap().push(u.to_string());
+            Ok(())
+        };
+        let f = p.read("https://a.example/post", &admit, &CancelToken::new());
+        assert!(f.failure.is_none() && f.text.chars().count() > 200, "{:?}", f.failure);
+        assert_eq!(*asked.lock().unwrap(), ["https://a.example/post"]);
+        assert_eq!(net.1.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_redirect_hop_the_grant_refuses_is_never_requested() {
+        let (p, net) = pages(vec![("https://a.example/go", redirect("https://inner.example/x")), ("https://inner.example/x", ok(ARTICLE))], "");
+        let admit = |u: &str| -> Result<(), String> { if u.contains("inner") { Err("the host name points at a private address".into()) } else { Ok(()) } };
+        let f = p.read("https://a.example/go", &admit, &CancelToken::new());
+        assert_eq!(f.failure, Some((Failure::Blocked, "the host name points at a private address".into())));
+        assert_eq!(*net.1.lock().unwrap(), ["https://a.example/go"], "the second hop never went out");
+    }
+
+    #[test]
+    fn robots_and_errors_keep_their_own_class() {
+        let (p, _) = pages(vec![("https://a.example/private/x", ok(ARTICLE))], "User-agent: *
+Disallow: /private/");
+        let go = |_: &str| -> Result<(), String> { Ok(()) };
+        let robots = p.read("https://a.example/private/x", &go, &CancelToken::new());
+        assert!(matches!(robots.failure, Some((Failure::Robots, _))), "{:?}", robots.failure);
+        let (p, _) = pages(vec![("https://a.example/gone", RawResponse { status: 404, content_type: Some("text/html".into()), ..Default::default() })], "");
+        assert!(matches!(p.read("https://a.example/gone", &go, &CancelToken::new()).failure, Some((Failure::Http, _))));
+        let (p, _) = pages(vec![], "");
+        assert!(matches!(p.read("https://a.example/nothing", &go, &CancelToken::new()).failure, Some((Failure::Unreachable, _))));
+        assert!(matches!(p.read("http://a.example/plain", &go, &CancelToken::new()).failure, Some((Failure::Blocked, _))), "plain http is not read");
     }
 }
