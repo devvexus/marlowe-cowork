@@ -118,8 +118,9 @@ pub(crate) fn run_calls(
     let mut effective: Vec<ToolCall> = calls.to_vec();
     let mut free = Vec::new();
     let mut ask: Vec<Pending> = Vec::new();
+    let cut = cx.scope.with_ext(|e| e.get::<OutputCut>().copied());
     for (i, c) in effective.iter_mut().enumerate() {
-        if let Some(bad) = invalid_args(c) {
+        if let Some(bad) = invalid_args(c, cut) {
             outcomes[i] = Some(bad);
             continue;
         }
@@ -127,7 +128,7 @@ pub(crate) fn run_calls(
             outcomes[i] = Some(answered);
             continue;
         }
-        if let Some(bad) = invalid_args(c) {
+        if let Some(bad) = invalid_args(c, cut) {
             outcomes[i] = Some(bad);
             continue;
         }
@@ -355,12 +356,22 @@ fn run_one(host: &dyn ToolHost, middleware: &[Arc<dyn ToolMiddleware>], call: &T
     .unwrap_or_else(|_| ToolOutcome::error(format!("the {} tool failed unexpectedly", call.name)))
 }
 
+/// Set on the conversation when the model's last reply stopped at the output limit: the tokens it
+/// wrote. A call in that reply whose arguments do not parse was cut off, not mistyped.
+#[derive(Debug, Clone, Copy)]
+pub struct OutputCut(pub u64);
+
 /// Arguments the fold could not parse arrive as a JSON string; report them instead of running.
-fn invalid_args(c: &ToolCall) -> Option<ToolOutcome> {
+fn invalid_args(c: &ToolCall, cut: Option<OutputCut>) -> Option<ToolOutcome> {
     if c.name.trim().is_empty() {
         return Some(ToolOutcome::error("the tool call had no tool name"));
     }
     match &c.args {
+        Value::String(_) if cut.is_some() => Some(ToolOutcome::error(format!(
+            "your reply stopped at the output limit ({} tokens) while you were writing this {} call, so its arguments were cut off and nothing ran.              Make the call much shorter: put less in it, or split the content over several calls.",
+            cut.map_or(0, |c| c.0),
+            c.name
+        ))),
         Value::String(raw) => {
             let shown: String = raw.chars().take(200).collect();
             Some(ToolOutcome::error(format!(

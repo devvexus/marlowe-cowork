@@ -1309,6 +1309,29 @@ fn a_checkers_new_mistake_is_not_the_same_failure_three_times_running() {
     assert!(tool_results(&r[5]).last().unwrap().contains("same failure 3 calls in a row"), "{:?}", tool_results(&r[5]));
 }
 
+#[test]
+fn a_call_cut_off_by_the_output_limit_says_so_and_ten_identical_failures_end_the_turn() {
+    let cut = vec![
+        StreamEvent::ToolCallStart { index: 0, id: "c1".into(), name: "write".into() },
+        StreamEvent::ToolArgsDelta { index: 0, json: "{\"path\":\"a.txt\",\"content\":\"never closed".into() },
+        StreamEvent::ToolCallEnd { index: 0 },
+        StreamEvent::Stop(StopReason::MaxTokens),
+    ];
+    let mut replies = vec![cut];
+    replies.extend((0..12).map(|_| call("bash", json!({"command": "make fail"}))));
+    let p = Script::new(replies);
+    let mut a = agent(p.clone(), local32k(), Fake::new());
+    a.middleware.push(guard::LoopGuard::new());
+    let out = run(&a, &mut convo(None), "go");
+    let r = p.requests();
+    let first = tool_results(&r[1]);
+    assert!(first[0].contains("stopped at the output limit") && first[0].contains("cut off"), "{first:?}");
+    assert!(!first[0].contains("not valid JSON"), "{first:?}");
+    assert_eq!(out.stop, TurnStop::Error);
+    assert!(out.error.as_deref().is_some_and(|e| e.contains("failed the same way 10 times")), "{:?}", out.error);
+    assert_eq!(out.steps, 11, "the cut call, then ten identical failures");
+}
+
 /// A step that only thinks: reasoning, no text, no call.
 fn thinking_only(t: &str) -> Vec<StreamEvent> {
     vec![StreamEvent::ReasoningDelta { text: t.into(), tokens: 4 }, StreamEvent::Stop(StopReason::EndTurn)]

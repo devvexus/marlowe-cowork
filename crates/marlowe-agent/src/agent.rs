@@ -553,6 +553,11 @@ impl Agent {
             }
             sink(AgentEvent::Usage(c.usage));
             truncated = c.stop == StopReason::MaxTokens;
+            if truncated {
+                convo.ext.insert(run_tools::OutputCut(c.usage.output));
+            } else {
+                convo.ext.remove::<run_tools::OutputCut>();
+            }
 
             let interrupted = cancel.is_cancelled() || c.stop == StopReason::Cancelled;
             assign_ids(&mut c.tool_calls, turn, spent.steps);
@@ -658,6 +663,12 @@ impl Agent {
                         convo.push(extra);
                     }
                 }
+            }
+            // The same call failing the same way this many times running is a loop the model will
+            // not leave (91 `team{}` calls in one live turn): end the turn and say so.
+            if let Some(n) = guard::stuck_on_one_failure(convo) {
+                error = Some(format!("the same tool call failed the same way {n} times in a row; the turn was stopped"));
+                break TurnStop::Error;
             }
         };
 

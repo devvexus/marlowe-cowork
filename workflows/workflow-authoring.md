@@ -22,6 +22,9 @@ cost and ask.
    cite.
 3. **Then the specialists**: one concrete task each, with everything it needs in its prompt (paths,
    the exact question, the answer's shape). Agents cannot ask questions mid-run.
+   Keep the script short: one or two sentences per agent prompt and a few dozen lines in all (the
+   agents hold the detail, the script only wires them); a script too long to finish in one call is
+   cut off at the output limit and nothing runs.
 4. **Scale to the request.** A modest team (under 10 specialists) unless the user or the session's
    size guideline says more; a one-line question is not a team task.
 5. **Multi-phase work is several team tasks in sequence** (understand, design, build, review): run

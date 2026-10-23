@@ -281,6 +281,14 @@ pub fn trim_repetition(text: &str) -> String {
 pub const REPEATED_FAILURE_AT: u32 = 3;
 /// The same batch of calls this many steps in a row gets a reminder.
 pub const REPEATED_CALLS_AT: u32 = 3;
+/// The same failure this many calls in a row ends the turn.
+pub const STUCK_FAILURE_AT: u32 = 10;
+
+/// How many times in a row one call has failed the same way, once that reaches
+/// [`STUCK_FAILURE_AT`].
+pub fn stuck_on_one_failure(convo: &Conversation) -> Option<u32> {
+    convo.ext.get::<GuardState>()?.failure.as_ref().map(|(_, n)| *n).filter(|n| *n >= STUCK_FAILURE_AT)
+}
 
 /// Sent once per turn when the model said what it would do next and ended the turn instead.
 pub const PROMISE_NUDGE: &str = "<system-reminder>\nYou said what you would do next but ended your turn without \
