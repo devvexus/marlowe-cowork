@@ -161,10 +161,18 @@ def load_calls(run_dir):
         recs = [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
     recs.sort(key=lambda r: r["t_start"])
     calls, unloads = [], []
+    ahead = None  # the engine's read-ahead into the slot (`/completion`, n_predict 0): tokens the server evaluated
     for r in recs:
         req, resp = tp.load_record_bodies(str(run_dir / "raw"), r)
         c = an.Call(r, req, resp, r.get("log_text", ""))
+        if r["path"] == "/completion" and r.get("status") == 200:
+            try:
+                if json.loads(req).get("n_predict") == 0:
+                    ahead = json.loads(resp).get("tokens_evaluated")
+            except ValueError:
+                pass
         if c.is_model_call and c.status == 200:
+            c.preread_tokens, ahead = ahead, None
             calls.append(c)
         elif r["path"] == "/api/generate" and '"keep_alive":0' in req.replace(" ", ""):
             unloads.append(r["t_start"])
@@ -288,13 +296,13 @@ def write_all(base):
     md = ["# Prompt-cache audit", "", "Every request is judged against one rule: its prompt is the previous prompt, plus what the model generated, plus new content at the end, "
           f"so the server must serve the whole previous sequence from cache (a gap of {an.TOLERANCE} tokens or less is the stop token and newline the template re-adds). "
           "`cold` is a cache the daemon emptied by restarting; `reset` is a new conversation, `compaction` is Marlowe eliding old tool results; the one rewrite the rule allows (the report says how full the window was).", ""]
-    md += ["## Summary", "", "| model | engine | requests | clean | breaks | cold | reset or compaction | worst gap (tokens) | tokens re-read in all |", "|---|---|---|---|---|---|---|---|---|"]
+    md += ["## Summary", "", "| model | engine | requests | clean | of which template drop, nothing re-read | breaks | cold | reset or compaction | worst gap (tokens) | tokens re-read in all |", "|---|---|---|---|---|---|---|---|---|---|"]
     for r in runs:
         rows = r["rows"][1:]
         b = breaks_of(r)
         cold = [x for x in rows if str(x.get("verdict", "")).startswith("cold")]
         gaps = [x["deficit"] for x in rows if x.get("deficit") and x["verdict"] == "BREAK"]
-        md.append(f"| {r['model']} | {r['engine']} | {r['requests']} | {sum(1 for x in rows if x['verdict'] == 'ok')} | {len(b) - len(cold)} | {len(cold)} | {sum(1 for x in rows if str(x['verdict']).startswith(('reset', 'compaction')))} | {max(gaps) if gaps else 0} | {sum(gaps)} |")
+        md.append(f"| {r['model']} | {r['engine']} | {r['requests']} | {sum(1 for x in rows if x['verdict'] == 'ok')} | {sum(1 for x in rows if x.get('template_drop'))} | {len(b) - len(cold)} | {len(cold)} | {sum(1 for x in rows if str(x['verdict']).startswith(('reset', 'compaction')))} | {max(gaps) if gaps else 0} | {sum(gaps)} |")
     md += ["", "## Every break: model x engine x cause", "", "| model | engine | n | message that produced it | first differing byte | tokens re-read | cause |", "|---|---|---|---|---|---|---|"]
     for r in runs:
         for x in breaks_of(r):

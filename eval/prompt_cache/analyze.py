@@ -368,6 +368,20 @@ def parent_of(calls, i):
     return None
 
 
+def template_drop_only(p, c, row):
+    """For a request after a user message: whether the earlier thinking is the only thing missing from the cache and the server read
+    no more than the new content (the engine's read-ahead shows in the tap). Returns {read_ahead_tokens, processed, thinking_chars} or None."""
+    pd, md = row.get("prompt_diff"), row.get("msg_diff")
+    if md or not pd or not (pd.get("think_ideal") and not pd.get("think_cur")):
+        return None
+    total, cached, ahead = row.get("total"), row.get("cached"), getattr(c, "preread_tokens", None)
+    # the engine read the prompt without the thinking into the slot (ahead tokens) before this request came: the server then served all
+    # of it from cache (up to the template's few stop/newline tokens) and read only what is new
+    if not total or cached is None or not ahead or cached < ahead - TOLERANCE:
+        return None
+    return {"read_ahead_tokens": ahead, "processed": total - cached, "thinking_chars": pd["think_ideal"]}
+
+
 def judge(calls, restarts=(), unloads=(), dropper="the template"):
     """One verdict per conductor request. calls: Call objects of one stream in order.
 
@@ -439,6 +453,13 @@ def judge(calls, restarts=(), unloads=(), dropper="the template"):
         row["server"] = {k: n.get(k) for k in ("sim_best", "f_keep", "restored", "forced_full") if n.get(k) is not None}
         row["reply_features"] = reply_features(p.agg)
         row["dropper"] = dropper
+        if row["verdict"] == "BREAK":
+            tail = template_drop_only(p, c, row)
+            if tail is not None:
+                # the template removed the earlier thinking from the prompt, and the server read nothing but the new message: the slot
+                # held the prompt without it (read ahead), so no token was read twice. The gap is only the thinking tokens that left the slot.
+                row["verdict"] = "ok"
+                row["template_drop"] = tail
         rows.append(row)
     # the count of tokens the template prints for a reply is a little off the model's own, the same way on every request; what
     # matters is a request that is off by more

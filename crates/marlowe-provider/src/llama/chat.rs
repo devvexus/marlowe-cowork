@@ -177,6 +177,7 @@ fn timings(t: &Value) -> Timings {
 pub struct RawText {
     bytes: Vec<u8>,
     seen: bool,
+    count: u64,
 }
 
 impl RawText {
@@ -189,6 +190,14 @@ impl RawText {
         String::from_utf8(self.bytes.clone()).ok()
     }
 
+    /// Whether the tokens that came are all the server generated (`predicted_n`, its stop token
+    /// aside). The server attaches a token to the chunk its parser emits for it, and a token the
+    /// parser swallows (`</think>`, a tool-call marker) never gets a chunk, so on a thinking or
+    /// tool-calling reply the tokens are short and the text must not be trusted.
+    pub fn covers(&self, predicted_n: u64) -> bool {
+        self.seen && self.count + 1 >= predicted_n
+    }
+
     /// Takes the tokens one chunk carries (`choices[0].logprobs.content`, or llama.cpp's own
     /// `completion_probabilities`).
     fn take(&mut self, chunk: &Value) {
@@ -196,6 +205,7 @@ impl RawText {
         let from_server = chunk.get("completion_probabilities").and_then(Value::as_array);
         for t in from_choice.into_iter().chain(from_server).flatten() {
             self.seen = true;
+            self.count += 1;
             if let Some(b) = t.get("bytes").and_then(Value::as_array) {
                 self.bytes.extend(b.iter().filter_map(|b| b.as_u64().map(|b| b as u8)));
             } else if let Some(s) = t.get("token").or_else(|| t.get("content")).and_then(Value::as_str) {
@@ -501,6 +511,8 @@ mod tests {
         let mut folder = Folder::new(true, &mut on);
         read_stream_raw(sse(&chunks), &mut folder, &CancelToken::new(), &mut raw).unwrap();
         assert_eq!(raw.text().as_deref(), Some("hm\n</think>\n\nHi"));
+        assert!(raw.covers(5) && raw.covers(6), "every token (the stop token aside) came");
+        assert!(!raw.covers(61), "a parser that swallowed tokens leaves the text short of what was generated");
         // A server that sends no tokens leaves nothing to compare with.
         let mut none = RawText::default();
         let mut on2 = |_: StreamEvent| {};

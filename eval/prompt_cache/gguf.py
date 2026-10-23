@@ -95,9 +95,20 @@ def manifest_facts(model):
 
 
 def engine_eligible(facts):
-    """Marlowe's engine takes a model Ollama hands to llama-server whole: no renderer, parser or extra layer."""
+    """Marlowe's engine (as of add218f) takes a model whose GGUF has a chat template of its own; a renderer or parser in the
+    manifest is no obstacle (the engine uses the file's template). A pass-through `{{ .Prompt }}` TEMPLATE layer counts as none;
+    any other extra layer (draft, projector, adapter, system, messages) keeps the model on Ollama."""
     extra = [k for k in facts["layers"] if k not in ("model", "params", "license")]
-    return not facts["renderer"] and not facts["parser"] and not extra
+    if "template" in extra and (facts.get("template") or "").strip() == "{{ .Prompt }}":
+        extra.remove("template")
+    if extra:
+        return False
+    if facts.get("renderer") or facts.get("parser"):
+        try:
+            return bool(read_header(facts["blob"]).get("tokenizer.chat_template"))
+        except OSError:
+            return False
+    return True
 
 
 # What a template does with reasoning, read from its text. A heuristic; template_probe() in audit.py checks it by rendering.

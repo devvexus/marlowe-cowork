@@ -376,9 +376,14 @@ impl OllamaProvider {
         .map_err(llama_error)?;
         let mut folder = Folder::new(thinking, on).with_tools(&req.tools).with_stats(self.stats.clone());
         let mut raw = llama_chat::RawText::default();
-        llama_chat::read_stream_raw(reader, &mut folder, cancel, &mut raw)?;
+        let timings = llama_chat::read_stream_raw(reader, &mut folder, cancel, &mut raw)?;
         let done = folder.finish();
-        let generated = raw.text().filter(|_| raw_asked);
+        let generated = raw.text().filter(|_| raw_asked && raw.covers(timings.predicted_n));
+        if raw_asked && generated.is_none() {
+            // This server's chat stream leaves out the tokens its parser swallows, so the text is
+            // never the whole reply: stop asking, and let the template's printing stand in.
+            self.raw_capture.store(false, Ordering::Relaxed);
+        }
         let ahead = self.hold_reply(&lease, want.key, req, &opts, &body, &done, generated.as_deref());
         match ahead.filter(|_| req.lane == Lane::Conductor) {
             Some(prefix) => lease.read_ahead(prefix),

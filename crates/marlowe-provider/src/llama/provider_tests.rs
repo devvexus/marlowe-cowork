@@ -362,7 +362,7 @@ fn answer_with_tokens(generated: &[&str]) -> Vec<Value> {
     vec![
         json!({"choices": [{"index": 0, "finish_reason": null, "delta": {"reasoning_content": "weighing it"}, "logprobs": {"content": toks}}]}),
         json!({"choices": [{"index": 0, "finish_reason": "stop", "delta": {"content": "an answer"}}],
-               "timings": {"cache_n": 0, "prompt_n": 9, "prompt_ms": 1.0, "predicted_n": 7, "predicted_ms": 3.0}}),
+               "timings": {"cache_n": 0, "prompt_n": 9, "prompt_ms": 1.0, "predicted_n": generated.len(), "predicted_ms": 3.0}}),
     ]
 }
 
