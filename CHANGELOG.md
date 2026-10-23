@@ -4,6 +4,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Prompt cache
+
+- **`eval/prompt_cache` audits whether any request rewrites what a local model already read.** It drives the real daemon (throwaway home, temp git repo) through a scripted conversation of thinking, multi-argument and nested tool calls, a tool error, a memory write, an interrupt, a steer, an outside file change, the Teams toggle and a daemon restart, with a tee in front of Ollama or Marlowe's own llama-server. The server's own numbers say how much of each prompt came from cache; every request that did not reuse the whole previous prompt plus the reply is named with the first differing byte, the message that produced it and the cause. `--templates` reads each model's own chat template from its GGUF and tests what it does with earlier reasoning.
+
 ### Parallel local engine
 
 - **Marlowe runs a local model on its own llama-server, with several slots.** For a model Ollama hands to llama-server whole (its manifest has no renderer, parser, template, draft or projector layer: `marlowe-dusk:22b-r1.5`, `marlowe-red:9b`, `marlowe-unhealed`), Marlowe starts Ollama's bundled `llama-server.exe` itself (hidden, in a kill-on-close Job Object, credentials scrubbed, output in `logs\llama-server.log`) with N slots of the planned window each, the same flags Ollama uses, q8_0 KV per slot (no shared pool), `-ngl 99 --fit off` so a misfit fails at load. Ollama is asked to unload the model first, so it is never in memory twice; idle unload follows `OLLAMA_KEEP_ALIVE` (five minutes by default). Models Ollama renders itself (the dawn, mini, valiance, qwen3.5 and 27B tags) stay on Ollama exactly as before, and `MARLOWE_LLAMA_ENGINE=0` keeps everything there.
