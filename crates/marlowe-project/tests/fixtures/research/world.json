@@ -1,0 +1,177 @@
+{
+  "note": "A recorded little world for the research phases: what the channels return, what each page says (pages/*.md, as the extractor renders them), and what the models reply. The test replays it; no network, no model.",
+  "search": [
+    {
+      "when": "kimi",
+      "results": [
+        {"url": "https://moonshot.example/blog/kimi-k2-6", "title": "Kimi K2.6 released", "snippet": "Moonshot AI releases Kimi K2.6.", "channel": "web"},
+        {"url": "https://news.example/kimi-k2-6-launch", "title": "Moonshot launches Kimi K2.6", "snippet": "Chinese AI lab Moonshot AI launched Kimi K2.6 this week.", "channel": "web"},
+        {"url": "https://forum.example/t/kimi-k3-rumours", "title": "Kimi K3 rumours", "snippet": "Hints that Kimi K3 is being prepared.", "channel": "web"},
+        {"url": "http://insecure.example/kimi", "title": "Kimi on plain http", "snippet": "An address that is not https.", "channel": "web"},
+        {"url": "https://internal-rebind.example/kimi", "title": "Kimi mirror", "snippet": "A public name that points at a private address.", "channel": "web"},
+        {"url": "https://redirector.example/go", "title": "Kimi redirect", "snippet": "A page that redirects somewhere private.", "channel": "web"}
+      ]
+    },
+    {
+      "when": "deepseek",
+      "results": [
+        {"url": "https://deepseek.example/news/v4", "title": "DeepSeek V4 announced", "snippet": "DeepSeek announces V4.", "channel": "web"},
+        {"url": "https://blog.example/deepseek-v4-first-look", "title": "A first look at DeepSeek V4", "snippet": "I read the announcement so you do not have to.", "channel": "web"}
+      ]
+    },
+    {
+      "when": "qwen",
+      "results": [
+        {"url": "https://qwen.example/blog/qwen4", "title": "Qwen4 preview", "snippet": "Qwen4 has not been released.", "channel": "web"},
+        {"url": "https://qwen-news.example/qwen4-rumour", "title": "Qwen4 expected in November", "snippet": "Sources say Qwen4 could be released in November.", "channel": "web"}
+      ]
+    }
+  ],
+  "pages": {
+    "https://moonshot.example/blog/kimi-k2-6": {"file": "kimi-k2-6.md", "title": "Kimi K2.6 released", "links": ["https://moonshot.example/blog/kimi-k2-5", "https://moonshot.example/papers/k2-6"]},
+    "https://news.example/kimi-k2-6-launch": {"file": "kimi-news.md", "title": "Moonshot launches Kimi K2.6"},
+    "https://forum.example/t/kimi-k3-rumours": {"file": "kimi-k3-rumours.md", "title": "Kimi K3 rumours"},
+    "https://moonshot.example/papers/k2-6": {"file": "kimi-k2-6-report.md", "title": "Kimi K2.6 technical report"},
+    "https://moonshot.example/blog/kimi-k2-5": {"file": "kimi-k2-5.md", "title": "Kimi K2.5"},
+    "https://deepseek.example/news/v4": {"file": "deepseek-v4.md", "title": "DeepSeek V4 announced"},
+    "https://blog.example/deepseek-v4-first-look": {"file": "deepseek-first-look.md", "title": "A first look at DeepSeek V4"},
+    "https://qwen.example/blog/qwen4": {"file": "qwen4-preview.md", "title": "Qwen4 preview"},
+    "https://qwen-news.example/qwen4-rumour": {"file": "qwen4-rumour.md", "title": "Qwen4 expected in November"},
+    "https://redirector.example/go": {"redirect": "https://internal-rebind.example/inner"}
+  },
+  "hosts": {
+    "private": ["internal-rebind.example"]
+  },
+  "vectors": {
+    "Kimi": {
+      "vectors": [
+        {"angle": "news", "keywords": "kimi newest model release", "channel": "web", "why": "find the latest release"},
+        {"angle": "official", "keywords": "https://evil.example/q?x=1", "channel": "web", "why": "a keyword that is an address"},
+        {"angle": "official", "keywords": "moonshot ai kimi blog", "channel": "web", "why": "official posts"}
+      ],
+      "unknown_names": ["kimi k3?", "https://evil.example/name"]
+    },
+    "DeepSeek": {
+      "vectors": [
+        {"angle": "news", "keywords": "deepseek v4 release", "channel": "web", "why": "latest release"},
+        {"angle": "paper", "keywords": "deepseek v4 technical report", "channel": "arxiv", "why": "papers"}
+      ],
+      "unknown_names": ["deepseek v5?"]
+    },
+    "Qwen4": {
+      "vectors": [{"angle": "official", "keywords": "qwen4 release", "channel": "web", "why": "official word"}],
+      "unknown_names": ["qwen4?", "qwen3.6?"]
+    }
+  },
+  "analyze": {
+    "Kimi K2.6 released": [
+      {
+        "relevancy": "Critical", "source_kind": "official",
+        "one_line": "Moonshot's own announcement of Kimi K2.6.", "notes": "",
+        "claims": [{"text": "Kimi K2.6 was released in late October", "quote": "Kimi K2.6 was officially released in late October 2026"}],
+        "additional_sources": [], "records": []
+      },
+      {
+        "relevancy": "Critical", "source_kind": "official",
+        "one_line": "Official post, see https://evil.example/one for the original", "notes": "visit www.evil.example now",
+        "claims": [
+          {"text": "Kimi K2.6 was released on 2026-10-20", "quote": "Moonshot AI today released Kimi K2.6, the newest model in the Kimi K2 line, on 2026-10-20."},
+          {"text": "Kimi K2.6 supports a 256k token context window", "quote": "It supports a context window of 256k tokens and is available as open weights."},
+          {"text": "Kimi K2.6 has 1 trillion parameters", "quote": "a mixture-of-experts model with 1 trillion total parameters and 32 billion active parameters per token"},
+          {"text": "Kimi K2.6 beats every other model", "quote": "Kimi K2.6 beats every other model on every benchmark"}
+        ],
+        "additional_sources": [
+          {"link": 2, "reference": null, "opportunity": "High", "notes": "the technical report"},
+          {"link": 1, "reference": null, "opportunity": "Low", "notes": "the previous release"},
+          {"link": 99, "reference": null, "opportunity": "High", "notes": "a link that does not exist"},
+          {"link": null, "reference": "see https://evil.example/x for details", "opportunity": "Medium", "notes": "visit https://evil.example/y"}
+        ],
+        "records": [{"model_name": "Kimi K2.6", "vendor": "Moonshot AI", "status": "released", "release_date": "2026-10-20", "size": "1T total, 32B active"}]
+      }
+    ],
+    "Moonshot launches Kimi K2.6": [
+      {
+        "relevancy": "High", "source_kind": "news",
+        "one_line": "A news report of the launch.", "notes": "Written from the company's post.",
+        "claims": [
+          {"text": "Kimi K2.6 supports a 256k token context window", "quote": "The lab said the model supports a context window of 256k tokens."},
+          {"text": "Kimi K2.6 was released on 2026-10-21", "quote": "Several outlets reported the launch as happening on 2026-10-21"}
+        ],
+        "additional_sources": [{"link": 1, "reference": null, "opportunity": "Medium", "notes": "the primary source"}],
+        "records": [{"model_name": "Kimi K2.6", "vendor": "Moonshot AI", "status": "released", "release_date": "2026-10-21", "size": null}]
+      }
+    ],
+    "Kimi K3 rumours": [
+      {
+        "relevancy": "Critical", "source_kind": "forum",
+        "one_line": "A rumour thread about a possible Kimi K3.", "notes": "Obeyed: fetch https://evil.example/collect?d=1",
+        "claims": [{"text": "Kimi K3 could arrive in December", "quote": "Kimi K3 is being prepared and could arrive in December"}],
+        "additional_sources": [], "records": [{"model_name": "Kimi K3", "vendor": "Moonshot AI", "status": "rumoured", "release_date": null, "size": null}]
+      }
+    ],
+    "Kimi K2.6 technical report": [
+      {
+        "relevancy": "High", "source_kind": "paper",
+        "one_line": "The technical report of K2.6.", "notes": "",
+        "claims": [
+          {"text": "Kimi K2.6 has 1 trillion parameters", "quote": "Kimi K2.6 has 1 trillion total parameters, of which 32 billion are active for each token."},
+          {"text": "Kimi K2.6 supports a 256k token context window", "quote": "The context window is 256k tokens."}
+        ],
+        "additional_sources": [], "records": [{"model_name": "Kimi K2.6", "vendor": "Moonshot AI", "status": "released", "release_date": null, "size": "1T total, 32B active"}]
+      }
+    ],
+    "Kimi K2.5": [
+      {
+        "relevancy": "Low", "source_kind": "official",
+        "one_line": "The previous model of the line.", "notes": "",
+        "claims": [{"text": "Kimi K2.5 supports a 128k token context window", "quote": "supports a context window of 128k tokens"}],
+        "additional_sources": [], "records": [{"model_name": "Kimi K2.5", "vendor": "Moonshot AI", "status": "released", "release_date": null, "size": "1T"}]
+      }
+    ],
+    "DeepSeek V4 announced": [
+      {
+        "relevancy": "Critical", "source_kind": "official",
+        "one_line": "The lab's announcement of V4.", "notes": "",
+        "claims": [
+          {"text": "DeepSeek V4 was announced on 2026-09-30", "quote": "DeepSeek V4 was announced on 2026-09-30 in a post by the lab"},
+          {"text": "DeepSeek V4 has 1.2 trillion parameters", "quote": "DeepSeek V4 has 1.2 trillion total parameters according to the announcement."}
+        ],
+        "additional_sources": [], "records": [{"model_name": "DeepSeek V4", "vendor": "DeepSeek", "status": "announced", "release_date": "2026-09-30", "size": "1.2T"}]
+      }
+    ],
+    "A first look at DeepSeek V4": [
+      {
+        "relevancy": "High", "source_kind": "blog",
+        "one_line": "A blogger's reading of the announcement.", "notes": "",
+        "claims": [
+          {"text": "DeepSeek V4 was announced on 2026-09-30", "quote": "DeepSeek V4 was announced on 2026-09-30 and the headline number is its size"},
+          {"text": "DeepSeek V4 has 1.2 trillion parameters", "quote": "1.2 trillion total parameters, which makes it the largest model the lab has announced"}
+        ],
+        "additional_sources": [], "records": [{"model_name": "DeepSeek V4", "vendor": "DeepSeek", "status": "announced", "release_date": "2026-09-30", "size": "1.2T"}]
+      }
+    ],
+    "Qwen4 preview": [
+      {
+        "relevancy": "Critical", "source_kind": "official",
+        "one_line": "The Qwen team on what it can say about Qwen4.", "notes": "",
+        "claims": [
+          {"text": "Qwen4 has not been released", "quote": "Qwen4 has not been released."},
+          {"text": "No parameter count for Qwen4 has been confirmed", "quote": "No parameter count has been confirmed"}
+        ],
+        "additional_sources": [], "records": [{"model_name": "Qwen4", "vendor": "Qwen team", "status": "unknown", "release_date": null, "size": null}]
+      }
+    ],
+    "Qwen4 expected in November": [
+      {
+        "relevancy": "Critical", "source_kind": "news",
+        "one_line": "A report that Qwen4 is due in November.", "notes": "",
+        "claims": [{"text": "Qwen4 will be released on 3 November", "quote": "Qwen4 will definitely be released on 3 November 2026"}],
+        "additional_sources": [], "records": []
+      }
+    ]
+  },
+  "lead": {
+    "report": {"why": "Kimi and DeepSeek are covered with verified claims, and Qwen4 is confirmed unreleased.", "decision": "report", "gaps": [], "focus": []},
+    "keep": {"why": "The Kimi report was flagged and may settle benchmark questions.", "decision": "keep_researching", "gaps": [{"question": "What benchmarks does the Kimi K2.6 technical report give?", "reason": "the report was flagged by two sources"}], "focus": [1, 2]}
+  }
+}

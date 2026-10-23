@@ -237,6 +237,13 @@ impl ProjectStore {
         Ok(ProjectStore { root: root.to_path_buf(), db })
     }
 
+    /// A store for callers that only use the project files (stored pages, reports, disposal): no
+    /// index table is made, so the index methods are not usable. Cheap enough to open per call.
+    pub fn open_files(root: &Path) -> Result<ProjectStore, StoreError> {
+        fs::create_dir_all(root)?;
+        Ok(ProjectStore { root: root.to_path_buf(), db: Connection::open_in_memory()? })
+    }
+
     /// A store whose index lives in memory (tests, and callers that only need the files).
     pub fn open_in_memory(root: &Path) -> Result<ProjectStore, StoreError> {
         fs::create_dir_all(root)?;

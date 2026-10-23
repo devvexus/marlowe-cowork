@@ -34,6 +34,7 @@ pub mod mutation;
 pub mod plan;
 pub mod registry;
 pub mod replica;
+pub mod research;
 pub mod spec;
 pub mod state;
 pub mod store;

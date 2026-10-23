@@ -9,6 +9,10 @@ description = "Projects: the plan, the project state JSON, the form schemas with
 marlowe-contract.workspace = true
 marlowe-model.workspace = true
 marlowe-proto.workspace = true
+# Stage C: the research phases reuse the keyless channels, source identity, link tables and text helpers.
+marlowe-research.workspace = true
+marlowe-extract.workspace = true
+marlowe-net.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

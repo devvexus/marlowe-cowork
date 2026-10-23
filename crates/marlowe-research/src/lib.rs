@@ -58,6 +58,7 @@ pub use marlowe_proto::ChannelId;
 pub use net::NetHttp;
 pub use page_identity::{is_identity_meta, page_route};
 pub use politeness::{HostGate, Refusal, Robots};
+pub use queries::{looks_like_url, query_text, search_text, since_year};
 pub use registry::{
     classify, route, ChannelEvent, ChannelRegistry, QuestionType, RegistryError, DEFAULT_BACKOFF, MAX_RETRY_WAIT, RATE_LIMIT_RETRIES,
 };
