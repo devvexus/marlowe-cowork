@@ -663,3 +663,31 @@ def main(args):
     assert!(e.contains("line 5") && e.contains("x = x * n"), "{e}");
     assert!(e.contains("line 7") && e.contains("x = x << n"), "{e}");
 }
+
+#[test]
+fn c32_parallel_takes_prompt_strings_and_runs_them_together() {
+    let host = ScriptedHost::new(|c| Scripted::after(150, AgentResult::text(c.prompt.clone(), 1)));
+    let t = std::time::Instant::now();
+    let (r, events) = go("32-parallel-prompts.star", cfg("32", json!({})), host.clone());
+    assert_eq!(r.unwrap().value, json!(["p0", "p1", "p2"]));
+    assert!(t.elapsed() < Duration::from_millis(400), "overlapped: {:?}", t.elapsed());
+    let calls = host.calls();
+    assert!(calls.iter().map(|c| c.started).max().unwrap() < calls.iter().filter_map(|c| c.finished).min().unwrap());
+    assert!(events.iter().any(|e| matches!(e, WfEvent::Phase(p) if p == "fan-out")));
+    // A value that is neither a prompt nor a function is still refused, naming both forms.
+    let e = match check("x.star", "META = {\"description\": \"d\"}\ndef main(args):\n    return parallel([1])\n") {
+        Ok(_) => {
+            let (r, _) = go_source("META = {\"description\": \"d\"}\ndef main(args):\n    return parallel([1])\n", ScriptedHost::echo());
+            format!("{:?}", r.err())
+        }
+        Err(d) => marlowe_workflow::validate::render(&d),
+    };
+    assert!(e.contains("prompt strings or functions"), "{e}");
+}
+
+fn go_source(src: &str, host: Arc<ScriptedHost>) -> (Result<RunOutcome, WorkflowError>, Vec<WfEvent>) {
+    let mut events = Vec::new();
+    let ctl = no_control();
+    let r = run(src, cfg("src", json!({})), host, &mut |e: &WfEvent| events.push(e.clone()), &ctl);
+    (r, events)
+}

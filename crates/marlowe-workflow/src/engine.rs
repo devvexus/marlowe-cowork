@@ -779,7 +779,8 @@ fn host_api(builder: &mut GlobalsBuilder) {
     }
 
     /// Calls every function in `thunks` (no arguments) so their agents run at the same time;
-    /// returns their results in order once all are done. A thunk that fails gives `None`.
+    /// returns their results in order once all are done. A thunk that fails gives `None`. An item
+    /// that is a prompt string stands for `lambda: agent(prompt)`.
     fn parallel<'v>(#[starlark(require = pos)] thunks: Value<'v>, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<Value<'v>> {
         let c = ctx(eval);
         c.require_main("parallel")?;
@@ -792,9 +793,13 @@ fn host_api(builder: &mut GlobalsBuilder) {
             return Err(anyhow::anyhow!("parallel() takes at most {} items", c.cfg.max_items));
         }
         for t in &items {
-            if arity(*t).is_none() {
+            if let Some(p) = t.unpack_str() {
+                if p.trim().is_empty() || p.len() > MAX_PROMPT_BYTES {
+                    return Err(anyhow::anyhow!("parallel([\"prompt\", ...]): each prompt is a non-empty string under {} KB", MAX_PROMPT_BYTES >> 10));
+                }
+            } else if arity(*t).is_none() {
                 return Err(anyhow::anyhow!(
-                    "parallel() takes functions, not values: wrap each call, parallel([lambda: agent(...), ...]); got a {}",
+                    "parallel() takes prompt strings or functions, not values: parallel([\"prompt a\", \"prompt b\"]) or parallel([lambda: agent(...), ...]); got a {}",
                     t.get_type()
                 ));
             }
@@ -804,7 +809,17 @@ fn host_api(builder: &mut GlobalsBuilder) {
         let mut waiting = false;
         for (i, t) in items.into_iter().enumerate() {
             c.pass.borrow_mut().push(format!("{id}.{i}/"));
-            let r = eval.eval_function(t, &[], &[]);
+            // A prompt string is `agent(prompt)` without the lambda around it.
+            let r = match t.unpack_str() {
+                Some(prompt) => {
+                    let opts = AgentOpts { phase: c.pass.borrow().phase.clone(), ..AgentOpts::default() };
+                    match c.agent_call(prompt.to_string(), opts) {
+                        Ok(r) => Ok(to_value(eval.heap(), &r.value)),
+                        Err(h) => Err(c.halt(h).into()),
+                    }
+                }
+                None => eval.eval_function(t, &[], &[]),
+            };
             let pending = std::mem::take(&mut c.pass.borrow_mut().pending);
             let fatal = c.pass.borrow().fatal.clone();
             // The failure line is marked in the item's own frame, so its id names the item

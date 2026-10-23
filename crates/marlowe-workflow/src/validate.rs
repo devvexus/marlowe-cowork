@@ -18,6 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use crate::diagnose;
 use starlark_syntax::codemap::CodeMap;
 use starlark_syntax::lexer::{Lexer, Token};
 use starlark_syntax::syntax::ast::{AstExpr, AstNoPayload, AstStmt, ClauseP, ExprP, StmtP};
@@ -62,6 +63,10 @@ pub struct Meta {
     pub when_to_use: Option<String>,
     #[serde(default)]
     pub phases: Vec<String>,
+    /// What `args` the task takes, for the saved-task list the model reads (`"topic (required);
+    /// questions (optional list)"`, or a dict of name to description).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
 }
 
 impl Meta {
@@ -88,7 +93,18 @@ impl Meta {
                 .collect::<Result<_, _>>()?,
             Some(_) => return Err("META[\"phases\"] must be a list of strings".into()),
         };
-        Ok(Meta { name: s("name")?, description, when_to_use: s("when_to_use")?.or(s("whenToUse")?), phases })
+        let args = match o.get("args") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(t)) => Some(t.clone()),
+            Some(Value::Object(m)) => Some(
+                m.iter().map(|(k, v)| match v.as_str() {
+                    Some(d) => format!("{k} ({d})"),
+                    None => k.clone(),
+                }).collect::<Vec<_>>().join("; "),
+            ),
+            Some(_) => return Err("META[\"args\"] must be a string, or a dict of argument name to description".into()),
+        };
+        Ok(Meta { name: s("name")?, description, when_to_use: s("when_to_use")?.or(s("whenToUse")?), phases, args })
     }
 }
 
@@ -145,6 +161,7 @@ pub fn static_checks(filename: &str, source: &str) -> Result<Validated, Vec<Diag
             None
         }
     };
+    let calls = top_level_host_calls(source, ast.statement());
     let main_params = match main_def(&toks, source) {
         Some(n) if n <= 1 => n,
         Some(_) => {
@@ -152,7 +169,7 @@ pub fn static_checks(filename: &str, source: &str) -> Result<Validated, Vec<Diag
             0
         }
         None => {
-            diags.push(Diagnostic::new(None, "define `def main(args):` at the top level and `return` the team task's result from it"));
+            diags.push(no_main(&calls));
             0
         }
     };
@@ -160,18 +177,22 @@ pub fn static_checks(filename: &str, source: &str) -> Result<Validated, Vec<Diag
     diags.extend(late_binding(&toks, source));
     diags.extend(reserved(&toks, source));
     diags.extend(defined_twice(&toks, source));
-    diags.extend(top_level_host_calls(source, ast.statement()));
+    if main_def(&toks, source).is_some() {
+        diags.extend(stray_host_calls(&toks, source, &calls));
+    }
     match meta {
         Some(meta) if diags.is_empty() => Ok(Validated { meta, main_params }),
         _ => Err(diags),
     }
 }
 
-/// A parse error, with a hint when the script looks like JavaScript.
+/// A parse error: the parser's message with its token list cut down, the bracket or quote mistake
+/// it may have run past, and a hint when the failing line itself is JavaScript.
 fn parse_error(e: &starlark::Error, source: &str) -> Diagnostic {
     let mut d = from_starlark(e);
+    d.message = diagnose::explain_parse(&d.message, source);
     let src_line = d.line.and_then(|l| source.lines().nth((l as usize).saturating_sub(1))).unwrap_or("");
-    if looks_like_js(src_line) || looks_like_js(source) {
+    if looks_like_js(src_line) {
         d.message.push_str(
             " (team task scripts are Starlark, Python-like: `def main(args):`, `x = agent(\"...\")`, `[f(x) for x in xs]`, no `const`, `await`, `=>`, `{ }` blocks or `;`)",
         );
@@ -179,8 +200,13 @@ fn parse_error(e: &starlark::Error, source: &str) -> Diagnostic {
     d
 }
 
-fn looks_like_js(s: &str) -> bool {
-    ["const ", "let ", "await ", "=>", "function ", "export ", "};", "===", "async ", "`"].iter().any(|k| s.contains(k))
+/// Whether `line`, outside its string literals, is JavaScript: a declaration keyword, an arrow, a
+/// strict comparison or a template string. Words inside strings ("bullet points", "=== Data ===")
+/// never count.
+fn looks_like_js(line: &str) -> bool {
+    let f = scan_line(line);
+    f.words.iter().any(|w| matches!(w.as_str(), "const" | "let" | "var" | "await" | "function" | "async" | "export"))
+        || ["=>", "===", "!==", "};", "`"].iter().any(|k| f.code.contains(k))
 }
 
 // ---------------------------------------------------------------- hints for Python habits
@@ -196,6 +222,8 @@ struct LineFacts {
     unterminated: bool,
     /// An f-string whose braces hold more than a name.
     complex_fstring: bool,
+    /// The line with its string literals removed.
+    code: String,
 }
 
 fn scan_line(line: &str) -> LineFacts {
@@ -252,8 +280,10 @@ fn scan_line(line: &str) -> LineFacts {
             }
             i = j + 1;
             last_string_end = Some(i);
+            f.code.push(' ');
             continue;
         }
+        f.code.push(ch);
         if ch.is_alphanumeric() || ch == '_' {
             word.push(ch);
         } else {
@@ -280,6 +310,33 @@ fn habit_hint(line: &str) -> Option<&'static str> {
     let has = |w: &str| f.words.iter().any(|x| x == w);
     if t.starts_with("import ") || (t.starts_with("from ") && has("import")) {
         return Some("Starlark has no import: a script cannot read files or run commands. Pass the items in through `args` or have an agent read them.");
+    }
+    if has("while") {
+        return Some("Starlark has no `while` (so every script ends): loop with `for x in items:` or `for _ in range(N):` with a fixed N.");
+    }
+    if has("try") || has("except") || has("finally") || has("raise") {
+        return Some("Starlark has no try/except/raise: agent() returns None when it fails, so test the result (`if r == None:`) and carry on.");
+    }
+    if has("class") {
+        return Some("Starlark has no `class`: use a dict (`{\"name\": n}`) or a `def` that returns one.");
+    }
+    if has("del") {
+        return Some("Starlark has no `del`: build a new list or dict instead (`[x for x in xs if x != y]`).");
+    }
+    if has("assert") {
+        return Some("Starlark has no `assert`: write `if not ok:` and return or log what failed.");
+    }
+    if has("global") || has("nonlocal") {
+        return Some("Starlark has no `global` or `nonlocal`: pass values into a function as parameters and return the result.");
+    }
+    if has("with") {
+        return Some("Starlark has no `with`: a script has no files or resources to open; call the function directly.");
+    }
+    if has("yield") {
+        return Some("Starlark has no generators: build a list and return it.");
+    }
+    if f.words.windows(2).any(|w| w[0] == "else" && w[1] == "if") {
+        return Some("Starlark spells `else if` as `elif`.");
     }
     if has("isinstance") {
         return Some("Starlark has no isinstance: use `type(x) == \"list\"` (or \"dict\", \"string\", \"int\").");
@@ -861,10 +918,10 @@ pub fn guarded_source(filename: &str, source: &str) -> String {
 /// Host functions that only work while `main` runs.
 const HOST_CALLS: &[&str] = &["agent", "parallel", "pipeline", "team", "workflow"];
 
-/// The host calls that need `main`, made directly at the top level: the top level is never run
-/// before approval, so this is where they are caught.
-fn top_level_host_calls(source: &str, stmt: &AstStmt) -> Vec<Diagnostic> {
-    fn walk(v: Visit<'_, AstNoPayload>, source: &str, out: &mut Vec<Diagnostic>) {
+/// The host calls that need `main`, made directly at the top level (name, line): the top level is
+/// never run before approval, so this is where they are caught.
+fn top_level_host_calls(source: &str, stmt: &AstStmt) -> Vec<(String, u32)> {
+    fn walk(v: Visit<'_, AstNoPayload>, source: &str, out: &mut Vec<(String, u32)>) {
         match &v {
             // A function body or a lambda runs later, from wherever it is called.
             Visit::Stmt(s) if matches!(s.node, StmtP::Def(_)) => return,
@@ -874,10 +931,7 @@ fn top_level_host_calls(source: &str, stmt: &AstStmt) -> Vec<Diagnostic> {
                     if let ExprP::Identifier(id) = &f.node {
                         let name = id.node.ident.as_str();
                         if HOST_CALLS.contains(&name) {
-                            out.push(Diagnostic::new(
-                                Some(line_of(source, e.span.begin().get() as usize)),
-                                format!("call {name}() from inside `def main(args):`, not at the top level of the script"),
-                            ));
+                            out.push((name.to_string(), line_of(source, e.span.begin().get() as usize)));
                         }
                     }
                 }
@@ -889,6 +943,72 @@ fn top_level_host_calls(source: &str, stmt: &AstStmt) -> Vec<Diagnostic> {
     }
     let mut out = Vec::new();
     walk(Visit::Stmt(stmt), source, &mut out);
+    out
+}
+
+fn lines_list(lines: &[u32]) -> String {
+    lines.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")
+}
+
+const MAIN_SKELETON: &str = "def main(args):\n    result = agent(\"...\")\n    return result";
+
+/// One message when there is no `def main`: the skeleton, and where the calls that belong in it
+/// are. The per-call lines would only say the same thing again.
+fn no_main(calls: &[(String, u32)]) -> Diagnostic {
+    let mut msg = format!(
+        "the script has no `def main(args):` at the top level. All the work goes inside it, indented, and it returns the result:\n    {}",
+        MAIN_SKELETON.replace('\n', "\n    ")
+    );
+    if !calls.is_empty() {
+        let lines: Vec<u32> = calls.iter().map(|c| c.1).collect();
+        msg.push_str(&format!("\n(the host calls on line{} {} are at the top level, where they cannot run; move them inside main)", if lines.len() > 1 { "s" } else { "" }, lines_list(&lines)));
+    }
+    Diagnostic::new(None, msg)
+}
+
+/// Host calls outside `main` when it exists: the cause is nearly always an unindented line after
+/// main's body, so say where main's body ends and which lines to indent.
+fn stray_host_calls(toks: &[Tok], source: &str, calls: &[(String, u32)]) -> Vec<Diagnostic> {
+    if calls.is_empty() {
+        return Vec::new();
+    }
+    let lv = levels(toks);
+    let main = bodies(toks, source).into_iter().find(|b| {
+        toks.iter().enumerate().any(|(i, t)| matches!(t.tok, Token::Def) && lv[i] == 0 && line_of(source, t.start) == b.line && toks.get(i + 1).and_then(|n| ident(&n.tok)) == Some("main"))
+    });
+    let Some(main) = main else {
+        let lines: Vec<u32> = calls.iter().map(|c| c.1).collect();
+        return vec![Diagnostic::new(Some(lines[0]), format!("{}() is called at the top level (lines {}); call it from inside `def main(args):`", calls[0].0, lines_list(&lines)))];
+    };
+    let end_tok = (main.from..main.to.min(toks.len())).rev().find(|&k| !matches!(toks[k].tok, Token::Dedent | Token::Newline | Token::Indent));
+    let main_end = end_tok.map_or(main.line, |k| line_of(source, toks[k].start));
+    let after: Vec<&(String, u32)> = calls.iter().filter(|c| c.1 > main_end).collect();
+    let before: Vec<&(String, u32)> = calls.iter().filter(|c| c.1 < main.line).collect();
+    let mut out = Vec::new();
+    if let Some(first) = after.first() {
+        let lines: Vec<u32> = after.iter().map(|c| c.1).collect();
+        out.push(Diagnostic::new(
+            Some(first.1),
+            format!(
+                "{}() on line {} is outside `def main` (line {}) because it is not indented: main's body ends at line {main_end}, and the code from line {} on starts at column 0, so it is top-level code. Indent that code by four spaces, level with main's other lines{}",
+                first.0,
+                first.1,
+                main.line,
+                main_end + 1,
+                if lines.len() > 1 { format!(" (the host calls are on lines {})", lines_list(&lines)) } else { String::new() }
+            ),
+        ));
+    }
+    if let Some(first) = before.first() {
+        out.push(Diagnostic::new(
+            Some(first.1),
+            format!("{n}() on line {l} runs at the top level, above `def main` (line {m}), where it cannot run: call {n}() from inside `def main(args):`", n = first.0, l = first.1, m = main.line),
+        ));
+    }
+    if out.is_empty() {
+        let first = &calls[0];
+        out.push(Diagnostic::new(Some(first.1), format!("{}() on line {} is at the top level of the script: call it from inside `def main(args):`", first.0, first.1)));
+    }
     out
 }
 

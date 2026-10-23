@@ -25,6 +25,7 @@
 #![deny(unsafe_code)]
 
 pub mod convert;
+pub mod diagnose;
 pub mod engine;
 pub mod findings;
 pub mod host;
