@@ -368,6 +368,12 @@ fn c25_args_verbatim() {
 }
 
 #[test]
+fn c25b_no_args_is_an_empty_object_so_get_with_a_default_works() {
+    let (r, _) = go("24-args.star", cfg("24", serde_json::Value::Null), ScriptedHost::echo());
+    assert_eq!(r.unwrap().value, json!({"same": true, "args": {}}));
+}
+
+#[test]
 fn c26_a_misspelt_name_is_found_before_any_agent() {
     let host = ScriptedHost::echo();
     let e = invalid("25-undefined-name.star");

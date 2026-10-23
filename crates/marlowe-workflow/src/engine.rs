@@ -1024,7 +1024,7 @@ fn run_child(c: &Ctx, filename: &str, source: &str, args: &Json) -> Result<Json,
     let globals = globals(&c.cfg);
     let module = Module::new();
     let ast = parse_guarded(filename, source).map_err(|e| ChildErr::Throw(e.to_string()))?;
-    let args_v = to_value(module.heap(), args);
+    let args_v = to_value(module.heap(), &script_args(args));
     module.set("args", args_v);
     let mut eval = Evaluator::new(&module);
     eval.extra = Some(c);
@@ -1093,7 +1093,7 @@ fn pass_inner(ctx: &Ctx, source: &str, globals: &Globals, compile_only: bool) ->
         Err(e) => return PassEnd::Failed(validate::from_starlark(&e)),
     };
     let module = Module::new();
-    let args_v = to_value(module.heap(), &ctx.cfg.args);
+    let args_v = to_value(module.heap(), &script_args(&ctx.cfg.args));
     module.set("args", args_v);
     let mut eval = Evaluator::new(&module);
     eval.extra = Some(ctx);
@@ -1113,6 +1113,12 @@ fn pass_inner(ctx: &Ctx, source: &str, globals: &Globals, compile_only: bool) ->
     let n = arity(main).unwrap_or(0).min(1);
     let r = eval.eval_function(main, &[args_v][..n], &[]);
     end_of(ctx, r)
+}
+
+/// What a script sees as `args`: the JSON the caller passed, or an empty object when it passed none
+/// (a saved team task started by name has no arguments, and `args.get("x", default)` must work).
+fn script_args(args: &Json) -> Json {
+    if args.is_null() { Json::Object(Default::default()) } else { args.clone() }
 }
 
 fn end_of(ctx: &Ctx, r: starlark::Result<Value>) -> PassEnd {
