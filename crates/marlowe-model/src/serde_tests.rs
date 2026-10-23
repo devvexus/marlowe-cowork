@@ -201,3 +201,16 @@ fn pre_m46_stored_json_still_deserialises() {
     assert!(!info.supports_vision);
     assert_eq!(info.context_window, Some(131_072));
 }
+
+#[test]
+fn a_think_budget_is_absent_from_the_wire_when_none_and_round_trips_when_set() {
+    let mut req = ChatRequest::new("m", vec![Message::user("hi")]);
+    let v = serde_json::to_value(&req).unwrap();
+    assert!(v.get("think_budget").is_none());
+    // A request stored before the field existed still loads.
+    assert_eq!(serde_json::from_value::<ChatRequest>(v).unwrap().think_budget, None);
+    req.think_budget = Some(600);
+    let v = serde_json::to_value(&req).unwrap();
+    assert_eq!(v["think_budget"], 600);
+    assert_eq!(serde_json::from_value::<ChatRequest>(v).unwrap(), req);
+}

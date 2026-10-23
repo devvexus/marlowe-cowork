@@ -455,6 +455,7 @@ impl Agent {
                 temperature: None,
                 format: None,
                 lane: self.lane,
+                think_budget: None,
             };
             // A local model keeps its cache only for an exact prefix: say which section broke it.
             let local = matches!(live.model.provider, ProviderKind::Ollama | ProviderKind::LocalGguf);

@@ -120,6 +120,12 @@ pub struct ChatRequest {
     /// Whose conversation this is; only an engine with several slots reads it.
     #[serde(default, skip_serializing_if = "Lane::is_other")]
     pub lane: Lane,
+    /// Most reasoning tokens before the answer, for a request whose reply is a forced form: the
+    /// grammar does not cover reasoning, so without a bound a small model can spend its whole
+    /// window thinking about a trivial form. The llama.cpp engine sends it as
+    /// `thinking_budget_tokens`; Ollama and the cloud providers ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub think_budget: Option<u32>,
 }
 
 impl ChatRequest {
@@ -135,6 +141,7 @@ impl ChatRequest {
             temperature: None,
             format: None,
             lane: Lane::Other,
+            think_budget: None,
         }
     }
 

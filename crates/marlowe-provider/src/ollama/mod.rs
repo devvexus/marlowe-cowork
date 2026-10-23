@@ -358,6 +358,7 @@ impl OllamaProvider {
         // generated text is worth asking the server for.
         let mut raw_asked = req.lane == Lane::Conductor && self.raw_capture.load(Ordering::Relaxed);
         let mut body = llama_chat::chat_body(&planned.body, lease.sampling.as_ref(), lease.slot, &lease.thinking, raw_asked);
+        llama_chat::set_think_budget(&mut body, req.think_budget);
         // The prompt must extend the last one plus its reply, as the model's template renders it.
         self.render.before(&lease.endpoint, &req.model, want.key, &body);
         on(StreamEvent::Sent);
@@ -369,6 +370,7 @@ impl OllamaProvider {
                 self.raw_capture.store(false, Ordering::Relaxed);
                 raw_asked = false;
                 body = llama_chat::chat_body(&planned.body, lease.sampling.as_ref(), lease.slot, &lease.thinking, false);
+                llama_chat::set_think_budget(&mut body, req.think_budget);
                 post(&body)
             }
             other => other,

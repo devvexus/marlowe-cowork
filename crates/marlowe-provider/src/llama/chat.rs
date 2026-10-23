@@ -109,6 +109,16 @@ pub fn chat_body(planned: &Value, sampling: Option<&Sampling>, slot: u32, thinki
     Value::Object(body)
 }
 
+/// Bounds the reasoning of a call whose reply is a forced form (`ChatRequest::think_budget`):
+/// llama-server stops reasoning after `budget` tokens and goes on to the answer, which the grammar
+/// then shapes. Measured on a CPU llama-server: without it a trivial form spent a whole window
+/// reasoning and the answer never came. `None` leaves the body alone.
+pub fn set_think_budget(body: &mut Value, budget: Option<u32>) {
+    if let (Some(budget), Some(o)) = (budget, body.as_object_mut()) {
+        o.insert("thinking_budget_tokens".into(), json!(budget));
+    }
+}
+
 /// One Ollama-shaped message as an OpenAI one: arguments as a JSON string, thinking as
 /// `reasoning_content`, the tool's name beside its result.
 fn convert_message(m: &Value) -> Value {
@@ -418,6 +428,15 @@ mod tests {
         // Without a `.params` layer the defaults are Ollama's.
         let d = chat_body(&planned, None, 0, &Thinking::Keeps, false);
         assert_eq!((d["temperature"].as_f64(), d["top_k"].as_i64(), d["repeat_penalty"].as_f64()), (Some(0.8), Some(40), Some(1.1)));
+    }
+
+    #[test]
+    fn a_think_budget_rides_as_thinking_budget_tokens_and_is_absent_otherwise() {
+        let mut b = chat_body(&json!({"messages": [], "options": {}}), None, 0, &Thinking::Keeps, false);
+        set_think_budget(&mut b, None);
+        assert!(b.get("thinking_budget_tokens").is_none());
+        set_think_budget(&mut b, Some(600));
+        assert_eq!(b["thinking_budget_tokens"], 600);
     }
 
     #[test]
