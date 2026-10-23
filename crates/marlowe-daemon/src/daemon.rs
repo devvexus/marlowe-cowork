@@ -559,12 +559,15 @@ impl Daemon {
             core.add_writer(crate::watch_ops::watch_voice_load(core.clone())?);
         }
         if let Some(setup) = deps.crew {
+            let projects = setup.projects.clone();
             // A crew that will not start leaves the daemon without one, said in the daemon log.
             match crate::crew::start(&core, setup) {
                 Ok(forwarder) => {
                     core.add_writer(forwarder);
                     // Results a previous daemon finished but never delivered.
                     crate::crew::relay_due(&core);
+                    // Projects share the crew's model slots, so they start after it.
+                    crate::project_ops::start(&core, projects);
                 }
                 Err(e) => eprintln!("marlowe: {e}"),
             }
@@ -645,6 +648,7 @@ impl Daemon {
         // wakes to a stop (the runner reads the flag before the refusal), not a refusal; the wait
         // for the threads is in `settle`, after the models are unloaded.
         let in_flight = crate::close_ops::pause(&core);
+        crate::project_ops::suspend(&core);
         core.approvals.deny_all();
         let end = PhaseEvent::end(PhaseKind::Shutdown, paused.elapsed().as_millis() as u64).stage("pause");
         crate::close_ops::publish(&core, end.with_done(in_flight.len() as u64).unit("runs"));

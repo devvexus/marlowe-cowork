@@ -449,6 +449,21 @@ impl ProjectService {
 
     // ---- running -----------------------------------------------------------------------------
 
+    /// Starts the engine of a project that was running when the process stopped and could not be
+    /// resumed then (no model was loaded). Does nothing for a project that runs, is parked on a
+    /// card or has ended.
+    pub fn resume(&self, id: &str) -> Result<(), ProjectError> {
+        if self.is_running(id) {
+            return Ok(());
+        }
+        let store = self.store()?;
+        let state = self.load(&store, id)?;
+        if state.status.is_terminal() || state.open_gate().is_some() {
+            return Ok(());
+        }
+        self.start_run(state, None)
+    }
+
     /// Starts an engine for `state`, first applying `answer` (gate, choice, text) when given.
     fn start_run(&self, state: ProjectState, answer: Option<(String, String, Option<String>)>) -> Result<(), ProjectError> {
         let id = state.id.clone();
@@ -724,7 +739,7 @@ pub fn relay_text(st: &ProjectState, dir: Option<&std::path::Path>, reason: Opti
     let mut out = String::new();
     match st.status {
         ProjectStatus::Finished => {
-            out.push_str(&format!("[Project {} finished: {}]\n", st.id, clip(&st.title, 80)));
+            out.push_str(&format!("Project {} finished: {}\n", st.id, clip(&st.title, 80)));
             let report = st.items_of_kind("report").into_iter().rev().find(|r| r.status == ItemStatus::Done);
             match report {
                 Some(r) => {
@@ -748,7 +763,7 @@ pub fn relay_text(st: &ProjectState, dir: Option<&std::path::Path>, reason: Opti
             }
         }
         _ => {
-            out.push_str(&format!("[Project {} stopped: {}]\n", st.id, clip(&st.title, 80)));
+            out.push_str(&format!("Project {} stopped: {}\n", st.id, clip(&st.title, 80)));
             out.push_str(&format!("Outcome: {}.", status_word(st)));
             if let Some(r) = reason {
                 out.push_str(&format!(" {}", clip(r, 300)));

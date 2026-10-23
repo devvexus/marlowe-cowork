@@ -8,7 +8,7 @@
 //! | [`tools`] | `mcp_ops::compose` (K: the MCP host beside the built-ins) |
 //! | [`Stack`] middleware | `mode_ops::middleware` (E: hooks, modes, rules), `conductor_ops::middleware` (F: todo and verify reminders), `checkpoint::middleware` (F2: snapshots in `pre_mutation`), `task_ops::middleware` (N: background news at a step boundary), `f3_ops::middleware` (F3: `ultrathink` and `+500k`, the task-list mirror) |
 //! | [`Stack`] observers | `mode_ops::observers` (E: SessionStart and Notification hooks), `checkpoint::observers` (F2: per-call and per-batch turn rows) |
-//! | [`Stack`] services | `mode_ops::services` (E: the hook runner), `teams_ops::services` (the Teams reminder), `conductor_ops::services` (F: `ask_user`, subagents, worktrees), `task_ops::services` (N: the task registry), `notify_ops::services` (N), `workflow_ops::services` (W), `f3_ops::services` (F3), `web_ops::services` (T20: the `web_fetch` prompt digest) |
+//! | [`Stack`] services | `mode_ops::services` (E: the hook runner), `teams_ops::services` (the Teams reminder), `conductor_ops::services` (F: `ask_user`, subagents, worktrees), `task_ops::services` (N: the task registry), `notify_ops::services` (N), `workflow_ops::services` (W), `project_ops::services` (the project service), `f3_ops::services` (F3), `web_ops::services` (T20: the `web_fetch` prompt digest) |
 //!
 //! The exec-side middleware (A's `FileState`, B's job notices, C's diagnostics) comes from the
 //! tool host itself (`ToolHost::middleware`, seeded by `Agent::new`), built next to its state.
@@ -45,13 +45,14 @@ impl Stack {
         ]
         .concat();
         let observers = [crate::mode_ops::observers(core, convo), crate::checkpoint::observers(core, convo)].concat();
-        let adders: [fn(&Arc<Core>, &Conversation, Services) -> Services; 8] = [
+        let adders: [fn(&Arc<Core>, &Conversation, Services) -> Services; 9] = [
             crate::mode_ops::services,
             crate::teams_ops::services,
             crate::conductor_ops::services,
             crate::task_ops::services,
             crate::notify_ops::services,
             crate::workflow_ops::services,
+            crate::project_ops::services,
             crate::f3_ops::services,
             crate::web_ops::services,
         ];

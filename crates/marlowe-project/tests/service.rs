@@ -146,7 +146,7 @@ fn approval_runs_the_project_to_its_end_and_the_host_gets_the_words_once() {
     let ended = host.ended.lock().unwrap().clone();
     assert_eq!(ended.len(), 1);
     assert_eq!(ended[0].session.as_deref(), Some("s_9"));
-    assert!(ended[0].text.starts_with(&format!("[Project {id} finished")) && ended[0].text.contains("project.json"), "{}", ended[0].text);
+    assert!(ended[0].text.starts_with(&format!("Project {id} finished")) && ended[0].text.contains("project.json"), "{}", ended[0].text);
     assert_eq!(svc.relays_due().len(), 1, "due until the host says it was delivered");
     svc.mark_relayed(&id).unwrap();
     assert!(svc.relays_due().is_empty());

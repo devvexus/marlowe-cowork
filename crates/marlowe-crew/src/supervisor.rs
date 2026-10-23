@@ -129,6 +129,20 @@ pub struct CrewSetup {
     /// Research channels and the corpus fetcher ([`crate::playbook::research_v2::ChannelIo`]).
     /// `None` keeps deep research on v1.
     pub research: Option<Arc<dyn ResearchIo>>,
+    /// What projects need from the binary. `None`: no projects (the `manage_project` tool answers
+    /// that there is no project service).
+    pub projects: Option<ProjectSetup>,
+}
+
+/// Builds the research dependencies of a project given where its memories go. The binary owns
+/// the keyless channels and the corpus fetcher; the daemon owns the memory.
+pub type ResearchFactory = Arc<dyn Fn(Arc<dyn marlowe_project::research::MemorySink>) -> Arc<marlowe_project::research::ResearchDeps> + Send + Sync>;
+
+/// The binary's part of the project service.
+#[derive(Clone)]
+pub struct ProjectSetup {
+    /// Makes the research dependencies (channels, fetcher, the project and output folders).
+    pub research: ResearchFactory,
 }
 
 /// Everything a supervisor needs.

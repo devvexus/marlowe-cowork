@@ -233,6 +233,12 @@ fn dispatch(core: &Arc<Core>, client: u64, client_name: &str, req: Request) {
         | Request::RunWorkflow { .. }
         | Request::SkipWorkflowAgent { .. }
         | Request::ListFindings { .. }) => crate::workflow_ops::dispatch(core, client, flow),
+        proj @ (Request::ListProjects
+        | Request::GetProject { .. }
+        | Request::AnswerProjectGate { .. }
+        | Request::CheckinProject { .. }
+        | Request::CancelProject { .. }
+        | Request::ReopenProject { .. }) => crate::project_ops::dispatch(core, client, proj),
         // Closing the window (N): the daemon's own lifetime.
         close @ (Request::WindowClosed
         | Request::Detach { .. }

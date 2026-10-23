@@ -11,7 +11,7 @@ use crate::crew::{CrewRunInfo, CrewStep, Dispatch, RoleInfo, RunId};
 use crate::ids::{ApprovalId, SessionId};
 use crate::memory::{ImportReport, MemoryChange, MemoryHit, MemoryStatsReport};
 use crate::phase::{PhaseEvent, PhaseSpan, StageMs, TurnNumbers};
-use crate::project::{ProjectGateOption, ProjectPatch};
+use crate::project::{ProjectGateOption, ProjectPatch, ProjectSummary};
 use crate::request::{ApprovalDecision, Slot};
 use crate::research::{CostQuote, ResearchPlan, ResearchProgress};
 use crate::watch::{BriefItem, Notice, VoiceStatus, WatchCandidate, WatchState};
@@ -297,6 +297,8 @@ pub enum Event {
     /// A project's whole state at revision `rev` (reply to a state request, and the answer to a
     /// revision gap).
     ProjectState { project: String, rev: u64, state: serde_json::Value },
+    /// Reply to `ListProjects`, newest first.
+    ProjectList { projects: Vec<ProjectSummary> },
     /// A project parked on a gate and waits for the user (broadcast). `kind` is `plan` or
     /// `checkin`; `summary` is one line for a notice.
     ProjectGateRaised {

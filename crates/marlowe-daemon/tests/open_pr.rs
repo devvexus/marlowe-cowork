@@ -173,7 +173,7 @@ fn parity_g3_open_pr_asks_once_then_pushes_and_opens() {
         mind: None,
         sentinel: None,
         voice: None,
-        crew: Some(CrewSetup { tools: Arc::new(|_, _| Arc::new(RecordingGh::default()) as Arc<dyn ToolHost>), config: CrewConfig::default(), research: None }),
+        crew: Some(CrewSetup { tools: Arc::new(|_, _| Arc::new(RecordingGh::default()) as Arc<dyn ToolHost>), config: CrewConfig::default(), research: None, projects: None }),
     };
     let d = Daemon::start(deps, &home, DaemonConfig::default()).expect("daemon starts");
     let info = d.info();

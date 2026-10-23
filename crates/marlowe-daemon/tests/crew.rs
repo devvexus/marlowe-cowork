@@ -266,7 +266,7 @@ fn deps_with(provider: Arc<Routed>, crew: bool, up: Arc<std::sync::atomic::Atomi
     let mut providers = ProviderFactory::new(Arc::new(MemoryStore::new()));
     providers.register(ProviderKind::Ollama, move |_| Ok(provider.clone() as Arc<dyn Provider>));
     providers.set_hardware(marlowe_brains::Hardware { models: Arc::new(Engine(up)), gpu: Arc::new(NoGpu), server: Arc::new(NoServer) });
-    let setup = CrewSetup { tools: Arc::new(|_, _| Arc::new(FakeTools) as Arc<dyn ToolHost>), config: CrewConfig::default(), research: None };
+    let setup = CrewSetup { tools: Arc::new(|_, _| Arc::new(FakeTools) as Arc<dyn ToolHost>), config: CrewConfig::default(), research: None, projects: None };
     DaemonDeps {
         providers,
         tools: Arc::new(|_| Arc::new(FakeTools) as Arc<dyn ToolHost>),

@@ -8,6 +8,7 @@ mod client;
 mod commands;
 mod crew_cmd;
 mod crew_plan;
+mod project_cmd;
 mod daemon_ctl;
 mod doctor;
 mod eval;
@@ -56,6 +57,11 @@ marlowe crew [list [N] | show <run> | roles | dispatch <role> <goal> [--playbook
               | merge <run> [--yes] | discard <run> [--yes]]
                                           crew runs; merge and discard ask for approval;
                                           deep research waits for its plan to be approved
+marlowe project [list [--json] | show <id> | view <id> | overview | card <id>
+                | answer <id> <approve|keep_researching|steer|cancel> [text]
+                | checkin <id> | cancel <id> | reopen <id> <stage>]
+                                          projects: the state as JSON, drawn as text, and the open card;
+                                          reading needs no daemon, answering goes through it
 marlowe me [--name N] [--address sir|name|none]
                                           what Marlowe calls you (prints it with no flags)
 marlowe math [--grid | --images] [--width N]
@@ -122,6 +128,7 @@ fn dispatch(home: &std::path::Path, args: &[String]) -> Result<i32, String> {
         Some("say") => watch_cmd::say(home, rest),
         Some("me") => me_cmd::run(home, rest),
         Some("crew") => crew_cmd::run(home, rest),
+        Some("project") => project_cmd::run(home, rest),
         Some("status") => commands::status(home),
         Some("shutdown") => commands::shutdown(home),
         Some("doctor") => Ok(doctor::run(home, rest)),

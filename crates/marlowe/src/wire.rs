@@ -272,7 +272,13 @@ fn crew_setup(home: &Path) -> CrewSetup {
     let settings = crate::research_wire::ResearchSettings::load(home);
     let config = CrewConfig { research: settings.v2(), ..CrewConfig::default() };
     let research = (!scripted()).then(|| crate::research_wire::research_io(home, &settings));
-    CrewSetup { tools: crew_tool_factory(home), config, research }
+    // Projects need the network side too; a scripted run has none.
+    let projects = (!scripted()).then(|| {
+        let home = home.to_path_buf();
+        let settings = settings.clone();
+        marlowe_crew::ProjectSetup { research: Arc::new(move |memory| crate::research_wire::project_research(&home, &settings, memory)) }
+    });
+    CrewSetup { tools: crew_tool_factory(home), config, research, projects }
 }
 
 /// The watchers over the persisted roots. A Sentinel that fails to start (or panics doing so)

@@ -188,8 +188,8 @@ mod tests {
     }
 
     /// A15, the dusk profile at 32k, this host alone: persona and blocks (v3, memory, crew and the
-    /// live groups') inside their 2,000-token slice, the built-in tool schemas inside their 7,000,
-    /// and the fitter keeps the whole prefix inside 12,500 with every oversized section cut,
+    /// live groups') inside their 2,200-token slice, the built-in tool schemas inside their 7,400,
+    /// and the fitter keeps the whole prefix inside 13,000 with every oversized section cut,
     /// visibly. Every built-in is listed (nothing is behind `tool_search`), so this waits for the
     /// compact specs; the wired conductor's own tools are counted in
     /// `parity_a15_instructions_at_their_cap_reach_dusk_uncut` and in the daemon's

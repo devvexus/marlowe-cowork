@@ -568,6 +568,27 @@ pub enum Request {
         session: Option<SessionId>,
     },
 
+    // Projects (`project_ops.rs`).
+    /// Answered with `ProjectList`.
+    ListProjects,
+    /// Answered with `ProjectState`: the project's whole state.
+    GetProject { project: String },
+    /// Answers the project's open card (`approve`, `keep_researching`, `steer` with `text`,
+    /// `cancel`) and sets it running again; the answer is broadcast as `ProjectGateAnswered`.
+    AnswerProjectGate {
+        project: String,
+        gate: String,
+        choice: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
+    /// Forces a checkin at the next safe point.
+    CheckinProject { project: String },
+    /// Cancels the project (it can be reopened from a stage).
+    CancelProject { project: String },
+    /// Re-queues the project from the state a stage started from (`ph_dv`, `DataValidation`, `final`).
+    ReopenProject { project: String, phase: String },
+
     // F3: the conductor's plan file, `/fast`, rule suggestions (`f3_ops.rs`).
     /// `/fast`: the conductor runs on the `Quick` slot's model, or back; answered with
     /// `FastChanged` (broadcast).

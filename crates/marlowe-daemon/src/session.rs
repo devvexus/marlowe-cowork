@@ -457,6 +457,7 @@ fn serve(
             // load it themselves go out now (this session's land in the queue read below).
             if !input.relay {
                 crate::crew::retry_deferred(core);
+                crate::project_ops::retry_deferred(core);
                 let mut st = lock(&handle.state);
                 let held = std::mem::take(&mut st.held);
                 st.relays.extend(held);
@@ -582,7 +583,7 @@ fn run_one(
             // hears the outcome now all the same.
             eprintln!("marlowe: a relay waits for the next turn: {message}");
             crate::crew::announce_held(core, &session, &input.text);
-            if !crate::crew::defer(core, &input.text) {
+            if !crate::crew::defer(core, &input.text) && !crate::project_ops::defer(core, &input.text) {
                 // A job notice or an agent's report: held by the session, not dropped.
                 lock(&handle.state).held.push(input.clone());
             }
@@ -723,6 +724,7 @@ fn run_one(
         Ok(()) => {
             for relay in input.relay.then_some(&input.text).into_iter().chain(&steered) {
                 crate::crew::delivered(core, relay);
+                crate::project_ops::delivered(core, relay);
             }
         }
         Err(e) => {

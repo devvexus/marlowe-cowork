@@ -10,7 +10,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use marlowe_agent::teams::{on_reminder_naming, TeamsNote, OFF_NOTICE};
+use marlowe_agent::teams::{is_research_request, looks_substantial, on_reminder_naming, on_reminder_projects, TeamsNote, OFF_NOTICE, RESEARCH_REMINDER, SUGGEST_REMINDER};
 use marlowe_agent::{Conversation, Services};
 use marlowe_proto::{Event, Request, SessionId};
 use marlowe_settings::Settings;
@@ -101,6 +101,35 @@ fn named_task(core: &Core, workspace: Option<&Path>, text: &str) -> Option<Strin
     marlowe_workflow::saved::named_in(&catalog, text).map(marlowe_workflow::saved::describe)
 }
 
+/// The saved team task the message names, described for the reminder, and whether a project
+/// kind replaces it.
+fn named_task_superseded(core: &Core, workspace: Option<&Path>, text: &str) -> Option<(String, bool)> {
+    static KINDS: std::sync::OnceLock<marlowe_project::Registry> = std::sync::OnceLock::new();
+    let roots = marlowe_workflow::service::roots(&core.home, workspace, marlowe_agent::commands::plugin::bundle_roots(Some(&core.home), workspace));
+    let catalog = roots.catalog();
+    let found = marlowe_workflow::saved::named_in(&catalog, text)?;
+    let replaced = KINDS.get_or_init(marlowe_project::Registry::builtin).superseded_by(&found.name).is_some();
+    Some((marlowe_workflow::saved::describe(found), replaced))
+}
+
+/// What a turn is told when the daemon runs projects: Teams on points substantive requests (and
+/// every research request) at a project; Teams off starts a research project for a research
+/// request (its plan card is the ask) and only offers one for other substantial work.
+fn project_reminder(core: &Core, workspace: Option<&Path>, mode: Mode, text: &str) -> Option<String> {
+    match mode {
+        Mode::On => {
+            let (named, superseded) = match named_task_superseded(core, workspace, text) {
+                Some((d, s)) => (Some(d), s),
+                None => (None, false),
+            };
+            Some(on_reminder_projects(size(core, workspace), named.as_deref(), superseded))
+        }
+        _ if is_research_request(text) => Some(RESEARCH_REMINDER.to_string()),
+        _ if looks_substantial(text) => Some(SUGGEST_REMINDER.to_string()),
+        _ => None,
+    }
+}
+
 /// A session's turn reminder: the on-reminder while Teams is on, the off notice once after it is
 /// switched off. A crew result relayed into the conversation is not a user turn and gets none.
 pub(crate) fn services(core: &Arc<Core>, convo: &Conversation, services: Services) -> Services {
@@ -113,12 +142,19 @@ pub(crate) fn services(core: &Arc<Core>, convo: &Conversation, services: Service
         }
         let core = weak.upgrade()?;
         let ws = workspace.as_deref();
+        let projects = crate::project_ops::live(&core);
         match mode(&core, &session, ws) {
+            Mode::On if projects => project_reminder(&core, ws, Mode::On, text),
             Mode::On => Some(on_reminder_naming(size(&core, ws), named_task(&core, ws, text).as_deref())),
             Mode::OffPending => {
                 write(&core, &session, Mode::Off);
-                Some(OFF_NOTICE.to_string())
+                // The off notice goes first; a research request in the same message still starts a project.
+                match projects.then(|| project_reminder(&core, ws, Mode::Off, text)).flatten() {
+                    Some(extra) => Some(format!("{OFF_NOTICE}{extra}")),
+                    None => Some(OFF_NOTICE.to_string()),
+                }
             }
+            Mode::Off if projects => project_reminder(&core, ws, Mode::Off, text),
             Mode::Off => None,
         }
     }));

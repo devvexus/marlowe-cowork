@@ -51,3 +51,25 @@ pub struct ProjectGateOption {
     #[serde(default)]
     pub needs_text: bool,
 }
+
+/// One project in a listing (the index row, as a client sees it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectSummary {
+    /// `p_<8hex>`.
+    pub id: String,
+    /// A short name.
+    pub title: String,
+    /// The project kind (`research`).
+    pub kind: String,
+    /// `awaiting_plan`, `running`, `awaiting_checkin`, `finished`, `cancelled` or `failed`.
+    pub status: String,
+    /// The current phase type.
+    pub phase: String,
+    /// The revision saved.
+    pub rev: u64,
+    /// When it last changed, in Unix milliseconds.
+    pub updated_ms: u64,
+    /// The conversation that started it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+}

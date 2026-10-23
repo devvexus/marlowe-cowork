@@ -701,8 +701,8 @@ mod tests {
         assert_eq!(w.host.persona_blocks().len(), w.system.blocks().len() - 2, "memory and crew are the daemon's; the rest are the host's");
     }
 
-    /// Gate A15, the sizes (design.budget): tools inside 7,000 tokens, persona and blocks inside
-    /// 2,000, the fitted prefix inside 12,500 with project instructions at their cap arriving
+    /// Gate A15, the sizes (design.budget): tools inside 7,400 tokens, persona and blocks inside
+    /// 2,200, the fitted prefix inside 13,000 with project instructions at their cap arriving
     /// uncut.
     #[test]
     fn the_wired_dusk_prefix_fits_its_slices_in_a_repository() {

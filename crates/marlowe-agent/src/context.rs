@@ -681,8 +681,9 @@ pub struct PrefixBudget {
 }
 
 impl PrefixBudget {
-    /// 32k class: 12.5k (persona+blocks 2.0k, tools 7.0k, instructions 1.5k, profile 0.3k, repo
-    /// map 0.8k, skills 0.4k, style 0.2k, slack 0.3k); 48k to 200k: 20k (typed built-ins about
+    /// 32k class: 13k (persona+blocks 2.2k, tools 7.4k, instructions 1.5k, profile 0.3k, repo
+    /// map 0.8k, skills 0.4k, style 0.2k, slack 0.2k; projects added `manage_project` and its
+    /// block, 0.4k and 0.2k over the earlier 7.0k and 2.0k); 48k to 200k: 20k (typed built-ins about
     /// 7.5k plus 2.5k for MCP in the tools slice); 200k and more: 34k with instructions uncapped
     /// (taken from the 7k slack first). Every built-in of the host's groups is listed on every
     /// window, so the tools slice is sized for all of them; what MCP may take is that slice minus
@@ -693,7 +694,7 @@ impl PrefixBudget {
         } else if window > 48_000 {
             Self { window, total: 20_000, persona: 2_500, tools: 10_000, instructions: Some(4_000), profile: 500, repo_map: 2_000, skills: 600, style: 300, tail: 1_500 }
         } else {
-            Self { window, total: 12_500, persona: 2_000, tools: 7_000, instructions: Some(1_500), profile: 300, repo_map: 800, skills: 400, style: 200, tail: 1_000 }
+            Self { window, total: 13_000, persona: 2_200, tools: 7_400, instructions: Some(1_500), profile: 300, repo_map: 800, skills: 400, style: 200, tail: 1_000 }
         }
     }
 }
@@ -1036,7 +1037,7 @@ mod tests {
     #[test]
     fn the_budget_scales_with_the_window() {
         let small = PrefixBudget::for_window(32_768);
-        assert_eq!((small.total, small.tools, small.persona, small.repo_map, small.tail), (12_500, 7_000, 2_000, 800, 1_000));
+        assert_eq!((small.total, small.tools, small.persona, small.repo_map, small.tail), (13_000, 7_400, 2_200, 800, 1_000));
         assert_eq!(PrefixBudget::for_window(48_000).total, small.total, "48k is still the small class");
         let mid = PrefixBudget::for_window(131_072);
         assert_eq!((mid.total, mid.tools, mid.persona, mid.tail), (20_000, 10_000, 2_500, 1_500));

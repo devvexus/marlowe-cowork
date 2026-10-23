@@ -55,7 +55,7 @@ pub use frame::{write_line, FrameError, LineReader, MAX_LINE_BYTES};
 pub use ids::{ApprovalId, SessionId};
 pub use memory::{ImportReport, MemoryChange, MemoryHit, MemoryKind, MemoryScope, MemoryStatsReport, MemoryTrust};
 pub use paths::DaemonInfo;
-pub use project::{PatchOp, ProjectGateOption, ProjectPatch};
+pub use project::{PatchOp, ProjectGateOption, ProjectPatch, ProjectSummary};
 pub use phase::{PhaseEvent, PhaseKind, PhaseSpan, PhaseState, ReadStat, StageMs, TurnNumbers};
 pub use request::{ApprovalDecision, Request, Secret, Slot, SlotParseError};
 pub use research::{

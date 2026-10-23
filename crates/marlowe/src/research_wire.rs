@@ -208,7 +208,6 @@ impl SearchBackend for KeylessSearch {
 // ---- projects ------------------------------------------------------------------------------------
 
 /// Channel search for a project: the keyless registry behind `marlowe_project::research::Web`.
-#[allow(dead_code)] // wired by the project tool
 pub struct ProjectWeb {
     registry: Arc<ChannelRegistry>,
     http: Arc<dyn HttpGet>,

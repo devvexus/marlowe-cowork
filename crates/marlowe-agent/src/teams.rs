@@ -28,6 +28,49 @@ pub fn on_reminder_naming(size: u32, named: Option<&str>) -> String {
     )
 }
 
+/// [`on_reminder_naming`] for a daemon that runs projects: a substantive request starts a project
+/// (`manage_project`), not a team task. `named` is a saved team task the user's message names, and
+/// `superseded` whether a project kind replaces it (then the note points at a project instead).
+pub fn on_reminder_projects(size: u32, named: Option<&str>, superseded: bool) -> String {
+    let named = match (named, superseded) {
+        (Some(n), true) => format!(" The user named a saved team task: {n}. A project replaces it: start one with manage_project{{action:\"create\"}} and write no team script."),
+        (Some(n), false) => format!(" The user named a saved team task: {n}. Run that one now: team{{name, args}}, taking the args from their words; write no script and pass no path."),
+        (None, _) => String::new(),
+    };
+    format!(
+        "<system-reminder>Teams is on: for every substantive request start a project with manage_project{{action:\"create\"}} without asking; \
+         any request for research or deep research is one. Write the plan yourself (objective, questions, fields); the user approves the \
+         plan card before anything runs. Stay solo for conversation and trivial edits. Use a team task (team) only when the user names a \
+         saved one or asks for a script, and keep a team under {size} specialists.{named}</system-reminder>"
+    )
+}
+
+/// Teams is off and the user asks for research: a research project is the answer in both states
+/// (the plan card is the ask, and nothing is read before the user approves it).
+pub const RESEARCH_REMINDER: &str = "<system-reminder>The user asks for research. Start a research project with manage_project{action:\"create\"} (objective, questions, fields): its plan card is the question to the user, and nothing is read until they approve it, so do not ask first.</system-reminder>";
+
+/// Teams is off and the request looks substantial: offer a project, do not start one.
+pub const SUGGEST_REMINDER: &str = "<system-reminder>If this request is substantial (several steps, a lot to read or build), say in one sentence that a project could do it and offer. Call manage_project only after the user agrees.</system-reminder>";
+
+/// Whether the message asks for research or deep research. Whole words only: "research",
+/// "researching", "literature review", "state of the art"; not "researcher" or "re-search".
+pub fn is_research_request(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let mut words = lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty());
+    words.any(|w| matches!(w, "research" | "researching" | "researched"))
+        || lower.contains("literature review")
+        || lower.contains("state of the art")
+        || lower.contains("state-of-the-art")
+}
+
+/// Whether a message looks like work too big for one reply: a long message, or a shorter one
+/// laid out as a list. Only used to offer a project when Teams is off.
+pub fn looks_substantial(text: &str) -> bool {
+    let words = text.split_whitespace().count();
+    let lines = text.lines().filter(|l| !l.trim().is_empty()).count();
+    words >= 40 || (words >= 20 && lines >= 4)
+}
+
 /// A service: the reminder for the turn now starting (given the user's text), if any. Asked once
 /// per turn (the off notice is handed out once), so it may change what it remembers.
 #[derive(Clone)]
@@ -36,5 +79,43 @@ pub struct TeamsNote(pub Arc<dyn Fn(&str) -> Option<String> + Send + Sync>);
 impl TeamsNote {
     pub fn note(&self, user_text: &str) -> Option<String> {
         (self.0)(user_text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn research_is_a_whole_word_and_a_few_phrases() {
+        for yes in [
+            "Do a deep research on the newest open models",
+            "can you research kimi k3?",
+            "I want a literature review of pruning",
+            "what is the state of the art in speculative decoding",
+            "Researching this by hand is slow",
+        ] {
+            assert!(is_research_request(yes), "{yes}");
+        }
+        for no in ["fix the failing test", "the researcher notebook", "a re-search of the file tree", "search the web for kimi"] {
+            assert!(!is_research_request(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn substantial_is_length_or_a_list() {
+        assert!(!looks_substantial("fix the typo in the readme"));
+        assert!(looks_substantial(&"word ".repeat(45)));
+        assert!(looks_substantial("Please do these things for me:\n- one two three four\n- five six seven eight\n- nine ten eleven twelve\n- and thirteen fourteen fifteen"));
+    }
+
+    #[test]
+    fn the_project_reminder_points_at_projects_and_keeps_the_team_for_named_tasks() {
+        let r = on_reminder_projects(5, None, false);
+        assert!(r.starts_with("<system-reminder>Teams is on: for every substantive request start a project"), "{r}");
+        assert!(r.contains("manage_project") && r.contains("under 5 specialists") && r.ends_with("</system-reminder>"));
+        assert!(on_reminder_projects(5, Some("code-review (args: path)"), false).contains("Run that one now: team{name, args}"));
+        let sup = on_reminder_projects(5, Some("web-research"), true);
+        assert!(sup.contains("A project replaces it") && !sup.contains("Run that one now"), "{sup}");
     }
 }
