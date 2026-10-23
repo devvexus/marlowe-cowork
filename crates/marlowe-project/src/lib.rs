@@ -2,7 +2,7 @@
 //!
 //! A project is a durable, staged piece of work that a small model can start and a crowd of
 //! single-task models can finish (design: `docs/research/projects-design.md`). This crate holds
-//! the parts that need no model and no agent loop:
+//! the parts that need no agent loop (an employee has no tools; the engine calls a model through `marlowe-model`'s `Provider`):
 //!
 //! | Module | What it is |
 //! |---|---|
@@ -16,6 +16,7 @@
 //! | [`view`] | The view-model: **one renderer over any project's JSON** (badge, link, table, bar, meter, duration, agent chips), a plain-text painter, and the overview rollups. |
 //! | [`store`] | Files under the Marlowe home (atomic `project.json`, journal, content-addressed sources, archive, reopen, disposal) and the `projects` index in `cowork.db`. |
 //! | [`actor`] | The single writer for a running project: applies mutations, coalesces events, saves. |
+//! | [`engine`] | The phase engine: the employee runner (one fresh-context, tool-less model call forced into its form, validated and retried), the scheduler (lanes, pipelining, delta merges, gates, budgets, cancel), the journal that makes a restart a replay, and the toolbox of named functions a phase points at. |
 //!
 //! Two rules shape everything here. The screen is derived from the JSON: nothing in [`view`]
 //! knows what a source or an experiment is, so a kind nobody wrote screen code for still draws.
@@ -26,6 +27,7 @@
 #![warn(missing_docs)]
 
 pub mod actor;
+pub mod engine;
 pub mod form;
 pub mod ids;
 pub mod mutation;
@@ -37,6 +39,7 @@ pub mod state;
 pub mod store;
 pub mod view;
 
+pub use engine::{Engine, EngineConfig, RunOutcome, Toolbox};
 pub use actor::{ActorConfig, ActorError, ProjectActor, ProjectEvent, ProjectHandle};
 pub use form::{data_schema, model_schema, Field, FieldSource, FieldType, Form, Show, ShowAs, Tone, Who};
 pub use mutation::{Applied, ItemUpdate, LiveUpdate, Mutation, MutationError, PhaseUpdate};

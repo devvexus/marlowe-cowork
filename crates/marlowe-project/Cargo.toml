@@ -3,10 +3,11 @@ name = "marlowe-project"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Projects: the plan, the project state JSON, the form schemas with display hints, the view-model that draws any project, and the store. No model calls and no agent loop."
+description = "Projects: the plan, the project state JSON, the form schemas with display hints, the view-model that draws any project, and the store. The employee runner and the phase engine (no agent loop: an employee has no tools)."
 
 [dependencies]
 marlowe-contract.workspace = true
+marlowe-model.workspace = true
 marlowe-proto.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -15,3 +16,6 @@ blake3.workspace = true
 rusqlite.workspace = true
 crossbeam-channel.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+marlowe-provider.workspace = true
