@@ -288,7 +288,9 @@ impl AgentRunner {
             cache: false,
         }];
         req.format = Some(schema.clone());
-        req.effort = marlowe_model::Effort::Low;
+        // Formatting, not thinking: a thinking model spent all 4,096 tokens reasoning about the
+        // JSON and returned nothing (3 of 15 checkers in one live run).
+        req.effort = marlowe_model::Effort::Off;
         req.max_output_tokens = Some(4_096);
         let c = metered.stream(&req, &self.cancel, &mut |_| {});
         if let Some(e) = failed.lock().unwrap_or_else(|e| e.into_inner()).take() {

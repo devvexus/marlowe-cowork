@@ -207,6 +207,37 @@ pub(crate) fn transcript_path(home: &std::path::Path, run: &RunId) -> std::path:
     home.join("jobs").join(format!("agent_{}.jsonl", run.as_str()))
 }
 
+/// Longest stretch of one step's text a `task_output` shows (its end: where the step has got to).
+const STEP_TEXT_SHOWN: usize = 500;
+
+/// The transcript's lines, one per streamed piece, as one line per step and action: the pieces
+/// joined, the end of a long step kept.
+pub(crate) fn coalesce_transcript(lines: &str) -> String {
+    let mut blocks: Vec<(i64, String, String)> = Vec::new();
+    for line in lines.lines().filter(|l| !l.trim().is_empty()) {
+        let (step, action, text) = match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(v) => (
+                v["step"].as_i64().unwrap_or(0),
+                v["action"].as_str().unwrap_or("").to_string(),
+                v["text"].as_str().unwrap_or("").to_string(),
+            ),
+            Err(_) => (0, String::new(), line.to_string()),
+        };
+        match blocks.last_mut() {
+            Some((s, a, t)) if *s == step && *a == action => t.push_str(&text),
+            _ => blocks.push((step, action, text)),
+        }
+    }
+    let mut out = String::new();
+    for (step, action, text) in blocks {
+        let text = text.trim();
+        let n = text.chars().count();
+        let shown: String = if n > STEP_TEXT_SHOWN { format!("...{}", text.chars().skip(n - STEP_TEXT_SHOWN).collect::<String>()) } else { text.to_string() };
+        out.push_str(&format!("[step {step} {action}] {}{}\n", shown.replace('\n', " "), if n > STEP_TEXT_SHOWN { format!(" ({n} chars)") } else { String::new() }));
+    }
+    out
+}
+
 /// Appends a step to its run's transcript file. A step streams its text in pieces: a line is one
 /// piece, in order.
 pub(crate) fn crew_step(core: &Core, run: &RunId, step: u32, action: &str, text: Option<&str>) {
@@ -280,11 +311,28 @@ impl TaskSource for CrewSource {
     fn output(&self, id: &str, since: Option<u64>, filter: Option<&str>) -> Option<Result<TaskChunk, String>> {
         let core = self.core.upgrade()?;
         let run = crew_run(&core, id)?;
-        // A run with a transcript file is read from it, like any task's output file.
-        if transcript_path(&core.home, &run).is_file() {
-            return None;
-        }
         let link = core.crew.get()?;
+        // A run with a transcript file is read from it, but as the model's `task_output` it is
+        // joined into one block per step: the file holds every streamed piece on a line of its own
+        // (a poll of a running team returned 32k characters of `{"text":"I"}` lines).
+        let path = transcript_path(&core.home, &run);
+        if path.is_file() {
+            let raw = std::fs::read(&path).ok()?;
+            let done = link.supervisor.get(&run).ok().flatten().is_some_and(|r| r.status.is_terminal());
+            let start = (since.unwrap_or(0) as usize).min(raw.len());
+            let end = raw.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1).max(start);
+            let text = String::from_utf8_lossy(&raw[start..end]);
+            let blocks = coalesce_transcript(&text);
+            let re = match filter.map(str::trim).filter(|f| !f.is_empty()).map(regex::Regex::new).transpose() {
+                Ok(re) => re,
+                Err(e) => return Some(Err(format!("filter is not a valid regular expression: {e}"))),
+            };
+            let shown: String = match &re {
+                Some(re) => blocks.split_inclusive('\n').filter(|l| re.is_match(l.trim_end())).collect(),
+                None => blocks,
+            };
+            return Some(Ok(TaskChunk { text: shown, next_since: end as u64, done }));
+        }
         let (info, steps) = match link.supervisor.transcript(&run) {
             Ok(t) => t,
             Err(e) => return Some(Err(e.to_string())),
@@ -678,5 +726,20 @@ mod tests {
         reg.requeue_front(&sid(), sent);
         let again = drain(reg.as_ref(), &sid());
         assert_eq!(again.iter().map(|i| i.text.as_str()).collect::<Vec<_>>(), ["one", "two", "three", "four"]);
+    }
+
+    #[test]
+    fn a_step_streamed_in_pieces_reads_as_one_line() {
+        let raw = "{\"step\":1,\"action\":\"researcher 1\",\"text\":\"I\"}
+{\"step\":1,\"action\":\"researcher 1\",\"text\":\"'ll look\"}
+{\"step\":2,\"action\":\"researcher 2\",\"text\":\"Hello\"}
+";
+        assert_eq!(coalesce_transcript(raw), "[step 1 researcher 1] I'll look
+[step 2 researcher 2] Hello
+");
+        let long = format!("{{\"step\":1,\"action\":\"a\",\"text\":\"{}\"}}
+", "x".repeat(2_000));
+        let shown = coalesce_transcript(&long);
+        assert!(shown.len() < 700 && shown.contains("(2000 chars)") && shown.contains("...xxx"), "{}", shown.len());
     }
 }
