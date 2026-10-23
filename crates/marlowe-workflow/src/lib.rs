@@ -33,7 +33,8 @@ pub mod journal;
 pub mod pools;
 pub mod progress;
 pub mod saved;
-pub mod schema;
+/// The JSON Schema subset; lives in `marlowe-contract` so crates without Starlark can validate with it.
+pub use marlowe_contract::schema;
 pub mod scripted;
 pub mod service;
 pub mod validate;

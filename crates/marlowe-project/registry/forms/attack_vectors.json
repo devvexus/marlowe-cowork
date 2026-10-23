@@ -1,0 +1,135 @@
+{
+  "form": "attack_vectors",
+  "version": 1,
+  "title": "Search angles",
+  "item_label": "Angles: {data.question}",
+  "fields": [
+    {
+      "key": "question",
+      "type": "text",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "today",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "vectors",
+      "type": "table",
+      "w": "M",
+      "max_items": 6,
+      "columns": [
+        {
+          "key": "angle",
+          "type": "enum",
+          "w": "M",
+          "values": [
+            "official",
+            "news",
+            "paper",
+            "code",
+            "discussion",
+            "benchmark",
+            "other"
+          ]
+        },
+        {
+          "key": "keywords",
+          "type": "string",
+          "w": "M",
+          "max_len": 80
+        },
+        {
+          "key": "channel",
+          "type": "enum",
+          "w": "M",
+          "values": [
+            "web",
+            "scholarly",
+            "arxiv",
+            "community",
+            "feeds",
+            "wiki"
+          ]
+        },
+        {
+          "key": "why",
+          "type": "string",
+          "w": "M",
+          "max_len": 120
+        }
+      ],
+      "show": {
+        "as": "table",
+        "columns": [
+          "angle",
+          "keywords",
+          "channel"
+        ]
+      }
+    },
+    {
+      "key": "unknown_names",
+      "type": "list",
+      "w": "M",
+      "of": "string",
+      "max_items": 5,
+      "max_len": 40,
+      "label": "Names it suspects exist"
+    },
+    {
+      "key": "queries",
+      "type": "table",
+      "w": "C",
+      "max_items": 60,
+      "columns": [
+        {
+          "key": "channel",
+          "type": "string",
+          "w": "C"
+        },
+        {
+          "key": "query",
+          "type": "string",
+          "w": "C"
+        },
+        {
+          "key": "kind",
+          "type": "enum",
+          "w": "C",
+          "values": [
+            "base",
+            "dated",
+            "unknown"
+          ]
+        },
+        {
+          "key": "since_year",
+          "type": "integer",
+          "w": "C"
+        }
+      ],
+      "show": {
+        "as": "table",
+        "columns": [
+          "channel",
+          "query",
+          "kind"
+        ]
+      }
+    },
+    {
+      "key": "agents",
+      "type": "agents",
+      "w": "C",
+      "from": "agents"
+    }
+  ]
+}

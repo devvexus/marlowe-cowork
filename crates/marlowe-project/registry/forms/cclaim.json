@@ -1,0 +1,142 @@
+{
+  "form": "cclaim",
+  "version": 1,
+  "title": "Condensed claim",
+  "item_label": "{data.claim}",
+  "fields": [
+    {
+      "key": "claim",
+      "type": "text",
+      "w": "M",
+      "max_len": 240,
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "verdict",
+      "type": "enum",
+      "w": "C",
+      "nullable": true,
+      "values": [
+        {
+          "v": "upheld",
+          "tone": "ok",
+          "glyph": "✓"
+        },
+        {
+          "v": "partial",
+          "tone": "warn",
+          "glyph": "~"
+        },
+        {
+          "v": "refuted",
+          "tone": "bad",
+          "glyph": "✗"
+        },
+        {
+          "v": "unsupported",
+          "tone": "bad",
+          "glyph": "?"
+        }
+      ]
+    },
+    {
+      "key": "stance",
+      "type": "enum",
+      "w": "C",
+      "values": [
+        {
+          "v": "supported",
+          "tone": "ok"
+        },
+        {
+          "v": "contested",
+          "tone": "warn",
+          "glyph": "!"
+        }
+      ]
+    },
+    {
+      "key": "score",
+      "type": "number",
+      "w": "C",
+      "min": 0,
+      "max": 1,
+      "show": {
+        "as": "meter",
+        "min": 0,
+        "max": 1
+      }
+    },
+    {
+      "key": "source_count",
+      "type": "integer",
+      "w": "C",
+      "label": "independent sources",
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "corroborates",
+      "type": "table",
+      "w": "C",
+      "max_items": 200,
+      "columns": [
+        {
+          "key": "claim_id",
+          "type": "string",
+          "w": "C"
+        },
+        {
+          "key": "text",
+          "type": "text",
+          "w": "C"
+        },
+        {
+          "key": "quote",
+          "type": "text",
+          "w": "C"
+        },
+        {
+          "key": "source",
+          "type": "url",
+          "w": "C"
+        },
+        {
+          "key": "credibility",
+          "type": "number",
+          "w": "C",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "show": {
+        "as": "table",
+        "columns": [
+          "text",
+          "source",
+          "credibility"
+        ]
+      }
+    },
+    {
+      "key": "sub",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "agents",
+      "type": "agents",
+      "w": "C",
+      "from": "agents"
+    }
+  ],
+  "rules": [
+    "originals_from_store"
+  ]
+}

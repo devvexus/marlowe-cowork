@@ -1,0 +1,63 @@
+{
+  "form": "condense",
+  "version": 1,
+  "title": "Condense pass",
+  "item_label": "Condense {data.sub}",
+  "fields": [
+    {
+      "key": "sub",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "groups",
+      "type": "table",
+      "w": "M",
+      "max_items": 60,
+      "columns": [
+        {
+          "key": "members",
+          "type": "list",
+          "w": "M",
+          "of": "string",
+          "max_items": 40,
+          "max_len": 12
+        },
+        {
+          "key": "claim",
+          "type": "text",
+          "w": "M",
+          "max_len": 240
+        },
+        {
+          "key": "contradicts",
+          "type": "list",
+          "w": "M",
+          "of": "string",
+          "max_items": 10,
+          "max_len": 12
+        }
+      ],
+      "show": {
+        "as": "table",
+        "columns": [
+          "claim"
+        ]
+      }
+    },
+    {
+      "key": "agents",
+      "type": "agents",
+      "w": "C",
+      "from": "agents"
+    }
+  ],
+  "rules": [
+    "ids_known",
+    "claim_in_one_group",
+    "omitted_become_singletons"
+  ]
+}

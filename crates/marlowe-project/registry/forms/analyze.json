@@ -1,0 +1,330 @@
+{
+  "form": "analyze",
+  "version": 1,
+  "title": "Source analysis",
+  "item_label": "{data.index}. {data.title}",
+  "fields": [
+    {
+      "key": "index",
+      "type": "integer",
+      "w": "C",
+      "required": true,
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "title",
+      "type": "string",
+      "w": "C",
+      "max_len": 200,
+      "required": true,
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "relevancy",
+      "type": "enum",
+      "w": "M",
+      "values": [
+        {
+          "v": "Critical",
+          "def": "The page itself answers a core part of the question: it names the subject and states the fact asked for (a release, a size, a date, a result). Test: could you quote one sentence as the answer?",
+          "weight": 1.0,
+          "tone": "accent",
+          "glyph": "!"
+        },
+        {
+          "v": "High",
+          "def": "About the exact subject and gives usable data for it, but not the answer itself (specs, a benchmark, an official post about something nearby).",
+          "weight": 0.7,
+          "tone": "ok",
+          "glyph": "●"
+        },
+        {
+          "v": "Medium",
+          "def": "About the same family or topic: context, comparisons, an adjacent release. The subject appears but with little data.",
+          "weight": 0.4,
+          "tone": "info",
+          "glyph": "◐"
+        },
+        {
+          "v": "Low",
+          "def": "No data on the subject seen, but it points to places that might have it (a link list, a roundup). Low hit chance.",
+          "weight": 0.15,
+          "tone": "dim",
+          "glyph": "○"
+        },
+        {
+          "v": "Skip",
+          "def": "Nothing usable for this question. Claims are ignored.",
+          "weight": 0.0,
+          "tone": "dim",
+          "glyph": "×"
+        }
+      ]
+    },
+    {
+      "key": "credibility",
+      "type": "number",
+      "w": "C",
+      "min": 0,
+      "max": 1,
+      "label": "cred",
+      "show": {
+        "as": "meter",
+        "min": 0,
+        "max": 1
+      }
+    },
+    {
+      "key": "source_kind",
+      "type": "enum",
+      "w": "M",
+      "values": [
+        {
+          "v": "official",
+          "tone": "ok"
+        },
+        {
+          "v": "paper",
+          "tone": "ok"
+        },
+        {
+          "v": "repo",
+          "tone": "info"
+        },
+        {
+          "v": "news",
+          "tone": "info"
+        },
+        {
+          "v": "blog",
+          "tone": "dim"
+        },
+        {
+          "v": "forum",
+          "tone": "dim"
+        },
+        {
+          "v": "aggregator",
+          "tone": "dim"
+        },
+        {
+          "v": "other",
+          "tone": "dim"
+        }
+      ],
+      "label": "kind"
+    },
+    {
+      "key": "runtime_ms",
+      "type": "duration",
+      "w": "C",
+      "label": "runtime",
+      "from": "live.runtime_ms",
+      "show": {
+        "as": "duration"
+      }
+    },
+    {
+      "key": "one_line",
+      "type": "string",
+      "w": "M",
+      "max_len": 140,
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "source",
+      "type": "url",
+      "w": "C",
+      "required": true,
+      "show": {
+        "as": "link",
+        "label_from": "title"
+      }
+    },
+    {
+      "key": "notes",
+      "type": "string",
+      "w": "M",
+      "max_len": 300,
+      "show": {
+        "as": "text",
+        "lines": 2
+      }
+    },
+    {
+      "key": "claims",
+      "type": "table",
+      "w": "M",
+      "max_items": 8,
+      "columns": [
+        {
+          "key": "text",
+          "type": "text",
+          "w": "M",
+          "max_len": 240
+        },
+        {
+          "key": "quote",
+          "type": "text",
+          "w": "M",
+          "max_len": 300
+        },
+        {
+          "key": "sub",
+          "type": "string",
+          "w": "C",
+          "show": {
+            "as": "hidden"
+          }
+        }
+      ],
+      "show": {
+        "as": "table",
+        "columns": [
+          "text"
+        ]
+      }
+    },
+    {
+      "key": "additional_sources",
+      "type": "table",
+      "w": "M",
+      "max_items": 8,
+      "columns": [
+        {
+          "key": "index",
+          "type": "integer",
+          "w": "C",
+          "show": {
+            "as": "hidden"
+          }
+        },
+        {
+          "key": "link",
+          "type": "integer",
+          "w": "M",
+          "nullable": true,
+          "min": 1,
+          "max": 400
+        },
+        {
+          "key": "reference",
+          "type": "string",
+          "w": "M",
+          "nullable": true,
+          "max_len": 160
+        },
+        {
+          "key": "opportunity",
+          "type": "enum",
+          "w": "M",
+          "values": [
+            {
+              "v": "Critical",
+              "def": "The page itself answers a core part of the question: it names the subject and states the fact asked for (a release, a size, a date, a result). Test: could you quote one sentence as the answer?",
+              "weight": 1.0,
+              "tone": "accent",
+              "glyph": "!"
+            },
+            {
+              "v": "High",
+              "def": "About the exact subject and gives usable data for it, but not the answer itself (specs, a benchmark, an official post about something nearby).",
+              "weight": 0.7,
+              "tone": "ok",
+              "glyph": "●"
+            },
+            {
+              "v": "Medium",
+              "def": "About the same family or topic: context, comparisons, an adjacent release. The subject appears but with little data.",
+              "weight": 0.4,
+              "tone": "info",
+              "glyph": "◐"
+            },
+            {
+              "v": "Low",
+              "def": "No data on the subject seen, but it points to places that might have it (a link list, a roundup). Low hit chance.",
+              "weight": 0.15,
+              "tone": "dim",
+              "glyph": "○"
+            },
+            {
+              "v": "Skip",
+              "def": "Nothing usable for this question. Claims are ignored.",
+              "weight": 0.0,
+              "tone": "dim",
+              "glyph": "×"
+            }
+          ]
+        },
+        {
+          "key": "notes",
+          "type": "string",
+          "w": "M",
+          "max_len": 160
+        },
+        {
+          "key": "source",
+          "type": "url",
+          "w": "C",
+          "nullable": true
+        }
+      ],
+      "label": "additional sources",
+      "show": {
+        "as": "table",
+        "columns": [
+          "opportunity",
+          "notes",
+          "source"
+        ]
+      }
+    },
+    {
+      "key": "records",
+      "type": "table",
+      "w": "M",
+      "max_items": 10,
+      "columns_from": "plan.fields",
+      "show": {
+        "as": "table"
+      }
+    },
+    {
+      "key": "relevance",
+      "type": "number",
+      "w": "C",
+      "min": 0,
+      "max": 1,
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "rejected",
+      "type": "json",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "agents",
+      "type": "agents",
+      "w": "C",
+      "label": "agents",
+      "from": "agents"
+    }
+  ],
+  "rules": [
+    "quotes_verbatim",
+    "links_in_table",
+    "no_urls",
+    "relevancy_consistent"
+  ]
+}

@@ -49,6 +49,8 @@ members = [
     "crates/marlowe-anthropic",
     # M4.6 wave 2: the workflow engine (track W).
     "crates/marlowe-workflow",
+    # Projects: plan, state JSON, forms with display hints, the generic view-model, the store.
+    "crates/marlowe-project",
 ]
 # Reference sources only; never built.
 exclude = ["legacy"]
@@ -92,6 +94,7 @@ marlowe-verify = { path = "crates/marlowe-verify" }
 marlowe-settings = { path = "crates/marlowe-settings" }
 marlowe-anthropic = { path = "crates/marlowe-anthropic" }
 marlowe-workflow = { path = "crates/marlowe-workflow" }
+marlowe-project = { path = "crates/marlowe-project" }
 
 # Terminal. crossterm, not termion: Windows is the primary platform.
 ratatui = "0.30"

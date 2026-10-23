@@ -1,0 +1,39 @@
+{
+  "form": "answer",
+  "version": 1,
+  "title": "Answer",
+  "item_label": "Answer",
+  "fields": [
+    {
+      "key": "text",
+      "type": "text",
+      "w": "M",
+      "max_len": 2500,
+      "show": {
+        "as": "text",
+        "lines": 6
+      }
+    },
+    {
+      "key": "end",
+      "type": "enum",
+      "w": "M",
+      "values": [
+        "END"
+      ],
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "agents",
+      "type": "agents",
+      "w": "C",
+      "from": "agents"
+    }
+  ],
+  "rules": [
+    "markers_known",
+    "end_present"
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "form": "question",
+  "version": 1,
+  "title": "Question",
+  "item_label": "{data.id} {data.text}",
+  "fields": [
+    {
+      "key": "id",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "text",
+      "type": "text",
+      "w": "P",
+      "max_len": 200,
+      "show": {
+        "as": "hidden"
+      }
+    }
+  ]
+}

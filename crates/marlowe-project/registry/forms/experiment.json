@@ -1,0 +1,97 @@
+{
+  "form": "experiment",
+  "version": 1,
+  "title": "Experiment",
+  "item_label": "Experiment #{data.n} ({data.name}) [{status}]",
+  "fields": [
+    {
+      "key": "n",
+      "type": "integer",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "name",
+      "type": "string",
+      "w": "P",
+      "max_len": 80,
+      "label": "Name",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "overview",
+      "type": "text",
+      "w": "M",
+      "max_len": 600,
+      "label": "Overview",
+      "show": {
+        "as": "text",
+        "lines": 4
+      }
+    },
+    {
+      "key": "size_bytes",
+      "type": "integer",
+      "w": "C",
+      "label": "size",
+      "from": "live.size_bytes",
+      "show": {
+        "as": "meter",
+        "unit": "bytes",
+        "min": 0
+      }
+    },
+    {
+      "key": "cpu_pct",
+      "type": "number",
+      "w": "C",
+      "label": "cpu",
+      "from": "live.cpu_pct",
+      "show": {
+        "as": "meter",
+        "unit": "%",
+        "min": 0,
+        "max": 100,
+        "warn_at": 85
+      }
+    },
+    {
+      "key": "gpu_pct",
+      "type": "number",
+      "w": "C",
+      "label": "gpu",
+      "from": "live.gpu_pct",
+      "show": {
+        "as": "meter",
+        "unit": "%",
+        "min": 0,
+        "max": 100,
+        "warn_at": 90
+      }
+    },
+    {
+      "key": "runtime_ms",
+      "type": "duration",
+      "w": "C",
+      "label": "runtime",
+      "from": "live.runtime_ms",
+      "show": {
+        "as": "duration"
+      }
+    },
+    {
+      "key": "agents",
+      "type": "agents",
+      "w": "C",
+      "label": "agents",
+      "from": "agents",
+      "show": {
+        "as": "agent_ref"
+      }
+    }
+  ]
+}

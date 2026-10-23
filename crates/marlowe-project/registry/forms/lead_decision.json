@@ -1,0 +1,74 @@
+{
+  "form": "lead_decision",
+  "version": 1,
+  "title": "Lead decision",
+  "item_label": "Decision: {data.decision}",
+  "fields": [
+    {
+      "key": "why",
+      "type": "text",
+      "w": "M",
+      "max_len": 300,
+      "show": {
+        "as": "text",
+        "lines": 3
+      }
+    },
+    {
+      "key": "decision",
+      "type": "enum",
+      "w": "M",
+      "values": [
+        {
+          "v": "report",
+          "tone": "ok",
+          "glyph": "✓"
+        },
+        {
+          "v": "keep_researching",
+          "tone": "info",
+          "glyph": "↻"
+        }
+      ]
+    },
+    {
+      "key": "gaps",
+      "type": "table",
+      "w": "M",
+      "max_items": 5,
+      "columns": [
+        {
+          "key": "question",
+          "type": "string",
+          "w": "M",
+          "max_len": 200
+        },
+        {
+          "key": "reason",
+          "type": "string",
+          "w": "M",
+          "max_len": 120
+        }
+      ],
+      "show": {
+        "as": "table"
+      }
+    },
+    {
+      "key": "focus",
+      "type": "list",
+      "w": "M",
+      "of": "integer",
+      "max_items": 10,
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "agents",
+      "type": "agents",
+      "w": "C",
+      "from": "agents"
+    }
+  ]
+}

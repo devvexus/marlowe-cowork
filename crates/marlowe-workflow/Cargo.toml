@@ -6,6 +6,7 @@ license.workspace = true
 description = "Workflow scripts: a hermetic Starlark engine, the host API (agent, parallel, pipeline, phase, log, budget), the call journal and the schema validator. M4.6 track W."
 
 [dependencies]
+marlowe-contract.workspace = true
 marlowe-model.workspace = true
 marlowe-proto.workspace = true
 serde.workspace = true

@@ -1,0 +1,64 @@
+{
+  "form": "audit",
+  "version": 1,
+  "title": "Citation audit",
+  "item_label": "Audit {data.batch}",
+  "fields": [
+    {
+      "key": "batch",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "verdicts",
+      "type": "table",
+      "w": "M",
+      "max_items": 6,
+      "columns": [
+        {
+          "key": "n",
+          "type": "integer",
+          "w": "M",
+          "min": 1
+        },
+        {
+          "key": "verdict",
+          "type": "enum",
+          "w": "M",
+          "values": [
+            {
+              "v": "supported",
+              "tone": "ok"
+            },
+            {
+              "v": "partial",
+              "tone": "warn"
+            },
+            {
+              "v": "unsupported",
+              "tone": "bad"
+            }
+          ]
+        },
+        {
+          "key": "reason",
+          "type": "string",
+          "w": "M",
+          "max_len": 120
+        }
+      ],
+      "show": {
+        "as": "table"
+      }
+    },
+    {
+      "key": "agents",
+      "type": "agents",
+      "w": "C",
+      "from": "agents"
+    }
+  ]
+}

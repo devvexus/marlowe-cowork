@@ -1,6 +1,6 @@
 # Projects: design
 
-Status: design, nothing built. Supersedes [deep-research-teams-design.md](deep-research-teams-design.md) as the plan of record; that file stays as the source of the research invariants and the v2 stage map. Tags: (m) measured, (e) estimate, (u) unmeasured.
+Status: **Stage A built** (the core crate `marlowe-project`, section 10); stages B to D are design. Supersedes [deep-research-teams-design.md](deep-research-teams-design.md) as the plan of record; that file stays as the source of the research invariants and the v2 stage map. Tags: (m) measured, (e) estimate, (u) unmeasured.
 
 ## 0. Summary
 
@@ -300,22 +300,33 @@ The renderer knows five things and nothing about any project kind: (1) the item 
 **A research source (from the form above, no source-specific code):**
 
 ```
- 3. Moonshot AI releases Kimi K2.6              [High] ●      cred 0.72 ▰▰▰▰▰▰▰▱▱▱   done  00:00:41
-    Kimi K2.6 released 2026-10-20, 1T MoE, 256k context        https://example.org/kimi-k26 ↗
-    claims 2   |  records 1   |  additional sources 3 [Critical 1, High 1, Low 1]
-    ◆ a_17 analyst
+3. Moonshot AI releases Kimi K2.6   done   [High] ●   cred ▰▰▰▰▰▰▱▱ 0.72   [official]   runtime 00:00:41
+  Kimi K2.6 released 2026-10-20, 1T MoE, 256k context
+  Moonshot AI releases Kimi K2.6 ↗ (example.org)
+  Official post.
+  claims (2)
+    K2.6 is out
+    1T MoE
+  additional sources (2)
+    opportunity | notes | source
+    [Critical] ! | release post | example.org ↗
+  records (1)
+    Model name | Vendor | Status | ...
+  ◆ a_17 analyst
 ```
+
+(This is the plain-text painter's output in `view.rs`, from a test. Painter rules, settled in code: the title line is the filled `item_label`, then the status word unless the label already shows `{status}`, then the *inline* cells in field order (badge, meter, progress, duration, time) as `label value`, bars 8 cells wide, the bar before a meter's value and after a progress count; *block* cells (text, link, table, json) go under it; the agent chips are always the last line and come from `item.agents` whether or not the form lists an `agent_ref` field; children nest two spaces in.)
 
 The `relevancy` field has `show: badge` (values carry tone and glyph), `source` has `link`, `credibility` has `meter`, `records` has `table` (columns from the plan's fields), `additional_sources` has `table`, `agents` has `agent_ref`. The renderer did not know it was a source.
 
-**An engineering experiment, rendered from its own schema with no UI code.** The Engineering phase (later) declares the item form below. Nothing else is needed for it to show:
+**An engineering experiment, rendered from its own schema with no UI code.** The Engineering phase (later) declares the item form below (shipped as `registry/forms/experiment.json`; `name` is `hidden` because the label already carries it, which is what makes the painted line equal the one below, pinned by a test). Nothing else is needed for it to show:
 
 ```json
 { "form":"experiment","version":1,"title":"Experiment",
   "item_label":"Experiment #{data.n} ({data.name}) [{status}]",
   "fields":[
    {"key":"n","type":"integer","w":"C","show":{"as":"hidden"}},
-   {"key":"name","label":"Name","type":"string","w":"P","max_len":80,"show":{"as":"text"}},
+   {"key":"name","label":"Name","type":"string","w":"P","max_len":80,"show":{"as":"hidden"}},
    {"key":"overview","label":"Overview","type":"text","w":"M","max_len":600,"show":{"as":"text","lines":4}},
    {"key":"size_bytes","label":"size","type":"integer","w":"C","from":"live.size_bytes","show":{"as":"meter","unit":"bytes","min":0,"max":null}},
    {"key":"cpu_pct","label":"cpu","type":"number","w":"C","from":"live.cpu_pct","show":{"as":"meter","unit":"%","min":0,"max":100,"warn_at":85}},
@@ -472,7 +483,7 @@ Not measured. Ollama has no per-request thinking budget. I did not probe it: it 
 Three layers, in order:
 
 1. **Grammar** (engine): shape, enums, lengths, counts.
-2. **Parse and schema check** (code): `serde_json` parse of `content`; `schema::validate` (from `marlowe-contract` after the Stage A move; today `marlowe_workflow::schema`) against the same schema (it supports `type`, `properties`, `required`, `items`, `enum`, numeric bounds, string and array lengths, `additionalProperties`). Catches truncation and engines that ignore `format`.
+2. **Parse and schema check** (code): `serde_json` parse of `content`; `marlowe_contract::schema::validate` (moved there in Stage A; `marlowe_workflow::schema` re-exports it) against the same schema (it supports `type`, `properties`, `required`, `items`, `enum`, numeric bounds, string and array lengths, `additionalProperties`). Catches truncation and engines that ignore `format`.
 3. **Form rules** (code, named in the form): drops and checks that need data the grammar cannot see: quote found verbatim (drop the claim), link number within the table (drop), url strings (drop), `end` equals `END`, relevancy consistency (lower the label). Dropped items are counted in `rejected`; they fail the employee only when a rule says the form is empty of the thing it exists to produce (an Analyze with relevancy Critical or High and no surviving claim).
 
 ### 5.5 Retry
@@ -551,11 +562,11 @@ When Finish ends, `Run.relay_due` is set and the existing relay posts into the s
 
 ### 7.2 Index
 
-A `projects` table in `cowork.db` (same connection and `MIGRATIONS` as `crew_runs`): `id, session, run, title, kind, status, phase, rev, plan_no, updated_ms, dir`. It is a cache of what `project.json` says and can be rebuilt by scanning `<home>\projects`. The run record gets `project: Option<ProjectRef>` (additive). Nothing in `cowork.db` is the source of truth for project content.
+A `projects` table in `cowork.db`: `id, session, run, title, kind, status, phase, rev, plan_no, updated_ms, dir`. *Built:* `marlowe-project` owns it (`store::INDEX_SCHEMA`, `CREATE ... IF NOT EXISTS`, on its own WAL connection to the same file, so the crate does not depend on `marlowe-crew`; the crew store may run the same string in its migration list). It is a cache of what `project.json` says and is rebuilt by scanning `<home>\projects` (`rebuild_index`, which also sweeps stale temp files and runs at boot before any writer; a reader's `load` never deletes a writer's temp file). The run record gets `project: Option<ProjectRef>` (additive). Nothing in `cowork.db` is the source of truth for project content.
 
 ### 7.3 Archive and reopen
 
-A snapshot is written at each phase boundary. `reopen{id, phase}` loads `archive\NN-<phase>.json` as the state, truncates journal lines after that phase's boundary (kept in a `.reopened` copy), and re-queues the run at that phase. The final-state JSON is archived at Finish, so a finished project can be reopened from any stage whose inputs still exist (`sources\` is needed from DataValidation on).
+A snapshot is written at each phase boundary. `reopen{id, phase}` loads `archive\NN-<phase>.json` as the state, truncates journal lines after that phase's boundary (kept in a `.reopened` copy), and re-queues the run at that phase. *Built, and settled:* a snapshot is taken **when the labelled phase is about to start** (label `ph_dv` is "the state DataValidation starts from"; `final` at Finish), so reopening at a phase re-runs that phase. The file holds `{snapshot:{no,label,taken_ms,rev,journal:{relpath: bytes}},state}`; the byte marks are what the journals are cut back to. `reopen(id, label-or-NN, now)` returns the snapshot state running again (parked on its card instead if the snapshot had an open gate), with `rev` past every revision seen so clients refetch; the cut journal bytes and the later snapshots move to `.reopened\<now>\`. `final` with no snapshot of that name reopens from `project.json` as it stands (how a `delete`-disposed project reopens at Finish). The final-state JSON is archived at Finish, so a finished project can be reopened from any stage whose inputs still exist (`sources\` is needed from DataValidation on).
 
 ### 7.4 Disposal (`workspace`)
 
@@ -632,28 +643,45 @@ The model never writes a URL; quotes are verbatim; page text is data; independen
 
 Stages A to D follow; each ends with its acceptance tests green and `cargo check --workspace --all-targets` clean. Cargo only through `scripts/cargo-idle.ps1`, one build at a time; no GPU needed for A to C except the optional live check.
 
-### Stage A: core crate `marlowe-project`
+### Stage A: core crate `marlowe-project` (built)
 
-Depends on `marlowe-model`, `marlowe-proto` and the JSON-schema validator. `marlowe-workflow` pulls in the Starlark interpreter, so first move `schema.rs` (pure `serde_json`, `check_shape` and `validate`) into `marlowe-contract` and re-export it from `marlowe-workflow`; no behaviour change. No agent loop.
+Depends on `marlowe-contract` (the schema validator) and `marlowe-proto` (patch and event types). It does not depend on `marlowe-model` yet; nothing in stage A calls a model. `schema.rs` (pure `serde_json`, `check_shape` and `validate`) moved from `marlowe-workflow` into `marlowe-contract` and is re-exported as `marlowe_workflow::schema`, so no caller changed and the Starlark interpreter stays out of this crate. No agent loop.
 
-- Types: `Plan`, `ProjectState`, `Item`, `Form`, `Field`, `Gate`, `Mutation`.
-- Plan validator with the error messages of 6.1; `model_schema(form, plan)`; item validator via `marlowe_workflow::schema::validate`.
-- View-model: `view(item, state) -> Row` resolving the hint vocabulary; a plain-text painter used by tests and `--json`/CLI.
-- State actor (single writer), path-patch format, `rev`, atomic `project.json`, archive snapshots, `reopen`.
-- `projects` index table and migration; `ProjectUpdated` and gate event types in `marlowe-proto`.
-- Form and kind registry with the research forms and the experiment form.
+What exists, one module each (all public items have rustdoc; `#![warn(missing_docs)]` is on):
 
-Sub-steps, each buildable and testable alone: **A1** the schema move and the types with golden round-trips (acceptance 1); **A2** plan validator and `model_schema` (2, 3); **A3** view-model and painter (4, 5); **A4** state actor, patches, atomic write, archive, reopen, index (6, 7, 8).
+| Module | Built |
+|---|---|
+| `plan` | `parse_plan` (validation with the 6.1 messages, expansion, defaults), `revise_plan` (changed keys over `Plan::to_input()`), `continue_plan` (inherits; ids carry on through `question_offset`; refused at `max_rounds`). |
+| `form` | `Form`, `Field`, `Show`, `ShowAs`, `Tone`, `EnumValue`; `Form::validate` (a model field needs its length caps, never a url/timestamp/duration/JSON, a hint must fit its type, no colour value anywhere); `model_schema`, `data_schema`. |
+| `registry` | 14 forms (`registry/forms/*.json`: question, attack_vectors, page, analyze, claim, cclaim, condense, verify, lead_decision, section, answer, audit, validated, experiment) and 2 kinds (`registry/kinds/*.json`: `research` available; `engineering` registered with `available: false`, so a plan cannot name it yet). A new kind is a JSON file and one line in `registry.rs`. |
+| `state` | `ProjectState` (2.2), `Item`, `Live` (typed slots plus `extra`), `Phase`, `Gate`, `Agent`, `Grants`, `Metrics`; `ProjectState::new` embeds the kind's forms, makes the phases pending and one `question` item per question. |
+| `mutation` | 16 mutations; `apply` checks references, validates a `done` item against its form, bumps `rev`, returns patches. |
+| `replica` | `apply_patches`, `Replica` (gap detection by `base`). |
+| `view` | `view`, `view_tree`, `paint`, `rollups`, `overview`, `paint_overview`. |
+| `store` | `ProjectStore`: create/save/load, index (`list`, `row`, `resumable`, `rebuild_index`), journal, content-addressed sources, `archive`, `snapshots`, `reopen`, `link_workspace`, `dispose`. |
+| `actor` | `ProjectActor`/`ProjectHandle`: one writer thread per running project, coalesced `ProjectEvent`s, saves. |
+| `marlowe-proto` | `ProjectPatch`, `PatchOp`, `ProjectGateOption`; events `ProjectUpdated {project, base, rev, patches}`, `ProjectState`, `ProjectGateRaised`, `ProjectGateAnswered`. |
 
-Acceptance:
-1. Golden round-trips of Plan, state and every form (serde in, out, equal).
-2. Plan validator table tests: each bad plan yields at most three errors, each containing a fix sentence; a valid plan passes; a 12-field plan passes, 13 fails.
-3. `model_schema` output passes `schema::check_shape`; contains no display hints and no `w:"C"` field; fields keep their order; project fields appear as `records` columns. (Optional ignored test posts it to a CPU llama-server and gets valid JSON.)
-4. Two-shape render test: the same `view`/painter renders a research fixture and an engineering fixture; the experiment line equals the string in section 3; a third fixture kind with only a form and no registration renders.
-5. No hex colour appears in any form; tone names map to the palette constants.
-6. Patch replay: applying the emitted patches in order to the first snapshot equals the final state; a `rev` gap triggers a full state request.
-7. Crash safety: a write interrupted between temp and rename leaves the old `project.json` intact; the index can be rebuilt by scanning.
-8. Reopen from a phase restores the snapshot and truncates the journal.
+Settled while building (the design above is amended where it differed):
+
+- **Patches** are computed by diffing the touched parts of the state before and after each mutation (a part is a top-level field, one item, one agent, one form, or one kind's order list), so a mutation cannot forget to report a change. Objects are compared key by key, arrays are replaced whole, and every update ends with `set /rev` and `set /updated_ms`. `ProjectUpdated` carries `base` as well as `rev` because the actor coalesces several revisions into one event; a client applies it only if its copy is at `base`, else it asks for the full state.
+- **Actor timing.** Patches are held up to 100 ms, `project.json` is written at most every 250 ms, and always at flush, archive and stop. A gate is different: updates are flushed, then the gate event goes out, then `project.json` is written before the call returns, so a parked run survives a crash with its card.
+- **A `done` item is checked.** `PutItem` and `UpdateItem` refuse (state unchanged) a `done` item whose data breaks `data_schema` of its form: unknown key, missing required field, enum outside its values, string or table over its cap. Items that are not `done`, and items whose form is not embedded (a kind nobody registered), are not checked.
+- **Forms.** `w` defaults to code; `required` defaults to true for model fields and false otherwise; `nullable` (a column the page may not answer); `columns_from: "plan.fields"` is how `records` takes the plan's fields as columns (a plan field becomes a nullable model column, an enum if it has `values`, text capped at the plan's `max_len`; `date` and `url` plan types become capped strings, because a model never writes a URL: the Stage C rule that drops URL-shaped strings covers them). Enum `values` read as plain strings or `{v, def, weight, tone, glyph}`. A badge on a value with no tone draws `info`. Grammar `required` is every model field (a nullable one may say null).
+- **Plan.** Questions accept `{"q": ...}` and a field may be a bare key string; `label` and `key_field` on a field are tolerated. `type: "enum"` with `values` is accepted. A continuation plan's `questions` are the new ones only (ids carry on from the last number); earlier questions stay as items in the state. `max_fetches` defaults to `max(60, max_sources)`; an explicit one below `max_sources` is an error. Control characters in manager text are replaced by spaces and lengths count characters.
+- **Rollups.** In a kind template `over` is a string: an item kind, or `agents`.
+- **Untrusted text.** Everything drawn that did not come from the harness passes `marlowe_contract::sanitize_*` (an escape becomes a visible `<U+001B>`); a link is `openable` only for `http`/`https` without whitespace or control characters.
+- **Not in stage A:** the plan card's cost estimate and grant text (needs channel readiness, stage D), the phase-menu declarations of 4.2 (stage B), `Request::GetProject`/`AnswerGate` (stage D), `ChatRequest.think_budget` (stage B).
+
+Acceptance, as tested (86 unit tests and one end-to-end test in `tests/flow.rs`; none needs a model or a GPU):
+1. Golden round-trips: `plan_round_trips_through_json_and_through_its_canonical_input`, `state_round_trips_through_json_equal`, `every_form_round_trips_through_serde_unchanged`, `a_registered_forms_file_equals_its_reserialised_value`, `every_registered_form_is_sound`.
+2. Plan validator: `each_bad_plan_gets_at_most_three_errors_each_with_a_fix_sentence` (13 cases), `twelve_fields_pass_and_thirteen_fail`, `eight_questions_pass_and_nine_fail`.
+3. `model_schema`: `model_schema_keeps_only_model_fields_in_order_with_their_caps`, `plan_fields_become_the_records_columns_and_nullable_columns_accept_null`, `the_model_never_sees_a_code_field_in_any_research_form`, `analyze_schema_matches_the_design_table`. (The optional CPU llama-server post stays for stage B.)
+4. Two-shape render: `a_research_source_draws_from_its_form_with_no_source_specific_code`, `an_engineering_experiment_renders_the_design_line_from_its_own_form` (string equality with section 3), `a_kind_with_only_a_form_and_no_registration_renders`, `an_item_whose_form_is_missing_is_drawn_field_by_field`, `overview_counts_from_the_json_and_falls_back_for_an_unregistered_kind`.
+5. Palette: `tones_map_to_the_locked_palette`, `no_form_carries_a_colour_value`, `a_form_with_a_colour_value_is_refused`.
+6. Patch replay: `every_mutation_bumps_rev_and_reports_patches_that_replay_to_the_same_state`, `mutations_apply_in_order_and_patches_are_coalesced_until_a_flush`, `a_gap_asks_for_the_full_state_and_leaves_the_copy_alone`.
+7. Crash safety: `a_write_that_stops_before_the_rename_leaves_the_old_state_whole`, `the_index_can_be_rebuilt_by_scanning`, `the_journal_appends_lines_and_ignores_a_torn_last_line`.
+8. Reopen: `archive_then_reopen_restores_the_snapshot_and_truncates_the_journal`, `a_finished_project_reopens_from_final_even_when_its_archive_was_deleted`.
 
 ### Stage B: employee runner, constrained output, phase engine
 
@@ -726,6 +754,8 @@ Acceptance:
 12. **Tabulate.** Include the small code-only records merge in the first slice (it is what makes the "newest AI models" example useful). Recommend yes.
 
 ## 12. Not verified
+
+Stage A (built): `cargo check --workspace --all-targets` is clean (the warnings in `marlowe`, `marlowe-tui` and `marlowe-memory` were there before) and the tests of `marlowe-project`, `marlowe-proto`, `marlowe-contract` and `marlowe-workflow` pass. Not run: the rest of the workspace's tests, any model, any GPU. The store and actor were exercised on a local temp directory only; concurrent access from two processes, a real crash (power loss) and a very large state (thousands of items) were not tried. The painter was checked as plain text; no terminal was involved.
 
 No cargo build, no test and no GPU were run. Measured: llama-server on CPU with `marlowe-mini:4b-super`, section 5.2 only. Not measured: Ollama `format` with and without `think` on any model; llama-server on the project's real engine flags; whether the tool slice has room for a fourth long description; the time estimates (all (e)). Every statement about existing code comes from reading source and the maps, not from running it.
 

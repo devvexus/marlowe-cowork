@@ -11,6 +11,7 @@ use crate::crew::{CrewRunInfo, CrewStep, Dispatch, RoleInfo, RunId};
 use crate::ids::{ApprovalId, SessionId};
 use crate::memory::{ImportReport, MemoryChange, MemoryHit, MemoryStatsReport};
 use crate::phase::{PhaseEvent, PhaseSpan, StageMs, TurnNumbers};
+use crate::project::{ProjectGateOption, ProjectPatch};
 use crate::request::{ApprovalDecision, Slot};
 use crate::research::{CostQuote, ResearchPlan, ResearchProgress};
 use crate::watch::{BriefItem, Notice, VoiceStatus, WatchCandidate, WatchState};
@@ -289,6 +290,24 @@ pub enum Event {
     RunTranscript { run: CrewRunInfo, steps: Vec<CrewStep> },
     /// Reply to `ListRoles`.
     Roles { list: Vec<RoleInfo> },
+    /// A project's state changed (broadcast, coalesced to about 100 ms). The patches take a copy
+    /// of the state at revision `base` to revision `rev`; a client whose copy is not at `base`
+    /// asks for the full state instead of applying them.
+    ProjectUpdated { project: String, base: u64, rev: u64, patches: Vec<ProjectPatch> },
+    /// A project's whole state at revision `rev` (reply to a state request, and the answer to a
+    /// revision gap).
+    ProjectState { project: String, rev: u64, state: serde_json::Value },
+    /// A project parked on a gate and waits for the user (broadcast). `kind` is `plan` or
+    /// `checkin`; `summary` is one line for a notice.
+    ProjectGateRaised {
+        project: String,
+        gate: String,
+        kind: String,
+        summary: String,
+        options: Vec<ProjectGateOption>,
+    },
+    /// A project's gate was answered and the run was re-queued (broadcast).
+    ProjectGateAnswered { project: String, gate: String, choice: String },
     /// A deep research run drafted its plan and waits for `ApprovePlan` (broadcast; the run is
     /// `needs_you` until then).
     PlanProposed { run: RunId, plan: ResearchPlan, quote: CostQuote },

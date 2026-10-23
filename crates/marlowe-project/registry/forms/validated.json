@@ -1,0 +1,137 @@
+{
+  "form": "validated",
+  "version": 1,
+  "title": "Validated findings",
+  "item_label": "Validated findings",
+  "fields": [
+    {
+      "key": "claims",
+      "type": "table",
+      "w": "C",
+      "max_items": 500,
+      "columns": [
+        {
+          "key": "id",
+          "type": "string",
+          "w": "C"
+        },
+        {
+          "key": "claim",
+          "type": "text",
+          "w": "C"
+        },
+        {
+          "key": "verdict",
+          "type": "enum",
+          "w": "C",
+          "values": [
+            {
+              "v": "upheld",
+              "tone": "ok",
+              "glyph": "✓"
+            },
+            {
+              "v": "partial",
+              "tone": "warn",
+              "glyph": "~"
+            },
+            {
+              "v": "refuted",
+              "tone": "bad",
+              "glyph": "✗"
+            },
+            {
+              "v": "unsupported",
+              "tone": "bad",
+              "glyph": "?"
+            }
+          ]
+        },
+        {
+          "key": "score",
+          "type": "number",
+          "w": "C",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "key": "source_count",
+          "type": "integer",
+          "w": "C"
+        },
+        {
+          "key": "sources",
+          "type": "json",
+          "w": "C",
+          "show": {
+            "as": "hidden"
+          }
+        }
+      ],
+      "show": {
+        "as": "table",
+        "columns": [
+          "claim",
+          "verdict",
+          "score"
+        ]
+      }
+    },
+    {
+      "key": "sources",
+      "type": "table",
+      "w": "C",
+      "max_items": 500,
+      "columns": [
+        {
+          "key": "id",
+          "type": "string",
+          "w": "C"
+        },
+        {
+          "key": "url",
+          "type": "url",
+          "w": "C"
+        },
+        {
+          "key": "title",
+          "type": "string",
+          "w": "C"
+        },
+        {
+          "key": "priority",
+          "type": "number",
+          "w": "C",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "show": {
+        "as": "table",
+        "columns": [
+          "title",
+          "url",
+          "priority"
+        ]
+      }
+    },
+    {
+      "key": "records",
+      "type": "table",
+      "w": "C",
+      "max_items": 500,
+      "columns_from": "plan.fields",
+      "show": {
+        "as": "table"
+      }
+    },
+    {
+      "key": "coverage",
+      "type": "json",
+      "w": "C",
+      "show": {
+        "as": "json"
+      }
+    }
+  ]
+}

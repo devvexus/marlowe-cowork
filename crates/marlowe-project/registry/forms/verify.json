@@ -1,0 +1,76 @@
+{
+  "form": "verify",
+  "version": 1,
+  "title": "Verdict",
+  "item_label": "Verify {data.cclaim}",
+  "fields": [
+    {
+      "key": "cclaim",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "reason",
+      "type": "text",
+      "w": "M",
+      "max_len": 200,
+      "show": {
+        "as": "text",
+        "lines": 2
+      }
+    },
+    {
+      "key": "verdict",
+      "type": "enum",
+      "w": "M",
+      "values": [
+        {
+          "v": "upheld",
+          "tone": "ok",
+          "glyph": "✓"
+        },
+        {
+          "v": "partial",
+          "tone": "warn",
+          "glyph": "~"
+        },
+        {
+          "v": "refuted",
+          "tone": "bad",
+          "glyph": "✗"
+        },
+        {
+          "v": "unsupported",
+          "tone": "bad",
+          "glyph": "?"
+        }
+      ]
+    },
+    {
+      "key": "corrected_claim",
+      "type": "string",
+      "w": "M",
+      "nullable": true,
+      "max_len": 240
+    },
+    {
+      "key": "used",
+      "type": "list",
+      "w": "M",
+      "of": "integer",
+      "max_items": 6,
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "agents",
+      "type": "agents",
+      "w": "C",
+      "from": "agents"
+    }
+  ]
+}

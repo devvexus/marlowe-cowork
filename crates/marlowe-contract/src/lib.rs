@@ -42,6 +42,7 @@
 
 pub mod common;
 pub mod frame;
+pub mod schema;
 pub mod text;
 pub mod wire;
 

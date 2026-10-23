@@ -1,0 +1,27 @@
+{
+  "kind": "engineering",
+  "title": "Engineering",
+  "available": false,
+  "phases": [
+    "Plan",
+    "Engineering",
+    "Finish"
+  ],
+  "forms": [
+    "question@1",
+    "experiment@1"
+  ],
+  "supersedes": [],
+  "rollups": [
+    {
+      "title": "Experiments",
+      "over": "experiment",
+      "by": "status"
+    },
+    {
+      "title": "Agents",
+      "over": "agents",
+      "by": "status"
+    }
+  ]
+}

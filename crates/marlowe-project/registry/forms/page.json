@@ -1,0 +1,182 @@
+{
+  "form": "page",
+  "version": 1,
+  "title": "Page",
+  "item_label": "{data.title}",
+  "fields": [
+    {
+      "key": "source_id",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "url",
+      "type": "url",
+      "w": "C",
+      "show": {
+        "as": "link",
+        "label_from": "title"
+      }
+    },
+    {
+      "key": "title",
+      "type": "string",
+      "w": "C",
+      "max_len": 200,
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "channel",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "identity",
+      "type": "string",
+      "w": "C",
+      "nullable": true,
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "date",
+      "type": "string",
+      "w": "C",
+      "nullable": true,
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "status",
+      "type": "enum",
+      "w": "C",
+      "values": [
+        {
+          "v": "ok",
+          "tone": "ok"
+        },
+        {
+          "v": "thin",
+          "tone": "warn"
+        },
+        {
+          "v": "robots",
+          "tone": "warn"
+        },
+        {
+          "v": "http",
+          "tone": "bad"
+        },
+        {
+          "v": "unreachable",
+          "tone": "bad"
+        },
+        {
+          "v": "unreadable",
+          "tone": "bad"
+        },
+        {
+          "v": "over_quota",
+          "tone": "dim"
+        },
+        {
+          "v": "duplicate",
+          "tone": "dim"
+        }
+      ]
+    },
+    {
+      "key": "credibility",
+      "type": "number",
+      "w": "C",
+      "min": 0,
+      "max": 1,
+      "label": "cred",
+      "show": {
+        "as": "meter",
+        "min": 0,
+        "max": 1
+      }
+    },
+    {
+      "key": "text_ref",
+      "type": "string",
+      "w": "C",
+      "nullable": true,
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "links",
+      "type": "integer",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "references",
+      "type": "table",
+      "w": "C",
+      "max_items": 200,
+      "columns": [
+        {
+          "key": "doi",
+          "type": "string",
+          "w": "C",
+          "nullable": true
+        },
+        {
+          "key": "arxiv_id",
+          "type": "string",
+          "w": "C",
+          "nullable": true
+        },
+        {
+          "key": "url",
+          "type": "url",
+          "w": "C",
+          "nullable": true
+        },
+        {
+          "key": "year",
+          "type": "integer",
+          "w": "C",
+          "nullable": true
+        },
+        {
+          "key": "label",
+          "type": "string",
+          "w": "C",
+          "nullable": true
+        }
+      ],
+      "show": {
+        "as": "table",
+        "columns": [
+          "label",
+          "url"
+        ]
+      }
+    },
+    {
+      "key": "question",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    }
+  ]
+}

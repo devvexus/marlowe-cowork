@@ -1,0 +1,88 @@
+{
+  "form": "claim",
+  "version": 1,
+  "title": "Claim",
+  "item_label": "{data.text}",
+  "fields": [
+    {
+      "key": "id",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "text",
+      "type": "text",
+      "w": "C",
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "quote",
+      "type": "text",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "locator",
+      "type": "json",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "source",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "sub",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "credibility",
+      "type": "number",
+      "w": "C",
+      "min": 0,
+      "max": 1,
+      "label": "cred",
+      "show": {
+        "as": "meter",
+        "min": 0,
+        "max": 1
+      }
+    },
+    {
+      "key": "status",
+      "type": "enum",
+      "w": "C",
+      "values": [
+        {
+          "v": "new",
+          "tone": "info"
+        },
+        {
+          "v": "condensed",
+          "tone": "ok"
+        },
+        {
+          "v": "rejected",
+          "tone": "bad"
+        }
+      ]
+    }
+  ]
+}

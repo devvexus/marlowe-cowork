@@ -3508,6 +3508,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "marlowe-project"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "crossbeam-channel",
+ "marlowe-contract",
+ "marlowe-proto",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "uuid",
+]
+
+[[package]]
 name = "marlowe-proto"
 version = "0.1.0"
 dependencies = [
@@ -3692,6 +3707,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "crossbeam-channel",
+ "marlowe-contract",
  "marlowe-model",
  "marlowe-proto",
  "regex",

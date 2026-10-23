@@ -1,0 +1,47 @@
+{
+  "form": "section",
+  "version": 1,
+  "title": "Report section",
+  "item_label": "Section {data.sub}",
+  "fields": [
+    {
+      "key": "sub",
+      "type": "string",
+      "w": "C",
+      "show": {
+        "as": "text"
+      }
+    },
+    {
+      "key": "text",
+      "type": "text",
+      "w": "M",
+      "max_len": 4000,
+      "show": {
+        "as": "text",
+        "lines": 6
+      }
+    },
+    {
+      "key": "end",
+      "type": "enum",
+      "w": "M",
+      "values": [
+        "END"
+      ],
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
+      "key": "agents",
+      "type": "agents",
+      "w": "C",
+      "from": "agents"
+    }
+  ],
+  "rules": [
+    "markers_known",
+    "end_present"
+  ]
+}

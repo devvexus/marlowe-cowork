@@ -1,0 +1,49 @@
+{
+  "kind": "research",
+  "title": "Research",
+  "available": true,
+  "phases": [
+    "Plan",
+    "DataCollection",
+    "DataValidation",
+    "Thinking",
+    "Report",
+    "Finish"
+  ],
+  "forms": [
+    "question@1",
+    "attack_vectors@1",
+    "page@1",
+    "analyze@1",
+    "claim@1",
+    "cclaim@1",
+    "condense@1",
+    "verify@1",
+    "lead_decision@1",
+    "section@1",
+    "answer@1",
+    "audit@1",
+    "validated@1"
+  ],
+  "supersedes": [
+    "web-research",
+    "deep-research"
+  ],
+  "rollups": [
+    {
+      "title": "Sources",
+      "over": "source",
+      "by": "data.relevancy"
+    },
+    {
+      "title": "Claims",
+      "over": "cclaim",
+      "by": "data.verdict"
+    },
+    {
+      "title": "Agents",
+      "over": "agents",
+      "by": "status"
+    }
+  ]
+}
