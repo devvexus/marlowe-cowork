@@ -300,7 +300,7 @@ fn finish(inner: &Arc<Inner>, id: &RunId, provider: &str, outcome: Result<Result
 }
 
 /// The supervisor's side of every agent step.
-struct Hooks {
+pub(crate) struct Hooks {
     inner: Arc<Inner>,
     id: RunId,
     session: Option<SessionId>,
@@ -1159,4 +1159,18 @@ fn guarded_shell(inner: Arc<Inner>, id: RunId, session: Option<SessionId>) -> pl
         }
         sandbox_shell(sandbox, command, cancel)
     })
+}
+
+/// The project engine's view of this run's model slots: employees take their slots from the same
+/// pool as the run's agents and book their spend on the run (`Hooks::before_call` and
+/// `after_call` do both, behind the commit-memory check and the GPU hold).
+#[allow(dead_code)] // called by the project branch of `execute` (stage D)
+pub(crate) fn project_gate(hooks: &Arc<Hooks>, models: Vec<ModelRef>) -> Arc<crate::project_gate::ProjectGate> {
+    let brains = hooks.inner.deps.brains.clone();
+    let per_provider = hooks.inner.cfg.per_provider;
+    Arc::new(crate::project_gate::ProjectGate::new(
+        hooks.clone(),
+        models,
+        Arc::new(move |m: &ModelRef| if m.provider.is_local() { brains.context().crew_slots(m) } else { per_provider }),
+    ))
 }

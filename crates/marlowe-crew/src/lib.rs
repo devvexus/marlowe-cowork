@@ -12,6 +12,7 @@
 
 pub mod dispatch;
 pub mod playbook;
+pub mod project_gate;
 mod role;
 mod run;
 mod runner;

@@ -25,6 +25,8 @@ sha2.workspace = true
 marlowe-workflow.workspace = true
 # Track I: build_v2 reads the project profile (commands, hubs, lockfiles) and test-output parsers.
 marlowe-verify.workspace = true
+# Projects: the employees of a project take their model slots from this crew's pool.
+marlowe-project.workspace = true
 
 [dev-dependencies]
 marlowe-provider.workspace = true
