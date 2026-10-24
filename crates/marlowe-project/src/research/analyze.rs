@@ -36,6 +36,23 @@ fn relevancy_table(input: &TaskInput) -> String {
     rel.values.iter().map(|v| format!("- {}: {}", v.v, v.def.clone().unwrap_or_default())).collect::<Vec<_>>().join("\n")
 }
 
+/// `text` lowercased with every run of characters that are not letters or digits as one space,
+/// so a name matches the page however it is punctuated (`DeepSeek-V4-Pro` and `deepseek v4 pro`).
+fn words(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut gap = true;
+    for c in text.chars().flat_map(char::to_lowercase) {
+        if c.is_alphanumeric() {
+            out.push(c);
+            gap = false;
+        } else if !gap {
+            out.push(' ');
+            gap = true;
+        }
+    }
+    out.trim_end().to_string()
+}
+
 /// The plan's project-specific fields, as the model reads them.
 fn field_list(plan: &Plan) -> String {
     if plan.fields.is_empty() {
@@ -67,7 +84,8 @@ fn prompt(deps: &ResearchDeps, input: &TaskInput) -> Result<Prompt, String> {
          Today is {today}.\n\n\
          How relevant is the page to the question? Pick one, applying its test:\n{table}\n\n\
          `source_kind`: official (the maker's own site, docs or announcement), paper, repo, news, blog, forum, aggregator (a roundup of other sources), other.\n\n\
-         `records`: one row for each thing the page reports on, with these fields (null when the page does not say):\n{fields}\n\n\
+         `records`: one row for each specific thing this page itself names and reports on (each model, product or item by the exact name the page uses), with these fields (null when the page does not say):\n{fields}\n\
+         A row's `{key}` is written as the page writes it; no row for anything the page does not name.\n\n\
          Rules:\n\
          - A claim is one short statement the page makes that bears on the question. Its `quote` must be copied word for word from the page text. If no sentence of the page says it, do not write the claim.\n\
          - Links in the page text look like [L12]. For `additional_sources`, name a link by its number in `link`. If the page names a source that has no link, write its name or citation in `reference` and leave `link` null.\n\
@@ -77,6 +95,7 @@ fn prompt(deps: &ResearchDeps, input: &TaskInput) -> Result<Prompt, String> {
         today = input.today,
         table = relevancy_table(input),
         fields = field_list(&input.plan),
+        key = input.plan.key_field.as_deref().unwrap_or("name"),
     );
     let user = format!(
         "{}\n\n{}",
@@ -215,10 +234,20 @@ fn finish(deps: &ResearchDeps, input: &TaskInput, map: Map<String, Value>) -> Re
         }));
     }
 
-    // Records: only the plan's fields, nothing url-shaped, no empty rows.
+    // Records: only the plan's fields, nothing url-shaped, no empty rows, and a row's key is a
+    // name the page itself uses (as a claim's quote must be its words): a record is never about
+    // something the page does not name.
     let mut records: Vec<Value> = Vec::new();
+    let page_words = format!(" {} ", words(&text));
     if label != "Skip" {
         for r in rows(&map, "records") {
+            if let Some(key) = input.plan.key_field.as_deref() {
+                let named = r.get(key).and_then(Value::as_str).map(words).unwrap_or_default();
+                if named.is_empty() || !page_words.contains(&format!(" {named} ")) {
+                    rej.add("records_not_on_page", 1);
+                    continue;
+                }
+            }
             let mut row = Map::new();
             let mut any = false;
             for pf in &input.plan.fields {
@@ -303,6 +332,17 @@ pub fn priority(source: &Map<String, Value>) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Found live: an analyst filled `model_name` with "Kimi/Kimilab" and "Qwen/Alibaba", and added
+    /// rows for models the page never named. A record's key must be words the page uses.
+    #[test]
+    fn a_record_key_matches_the_page_however_it_is_punctuated() {
+        let page = format!(" {} ", words("Today DeepSeek-V4-Pro (1.6T) and V4.1-Flash ship. Qwen 4 is in training."));
+        let on = |name: &str| page.contains(&format!(" {} ", words(name)));
+        assert!(on("DeepSeek V4 Pro") && on("deepseek-v4-pro") && on("Qwen 4") && on("V4.1 Flash"));
+        assert!(!on("Kimi/Kimilab") && !on("Qwen/Alibaba") && !on("V4.1-Flash-1017"));
+        assert!(!on("4 Pro"), "a name is matched as whole words, not inside another");
+    }
 
     fn refs() -> Vec<Map<String, Value>> {
         vec![
