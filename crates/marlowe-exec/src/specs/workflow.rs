@@ -287,6 +287,19 @@ fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
             return ToolOutcome::error_of("team-name", missing_path(&roots, path));
         }
     }
+    // A saved team task a project kind replaces is not run where projects are (Matthew: research
+    // goes to the research project). Found live: told "a project replaces it", dawn still ran
+    // `team{name:"web-research"}`, and its agents asked 63 times in 45 minutes.
+    if let (None, None, Some(name)) = (&plan.script, &plan.path, &plan.name) {
+        if cx.scope.services.get::<marlowe_project::ProjectService>().is_some() {
+            if let Some(kind) = marlowe_project::Registry::builtin().superseded_by(name) {
+                return ToolOutcome::error_of(
+                    "team-superseded",
+                    format!("Not run: `{name}` is replaced by a {kind} project. Start it with manage_project{{action:\"create\", plan:{{objective, questions, fields}}}}; its plan card is the plan the user approves."),
+                );
+            }
+        }
+    }
     let from_script = plan.script.is_some() || plan.path.is_some();
     let fail = |e: String| ToolOutcome::error(if from_script { script_error(e) } else { e });
     let source = plan.script.clone().or_else(|| plan.path.as_deref().and_then(|p| std::fs::read_to_string(service::resolve_path(&roots, p)).ok()));

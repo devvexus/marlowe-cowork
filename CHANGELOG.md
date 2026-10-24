@@ -4,6 +4,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+- **A saved team task a project kind replaces is refused where projects run.** `team{name:"web-research"}` with a project service answers that a research project replaces it and how to start one. Found live: told "a project replaces it", dawn still ran the old team task, whose agents asked 63 times in 45 minutes.
 - **A quote that ends in a multibyte character no longer panics the analyst.** Locating a quote across `[L12]` markers took a character from the middle of one ("·"); the end is now one past the quote's last mapped byte.
 - **A question that names no subject is searched with the objective's names.** "Under what open source licenses is each published?" had gone to the web as it stood and brought back music news and court orders; the question's own query now carries the objective's names (capitalised or with a digit: Rust, TUI, Qwen4), and the search planner is told every angle names the subject.
 - **A plan's records always have a name.** When no field names a row (`name`, `*_name`, `title`, `*_id`) and none is marked `key_field`, code adds `name` first. Found live: a plan for "the three most popular Rust TUI libraries" collected stars, version and date with no library name, so rows were keyed by a star count.

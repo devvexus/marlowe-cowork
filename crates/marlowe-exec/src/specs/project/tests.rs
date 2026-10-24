@@ -287,3 +287,18 @@ fn a_research_turn_is_routed_to_a_project_once() {
     route.before_turn(&mut convo, &mut text);
     assert!(matches!(route.before_approval(&mut call("web_search"), &cx(&ws, 2, None)), CallFlow::Continue), "no project service, no route");
 }
+
+/// Found live: told that a project replaces it, dawn still ran `team{name:"web-research"}`. With a
+/// project service the superseded saved task is refused with the way to the project; without one
+/// it is not refused for that reason.
+#[test]
+fn a_saved_team_task_a_project_replaces_points_at_the_project() {
+    let (home, ws) = (temp("sup-h"), temp("sup-w"));
+    let t = host(&home, &ws);
+    let svc = service(&home);
+    let call = ToolCallReq { id: "c1".into(), name: "team".into(), args: json!({"name": "web-research", "args": {"topic": "new Kimi models"}}) };
+    let out = t.call_scoped(&call, &cx(&ws, 1, Some(&svc)));
+    assert!(out.is_error && out.content.contains("replaced by a research project") && out.content.contains("manage_project"), "{}", out.content);
+    let out = t.call_scoped(&call, &cx(&ws, 1, None));
+    assert!(!out.content.contains("replaced by a research project"), "{}", out.content);
+}
