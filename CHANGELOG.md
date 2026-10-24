@@ -4,6 +4,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+- **`enter_plan` is for code changes; a project's card is its plan.** Its description said to plan first when "the change is large", and dawn read a research request as large: twice it entered plan mode and wrote an `exit_plan` instead of starting the project.
 - **Plan mode lets a project plan be made.** A project's plan waits for the user's approval of its card, so `manage_project` create, revise, status, list and checkin count as reads in plan mode; answers that send a project on are still refused there. The tool says its card is the plan (no `enter_plan` first). Found live: dawn entered plan mode for a research request and was then refused its own project.
 - **A page the antivirus removes is left out by name.** Windows' "contains a virus" errors (225, 226) on a stored page become `StoreError::Quarantined` ("the antivirus removed this page as malware; it is left out"), and the analyst and verifier say so instead of "not in the project's files". Nothing tries to keep or hide such a page. Found live: Defender removed a cached search result as Trojan:JS/ChatGPTStealer.
 - **The grammar limit is 1,999, measured, not guessed.** Ollama's bundled llama-server parses `maxLength: 1999` and refuses `2000`, so the clamp of the previous fix still failed every report writer live; the bound is 1,999 now.

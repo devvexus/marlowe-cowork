@@ -813,7 +813,7 @@
  },
  {
   "name": "enter_plan",
-  "description": "Plan mode, called first when the user wants to plan before changing anything (or the change is large or risky): nothing runs until the user approves your exit_plan.",
+  "description": "Plan mode, called first when the user wants to plan before changing anything (or a code change is large or risky): nothing runs until the user approves your exit_plan. Not for a project: its card is its plan.",
   "input_schema": {
    "type": "object",
    "properties": {
