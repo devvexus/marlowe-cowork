@@ -347,7 +347,7 @@ fn parse_fields(v: &Value, errs: &mut Errs) -> Vec<PlanField> {
             }
         };
         for k in obj.keys() {
-            // `label` and `key_field` are tolerated (a label is kept, `key_field` ignored).
+            // `label` and `key_field` are tolerated (a label is kept, `key_field: true` names the record key).
             if !matches!(k.as_str(), "key" | "type" | "values" | "label" | "key_field") {
                 errs.add(&format!("{path}.{k}"), "not a field key", "Use only key, type and values");
             }
@@ -524,7 +524,10 @@ pub fn parse_plan(input: &Value, registry: &Registry, now_ms: u64) -> Result<Pla
     let kind = kind.unwrap_or_else(|| "research".into());
     let title = title.unwrap_or_else(|| objective.chars().take(60).collect::<String>().trim().to_string());
     let phases = phases.unwrap_or_else(|| registry.kind(&kind).map(|k| k.phases.clone()).unwrap_or_default());
-    let key_field = fields.first().map(|f| f.key.clone());
+    let marked = obj.get("fields").and_then(Value::as_array).and_then(|a| {
+        a.iter().find(|f| f.get("key_field").and_then(Value::as_bool) == Some(true)).and_then(|f| f.get("key")).and_then(Value::as_str).map(clean)
+    });
+    let key_field = record_key(&fields, marked.as_deref());
     Ok(Plan {
         plan_no: 1,
         objective,
@@ -545,6 +548,19 @@ pub fn parse_plan(input: &Value, registry: &Registry, now_ms: u64) -> Result<Pla
         seed_sources: Vec::new(),
         steer: None,
     })
+}
+
+/// The field a record table is keyed by: the one the manager marked `key_field: true`, else the
+/// first that names the thing a row is about (`name`, `*_name`, `title`, `*_title`, `*_id`), else
+/// the first field. Keying "the newest models" by `provider` would fold every model of one
+/// company into one row.
+fn record_key(fields: &[PlanField], marked: Option<&str>) -> Option<String> {
+    let names = |k: &str| k == "name" || k == "title" || k.ends_with("_name") || k.ends_with("_title") || k.ends_with("_id");
+    marked
+        .filter(|m| fields.iter().any(|f| f.key == *m))
+        .map(String::from)
+        .or_else(|| fields.iter().find(|f| names(&f.key)).map(|f| f.key.clone()))
+        .or_else(|| fields.first().map(|f| f.key.clone()))
 }
 
 /// Applies changed keys to a plan and validates the result, for `revise` while a plan gate is
@@ -693,7 +709,21 @@ mod tests {
         assert_eq!(p.questions[0].text, "What does each cache keep?");
         assert_eq!(p.fields[0].key, "method");
         assert_eq!(p.fields[1].label, "Cost per call");
-        assert_eq!(p.key_field.as_deref(), Some("method"));
+        assert_eq!(p.key_field.as_deref(), Some("cost"), "the field marked key_field keys the records");
+    }
+
+    #[test]
+    fn records_are_keyed_by_the_field_that_names_a_row_not_by_the_first() {
+        let p = parse_plan(
+            &json!({"objective": "Find the latest models from three AI labs and their release dates.", "questions": ["Which models did each lab release?"],
+                    "fields": ["provider", "model_name", "release_date"]}),
+            &reg(),
+            0,
+        )
+        .unwrap();
+        assert_eq!(p.key_field.as_deref(), Some("model_name"));
+        let p = parse_plan(&json!({"objective": "Compare three ways to cache a prompt on a local model.", "questions": ["What does each cache keep?"], "fields": ["method", "cost"]}), &reg(), 0).unwrap();
+        assert_eq!(p.key_field.as_deref(), Some("method"), "with no naming field the first one keys");
     }
 
     #[test]

@@ -166,7 +166,7 @@ const WRITER_RULES: &str = "Write prose that uses only the numbered claims. Cite
 
 fn section_prompt(input: &TaskInput) -> Result<Prompt, String> {
     let sub = input.sub.clone();
-    let all = input.project_handle.read(verified_claims).map_err(|e| e.to_string())?;
+    let (all, questions) = input.project_handle.read(|st| (verified_claims(st), super::all_questions(st))).map_err(|e| e.to_string())?;
     let mine: Vec<&VClaim> = all.iter().filter(|c| c.sub == sub).take(CLAIMS_PER_SECTION).collect();
     if mine.is_empty() {
         return Ok(Prompt::canned(json!({"text": NOTHING, "end": "END"})));
@@ -176,7 +176,8 @@ fn section_prompt(input: &TaskInput) -> Result<Prompt, String> {
          Objective: {}\n{WRITER_RULES}",
         fence::clean(&input.plan.objective, 500, false)
     );
-    let q = super::question_of(&input.plan, &sub);
+    // A question from an earlier round is not in this round's plan: take it from the project.
+    let q = questions.into_iter().find(|(id, _)| *id == sub).map(|(_, t)| t).unwrap_or_else(|| super::question_of(&input.plan, &sub));
     let user = format!("{}\n\n{}", fence::fence("The question", &q, 300), fence::fence("The verified claims", &claim_lines(&mine), 12_000));
     Ok(Prompt::new(vec![SystemBlock { text: system, cache: true }], user))
 }
@@ -274,7 +275,7 @@ trait AllQuestions {
 
 impl AllQuestions for ProjectState {
     fn plan_questions_all(&self) -> Vec<(String, String)> {
-        self.items_of_kind("question").into_iter().map(|q| (s(&q.data, "id").to_string(), s(&q.data, "text").to_string())).collect()
+        super::all_questions(self)
     }
 }
 

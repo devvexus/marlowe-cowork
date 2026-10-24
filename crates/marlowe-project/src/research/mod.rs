@@ -262,6 +262,13 @@ pub(crate) fn question_of(plan: &crate::plan::Plan, sub: &str) -> String {
     plan.questions.iter().find(|q| q.id == sub).map(|q| q.text.clone()).unwrap_or_else(|| plan.objective.clone())
 }
 
+/// The questions of every round, in order, as `(id, text)`: a continuation plan holds only its own
+/// new questions, while the project's question items keep all of them. The lead and the writer
+/// work from these, so a later round never hides what an earlier one found.
+pub(crate) fn all_questions(st: &crate::state::ProjectState) -> Vec<(String, String)> {
+    st.items_of_kind("question").into_iter().map(|q| (s(&q.data, "id").to_string(), s(&q.data, "text").to_string())).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,7 +279,7 @@ mod tests {
         assert_eq!(t, "see and and the [31m text");
         assert!(dropped);
         let (t, dropped) = plain("no addresses here", 8);
-        assert_eq!((t.as_str(), dropped), ("no addre…", false));
+        assert_eq!((t.as_str(), dropped), ("no addr…", false), "the ellipsis counts toward the cap, so a form's maxLength holds");
     }
 
     #[test]
