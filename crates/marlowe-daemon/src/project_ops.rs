@@ -118,6 +118,20 @@ pub(crate) fn live(core: &Core) -> bool {
     link(core).is_some()
 }
 
+/// A reminder naming the unfinished projects of a conversation (id, title, status, phase), so a
+/// question about them is answered from what is running and not from the model's guess. `None`
+/// when the daemon has no projects service or the conversation has none unfinished.
+pub(crate) fn running_reminder(core: &Core, session: &str) -> Option<String> {
+    let rows = link(core)?.shared.service().rows().ok()?;
+    let lines: Vec<String> = rows
+        .iter()
+        .filter(|r| r.session.as_deref() == Some(session) && !matches!(r.status.as_str(), "finished" | "cancelled" | "failed"))
+        .take(5)
+        .map(|r| format!("{} \"{}\" ({}, {})", r.id, r.title, r.status, r.phase))
+        .collect();
+    (!lines.is_empty()).then(|| format!("<system-reminder>Projects of this conversation: {}. They run in the background; manage_project status shows more, and the result arrives as a notice.</system-reminder>", lines.join("; ")))
+}
+
 /// The service for a session's tool calls.
 pub(crate) fn services(core: &Arc<Core>, _convo: &Conversation, services: Services) -> Services {
     match link(core) {

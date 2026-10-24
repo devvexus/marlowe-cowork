@@ -143,7 +143,8 @@ pub(crate) fn services(core: &Arc<Core>, convo: &Conversation, services: Service
         let core = weak.upgrade()?;
         let ws = workspace.as_deref();
         let projects = crate::project_ops::live(&core);
-        match mode(&core, &session, ws) {
+        let running = crate::project_ops::running_reminder(&core, &session.0);
+        let base = match mode(&core, &session, ws) {
             Mode::On if projects => project_reminder(&core, ws, Mode::On, text),
             Mode::On => Some(on_reminder_naming(size(&core, ws), named_task(&core, ws, text).as_deref())),
             Mode::OffPending => {
@@ -156,6 +157,10 @@ pub(crate) fn services(core: &Arc<Core>, convo: &Conversation, services: Service
             }
             Mode::Off if projects => project_reminder(&core, ws, Mode::Off, text),
             Mode::Off => None,
+        };
+        match (base, running) {
+            (Some(b), Some(r)) => Some(format!("{b}{r}")),
+            (b, r) => b.or(r),
         }
     }));
     services.with(note)

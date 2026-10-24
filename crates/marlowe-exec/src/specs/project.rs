@@ -114,6 +114,8 @@ fn call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
                         format!("project {} created", made.id),
                     )
                 }
+                // A refused plan made nothing; a small model otherwise goes on to `revise` an id it invented.
+                Err(e @ ProjectError::Plan(_)) => ToolOutcome::error_of(e.class(), format!("{e}\nNothing was created yet. Call manage_project create again with the plan fixed.")),
                 Err(e) => fail(e),
             }
         }

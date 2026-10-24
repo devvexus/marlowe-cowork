@@ -117,6 +117,36 @@ fn hit_item(input: &TaskInput, r: &SourceRef, origin: &str, rank: usize) -> Item
     it
 }
 
+/// How many of a question's web queries are tried on the stand-in channels when the web has no
+/// backend (they are rate limited; a few queries are enough to find the names to follow).
+const STAND_IN_QUERIES: usize = 3;
+
+/// Channels that stand in for a general web search that has no backend: discussion and news
+/// (Hacker News), the encyclopedia, and repositories.
+const STAND_INS: [ChannelId; 3] = [ChannelId::HackerNews, ChannelId::Wikipedia, ChannelId::Github];
+
+/// Runs `q` on the stand-in channels that have not failed yet. A channel that fails is left out
+/// for the rest of this search; only a cancel is an error.
+fn stand_in_search(
+    deps: &ResearchDeps,
+    q: &ChannelQuery,
+    cancel: &marlowe_model::CancelToken,
+    failed: &mut Vec<ChannelId>,
+    lists: &mut Vec<Vec<SourceRef>>,
+) -> Result<(), String> {
+    for ch in STAND_INS {
+        if failed.contains(&ch) {
+            continue;
+        }
+        match deps.web.search(ch, q, cancel) {
+            Ok(rs) => lists.push(rs),
+            Err(ChannelError::Cancelled) => return Err("cancelled".into()),
+            Err(_) => failed.push(ch),
+        }
+    }
+    Ok(())
+}
+
 fn search_sources(deps: &ResearchDeps, input: &TaskInput, cancel: &marlowe_model::CancelToken) -> Result<Finished, String> {
     let vector = input.item.as_ref().ok_or("there is no list of searches to run")?;
     let queries: Vec<(ChannelId, ChannelQuery)> = super::rows(&vector.data, "queries")
@@ -133,11 +163,16 @@ fn search_sources(deps: &ResearchDeps, input: &TaskInput, cancel: &marlowe_model
     let mut out = Finished { tainted: true, ..Default::default() };
     let mut failed: Vec<ChannelId> = Vec::new();
     let mut lists: Vec<Vec<SourceRef>> = Vec::new();
+    let mut stand_ins_run = 0usize;
     for (ch, q) in &queries {
         if cancel.is_cancelled() {
             return Err("cancelled".into());
         }
         if failed.contains(ch) {
+            if *ch == ChannelId::Web && stand_ins_run < STAND_IN_QUERIES {
+                stand_ins_run += 1;
+                stand_in_search(deps, q, cancel, &mut failed, &mut lists)?;
+            }
             continue;
         }
         match deps.web.search(*ch, q, cancel) {
@@ -150,6 +185,11 @@ fn search_sources(deps: &ResearchDeps, input: &TaskInput, cancel: &marlowe_model
                 note.label = text.clone();
                 note.data = object(json!({ "text": text }));
                 out.emits.push(note);
+                // A general search with no backend still has the open channels that carry news.
+                if *ch == ChannelId::Web && matches!(e, ChannelError::NoBackend { .. }) && stand_ins_run < STAND_IN_QUERIES {
+                    stand_ins_run += 1;
+                    stand_in_search(deps, q, cancel, &mut failed, &mut lists)?;
+                }
             }
         }
     }

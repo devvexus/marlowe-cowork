@@ -102,11 +102,34 @@ pub fn chat_body(planned: &Value, sampling: Option<&Sampling>, slot: u32, thinki
         let format = if f == "json" {
             json!({"type": "json_object"})
         } else {
-            json!({"type": "json_schema", "json_schema": {"name": "schema", "schema": f}})
+            json!({"type": "json_schema", "json_schema": {"name": "schema", "schema": grammar_safe(f)}})
         };
         body.insert("response_format".into(), format);
     }
     Value::Object(body)
+}
+
+/// The most repetitions llama.cpp's grammar parser accepts in one rule. A schema asking for more
+/// (`maxLength: 4000` on a long text field) is refused as "failed to parse grammar", so the
+/// grammar is given the largest count it takes; the caller still checks the reply against its
+/// own schema, and a reply is bounded by the call's token limit anyway.
+const GRAMMAR_MAX_REPEAT: u64 = 2000;
+
+/// `schema` with every length and item bound the grammar parser would refuse brought down to
+/// [`GRAMMAR_MAX_REPEAT`].
+pub fn grammar_safe(schema: &Value) -> Value {
+    match schema {
+        Value::Object(o) => Value::Object(
+            o.iter()
+                .map(|(k, v)| match (k.as_str(), v.as_u64()) {
+                    ("maxLength" | "minLength" | "maxItems" | "minItems", Some(n)) => (k.clone(), json!(n.min(GRAMMAR_MAX_REPEAT))),
+                    _ => (k.clone(), grammar_safe(v)),
+                })
+                .collect(),
+        ),
+        Value::Array(a) => Value::Array(a.iter().map(grammar_safe).collect()),
+        other => other.clone(),
+    }
 }
 
 /// Bounds the reasoning of a call whose reply is a forced form (`ChatRequest::think_budget`):
@@ -563,5 +586,15 @@ mod tests {
         let mut folder = Folder::new(false, &mut on);
         let r = read_stream(sse(&[delta(json!({"content": "x"}))]), &mut folder, &cancel);
         assert!(r.is_err_and(|e| e.is_cancelled()));
+    }
+
+    #[test]
+    fn a_long_length_bound_is_brought_down_to_what_the_grammar_parser_takes() {
+        let s = json!({"type": "object", "properties": {"text": {"type": "string", "maxLength": 4000}, "tags": {"type": "array", "maxItems": 3000, "items": {"type": "string", "maxLength": 12}}}});
+        let g = grammar_safe(&s);
+        assert_eq!(g["properties"]["text"]["maxLength"], 2000);
+        assert_eq!(g["properties"]["tags"]["maxItems"], 2000);
+        assert_eq!(g["properties"]["tags"]["items"]["maxLength"], 12);
+        assert_eq!(s["properties"]["text"]["maxLength"], 4000, "the caller's schema is not changed");
     }
 }
