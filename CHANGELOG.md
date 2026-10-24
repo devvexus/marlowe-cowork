@@ -4,6 +4,8 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+- **A writer sees each claim's date and uses every claim that answers its question.** A claim carries the newest publication date among its sources' pages, the writer is shown it, and asked for one sentence per answering claim (up to 12), the most recent first when the question asks for the latest. A live DeepSeek section had 25 verified claims, V4.1-Flash among them, and said two sentences about R1.
+- **The projects block tells the manager how a plan reads well.** Each question names its subject, because a researcher reads it alone; a request about a set of things gets fields for the facts to collect, the naming one first.
 - **A writer answers in sentences, each with the claims it rests on; code places the markers.** The section and answer forms take `sentences: [{text, claims}]` and code renders `... text [C3, C7].`, so a marker always sits inside the sentence it cites. Free prose put markers at line starts and on lines of their own, and the audit cut 24 of 30 sentences of a live report, most for markers that had come loose from their sentence.
 - **One sentence per auditor.** With six to a batch, dawn gave verdicts that belonged to the sentence beside the one they were numbered for; each auditor now judges one sentence against its own passages.
 - **A search query needs at least three letters.** A name of `[1,` had gone to arXiv as a query.

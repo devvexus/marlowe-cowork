@@ -55,11 +55,22 @@ pub struct VClaim {
     pub contested: bool,
     /// The source items behind it, best credibility first.
     pub sources: Vec<String>,
+    /// The newest publication date among its sources' pages (`YYYY-MM-DD`), when a page gave one.
+    pub date: Option<String>,
 }
 
 /// The verified claims, numbered by score then id.
 pub fn verified_claims(st: &ProjectState) -> Vec<VClaim> {
     let cred: HashMap<&str, f64> = st.items_of_kind("source").into_iter().map(|i| (i.id.as_str(), f(&i.data, "credibility"))).collect();
+    // A source's date is its page's: the page's own metadata, else its search result's.
+    let page_date: HashMap<&str, String> = st
+        .items_of_kind("page")
+        .into_iter()
+        .filter_map(|p| p.data.get("date").and_then(Value::as_str).map(|d| (p.id.as_str(), d.chars().take(10).collect::<String>())))
+        .filter(|(_, d)| d.len() >= 4)
+        .collect();
+    let source_date: HashMap<&str, &String> =
+        st.items_of_kind("source").into_iter().filter_map(|i| page_date.get(s(&i.data, "page")).map(|d| (i.id.as_str(), d))).collect();
     let mut v: Vec<VClaim> = st
         .items_of_kind("cclaim")
         .into_iter()
@@ -69,6 +80,7 @@ pub fn verified_claims(st: &ProjectState) -> Vec<VClaim> {
             sources.sort();
             sources.dedup();
             sources.sort_by(|a, b| cred.get(b.as_str()).unwrap_or(&0.0).total_cmp(cred.get(a.as_str()).unwrap_or(&0.0)).then(a.cmp(b)));
+            let date = sources.iter().filter_map(|x| source_date.get(x.as_str()).map(|d| (*d).clone())).max();
             VClaim {
                 n: 0,
                 id: c.id.clone(),
@@ -79,6 +91,7 @@ pub fn verified_claims(st: &ProjectState) -> Vec<VClaim> {
                 verdict: s(&c.data, "verdict").to_string(),
                 contested: s(&c.data, "stance") == "contested",
                 sources,
+                date,
             }
         })
         .collect();
@@ -151,12 +164,13 @@ fn claim_lines(claims: &[&VClaim]) -> String {
         .iter()
         .map(|c| {
             format!(
-                "[C{}] {} (score {:.2}; {} independent source{}{})",
+                "[C{}] {} (score {:.2}; {} independent source{}{}{})",
                 c.n,
                 fence::clean(&c.text, 240, false),
                 c.score,
                 c.roots,
                 if c.roots == 1 { "" } else { "s" },
+                c.date.as_deref().map(|d| format!("; dated {d}")).unwrap_or_default(),
                 if c.contested { "; contested" } else { "" }
             )
         })
@@ -164,7 +178,7 @@ fn claim_lines(claims: &[&VClaim]) -> String {
         .join("\n")
 }
 
-const WRITER_RULES: &str = "Write `sentences`, one entry per sentence, in reading order. `text` is the sentence itself, with no claim markers and no web addresses. `claims` lists the numbers of the claims it rests on (for [C3] write 3). Every sentence that states a fact cites at least one claim; a sentence only joins two others when it cites none. Write nothing the claims do not say. If claims disagree or one is marked contested, say so. Put END in `end`.";
+const WRITER_RULES: &str = "Write `sentences`, one entry per sentence, in reading order. `text` is the sentence itself, with no claim markers and no web addresses. `claims` lists the numbers of the claims it rests on (for [C3] write 3). Every sentence that states a fact cites at least one claim; a sentence only joins two others when it cites none. Use every claim that answers the question, one sentence each, up to 12; when the question asks for the newest or latest, lead with the most recently dated claims and say what is older. Write nothing the claims do not say. If claims disagree or one is marked contested, say so. Put END in `end`.";
 
 fn section_prompt(input: &TaskInput) -> Result<Prompt, String> {
     let sub = input.sub.clone();
