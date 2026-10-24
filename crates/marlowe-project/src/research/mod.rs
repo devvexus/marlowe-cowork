@@ -91,6 +91,15 @@ impl ResearchDeps {
         self.store().ok()?.get_source(project, hash).ok().flatten()
     }
 
+    /// The stored text of a page, or why it is not there: missing, or removed by the antivirus.
+    pub fn text_or_why(&self, project: &str, hash: &str) -> Result<String, String> {
+        match self.store()?.get_source(project, hash) {
+            Ok(Some(t)) => Ok(t),
+            Ok(None) => Err("the page text is not in the project's files".into()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
     /// The link table of a stored page.
     pub fn links(&self, project: &str, hash: &str) -> Vec<marlowe_research::LinkRow> {
         self.store()

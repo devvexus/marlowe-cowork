@@ -135,7 +135,7 @@ fn witnesses_of(deps: &ResearchDeps, project: &str, srcs: &HashMap<String, Src>,
 fn extract_claims(deps: &ResearchDeps, input: &TaskInput) -> Result<Finished, String> {
     let src = input.item.as_ref().ok_or("there is no source to extract from")?;
     let hash = s(&src.data, "text_ref");
-    let text = deps.text(&input.project, hash).ok_or("the page text is not in the project's files")?;
+    let text = deps.text_or_why(&input.project, hash)?;
     let mut out = Finished::default();
     let mut rej = Rejected::default();
     let mut seen: HashSet<(u64, u64)> = HashSet::new();

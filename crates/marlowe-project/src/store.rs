@@ -86,6 +86,19 @@ pub enum StoreError {
         /// The label asked for.
         label: String,
     },
+    /// The antivirus removed or locked a stored page as malware. The page is data a project
+    /// never runs, but nothing tries to keep it: it is left out of the project.
+    #[error("the antivirus removed this page as malware ({0}); it is left out")]
+    Quarantined(String),
+}
+
+/// Windows' "contains a virus" (225) and "virus removed" (226) errors become
+/// [`StoreError::Quarantined`].
+fn or_quarantined(e: io::Error, path: &Path) -> StoreError {
+    match e.raw_os_error() {
+        Some(225 | 226) => StoreError::Quarantined(path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+        _ => StoreError::Io(e),
+    }
 }
 
 /// One row of the index.
@@ -444,7 +457,7 @@ impl ProjectStore {
         let path = self.dir(id)?.join("sources").join(format!("{hash}.md"));
         if !path.exists() {
             fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
-            write_atomic(&path, text.as_bytes())?;
+            write_atomic(&path, text.as_bytes()).map_err(|e| or_quarantined(e, &path))?;
         }
         Ok(hash)
     }
@@ -476,10 +489,11 @@ impl ProjectStore {
     /// Reads stored page text by hash.
     pub fn get_source(&self, id: &str, hash: &str) -> Result<Option<String>, StoreError> {
         let h = safe_name(hash)?;
-        match fs::read_to_string(self.dir(id)?.join("sources").join(format!("{h}.md"))) {
+        let path = self.dir(id)?.join("sources").join(format!("{h}.md"));
+        match fs::read_to_string(&path) {
             Ok(t) => Ok(Some(t)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(or_quarantined(e, &path)),
         }
     }
 
@@ -766,6 +780,15 @@ mod tests {
         assert_eq!(s.rebuild_index().unwrap(), 1);
         assert!(!tmp.exists());
         assert_eq!(s.row(&st.id).unwrap().unwrap().rev, old.rev);
+    }
+
+    #[test]
+    fn a_page_the_antivirus_removed_is_named_as_such() {
+        // Found live: Defender removed a cached search result as Trojan:JS/ChatGPTStealer.
+        let e = or_quarantined(io::Error::from_raw_os_error(225), Path::new(r"C:\p\sources\ab.md"));
+        assert!(matches!(&e, StoreError::Quarantined(f) if f == "ab.md"), "{e:?}");
+        assert!(e.to_string().contains("removed this page as malware"));
+        assert!(matches!(or_quarantined(io::Error::from_raw_os_error(5), Path::new("x")), StoreError::Io(_)));
     }
 
     #[test]

@@ -237,6 +237,13 @@ impl Permissions {
                 crate::subagent::read_only_type(ty, home, ws)
             }
             "skill" => crate::commands::skill_read_only(&call.args, &crate::instructions::Sources::for_session(home, ws)),
+            // A project's plan is itself a plan that waits for the user: making or revising one,
+            // and asking about one, change nothing until the user approves its card. Found live:
+            // dawn entered plan mode for a research request and was then refused the project.
+            "manage_project" => matches!(
+                call.args.get("action").and_then(Value::as_str).map(str::trim),
+                Some("create" | "revise" | "status" | "list" | "checkin")
+            ),
             _ => false,
         }
     }
@@ -371,7 +378,7 @@ impl Permissions {
         // and `service{op:status|logs}` only look (track D). Plan mode allows those.
         let op = call.args.get("op").and_then(Value::as_str).unwrap_or("");
         let effects = match call.name.as_str() {
-            "agent" | "skill" if self.only_reads(call) => crate::tools::Effects::READ,
+            "agent" | "skill" | "manage_project" if self.only_reads(call) => crate::tools::Effects::READ,
             "git" | "gh" | "ci_status" if says == ToolSays::Free => crate::tools::Effects::READ,
             "project" if op == "profile" => crate::tools::Effects::READ,
             "service" if matches!(op, "status" | "logs") => crate::tools::Effects::READ,

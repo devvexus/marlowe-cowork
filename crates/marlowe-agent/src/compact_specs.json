@@ -1074,7 +1074,7 @@
  },
  {
   "name": "manage_project",
-  "description": "Start and steer a project: staged work done by many single-task agents in the background while you stay free. Use it for research and any request too big for one reply; you only design it. create: plan {objective, questions[\"..\"], fields? e.g. [{\"key\":\"release_date\"},{\"key\":\"status\",\"values\":[\"released\",\"rumoured\"]}], send?} returns an id and a plan card to show the user; nothing runs until they approve (answer approve). Also revise (id, plan: only the keys that change), status, list, answer (id, answer, text for steer), checkin, cancel, reopen (id, phase). The result arrives as a notice.",
+  "description": "Start and steer a project: staged work by many single-task agents in the background; you stay free. Use it for research and any request too big for one reply; you only design it. create: plan {objective, questions[\"..\"], fields? e.g. [{\"key\":\"release_date\"},{\"key\":\"status\",\"values\":[\"released\",\"rumoured\"]}], send?} returns an id and the plan card (it is the plan; no enter_plan): nothing runs until the user approves (answer approve). Also revise (id, plan: changed keys), status, list, answer (id, answer, text for steer), checkin, cancel, reopen (id, phase). The result arrives as a notice.",
   "input_schema": {
    "type": "object",
    "properties": {

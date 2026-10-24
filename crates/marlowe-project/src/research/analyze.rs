@@ -75,7 +75,7 @@ fn field_list(plan: &Plan) -> String {
 fn prompt(deps: &ResearchDeps, input: &TaskInput) -> Result<Prompt, String> {
     let page = input.item.as_ref().ok_or("there is no page to read")?;
     let hash = s(&page.data, "text_ref");
-    let text = deps.text(&input.project, hash).ok_or("the page text is not in the project's files")?;
+    let text = deps.text_or_why(&input.project, hash)?;
     let question = question_of(&input.plan, &input.sub);
     let shown = fit(&text, &question, deps.page_chars);
     let system = format!(

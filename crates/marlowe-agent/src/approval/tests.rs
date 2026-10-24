@@ -771,3 +771,16 @@ fn parity_m1_plan_mode_allows_read_only_git_and_read_only_agents() {
     assert_eq!(refused, [false, true, false, true], "{r:?}");
     assert!(gate.asked().is_empty(), "nothing asked in plan mode: {:?}", gate.asked());
 }
+
+/// A project's plan waits for the user's approval of its card, so making one is planning: plan
+/// mode lets `manage_project` create, revise and look, and refuses what sends a project on.
+/// Found live: dawn entered plan mode for a research request and was refused its project.
+#[test]
+fn plan_mode_lets_a_project_plan_be_made_but_not_sent_on() {
+    let p = perms(&ws("plan-project"), PermissionMode::Plan);
+    let reads = |args: Value| p.only_reads(&call("1", "manage_project", args));
+    assert!(reads(json!({"action": "create", "plan": {}})));
+    assert!(reads(json!({"action": "status", "id": "p_1"})));
+    assert!(!reads(json!({"action": "answer", "id": "p_1", "answer": "approve"})), "sending a project on is not planning");
+    assert!(!reads(json!({"action": "cancel", "id": "p_1"})));
+}
