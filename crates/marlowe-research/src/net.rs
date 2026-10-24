@@ -106,24 +106,40 @@ fn loopback(req: &HttpRequest, cancel: &CancelToken, idle: Duration) -> Result<H
     Ok(HttpResponse { status, content_type: None, bytes, final_url: req.url.clone(), retry_after: None })
 }
 
-impl HttpGet for NetHttp {
-    fn get(&self, req: &HttpRequest, cancel: &CancelToken) -> Result<HttpResponse, String> {
-        if cancel.is_cancelled() {
-            return Err("cancelled".into());
-        }
-        if req.url.starts_with("http://") {
-            return loopback(req, cancel, self.deadline.min(Duration::from_secs(20)));
-        }
-        if !req.url.starts_with("https://") {
-            return Err(format!("not an http(s) URL: {}", req.url));
-        }
-        // marlowe-net blocks; a worker lets a cancel or the deadline return promptly.
+/// The longest body a free search API answer may have; more is cut off.
+const MAX_POST_BYTES: usize = 4 * 1024 * 1024;
+
+/// One JSON POST over https through marlowe-net (no redirect followed; the body read to
+/// [`MAX_POST_BYTES`]).
+fn https_post(req: &HttpRequest, body: &[u8], read_timeout: Duration) -> Result<HttpResponse, String> {
+    let target = marlowe_net::Target::parse(&req.url).map_err(|e| e.to_string())?;
+    let accept = req.accept.unwrap_or("application/json");
+    let mut r = marlowe_net::shared()
+        .post_streaming(&target, &[("Accept", accept)], body, read_timeout)
+        .map_err(|e| e.to_string())?;
+    let text = r.read_capped(MAX_POST_BYTES);
+    Ok(HttpResponse {
+        status: r.status,
+        content_type: r.content_type.clone(),
+        bytes: text.into_bytes(),
+        final_url: req.url.clone(),
+        retry_after: retry_after_secs(r.retry_after.as_deref()),
+    })
+}
+
+impl NetHttp {
+    /// Runs `work` on a worker, so a cancel or the deadline returns promptly (marlowe-net blocks).
+    fn on_worker(
+        &self,
+        cancel: &CancelToken,
+        name: &str,
+        work: impl FnOnce() -> Result<HttpResponse, String> + Send + 'static,
+    ) -> Result<HttpResponse, String> {
         let (tx, rx) = mpsc::sync_channel(1);
-        let owned = req.clone();
         std::thread::Builder::new()
-            .name("marlowe-research-get".into())
+            .name(name.into())
             .spawn(move || {
-                let _ = tx.send(https_chain(&owned));
+                let _ = tx.send(work());
             })
             .map_err(|e| format!("could not start the request: {e}"))?;
         let until = Instant::now() + self.deadline;
@@ -141,6 +157,33 @@ impl HttpGet for NetHttp {
                 }
             }
         }
+    }
+}
+
+impl HttpGet for NetHttp {
+    fn get(&self, req: &HttpRequest, cancel: &CancelToken) -> Result<HttpResponse, String> {
+        if cancel.is_cancelled() {
+            return Err("cancelled".into());
+        }
+        if req.url.starts_with("http://") {
+            return loopback(req, cancel, self.deadline.min(Duration::from_secs(20)));
+        }
+        if !req.url.starts_with("https://") {
+            return Err(format!("not an http(s) URL: {}", req.url));
+        }
+        let owned = req.clone();
+        self.on_worker(cancel, "marlowe-research-get", move || https_chain(&owned))
+    }
+
+    fn post_json(&self, req: &HttpRequest, body: &[u8], cancel: &CancelToken) -> Result<HttpResponse, String> {
+        if cancel.is_cancelled() {
+            return Err("cancelled".into());
+        }
+        if !req.url.starts_with("https://") {
+            return Err(format!("a POST goes only to https, not {}", req.url));
+        }
+        let (owned, body, read) = (req.clone(), body.to_vec(), self.deadline);
+        self.on_worker(cancel, "marlowe-research-post", move || https_post(&owned, &body, read))
     }
 }
 

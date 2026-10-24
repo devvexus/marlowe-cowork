@@ -39,6 +39,13 @@ impl HttpGet for Paced<'_> {
         }
         self.inner.get(request, cancel)
     }
+
+    fn post_json(&self, request: &HttpRequest, body: &[u8], cancel: &CancelToken) -> Result<HttpResponse, String> {
+        if !self.prepaid.swap(false, Ordering::SeqCst) && !self.limiter.wait(cancel) {
+            return Err("cancelled".into());
+        }
+        self.inner.post_json(request, body, cancel)
+    }
 }
 
 /// The shape of a research question, which decides its channels.
@@ -604,7 +611,7 @@ mod tests {
     #[test]
     fn a_web_setting_that_cannot_register_is_skipped_not_a_panic() {
         let cfg = KeylessConfig {
-            web: WebConfig { searxng_url: Some("http://192.168.1.10:8080".into()), duckduckgo: false },
+            web: WebConfig { searxng_url: Some("http://192.168.1.10:8080".into()), free_search: false, duckduckgo: false },
             ..KeylessConfig::default()
         };
         let r = ChannelRegistry::keyless_with(&cfg, None);

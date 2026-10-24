@@ -142,6 +142,14 @@ pub struct HttpResponse {
 /// Implementations send `request.user_agent` and never add credentials.
 pub trait HttpGet: Send + Sync {
     fn get(&self, request: &HttpRequest, cancel: &CancelToken) -> Result<HttpResponse, String>;
+
+    /// POSTs the JSON `body` to `request.url`, for the free search APIs that take a JSON-RPC
+    /// call (no redirect followed, no credential added). A port that cannot POST says so, and
+    /// the web channel goes on to its next backend.
+    fn post_json(&self, request: &HttpRequest, body: &[u8], cancel: &CancelToken) -> Result<HttpResponse, String> {
+        let _ = (body, cancel);
+        Err(format!("this network port cannot POST to {}", request.url))
+    }
 }
 
 /// What one result looks like on the wire, so a parser need not guess.

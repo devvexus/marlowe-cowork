@@ -2,7 +2,7 @@
 //! research cache, and the user's settings in `<home>\research.json`.
 //!
 //! ```json
-//! { "searxng_url": "http://127.0.0.1:8080", "duckduckgo": true,
+//! { "searxng_url": "http://127.0.0.1:8080", "free_search": true, "duckduckgo": true,
 //!   "auto_approve_under_tokens": null, "fetch_concurrency": 16,
 //!   "feeds": [], "wikipedia_lang": "en", "stackexchange_site": "stackoverflow" }
 //! ```
@@ -31,7 +31,9 @@ pub const SETTINGS_FILE: &str = "research.json";
 pub struct ResearchSettings {
     /// SearXNG base URL; absent = loopback default, `""` = no SearXNG.
     pub searxng_url: Option<String>,
-    /// DuckDuckGo HTML lite as the second web backend (default on).
+    /// The free agent search APIs (Parallel, Exa, Marginalia) after SearXNG (default on).
+    pub free_search: Option<bool>,
+    /// DuckDuckGo HTML lite after them (default on).
     pub duckduckgo: Option<bool>,
     /// Ignored: accepted so an old research.json still parses. Web search never uses a paid API.
     pub hosted_search: Option<bool>,
@@ -70,6 +72,7 @@ impl ResearchSettings {
                     None
                 }
             },
+            free_search: self.free_search.unwrap_or(d.free_search),
             duckduckgo: self.duckduckgo.unwrap_or(d.duckduckgo),
         };
         if let Some(f) = &self.feeds {
@@ -147,7 +150,8 @@ pub fn research_io(home: &Path, settings: &ResearchSettings) -> Arc<dyn Research
 }
 
 /// The `web_search` tool's backend: the same keyless web channel deep research uses (SearXNG
-/// when it answers, else DuckDuckGo HTML lite), under `<home>\research.json`. No key, no paid API.
+/// when it answers, else the free agent search APIs in turn, Marginalia, then DuckDuckGo HTML
+/// lite), under `<home>\research.json`. No key, no paid API.
 pub struct KeylessSearch {
     registry: ChannelRegistry,
     http: Arc<dyn HttpGet>,
@@ -180,7 +184,7 @@ impl KeylessSearch {
     fn no_backend(&self, detail: &str) -> String {
         let url = self.searxng.as_deref().unwrap_or(marlowe_research::DEFAULT_SEARXNG);
         format!(
-            "no web search backend answered ({detail}): run SearXNG at {url} or enable duckduckgo in research.json"
+            "no web search backend answered ({detail}): the free search APIs rest a few minutes after a refusal and come back on their own; or run SearXNG at {url}, or turn free_search or duckduckgo on in research.json"
         )
     }
 }
@@ -326,7 +330,7 @@ mod tests {
             r#"{"searxng_url": "", "duckduckgo": false, "auto_approve_under_tokens": 50000, "fetch_concurrency": 999}"#,
         )
         .unwrap();
-        assert_eq!(s.keyless().web, WebConfig { searxng_url: None, duckduckgo: false });
+        assert_eq!(s.keyless().web, WebConfig { searxng_url: None, free_search: true, duckduckgo: false });
         assert_eq!(s.v2().auto_approve_under_tokens, Some(50_000));
         assert_eq!(s.v2().fetch_concurrency, 64);
         assert!(serde_json::from_str::<ResearchSettings>(r#"{"api_key": "x"}"#).is_err(), "no credential field");
@@ -414,7 +418,7 @@ mod tests {
         let s = KeylessSearch::with_http(&home, &settings, http);
         let e = s.search("anything", &CancelToken::new()).unwrap_err();
         assert!(e.contains("no web search backend answered"), "{e}");
-        assert!(e.contains("run SearXNG at http://127.0.0.1:8080 or enable duckduckgo in research.json"), "{e}");
+        assert!(e.contains("come back on their own; or run SearXNG at http://127.0.0.1:8080"), "{e}");
         assert!(!e.to_ascii_lowercase().contains("openrouter"), "{e}");
         let _ = std::fs::remove_dir_all(&home);
     }

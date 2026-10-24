@@ -273,12 +273,14 @@ fn web_uses_searxng_then_names_why_duckduckgo_could_not_answer() {
     let cache = ResearchCache::at_home(&home);
     let cancel = CancelToken::new();
     let ctx = ChannelCtx { http: &http, cache: Some(&cache), cancel: &cancel };
-    let web = WebChannel::new(WebConfig::default(), None);
+    // The free search APIs are off here: this is about SearXNG and DuckDuckGo.
+    let cfg = WebConfig { free_search: false, ..WebConfig::default() };
+    let web = WebChannel::new(cfg.clone(), None);
     let q = ChannelQuery::new("x", 3);
     let e = web.search(&q, &ctx).unwrap_err().to_string();
     assert!(e.contains("connection refused") && e.contains("challenge"), "{e}");
     let asked = http.seen().len();
-    let again = WebChannel::new(WebConfig::default(), None).search(&q, &ctx).unwrap_err().to_string();
+    let again = WebChannel::new(cfg, None).search(&q, &ctx).unwrap_err().to_string();
     assert!(again.contains("resting"), "{again}");
     assert_eq!(http.seen().len(), asked + 1, "only SearXNG was tried again");
     let _ = std::fs::remove_dir_all(&home);
