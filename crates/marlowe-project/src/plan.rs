@@ -527,6 +527,13 @@ pub fn parse_plan(input: &Value, registry: &Registry, now_ms: u64) -> Result<Pla
     let marked = obj.get("fields").and_then(Value::as_array).and_then(|a| {
         a.iter().find(|f| f.get("key_field").and_then(Value::as_bool) == Some(true)).and_then(|f| f.get("key")).and_then(Value::as_str).map(clean)
     });
+    let mut fields = fields;
+    // A table of things needs the field that names each; found live, a plan for "the three most
+    // popular Rust TUI libraries" had stars, version and date but no name, so rows were keyed by
+    // a star count. Code adds `name` first when no field names a row.
+    if !fields.is_empty() && marked.is_none() && !fields.iter().any(|f| names_a_row(&f.key)) && fields.len() < MAX_FIELDS {
+        fields.insert(0, PlanField { key: "name".into(), label: "Name".into(), ty: FieldType::String, values: Vec::new(), max_len: Some(120) });
+    }
     let key_field = record_key(&fields, marked.as_deref());
     Ok(Plan {
         plan_no: 1,
@@ -555,12 +562,16 @@ pub fn parse_plan(input: &Value, registry: &Registry, now_ms: u64) -> Result<Pla
 /// the first field. Keying "the newest models" by `provider` would fold every model of one
 /// company into one row.
 fn record_key(fields: &[PlanField], marked: Option<&str>) -> Option<String> {
-    let names = |k: &str| k == "name" || k == "title" || k.ends_with("_name") || k.ends_with("_title") || k.ends_with("_id");
     marked
         .filter(|m| fields.iter().any(|f| f.key == *m))
         .map(String::from)
-        .or_else(|| fields.iter().find(|f| names(&f.key)).map(|f| f.key.clone()))
+        .or_else(|| fields.iter().find(|f| names_a_row(&f.key)).map(|f| f.key.clone()))
         .or_else(|| fields.first().map(|f| f.key.clone()))
+}
+
+/// Whether a field's key names the thing a row is about.
+fn names_a_row(k: &str) -> bool {
+    k == "name" || k == "title" || k.ends_with("_name") || k.ends_with("_title") || k.ends_with("_id")
 }
 
 /// Applies changed keys to a plan and validates the result, for `revise` while a plan gate is
@@ -723,7 +734,8 @@ mod tests {
         .unwrap();
         assert_eq!(p.key_field.as_deref(), Some("model_name"));
         let p = parse_plan(&json!({"objective": "Compare three ways to cache a prompt on a local model.", "questions": ["What does each cache keep?"], "fields": ["method", "cost"]}), &reg(), 0).unwrap();
-        assert_eq!(p.key_field.as_deref(), Some("method"), "with no naming field the first one keys");
+        assert_eq!(p.fields[0].key, "name", "with no naming field code adds one first");
+        assert_eq!(p.key_field.as_deref(), Some("name"));
     }
 
     #[test]
