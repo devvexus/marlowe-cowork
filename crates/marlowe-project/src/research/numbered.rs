@@ -174,9 +174,10 @@ pub fn locate_quote(text: &str, quote: &str) -> Option<marlowe_research::Quote> 
     }
     let found = marlowe_research::text::locate(&DocRef::of(plain.as_bytes()), &plain, quote)?;
     let start = *map.get(found.locator.start)?;
-    let last = found.locator.end.checked_sub(1)?;
-    let last_start = *map.get(last)?;
-    let end = last_start + text[last_start..].chars().next()?.len_utf8();
+    // `map` gives every byte of the plain text its byte in `text`, so the quote's last byte maps
+    // to the last byte of its last character; the end is one past it. (Taking a character from
+    // there panicked live on a page whose quote ended in "·".)
+    let end = map.get(found.locator.end.checked_sub(1)?)? + 1;
     let q = marlowe_research::Quote { text: text.get(start..end)?.to_string(), locator: marlowe_research::Locator { doc, start, end, section: None, page: None } };
     q.matches(text).then_some(q)
 }
@@ -244,6 +245,16 @@ mod tests {
         following [K2.5](https://moonshot.example/blog/k2-5#top) and [the paper](https://arxiv.org/abs/2507.20534v2). \
         See [K2.5](https://moonshot.example/blog/k2-5) again, and [this page](https://news.example/self) and \
         [mail](mailto:a@b.c) and ![chart](https://img.example/c.png) and [odd \\[bracket\\]](https://x.example/a%28b%29).";
+
+    /// Found live: a quote whose last character was "·" panicked the analyst's thread.
+    #[test]
+    fn a_quote_that_ends_in_a_multibyte_character_is_found_across_link_markers() {
+        let text = "Ratatui [L4] gained 23.1k stars · and Crossterm [L5] reached 0.29 ·";
+        let q = locate_quote(text, "Ratatui gained 23.1k stars ·").expect("found without the marker");
+        assert_eq!(q.text, "Ratatui [L4] gained 23.1k stars ·");
+        let q = locate_quote(text, "Crossterm reached 0.29 ·").expect("the last character too");
+        assert!(q.text.ends_with('·') && text.is_char_boundary(q.locator.end));
+    }
 
     #[test]
     fn links_are_numbered_by_first_appearance_and_repeats_share_a_number() {
