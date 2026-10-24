@@ -217,6 +217,69 @@ pub fn tools() -> Vec<ToolDef> {
         .enabled(|t| t.state::<super::workflow::WorkflowGroup>().conductor)]
 }
 
+/// Where a session's research turn stands with the route below.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Route {
+    /// The turn's message asks for research and no project was started yet.
+    Pending,
+    /// A web call was answered with the way to a project; the rest of this step's web calls
+    /// get the same answer, the next step runs them.
+    Bounced,
+    Off,
+}
+
+/// Research goes to a project. The turn reminders say so; found live, dawn answered "Research the
+/// three most popular Rust TUI libraries ..." with thirteen web searches of its own, each an ask.
+/// In a session that has projects, the first web search, fetch or arXiv call of a turn whose
+/// message asks for research is answered with the way to start one. A `manage_project` call ends
+/// it, and the model may still search on at its next step (one quick fact needs no project).
+pub struct ResearchRoute {
+    sessions: Mutex<HashMap<String, Route>>,
+}
+
+/// What a web call in a research turn is answered with.
+pub const RESEARCH_ROUTE: &str = "Not run: the user asked for research, and research is a project: start one with manage_project{action:\"create\"} (objective, questions, fields); its plan card is the plan the user approves, and agents do the reading. Search yourself only for one quick fact, by calling the tool again.";
+
+impl marlowe_agent::ToolMiddleware for ResearchRoute {
+    fn name(&self) -> &str {
+        "research-route"
+    }
+
+    fn before_turn(&self, convo: &mut marlowe_agent::Conversation, text: &mut String) -> marlowe_agent::TurnFlow {
+        let route = if marlowe_agent::teams::is_research_request(text) { Route::Pending } else { Route::Off };
+        self.sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(convo.session.0.clone(), route);
+        marlowe_agent::TurnFlow::Continue
+    }
+
+    fn before_approval(&self, call: &mut marlowe_model::ToolCall, cx: &CallCtx) -> marlowe_agent::CallFlow {
+        let mut all = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(route) = all.get_mut(&cx.tool.session.0) else { return marlowe_agent::CallFlow::Continue };
+        if call.name == "manage_project" {
+            *route = Route::Off;
+            return marlowe_agent::CallFlow::Continue;
+        }
+        let web = matches!(call.name.as_str(), "web_search" | "web_fetch" | "arxiv");
+        if web && *route != Route::Off && cx.scope.services.get::<ProjectService>().is_some() {
+            *route = Route::Bounced;
+            return marlowe_agent::CallFlow::Done(ToolOutcome::error(RESEARCH_ROUTE));
+        }
+        marlowe_agent::CallFlow::Continue
+    }
+
+    fn after_step(&self, _info: marlowe_agent::StepInfo, convo: &mut marlowe_agent::Conversation) -> Vec<marlowe_model::Message> {
+        let mut all = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(route) = all.get_mut(&convo.session.0).filter(|r| **r == Route::Bounced) {
+            *route = Route::Off;
+        }
+        Vec::new()
+    }
+}
+
+/// The route, for the conductor's host.
+pub fn research_route() -> std::sync::Arc<dyn marlowe_agent::ToolMiddleware> {
+    std::sync::Arc::new(ResearchRoute { sessions: Mutex::new(HashMap::new()) })
+}
+
 /// The persona block for projects: how the manager plans, asks and reports.
 pub fn persona_block() -> &'static str {
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../persona/blocks/project.md"))

@@ -258,3 +258,32 @@ fn revise_cancel_and_reopen_speak_plainly() {
     assert!(missing.is_error && missing.class == Some("project_missing"), "{:?}", missing.class);
     svc.shutdown();
 }
+
+/// Found live: dawn answered "Research the three most popular Rust TUI libraries ..." with thirteen
+/// web searches of its own. A research turn's first web calls are answered with the way to a
+/// project, every web call of that step alike; the next step searches if the model still wants to.
+#[test]
+fn a_research_turn_is_routed_to_a_project_once() {
+    use marlowe_agent::{CallFlow, Conversation, StepInfo, ToolMiddleware};
+    let (home, ws) = (temp("route-h"), temp("route-w"));
+    let svc = service(&home);
+    let route = super::research_route();
+    let mut convo = Conversation::new(SessionId("s1".into()), Some(ws.clone()));
+    let mut text = "Research the three most popular Rust TUI libraries and compare them".to_string();
+    route.before_turn(&mut convo, &mut text);
+    let call = |name: &str| marlowe_model::ToolCall { id: "1".into(), name: name.into(), args: serde_json::json!({"query": "rust tui"}) };
+    let c = cx(&ws, 1, Some(&svc));
+    let bounced = |flow: CallFlow| matches!(flow, CallFlow::Done(ref o) if o.content.contains("research is a project"));
+    assert!(bounced(route.before_approval(&mut call("web_search"), &c)));
+    assert!(bounced(route.before_approval(&mut call("web_fetch"), &c)), "the same step's other web calls too");
+    route.after_step(StepInfo { turn: 1, step: 1 }, &mut convo);
+    assert!(matches!(route.before_approval(&mut call("web_search"), &c), CallFlow::Continue), "the next step searches");
+
+    let mut text = "what is the weather in Paris".to_string();
+    route.before_turn(&mut convo, &mut text);
+    assert!(matches!(route.before_approval(&mut call("web_search"), &c), CallFlow::Continue), "not a research request");
+
+    let mut text = "research the new Kimi models".to_string();
+    route.before_turn(&mut convo, &mut text);
+    assert!(matches!(route.before_approval(&mut call("web_search"), &cx(&ws, 2, None)), CallFlow::Continue), "no project service, no route");
+}

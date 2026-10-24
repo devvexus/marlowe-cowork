@@ -373,6 +373,10 @@ impl ToolHost for BuiltinTools {
         if !self.groups.contains(&ToolGroup::Git) && self.groups.contains(&ToolGroup::Shell) {
             out.push(git::shell_guard());
         }
+        // The conductor's research turns go to a project (the route only acts with a project service).
+        if self.groups.contains(&ToolGroup::Workflow) && self.state::<specs::workflow::WorkflowGroup>().conductor {
+            out.push(specs::project::research_route());
+        }
         out
     }
 
