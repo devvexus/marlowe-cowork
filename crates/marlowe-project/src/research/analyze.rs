@@ -36,6 +36,14 @@ fn relevancy_table(input: &TaskInput) -> String {
     rel.values.iter().map(|v| format!("- {}: {}", v.v, v.def.clone().unwrap_or_default())).collect::<Vec<_>>().join("\n")
 }
 
+/// A value that only says the page does not give one ("[Date not specified in excerpt]",
+/// "unknown", "N/A"), found live in a records table: it is no value.
+fn says_missing(v: &str) -> bool {
+    let l = v.trim().trim_matches(|c: char| matches!(c, '[' | ']' | '(' | ')')).to_lowercase();
+    matches!(l.as_str(), "unknown" | "n/a" | "na" | "none" | "null" | "unclear" | "tbd" | "-" | "?")
+        || ["not specified", "not stated", "not given", "not mentioned", "not available", "not disclosed", "not provided", "unspecified"].iter().any(|p| l.contains(p))
+}
+
 /// `text` lowercased with every run of characters that are not letters or digits as one space,
 /// so a name matches the page however it is punctuated (`DeepSeek-V4-Pro` and `deepseek v4 pro`).
 fn words(text: &str) -> String {
@@ -258,7 +266,7 @@ fn finish(deps: &ResearchDeps, input: &TaskInput, map: Map<String, Value>) -> Re
                             rej.add("urls_removed", 1);
                         }
                         let ok_enum = pf.values.is_empty() || pf.values.contains(&c);
-                        if c.is_empty() || !ok_enum {
+                        if c.is_empty() || !ok_enum || says_missing(&c) {
                             Value::Null
                         } else {
                             Value::String(c)
@@ -342,6 +350,16 @@ mod tests {
         assert!(on("DeepSeek V4 Pro") && on("deepseek-v4-pro") && on("Qwen 4") && on("V4.1 Flash"));
         assert!(!on("Kimi/Kimilab") && !on("Qwen/Alibaba") && !on("V4.1-Flash-1017"));
         assert!(!on("4 Pro"), "a name is matched as whole words, not inside another");
+    }
+
+    #[test]
+    fn a_value_that_says_it_is_missing_is_no_value() {
+        for v in ["[Date not specified in excerpt]", "unknown", "N/A", "Not disclosed", "(unclear)"] {
+            assert!(says_missing(v), "{v}");
+        }
+        for v in ["2026-10-24", "Released", "1.6T total / 49B activated", "Unknown Pleasures"] {
+            assert!(!says_missing(v), "{v}");
+        }
     }
 
     fn refs() -> Vec<Map<String, Value>> {

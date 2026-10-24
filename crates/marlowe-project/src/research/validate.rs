@@ -542,6 +542,12 @@ fn validated_output(deps: &ResearchDeps, input: &TaskInput) -> Result<Finished, 
     Ok(Finished { output: Some(output), ..Default::default() })
 }
 
+/// A record's key as rows are merged by: its letters and digits, lowercased, so "Kimi K3",
+/// "kimi-k3" and "Kimi-K3" are one row (found live: they were three).
+fn record_key(name: &str) -> String {
+    name.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
 /// The records table: one row per key, the best-credibility value per field, conflicts and
 /// unverified keys listed beside it. Code only.
 fn tabulate(deps: &ResearchDeps, input: &TaskInput, srcs: &HashMap<String, Src>, kept: &[&Item]) -> (Vec<Value>, Value) {
@@ -556,10 +562,15 @@ fn tabulate(deps: &ResearchDeps, input: &TaskInput, srcs: &HashMap<String, Src>,
     let mut by_key: BTreeMap<String, BTreeMap<String, Vec<Cand>>> = BTreeMap::new();
     let mut display: BTreeMap<String, String> = BTreeMap::new();
     let mut supporters: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for it in items.iter().filter(|i| i.status == ItemStatus::Done && s(&i.data, "relevancy") != "Skip") {
+    // Rows come from the pages that bear on the question: a page rated Low or Skip still names
+    // things (every model it mentions in passing), and a table of everything named reads as noise.
+    for it in items.iter().filter(|i| i.status == ItemStatus::Done && matches!(s(&i.data, "relevancy"), "Critical" | "High" | "Medium")) {
         for row in rows(&it.data, "records") {
             let Some(kv) = row.get(&key_field).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty()) else { continue };
-            let k = norm(kv);
+            let k = record_key(kv);
+            if k.is_empty() {
+                continue;
+            }
             display.entry(k.clone()).or_insert_with(|| kv.to_string());
             supporters.entry(k.clone()).or_default().push(it.id.clone());
             for pf in &plan.fields {
@@ -593,7 +604,7 @@ fn tabulate(deps: &ResearchDeps, input: &TaskInput, srcs: &HashMap<String, Src>,
         let ids: Vec<&String> = supporters[k].iter().collect::<HashSet<_>>().into_iter().collect();
         let ws: Vec<Witness> = ids.iter().filter_map(|id| srcs.get(id.as_str()).map(|src| witness(deps, &input.project, id, src))).collect();
         let roots_n = roots(&ws).len();
-        let named = kept.iter().any(|c| norm(s(&c.data, "claim")).contains(k.as_str()));
+        let named = kept.iter().any(|c| record_key(s(&c.data, "claim")).contains(k.as_str()));
         if roots_n < 2 && !named {
             unverified.push(display[k].clone());
         }

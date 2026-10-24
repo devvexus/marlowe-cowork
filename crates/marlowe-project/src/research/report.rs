@@ -31,6 +31,8 @@ pub const NOTHING_VERIFIED: &str = "The run found nothing verified that answers 
 /// Found live: with six to a batch, dawn gave verdicts that belonged to the sentence next to the
 /// one they were numbered for.
 pub const BATCH: usize = 1;
+/// Rows the report's records table shows.
+pub const RECORD_ROWS: usize = 25;
 /// Verified claims shown to one section writer.
 pub const CLAIMS_PER_SECTION: usize = 40;
 
@@ -663,16 +665,31 @@ fn assemble_report(deps: &ResearchDeps, input: &TaskInput) -> Result<Finished, S
             md.push_str(&format!("## {qtext}\n\n*This section could not be written: {e}.*\n\n"));
         }
     }
-    let records = snap.output.as_ref().and_then(|o| o.get("records")).and_then(Value::as_array).cloned().unwrap_or_default();
+    let all_records = snap.output.as_ref().and_then(|o| o.get("records")).and_then(Value::as_array).cloned().unwrap_or_default();
+    // The table shows the rows that say something beyond their name, best supported first, at
+    // most RECORD_ROWS; a live table listed sixty names, most with every field empty.
+    let key = plan.key_field.clone().unwrap_or_default();
+    let said = |r: &Value| r.as_object().is_some_and(|o| o.iter().any(|(k, v)| *k != key && !v.is_null() && v.as_str() != Some("")));
+    let records: Vec<Value> = all_records.iter().filter(|r| said(r)).take(RECORD_ROWS).cloned().collect();
+    let left_out = all_records.len() - records.len();
     if !plan.fields.is_empty() && !records.is_empty() {
         md.push_str("## Records\n\n");
         md.push_str(&format!("| {} |\n|{}\n", plan.fields.iter().map(|f| f.label.clone()).collect::<Vec<_>>().join(" | "), " --- |".repeat(plan.fields.len())));
         for r in records.iter().filter_map(Value::as_object) {
             md.push_str(&format!("| {} |\n", plan.fields.iter().map(|f| md_cell(r.get(&f.key).unwrap_or(&Value::Null))).collect::<Vec<_>>().join(" | ")));
         }
-        let unv: Vec<String> = cov.get("records").and_then(|r| r.get("unverified")).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+        let shown: HashSet<&str> = records.iter().filter_map(|r| r.get(&key).and_then(Value::as_str)).collect();
+        let unv: Vec<String> = cov
+            .get("records")
+            .and_then(|r| r.get("unverified"))
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).filter(|n| shown.contains(n)).map(str::to_string).collect())
+            .unwrap_or_default();
         if !unv.is_empty() {
             md.push_str(&format!("\nNot independently confirmed: {}.\n", unv.join(", ")));
+        }
+        if left_out > 0 {
+            md.push_str(&format!("\n{left_out} more named in the sources, with no details or below the first {RECORD_ROWS}: in the project file.\n"));
         }
         md.push('\n');
     }
