@@ -13,9 +13,33 @@
       }
     },
     {
+      "key": "sentences",
+      "type": "table",
+      "w": "M",
+      "max_items": 12,
+      "columns": [
+        {
+          "key": "text",
+          "type": "text",
+          "w": "M",
+          "max_len": 400
+        },
+        {
+          "key": "claims",
+          "type": "list",
+          "of": "integer",
+          "w": "M",
+          "max_items": 4
+        }
+      ],
+      "show": {
+        "as": "hidden"
+      }
+    },
+    {
       "key": "text",
       "type": "text",
-      "w": "M",
+      "w": "C",
       "max_len": 4000,
       "show": {
         "as": "text",

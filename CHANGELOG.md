@@ -4,6 +4,9 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+- **A writer answers in sentences, each with the claims it rests on; code places the markers.** The section and answer forms take `sentences: [{text, claims}]` and code renders `... text [C3, C7].`, so a marker always sits inside the sentence it cites. Free prose put markers at line starts and on lines of their own, and the audit cut 24 of 30 sentences of a live report, most for markers that had come loose from their sentence.
+- **One sentence per auditor.** With six to a batch, dawn gave verdicts that belonged to the sentence beside the one they were numbered for; each auditor now judges one sentence against its own passages.
+- **A search query needs at least three letters.** A name of `[1,` had gone to arXiv as a query.
 - **`enter_plan` is for code changes; a project's card is its plan.** Its description said to plan first when "the change is large", and dawn read a research request as large: twice it entered plan mode and wrote an `exit_plan` instead of starting the project.
 - **Plan mode lets a project plan be made.** A project's plan waits for the user's approval of its card, so `manage_project` create, revise, status, list and checkin count as reads in plan mode; answers that send a project on are still refused there. The tool says its card is the plan (no `enter_plan` first). Found live: dawn entered plan mode for a research request and was then refused its own project.
 - **A page the antivirus removes is left out by name.** Windows' "contains a virus" errors (225, 226) on a stored page become `StoreError::Quarantined` ("the antivirus removed this page as malware; it is left out"), and the analyst and verifier say so instead of "not in the project's files". Nothing tries to keep or hide such a page. Found live: Defender removed a cached search result as Trojan:JS/ChatGPTStealer.

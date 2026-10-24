@@ -263,7 +263,7 @@ pub fn responder(world: &Arc<World>, lead: &'static str) -> impl Fn(&ChatRequest
         if has("gaps") && has("focus") {
             return Say::Json(world.json["lead"][lead].clone());
         }
-        if has("text") && has("end") {
+        if has("sentences") && has("end") {
             let claims: Vec<(u32, String)> = u
                 .lines()
                 .filter_map(|l| {
@@ -273,14 +273,14 @@ pub fn responder(world: &Arc<World>, lead: &'static str) -> impl Fn(&ChatRequest
                     Some((n.parse().ok()?, text.to_string()))
                 })
                 .collect();
-            let mut text: Vec<String> = claims.iter().map(|(n, t)| format!("{t} [C{n}].")).collect();
+            let mut sentences: Vec<Value> = claims.iter().map(|(n, t)| json!({"text": format!("{t}."), "claims": [n]})).collect();
             if system(req).contains("section of the report") && u.contains("Kimi") {
                 // An overreach: a sentence its own citation does not support.
                 if let Some((n, _)) = claims.first() {
-                    text.push(format!("Kimi K2.6 beats every other model on every benchmark [C{n}]."));
+                    sentences.push(json!({"text": "Kimi K2.6 beats every other model on every benchmark.", "claims": [n]}));
                 }
             }
-            return Say::Json(json!({"text": text.join(" "), "end": "END"}));
+            return Say::Json(json!({"sentences": sentences, "end": "END"}));
         }
         if has("verdicts") {
             let sentences = lines_with(&u, 'S');

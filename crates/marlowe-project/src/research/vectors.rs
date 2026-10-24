@@ -93,7 +93,9 @@ pub fn expand(question: &str, angles: &[Angle], unknown: &[String], today: &str,
     let recent = date.map(|(y, _)| y.saturating_sub(1));
     let push = |rows: &mut Vec<QueryRow>, channel: ChannelId, text: String, kind: &'static str, since: Option<u16>| {
         let text = text.trim().to_string();
-        if text.is_empty() || rows.iter().any(|r| r.channel == channel && r.text.eq_ignore_ascii_case(&text)) {
+        // A query needs words: found live, a name of "[1," went to arXiv as a search.
+        let letters = text.chars().filter(|c| c.is_alphabetic()).count();
+        if letters < 3 || rows.iter().any(|r| r.channel == channel && r.text.eq_ignore_ascii_case(&text)) {
             return;
         }
         rows.push(QueryRow { channel, text, kind, since_year: since });

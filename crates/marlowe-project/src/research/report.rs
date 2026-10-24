@@ -27,8 +27,10 @@ use crate::store::write_atomic;
 pub const NOTHING: &str = "Nothing the run read answers this.";
 /// What the answer says when nothing was verified at all.
 pub const NOTHING_VERIFIED: &str = "The run found nothing verified that answers the objective.";
-/// Sentences per audit batch.
-pub const BATCH: usize = 6;
+/// Sentences per audit batch: one, so each auditor judges one sentence against its own passages.
+/// Found live: with six to a batch, dawn gave verdicts that belonged to the sentence next to the
+/// one they were numbered for.
+pub const BATCH: usize = 1;
 /// Verified claims shown to one section writer.
 pub const CLAIMS_PER_SECTION: usize = 40;
 
@@ -162,7 +164,7 @@ fn claim_lines(claims: &[&VClaim]) -> String {
         .join("\n")
 }
 
-const WRITER_RULES: &str = "Write prose that uses only the numbered claims. Cite every sentence that states a fact with the marker of each claim it rests on, like [C3] or [C3, C7]. Write nothing the claims do not say. If claims disagree or one is marked contested, say so. Short paragraphs, no headings, no lists of links, no web addresses. Put END in `end` after the text.";
+const WRITER_RULES: &str = "Write `sentences`, one entry per sentence, in reading order. `text` is the sentence itself, with no claim markers and no web addresses. `claims` lists the numbers of the claims it rests on (for [C3] write 3). Every sentence that states a fact cites at least one claim; a sentence only joins two others when it cites none. Write nothing the claims do not say. If claims disagree or one is marked contested, say so. Put END in `end`.";
 
 fn section_prompt(input: &TaskInput) -> Result<Prompt, String> {
     let sub = input.sub.clone();
@@ -182,8 +184,52 @@ fn section_prompt(input: &TaskInput) -> Result<Prompt, String> {
     Ok(Prompt::new(vec![SystemBlock { text: system, cache: true }], user))
 }
 
+/// The text a writer's `sentences` make: each sentence with the markers of its claims before
+/// its full stop (`... as the paper reports [C3, C7].`), so a marker always belongs to the
+/// sentence that cites it and the audit judges whole sentences. Found live: free prose put
+/// markers at line starts and on lines of their own, and the audit cut 24 of 30 sentences.
+/// Markers typed into a sentence's text are dropped; a number not in `allowed` is dropped and
+/// counted (the third value).
+fn render_sentences(rows: &[&Map<String, Value>], allowed: &HashSet<u32>) -> (String, bool, usize, Vec<Value>) {
+    let (mut parts, mut urls, mut unknown, mut kept) = (Vec::new(), false, 0, Vec::new());
+    for r in rows {
+        let (t, u) = plain_block(s(r, "text"), 400);
+        urls |= u;
+        let (t, _) = retain_markers(&t, &HashSet::new());
+        let t = t.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let mut ns: Vec<u32> = r.get("claims").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64).map(|n| n as u32).collect();
+        let given = ns.len();
+        ns.retain(|n| allowed.contains(n));
+        unknown += given - ns.len();
+        ns.sort_unstable();
+        ns.dedup();
+        kept.push(json!({"text": t, "claims": ns}));
+        let (body, stop) = match t.char_indices().last() {
+            Some((i, c)) if matches!(c, '.' | '!' | '?') => (t[..i].trim_end(), c),
+            _ => (t, '.'),
+        };
+        if ns.is_empty() {
+            parts.push(format!("{body}{stop}"));
+        } else {
+            parts.push(format!("{body} [{}]{stop}", ns.iter().map(|n| format!("C{n}")).collect::<Vec<_>>().join(", ")));
+        }
+    }
+    (parts.join(" "), urls, unknown, kept)
+}
+
 fn written(input: &TaskInput, map: Map<String, Value>, allowed: HashSet<u32>, what: &str) -> Result<Finished, RuleFailure> {
-    let (text, urls) = plain_block(s(&map, "text"), 4000);
+    // A writer answers in `sentences`; the fixed lines (nothing verified) come as `text`.
+    let sentences = rows(&map, "sentences");
+    let (text, urls, unknown, kept) = if sentences.is_empty() {
+        let (t, u) = plain_block(s(&map, "text"), 4000);
+        let kept = vec![json!({"text": t.chars().take(400).collect::<String>(), "claims": []})];
+        (t, u, 0, kept)
+    } else {
+        render_sentences(&sentences, &allowed)
+    };
     if text.is_empty() {
         return Err(RuleFailure::new("text_present", format!("The {what} is empty. Write it.")));
     }
@@ -192,14 +238,15 @@ fn written(input: &TaskInput, map: Map<String, Value>, allowed: HashSet<u32>, wh
         rej.add("urls_removed", 1);
     }
     let (text, removed) = retain_markers(&text, &allowed);
-    rej.add("unknown_markers", removed as u64);
+    rej.add("unknown_markers", (removed + unknown) as u64);
     if text == NOTHING || text == NOTHING_VERIFIED {
         // The fixed line is allowed without a citation.
     } else if !allowed.is_empty() && markers(&text).is_empty() {
-        return Err(RuleFailure::new("cites_claims", format!("The {what} cites no claim. Cite each factual sentence with the [C<n>] markers of the claims it rests on, using only the numbers you were given.")));
+        return Err(RuleFailure::new("cites_claims", format!("The {what} cites no claim. Give each factual sentence the numbers of the claims it rests on in `claims`, using only the numbers you were given.")));
     }
     let mut data = Map::new();
     data.insert("text".into(), json!(text));
+    data.insert("sentences".into(), Value::Array(kept));
     data.insert("end".into(), json!("END"));
     if input.step.id == "sections" {
         data.insert("sub".into(), json!(input.sub));
@@ -790,6 +837,22 @@ mod tests {
         let c = apply_audit(text, &mut spans);
         assert_eq!(c.text, "Alpha is out [C1]. Gamma is cheap [C3] (partly supported).");
         assert_eq!((c.cited, c.supported, c.partial, c.removed), (3, 1, 1, 1));
+    }
+
+    #[test]
+    fn a_writers_sentences_carry_their_own_markers() {
+        let a = object(json!({"text": "DeepSeek V4.1-Flash gains on Terminal-Bench 4.0 [C9].", "claims": [12, 99]}));
+        let b = object(json!({"text": "It was trained with self-feedback RL", "claims": [12, 3]}));
+        let c = object(json!({"text": "Two labs report it.", "claims": []}));
+        let allowed: HashSet<u32> = [3, 12].into_iter().collect();
+        let (t, urls, unknown, kept) = render_sentences(&[&a, &b, &c], &allowed);
+        assert_eq!(kept.len(), 3);
+        assert_eq!(t, "DeepSeek V4.1-Flash gains on Terminal-Bench 4.0 [C12]. It was trained with self-feedback RL [C3, C12]. Two labs report it.");
+        assert!(!urls);
+        assert_eq!(unknown, 1, "99 was not given");
+        let spans = sentences(&t);
+        assert_eq!(spans.len(), 3, "each sentence keeps its markers: {spans:?}");
+        assert!(t[spans[0].0..spans[0].1].ends_with("[C12]."));
     }
 
     #[test]

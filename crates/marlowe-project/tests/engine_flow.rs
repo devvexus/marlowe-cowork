@@ -228,7 +228,7 @@ fn a_delta_merge_fires_at_each_quarter_of_the_watched_step_and_sends_only_what_i
                 let mut d = input.new_item("doc", "section@1", &[&n.to_string()]);
                 d.parent = input.item.as_ref().map(|q| q.id.clone());
                 d.label = format!("doc {n}");
-                d.data = json!({"sub": "q1", "text": format!("doc {n}"), "end": "END"}).as_object().cloned().unwrap();
+                d.data = json!({"sub": "q1", "text": format!("doc {n}"), "sentences": [{"text": format!("doc {n}"), "claims": []}], "end": "END"}).as_object().cloned().unwrap();
                 out.emits.push(d);
             }
             Ok(out)
