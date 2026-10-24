@@ -112,8 +112,9 @@ pub fn chat_body(planned: &Value, sampling: Option<&Sampling>, slot: u32, thinki
 /// The most repetitions llama.cpp's grammar parser accepts in one rule. A schema asking for more
 /// (`maxLength: 4000` on a long text field) is refused as "failed to parse grammar", so the
 /// grammar is given the largest count it takes; the caller still checks the reply against its
-/// own schema, and a reply is bounded by the call's token limit anyway.
-const GRAMMAR_MAX_REPEAT: u64 = 2000;
+/// own schema, and a reply is bounded by the call's token limit anyway. Measured on Ollama's
+/// bundled llama-server (2026-10-23): `maxLength: 1999` parses, `2000` is refused.
+const GRAMMAR_MAX_REPEAT: u64 = 1999;
 
 /// `schema` with every length and item bound the grammar parser would refuse brought down to
 /// [`GRAMMAR_MAX_REPEAT`].
@@ -592,8 +593,8 @@ mod tests {
     fn a_long_length_bound_is_brought_down_to_what_the_grammar_parser_takes() {
         let s = json!({"type": "object", "properties": {"text": {"type": "string", "maxLength": 4000}, "tags": {"type": "array", "maxItems": 3000, "items": {"type": "string", "maxLength": 12}}}});
         let g = grammar_safe(&s);
-        assert_eq!(g["properties"]["text"]["maxLength"], 2000);
-        assert_eq!(g["properties"]["tags"]["maxItems"], 2000);
+        assert_eq!(g["properties"]["text"]["maxLength"], 1999);
+        assert_eq!(g["properties"]["tags"]["maxItems"], 1999);
         assert_eq!(g["properties"]["tags"]["items"]["maxLength"], 12);
         assert_eq!(s["properties"]["text"]["maxLength"], 4000, "the caller's schema is not changed");
     }

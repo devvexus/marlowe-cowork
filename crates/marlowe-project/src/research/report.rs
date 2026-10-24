@@ -475,6 +475,8 @@ fn assemble_report(deps: &ResearchDeps, input: &TaskInput) -> Result<Finished, S
         pages: HashMap<String, Item>,
         notes: Vec<String>,
         output: Option<Value>,
+        /// Parts a writer could not write: the section's question (or `answer`) and why.
+        unwritten: Vec<(String, String)>,
     }
     let snap: Snap = input
         .project_handle
@@ -491,6 +493,13 @@ fn assemble_report(deps: &ResearchDeps, input: &TaskInput) -> Result<Finished, S
                 pages: st.items_of_kind("page").into_iter().map(|i| (i.id.clone(), i.clone())).collect(),
                 notes: st.items_of_kind("note").into_iter().map(|n| s(&n.data, "text").to_string()).collect(),
                 output: latest_dv,
+                unwritten: st
+                    .items_of_kind("section")
+                    .into_iter()
+                    .chain(st.items_of_kind("answer"))
+                    .filter(|i| i.status == ItemStatus::Failed)
+                    .map(|i| (if i.kind == "answer" { "answer".to_string() } else { i.label.clone() }, i.error.clone().unwrap_or_else(|| "the writer failed".into())))
+                    .collect(),
             }
         })
         .map_err(|e| e.to_string())?;
@@ -571,7 +580,13 @@ fn assemble_report(deps: &ResearchDeps, input: &TaskInput) -> Result<Finished, S
     let analysed = g("sources", "analyzed").max(1.0);
     let failed_share = (g("pages", "failed") / planned).max(snap.sources.values().filter(|x| x.status == ItemStatus::Failed).count() as f64 / analysed.max(1.0));
     let blind: Vec<String> = cov.get("blind_questions").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
-    let (level, why) = confidence(accuracy, established, read_share, failed_share, blind.len(), snap.claims.len());
+    let (mut level, mut why) = confidence(accuracy, established, read_share, failed_share, blind.len(), snap.claims.len());
+    // A report with parts its writers could not write is not a medium-confidence report.
+    if !snap.unwritten.is_empty() {
+        level = "low";
+        why.push_str(&format!(", {} part{} could not be written", snap.unwritten.len(), if snap.unwritten.len() == 1 { "" } else { "s" }));
+    }
+    let unwritten_why = |text: &str| snap.unwritten.iter().find(|(t, _)| t == text).map(|(_, e)| e.clone());
 
     // The file.
     let mut md = String::new();
@@ -583,6 +598,8 @@ fn assemble_report(deps: &ResearchDeps, input: &TaskInput) -> Result<Finished, S
     for (qid, qtext) in &snap.questions {
         if let Some(t) = final_text.get(qid) {
             md.push_str(&format!("## {qtext}\n\n{t}\n\n"));
+        } else if let Some(e) = unwritten_why(qtext) {
+            md.push_str(&format!("## {qtext}\n\n*This section could not be written: {e}.*\n\n"));
         }
     }
     let records = snap.output.as_ref().and_then(|o| o.get("records")).and_then(Value::as_array).cloned().unwrap_or_default();
@@ -611,6 +628,9 @@ fn assemble_report(deps: &ResearchDeps, input: &TaskInput) -> Result<Finished, S
     }
     if !blind.is_empty() {
         md.push_str(&format!("- Nothing verified for: {}.\n", blind.join(", ")));
+    }
+    if let Some(e) = unwritten_why("answer") {
+        md.push_str(&format!("- The answer could not be written: {e}.\n"));
     }
     let mut seen_notes = HashSet::new();
     for n in snap.notes.iter().filter(|n| seen_notes.insert(norm(n))) {
