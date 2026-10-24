@@ -153,6 +153,33 @@ pub fn expand(question: &str, angles: &[Angle], unknown: &[String], today: &str,
     rows
 }
 
+/// The names an objective is about: words with a capital letter after the first word, or with a
+/// digit (Rust, TUI, GitHub, Qwen4, DeepSeek), at most four, in order.
+fn subject_names(objective: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (i, w) in objective.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '(' | ')' | '"')).filter(|w| !w.is_empty()).enumerate() {
+        let w = w.trim_matches(|c: char| !c.is_alphanumeric());
+        let named = (i > 0 && w.chars().any(char::is_uppercase)) || (w.chars().any(|c| c.is_ascii_digit()) && w.chars().any(char::is_alphabetic));
+        if named && w.chars().count() >= 2 && !out.iter().any(|o| o.eq_ignore_ascii_case(w)) {
+            out.push(w.to_string());
+        }
+        if out.len() == 4 {
+            break;
+        }
+    }
+    out
+}
+
+/// `question` with the objective's names in front when it names none of them.
+fn with_subject(question: &str, objective: &str) -> String {
+    let lower = question.to_lowercase();
+    let names = subject_names(objective);
+    if names.is_empty() || names.iter().any(|n| lower.contains(&n.to_lowercase())) {
+        return question.to_string();
+    }
+    format!("{} {question}", names.join(" "))
+}
+
 fn arxiv_form(q: &str) -> String {
     let words: Vec<&str> = q.split_whitespace().collect();
     if (2..=4).contains(&words.len()) && !q.contains(':') {
@@ -172,7 +199,7 @@ pub fn register(t: &mut Toolbox, deps: &Arc<ResearchDeps>) {
              Today is {}. Your own knowledge ends well before today and may be more than a year old. What is asked about may have newer versions, releases or results than you know of. \
              Make one angle aim at what you do not know, and list in `unknown_names` any names or versions you suspect exist but cannot confirm (a newer version, a successor), each with a question mark.\n\
              {online_note}\n\
-             Keywords are plain search words, never web addresses. Write at most {} angles.",
+             Every angle's keywords name the subject from the objective, even when the question only says \"each\" or \"they\". Keywords are plain search words, never web addresses. Write at most {} angles.",
             fence::clean(&input.plan.objective, 500, false),
             input.today,
             input.plan.limits.vectors_per_question
@@ -218,7 +245,10 @@ pub fn register(t: &mut Toolbox, deps: &Arc<ResearchDeps>) {
             })
             .take(5)
             .collect();
-        let queries = expand(&question, &angles, &unknown, &input.today, &online);
+        // A question that names none of the objective's subjects ("Under what licenses is each
+        // published?") searches for nothing in particular: its own query carries them.
+        let searched = with_subject(&question, &input.plan.objective);
+        let queries = expand(&searched, &angles, &unknown, &input.today, &online);
         let vectors: Vec<Value> = angles
             .iter()
             .map(|a| json!({"angle": a.angle, "keywords": a.keywords, "channel": a.group, "why": ""}))
@@ -271,6 +301,15 @@ mod tests {
         assert!(dated.contains(&"kimi k3 release latest"));
         assert!(rows.iter().filter(|r| r.kind == "dated").all(|r| r.since_year == Some(2025)), "a floor one year back");
         assert!(rows.iter().filter(|r| r.kind == "base").all(|r| r.since_year.is_none()), "base queries have no floor unless the question names a year");
+    }
+
+    #[test]
+    fn a_question_that_names_no_subject_is_searched_with_the_objectives_names() {
+        let objective = "Research and compare three most popular Rust TUI (Terminal User Interface) libraries by GitHub stars";
+        assert_eq!(subject_names(objective), ["Rust", "TUI", "Terminal", "User"]);
+        assert_eq!(with_subject("Under what open source licenses is each published?", objective), "Rust TUI Terminal User Under what open source licenses is each published?");
+        assert_eq!(with_subject("How many GitHub stars do the top 3 Rust TUI libraries have?", objective), "How many GitHub stars do the top 3 Rust TUI libraries have?");
+        assert_eq!(subject_names("Focus on new Kimi models, deepseek, and qwen4"), ["Kimi", "qwen4"]);
     }
 
     #[test]
