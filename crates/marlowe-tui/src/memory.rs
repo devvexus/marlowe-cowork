@@ -22,7 +22,7 @@ pub fn models_phrase(m: &ModelsState) -> Option<String> {
         ModelsState::Failed { reason } => {
             let reason = reason.replace("https://", "");
             let reason = reason.split_once("/resolve/").map_or(reason.as_str(), |(repo, _)| repo);
-            Some(format!("memory LMs {reason}: keyword only"))
+            Some(format!("memory LMs {reason}: keyword only · marlowe models fetch retries"))
         }
         ModelsState::Declined => Some("memory degraded · keyword only · marlowe models fetch installs the LMs".into()),
         ModelsState::Ready | ModelsState::Missing { .. } => None,

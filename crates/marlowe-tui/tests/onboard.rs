@@ -436,7 +436,7 @@ fn a_failed_download_is_shown_with_where_it_is_not_published() {
     let mut s = first_launch();
     let url = "https://huggingface.co/devvexus/marlowe-memory/resolve/main/ms-marco-MiniLM-L-2-v2-ft-session-j/model.onnx";
     feed(&mut s, 2, stats_with(ModelsState::Failed { reason: format!("not published at {url}") }));
-    assert_eq!(memory_line(&s), "390 beliefs \u{b7} memory LMs not published at huggingface.co/devvexus/marlowe-memory: keyword only");
+    assert_eq!(memory_line(&s), "390 beliefs \u{b7} memory LMs not published at huggingface.co/devvexus/marlowe-memory: keyword only \u{b7} marlowe models fetch retries");
     // It is not asked again for: the failure is not a prompt.
     name_and_address(&mut s);
     assert!(matches!(step(&s), Step::Checklist { .. }));

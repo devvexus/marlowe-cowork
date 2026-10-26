@@ -69,7 +69,7 @@ pub(crate) fn overlay(core: &Core, mut s: MemoryStatsReport) -> MemoryStatsRepor
         (None, Some(reason), ModelsState::Missing { .. }) => ModelsState::Failed { reason: reason.clone() },
         (None, None, missing @ ModelsState::Missing { .. }) => match answer(&core.home) {
             Some(Answer::Declined) => ModelsState::Declined,
-            Some(Answer::Accepted) => ModelsState::Failed { reason: "the earlier install did not finish".into() },
+            Some(Answer::Accepted) => ModelsState::Failed { reason: "install did not finish".into() },
             None => missing,
         },
         (_, _, other) => other,
