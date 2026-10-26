@@ -322,6 +322,19 @@ fn what_stays_on_ollama_is_looked_at_again_when_the_gpu_frees_up() {
 }
 
 #[test]
+fn the_engine_is_told_to_require_the_planners_estimate_and_its_reserve() {
+    let b = brains(Models::new(), 20_000.0);
+    let shape = b.factory().allocations().engine_shape("plain:8b").expect("fits");
+    let plan = b.context_plan(&plain()).unwrap().plan.expect("a plan");
+    let kv = KvType::parse(&shape.kv).expect("a cache type");
+    let planned = plan.need_mib(shape.ctx_per_slot, kv, shape.slots);
+    let told = b.factory().allocations().engine_need_mib("plain:8b").expect("an estimate");
+    // The start is held to the room the verdict required, not the bare estimate: a fit kept from a
+    // roomier moment must not start in the margin the planner keeps for its own error.
+    assert!((told - (planned + marlowe_brains::engine::ENGINE_RESERVE_MIB)).abs() < 1.0, "{told} vs {planned}");
+}
+
+#[test]
 fn a_load_the_engine_gave_up_is_not_tried_again_until_memory_comes_back() {
     let gpu = Arc::new(Dial(Mutex::new(Some(20_000.0))));
     let b = brains_on(Models::new(), gpu.clone());

@@ -24,8 +24,9 @@ pub trait EngineAdvisor: Send + Sync {
     /// The shape for `model_id`, or `None` when Ollama serves the model.
     fn shape(&self, model_id: &str) -> Option<EngineShape>;
 
-    /// GPU memory the planner expects the shape of `model_id` to take (weights, every slot's cache
-    /// and compute), MiB. The engine checks it against the memory free when it starts the server.
+    /// GPU memory the planner required to be free for the shape of `model_id` (weights, every
+    /// slot's cache, compute, and the engine's reserve), MiB. The engine checks it against the
+    /// memory free when it starts the server.
     fn need_mib(&self, _model_id: &str) -> Option<f64> {
         None
     }

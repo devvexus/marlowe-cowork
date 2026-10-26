@@ -3,7 +3,8 @@
 //! The engine starts Ollama's bundled `llama-server.exe` on demand for a model the planner
 //! assigned to it, serves every request for that model on one of its slots, and stops it after
 //! the keep-alive Ollama would have used. It never runs a model Ollama also has loaded: before a
-//! load it asks Ollama to unload the same model (`keep_alive: 0`).
+//! load it asks Ollama to unload the same model (`keep_alive: 0`), and the other models Ollama
+//! holds too when the card is short of what the load needs.
 //!
 //! # Slots
 //!
@@ -588,6 +589,25 @@ impl LlamaEngine {
         }
     }
 
+    /// Asks Ollama to let go of every model it holds but `model`: the planner counts what
+    /// Ollama's runners hold as free for a load, so a start that finds the card short of it makes
+    /// that true, as Ollama itself would for a model it loads. Returns the models it unloaded.
+    fn release_ollama(&self, model: &str) -> Vec<String> {
+        let ollama = &self.inner.cfg.ollama;
+        let held = |_: ()| -> Vec<String> {
+            http::get_json(ollama, "/api/ps", QUICK).map(|v| parse_ps(&v)).unwrap_or_default().into_iter().map(|p| p.name).collect()
+        };
+        let others: Vec<String> = held(()).into_iter().filter(|n| !same_model(n, model)).collect();
+        for name in &others {
+            let _ = http::post_json(ollama, "/api/generate", &unload_body(name), Duration::from_secs(8));
+        }
+        let until = Instant::now() + Duration::from_secs(12);
+        while held(()).iter().any(|n| others.contains(n)) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        others
+    }
+
     /// Whether the GPU has room for the model now, measured after Ollama let go of it. A model
     /// that does not fit is not started: with the driver's sysmem fallback it would load anyway,
     /// into system memory, and read at a few tokens a second. No reading is not "fits".
@@ -598,6 +618,16 @@ impl LlamaEngine {
         let need = want.need_mib.unwrap_or(0.0).max(weights + SPILL_SLACK_MIB / 2.0);
         let until = Instant::now() + cfg.vram_settle;
         let mut free = probe.free_mib();
+        if free.is_some_and(|f| f < need) {
+            // Short of room: the planner counted what Ollama holds for another model as free.
+            let freed = self.release_ollama(&want.model);
+            if !freed.is_empty() {
+                if let Some(o) = self.observer() {
+                    o.note(&format!("Ollama let go of {} to make room for {}", freed.join(", "), want.model));
+                }
+                free = probe.free_mib();
+            }
+        }
         while free.is_none_or(|f| f < need) && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(200).min(cfg.vram_settle));
             free = probe.free_mib();
@@ -615,6 +645,11 @@ impl LlamaEngine {
     fn spilled(&self, pid: u32, blob: &Path) -> Option<String> {
         let probe = self.inner.cfg.vram.as_ref()?;
         let (dedicated, shared) = probe.process_mib(pid)?;
+        // A server that has loaded a model holds some memory: nothing at all is a counter that
+        // could not be read (or has no instance yet), and says nothing about a spill.
+        if dedicated <= 0.0 && shared <= 0.0 {
+            return None;
+        }
         let weights = std::fs::metadata(blob).map_or(0.0, |m| m.len() as f64 / MIB);
         let missing = (weights - dedicated).max(0.0);
         if shared <= PINNED_ALLOWANCE_MIB && missing <= SPILL_SLACK_MIB {
@@ -1148,6 +1183,70 @@ mod tests {
         assert!(e.status().is_none());
         assert_eq!(told.0.lock().unwrap().len(), 1);
         assert!(heard.lines.lock().unwrap().iter().any(|l| l.starts_with("dusk:22b runs on Ollama: the driver moved")));
+    }
+
+    /// A card whose free memory is what is left while Ollama holds any model.
+    #[derive(Debug)]
+    struct HeldByOllama {
+        ollama: LocalEndpoint,
+        free_when_held: f64,
+        free_when_not: f64,
+    }
+    impl VramProbe for HeldByOllama {
+        fn free_mib(&self) -> Option<f64> {
+            let held = http::get_json(&self.ollama, "/api/ps", QUICK).map(|v| !parse_ps(&v).is_empty()).unwrap_or(false);
+            Some(if held { self.free_when_held } else { self.free_when_not })
+        }
+        fn process_mib(&self, _: u32) -> Option<(f64, f64)> {
+            Some((8_000.0, 100.0))
+        }
+    }
+
+    #[test]
+    fn another_model_ollama_holds_is_let_go_when_the_card_is_short_of_the_load() {
+        let fx = Fixture::new("dusk:22b");
+        // The planner counted what Ollama's runner holds as free; the server starts after it lets go.
+        fx.ollama.resident("other:9b");
+        let mut cfg = fx.config();
+        cfg.vram = Some(Arc::new(HeldByOllama { ollama: fx.ollama.endpoint(), free_when_held: 2_000.0, free_when_not: 20_000.0 }));
+        cfg.vram_settle = Duration::ZERO;
+        let e = LlamaEngine::new(cfg, fx.spawner.clone());
+        let heard = Arc::new(Heard::default());
+        let alloc = ContextAllocations::new();
+        alloc.set_engine_observer(Arc::new(Ears(heard.clone())));
+        e.follow(alloc);
+        let mut w = want("dusk:22b", Lane::Conductor, 1);
+        w.need_mib = Some(13.6 * 1024.0);
+        e.acquire(&w, &CancelToken::new()).unwrap();
+        assert_eq!((fx.spawner.starts(), fx.ollama.unloaded()), (1, vec!["other:9b".to_string()]));
+        assert!(heard.lines.lock().unwrap().iter().any(|l| l == "Ollama let go of other:9b to make room for dusk:22b"), "{:?}", heard.lines.lock().unwrap());
+    }
+
+    #[test]
+    fn a_card_that_stays_short_after_ollama_let_go_still_declines() {
+        let fx = Fixture::new("dusk:22b");
+        fx.ollama.resident("other:9b");
+        let mut cfg = fx.config();
+        cfg.vram = Some(Arc::new(HeldByOllama { ollama: fx.ollama.endpoint(), free_when_held: 2_000.0, free_when_not: 6_000.0 }));
+        cfg.vram_settle = Duration::ZERO;
+        let e = LlamaEngine::new(cfg, fx.spawner.clone());
+        let mut w = want("dusk:22b", Lane::Conductor, 1);
+        w.need_mib = Some(13.6 * 1024.0);
+        let err = e.acquire(&w, &CancelToken::new()).err().expect("refused");
+        assert_eq!(err.detail, "dusk:22b runs on Ollama: needs 13.6 GiB on the GPU, 5.9 GiB free");
+        assert_eq!(fx.spawner.starts(), 0);
+    }
+
+    #[test]
+    fn a_process_the_counters_report_nothing_for_is_not_a_spill() {
+        let fx = Fixture::new("dusk:22b");
+        let (e, vram, told, _) = with_gpu(&fx, Some(20_000.0));
+        // PDH answered without an instance for the server (or there is no PDH): zero and zero is
+        // no reading, not a model that is nowhere.
+        *vram.process.lock().unwrap() = Some((0.0, 0.0));
+        e.acquire(&want("dusk:22b", Lane::Conductor, 1), &CancelToken::new()).unwrap();
+        assert_eq!((fx.spawner.starts(), fx.spawner.killed()), (1, 0));
+        assert!(told.0.lock().unwrap().is_empty());
     }
 
     #[test]

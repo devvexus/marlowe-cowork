@@ -85,7 +85,9 @@ impl EngineAdvisor for Advisor {
         let b = self.0.upgrade()?;
         let model = ModelRef::new(ProviderKind::Ollama, model_id);
         match b.engine_allowed(&model).then(|| b.engine_fit(&model)) {
-            Some(Verdict::Fits { need_mib, .. }) => Some(need_mib),
+            // What the planner required to be free when it said "fits": its estimate and the
+            // reserve, so a fit kept from a roomier moment is held to the same room at the start.
+            Some(Verdict::Fits { need_mib, .. }) => Some(need_mib + ENGINE_RESERVE_MIB),
             _ => None,
         }
     }
