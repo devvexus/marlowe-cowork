@@ -88,6 +88,12 @@ fn without_superseded(entries: Vec<marlowe_workflow::saved::CatalogEntry>) -> Ve
     entries.into_iter().filter(|e| kinds.superseded_by(&e.name).is_none()).collect()
 }
 
+/// The saved tasks a call's messages may offer: where a project service exists, without those a project replaces.
+fn shown_catalog(cx: &CallCtx, roots: &marlowe_workflow::saved::Roots) -> Vec<marlowe_workflow::saved::CatalogEntry> {
+    let catalog = roots.catalog();
+    if cx.scope.services.get::<marlowe_project::ProjectService>().is_some() { without_superseded(catalog) } else { catalog }
+}
+
 /// Most characters of the saved-task list in the `team` description.
 const CATALOG_CHARS: usize = 600;
 
@@ -164,8 +170,8 @@ fn resolved_plan(a: &Value, roots: &marlowe_workflow::saved::Roots) -> Result<Pl
 }
 
 /// What a `path` that is not a file is told: a saved team task runs by `name`, and which ones there are.
-fn missing_path(roots: &marlowe_workflow::saved::Roots, path: &str) -> String {
-    let catalog = roots.catalog();
+fn missing_path(cx: &CallCtx, roots: &marlowe_workflow::saved::Roots, path: &str) -> String {
+    let catalog = shown_catalog(cx, roots);
     let mut msg = format!("No file {path}.");
     if catalog.is_empty() {
         return msg;
@@ -253,10 +259,7 @@ fn refuse(cx: &CallCtx, roots: &marlowe_workflow::saved::Roots, plan: &Plan, sou
     if n < STOP_WRITING_AT {
         return ToolOutcome::error_of("script-invalid", msg);
     }
-    let mut catalog = roots.catalog();
-    if cx.scope.services.get::<marlowe_project::ProjectService>().is_some() {
-        catalog = without_superseded(catalog);
-    }
+    let catalog = shown_catalog(cx, roots);
     let fit = source.and_then(|s| marlowe_workflow::saved::best_match(&catalog, s));
     let way_out = match (fit, catalog.is_empty()) {
         (Some(c), _) => format!(
@@ -301,7 +304,7 @@ fn workflow_call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
     };
     if let (None, Some(path)) = (&plan.script, &plan.path) {
         if !service::resolve_path(&roots, path).exists() {
-            return ToolOutcome::error_of("team-name", missing_path(&roots, path));
+            return ToolOutcome::error_of("team-name", missing_path(cx, &roots, path));
         }
     }
     // A saved team task a project kind replaces is not run where projects are (Matthew: research

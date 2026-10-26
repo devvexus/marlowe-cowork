@@ -315,3 +315,16 @@ fn the_team_listing_omits_a_task_a_project_replaces_only_where_projects_run() {
     assert!(!with.contains("web-research") && with.contains("code-review"), "{with}");
     assert!(with.len() <= plain.len());
 }
+
+/// The messages that list saved tasks (a `path` that is no file) follow the same rule as the listing.
+#[test]
+fn a_missing_path_message_omits_a_task_a_project_replaces_only_where_projects_run() {
+    let (home, ws) = (temp("mp-h"), temp("mp-w"));
+    let t = host(&home, &ws);
+    let svc = service(&home);
+    let call = ToolCallReq { id: "c1".into(), name: "team".into(), args: json!({"path": "nowhere/plan.star"}) };
+    let with = t.call_scoped(&call, &cx(&ws, 1, Some(&svc))).content;
+    assert!(with.contains("code-review") && !with.contains("web-research"), "{with}");
+    let plain = t.call_scoped(&call, &cx(&ws, 1, None)).content;
+    assert!(plain.contains("web-research"), "{plain}");
+}
