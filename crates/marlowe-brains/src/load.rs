@@ -188,7 +188,17 @@ impl Brains {
         let kv = policy.as_ref().map_or(KvType::F16, |p| p.kv_type);
         let plan = self.context_plan(model).ok().and_then(|p| p.plan);
         let need_mib = plan.as_ref().map(|p| p.need_mib(ctx, kv, agents));
-        let free_mib = plan.as_ref().and_then(|p| p.gpu.as_ref()).map(|g| g.free_mib - g.headroom_mib.max(HEADROOM_MIB));
+        // The engine's server gives the card back to the model it starts (it stops the one it
+        // runs first), so it is measured as the planner measures it: free plus what Ollama's
+        // runners hold, less the headroom. A model it would not fit never reaches the engine.
+        let on_engine = self.engine_wanted(model);
+        let free_mib = plan.as_ref().and_then(|p| p.gpu.as_ref()).map(|g| {
+            if on_engine {
+                g.free_for_marlowe_mib() - g.headroom_mib.max(HEADROOM_MIB)
+            } else {
+                g.free_mib - g.headroom_mib.max(HEADROOM_MIB)
+            }
+        });
         LoadCost { model: model.clone(), ctx, agents, kv, need_mib, free_mib, resident, resident_known: true }
     }
 

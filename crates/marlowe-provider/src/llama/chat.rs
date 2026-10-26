@@ -296,7 +296,10 @@ pub fn read_stream_raw(
         raw.take(&v);
         if let Some(p) = v.get("prompt_progress") {
             let n = |k: &str| p.get(k).and_then(Value::as_u64).unwrap_or(0);
-            folder.passthrough(StreamEvent::ReadProgress { total: n("total"), cached: n("cache"), processed: n("processed") });
+            // `time_ms` is how long the server has been reading this prompt: with the tokens read
+            // since the cache, the rate the user sees.
+            let ms = p.get("time_ms").and_then(Value::as_f64).filter(|m| m.is_finite() && *m > 0.0).map_or(0, |m| m.round() as u64);
+            folder.passthrough(StreamEvent::ReadProgress { total: n("total"), cached: n("cache"), processed: n("processed"), ms });
         }
         if let Some(t) = v.get("timings") {
             seen = timings(t);
@@ -513,7 +516,7 @@ mod tests {
         let progress: Vec<_> = events
             .iter()
             .filter_map(|e| match e {
-                StreamEvent::ReadProgress { total, cached, processed } => Some((*total, *cached, *processed)),
+                StreamEvent::ReadProgress { total, cached, processed, .. } => Some((*total, *cached, *processed)),
                 _ => None,
             })
             .collect();

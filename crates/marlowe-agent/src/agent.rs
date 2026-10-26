@@ -773,13 +773,16 @@ fn call_model(
                 }
                 // The engine's own count of the read so far (llama.cpp reports it per batch): the
                 // live read line shows it as it is, with nothing estimated.
-                StreamEvent::ReadProgress { total, cached, processed } => {
+                StreamEvent::ReadProgress { total, cached, processed, ms } => {
                     if let Some(w) = wire.take() {
                         w.end(sink);
                     }
                     if prefill.is_some() {
                         let mut p = PhaseEvent::progress(PhaseKind::Prefill, *processed, *total).unit("tok");
                         p.cached = Some(*cached);
+                        // The server's own clock for this read: fresh tokens over its time, so the
+                        // live line carries a rate (and a bar) with no log to read.
+                        p.rate = (*ms > 0 && processed > cached).then(|| ((processed - cached) as f64 * 1000.0 / *ms as f64) as f32);
                         sink(AgentEvent::Phase(p));
                     }
                     return;

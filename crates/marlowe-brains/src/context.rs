@@ -56,8 +56,10 @@ pub(crate) struct ContextState {
     pub eligibility: Mutex<HashMap<String, Result<(), String>>>,
     /// Models the user turned the engine off for.
     pub engine_off: Mutex<HashMap<ModelRef, bool>>,
-    /// The planner's slots and window for an engine model with no saved policy.
-    pub engine_auto: Mutex<HashMap<ModelRef, ContextPolicy>>,
+    /// Whether the engine takes a model whole on the GPU or Ollama keeps it, per model.
+    pub engine_fit: Mutex<HashMap<ModelRef, crate::engine::Verdict>>,
+    /// How long a "Ollama keeps it" verdict stands before the GPU is read again (`None`: the default).
+    pub engine_recheck: Mutex<Option<Duration>>,
 }
 
 /// How long what a runner serves is taken as known before it is looked at again.
@@ -304,7 +306,19 @@ impl Brains {
     pub(crate) fn forget_files(&self) {
         self.ctx.analyzed.lock().unwrap_or_else(|e| e.into_inner()).clear();
         self.ctx.eligibility.lock().unwrap_or_else(|e| e.into_inner()).clear();
-        self.ctx.engine_auto.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.ctx.engine_fit.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
+    /// What earlier loads measured for this GPU and model file, for the planner.
+    pub(crate) fn calibration_for(&self, blob: Option<&str>, ub: u32, gpu_name: &str) -> Calibration {
+        self.with_library(|l| {
+            let compute = blob.and_then(|b| l.calibration_like(&format!("compute|{}|{ub}|", blob_key(b))).ok().flatten());
+            Calibration {
+                driver_mib: l.calibration(&format!("driver|{gpu_name}")).ok().flatten(),
+                compute: compute.and_then(|(k, v)| k.rsplit('|').next()?.parse().ok().map(|ctx| (ctx, v))),
+                bw_ram_gbs: l.calibration("bw_ram").ok().flatten(),
+            }
+        })
     }
 
     pub(crate) fn analyzed(&self, model: &ModelRef) -> Result<Arc<Analyzed>, BrainsError> {
@@ -421,14 +435,7 @@ impl Brains {
                 ));
             }
         }
-        let calib = self.with_library(|l| {
-            let compute = blob.as_deref().and_then(|b| l.calibration_like(&format!("compute|{}|{ub}|", blob_key(b))).ok().flatten());
-            Calibration {
-                driver_mib: l.calibration(&format!("driver|{gpu_name}")).ok().flatten(),
-                compute: compute.and_then(|(k, v)| k.rsplit('|').next()?.parse().ok().map(|ctx| (ctx, v))),
-                bw_ram_gbs: l.calibration("bw_ram").ok().flatten(),
-            }
-        });
+        let calib = self.calibration_for(blob.as_deref(), ub, &gpu_name);
         let spec_n = if a.draft.is_some() { in_effect.spec_n.unwrap_or(3) } else { 0 };
         let plan = build(&PlanInputs {
             main: &a.main,
@@ -450,7 +457,9 @@ impl Brains {
             in_effect.next_kv_type().unwrap_or(KvType::F16)
         };
         let (parallel, auto) = if engine_on {
-            match crate::engine::engine_choice(&plan, kv) {
+            // The choice the engine holds for this model (it started, or will start, with it).
+            let held = self.engine_auto_policy(model);
+            match held.map(|p| (p.parallel, p.max_ctx)).or_else(|| crate::engine::engine_choice(&plan, kv)) {
                 Some((n, c)) => (n, Some(ContextPolicy { max_ctx: c, kv_type: kv, parallel: n, source: PolicySource::Auto, updated_ms: 0 })),
                 None => (1, None),
             }

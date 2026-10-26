@@ -281,9 +281,23 @@ impl Provider for OllamaProvider {
             return Err(ProviderError::cancelled());
         }
         let meta = self.meta(&req.model)?;
+        // The request is on its way once, however many engines were tried for it.
+        let mut sent = false;
+        let mut once = |ev: StreamEvent| {
+            if matches!(ev, StreamEvent::Sent) && std::mem::replace(&mut sent, true) {
+                return;
+            }
+            on(ev)
+        };
+        let on: &mut dyn FnMut(StreamEvent) = &mut once;
         if let Some(engine) = &self.llama {
             match self.alloc.engine_shape(&req.model) {
-                Some(shape) => return self.stream_llama(engine, shape, req, &meta, cancel, on),
+                Some(shape) => match self.stream_llama(engine, shape, req, &meta, cancel, on) {
+                    // The engine would not run it (it did not fit, or the driver spilled it into
+                    // system memory): Ollama serves this request, and the planner keeps the model there.
+                    Err(e) if !e.is_cancelled() && engine.declined(&req.model).is_some() => {}
+                    done => return done,
+                },
                 // Ollama serves it now (the setting was turned off): never in memory twice.
                 None => {
                     engine.unload(Some(&req.model));
@@ -352,7 +366,19 @@ impl OllamaProvider {
         let opts = BodyOptions::new(shape.ctx_per_slot, think_value(meta.think_mode(), req.effort));
         let planned = plan_request(req, &opts)?;
         let thinking = planned.body.get("think").is_some_and(|t| t != &Value::Bool(false));
-        let want = Want { model: req.model.clone(), shape, lane: req.lane, key: conversation_key(req) };
+        let want = Want {
+            model: req.model.clone(),
+            shape,
+            lane: req.lane,
+            key: conversation_key(req),
+            need_mib: self.alloc.engine_need_mib(&req.model),
+        };
+        // A cold server is the model's load, and it happens inside `acquire`: the call is on its
+        // way now, so the live meter opens the load line here and ends it when the server is up
+        // (its real time), and the wait is not mistaken for the model reading the prompt.
+        if !engine.runs(&want) {
+            on(StreamEvent::Sent);
+        }
         let lease = engine.acquire(&want, cancel)?;
         // The user's conversation is the one that can be read ahead, so it is the one whose exact
         // generated text is worth asking the server for.

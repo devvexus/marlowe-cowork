@@ -10,16 +10,32 @@ use marlowe_model::{
 use serde_json::{json, Value};
 
 use super::engine::LlamaEngine;
-use super::testkit::{chatml_with, Fixture, Reply, Tpl};
+use super::testkit::{chatml_with, FakeVram, Fixture, Reply, Tpl};
 use crate::ollama::OllamaProvider;
 
 const MODEL: &str = "dusk:22b";
 
-struct Advice(Mutex<Option<EngineShape>>);
+struct Advice(Mutex<Option<EngineShape>>, Mutex<Option<f64>>, Mutex<Vec<String>>);
+
+impl Advice {
+    fn new(initial: Option<EngineShape>) -> Self {
+        Self(Mutex::new(initial), Mutex::new(None), Mutex::new(Vec::new()))
+    }
+}
 
 impl EngineAdvisor for Advice {
     fn shape(&self, _: &str) -> Option<EngineShape> {
         self.0.lock().unwrap().clone()
+    }
+
+    fn need_mib(&self, _: &str) -> Option<f64> {
+        *self.1.lock().unwrap()
+    }
+
+    // As the planner does: the model stays on Ollama from here on.
+    fn declined(&self, _: &str, why: &str) {
+        self.2.lock().unwrap().push(why.to_string());
+        *self.0.lock().unwrap() = None;
     }
 }
 
@@ -37,7 +53,7 @@ struct Rig {
 fn rig(initial: Option<EngineShape>) -> Rig {
     let fx = Fixture::new(MODEL);
     let alloc = ContextAllocations::new();
-    let advice = Arc::new(Advice(Mutex::new(initial)));
+    let advice = Arc::new(Advice::new(initial));
     alloc.set_engine_advisor(advice.clone());
     let engine = fx.engine();
     let provider = OllamaProvider::new(fx.ollama.endpoint()).with_allocations(alloc).with_llama_engine(engine.clone());
@@ -70,8 +86,9 @@ fn a_model_the_planner_gave_the_engine_is_served_by_llama_server_not_ollama() {
     assert_eq!(r.fx.ollama.chats(), 0, "Ollama never saw the request");
     assert_eq!((c.usage.input, c.usage.cached_input, c.usage.prompt_eval), (40, 10, None));
     assert_eq!((c.usage.prefill_ms, c.usage.decode_ms), (Some(25), Some(20)));
-    assert!(events.iter().any(|e| matches!(e, StreamEvent::ReadProgress { total: 40, cached: 10, processed: 40 })));
-    assert!(matches!(events.first(), Some(StreamEvent::Sent)), "the prefill clock starts once the slot is held");
+    assert!(events.iter().any(|e| matches!(e, StreamEvent::ReadProgress { total: 40, cached: 10, processed: 40, ms: 5 })));
+    assert!(matches!(events.first(), Some(StreamEvent::Sent)), "the request is on its way before anything is read");
+    assert_eq!(events.iter().filter(|e| matches!(e, StreamEvent::Sent)).count(), 1);
     // The conductor's conversation is pinned to slot 0 and the cache is asked for.
     let sent = r.fx.spawner.seen.chats.lock().unwrap()[0].clone();
     assert_eq!((sent["id_slot"].as_u64(), sent["cache_prompt"].as_bool()), (Some(0), Some(true)));
@@ -439,4 +456,81 @@ fn a_models_template_is_asked_once_per_file_even_across_engine_restarts() {
     // that tells a dropping template from a silent one); the second reads the answer from the file.
     assert!(after_first > 0, "the first load asked the template");
     assert_eq!(asks.load(Ordering::SeqCst), after_first, "the second load did not ask again");
+}
+
+/// A rig whose engine reads a fake GPU.
+fn rig_gpu(free: Option<f64>) -> (Rig, Arc<FakeVram>) {
+    let r = rig(Some(shape(2, 16_384)));
+    let vram = FakeVram::new(free);
+    let mut cfg = r.fx.config();
+    cfg.vram = Some(vram.clone());
+    cfg.vram_settle = Duration::ZERO;
+    let engine = LlamaEngine::new(cfg, r.fx.spawner.clone());
+    let alloc = ContextAllocations::new();
+    alloc.set_engine_advisor(r.advice.clone());
+    engine.follow(alloc.clone());
+    let provider = OllamaProvider::new(r.fx.ollama.endpoint()).with_allocations(alloc).with_llama_engine(engine.clone());
+    (Rig { provider, engine, ..r }, vram)
+}
+
+#[test]
+fn a_cold_server_is_a_load_the_call_is_on_its_way_before_it_and_only_once() {
+    let r = rig(Some(shape(2, 16_384)));
+    r.fx.spawner.start_takes(Duration::from_millis(300));
+    let (spawner, engine) = (r.fx.spawner.clone(), r.engine.clone());
+    let mut seen: Vec<(usize, bool)> = Vec::new();
+    r.provider
+        .stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |e| {
+            if matches!(e, StreamEvent::Sent) {
+                seen.push((spawner.starts(), engine.status().is_some()));
+            }
+        })
+        .unwrap();
+    // The server had not started when the call was announced: the wait that follows is the load.
+    assert_eq!(seen, vec![(0, false)]);
+    // Warm: the server is up, so the announcement is the request itself.
+    let mut warm: Vec<(usize, bool)> = Vec::new();
+    r.provider
+        .stream(&request(Lane::Conductor, "again"), &CancelToken::new(), &mut |e| {
+            if matches!(e, StreamEvent::Sent) {
+                warm.push((spawner.starts(), engine.status().is_some()));
+            }
+        })
+        .unwrap();
+    assert_eq!(warm, vec![(1, true)]);
+}
+
+#[test]
+fn a_model_that_does_not_fit_is_served_by_ollama_in_the_same_request() {
+    let (r, _vram) = rig_gpu(Some(11.9 * 1024.0));
+    *r.advice.1.lock().unwrap() = Some(13.6 * 1024.0);
+    let mut sent = 0;
+    let c = r.provider.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |e| sent += usize::from(matches!(e, StreamEvent::Sent))).unwrap();
+    assert_eq!(c.text, "from ollama");
+    assert_eq!((r.fx.ollama.chats(), r.fx.spawner.starts()), (1, 0));
+    assert_eq!(sent, 1, "one request, one announcement, whichever engine ran it");
+    assert_eq!(r.advice.2.lock().unwrap().clone(), vec!["needs 13.6 GiB on the GPU, 11.9 GiB free".to_string()]);
+    // The planner now keeps it on Ollama: the next request does not touch the engine at all.
+    r.provider.stream(&request(Lane::Conductor, "again"), &CancelToken::new(), &mut |_| {}).unwrap();
+    assert_eq!((r.fx.ollama.chats(), r.fx.spawner.starts()), (2, 0));
+}
+
+#[test]
+fn a_server_the_driver_spilled_is_stopped_and_ollama_answers() {
+    let (r, vram) = rig_gpu(Some(20_000.0));
+    *vram.process.lock().unwrap() = Some((9_000.0, 5_000.0));
+    let c = r.provider.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |_| {}).unwrap();
+    assert_eq!(c.text, "from ollama");
+    assert_eq!((r.fx.spawner.starts(), r.fx.spawner.killed(), r.fx.ollama.chats()), (1, 1, 1));
+    assert!(r.engine.status().is_none());
+    assert!(r.advice.2.lock().unwrap()[0].starts_with("the driver moved"), "{:?}", r.advice.2.lock().unwrap());
+}
+
+#[test]
+fn a_server_that_fits_runs_the_request_and_ollama_never_sees_it() {
+    let (r, _vram) = rig_gpu(Some(20_000.0));
+    *r.advice.1.lock().unwrap() = Some(13.6 * 1024.0);
+    let c = r.provider.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |_| {}).unwrap();
+    assert_eq!(c.text, "ok");
+    assert_eq!((r.fx.ollama.chats(), r.fx.spawner.starts()), (0, 1));
 }

@@ -23,6 +23,16 @@ pub struct EngineShape {
 pub trait EngineAdvisor: Send + Sync {
     /// The shape for `model_id`, or `None` when Ollama serves the model.
     fn shape(&self, model_id: &str) -> Option<EngineShape>;
+
+    /// GPU memory the planner expects the shape of `model_id` to take (weights, every slot's cache
+    /// and compute), MiB. The engine checks it against the memory free when it starts the server.
+    fn need_mib(&self, _model_id: &str) -> Option<f64> {
+        None
+    }
+
+    /// The engine did not run `model_id` after all, and why (it did not fit, or the driver spilled
+    /// it into system memory). The advisor keeps the model on Ollama from here on.
+    fn declined(&self, _model_id: &str, _why: &str) {}
 }
 
 /// Hears about the engine's work, so a client shows it. The daemon implements it.
@@ -80,6 +90,20 @@ impl ContextAllocations {
     pub fn engine_shape(&self, model_id: &str) -> Option<EngineShape> {
         let advisor = self.hooks.advisor.read().unwrap_or_else(|e| e.into_inner()).clone()?;
         advisor.shape(model_id)
+    }
+
+    /// The GPU memory the planner expects the engine's server for `model_id` to take, MiB.
+    pub fn engine_need_mib(&self, model_id: &str) -> Option<f64> {
+        let advisor = self.hooks.advisor.read().unwrap_or_else(|e| e.into_inner()).clone()?;
+        advisor.need_mib(model_id)
+    }
+
+    /// Tells the advisor the engine did not run `model_id`, and why.
+    pub fn engine_declined(&self, model_id: &str, why: &str) {
+        let advisor = self.hooks.advisor.read().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(a) = advisor {
+            a.declined(model_id, why);
+        }
     }
 
     /// Installs who hears about the engine's loads and unloads.

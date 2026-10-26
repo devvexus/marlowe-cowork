@@ -120,7 +120,7 @@ mod tests {
         let before = hw.runtime(MODEL, None);
         assert!(!before.loaded && before.slots.is_empty());
         assert_eq!(hw.resident(), Some(vec![]));
-        let want = Want { model: MODEL.into(), shape: EngineShape { slots: 4, ctx_per_slot: 8192, kv: "q8_0".into() }, lane: Lane::Conductor, key: 1 };
+        let want = Want { model: MODEL.into(), shape: EngineShape { slots: 4, ctx_per_slot: 8192, kv: "q8_0".into() }, lane: Lane::Conductor, key: 1, need_mib: None };
         let _lease = engine.acquire(&want, &CancelToken::new()).unwrap();
         let rt = hw.runtime(MODEL, None);
         assert!(rt.loaded);
@@ -138,7 +138,7 @@ mod tests {
         let down = OllamaHw::with_paths(LocalEndpoint::new("127.0.0.1", 1).unwrap(), store.clone(), None);
         let hw = LlamaModels::new(down, engine.clone(), store);
         assert_eq!(hw.resident(), None, "neither answering: unknown");
-        let want = Want { model: MODEL.into(), shape: EngineShape { slots: 2, ctx_per_slot: 8192, kv: "q8_0".into() }, lane: Lane::Conductor, key: 1 };
+        let want = Want { model: MODEL.into(), shape: EngineShape { slots: 2, ctx_per_slot: 8192, kv: "q8_0".into() }, lane: Lane::Conductor, key: 1, need_mib: None };
         let _lease = engine.acquire(&want, &CancelToken::new()).unwrap();
         assert_eq!(hw.resident(), Some(vec![MODEL.to_string()]), "the engine serves it");
     }
@@ -148,7 +148,7 @@ mod tests {
         let fx = Fixture::new(MODEL);
         let engine = fx.engine();
         let hw = source(&fx, &engine);
-        let want = Want { model: MODEL.into(), shape: EngineShape { slots: 2, ctx_per_slot: 8192, kv: "q8_0".into() }, lane: Lane::Conductor, key: 1 };
+        let want = Want { model: MODEL.into(), shape: EngineShape { slots: 2, ctx_per_slot: 8192, kv: "q8_0".into() }, lane: Lane::Conductor, key: 1, need_mib: None };
         drop(engine.acquire(&want, &CancelToken::new()).unwrap());
         hw.unload(MODEL).unwrap();
         assert!(engine.status().is_none());

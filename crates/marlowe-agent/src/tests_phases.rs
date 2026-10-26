@@ -233,8 +233,8 @@ impl Provider for Reading {
     }
     fn stream(&self, req: &ChatRequest, cancel: &CancelToken, on: &mut dyn FnMut(StreamEvent)) -> Result<Completion, ProviderError> {
         on(StreamEvent::Sent);
-        on(StreamEvent::ReadProgress { total: 9_000, cached: 6_000, processed: 6_000 });
-        on(StreamEvent::ReadProgress { total: 9_000, cached: 6_000, processed: 9_000 });
+        on(StreamEvent::ReadProgress { total: 9_000, cached: 6_000, processed: 6_000, ms: 0 });
+        on(StreamEvent::ReadProgress { total: 9_000, cached: 6_000, processed: 9_000, ms: 60 });
         let usage = Usage { input: 9_000, cached_input: 6_000, prefill_ms: Some(900), output: 5, ..Default::default() };
         self.inner.stream(req, cancel, &mut |e| match e {
             StreamEvent::Stop(s) => {
@@ -259,6 +259,8 @@ fn an_engine_that_reports_the_read_gives_exact_progress_and_the_cached_split() {
     }
     let end = p[3];
     assert_eq!((end.state, end.done, end.total, end.cached, end.ms, end.est), (PhaseState::End, Some(3_000), Some(9_000), Some(6_000), Some(900), false));
+    // The server's clock gives the rate: 3,000 fresh tokens in 60 ms. Before it has a clock there is none.
+    assert_eq!((p[1].rate, p[2].rate), (None, Some(50_000.0)));
 }
 
 #[test]

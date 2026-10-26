@@ -50,7 +50,11 @@ fn make_ollama(
 /// Marlowe's parallel local engine: Ollama's bundled llama-server, started by Marlowe for the
 /// models Ollama hands to llama-server whole. Off for a scripted run, a remote Ollama and
 /// `MARLOWE_LLAMA_ENGINE=0`.
-fn llama_engine(home: &Path, endpoint: &marlowe_provider::LocalEndpoint) -> Option<marlowe_provider::llama::LlamaEngine> {
+fn llama_engine(
+    home: &Path,
+    endpoint: &marlowe_provider::LocalEndpoint,
+    gpu: Option<&Arc<marlowe_sentinel::vram::SentinelGpu>>,
+) -> Option<marlowe_provider::llama::LlamaEngine> {
     use marlowe_provider::llama::{keep_alive_from, EngineConfig, LlamaEngine, SystemSpawner};
     if scripted() || std::env::var("MARLOWE_LLAMA_ENGINE").is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "off" | "false" | "no")) {
         return None;
@@ -64,8 +68,30 @@ fn llama_engine(home: &Path, endpoint: &marlowe_provider::LocalEndpoint) -> Opti
     // Ollama's own keep-alive: the setting it was started with, else five minutes.
     let keep = marlowe_provider::ollama_runtime::saved_user_env("OLLAMA_KEEP_ALIVE").or_else(|| std::env::var("OLLAMA_KEEP_ALIVE").ok());
     cfg.keep_alive = keep_alive_from(keep.as_deref());
+    // The card is read before a server starts and after it loaded: the Windows driver pages a
+    // model that does not fit into system memory instead of failing the load.
+    cfg.vram = gpu.map(|g| Arc::new(GpuProbe(g.clone())) as Arc<dyn marlowe_provider::llama::VramProbe>);
     let scrub = marlowe_brains::scrubbed_env().iter().map(|s| s.to_string()).collect();
     Some(LlamaEngine::new(cfg, Arc::new(SystemSpawner::new(scrub))))
+}
+
+/// The engine's view of the GPU: NVML's free memory and the per-process counters (PDH).
+struct GpuProbe(Arc<marlowe_sentinel::vram::SentinelGpu>);
+
+impl std::fmt::Debug for GpuProbe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("GpuProbe")
+    }
+}
+
+impl marlowe_provider::llama::VramProbe for GpuProbe {
+    fn free_mib(&self) -> Option<f64> {
+        marlowe_hw::GpuSource::snapshot(&*self.0).map(|s| s.gpu.free_mib)
+    }
+
+    fn process_mib(&self, pid: u32) -> Option<(f64, f64)> {
+        self.0.runner_memory().into_iter().find(|r| r.0 == pid).map(|r| (r.1, r.2))
+    }
 }
 
 /// Never fails: the catalog works without a key; `stream` then returns an Auth error.
@@ -88,7 +114,8 @@ pub fn provider_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> P
         .as_deref()
         .and_then(marlowe_provider::LocalEndpoint::parse)
         .unwrap_or_else(marlowe_provider::LocalEndpoint::default_ollama);
-    let engine = llama_engine(home, &endpoint);
+    let gpu = (!scripted()).then(|| Arc::new(marlowe_sentinel::vram::SentinelGpu::open()));
+    let engine = llama_engine(home, &endpoint, gpu.as_ref());
     if let Some(e) = &engine {
         // Loads and idle unloads show as background work once the daemon is listening.
         e.follow(f.allocations().clone());
@@ -111,7 +138,7 @@ pub fn provider_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> P
         };
         f.set_hardware(marlowe_brains::Hardware {
             models,
-            gpu: Arc::new(marlowe_sentinel::vram::SentinelGpu::open()),
+            gpu: gpu.unwrap_or_else(|| Arc::new(marlowe_sentinel::vram::SentinelGpu::open())),
             server: Arc::new(
                 marlowe_provider::OllamaServerControl::new(endpoint)
                     // A remote Ollama is not ours to start.

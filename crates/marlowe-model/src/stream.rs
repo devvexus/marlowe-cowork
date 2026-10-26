@@ -107,7 +107,8 @@ pub enum StreamEvent {
     Usage(Usage),
     /// The engine's own count of the prompt read so far, while it reads (llama.cpp reports it per
     /// batch). `processed` includes the `cached` tokens, so the new tokens read are the difference.
-    ReadProgress { total: u64, cached: u64, processed: u64 },
+    /// `ms` is how long the server has been reading this prompt (0: it did not say).
+    ReadProgress { total: u64, cached: u64, processed: u64, #[serde(default)] ms: u64 },
     Stop(StopReason),
 }
 

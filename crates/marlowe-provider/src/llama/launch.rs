@@ -3,8 +3,14 @@
 //! Mirrors the launch Ollama 0.32.5 makes for a model it hands to llama-server whole (measured
 //! off a live Ollama process, 2026-10), with the slot count and the per-slot context Marlowe's
 //! planner chose. `-c` is the product of the two and the KV cache is split per slot (no
-//! `--kv-unified`), so one agent can never take another's context. `-ngl 99 --fit off` makes a
-//! misfit fail at load, loudly, instead of quietly spilling layers to the CPU.
+//! `--kv-unified`), so one agent can never take another's context. `-ngl 99 --fit off` keeps
+//! llama.cpp from moving layers to the CPU on its own, but it does NOT make a misfit fail: under
+//! the Windows driver's sysmem fallback (NVIDIA "CUDA - Sysmem Fallback Policy", on by default)
+//! a `cudaMalloc` past the card's memory succeeds by paging into system RAM, so the server loads
+//! and reads at a few tokens a second (a 12.8 GiB model on 11.9 GiB free: 46 tok/s prefill
+//! against 2,400). The fit is therefore checked by the engine before it starts a server and the
+//! spill after ([`super::engine::VramProbe`]); setting the policy to "Prefer No Sysmem Fallback"
+//! for llama-server.exe in the NVIDIA Control Panel makes the allocation fail instead.
 
 use std::path::{Path, PathBuf};
 
@@ -134,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn the_launch_mirrors_ollamas_and_fails_loudly_on_a_misfit() {
+    fn the_launch_mirrors_ollamas_and_keeps_every_layer_on_the_gpu() {
         let a = args(&spec());
         assert_eq!(after(&a, "--cache-type-k"), "q8_0");
         assert_eq!(after(&a, "--cache-type-v"), "q8_0");

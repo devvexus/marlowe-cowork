@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use super::engine::{EngineConfig, LlamaEngine};
+use super::engine::{EngineConfig, LlamaEngine, VramProbe};
 use super::server::{Process, Spawner};
 use crate::http::LocalEndpoint;
 use crate::ollama_store::LaunchPlan;
@@ -174,6 +174,8 @@ pub struct FakeSpawner {
     apply: Mutex<Option<Arc<Apply>>>,
     /// How long a `/completion` request takes, and what it answers.
     completion: Mutex<(Duration, u16)>,
+    /// How long a server takes to come up (the model loading).
+    start_takes: Mutex<Duration>,
 }
 
 type Apply = dyn Fn(&Value) -> Reply + Send + Sync;
@@ -189,7 +191,13 @@ impl FakeSpawner {
             plans: Mutex::new(Vec::new()),
             apply: Mutex::new(None),
             completion: Mutex::new((Duration::ZERO, 200)),
+            start_takes: Mutex::new(Duration::ZERO),
         })
+    }
+
+    /// Makes a server take `took` to come up, as a model loading does.
+    pub fn start_takes(&self, took: Duration) {
+        *self.start_takes.lock().unwrap() = took;
     }
 
     pub fn starts(&self) -> usize {
@@ -248,6 +256,7 @@ impl Spawner for FakeSpawner {
     fn start(&self, plan: &LaunchPlan, log: Option<&Path>) -> std::io::Result<Box<dyn Process>> {
         self.started.fetch_add(1, Ordering::SeqCst);
         self.plans.lock().unwrap().push(plan.clone());
+        std::thread::sleep(*self.start_takes.lock().unwrap());
         if let Some(line) = self.dying.lock().unwrap().clone() {
             if let Some(p) = log {
                 let mut f = std::fs::OpenOptions::new().create(true).append(true).open(p)?;
@@ -319,6 +328,30 @@ impl Spawner for FakeSpawner {
 
     fn free_port(&self) -> std::io::Result<u16> {
         Ok(TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port())
+    }
+}
+
+/// A fake GPU: the memory free, and what the server's process holds once it loaded.
+#[derive(Debug)]
+pub struct FakeVram {
+    pub free: Mutex<Option<f64>>,
+    /// Dedicated and shared MiB of the server's process; `None`: not readable.
+    pub process: Mutex<Option<(f64, f64)>>,
+}
+
+impl FakeVram {
+    pub fn new(free: Option<f64>) -> Arc<Self> {
+        Arc::new(Self { free: Mutex::new(free), process: Mutex::new(Some((8_000.0, 100.0))) })
+    }
+}
+
+impl VramProbe for FakeVram {
+    fn free_mib(&self) -> Option<f64> {
+        *self.free.lock().unwrap()
+    }
+
+    fn process_mib(&self, _pid: u32) -> Option<(f64, f64)> {
+        *self.process.lock().unwrap()
     }
 }
 

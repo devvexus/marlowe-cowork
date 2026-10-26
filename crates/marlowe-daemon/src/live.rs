@@ -445,6 +445,27 @@ mod tests {
     }
 
     #[test]
+    fn an_engine_server_starting_after_the_send_is_a_load_that_lasts_until_the_model_is_up() {
+        // The provider announces the call before it starts the server, so the send is the load's
+        // start; the model is listed when the server is up, and that is the load's end.
+        let (emit, seen) = collect();
+        let up_at = Instant::now() + Duration::from_millis(150);
+        let resident = move || Some(Instant::now() >= up_at);
+        let w = Watch::start(loading(), probes(growing(0.0, 100.0), resident), None, emit, Duration::from_millis(2));
+        let sent = Instant::now();
+        w.sent(0);
+        wait_for(&seen, |e| e.iter().any(|p| p.kind == PhaseKind::Load && p.state == PhaseState::End));
+        let waited = sent.elapsed().as_millis() as u64;
+        let ev = seen.lock().unwrap().clone();
+        assert_eq!((ev[0].kind, ev[0].state), (PhaseKind::Load, PhaseState::Start), "the load opens at the send");
+        let end = ev.iter().find(|p| p.state == PhaseState::End).unwrap();
+        let ms = end.ms.unwrap();
+        assert!((140..=waited + 5).contains(&ms), "the load took {ms} ms of the {waited} ms to the model being up");
+        w.first_frame();
+        assert_eq!(seen.lock().unwrap().iter().filter(|p| p.state == PhaseState::End).count(), 1);
+    }
+
+    #[test]
     fn a_model_already_loaded_has_no_load_line() {
         let (emit, seen) = collect();
         let w = Watch::start(loading(), probes(|| Some(0.0), || Some(true)), None, emit, Duration::from_millis(2));
