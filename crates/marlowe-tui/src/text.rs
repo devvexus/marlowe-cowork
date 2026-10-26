@@ -172,6 +172,11 @@ pub fn bytes(n: u64) -> String {
     }
 }
 
+/// Download sizes as the offer and the memory line show them: decimal megabytes, rounded.
+pub fn megabytes(n: u64) -> u64 {
+    (n + 500_000) / 1_000_000
+}
+
 /// A price per million tokens: `$3`, `$0.15`, `free`.
 pub fn price(v: f64) -> String {
     if v <= 0.0 {

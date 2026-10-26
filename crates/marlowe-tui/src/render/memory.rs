@@ -76,6 +76,9 @@ pub fn draw(main: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
             format!("importing the old memories\u{2026} {} read \u{b7} {} imported", text::thousands(i.read), text::thousands(i.imported)),
             ink(Ink::Accent, theme),
         ))
+    } else if let Some(phrase) = m.stats.as_ref().and_then(|s| crate::memory::models_phrase(&s.models)) {
+        let working = matches!(m.stats.as_ref().map(|s| &s.models), Some(marlowe_proto::ModelsState::Installing { .. }));
+        Line::from(Span::styled(text::truncate(&phrase, w as usize), ink(if working { Ink::Accent } else { Ink::Amber }, theme)))
     } else if let Some(why) = m.stats.as_ref().and_then(|s| s.degraded.as_ref()) {
         Line::from(Span::styled(
             text::truncate(&format!("degraded: {} \u{b7} keyword search only, nothing is injected on its own", text::clean(why)), w as usize),

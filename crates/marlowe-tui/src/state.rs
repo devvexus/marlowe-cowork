@@ -1422,7 +1422,10 @@ impl State {
             Event::MemoryResults { hits } => self.memory_results(hits),
             Event::MemoryChanged { id, change } => self.memory_changed(id, change, out),
             Event::MemoryProfile { hits, tokens, omitted } => self.memory_profile(hits, *tokens, *omitted),
-            Event::MemoryStats(report) => self.memory.stats = Some(report.clone()),
+            Event::MemoryStats(report) => {
+                self.memory.stats = Some(report.clone());
+                self.offer_models_to_known_user();
+            }
             Event::Recalled { session, count, summary, total_ms, stages, abstained, .. } if self.mine(session) => {
                 self.strip.recalled();
                 // A daemon that measures the stages says so even when nothing was found: the

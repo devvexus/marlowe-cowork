@@ -1,5 +1,6 @@
-//! First-run onboarding: what to call the user, how to greet them, then a checklist of only the
-//! next steps that apply (import old memories, watch suggested folders, add a model).
+//! First-run onboarding: what to call the user, how to greet them, the offer to install the
+//! memory models when they are missing, then a checklist of only the next steps that apply
+//! (import old memories, watch suggested folders, add a model).
 //!
 //! It appears once the boot is over, only on an empty composer in the conversation view, and
 //! never takes keys from someone who is already typing: a key during the boot defers it, and a
@@ -7,7 +8,7 @@
 //! the rest. Deferred or skipped, it stays away for the session; the palette can reopen it.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use marlowe_proto::{AddressForm, Request, WatchCandidate};
+use marlowe_proto::{AddressForm, ModelsState, Request, WatchCandidate};
 
 use crate::composer::Composer;
 use crate::state::{NoteTone, Overlay, State, View};
@@ -15,6 +16,8 @@ use crate::wake::{norm, Presence, NO_SENTINEL};
 
 /// A printable key this soon after the overlay appears was meant for the composer.
 pub const ONBOARD_GUARD_MS: i64 = 600;
+/// What the memory models are for, under the question that asks for them.
+pub const MODELS_PURPOSE: &str = "They let me recall our past conversations by meaning, not just matching words. Without them, memory is keyword-only.";
 /// Folders offered in the checklist at most.
 pub const MAX_FOLDERS: usize = 4;
 
@@ -53,6 +56,8 @@ impl Onboard {
 pub enum Step {
     Name { input: Composer },
     Address { name: Option<String>, sel: usize },
+    /// "Install memory LMs?" `sel`: 0 yes, 1 no. Only when the daemon reports them missing.
+    Models { bytes: u64, cascade: bool, sel: usize },
     Checklist { items: Vec<Item>, sel: usize },
 }
 
@@ -116,8 +121,13 @@ impl State {
             input.set(n);
         }
         let guard_until_ms = if guard { self.now_ms + ONBOARD_GUARD_MS } else { i64::MIN };
-        self.onboard = Onboard::Active { step: Step::Name { input }, guard_until_ms };
         self.overlay = Some(Overlay::Onboard);
+        // Named already (another client, `marlowe me`) and not asked for: only what still applies.
+        if guard && self.user.as_ref().is_some_and(|u| u.set) {
+            self.after_user(guard_until_ms);
+        } else {
+            self.onboard = Onboard::Active { step: Step::Name { input }, guard_until_ms };
+        }
         // Discovery for the checklist, answered while the user types a name.
         if self.wake.candidates.is_none() && self.wake.sentinel != Presence::Absent {
             self.expect_error(NO_SENTINEL);
@@ -194,6 +204,20 @@ impl State {
                     _ => {}
                 }
             }
+            Step::Models { bytes, sel, .. } => {
+                let bytes = *bytes;
+                match k.code {
+                    KeyCode::Left | KeyCode::Up | KeyCode::BackTab => *sel = 0,
+                    KeyCode::Right | KeyCode::Down | KeyCode::Tab => *sel = 1,
+                    KeyCode::Char('y' | '1') => self.answer_models(true, bytes, guard_until_ms, out),
+                    KeyCode::Char('n' | '2') => self.answer_models(false, bytes, guard_until_ms, out),
+                    KeyCode::Enter => {
+                        let yes = *sel == 0;
+                        self.answer_models(yes, bytes, guard_until_ms, out);
+                    }
+                    _ => {}
+                }
+            }
             Step::Checklist { items, sel } => match k.code {
                 KeyCode::Up | KeyCode::BackTab => *sel = sel.saturating_sub(1),
                 KeyCode::Down | KeyCode::Tab => *sel = (*sel + 1).min(items.len().saturating_sub(1)),
@@ -227,6 +251,61 @@ impl State {
             (None, _) => "saved · no address in greetings".into(),
         };
         self.flash(said, NoteTone::Dim);
+        self.after_user(guard_until_ms);
+    }
+
+    /// The memory models still to be offered: their size, and whether the cascade is in it.
+    pub(crate) fn models_offer(&self) -> Option<(u64, bool)> {
+        match self.memory.stats.as_ref()?.models {
+            ModelsState::Missing { bytes, cascade } => Some((bytes, cascade)),
+            _ => None,
+        }
+    }
+
+    /// Raises onboarding for a user who is already named when the models are missing, so the
+    /// offer is not only for a first launch with no name. Never over a finished or running one.
+    pub(crate) fn offer_models_to_known_user(&mut self) {
+        if self.onboard == Onboard::Idle && self.user.as_ref().is_some_and(|u| u.set) && self.models_offer().is_some() {
+            self.onboard = Onboard::Pending;
+        }
+    }
+
+    /// After the name and address: the memory-model offer if it applies, else the checklist.
+    fn after_user(&mut self, guard_until_ms: i64) {
+        match self.models_offer() {
+            Some((bytes, cascade)) => {
+                self.onboard = Onboard::Active { step: Step::Models { bytes, cascade, sel: 0 }, guard_until_ms };
+            }
+            None => self.enter_checklist(guard_until_ms),
+        }
+    }
+
+    /// Yes asks the daemon to download on its own thread; no is remembered by it. Either way the
+    /// memory line carries the rest, and the daemon's next stats confirm it.
+    fn answer_models(&mut self, yes: bool, bytes: u64, guard_until_ms: i64, out: &mut Vec<Request>) {
+        let (request, state, said) = if yes {
+            (
+                Request::ModelsInstall,
+                ModelsState::Installing { done: 0, total: bytes },
+                "installing memory LMs in the background \u{b7} progress is on the memory line",
+            )
+        } else {
+            (
+                Request::ModelsDecline,
+                ModelsState::Declined,
+                "memory stays keyword-only \u{b7} `marlowe models fetch` installs the LMs later",
+            )
+        };
+        out.push(request);
+        if let Some(s) = self.memory.stats.as_mut() {
+            s.models = state;
+        }
+        self.flash(said, NoteTone::Dim);
+        self.enter_checklist(guard_until_ms);
+    }
+
+    /// The checklist of what applies now, or the end when nothing does.
+    fn enter_checklist(&mut self, guard_until_ms: i64) {
         let items = self.checklist_items();
         let waiting = self.wake.candidates.is_none() && self.wake.sentinel != Presence::Absent;
         if items.is_empty() && !waiting {
@@ -308,11 +387,13 @@ impl State {
     pub(crate) fn on_user(&mut self, u: UserProfile) {
         match (u.set, &self.onboard) {
             (false, Onboard::Idle) => self.onboard = Onboard::Pending,
-            // Named elsewhere (another client, `marlowe me`) before it showed.
-            (true, Onboard::Pending) => self.onboard = Onboard::Done,
+            // Named elsewhere (another client, `marlowe me`) before it showed. The memory-model
+            // offer, if there is one, still shows.
+            (true, Onboard::Pending) if self.models_offer().is_none() => self.onboard = Onboard::Done,
             _ => {}
         }
         self.user = Some(u);
+        self.offer_models_to_known_user();
     }
 
     /// A paste into the name field.

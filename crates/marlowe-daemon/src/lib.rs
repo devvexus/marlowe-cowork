@@ -36,6 +36,7 @@ mod mcp_ops;
 mod mind;
 mod mind_ops;
 mod mode_ops;
+mod models_ops;
 mod notify_ops;
 mod phases;
 mod project_ops;

@@ -264,7 +264,10 @@ pub fn memory_lines(state: &State, w: usize) -> Vec<(String, Ink)> {
     match &state.memory.stats {
         Some(s) => {
             v.push((format!("{} memories · {} episodes", text::thousands(s.beliefs), text::thousands(s.episodes)), Ink::Body));
-            if s.degraded.is_some() {
+            if let Some(phrase) = crate::memory::models_phrase(&s.models) {
+                let working = matches!(s.models, marlowe_proto::ModelsState::Installing { .. });
+                v.push((phrase, if working { Ink::Accent } else { Ink::Amber }));
+            } else if s.degraded.is_some() {
                 v.push(("degraded: keyword search only".into(), Ink::Amber));
             }
         }

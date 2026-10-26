@@ -1082,3 +1082,30 @@ fn a_retraction_hides_the_rewound_turns_from_every_path_and_survives_a_reopen() 
     }
     let _ = fs::remove_dir_all(&home);
 }
+
+#[test]
+fn installing_the_models_leaves_keyword_only_mode_without_a_restart() {
+    let home = temp_home("reload-models");
+    let mind = Mind::open_with(&home, without_models(&home)).unwrap();
+    let s = mind.stats().unwrap();
+    assert!(s.degraded.as_deref().is_some_and(|d| d.contains("marlowe models fetch")), "{:?}", s.degraded);
+    assert!(
+        matches!(s.models, ModelsState::Missing { cascade, .. } if cascade == cfg!(feature = "cuda")),
+        "{:?}",
+        s.models
+    );
+
+    // The files arrive (existence is what is looked for; loading waits for first need).
+    let dir = home.join("no-models-here");
+    for (sub, file) in [(EMBEDDER_DIR, "model.onnx"), (EMBEDDER_DIR, "vocab.txt"), (RERANKER_DIR, "model.onnx"), (RERANKER_DIR, "tokenizer.json")] {
+        fs::create_dir_all(dir.join(sub)).unwrap();
+        fs::write(dir.join(sub).join(file), b"x").unwrap();
+    }
+    assert!(mind.stats().unwrap().degraded.is_some(), "not noticed until asked to look again");
+    mind.reload_models().unwrap();
+    let s = mind.stats().unwrap();
+    assert_eq!(s.degraded, None);
+    assert_eq!(s.models, ModelsState::Ready);
+    mind.shutdown().unwrap();
+    let _ = fs::remove_dir_all(&home);
+}

@@ -1,13 +1,33 @@
 //! The Memory view's state and keys, and the legacy-import offer.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use marlowe_proto::{MemoryChange, MemoryHit, MemoryStatsReport, Request};
+use marlowe_proto::{MemoryChange, MemoryHit, MemoryStatsReport, ModelsState, Request};
 
 use crate::composer::Composer;
 use crate::state::{NoteTone, Overlay, State, View};
 
 /// Hits requested per search.
 pub const SEARCH_LIMIT: u32 = 30;
+
+/// What the memory models are doing, as one phrase for the memory line; `None` when they are
+/// installed, or missing and still to be asked about.
+pub fn models_phrase(m: &ModelsState) -> Option<String> {
+    use crate::text::megabytes;
+    match m {
+        ModelsState::Installing { done, total } => {
+            let pct = if *total == 0 { 0 } else { (done * 100 / total).min(100) };
+            Some(format!("installing memory LMs {pct}% ({}/{} MB)", megabytes(*done), megabytes(*total)))
+        }
+        // The URL names the repo, which is what is missing; the file path after it only crowds the line.
+        ModelsState::Failed { reason } => {
+            let reason = reason.replace("https://", "");
+            let reason = reason.split_once("/resolve/").map_or(reason.as_str(), |(repo, _)| repo);
+            Some(format!("memory LMs {reason}: keyword only"))
+        }
+        ModelsState::Declined => Some("memory degraded · keyword only · marlowe models fetch installs the LMs".into()),
+        ModelsState::Ready | ModelsState::Missing { .. } => None,
+    }
+}
 
 /// What the Memory view is doing.
 #[derive(Debug, Clone)]

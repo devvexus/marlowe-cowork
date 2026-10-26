@@ -1,0 +1,40 @@
+ * marlowe — new session                                                                      memory degraded  teams ○  0 runs · 0 need you
+╭ Conversation ──────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ add a model ▾                          │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
+│                                                                                                │╭ Workspace ─────────────────────────────╮
+│                                                                                                ││ C:/work/valiance ▾                     │
+│                                                                                                │╰────────────────────────────────── (w) ─╯
+│                                                                                                │╭ Crew ──────────────────────────────────╮
+│                                                                                                ││ no runs                                │
+│                                                                                                │╰────────────────────────────────── (1) ─╯
+│                                           ⣿  MARLOWE                                           │╭ Watch ─────────────────────────────────╮
+│                                                                                                ││ nothing watched                        │
+│                                                                                                ││                                        │
+│                                  You have no models. Add one?                                  ││                                        │
+│                                 ╭ setup ───────────────────────────────────────────────────────────────╮                                 │
+│                       Marlowe th│ Install memory LMs? · 193 MB                                         │                                 │
+│                   local ones thr│ They let me recall our past conversations by meaning, not just       │                                 │
+│                                 │ matching words. Without them, memory is keyword-only.                │                                 │
+│                                 │                                                                      │                                 │
+│                               ↵ │ › 1 yes        2 no                                                  │                                 │
+│                                 │                                                                      │                                 │
+│                                 │ ↵ choose   ← → move   esc skip setup                                 │                                 │
+│                                 ╰──────────────────────────────────────────────────────────────────────╯                                 │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                                                                                                │╭ Threads ───────────────────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+│                                                                                                │╭ Memory ────────────────────────────────╮
+│                                                                                                ││ 390 memories · 0 episodes              │
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯│ degraded: keyword search only          │
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ old harness memories to import · ^k    │
+│ › press ↵ to add a model                                                ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰─ saved · Matthew · “sir” in greetings ─────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ⇧tab Mode  ^k palette               21:40

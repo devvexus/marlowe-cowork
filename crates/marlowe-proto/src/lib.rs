@@ -53,7 +53,7 @@ pub use event::{
 };
 pub use frame::{write_line, FrameError, LineReader, MAX_LINE_BYTES};
 pub use ids::{ApprovalId, SessionId};
-pub use memory::{ImportReport, MemoryChange, MemoryHit, MemoryKind, MemoryScope, MemoryStatsReport, MemoryTrust};
+pub use memory::{ImportReport, MemoryChange, MemoryHit, MemoryKind, MemoryScope, MemoryStatsReport, MemoryTrust, ModelsState};
 pub use paths::DaemonInfo;
 pub use project::{PatchOp, ProjectGateOption, ProjectPatch, ProjectSummary};
 pub use phase::{PhaseEvent, PhaseKind, PhaseSpan, PhaseState, ReadStat, StageMs, TurnNumbers};

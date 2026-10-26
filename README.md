@@ -47,9 +47,19 @@ docs/      VISION.md, ARCHITECTURE.md, legacy addenda
 cargo build --release
 ```
 
-Models (about 190 MB: `jina-embeddings-v2-small-en` and the fine-tuned MiniLM cross-encoder) are not in git. They are copied into `models/` and sha256-verified by `scripts/fetch-models.ps1`.
+Models (about 193 MB: `jina-embeddings-v2-small-en` and the fine-tuned MiniLM cross-encoder) are not in git. On a development tree `scripts/fetch-models.ps1` copies them into `models/` (from a local `Marlowe_Harness`, else from Hugging Face) and sha256-verifies them. On any other machine the first Wake offers them ("Install memory LMs?"), and `marlowe models fetch` does the same from the command line; both download into `%LOCALAPPDATA%\MarloweCowork\models`.
 
 Build at idle priority with `powershell -NoProfile -File scripts/cargo-idle.ps1 build --release -j 4`.
+
+## New machine
+
+Windows x64 or ARM64:
+
+1. Clone the repo.
+2. Install Rust with rustup (the native `aarch64-pc-windows-msvc` toolchain on ARM64); `rust-toolchain.toml` pins the version and adds both Windows targets.
+3. Visual Studio Build Tools with "Desktop development with C++", plus the components "MSVC v143 ARM64 build tools" and "C++ Clang tools for Windows" on ARM64 (`ring` compiles C with `clang` there; `rusqlite`, `blake3` and `psm` need the MSVC tools). The first build also downloads ONNX Runtime (sha256-checked, cached) and needs the network.
+4. Install Ollama for the local models.
+5. `cargo build --release`, then `marlowe`. The first Wake offers the memory LMs (about 193 MB): they let Marlowe recall past conversations by meaning, and nothing downloads without a yes.
 
 ## Palette
 

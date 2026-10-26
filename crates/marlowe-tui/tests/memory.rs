@@ -61,6 +61,7 @@ fn in_memory() -> State {
             models_loaded: vec![],
             degraded: None,
             journal_seq: 5_000,
+            ..Default::default()
         }),
     );
     type_str(&mut s, "gate");

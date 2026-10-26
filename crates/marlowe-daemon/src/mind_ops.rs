@@ -31,6 +31,8 @@ pub(crate) struct MemoryState {
     /// Cached `legacy_status(None)`; cleared after an import.
     legacy: Mutex<Option<Option<LegacyStatus>>>,
     importing: AtomicBool,
+    /// A running model download, or why the last one stopped.
+    pub(crate) models: Mutex<crate::models_ops::ModelsStatus>,
 }
 
 /// Handles a memory request for `client` on a worker thread. Never panics the client thread.
@@ -79,9 +81,11 @@ fn handle(core: &Arc<Core>, mind: &Mind, client: u64, req: Request) {
             Err(e) => reply(error(format!("not corrected: {e}"))),
         },
         Request::MemoryStats => match mind.stats() {
-            Ok(s) => reply(Event::MemoryStats(s)),
+            Ok(s) => reply(Event::MemoryStats(crate::models_ops::overlay(core, s))),
             Err(e) => reply(error(format!("memory stats failed: {e}"))),
         },
+        Request::ModelsInstall => crate::models_ops::install(core, mind),
+        Request::ModelsDecline => crate::models_ops::decline(core, mind),
         Request::LegacyStatus => match legacy_status(core, mind) {
             Ok(Some(s)) => reply(available(&s)),
             Ok(None) => reply(error("no old harness profile was found".into())),

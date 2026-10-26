@@ -214,6 +214,11 @@ pub enum Request {
     },
     /// Asks whether an old profile exists; answered with `LegacyAvailable` or an `Error`.
     LegacyStatus,
+    /// Downloads the memory models on a daemon thread and loads them when done. Progress and
+    /// the outcome arrive as `MemoryStats` (`models`). The answer is remembered.
+    ModelsInstall,
+    /// Turns the memory models down; remembered, so onboarding does not ask again.
+    ModelsDecline,
     /// Runs the auto-injection pipeline for `query` outside a turn (diagnostics, `memory bench`).
     /// Answered with `MemoryProbed`; the decision is journalled like any injection.
     MemoryProbe {

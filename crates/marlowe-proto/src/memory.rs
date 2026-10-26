@@ -124,6 +124,27 @@ pub struct MemoryStatsReport {
     pub degraded: Option<String>,
     /// Last journal sequence number.
     pub journal_seq: u64,
+    /// Whether the memory models are on this machine, being fetched, or were turned down.
+    #[serde(default)]
+    pub models: ModelsState,
+}
+
+/// Where the memory models (the embedder and the reranker) stand on this machine.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ModelsState {
+    /// Installed, or this daemon has no memory to ask about.
+    #[default]
+    Ready,
+    /// Not on disk and not yet answered: onboarding offers them. `bytes` is what is still to
+    /// download; `cascade` says the GPU rerank cascade is part of it.
+    Missing { bytes: u64, cascade: bool },
+    /// Turned down at onboarding: keyword-only until `marlowe models fetch`.
+    Declined,
+    /// A download is running.
+    Installing { done: u64, total: u64 },
+    /// The last download stopped; it is not retried until asked for again.
+    Failed { reason: String },
 }
 
 /// Outcome of importing the old harness profile.

@@ -16,6 +16,7 @@
 
 mod actor;
 mod capture;
+pub mod download;
 mod episode;
 mod error;
 mod legacy;
@@ -42,7 +43,7 @@ use actor::{Actor, Cmd};
 pub use error::MindError;
 pub use marlowe_proto::{
     ImportReport, MemoryChange, MemoryHit as RecallHit, MemoryKind, MemoryScope as Scope,
-    MemoryStatsReport as MindStats, MemoryTrust as Trust,
+    MemoryStatsReport as MindStats, MemoryTrust as Trust, ModelsState,
 };
 pub use paths::{
     default_legacy_profile, has_models, install_dir, install_models, models_dir_candidates, profile_dir,
@@ -262,6 +263,12 @@ impl Mind {
     /// Runs `marlowe_memory::consolidate` over every session now (scheduling is M5).
     pub fn consolidate_now(&self) -> Result<ConsolidateReport, MindError> {
         self.call(Cmd::Consolidate)?
+    }
+
+    /// Looks for the memory models again (after they were installed) and loads them on first
+    /// need, so recall leaves keyword-only mode without a restart.
+    pub fn reload_models(&self) -> Result<(), MindError> {
+        self.call(Cmd::ReloadModels)
     }
 
     /// Writes a BeliefStore snapshot with its journal-seq watermark.

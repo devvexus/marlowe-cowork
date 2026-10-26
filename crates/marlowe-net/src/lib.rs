@@ -927,6 +927,10 @@ pub struct ResponseStream {
     /// `Retry-After`, verbatim, when the server sent one. The caller decides what to do with it;
     /// this crate has no retry policy.
     pub retry_after: Option<String>,
+    /// `Location` of a redirect status, verbatim. Never followed here.
+    pub redirect_to: Option<String>,
+    /// `Content-Length`, when the server sent one.
+    pub content_length: Option<u64>,
     body: Box<dyn BufRead + Send>,
     host: String,
 }
@@ -1022,21 +1026,74 @@ impl Client {
         reader.get_mut().flush().map_err(unreachable)?;
 
         let parsed = read_head(&mut reader, &target.host)?;
-        let body: Box<dyn BufRead + Send> = if parsed.chunked {
-            Box::new(BufReader::with_capacity(
-                16 * 1024,
-                ChunkedReader { inner: reader, remaining: 0, finished: false },
-            ))
-        } else {
-            Box::new(reader)
-        };
-        Ok(ResponseStream {
-            status: parsed.status,
-            content_type: parsed.content_type,
-            retry_after: parsed.retry_after,
-            body,
+        Ok(stream_of(reader, parsed, &target.host))
+    }
+
+    /// GET `target` and return the response **without buffering it**: a model file is hundreds of
+    /// megabytes and [`Client::fetch`] caps a body at [`MAX_BODY_BYTES`]. Asks for the identity
+    /// encoding so the bytes are the file's. Like [`Client::post_streaming`] it follows no
+    /// redirect (the status and `Location` are in the result), pools nothing, and
+    /// `read_timeout` applies per read.
+    pub fn get_streaming(
+        &self,
+        target: &Target,
+        headers: &Headers<'_>,
+        read_timeout: Duration,
+    ) -> Result<ResponseStream, FetchError> {
+        if !headers.valid() {
+            return Err(FetchError::Unsupported {
+                url: target.host.clone(),
+                detail: "a request header is empty or not printable ASCII".into(),
+            });
+        }
+        self.stats.handshakes.fetch_add(1, Ordering::Relaxed);
+        let mut reader = self.connect(target)?;
+        reader.get_ref().sock.set_read_timeout(Some(read_timeout)).ok();
+        reader.get_ref().sock.set_write_timeout(Some(read_timeout)).ok();
+        let request = format!(
+            "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {}\r\nAccept: {}\r\n\
+             Accept-Encoding: identity\r\nConnection: close\r\n\r\n",
+            target.path, target.host, headers.user_agent, headers.accept
+        );
+        let unreachable = |e: std::io::Error| FetchError::Unreachable {
             host: target.host.clone(),
-        })
+            detail: e.to_string(),
+        };
+        reader.get_mut().write_all(request.as_bytes()).map_err(unreachable)?;
+        reader.get_mut().flush().map_err(unreachable)?;
+        let parsed = read_head(&mut reader, &target.host)?;
+        if parsed.content_encoding.as_deref().is_some_and(|e| !matches!(e.trim(), "" | "identity")) {
+            return Err(FetchError::Decode {
+                host: target.host.clone(),
+                encoding: parsed.content_encoding.unwrap_or_default(),
+                detail: "an encoding was sent although only identity was requested".into(),
+            });
+        }
+        Ok(stream_of(reader, parsed, &target.host))
+    }
+}
+
+/// The streamed body of a parsed head: chunk-decoded, or cut at `Content-Length`.
+fn stream_of(reader: BufReader<TlsStream>, head: Head, host: &str) -> ResponseStream {
+    let body: Box<dyn BufRead + Send> = if head.chunked {
+        Box::new(BufReader::with_capacity(16 * 1024, ChunkedReader { inner: reader, remaining: 0, finished: false }))
+    } else if let Some(len) = head.content_length {
+        Box::new(reader.take(len as u64))
+    } else {
+        Box::new(reader)
+    };
+    let redirect_to = match head.status {
+        301 | 302 | 303 | 307 | 308 => head.location,
+        _ => None,
+    };
+    ResponseStream {
+        status: head.status,
+        content_type: head.content_type,
+        retry_after: head.retry_after,
+        redirect_to,
+        content_length: head.content_length.map(|n| n as u64),
+        body,
+        host: host.to_string(),
     }
 }
 

@@ -4,8 +4,8 @@ mod common;
 
 use common::*;
 use crossterm::event::KeyCode;
-use marlowe_proto::{Event, Request, WatchCandidate};
-use marlowe_tui::onboard::{ItemKind, ItemState, Onboard, Step, ONBOARD_GUARD_MS};
+use marlowe_proto::{Event, MemoryStatsReport, ModelsState, Request, WatchCandidate};
+use marlowe_tui::onboard::{ItemKind, ItemState, Onboard, Step, MODELS_PURPOSE, ONBOARD_GUARD_MS};
 use marlowe_tui::state::Overlay;
 use marlowe_tui::wake::BOOT_FULL_MS;
 use marlowe_tui::{State, View};
@@ -317,4 +317,160 @@ fn a_checklist_waiting_on_a_missing_sentinel_closes_instead_of_hanging() {
     s.on_tick();
     assert_eq!(s.onboard, Onboard::Done);
     assert!(s.overlay.is_none());
+}
+
+// ---------------------------------------------------------------- the memory models
+
+const SHIPPED: u64 = 193_270_110;
+
+fn stats_with(models: ModelsState) -> Event {
+    Event::MemoryStats(MemoryStatsReport {
+        beliefs: 390,
+        degraded: (models != ModelsState::Ready).then(|| "models missing".to_string()),
+        models,
+        ..Default::default()
+    })
+}
+
+fn missing() -> Event {
+    stats_with(ModelsState::Missing { bytes: SHIPPED, cascade: false })
+}
+
+fn memory_line(s: &State) -> String {
+    s.systems().into_iter().find(|l| l.label == "memory").expect("a memory line").value
+}
+
+/// A first launch whose daemon says the memory models are not on this machine.
+fn first_launch_without_models() -> State {
+    let mut s = first_launch();
+    feed(&mut s, 2, missing());
+    s
+}
+
+/// Through the name and the address to the next step.
+fn name_and_address(s: &mut State) {
+    after_boot(s);
+    type_str(s, "Matthew");
+    s.on_key(key(KeyCode::Enter));
+    s.on_key(key(KeyCode::Enter));
+}
+
+#[test]
+fn the_memory_models_are_offered_after_the_name_with_their_purpose_and_size() {
+    let mut s = first_launch_without_models();
+    name_and_address(&mut s);
+    assert!(matches!(step(&s), Step::Models { bytes: SHIPPED, cascade: false, sel: 0 }), "{:?}", s.onboard);
+    let buf = render(&s, W, H);
+    assert!(contains(&buf, "Install memory LMs? \u{b7} 193 MB"), "{}", dump(&buf));
+    // One sentence on what they are for, wrapped to the panel.
+    assert!(contains(&buf, "recall our past conversations by meaning, not just"), "{}", dump(&buf));
+    assert!(contains(&buf, "matching words. Without them, memory is keyword-only."), "{}", dump(&buf));
+    assert!(MODELS_PURPOSE.contains("keyword-only"));
+    assert!(contains(&buf, "\u{203a} 1 yes") && contains(&buf, "2 no"));
+    assert!(!contains(&buf, "GPU rerank cascade"), "the cascade is only on a cuda build");
+    shot(&s, "onboard_models");
+}
+
+#[test]
+fn a_cuda_build_shows_the_larger_size_in_the_same_question() {
+    let mut s = first_launch();
+    feed(&mut s, 2, stats_with(ModelsState::Missing { bytes: 651_769_316, cascade: true }));
+    name_and_address(&mut s);
+    let buf = render(&s, W, H);
+    assert!(contains(&buf, "Install memory LMs? \u{b7} 652 MB"), "{}", dump(&buf));
+    assert!(contains(&buf, "Includes the GPU rerank cascade."));
+}
+
+#[test]
+fn the_question_is_not_asked_when_the_models_are_here_or_already_answered() {
+    for models in [ModelsState::Ready, ModelsState::Declined, ModelsState::Installing { done: 1, total: 2 }] {
+        let mut s = first_launch();
+        feed(&mut s, 2, stats_with(models.clone()));
+        name_and_address(&mut s);
+        assert!(matches!(step(&s), Step::Checklist { .. }), "{models:?}: {:?}", s.onboard);
+        assert!(!contains(&render(&s, W, H), "Install memory LMs?"));
+    }
+    // Stats that have not arrived are not a reason to ask either.
+    let mut s = first_launch();
+    name_and_address(&mut s);
+    assert!(matches!(step(&s), Step::Checklist { .. }));
+}
+
+#[test]
+fn yes_sends_the_install_request_and_the_memory_line_follows_the_daemon() {
+    let mut s = first_launch_without_models();
+    name_and_address(&mut s);
+    assert_eq!(s.on_key(key(KeyCode::Enter)), vec![Request::ModelsInstall], "yes is the default");
+    assert!(matches!(step(&s), Step::Checklist { .. }), "on to the other steps");
+    assert!(memory_line(&s).contains("installing memory LMs 0% (0/193 MB)"), "{}", memory_line(&s));
+    // The daemon's progress replaces the report; the line reads the figures.
+    feed(&mut s, 0, stats_with(ModelsState::Installing { done: 78_000_000, total: 186_000_000 }));
+    assert_eq!(memory_line(&s), "390 beliefs \u{b7} installing memory LMs 41% (78/186 MB)");
+    feed(&mut s, 3, Event::MemoryStats(MemoryStatsReport { beliefs: 390, ..Default::default() }));
+    assert_eq!(memory_line(&s), "390 beliefs \u{b7} recall online", "loaded without a restart");
+}
+
+#[test]
+fn no_is_remembered_and_the_memory_line_says_how_to_install_later() {
+    let mut s = first_launch_without_models();
+    name_and_address(&mut s);
+    assert_eq!(s.on_key(key(KeyCode::Char('n'))), vec![Request::ModelsDecline]);
+    assert!(memory_line(&s).contains("marlowe models fetch"), "{}", memory_line(&s));
+    assert!(memory_line(&s).contains("keyword only"));
+    // The daemon remembers it; a later launch gets Declined and no question.
+    let mut again = first_launch();
+    feed(&mut again, 2, stats_with(ModelsState::Declined));
+    name_and_address(&mut again);
+    assert!(matches!(step(&again), Step::Checklist { .. }));
+    assert!(memory_line(&again).contains("marlowe models fetch"));
+    // Moving to "no" and pressing Enter is the same answer.
+    let mut s = first_launch_without_models();
+    name_and_address(&mut s);
+    s.on_key(key(KeyCode::Right));
+    assert!(matches!(step(&s), Step::Models { sel: 1, .. }));
+    assert_eq!(s.on_key(key(KeyCode::Enter)), vec![Request::ModelsDecline]);
+}
+
+#[test]
+fn a_failed_download_is_shown_with_where_it_is_not_published() {
+    let mut s = first_launch();
+    let url = "https://huggingface.co/devvexus/marlowe-memory/resolve/main/ms-marco-MiniLM-L-2-v2-ft-session-j/model.onnx";
+    feed(&mut s, 2, stats_with(ModelsState::Failed { reason: format!("not published at {url}") }));
+    assert_eq!(memory_line(&s), "390 beliefs \u{b7} memory LMs not published at huggingface.co/devvexus/marlowe-memory: keyword only");
+    // It is not asked again for: the failure is not a prompt.
+    name_and_address(&mut s);
+    assert!(matches!(step(&s), Step::Checklist { .. }));
+}
+
+#[test]
+fn a_user_who_is_already_named_is_still_offered_the_models() {
+    let named = || {
+        let mut s = state();
+        s.start_boot(None);
+        welcome(&mut s, 0);
+        feed(&mut s, 0, Event::User { name: Some("Matthew".into()), address: Some("sir".into()), set: true });
+        feed(&mut s, 1, library_with_sonnet());
+        s
+    };
+    let mut s = named();
+    assert_eq!(s.onboard, Onboard::Idle);
+    feed(&mut s, 2, missing());
+    assert_eq!(s.onboard, Onboard::Pending);
+    after_boot(&mut s);
+    assert!(matches!(step(&s), Step::Models { .. }), "no name step for a named user: {:?}", s.onboard);
+    assert_eq!(s.overlay, Some(Overlay::Onboard));
+    assert_eq!(s.on_key(key(KeyCode::Char('y'))), vec![Request::ModelsInstall]);
+    // Discovery found nothing, so nothing else applies.
+    feed(&mut s, 3, Event::WatchCandidates { candidates: vec![] });
+    assert_eq!(s.onboard, Onboard::Done);
+    assert!(s.overlay.is_none());
+
+    // Skipped with Esc, it does not come back this session.
+    let mut s = named();
+    feed(&mut s, 2, missing());
+    after_boot(&mut s);
+    s.on_key(key(KeyCode::Esc));
+    assert_eq!(s.onboard, Onboard::Done);
+    feed(&mut s, 2, missing());
+    assert_eq!(s.onboard, Onboard::Done);
 }

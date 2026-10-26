@@ -188,8 +188,8 @@ fn prompt(tool: &str, summary: &str, detail: &str) -> ApprovalDecision {
 
 // ---------------------------------------------------------------- models
 
-const MODELS_USAGE: &str = "usage: marlowe models [path | install <dir> | list | detect | catalog <provider> | \
-add <provider> <model-id> | remove <ref> | slot <slot> <ref|default> [effort]]";
+const MODELS_USAGE: &str = "usage: marlowe models [path | fetch [--cascade] | install <dir> | list | detect | \
+catalog <provider> | add <provider> <model-id> | remove <ref> | slot <slot> <ref|default> [effort]]";
 
 /// Where the memory models are looked for, and whether they are there.
 fn models_path(home: &Path) -> CmdResult {
@@ -197,12 +197,53 @@ fn models_path(home: &Path) -> CmdResult {
     let found = marlowe_mind::has_models(&dir);
     println!("{}  ({})", dir.display(), if found { "memory models found" } else { "memory models MISSING: recall is keyword only" });
     if !found {
+        let want = marlowe_mind::download::manifest(marlowe_mind::download::WITH_CASCADE, "");
         println!(
-            "fix: marlowe models install <dir holding {} and {}>",
+            "fix: marlowe models fetch  (downloads {} MB)\n  or: marlowe models install <dir holding {} and {}>",
+            marlowe_mind::download::megabytes(marlowe_mind::download::total_bytes(&want)),
             marlowe_mind::EMBEDDER_DIR,
             marlowe_mind::RERANKER_DIR
         );
     }
+    Ok(0)
+}
+
+/// Download the memory models, checked against the pinned digests, into the install location.
+/// The shipped pair; `--cascade` adds the GPU rerank cascade's graphs (a `cuda` build always does).
+fn models_fetch(args: &[String]) -> CmdResult {
+    use marlowe_mind::download::{self, Net, Policy};
+    if let Some(bad) = args.iter().find(|a| *a != "--cascade") {
+        return Err(format!("unknown option {bad:?}\n{MODELS_USAGE}"));
+    }
+    let cascade = download::WITH_CASCADE || !args.is_empty();
+    let dest = download::dest_dir().ok_or("no %LOCALAPPDATA% to install into (set MARLOWE_MODELS to choose a folder)")?;
+    let base = download::base_url();
+    let entries = download::manifest(cascade, &base);
+    println!(
+        "fetching {} files ({} MB) into {}",
+        entries.len(),
+        download::megabytes(download::total_bytes(&entries)),
+        dest.display()
+    );
+    let tty = std::io::stdout().is_terminal();
+    let mut last = String::new();
+    let mut show = |p: download::Progress<'_>| {
+        let pct = if p.total == 0 { 100 } else { p.done * 100 / p.total };
+        let line = format!("{pct:>3}%  {}/{} MB  {}", download::megabytes(p.done), download::megabytes(p.total), p.file);
+        if tty {
+            print!("\r{line:<100}");
+            let _ = std::io::stdout().flush();
+        } else if last != p.file {
+            println!("{line}");
+        }
+        last = p.file.to_string();
+    };
+    let result = download::download(&entries, &dest, &Net, &Policy::for_base(&base), &mut show);
+    if tty {
+        println!();
+    }
+    result.map_err(|e| format!("memory LMs {e}: keyword only"))?;
+    println!("memory LMs installed in {}; a running daemon loads them at its next start (marlowe shutdown)", dest.display());
     Ok(0)
 }
 
@@ -218,6 +259,7 @@ fn models_install(src: Option<&String>) -> CmdResult {
 pub fn models(home: &Path, args: &[String]) -> CmdResult {
     match args.first().map(String::as_str) {
         Some("path") => return models_path(home),
+        Some("fetch") => return models_fetch(&args[1..]),
         Some("install") => return models_install(args.get(1)),
         _ => {}
     }

@@ -15,9 +15,10 @@ use marlowe_memory::{
     BeliefStore, BeliefWrite, FrozenGate, MaturationPolicy, MemoryEntry, OperatingPoint, Tags,
     Utterance,
 };
-use marlowe_proto::{MemoryHit, MemoryStatsReport};
+use marlowe_proto::{MemoryHit, MemoryStatsReport, ModelsState};
 
 use crate::capture::{classify, Capture};
+use crate::download;
 use crate::episode;
 use crate::error::MindError;
 use crate::legacy::{ChunkResult, ImportOp, Speaker};
@@ -58,6 +59,8 @@ pub(crate) enum Cmd {
     /// Session, whether it read untrusted content. Extractive: no model.
     WriteSessionEpisode(String, bool, Reply<Result<Option<String>, MindError>>),
     Stats(Reply<Result<MemoryStatsReport, MindError>>),
+    /// The model files were installed: look again, and embed what was kept keyword-only.
+    ReloadModels(Reply<()>),
     Consolidate(Reply<Result<ConsolidateReport, MindError>>),
     Snapshot(Reply<Result<SnapshotInfo, MindError>>),
     /// A `/rewind` dropped turns: retract what the session recorded from them.
@@ -104,6 +107,7 @@ impl EmbedQueue {
 
 pub(crate) struct Actor {
     pub cfg: MindConfig,
+    home: PathBuf,
     pub profile_dir: PathBuf,
     #[cfg_attr(not(test), allow(dead_code))]
     pub boot: Boot,
@@ -223,6 +227,7 @@ impl Actor {
         let workspaces = Workspaces::load(&profile_dir);
         Ok(Actor {
             cfg,
+            home: home.to_path_buf(),
             profile_dir,
             boot,
             journal,
@@ -280,6 +285,10 @@ impl Actor {
             Cmd::WriteEpisode(s, text, at, tainted, r) => drop(r.send(self.write_episode(&s, &text, at, tainted))),
             Cmd::WriteSessionEpisode(s, tainted, r) => drop(r.send(self.write_session_episode(&s, tainted))),
             Cmd::Stats(r) => drop(r.send(Ok(self.stats()))),
+            Cmd::ReloadModels(r) => {
+                self.reload_models();
+                let _ = r.send(());
+            }
             Cmd::Consolidate(r) => drop(r.send(self.consolidate())),
             Cmd::Snapshot(r) => drop(r.send(self.snapshot())),
             Cmd::Retract(p, r) => drop(r.send(self.retract(p))),
@@ -679,7 +688,29 @@ impl Actor {
             models_loaded: self.models.loaded(),
             degraded: self.models.degraded().map(str::to_string),
             journal_seq: self.journal.last_seq(),
+            models: self.models_state(),
         }
+    }
+
+    /// Missing models are priced as what is still to download for this build.
+    fn models_state(&self) -> ModelsState {
+        if !self.models.missing() {
+            return ModelsState::Ready;
+        }
+        let dest = download::dest_dir().unwrap_or_default();
+        let left = download::absent(&download::manifest(download::WITH_CASCADE, ""), &dest);
+        ModelsState::Missing { bytes: download::total_bytes(&left), cascade: download::WITH_CASCADE }
+    }
+
+    /// Looks for the models again where they would be found now. Beliefs written while the
+    /// service was keyword-only have no vectors; they join the embed queue.
+    fn reload_models(&mut self) {
+        let dir = self.cfg.models_dir.clone().unwrap_or_else(|| paths::resolve_models_dir(&self.home));
+        self.models = Models::new(dir, self.cfg.model_idle, self.cfg.gpu.clone());
+        if self.models.degraded().is_none() && !self.vectors.pending(&self.beliefs).is_empty() {
+            self.queue.rebuild = true;
+        }
+        self.embed_retry_at = None;
     }
 
     /// Frozen-policy consolidation per session, never across trust classes and never touching

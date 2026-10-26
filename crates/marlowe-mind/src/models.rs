@@ -58,6 +58,8 @@ pub(crate) struct Models {
     embedder: Option<(Embedder, Instant)>,
     reranker: Option<(Reranker, Instant)>,
     degraded: Option<String>,
+    /// A required file is not on disk (as opposed to one that failed to load).
+    missing: bool,
     gpu: Option<GpuProbe>,
 }
 
@@ -77,7 +79,7 @@ impl Models {
             .collect();
         let degraded = (!missing.is_empty()).then(|| {
             format!(
-                "models missing from {}: {}. Recall is lexical only and auto-injection is off.                  Fix: `marlowe models install <dir holding the models>`",
+                "models missing from {}: {}. Recall is lexical only and auto-injection is off. Fix: `marlowe models fetch`",
                 dir.display(),
                 missing.join(", ")
             )
@@ -85,7 +87,12 @@ impl Models {
         if let Some(reason) = &degraded {
             eprintln!("marlowe-mind: degraded: {reason}");
         }
-        Self { dir, idle, embedder: None, reranker: None, degraded, gpu }
+        Self { dir, idle, embedder: None, reranker: None, missing: degraded.is_some(), degraded, gpu }
+    }
+
+    /// Whether a required model file is absent from disk.
+    pub fn missing(&self) -> bool {
+        self.missing
     }
 
     /// Why the service is degraded, if it is.

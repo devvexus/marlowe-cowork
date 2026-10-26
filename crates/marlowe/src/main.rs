@@ -41,7 +41,8 @@ marlowe --launch [args]                   open it in a configured Windows Termin
 marlowe daemon                            run the daemon in the foreground
 marlowe ask <text> [--model REF] [--workspace DIR] [--session ID] [--yes]
 marlowe models [list | detect | catalog <provider> | add <provider> <id>
-                | remove <ref> | slot <slot> <ref|default> [effort]]
+                | remove <ref> | slot <slot> <ref|default> [effort]
+                | path | fetch [--cascade] | install <dir>]
 marlowe sessions [limit]                  recent sessions: id, turns, workspace, title
 marlowe memory [search <query> [--limit N] [--project DIR | --global] | stats
                 | probe <query> [--workspace DIR] | forget <id>

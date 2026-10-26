@@ -4,15 +4,19 @@
 # and clearer.
 #
 # Sources, in order:
-#   1. A local Marlowe_Harness checkout (the fine-tuned cross-encoder exists only there — it was
-#      trained in-house on the Session J recipe and is not published).
-#   2. Hugging Face, for the jina embedder only.
+#   1. A local Marlowe_Harness checkout (the fine-tuned cross-encoders were trained in-house on the
+#      Session J recipe).
+#   2. Hugging Face: the jina embedder from its upstream repo, the fine-tunes from the models repo
+#      ($Base, default https://huggingface.co/devvexus/marlowe-memory/resolve/main/<dir>/<file>; the
+#      same layout as models/, uploaded with scripts/upload-models-hf.ps1; MARLOWE_MODELS_URL
+#      replaces it). `marlowe models fetch` downloads the same files without this script.
 #
 # -Cascade also copies the five extra fine-tuned graphs the GPU rerank cascade fuses (`--features
 # cuda`; pinned in crates/marlowe-memory/src/cascade.rs). They share the shipped tokenizer.json.
 param(
     [string]$Harness = "C:\Users\matth\Projects\Marlowe_Harness",
     [string]$Dest = (Join-Path $PSScriptRoot "..\models"),
+    [string]$Base = $(if ($env:MARLOWE_MODELS_URL) { $env:MARLOWE_MODELS_URL.TrimEnd('/') } else { "https://huggingface.co/devvexus/marlowe-memory/resolve/main" }),
     [switch]$Cascade
 )
 $ErrorActionPreference = "Stop"
@@ -25,9 +29,9 @@ $files = @(
        Sha = "109753d618dbb576a35112f9c20ef35cf3517d46106175bcf010c986a4bef1df";
        Url = "https://huggingface.co/jinaai/jina-embeddings-v2-small-en/resolve/44e7d1d6caec8c883c2d4b207588504d519788d0/vocab.txt" },
     @{ Dir = "ms-marco-MiniLM-L-2-v2-ft-session-j"; Name = "model.onnx";
-       Sha = "9c222dac4315cfd2f33f2e865bb651a7a16bf532c11e55b7fb1a43bb041880c0"; Url = $null },
+       Sha = "9c222dac4315cfd2f33f2e865bb651a7a16bf532c11e55b7fb1a43bb041880c0"; Url = "$Base/ms-marco-MiniLM-L-2-v2-ft-session-j/model.onnx" },
     @{ Dir = "ms-marco-MiniLM-L-2-v2-ft-session-j"; Name = "tokenizer.json";
-       Sha = "0d3aef594edd5f9b53e7f814277a9171dc70ff93eb66bda6e01f7aa53997d963"; Url = $null }
+       Sha = "0d3aef594edd5f9b53e7f814277a9171dc70ff93eb66bda6e01f7aa53997d963"; Url = "$Base/ms-marco-MiniLM-L-2-v2-ft-session-j/tokenizer.json" }
 )
 if ($Cascade) {
     $graphs = @(
@@ -38,8 +42,8 @@ if ($Cascade) {
         @("ms-marco-MiniLM-L-12-v2-ft-w1", "b1a374f3cd2752af2143d4f01853282a9a1d4e7ee8137e82c5827291b26ccdd6")
     )
     foreach ($g in $graphs) {
-        $files += @{ Dir = $g[0]; Name = "model.onnx"; Sha = $g[1]; Url = $null }
-        $files += @{ Dir = $g[0]; Name = "tokenizer.json"; Url = $null
+        $files += @{ Dir = $g[0]; Name = "model.onnx"; Sha = $g[1]; Url = "$Base/$($g[0])/model.onnx" }
+        $files += @{ Dir = $g[0]; Name = "tokenizer.json"; Url = "$Base/$($g[0])/tokenizer.json"
                      Sha = "0d3aef594edd5f9b53e7f814277a9171dc70ff93eb66bda6e01f7aa53997d963" }
     }
 }
@@ -54,10 +58,16 @@ foreach ($f in $files) {
         $local = Join-Path $Harness "models\$($f.Dir)\$($f.Name)"
         if (Test-Path $local) {
             Copy-Item $local $target -Force
-        } elseif ($f.Url) {
-            Invoke-WebRequest -Uri $f.Url -OutFile $target -UseBasicParsing
         } else {
-            throw "$($f.Dir)/$($f.Name): not found in $Harness and has no public source."
+            # A .part file, so an interrupted download is never mistaken for a model.
+            $part = "$target.part"
+            try {
+                Invoke-WebRequest -Uri $f.Url -OutFile $part -UseBasicParsing
+            } catch {
+                Remove-Item $part -Force -ErrorAction SilentlyContinue
+                throw "$($f.Dir)/$($f.Name): not in $Harness and not published at $($f.Url) ($($_.Exception.Message))"
+            }
+            Move-Item $part $target -Force
         }
     }
 

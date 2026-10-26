@@ -121,6 +121,7 @@ fn stats() -> MemoryStatsReport {
         models_loaded: vec![],
         degraded: None,
         journal_seq: 1_204,
+        ..Default::default()
     }
 }
 

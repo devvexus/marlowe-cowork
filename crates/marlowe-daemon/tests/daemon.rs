@@ -953,6 +953,38 @@ fn memory_tools_and_requests_work_without_models_and_say_so() {
 }
 
 #[test]
+fn declining_the_memory_models_is_remembered_across_a_restart() {
+    let home = temp_home("models-decline");
+    seed_model(&home);
+    let empty = home.join("no-models");
+    std::fs::create_dir_all(&empty).unwrap();
+    let stats = |c: &mut Client| match c.request(&Request::MemoryStats, |e| matches!(e, Event::MemoryStats(_))) {
+        Event::MemoryStats(s) => s,
+        _ => unreachable!(),
+    };
+
+    let d = start_with(&home, Arc::new(Scripted::default()), mem_cfg(), Some(open_mind(&home, empty.clone())));
+    let mut a = Client::connect(&d.info, None);
+    let before = stats(&mut a);
+    assert!(matches!(before.models, marlowe_proto::ModelsState::Missing { .. }), "{:?}", before.models);
+    // The answer is broadcast, so every window's memory line follows.
+    a.send(&Request::ModelsDecline);
+    let said = a.until(|e| matches!(e, Event::MemoryStats(s) if s.models == marlowe_proto::ModelsState::Declined));
+    assert!(!said.is_empty());
+    assert_eq!(stats(&mut a).models, marlowe_proto::ModelsState::Declined);
+    assert!(home.join("onboarding.json").is_file(), "kept beside user.json");
+    drop(a);
+    stop(d, &home);
+
+    let d = start_with(&home, Arc::new(Scripted::default()), mem_cfg(), Some(open_mind(&home, empty)));
+    let mut b = Client::connect(&d.info, None);
+    let after = stats(&mut b);
+    assert_eq!(after.models, marlowe_proto::ModelsState::Declined, "not asked again");
+    assert!(after.degraded.is_some(), "still keyword-only");
+    stop(d, &home);
+}
+
+#[test]
 fn an_evicted_session_is_written_up_as_an_episode() {
     let home = temp_home("episode");
     seed_model(&home);

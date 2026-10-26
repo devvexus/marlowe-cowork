@@ -152,6 +152,8 @@ fn dispatch(core: &Arc<Core>, client: u64, client_name: &str, req: Request) {
         | Request::MemoryForget { .. }
         | Request::MemoryCorrect { .. }
         | Request::MemoryStats
+        | Request::ModelsInstall
+        | Request::ModelsDecline
         | Request::ImportLegacy { .. }
         | Request::LegacyStatus
         | Request::MemoryProbe { .. }

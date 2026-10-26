@@ -394,6 +394,11 @@ impl State {
             Conn::Refused(_) => ("refused this client".into(), Health::Down),
         };
         let memory = match (&self.memory.stats, self.wake.memory_presence) {
+            (Some(s), _) if crate::memory::models_phrase(&s.models).is_some() => {
+                let phrase = crate::memory::models_phrase(&s.models).unwrap_or_default();
+                let health = if matches!(s.models, marlowe_proto::ModelsState::Installing { .. }) { Health::Pending } else { Health::Degraded };
+                (format!("{} beliefs · {phrase}", crate::text::thousands(s.beliefs)), health)
+            }
             (Some(s), _) if s.degraded.is_some() => {
                 (format!("{} beliefs · memory degraded · keyword only", crate::text::thousands(s.beliefs)), Health::Degraded)
             }
