@@ -302,3 +302,16 @@ fn a_saved_team_task_a_project_replaces_points_at_the_project() {
     let out = t.call_scoped(&call, &cx(&ws, 1, None));
     assert!(!out.content.contains("replaced by a research project"), "{}", out.content);
 }
+
+/// Found live (run 10): the `team` description still listed `web-research`, so a small model
+/// picked it. Where projects run the listing omits what a project kind replaces; elsewhere not.
+#[test]
+fn the_team_listing_omits_a_task_a_project_replaces_only_where_projects_run() {
+    let (home, ws) = (temp("lst-h"), temp("lst-w"));
+    let listing = |t: &BuiltinTools| t.specs().into_iter().find(|s| s.name == "team").unwrap().description;
+    let plain = listing(&host(&home, &ws));
+    assert!(plain.contains("web-research"), "{plain}");
+    let with = listing(&host(&home, &ws).with_state(crate::specs::workflow::ProjectsRun(true)));
+    assert!(!with.contains("web-research") && with.contains("code-review"), "{with}");
+    assert!(with.len() <= plain.len());
+}

@@ -167,6 +167,8 @@ pub fn tool_factory(home: &Path) -> ToolHostFactory {
         }
         let setup = marlowe_exec::specs::HostSetup { home: &home, workspace: req.workspace.as_deref() };
         let tools = marlowe_exec::specs::configure(tools, &setup);
+        // Projects run wherever the crew setup starts them (see `crew_setup`): `team` then lists no task a project replaces.
+        let tools = if scripted() { tools } else { tools.with_state(marlowe_exec::specs::workflow::ProjectsRun(true)) };
         if let Some(session) = &req.session {
             marlowe_exec::specs::shell::note_session(&tools, &session.0);
         }

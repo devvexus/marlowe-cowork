@@ -76,6 +76,18 @@ fn workflow_spec() -> marlowe_model::ToolSpec {
     marlowe_agent::compact_specs::spec("team")
 }
 
+/// Set on a host of a daemon that runs projects. The tool list is built before any call, so the
+/// service itself (which a call finds in its services) cannot say it; this does, once per host.
+#[derive(Debug, Default)]
+pub struct ProjectsRun(pub bool);
+
+/// The catalog without the saved tasks a project kind replaces (the generic predicate the call's
+/// refusal uses), so a task is not listed and then refused.
+fn without_superseded(entries: Vec<marlowe_workflow::saved::CatalogEntry>) -> Vec<marlowe_workflow::saved::CatalogEntry> {
+    let kinds = marlowe_project::Registry::builtin();
+    entries.into_iter().filter(|e| kinds.superseded_by(&e.name).is_none()).collect()
+}
+
 /// Most characters of the saved-task list in the `team` description.
 const CATALOG_CHARS: usize = 600;
 
@@ -85,7 +97,9 @@ fn with_catalog(t: &BuiltinTools, spec: &mut marlowe_model::ToolSpec) {
     let g = group(t);
     let text = g.catalog.get_or_init(|| {
         let Some(roots) = roots(t, None) else { return String::new() };
-        marlowe_workflow::saved::catalog_text(&roots.catalog(), CATALOG_CHARS)
+        let entries = roots.catalog();
+        let entries = if t.state::<ProjectsRun>().0 { without_superseded(entries) } else { entries };
+        marlowe_workflow::saved::catalog_text(&entries, CATALOG_CHARS)
     });
     if !text.is_empty() {
         spec.description.push_str("\nSaved tasks:\n");
@@ -239,7 +253,10 @@ fn refuse(cx: &CallCtx, roots: &marlowe_workflow::saved::Roots, plan: &Plan, sou
     if n < STOP_WRITING_AT {
         return ToolOutcome::error_of("script-invalid", msg);
     }
-    let catalog = roots.catalog();
+    let mut catalog = roots.catalog();
+    if cx.scope.services.get::<marlowe_project::ProjectService>().is_some() {
+        catalog = without_superseded(catalog);
+    }
     let fit = source.and_then(|s| marlowe_workflow::saved::best_match(&catalog, s));
     let way_out = match (fit, catalog.is_empty()) {
         (Some(c), _) => format!(
