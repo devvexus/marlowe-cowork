@@ -5,8 +5,6 @@
 mod agent;
 mod build;
 pub mod build_v2;
-mod research;
-pub mod research_v2;
 /// Workflow scripts as crew runs (track W).
 pub mod script;
 
@@ -17,8 +15,6 @@ pub use agent::{
 };
 pub use build::{build, detect_test_command};
 pub use build_v2::{build_v2, review_diff, BuildHost, BuildV2Config, Finding, Lens, Severity};
-pub use research::{deep_research, first_paragraph, min_confidence, parse_verdicts, Verdict, REPORT_FILE};
-pub use research_v2::{deep_research_v2, ResearchHost, ResearchIo, ResearchV2Config};
 
 use marlowe_model::{Effort, Usage};
 use marlowe_proto::{Citation, Confidence, Dispatch, Playbook, SandboxKind};
@@ -107,12 +103,9 @@ pub trait StepRunner: Send + Sync {
 /// Playbook tunables (from `CrewConfig`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaybookConfig {
-    pub max_scouts: usize,
     pub max_test_iterations: u32,
     /// The build test command; `None` detects one from the worktree.
     pub test_command: Option<String>,
-    /// Deep research v2 settings.
-    pub research: ResearchV2Config,
     /// build_v2 settings.
     pub build: BuildV2Config,
 }
@@ -120,17 +113,15 @@ pub struct PlaybookConfig {
 impl Default for PlaybookConfig {
     fn default() -> Self {
         Self {
-            max_scouts: 6,
             max_test_iterations: 4,
             test_command: None,
-            research: ResearchV2Config::default(),
             build: BuildV2Config::default(),
         }
     }
 }
 
 /// Runs `playbook` for `goal`, or a single role-prompt step with `role` when there is none.
-/// Deep research and build are v1 here; [`run_with`] runs v2 when the run has their hosts.
+/// Build is v1 here; [`run_with`] runs v2 when the run has its host.
 pub fn run(
     playbook: Option<Playbook>,
     role: &str,
@@ -141,18 +132,15 @@ pub fn run(
     run_with(playbook, role, goal, runner, cfg, Hosts::default())
 }
 
-/// The hosts that make the v2 playbooks run.
+/// The hosts that make the v2 playbook run.
 #[derive(Clone, Copy, Default)]
 pub struct Hosts<'a> {
-    /// Deep research v2. Without one (no channels wired) deep research falls back to v1, whose
-    /// scouts search with their own tools.
-    pub research: Option<&'a dyn ResearchHost>,
     /// build_v2. Without one, or when the run has no git worktree (children need git), a build is
     /// v1: one engineer, the test loop, one review.
     pub build: Option<&'a dyn BuildHost>,
 }
 
-/// [`run`], with the hosts that make the v2 playbooks.
+/// [`run`], with the hosts that make the v2 playbook.
 pub fn run_with(
     playbook: Option<Playbook>,
     role: &str,
@@ -162,10 +150,7 @@ pub fn run_with(
     hosts: Hosts<'_>,
 ) -> Result<Dispatch, CrewError> {
     match playbook {
-        Some(Playbook::DeepResearch) => match hosts.research {
-            Some(host) => deep_research_v2(runner, host, goal, &cfg.research),
-            None => deep_research(runner, goal, cfg),
-        },
+        Some(Playbook::DeepResearch) => Err(CrewError::Retired(Playbook::DeepResearch)),
         Some(Playbook::Build) => match hosts.build {
             Some(host) if runner.sandbox().kind == SandboxKind::Worktree => build_v2(runner, host, goal, &cfg.build),
             _ => build(runner, goal, cfg),
@@ -265,23 +250,21 @@ pub fn confidence_line(text: &str) -> Option<Confidence> {
     })
 }
 
-/// A file-name slug: lower-case ASCII words joined by `-`, at most 60 chars, never empty.
-pub fn slug(text: &str) -> String {
-    let mut s = String::new();
-    for word in text.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()) {
-        if s.len() + word.len() + 1 > 60 {
-            break;
-        }
-        if !s.is_empty() {
-            s.push('-');
-        }
-        s.push_str(&word.to_ascii_lowercase());
+/// The first paragraph that is not a heading, cut at a word boundary to about `max` chars.
+pub fn first_paragraph(text: &str, max: usize) -> String {
+    let para = text
+        .split("\n\n")
+        .map(str::trim)
+        .find(|p| !p.is_empty() && !p.starts_with('#') && !p.to_ascii_lowercase().starts_with("confidence:"))
+        .unwrap_or("")
+        .replace('\n', " ");
+    if para.chars().count() <= max {
+        return para;
     }
-    if s.is_empty() {
-        "research".to_string()
-    } else {
-        s
-    }
+    let cut: String = para.chars().take(max).collect();
+    let at_boundary = para.chars().nth(max).is_some_and(char::is_whitespace);
+    let cut = if at_boundary { cut.as_str() } else { cut.rfind(' ').map(|i| &cut[..i]).unwrap_or(&cut) };
+    format!("{}…", cut.trim_end())
 }
 
 #[cfg(test)]

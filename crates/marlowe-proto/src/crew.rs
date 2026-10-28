@@ -83,6 +83,7 @@ impl CrewRunStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Playbook {
+    /// Retired: research is a project. Kept so stored runs still load; nothing starts one.
     DeepResearch,
     Build,
 }
@@ -98,13 +99,14 @@ impl Playbook {
 
 /// A string that is not a playbook.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("unknown playbook '{0}' (deep_research, build)")]
+#[error("unknown playbook '{0}' (build)")]
 pub struct PlaybookParseError(pub String);
 
 impl FromStr for Playbook {
     type Err = PlaybookParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_ascii_lowercase().replace(['-', ' '], "_").as_str() {
+            // Parsed so the retired name can be told apart from a typo; no run takes it.
             "deep_research" | "research" => Ok(Playbook::DeepResearch),
             "build" => Ok(Playbook::Build),
             _ => Err(PlaybookParseError(s.to_string())),

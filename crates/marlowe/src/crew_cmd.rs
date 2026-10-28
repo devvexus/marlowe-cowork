@@ -17,13 +17,10 @@ const SETTLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 pub const CREW_USAGE: &str = "\
 usage: marlowe crew [list [N] | show <run> | roles
-                    | dispatch <role> <goal> [--playbook deep_research|build] [--workspace DIR] [--session ID]
+                    | dispatch <role> <goal> [--playbook build] [--workspace DIR] [--session ID]
                     | steer <run> <text> | cancel <run> | pause <run> | resume <run>
-                    | plan <run> [--json] | plan <run> approve [--breadth N] [--depth N] [--sources N]
-                    | plan <run> edit <plan.json> | plan <run> reject [reason]
                     | merge <run> [--yes] | discard <run> [--yes]]
-<run> is the id or a unique prefix of it (the 8 characters `list` shows).
-`plan` shows a deep research run's proposed plan and its cost quote; approve may narrow it.";
+<run> is the id or a unique prefix of it (the 8 characters `list` shows).";
 
 type CmdResult = Result<i32, String>;
 
@@ -88,7 +85,6 @@ pub fn run(home: &Path, args: &[String]) -> CmdResult {
         "cancel" => control(home, Request::CancelRun { run: run_arg(args, 1)? }, "cancelled"),
         "pause" => control(home, Request::PauseRun { run: run_arg(args, 1)? }, "pausing"),
         "resume" => control(home, Request::ResumeRun { run: run_arg(args, 1)? }, "resumed"),
-        "plan" => crate::crew_plan::run(home, &run_arg(args, 1)?, rest.get(1..).unwrap_or_default()),
         "merge" | "discard" => {
             let run = run_arg(args, 1)?;
             let yes = rest.iter().any(|a| a == "--yes");
@@ -146,7 +142,13 @@ fn dispatch(home: &Path, rest: &[String]) -> CmdResult {
     while let Some(a) = it.next() {
         let mut value = |flag: &str| it.next().cloned().ok_or(format!("{flag} needs a value"));
         match a.as_str() {
-            "--playbook" => playbook = Some(value("--playbook")?.parse::<Playbook>().map_err(|e| e.to_string())?),
+            "--playbook" => {
+                let p = value("--playbook")?.parse::<Playbook>().map_err(|e| e.to_string())?;
+                if p == Playbook::DeepResearch {
+                    return Err(marlowe_crew::CrewError::Retired(p).to_string());
+                }
+                playbook = Some(p);
+            }
             "--workspace" => workspace = Some(value("--workspace")?),
             "--session" => session = Some(SessionId::from(value("--session")?.as_str())),
             _ => words.push(a.clone()),
@@ -334,7 +336,7 @@ mod tests {
             role: "researcher".into(),
             title: "sparse attention survey".into(),
             goal: "Survey sparse attention since 2023".into(),
-            playbook: Some(Playbook::DeepResearch),
+            playbook: Some(Playbook::Build),
             status: CrewRunStatus::Running,
             workspace: None,
             sandbox: None,
@@ -355,7 +357,7 @@ mod tests {
     fn a_run_line_has_id_status_role_title_step_spend_action() {
         assert_eq!(
             run_line(&info()),
-            "abcdef01  ● running   researcher · sparse attention survey [deep_research] · step 3 · 1200 tok · $0.04 · scouting 4 sub-questions"
+            "abcdef01  ● running   researcher · sparse attention survey [build] · step 3 · 1200 tok · $0.04 · scouting 4 sub-questions"
         );
     }
 

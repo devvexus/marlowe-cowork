@@ -532,7 +532,7 @@ fn a_finished_run_hands_over_the_files_its_agents_made_and_its_whole_result() {
     std::fs::write(sandbox.join("research").join("kimi-models.md"), "# Kimi\nclaim [C1]\n").unwrap();
     let r = runner(model, &sandbox);
     let run = RunId::new_random();
-    let src = "META = {\"name\": \"web-research\", \"description\": \"d\"}\ndef main(args):\n    return \"report line\\n\" * 800\n";
+    let src = "META = {\"name\": \"code-review\", \"description\": \"d\"}\ndef main(args):\n    return \"report line\\n\" * 800\n";
     let wf = job_script(&home, &run, src, json!({}), None);
     let (out, _) = go(&r, &home, &run, &wf);
     let d = out.unwrap();

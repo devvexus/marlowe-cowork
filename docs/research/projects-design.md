@@ -556,7 +556,7 @@ One tool, **`manage_project`**, one flat object argument. (The first design call
 | Teams on | The reminder on the user turn's tail (never the system prompt, so the cache holds) says: for every substantive request start a project with `manage_project{create}` without asking; any research request is one; a team task only when the user names a saved one or asks for a script (`teams::on_reminder_projects`). |
 | Teams off, a research request | `RESEARCH_REMINDER`: start a research project; its plan card is the question to the user, so do not ask first (decision 5, and decision 2 recommended). |
 | Teams off, other substantial work | `SUGGEST_REMINDER`: say in one sentence that a project could do it and offer; call the tool only after the user agrees. |
-| A message names a saved team task a kind supersedes (`web-research`, `deep-research`) | The naming note says a project replaces it. The list is data on the kind (`supersedes`). |
+| A message names a saved team task a kind supersedes (`web-research`, `deep-research`; no built-in has these names now, so this is a user's own saved file) | The naming note says a project replaces it. The list is data on the kind (`supersedes`). |
 
 A research request is the whole word `research`/`researching`/`researched`, or `literature review` or `state of the art`; a substantial request is 40 words or more, or 20 words laid out in four lines or more (`teams::is_research_request`, `looks_substantial`; heuristics, not measured). These reminders are used only when the daemon runs projects; without a project service the old Teams text is sent unchanged (the headless probe and the Teams tests pin it). The `team` tool, Starlark tasks and `dispatch` stay as a hidden advanced route; the `deep_research` playbook is not routed to.
 
@@ -684,6 +684,8 @@ The model never writes a URL; quotes are verbatim; page text is data; independen
 ## 9. Built now, built later, and adding a phase type
 
 **Built now (core plus the research slice):** `marlowe-project` core (stage A); the employee runner and constrained output; the phase engine with the four primitives (stage B, both built); the research phases (stage C, built); Plan; DataCollection; DataValidation; Thinking limited to the lead decision and routing; Checkin; Report; Finish; the `manage_project` tool, routing, approval, relay and boot recovery (stage D, built); the view-model that resolves display hints (headless, tested).
+
+**Retired:** the old research paths, `team{name:"web-research"}` and `dispatch{playbook:"deep_research"}` (decision 11). The shared research code stays: `marlowe-research`, `marlowe_project::research`, the corpus fetcher and the `web_search` backend.
 
 **Later:** Engineering (code and experiments in parallel, its own tree, GPU locks, disk awareness; its experiment form is in section 3 as the proof the data model carries it); Thinking beyond the decision (multi-round planning by the lead); the TUI renderer and design previews (after the code is nailed, per Matthew); extra kinds.
 
@@ -877,7 +879,7 @@ Also tested: the workspace pointer; a plan cannot be approved in the turn that m
 8. **Network grant size.** `max_fetches` default 60 per approval; a blocked fetch is listed on the next Checkin, not asked one by one. Recommend; asking per fetch would stall a parallel run.
 9. **Workspace disposal default.** `compact`. Recommend; `delete` makes reopen impossible before Finish.
 10. **Continuation limit.** `max_rounds` default 3, up to 5 in the plan. Recommend.
-11. **Existing team tasks and `dispatch deep_research`.** Stay as a hidden advanced route and untouched; the model is pointed at `project`. This is the default you may veto.
+11. **Existing team tasks and `dispatch deep_research`.** **Retired** (Matthew's decision, replacing the "hidden route" default): projects are the only research path. The built-in `web-research` team task, the `deep_research` crew playbook (its plan approval, stage events, Run-view strip and `marlowe crew plan`) and `tools/research_produce.py` are removed; `code-review` and `simplify` stay. A model that names a retired path gets one sentence pointing at `manage_project` (`team{name:"web-research"}` where projects run; `dispatch{playbook:"deep_research"}` always). A run stored under the playbook still opens as a plain result, and one left unfinished at boot is ended as failed with that sentence.
 12. **Tabulate.** Include the small code-only records merge in the first slice (it is what makes the "newest AI models" example useful). Recommend yes.
 
 ## 12. Not verified

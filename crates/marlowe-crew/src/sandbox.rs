@@ -65,8 +65,6 @@ pub enum MergeOutcome {
     MergeCommit { commit: String },
     /// The crew branch had no commits beyond the base.
     NothingToMerge,
-    /// A research run's report was accepted and copied into the workspace.
-    ReportCopied { path: PathBuf },
     /// A seeded run's changes were copied into the original working tree, uncommitted.
     Applied { files: Vec<String> },
 }

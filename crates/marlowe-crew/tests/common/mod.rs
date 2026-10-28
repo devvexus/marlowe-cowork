@@ -243,7 +243,6 @@ pub fn start(home: &Path, p: &Arc<Scripted>, cfg: CrewConfig, allow: bool) -> Fi
         approvals: approvals.clone(),
         mind: None,
         gpu_busy: Arc::new(|| false),
-        research: None,
         session_model: None,
     };
     let sup = Supervisor::start(home, deps, cfg, tx).unwrap();

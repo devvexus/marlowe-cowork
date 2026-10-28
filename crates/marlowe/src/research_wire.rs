@@ -1,9 +1,8 @@
-//! Deep research v2's I/O for the daemon: the keyless channel registry, the corpus fetcher, the
-//! research cache, and the user's settings in `<home>\research.json`.
+//! Research I/O for the daemon: the keyless channel registry, the corpus fetcher, the research
+//! cache, and the user's settings in `<home>\research.json`.
 //!
 //! ```json
 //! { "searxng_url": "http://127.0.0.1:8080", "free_search": true, "duckduckgo": true,
-//!   "auto_approve_under_tokens": null, "fetch_concurrency": 16,
 //!   "feeds": [], "wikipedia_lang": "en", "stackexchange_site": "stackoverflow" }
 //! ```
 //!
@@ -13,7 +12,6 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use marlowe_crew::playbook::research_v2::{ChannelIo, FetchedPage, PageFetcher, ResearchIo, ResearchV2Config};
 use marlowe_exec::corpus::{Corpus, Outcome};
 use marlowe_exec::{SearchBackend, SearchResponse, SearchResult};
 use marlowe_model::CancelToken;
@@ -37,8 +35,9 @@ pub struct ResearchSettings {
     pub duckduckgo: Option<bool>,
     /// Ignored: accepted so an old research.json still parses. Web search never uses a paid API.
     pub hosted_search: Option<bool>,
-    /// Plans quoted under this many model tokens start without asking (default off).
+    /// Ignored: accepted so an old research.json still parses (the retired deep research's settings).
     pub auto_approve_under_tokens: Option<u64>,
+    /// Ignored, like `auto_approve_under_tokens`.
     pub fetch_concurrency: Option<usize>,
     pub feeds: Option<Vec<String>>,
     pub wikipedia_lang: Option<String>,
@@ -86,14 +85,6 @@ impl ResearchSettings {
         }
         k
     }
-
-    pub fn v2(&self) -> ResearchV2Config {
-        let mut c = ResearchV2Config { auto_approve_under_tokens: self.auto_approve_under_tokens, ..Default::default() };
-        if let Some(n) = self.fetch_concurrency.filter(|n| *n > 0) {
-            c.fetch_concurrency = n.min(64);
-        }
-        c
-    }
 }
 
 /// A SearXNG URL the registry accepts: https anywhere, plain http only to this machine (a LAN
@@ -109,47 +100,7 @@ pub fn searxng_url_ok(url: &str) -> bool {
     matches!(host.as_str(), "127.0.0.1" | "localhost" | "[::1]")
 }
 
-/// The corpus fetcher as crew's [`PageFetcher`]: a read page becomes its markdown and links;
-/// anything else carries only the harness-written reason.
-pub struct CorpusPages(pub Corpus);
-
-impl PageFetcher for CorpusPages {
-    fn fetch(&self, urls: &[String], concurrency: usize, cancel: &CancelToken) -> Vec<FetchedPage> {
-        self.0.fetch(urls, concurrency, cancel).into_iter().map(page_of).collect()
-    }
-}
-
-pub fn page_of(o: Outcome) -> FetchedPage {
-    match o {
-        Outcome::Read(p) => FetchedPage {
-            url: p.url.clone(),
-            final_url: p.final_url.clone(),
-            title: p.document.title.clone(),
-            text: p.markdown.clone(),
-            links: p.links().to_vec(),
-            meta: p.document.meta.clone(),
-            error: None,
-        },
-        other => FetchedPage {
-            url: other.url().to_string(),
-            final_url: other.url().to_string(),
-            error: other.why_not().or_else(|| Some("not read".into())),
-            ..Default::default()
-        },
-    }
-}
-
-/// The product [`ResearchIo`] for `home`. Web search is keyless: SearXNG, then DuckDuckGo lite.
-pub fn research_io(home: &Path, settings: &ResearchSettings) -> Arc<dyn ResearchIo> {
-    Arc::new(ChannelIo {
-        registry: Arc::new(ChannelRegistry::keyless_with(&settings.keyless(), None)),
-        http: Arc::new(NetHttp::new()),
-        cache: Some(Arc::new(ResearchCache::at_home(home))),
-        pages: Arc::new(CorpusPages(Corpus::product())),
-    })
-}
-
-/// The `web_search` tool's backend: the same keyless web channel deep research uses (SearXNG
+/// The `web_search` tool's backend: the same keyless web channel a project uses (SearXNG
 /// when it answers, else the free agent search APIs in turn, Marginalia, then DuckDuckGo HTML
 /// lite), under `<home>\research.json`. No key, no paid API.
 pub struct KeylessSearch {
@@ -177,6 +128,7 @@ impl KeylessSearch {
         }
     }
 
+    #[cfg(test)]
     pub fn registry(&self) -> &ChannelRegistry {
         &self.registry
     }
@@ -325,14 +277,12 @@ mod tests {
     fn settings_default_and_parse() {
         let s: ResearchSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(s.keyless().web, WebConfig::default());
-        assert_eq!(s.v2(), ResearchV2Config::default());
         let s: ResearchSettings = serde_json::from_str(
             r#"{"searxng_url": "", "duckduckgo": false, "auto_approve_under_tokens": 50000, "fetch_concurrency": 999}"#,
         )
         .unwrap();
         assert_eq!(s.keyless().web, WebConfig { searxng_url: None, free_search: true, duckduckgo: false });
-        assert_eq!(s.v2().auto_approve_under_tokens, Some(50_000));
-        assert_eq!(s.v2().fetch_concurrency, 64);
+        assert_eq!((s.auto_approve_under_tokens, s.fetch_concurrency), (Some(50_000), Some(999)), "old settings still parse");
         assert!(serde_json::from_str::<ResearchSettings>(r#"{"api_key": "x"}"#).is_err(), "no credential field");
     }
 
@@ -356,14 +306,6 @@ mod tests {
         // The whole registry still builds, web included (DuckDuckGo stays on).
         let r = ChannelRegistry::keyless_with(&s.keyless(), None);
         assert!(r.ids().contains(&ChannelId::Web) && r.skipped().is_empty());
-    }
-
-    #[test]
-    fn an_unread_page_carries_only_the_harness_reason() {
-        let o = Outcome::Status { url: "https://example.org/x".into(), status: 403 };
-        let p = page_of(o);
-        assert_eq!(p.error.as_deref(), Some("HTTP 403"));
-        assert!(p.text.is_empty() && p.links.is_empty());
     }
 
     /// Answers SearXNG's JSON for any URL, or refuses every connection.

@@ -322,7 +322,7 @@ fn deps(home: &Path, provider: Arc<Routed>, opts: &Options) -> (DaemonDeps, Env)
         gpu: Arc::new(NoGpu),
         server: Arc::new(NoServer),
     });
-    let setup = CrewSetup { tools: Arc::new(|_, _| Arc::new(FakeTools) as Arc<dyn ToolHost>), config: CrewConfig::default(), research: None, projects: None };
+    let setup = CrewSetup { tools: Arc::new(|_, _| Arc::new(FakeTools) as Arc<dyn ToolHost>), config: CrewConfig::default(), projects: None };
     let tools_home = home.to_path_buf();
     let sentinel = opts.sentinel.then(|| {
         let (tx, rx) = unbounded();

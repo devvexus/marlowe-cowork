@@ -1,5 +1,7 @@
 # Deep research v2: evaluation
 
+> Retired: the `deep_research` crew playbook this file evaluates is gone (research is a project, see [projects-design.md](projects-design.md)). The extraction results (section 1) still stand.
+
 Code: `tools/extraction_eval.py`, `crates/marlowe-extract/examples/extract_eval.rs`,
 `tools/research_eval.py`, `tools/research_questions.json`, `tools/research_eval_fixtures/`.
 Raw results: `data/runs/extraction-eval/<label>/` and `data/runs/research-eval/<label>/` (git-ignored).

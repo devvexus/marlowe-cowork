@@ -52,8 +52,7 @@ Memory is the reason to prefer this over a cloud coworker.
 
 - **An agent is four things:** a role card (a markdown file Matthew can edit), a model and effort slot, a tool allowlist, and a budget plus sandbox. Shipped roles: Researcher, Engineer, Reviewer, Analyst, Scout.
 - **The conductor never blocks.** `dispatch` returns a run id immediately. Each run executes on its own thread as a durable Run: checkpointed, and resumed automatically after a daemon restart. Results land in the conductor's inbox and are relayed at the next step, or in a short relay turn if idle. Runs are depth 1 in v1.
-- **Two Rust playbooks ship in v1**, as deterministic orchestration:
-  - Deep Research: plan, parallel scouts (web, arXiv, local files, papers via marlowe-extract), claim extraction with citations, adversarial verify, cited report.
+- **One Rust playbook ships**, as deterministic orchestration (research is a project, not a playbook):
   - Build: plan, implement in a git worktree, build/test loop, Reviewer pass, diff presented for merge.
   Investigate, Review and Experiment ship as role-card prompts and are promoted to playbooks later.
 - **Visibility.** The Crew rail shows status, step, spend and current action per run. The Run view shows the transcript, a steer box (guidance injected mid-flight), pause/cancel and diff review.

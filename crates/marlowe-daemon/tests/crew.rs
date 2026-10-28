@@ -266,7 +266,7 @@ fn deps_with(provider: Arc<Routed>, crew: bool, up: Arc<std::sync::atomic::Atomi
     let mut providers = ProviderFactory::new(Arc::new(MemoryStore::new()));
     providers.register(ProviderKind::Ollama, move |_| Ok(provider.clone() as Arc<dyn Provider>));
     providers.set_hardware(marlowe_brains::Hardware { models: Arc::new(Engine(up)), gpu: Arc::new(NoGpu), server: Arc::new(NoServer) });
-    let setup = CrewSetup { tools: Arc::new(|_, _| Arc::new(FakeTools) as Arc<dyn ToolHost>), config: CrewConfig::default(), research: None, projects: None };
+    let setup = CrewSetup { tools: Arc::new(|_, _| Arc::new(FakeTools) as Arc<dyn ToolHost>), config: CrewConfig::default(), projects: None };
     DaemonDeps {
         providers,
         tools: Arc::new(|_| Arc::new(FakeTools) as Arc<dyn ToolHost>),
@@ -721,45 +721,13 @@ fn a_result_finished_but_never_relayed_is_relayed_after_a_restart() {
     stop(d);
 }
 
-/// Search and fetch that are never reached: the run stops at its plan.
-struct NoWeb;
-
-impl marlowe_crew::playbook::research_v2::ResearchIo for NoWeb {
-    fn channels(&self) -> Vec<marlowe_proto::ChannelId> {
-        vec![marlowe_proto::ChannelId::Web]
-    }
-
-    fn search(
-        &self,
-        _c: marlowe_proto::ChannelId,
-        _q: &marlowe_research::ChannelQuery,
-        _cancel: &CancelToken,
-    ) -> Result<Vec<marlowe_research::SourceRef>, marlowe_research::ChannelError> {
-        Ok(Vec::new())
-    }
-
-    fn fetch(&self, _urls: &[String], _n: usize, _cancel: &CancelToken) -> Vec<marlowe_crew::playbook::research_v2::FetchedPage> {
-        Vec::new()
-    }
-}
-
-/// ui-preview5: a research plan proposed while no client was looking (or before a reconnect past
-/// the replay ring) never reached the screen. Listing runs, which every client does on attach,
-/// now brings each waiting plan with it.
+/// The research playbook is retired: a dispatch that names it starts nothing and is told the way
+/// to a project.
 #[test]
-fn a_client_that_attaches_after_the_plan_gets_it_with_the_run_list() {
-    let home = temp_home("plan-attach");
+fn a_dispatch_naming_the_retired_research_playbook_is_told_to_start_a_project() {
+    let home = temp_home("retired-playbook");
     let p = Arc::new(Routed::default());
-    let plan = r#"{"sub_questions": [{"question": "Which Chinese labs plan a model launch in October 2026?", "channels": ["web"]}],
-        "breadth": 2, "depth": 0, "source_budget": 4}"#;
-    // The draft is the run's first call; whichever queue it is routed to answers it.
-    p.crew(reply(plan));
-    p.conductor(reply(plan));
-    let mut deps = deps(p.clone(), true);
-    deps.crew.as_mut().unwrap().research = Some(Arc::new(NoWeb));
-    let d = Daemon::start(deps, &home, DaemonConfig::default()).expect("daemon starts");
-    let d = Running { info: d.info(), join: std::thread::spawn(move || d.wait()) };
-
+    let d = start(&home, p.clone(), true);
     let mut a = Client::connect(&d.info);
     a.send(&Request::Dispatch {
         session: None,
@@ -769,28 +737,15 @@ fn a_client_that_attaches_after_the_plan_gets_it_with_the_run_list() {
         workspace: None,
         budget: None,
     });
-    let run = reply_run(&a.until(|e| matches!(&e.event, Event::RunUpdated(_)) && e.seq == 0));
-    a.until_event(|e| matches!(e, Event::PlanProposed { run: r, .. } if *r == run));
-
-    // A second client, attached after the broadcast: the run list carries the plan.
-    let mut b = Client::connect(&d.info);
-    b.send(&Request::ListRuns { limit: 30 });
-    let got = b.until(|e| e.seq == 0 && matches!(&e.event, Event::PlanProposed { .. }));
-    let runs_at = got.iter().position(|e| e.seq == 0 && matches!(&e.event, Event::Runs { .. })).expect("the list first");
-    let Event::PlanProposed { run: r, plan, quote } = &got.last().unwrap().event else { unreachable!() };
-    assert!(runs_at < got.len() - 1);
-    assert_eq!(*r, run);
-    assert_eq!(plan.sub_questions[0].question, "Which Chinese labs plan a model launch in October 2026?");
-    assert!(quote.model_tokens > 0);
-
-    // Answered from the second client, the run moves on and the plan is gone from the list.
-    b.send(&Request::ApprovePlan { run: run.clone(), decision: marlowe_proto::PlanDecision::Reject { reason: None } });
-    b.until_event(|e| matches!(e, Event::RunUpdated(i) if i.id == run && i.status == CrewRunStatus::Cancelled));
-    b.send(&Request::ListRuns { limit: 30 });
-    b.send(&Request::ListRoles);
-    let got = b.until(|e| e.seq == 0 && matches!(&e.event, Event::Roles { .. }));
-    assert!(got.iter().any(|e| matches!(&e.event, Event::Runs { .. })));
-    assert!(!got.iter().any(|e| matches!(&e.event, Event::PlanProposed { .. })), "{got:#?}");
+    let got = a.until(|e| e.seq == 0 && matches!(e.event, Event::Error { .. } | Event::RunUpdated(_)));
+    assert!(
+        matches!(&got.last().unwrap().event, Event::Error { message, .. } if message.contains("retired") && message.contains("manage_project")),
+        "{:?}",
+        got.last().unwrap().event
+    );
+    a.send(&Request::ListRuns { limit: 30 });
+    let got = a.until(|e| e.seq == 0 && matches!(&e.event, Event::Runs { .. }));
+    assert!(matches!(&got.last().unwrap().event, Event::Runs { list } if list.is_empty()), "nothing was queued");
     stop(d);
 }
 

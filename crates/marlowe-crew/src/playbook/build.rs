@@ -7,7 +7,7 @@ use std::path::Path;
 
 use marlowe_proto::{Confidence, Dispatch, SandboxKind};
 
-use super::research::first_paragraph;
+use super::first_paragraph;
 use super::{PlaybookConfig, ShellResult, StepRunner, StepSpec};
 use crate::playbook::agent::tail_chars;
 use crate::CrewError;

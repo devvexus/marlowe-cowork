@@ -12,7 +12,6 @@ use crate::context::{ContextPolicy, KvType};
 use crate::crew::{CrewBudget, Playbook, RunId};
 use crate::ids::{ApprovalId, SessionId};
 use crate::memory::MemoryScope;
-use crate::research::PlanDecision;
 
 /// A secret on the wire. `Debug` and `Display` never print it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -293,16 +292,12 @@ pub enum Request {
     PauseRun { run: RunId },
     ResumeRun { run: RunId },
     /// Build: merges `crew/<run-id>` into the original checkout's current branch (never pushes)
-    /// and removes the worktree. Research: copies the report into `<workspace>\research\<slug>.md`. Goes
-    /// through an approval first.
+    /// and removes the worktree. Goes through an approval first.
     MergeRun { run: RunId },
     /// Removes the run's worktree and branch (or scratch dir) without merging.
     DiscardRun { run: RunId },
     /// Answered with `Roles`.
     ListRoles,
-    /// Answers a deep research run's `PlanProposed`: approve it, run an edited plan instead, or
-    /// reject it (the run ends cancelled). Answered with `RunUpdated`.
-    ApprovePlan { run: RunId, decision: PlanDecision },
     /// The context and hardware plan for `model`; answered with `ContextPlan` to this client.
     ContextPlan { model: ModelRef },
     /// Every library model's context policy and engine state; answered with `ContextPolicies`.

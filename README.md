@@ -6,7 +6,7 @@ MarloweCowork is a local-first research engineer that lives on your machine. It 
 
 - **Wake**: a fast boot sequence and a spoken, memory-grounded greeting ("Good morning, sir.") composed from real overnight events.
 - **Total Recall**: every turn is captured, retrieval is invisible and gated by calibrated abstention, and the signed journal keeps it all auditable.
-- **Crew**: role-carded agents (Researcher, Engineer, Reviewer, Analyst, Scout) run as durable, non-blocking runs in sandboxes; Deep Research and Build ship as playbooks.
+- **Crew**: role-carded agents (Researcher, Engineer, Reviewer, Analyst, Scout) run as durable, non-blocking runs in sandboxes; Build ships as a playbook, and research is a project.
 - **Sentinel**: ambient awareness of training runs, git repos, processes, the Ollama store and arXiv, with ranked notices and routines.
 - **Voice**: spoken output first (WinRT), then full local voice (Kokoro TTS, Moonshine STT) in a sidecar process.
 - **Look**: the original palette, locked, with a new Conversation + Situation Board layout.

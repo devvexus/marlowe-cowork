@@ -1,7 +1,7 @@
 //! The crew on screen: the CREW rail section, the run list and the Run view (alt-r), and the ^d
 //! dispatch prompt. Foreground only; the prompt's `Clear` resets cells to the terminal default.
 
-use marlowe_proto::{CrewRunInfo, CrewRunStatus, CrewStep, Dispatch, Playbook, SandboxKind, StageState};
+use marlowe_proto::{CrewRunInfo, CrewRunStatus, CrewStep, Dispatch, Playbook, SandboxKind};
 use marlowe_surface::chrome::Ink;
 use marlowe_surface::{markdown, Theme};
 use ratatui::buffer::Buffer;
@@ -11,10 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Widget};
 
 use super::{hit, hovered, ink, lit, note_style, put, put_row};
-use crate::crew::{
-    discardable, mergeable, report_artifact, run_detail, status_glyph, status_word, ResearchTrack, RunConfirm,
-    RunView, PLAYBOOKS, STEP_TAIL, STRIP,
-};
+use crate::crew::{discardable, mergeable, run_detail, status_glyph, status_word, RunConfirm, RunView, PLAYBOOKS, STEP_TAIL};
 use crate::state::{State, Target};
 use crate::text;
 use crate::wake::Presence;
@@ -118,9 +115,6 @@ fn content(main: Rect) -> Rect {
 pub fn cursor(main: Rect, state: &State) -> Option<(u16, u16)> {
     let c = content(main);
     let open = state.crew.open.as_ref()?;
-    if open.plan_edit.as_ref().is_some_and(|e| e.typing.is_some()) {
-        return open.plan_cursor.get();
-    }
     let v = Some(open).filter(|v| v.steering)?;
     let before = &v.steer.text()[..v.steer.cursor()];
     let col = text::width(&text::clean(before)).min(c.width.saturating_sub(10) as usize) as u16;
@@ -135,14 +129,7 @@ pub fn draw(main: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     let hints: &[(&str, &str)] = match (&state.crew.open, state.crew.open_run()) {
         (Some(v), Some(r)) => {
             draw_run(c, state, v, r, theme, buf);
-            match &v.plan_edit {
-                Some(e) if e.typing.is_some() => &[("↵", "done"), ("esc", "cancel")],
-                Some(_) => &[("↑↓", "row"), ("↵", "type"), ("←→", "adjust"), ("d", "drop"), ("s", "send"), ("esc", "discard")],
-                None if v.confirm.is_none() && state.crew.plan(&r.id).is_some() => {
-                    &[("a", "approve plan"), ("e", "edit"), ("x", "reject"), ("p", "pause"), ("↑↓", "scroll"), ("esc/⌫", "runs")]
-                }
-                None => run_hints(v, r),
-            }
+            run_hints(v, r)
         }
         (Some(_), None) => {
             put(buf, c.x, c.y, &Line::from(Span::styled("loading the run…", ink(Ink::Dim, theme))), c.width);
@@ -163,9 +150,7 @@ fn run_hints(v: &RunView, r: &CrewRunInfo) -> &'static [(&'static str, &'static 
     if v.steering {
         return &[("↵", "steer"), ("esc", "done")];
     }
-    let research = r.playbook == Some(Playbook::DeepResearch);
     match (r.status.is_terminal(), mergeable(r), discardable(r)) {
-        (_, true, _) if research => &[("m", "accept report"), ("d", "discard"), ("↑↓", "scroll"), ("esc/⌫", "runs")],
         (_, true, _) => &[("m", "merge"), ("d", "discard"), ("↑↓", "scroll"), ("esc/⌫", "runs")],
         (true, false, true) => &[("d", "discard"), ("↑↓", "scroll"), ("esc/⌫", "runs")],
         (true, false, false) => &[("↑↓", "scroll"), ("esc/⌫", "runs")],
@@ -266,7 +251,7 @@ fn draw_list(c: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     }
 }
 
-/// The Run view: header, result (diff, report or summary), transcript, steer box.
+/// The Run view: header, result (diff or summary), transcript, steer box.
 fn draw_run(c: Rect, state: &State, v: &RunView, r: &CrewRunInfo, theme: &Theme, buf: &mut Buffer) {
     let w = c.width as usize;
     let dim = ink(Ink::Dim, theme);
@@ -300,11 +285,6 @@ fn draw_run(c: Rect, state: &State, v: &RunView, r: &CrewRunInfo, theme: &Theme,
     head.push(Line::from(l));
     head.push(Line::from(Span::styled(text::truncate(&progress_line(r, state.now_ms), w), dim)));
     head.push(Line::from(Span::styled(text::truncate(&where_line(r), w), dimmer)));
-    if r.playbook == Some(Playbook::DeepResearch) {
-        if let Some(t) = state.crew.research(&r.id) {
-            head.extend(stage_strip(t, w, theme));
-        }
-    }
     if let Some(d) = state.crew.dag(&r.id) {
         head.extend(dag_strip(d, w, theme));
     }
@@ -312,9 +292,7 @@ fn draw_run(c: Rect, state: &State, v: &RunView, r: &CrewRunInfo, theme: &Theme,
         let lead = if i == 0 { "goal  " } else { "      " };
         head.push(Line::from(vec![Span::styled(lead, dimmer), Span::styled(g, theme.normal())]));
     }
-    // A waiting plan's note says what its panel shows.
-    let plan_shown = state.crew.plan(&r.id).is_some();
-    if let Some(n) = r.note.as_deref().filter(|n| !n.trim().is_empty() && !plan_shown) {
+    if let Some(n) = r.note.as_deref().filter(|n| !n.trim().is_empty()) {
         let st = match r.status {
             CrewRunStatus::Failed => ink(Ink::Red, theme),
             CrewRunStatus::NeedsYou => ink(Ink::Amber, theme),
@@ -332,33 +310,10 @@ fn draw_run(c: Rect, state: &State, v: &RunView, r: &CrewRunInfo, theme: &Theme,
     for (i, l) in head.iter().take(head_h).enumerate() {
         put(buf, c.x, c.y + i as u16, l, c.width);
     }
-    let under = |taken: usize| Rect {
-        y: c.y + taken as u16,
-        height: (c.height as usize).saturating_sub(taken + usize::from(bottom.is_some()) * 2) as u16,
-        ..c
-    };
-    // A waiting plan sits under the header, fixed, with its buttons; its editor takes the body.
-    if let Some(e) = &v.plan_edit {
-        super::plan::editor(under(head_h), state, v, e, theme, buf);
-        if let Some(b) = bottom {
-            put(buf, c.x, c.bottom() - 1, &b, c.width);
-        }
-        return;
-    }
-    let plan_h = if state.crew.plan(&r.id).is_some() {
-        let room = under(head_h);
-        // The transcript keeps a few rows; the plan gets the rest.
-        let cap = Rect { height: room.height.saturating_sub(4).max(room.height.min(8)), ..room };
-        super::plan::panel(cap, state, r, theme, buf) as usize
-    } else {
-        0
-    };
-    let head_h = head_h + plan_h;
-
     // Body: scrolls.
     let mut body: Vec<Line<'static>> = Vec::new();
     if let Some(d) = &r.result {
-        result_lines(r, d, v, w, theme, &mut body);
+        result_lines(r, d, w, theme, &mut body);
         body.push(Line::from(""));
     }
     transcript_lines(v, w, theme, &mut body);
@@ -395,13 +350,6 @@ fn draw_run(c: Rect, state: &State, v: &RunView, r: &CrewRunInfo, theme: &Theme,
     }
 }
 
-/// A research run's stages and counts, from its `ResearchProgress` reports:
-///
-/// ```text
-/// ✓ Plan → ● Explore 3/8 → ○ Compress → ○ Corroborate → ○ Verify → ○ Synthesise
-/// sources 42 found · 30 fetched · claims 118 · independent roots 9 · citations 24 supported · 2 unsupported
-/// reading arXiv:2401.01234
-/// ```
 /// The build run's stage line and its task graph, one line per level of dependencies. Waiting,
 /// running, done, failed, blocked on a hub change, re-running one at a time.
 pub(super) fn dag_strip(d: &crate::dag::BuildDag, w: usize, theme: &Theme) -> Vec<Line<'static>> {
@@ -460,75 +408,6 @@ pub(super) fn dag_strip(d: &crate::dag::BuildDag, w: usize, theme: &Theme) -> Ve
     out
 }
 
-fn stage_strip(t: &ResearchTrack, w: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let dim = ink(Ink::Dim, theme);
-    let dimmer = ink(Ink::Dimmer, theme);
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    for (i, stage) in STRIP.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(" → ", dimmer));
-        }
-        let name = stage_name(*stage);
-        let (glyph, gstyle, nstyle) = match t.stage(*stage).map(|s| s.0) {
-            None => ("○", dimmer, dimmer),
-            Some(StageState::Done) => ("✓", ink(Ink::Green, theme), dim),
-            Some(StageState::Started | StageState::Running) => ("●", ink(Ink::Accent, theme), theme.bright()),
-            Some(StageState::NeedsYou) => ("◐", ink(Ink::Amber, theme), ink(Ink::Amber, theme)),
-            Some(StageState::Failed) => ("✗", ink(Ink::Red, theme), ink(Ink::Red, theme)),
-            Some(StageState::Skipped) => ("–", dimmer, dimmer),
-        };
-        spans.push(Span::styled(format!("{glyph} "), gstyle));
-        spans.push(Span::styled(name, nstyle));
-        if let Some((StageState::Started | StageState::Running, done, total)) = t.stage(*stage) {
-            if total > 0 {
-                spans.push(Span::styled(format!(" {done}/{total}"), dim));
-            }
-        }
-    }
-    let mut out = vec![Line::from(spans)];
-    let c = &t.counts;
-    let mut parts = Vec::new();
-    if c.sources_found > 0 || c.sources_fetched > 0 {
-        parts.push(format!("sources {} found · {} fetched", c.sources_found, c.sources_fetched));
-    }
-    if c.claims > 0 {
-        parts.push(format!("claims {}", c.claims));
-    }
-    if c.independent_roots > 0 {
-        parts.push(format!("independent roots {}", c.independent_roots));
-    }
-    if c.citations_supported + c.citations_partial + c.citations_unsupported > 0 {
-        let mut cites = format!("citations {} supported", c.citations_supported);
-        if c.citations_partial > 0 {
-            cites.push_str(&format!(" · {} partial", c.citations_partial));
-        }
-        cites.push_str(&format!(" · {} unsupported", c.citations_unsupported));
-        parts.push(cites);
-    }
-    if !parts.is_empty() {
-        let unsupported = c.citations_unsupported > 0;
-        let line = text::truncate(&parts.join(" · "), w);
-        out.push(Line::from(Span::styled(line, if unsupported { ink(Ink::Amber, theme) } else { dim })));
-    }
-    if let Some(d) = t.detail.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
-        out.push(Line::from(Span::styled(text::truncate(&text::clean(d), w), dimmer)));
-    }
-    out
-}
-
-fn stage_name(s: marlowe_proto::ResearchStage) -> &'static str {
-    use marlowe_proto::ResearchStage as S;
-    match s {
-        S::Plan => "Plan",
-        S::Explore => "Explore",
-        S::Compress => "Compress",
-        S::Corroborate => "Corroborate",
-        S::Verify => "Verify",
-        S::Synthesise => "Synthesise",
-        S::Remember => "Remember",
-    }
-}
-
 /// `step 7 · $0.0213 of $0.50 · 41.2k tokens of 200k · 3m ago`.
 fn progress_line(r: &CrewRunInfo, now_ms: i64) -> String {
     let mut parts = vec![match r.budget.steps {
@@ -558,7 +437,7 @@ fn progress_line(r: &CrewRunInfo, now_ms: i64) -> String {
     parts.join(" · ")
 }
 
-/// `deep_research · scratch ~/AppData/…/scratch/ab12cd34` or `build · worktree crew/ab12cd34 of ~/Projects/x`.
+/// `single dispatch · scratch ~/AppData/…/scratch/ab12cd34` or `build · worktree crew/ab12cd34 of ~/Projects/x`.
 fn where_line(r: &CrewRunInfo) -> String {
     let mut parts = vec![r.playbook.map_or("single dispatch", Playbook::as_str).to_string()];
     match &r.sandbox {
@@ -581,7 +460,7 @@ fn where_line(r: &CrewRunInfo) -> String {
     parts.join(" · ")
 }
 
-fn result_lines(r: &CrewRunInfo, d: &Dispatch, v: &RunView, w: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
+fn result_lines(r: &CrewRunInfo, d: &Dispatch, w: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
     let dim = ink(Ink::Dim, theme);
     let dimmer = ink(Ink::Dimmer, theme);
     let speech = Style::default().fg(theme.speech());
@@ -611,22 +490,6 @@ fn result_lines(r: &CrewRunInfo, d: &Dispatch, v: &RunView, w: usize, theme: &Th
         out.push(Line::from(""));
         out.push(section("SUMMARY", theme));
         out.extend(markdown::render_prose(&d.summary, w, theme, speech));
-    } else if r.playbook == Some(Playbook::DeepResearch) {
-        let mut head = vec![Span::styled("REPORT", ink(Ink::Accent, theme))];
-        head.push(Span::styled(format!("  {conf} · {} source{}", d.citations.len(), plural(d.citations.len())), dimmer));
-        out.push(Line::from(head));
-        match &v.report {
-            Some(rep) => out.extend(markdown::render_prose(rep, w, theme, speech)),
-            None => {
-                out.extend(markdown::render_prose(&d.summary, w, theme, speech));
-                if let Some(p) = report_artifact(d) {
-                    out.push(dimmer_line(&format!("the report at {} could not be read", text::short_path(&text::clean(p))), dimmer));
-                }
-            }
-        }
-        citations(d, w, theme, out);
-        out.push(Line::from(""));
-        merge_prompt(r, w, theme, out);
     } else {
         let mut head = vec![Span::styled("RESULT", ink(Ink::Accent, theme))];
         head.push(Span::styled(format!("  {conf}"), dimmer));
@@ -690,10 +553,7 @@ fn merge_prompt(r: &CrewRunInfo, w: usize, theme: &Theme, out: &mut Vec<Line<'st
             format!(" merge {}{into}, after your approval; nothing is pushed", text::clean(&d.branch))
         }
         (Some(d), None) => format!(" merge {}, after your approval; nothing is pushed", text::clean(&d.branch)),
-        (None, _) => {
-            let into = r.workspace.as_deref().map(|w| format!(" into {}/research", text::short_path(w))).unwrap_or_default();
-            format!(" accept: copy the report{into}, after your approval")
-        }
+        (None, _) => return,
     };
     let mut spans = vec![Span::styled("m", accent), Span::styled(text::truncate(&what, w.saturating_sub(16)), tone)];
     if discardable(r) {
@@ -766,7 +626,6 @@ fn bottom_line(v: &RunView, r: &CrewRunInfo, w: usize, theme: &Theme) -> Option<
                 Some(SandboxKind::Worktree) => ("discard this run?", "  the worktree and its branch are deleted  "),
                 _ => ("discard this run?", "  its scratch directory is deleted  "),
             },
-            RunConfirm::RejectPlan => ("reject this plan?", "  the run ends cancelled  "),
         };
         return Some(Line::from(vec![
             Span::styled(q, amber),
@@ -775,9 +634,6 @@ fn bottom_line(v: &RunView, r: &CrewRunInfo, w: usize, theme: &Theme) -> Option<
             Span::styled(" / ", dimmer),
             Span::styled("n", accent),
         ]));
-    }
-    if v.plan_edit.is_some() {
-        return None;
     }
     if v.steering {
         let t = text::clean(v.steer.text());
@@ -845,7 +701,7 @@ pub fn dispatch(area: Rect, state: &State, theme: &Theme, buf: &mut Buffer) -> O
     let role_name = roles.get(p.role).map(|r| text::clean(&r.name)).unwrap_or_else(|| "the role".into());
     let how = match p.playbook() {
         None => format!("{role_name} works the goal alone and reports back"),
-        Some(Playbook::DeepResearch) => "plan → scouts in parallel → verify → a cited report".into(),
+        Some(Playbook::DeepResearch) => "retired: research runs as a project".into(),
         Some(Playbook::Build) => "plan → implement in a worktree → test → review → merge approval".into(),
     };
     lines.push(Line::from(Span::styled(how, dim)));

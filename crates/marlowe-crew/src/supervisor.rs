@@ -13,10 +13,6 @@
 //! model streams in flight per model and a workflow's agents. While the GPU is busy a local step
 //! moves to a cloud slot or waits ("waiting for the GPU").
 //!
-//! A deep research run waiting on its plan is parked: no thread, no slot. `approve_plan` queues
-//! it with the answer, which its plan gate takes on the next start; at boot a parked plan is
-//! pending again straight from its checkpoint.
-//!
 //! [`AgentRunner`]: crate::playbook::AgentRunner
 
 use std::collections::{HashMap, VecDeque};
@@ -31,13 +27,12 @@ use marlowe_brains::{Admission, Brains, Priority};
 use marlowe_mind::{Kind, MemoryIn, Mind, Provenance};
 use marlowe_model::{CancelToken, ModelRef};
 use marlowe_proto::{
-    ApprovalDecision, Confidence, CostQuote, CrewBudget, CrewRunInfo, CrewRunStatus, CrewStep, Dispatch, MemoryScope, PlanDecision,
-    ResearchPlan, ResearchProgress, RoleInfo, RunId, SandboxKind, SessionId,
+    ApprovalDecision, Confidence, CrewBudget, CrewRunInfo, CrewRunStatus, CrewStep, Dispatch, MemoryScope, Playbook, RoleInfo, RunId,
+    SandboxKind, SessionId,
 };
 
 use crate::dispatch::{DispatchArgs, DispatchReceipt, Estimate};
-use crate::playbook::research_v2::apply_decision;
-use crate::playbook::{slug, BuildV2Config, ResearchIo, ResearchV2Config, StepModel, REPORT_FILE};
+use crate::playbook::{BuildV2Config, StepModel};
 use crate::role::{RoleCard, Roles};
 use crate::run::{clip, message_lines, Run};
 use crate::sandbox::MergeOutcome;
@@ -84,15 +79,11 @@ pub struct RunNotice {
 pub struct CrewConfig {
     /// Concurrent runs per cloud provider.
     pub per_provider: usize,
-    /// Scouts in a deep_research run: at least 3, at most this.
-    pub max_scouts: usize,
     /// Fix-and-retest iterations in a build run.
     pub max_test_iterations: u32,
     /// Raise applied to the exceeded dimension when the user approves a budget extension:
     /// the limit grows by this fraction of itself (0.5 = +50%).
     pub budget_extension: f64,
-    /// Deep research v2: plan auto-approval (off by default), fetch concurrency, bounds.
-    pub research: ResearchV2Config,
     /// build_v2: parallel engineers, rounds, plan auto-approval, wall-clock budget, lockfiles.
     pub build: BuildV2Config,
     /// A new local model call waits while Windows has less commit memory than this (bytes): a
@@ -109,10 +100,8 @@ impl Default for CrewConfig {
     fn default() -> Self {
         Self {
             per_provider: 2,
-            max_scouts: 6,
             max_test_iterations: 4,
             budget_extension: 0.5,
-            research: ResearchV2Config::default(),
             build: BuildV2Config::default(),
             commit_floor: 2 << 30,
             memory_wait: Duration::from_secs(60),
@@ -126,9 +115,6 @@ impl Default for CrewConfig {
 pub struct CrewSetup {
     pub tools: CrewToolFactory,
     pub config: CrewConfig,
-    /// Research channels and the corpus fetcher ([`crate::playbook::research_v2::ChannelIo`]).
-    /// `None` keeps deep research on v1.
-    pub research: Option<Arc<dyn ResearchIo>>,
     /// What projects need from the binary. `None`: no projects (the `manage_project` tool answers
     /// that there is no project service).
     pub projects: Option<ProjectSetup>,
@@ -152,13 +138,9 @@ pub struct CrewDeps {
     /// Builds each run's inner tool host.
     pub tools: CrewToolFactory,
     pub approvals: Arc<dyn RunApprovals>,
-    /// Finished research runs write a Result memory; `None` skips it. Deep research v2 also
-    /// recalls from it and reads the user's profile when it plans.
+    /// A build recalls from it and remembers its outcome; `None` skips both.
     pub mind: Option<Mind>,
     pub gpu_busy: GpuBusy,
-    /// Research channels and the corpus fetcher. With them deep research runs v2; without them,
-    /// v1 (scouts search with their own tools).
-    pub research: Option<Arc<dyn ResearchIo>>,
     /// The model each conversation is on; `None` (tests, the CLI) defaults runs to the
     /// conductor's model.
     pub session_model: Option<SessionModel>,
@@ -174,11 +156,7 @@ pub enum CrewEvent {
     /// Done with a result. The daemon posts it to `session`'s inbox and, if the session is idle,
     /// runs a short relay turn.
     Finished { run: RunId, session: Option<SessionId>, dispatch: Dispatch },
-    /// A deep research run drafted its plan and waits for [`Supervisor::approve_plan`].
-    PlanProposed { run: RunId, session: Option<SessionId>, plan: ResearchPlan, quote: CostQuote },
-    /// A deep research run's stage moved.
-    Research { run: RunId, progress: ResearchProgress },
-    /// A run's setup or a research channel moved (`Spinup` / `Channel` phases, `run` set): the
+    /// A run's setup or a channel moved (`Spinup` / `Channel` phases, `run` set): the
     /// daemon forwards it as a live phase.
     Phase(marlowe_proto::PhaseEvent),
     /// A workflow run's progress view changed (track W).
@@ -255,17 +233,8 @@ pub(crate) struct Control {
     pub user_cancel: AtomicBool,
     pub pause: AtomicBool,
     pub stop: AtomicBool,
-    /// The note a cancelled run ends with (a rejected plan says so).
+    /// The note a cancelled run ends with.
     pub end_note: Mutex<Option<String>>,
-    /// The run thread stopped at the plan gate: the run waits `needs_you` with no thread.
-    pub parked: AtomicBool,
-}
-
-/// A research plan waiting on the user. No thread waits with it: the run is parked at its plan
-/// gate, holding no concurrency slot, and the answer queues it again.
-pub(crate) struct PendingPlan {
-    pub plan: ResearchPlan,
-    pub quote: CostQuote,
 }
 
 /// A run this process is responsible for: queued, running, paused or waiting on the user.
@@ -302,10 +271,6 @@ pub(crate) struct Inner {
     /// behind.
     pub local_holders: Mutex<Vec<(RunId, String, String)>>,
     pub local_free: Condvar,
-    /// Research plans waiting on the user, by run.
-    pub plans: Mutex<HashMap<RunId, PendingPlan>>,
-    /// Answers to parked plans, taken by the run's plan gate when it runs again.
-    pub decided: Mutex<HashMap<RunId, PlanDecision>>,
     wake: Sender<()>,
 }
 
@@ -326,6 +291,13 @@ fn same_name(model: &ModelRef, name: &str) -> bool {
     name.trim().eq_ignore_ascii_case(&model.to_string()) || norm(&model.model_id) == norm(name)
 }
 
+/// Ends a stored run of the retired research playbook as failed, with the way to a project.
+fn end_retired(run: &mut Run) {
+    run.status = CrewRunStatus::Failed;
+    run.note = Some(CrewError::Retired(Playbook::DeepResearch).to_string());
+    run.current_action = None;
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -333,25 +305,6 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 impl Inner {
     pub(crate) fn state(&self) -> MutexGuard<'_, State> {
         lock(&self.state)
-    }
-
-    /// The checkpointed proposal of a deep research run that stopped at its plan gate: proposed,
-    /// never approved.
-    fn parked_proposal(&self, run: &Run) -> Option<crate::playbook::research_v2::Proposal> {
-        use crate::playbook::research_v2::checkpoint_key;
-        use marlowe_proto::ResearchStage;
-        if run.playbook != Some(crate::Playbook::DeepResearch) {
-            return None;
-        }
-        let steps = self.store().steps(&run.id).ok()?;
-        let output = |part: &str| {
-            let key = checkpoint_key(ResearchStage::Plan, Some(part));
-            steps.iter().find(|s| s.key == key).and_then(|s| s.output.clone())
-        };
-        if output("approved").is_some() {
-            return None;
-        }
-        serde_json::from_str(&output("proposed")?).ok()
     }
 
     pub(crate) fn store(&self) -> MutexGuard<'_, RunStore> {
@@ -653,7 +606,6 @@ impl Control {
             pause: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             end_note: Mutex::new(None),
-            parked: AtomicBool::new(false),
         }
     }
 }
@@ -691,15 +643,11 @@ impl Supervisor {
             local_streams: Mutex::new(HashMap::new()),
             local_holders: Mutex::new(Vec::new()),
             local_free: Condvar::new(),
-            plans: Mutex::new(HashMap::new()),
-            decided: Mutex::new(HashMap::new()),
             wake: wake_tx,
         });
 
         // Runs a previous daemon left mid-flight (a crash: a clean stop leaves them running). One
-        // waiting on an approval lost it: it pauses, and resuming asks again. One parked at its
-        // research plan gate waits on as it was: its checkpointed proposal is pending again
-        // straight from the store, with no model, GPU or concurrency slot, and the answer queues it.
+        // waiting on an approval lost it: it pauses, and resuming asks again.
         let alive = home.join(ALIVE_FILE);
         let crashed = std::fs::read_to_string(&alive).ok().map(|m| {
             let offset = m.lines().find_map(|l| l.strip_prefix("log=")).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
@@ -710,6 +658,11 @@ impl Supervisor {
 log={log_len}
 ", std::process::id()));
         let mut resumable = inner.store().resumable()?;
+        // A run of the retired research playbook is ended, not resumed: nothing could run it.
+        for mut run in resumable.extract_if(.., |r| r.playbook == Some(Playbook::DeepResearch)) {
+            end_retired(&mut run);
+            inner.save_detached(run)?;
+        }
         // A run that was running when the daemon died fails with the reason rather than starting
         // again by itself (what killed the daemon would likely kill it again). Queued runs never
         // started; they go on.
@@ -730,13 +683,12 @@ log={log_len}
             .collect();
         let mut events = Vec::new();
         for mut run in stranded {
-            if let Some(p) = inner.parked_proposal(&run) {
-                lock(&inner.plans).insert(run.id.clone(), PendingPlan { plan: p.plan.clone(), quote: p.quote.clone() });
-                events.push(CrewEvent::PlanProposed { run: run.id.clone(), session: run.session.clone(), plan: p.plan, quote: p.quote });
-                continue;
+            if run.playbook == Some(Playbook::DeepResearch) {
+                end_retired(&mut run);
+            } else {
+                run.status = CrewRunStatus::Paused;
+                run.note = Some("the daemon restarted while this run waited on you; resume it to ask again".into());
             }
-            run.status = CrewRunStatus::Paused;
-            run.note = Some("the daemon restarted while this run waited on you; resume it to ask again".into());
             inner.save_detached(run)?;
         }
         {
@@ -765,6 +717,9 @@ log={log_len}
     /// Queues a run under `session` and returns at once. `args.workspace` must already be
     /// resolved (argument, else the session's workspace).
     pub fn dispatch(&self, session: Option<SessionId>, args: DispatchArgs) -> Result<DispatchReceipt, CrewError> {
+        if let Some(p @ Playbook::DeepResearch) = args.playbook {
+            return Err(CrewError::Retired(p));
+        }
         let card = lock(&self.inner.roles).get(&args.role).cloned().ok_or_else(|| CrewError::UnknownRole(args.role.clone()))?;
         let budget = args.budget.unwrap_or_default();
         let workspace = args.workspace.as_deref().map(str::trim).filter(|w| !w.is_empty()).map(PathBuf::from);
@@ -993,9 +948,6 @@ log={log_len}
 
     /// Cancels the run's token; the run ends `cancelled` and keeps its sandbox until discarded.
     pub fn cancel(&self, run: &RunId) -> Result<(), CrewError> {
-        // A plan it waited on goes with it.
-        lock(&self.inner.plans).remove(run);
-        lock(&self.inner.decided).remove(run);
         let ev = {
             let mut st = self.inner.state();
             match st.live.get(run) {
@@ -1059,84 +1011,6 @@ log={log_len}
         Ok(due.iter().map(Run::info).collect())
     }
 
-    /// Answers a research run's proposed plan. An edit must validate (the run keeps waiting when
-    /// it does not); a rejection ends the run cancelled.
-    pub fn approve_plan(&self, run: &RunId, decision: PlanDecision) -> Result<(), CrewError> {
-        let mut events = Vec::new();
-        {
-            let mut st = self.inner.state();
-            {
-                let mut plans = lock(&self.inner.plans);
-                let Some(pending) = plans.get(run) else {
-                    drop(plans);
-                    drop(st);
-                    let status = self.inner.run(run)?.status;
-                    return Err(bad_state(run, status, "it has no plan awaiting approval"));
-                };
-                if let PlanDecision::Edit { .. } = &decision {
-                    if let Err(e) = apply_decision(pending.plan.clone(), decision.clone()) {
-                        return Err(bad_state(run, CrewRunStatus::NeedsYou, &format!("the edited plan is not runnable: {e}")));
-                    }
-                }
-                plans.remove(run);
-            }
-            let rejected = match &decision {
-                PlanDecision::Reject { reason } => Some(match reason.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
-                    Some(r) => format!("plan rejected: {r}"),
-                    None => "plan rejected".to_string(),
-                }),
-                _ => None,
-            };
-            match st.live.get(run) {
-                // The thread is still parking: `finish` reads the answer.
-                Some(live) if live.running => match rejected {
-                    Some(note) => {
-                        *lock(&live.ctl.end_note) = Some(note);
-                        live.ctl.user_cancel.store(true, Ordering::SeqCst);
-                    }
-                    None => {
-                        lock(&self.inner.decided).insert(run.clone(), decision);
-                    }
-                },
-                _ => {
-                    st.queue.retain(|q| q != run);
-                    let mut stored = match st.live.get(run) {
-                        Some(l) => l.run.clone(),
-                        None => self.inner.store().get(run)?.ok_or_else(|| CrewError::UnknownRun(run.clone()))?,
-                    };
-                    stored.current_action = None;
-                    match rejected {
-                        Some(note) => {
-                            st.live.remove(run);
-                            stored.status = CrewRunStatus::Cancelled;
-                            stored.note = Some(note);
-                            stored.updated_ms = crate::now_ms();
-                            self.inner.store().save(&stored)?;
-                            events.push(CrewEvent::Updated(stored.info()));
-                        }
-                        None => {
-                            lock(&self.inner.decided).insert(run.clone(), decision);
-                            stored.status = CrewRunStatus::Queued;
-                            stored.note = Some("plan approved; waiting for a slot to explore".into());
-                            self.inner.enqueue(&mut st, stored);
-                            events.extend(self.inner.touch(&mut st, run, |_| {}));
-                        }
-                    }
-                }
-            }
-        }
-        for ev in events {
-            self.inner.emit(ev);
-        }
-        self.inner.wake();
-        Ok(())
-    }
-
-    /// The plan a research run is waiting on, with its quote.
-    pub fn pending_plan(&self, run: &RunId) -> Option<(ResearchPlan, CostQuote)> {
-        lock(&self.inner.plans).get(run).map(|p| (p.plan.clone(), p.quote.clone()))
-    }
-
     /// Stops the run at its next step boundary, freeing its concurrency slot.
     pub fn pause(&self, run: &RunId) -> Result<(), CrewError> {
         let ev = {
@@ -1190,42 +1064,23 @@ log={log_len}
     }
 
     /// Call only after the user approved. Build: merges `crew/<run-id>` into the origin's current
-    /// branch and removes the worktree. Research: copies `report.md` to
-    /// `<workspace>\research\<slug>.md`. Never pushes.
+    /// branch and removes the worktree. Never pushes.
     pub fn merge(&self, run: &RunId) -> Result<MergeOutcome, CrewError> {
         let mut r = self.idle_run(run)?;
         if r.result.is_none() {
             return Err(bad_state(run, r.status, "it has no result to merge yet"));
         }
         let sandbox = r.sandbox.clone().ok_or_else(|| bad_state(run, r.status, "it has no sandbox"))?;
-        let outcome = if sandbox.kind == SandboxKind::Worktree {
-            let outcome = sandbox.merge()?;
-            sandbox.discard()?;
-            outcome
-        } else {
-            let report = sandbox.root.join(REPORT_FILE);
-            if !report.is_file() {
-                return Err(bad_state(run, r.status, "it wrote no report and has no worktree"));
-            }
-            let ws = r.workspace.clone().ok_or_else(|| bad_state(run, r.status, "it has no workspace to save into"))?;
-            let dir = ws.join("research");
-            std::fs::create_dir_all(&dir)?;
-            let stem = slug(&r.title);
-            let mut dest = dir.join(format!("{stem}.md"));
-            let mut n = 2;
-            while dest.exists() {
-                dest = dir.join(format!("{stem}-{n}.md"));
-                n += 1;
-            }
-            std::fs::copy(&report, &dest)?;
-            MergeOutcome::ReportCopied { path: dest }
-        };
+        if sandbox.kind != SandboxKind::Worktree {
+            return Err(bad_state(run, r.status, "it has no worktree to merge"));
+        }
+        let outcome = sandbox.merge()?;
+        sandbox.discard()?;
         r.status = CrewRunStatus::Done;
         r.note = Some(match &outcome {
             MergeOutcome::FastForward { head } => format!("merged: fast-forward to {}", short_sha(head)),
             MergeOutcome::MergeCommit { commit } => format!("merged: merge commit {}", short_sha(commit)),
             MergeOutcome::NothingToMerge => "nothing to merge; the worktree is removed".into(),
-            MergeOutcome::ReportCopied { path } => format!("report saved to {}", path.display()),
             MergeOutcome::Applied { files } => format!("applied to the working tree, uncommitted: {} file(s)", files.len()),
         });
         self.inner.save_detached(r)?;

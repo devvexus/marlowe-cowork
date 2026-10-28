@@ -13,7 +13,6 @@ use crate::memory::{ImportReport, MemoryChange, MemoryHit, MemoryStatsReport};
 use crate::phase::{PhaseEvent, PhaseSpan, StageMs, TurnNumbers};
 use crate::project::{ProjectGateOption, ProjectPatch, ProjectSummary};
 use crate::request::{ApprovalDecision, Slot};
-use crate::research::{CostQuote, ResearchPlan, ResearchProgress};
 use crate::watch::{BriefItem, Notice, VoiceStatus, WatchCandidate, WatchState};
 
 /// Every event on the wire. Broadcast events carry a daemon-wide, strictly increasing `seq` and
@@ -310,11 +309,6 @@ pub enum Event {
     },
     /// A project's gate was answered and the run was re-queued (broadcast).
     ProjectGateAnswered { project: String, gate: String, choice: String },
-    /// A deep research run drafted its plan and waits for `ApprovePlan` (broadcast; the run is
-    /// `needs_you` until then).
-    PlanProposed { run: RunId, plan: ResearchPlan, quote: CostQuote },
-    /// A deep research run's stage moved (broadcast).
-    ResearchProgress { run: RunId, progress: ResearchProgress },
     /// One model call finished: `tokens` (prompt + output) is what the context holds now, out of
     /// the agent's `window`. Drives the Model box's context meter.
     ContextUsage { session: SessionId, turn: u32, tokens: u64, window: u32 },

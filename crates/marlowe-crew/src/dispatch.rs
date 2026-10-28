@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 
 use crate::role::RoleCard;
 use crate::supervisor::Supervisor;
+use crate::CrewError;
 
 /// The tool's name.
 pub const DISPATCH_TOOL: &str = "dispatch";
@@ -89,6 +90,10 @@ pub struct DispatchArgs {
 impl DispatchArgs {
     /// Parses the model's arguments; the error says what is wrong in one line.
     pub fn parse(args: &Value) -> Result<DispatchArgs, String> {
+        // The retired research playbook, under any spelling `Playbook` takes: one sentence to the project.
+        if let Some(Ok(retired @ Playbook::DeepResearch)) = args.get("playbook").and_then(Value::as_str).map(str::parse::<Playbook>) {
+            return Err(CrewError::Retired(retired).to_string());
+        }
         let a: DispatchArgs = serde_json::from_value(args.clone()).map_err(|e| format!("bad dispatch arguments: {e}"))?;
         if a.role.trim().is_empty() {
             return Err("`role` is required".into());
@@ -116,9 +121,8 @@ impl Estimate {
     pub fn for_run(role: &RoleCard, playbook: Option<Playbook>, budget: &CrewBudget, pricing: Option<&Pricing>) -> Estimate {
         let budget = role.budget.overlay(*budget);
         let minutes = match playbook {
-            Some(Playbook::DeepResearch) => 20,
             Some(Playbook::Build) => 30,
-            None => 8,
+            Some(Playbook::DeepResearch) | None => 8,
         };
         let usd = pricing.zip(budget.tokens).map(|(p, tokens)| {
             let used = tokens / 3;

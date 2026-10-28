@@ -35,31 +35,12 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
                 Err(m) => fail(m),
             }
         }
-        // Then every listed run's waiting plan: a client that attached after the broadcast (a
-        // restart, a reconnect past the replay ring) has it without opening that run.
         Request::ListRuns { limit } => match sup.list(limit.clamp(1, LIST_MAX)) {
-            Ok(list) => {
-                let plans: Vec<Event> = list
-                    .iter()
-                    .filter(|r| r.status == CrewRunStatus::NeedsYou)
-                    .filter_map(|r| sup.pending_plan(&r.id).map(|(plan, quote)| Event::PlanProposed { run: r.id.clone(), plan, quote }))
-                    .collect();
-                reply(Event::Runs { list });
-                for ev in plans {
-                    reply(ev);
-                }
-            }
+            Ok(list) => reply(Event::Runs { list }),
             Err(e) => fail(e.to_string()),
         },
-        // A plan still waiting for the user comes first, so a client that (re)opens the run can
-        // answer it.
         Request::WatchRun { run } => match resolve(sup, &run).and_then(|id| sup.transcript(&id).map_err(|e| e.to_string())) {
-            Ok((run, steps)) => {
-                if let Some((plan, quote)) = sup.pending_plan(&run.id) {
-                    reply(Event::PlanProposed { run: run.id.clone(), plan, quote });
-                }
-                reply(Event::RunTranscript { run, steps })
-            }
+            Ok((run, steps)) => reply(Event::RunTranscript { run, steps }),
             Err(m) => fail(m),
         },
         Request::Steer { run, text } => {
@@ -78,7 +59,6 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
         Request::ResumeRun { run } => control(core, client, sup, &run, |id| sup.resume(id)),
         Request::MergeRun { run } => spawn_settle(core, client, run, Settle::Merge),
         Request::DiscardRun { run } => spawn_settle(core, client, run, Settle::Discard),
-        Request::ApprovePlan { run, decision } => control(core, client, sup, &run, |id| sup.approve_plan(id, decision)),
         other => fail(format!("not a crew request: {other:?}")),
     }
 }
@@ -232,7 +212,6 @@ fn outcome_line(o: &MergeOutcome) -> String {
         MergeOutcome::FastForward { head } => format!("fast-forwarded to {head}"),
         MergeOutcome::MergeCommit { commit } => format!("merged as {commit}"),
         MergeOutcome::NothingToMerge => "nothing to merge".into(),
-        MergeOutcome::ReportCopied { path } => format!("report copied to {}", path.display()),
         MergeOutcome::Applied { files } => format!("applied to the working tree, uncommitted: {}", files.join(", ")),
     }
 }

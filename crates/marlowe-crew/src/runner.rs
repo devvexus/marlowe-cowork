@@ -9,17 +9,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use marlowe_agent::{AgentEvent, ApprovalGate, ApprovalReq, Budget, ToolHost, MAX_STEPS};
-use marlowe_mind::{Kind, MemoryIn, ProfileQuery, Provenance, RecallQuery};
+use marlowe_mind::{Kind, MemoryIn, Provenance, RecallQuery};
 use marlowe_model::{CancelToken, Message, ModelRef, Pricing, Usage};
 use marlowe_proto::{
-    ApprovalDecision, CostQuote, CrewRunStatus, CrewSpent, Dispatch, MemoryScope, MemoryTrust, PlanDecision, Playbook, ResearchPlan,
-    PhaseEvent, PhaseKind, ResearchProgress, RunId, SandboxKind, SessionId,
+    ApprovalDecision, CrewRunStatus, CrewSpent, Dispatch, MemoryScope, MemoryTrust, PhaseEvent, PhaseKind, Playbook, RunId, SandboxKind,
+    SessionId,
 };
 
 use crate::playbook::build_v2::{BuildPlan, BuildQuote};
-use crate::playbook::research_v2::{Finding, Recalled};
 use crate::playbook::{
-    self, sandbox_shell, AgentRunner, CallCheckpoint, PartialStep, PlaybookConfig, ResearchIo, ShellResult, StepFailure,
+    self, sandbox_shell, AgentRunner, CallCheckpoint, PartialStep, PlaybookConfig, ShellResult, StepFailure,
     StepHooks, StepModel, StepResult, StepSpec,
 };
 use crate::role::RoleCard;
@@ -27,7 +26,7 @@ use crate::run::{call_line, clip, Run, StepRecord};
 use crate::sandbox::{Sandbox, ShellVerdict};
 use crate::shell_policy::{Dialect, Verdict};
 use crate::tools::CrewTools;
-use crate::supervisor::{extend_budget, result_memory, Control, CrewEvent, Inner, PendingPlan};
+use crate::supervisor::{extend_budget, Control, CrewEvent, Inner};
 use crate::CrewError;
 
 /// The current action of a step held while the GPU is busy.
@@ -68,8 +67,7 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
     let began = Instant::now();
     let want = match run.playbook {
         Some(Playbook::Build) => SandboxKind::Worktree,
-        Some(Playbook::DeepResearch) => SandboxKind::Scratch,
-        None => card.sandbox,
+        Some(Playbook::DeepResearch) | None => card.sandbox,
     };
     // A workflow makes its worktree when its first agent that may write starts; until then (and
     // for good, when its agents only read) it has a scratch directory and reads the workspace.
@@ -148,10 +146,8 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
     };
 
     let cfg = PlaybookConfig {
-        max_scouts: inner.cfg.max_scouts,
         max_test_iterations: inner.cfg.max_test_iterations,
         test_command: None,
-        research: inner.cfg.research.clone(),
         build: inner.cfg.build.clone(),
     };
     hooks.check()?;
@@ -176,17 +172,8 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
         };
         return playbook::script::run_workflow(&runner, job, &emit);
     }
-    let research = match (&run.playbook, &inner.deps.research) {
-        (Some(Playbook::DeepResearch), Some(io)) => Some(RunResearch {
-            hooks: hooks.clone(),
-            io: io.clone(),
-            workspace: run.workspace.clone(),
-        }),
-        _ => None,
-    };
     let build = (run.playbook == Some(Playbook::Build)).then(|| RunBuild { hooks: hooks.clone(), created_ms: run.created_ms });
     let hosts = playbook::Hosts {
-        research: research.as_ref().map(|r| r as &dyn playbook::ResearchHost),
         build: build.as_ref().map(|b| b as &dyn playbook::BuildHost),
     };
     playbook::run_with(run.playbook, &run.role, &run.goal, &runner, &cfg, hosts)
@@ -196,7 +183,6 @@ fn execute(inner: &Arc<Inner>, id: &RunId) -> Result<Dispatch, CrewError> {
 /// (shutdown) is left `running` in the store so the next start resumes it.
 fn finish(inner: &Arc<Inner>, id: &RunId, provider: &str, outcome: Result<Result<Dispatch, CrewError>, String>) {
     let mut events = Vec::new();
-    let mut memory: Option<(Run, Dispatch)> = None;
     {
         let mut st = inner.state();
         if let Some(n) = st.active.get_mut(provider) {
@@ -207,30 +193,6 @@ fn finish(inner: &Arc<Inner>, id: &RunId, provider: &str, outcome: Result<Result
         live.running = false;
         let ctl = live.ctl.clone();
         let user_cancel = ctl.user_cancel.load(Ordering::SeqCst);
-        // Parked at the plan gate: the run stays `needs_you` with no thread, unless the answer
-        // came while the thread was still ending, which queues it again now.
-        if ctl.parked.swap(false, Ordering::SeqCst) && !user_cancel {
-            let answered = inner.decided.lock().unwrap_or_else(|e| e.into_inner()).contains_key(id);
-            let ev = if answered && !ctl.stop.load(Ordering::SeqCst) {
-                if !st.queue.contains(id) {
-                    st.queue.push_back(id.clone());
-                }
-                inner.touch(&mut st, id, |r| {
-                    r.status = CrewRunStatus::Queued;
-                    r.note = Some("plan approved; waiting for a slot to explore".into());
-                    r.current_action = None;
-                })
-            } else {
-                let ev = inner.touch(&mut st, id, |r| r.current_action = None);
-                st.live.remove(id);
-                ev
-            };
-            drop(st);
-            if let Some(ev) = ev {
-                inner.emit(ev);
-            }
-            return;
-        }
         if ctl.stop.load(Ordering::SeqCst) && !user_cancel {
             st.live.remove(id);
             return;
@@ -250,10 +212,6 @@ fn finish(inner: &Arc<Inner>, id: &RunId, provider: &str, outcome: Result<Result
                 if let Some(run) = st.live.get(id).map(|l| l.run.clone()) {
                     events.extend(ev);
                     events.push(CrewEvent::Finished { run: id.clone(), session: run.session.clone(), dispatch: dispatch.clone() });
-                    // Deep research v2 stores its own findings (REMEMBER); v1 leaves one summary.
-                    if run.playbook == Some(Playbook::DeepResearch) && inner.deps.research.is_none() {
-                        memory = Some((run, dispatch));
-                    }
                 }
                 None
             }
@@ -293,9 +251,6 @@ fn finish(inner: &Arc<Inner>, id: &RunId, provider: &str, outcome: Result<Result
     }
     for ev in events {
         inner.emit(ev);
-    }
-    if let (Some((run, dispatch)), Some(mind)) = (memory, inner.deps.mind.as_ref()) {
-        let _ = mind.remember(result_memory(&run, &dispatch));
     }
 }
 
@@ -790,182 +745,6 @@ impl Hooks {
         let result = StepResult { text: data.to_string(), ..Default::default() };
         self.done.lock().unwrap_or_else(|e| e.into_inner()).insert(key.to_string(), result);
         self.inner.emit(CrewEvent::Step { run: self.id.clone(), step, action: rec.action, text_delta: None });
-    }
-}
-
-/// Deep research v2's view of its run: plan approval, stage progress, data checkpoints, the
-/// user's profile and memory, and the channels.
-struct RunResearch {
-    hooks: Arc<Hooks>,
-    io: Arc<dyn ResearchIo>,
-    workspace: Option<PathBuf>,
-}
-
-impl RunResearch {
-    fn scope(&self) -> Option<MemoryScope> {
-        self.workspace.as_ref().map(|w| MemoryScope::Project(w.display().to_string()))
-    }
-}
-
-impl playbook::ResearchHost for RunResearch {
-    fn run_id(&self) -> RunId {
-        self.hooks.id.clone()
-    }
-
-    fn io(&self) -> &dyn ResearchIo {
-        self.io.as_ref()
-    }
-
-    fn cancel(&self) -> &CancelToken {
-        &self.hooks.ctl.cancel
-    }
-
-    fn check(&self) -> Result<(), CrewError> {
-        self.hooks.check()
-    }
-
-    fn channel(&self, ev: &marlowe_research::ChannelEvent) {
-        use marlowe_research::ChannelEvent as C;
-        let phase = |c: marlowe_proto::ChannelId| {
-            marlowe_proto::PhaseEvent { run: Some(self.hooks.id.clone()), ..marlowe_proto::PhaseEvent::start(marlowe_proto::PhaseKind::Channel) }.stage(c.label())
-        };
-        let ev = match ev {
-            C::Online(c) => phase(*c),
-            C::Retrying { channel, status, .. } => {
-                let mut p = phase(*channel).detail(format!("{status} retrying"));
-                p.state = marlowe_proto::PhaseState::Progress;
-                p
-            }
-            C::Done { channel, n } => {
-                let mut p = phase(*channel).with_done(*n as u64);
-                p.state = marlowe_proto::PhaseState::End;
-                p
-            }
-            C::Failed { channel, why } => {
-                let mut p = phase(*channel).detail(format!("failed: {why}"));
-                p.state = marlowe_proto::PhaseState::End;
-                p
-            }
-        };
-        self.hooks.inner.emit(CrewEvent::Phase(ev));
-    }
-
-    fn progress(&self, p: &ResearchProgress) {
-        let mut action = format!("research {}/7 {}", p.stage.ordinal(), p.stage.as_str());
-        if p.total > 0 {
-            action.push_str(&format!(" {}/{}", p.done, p.total));
-        }
-        if let Some(d) = &p.detail {
-            action.push_str(&format!(": {d}"));
-        }
-        self.hooks.progress(&action);
-        self.hooks.inner.emit(CrewEvent::Research { run: self.hooks.id.clone(), progress: p.clone() });
-    }
-
-    /// The plan gate. An answer given while the run was parked is taken at once. Otherwise the
-    /// plan is pending, the run is `needs_you`, and the thread ends (`Stopped` with `parked` set):
-    /// a waiting plan holds no thread and no concurrency slot, and
-    /// [`crate::Supervisor::approve_plan`] queues the run again with its answer.
-    fn propose_plan(&self, plan: &ResearchPlan, quote: &CostQuote) -> Result<PlanDecision, CrewError> {
-        let (inner, id) = (&self.hooks.inner, &self.hooks.id);
-        if let Some(d) = inner.decided.lock().unwrap_or_else(|e| e.into_inner()).remove(id) {
-            return Ok(d);
-        }
-        self.hooks.check()?;
-        self.hooks.ctl.parked.store(true, Ordering::SeqCst);
-        let pending = PendingPlan { plan: plan.clone(), quote: quote.clone() };
-        inner.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), pending);
-        let note = format!(
-            "research plan ready: {} sub-questions, about {} model tokens, {} fetches, {} min; approve, edit or reject it",
-            plan.sub_questions.len(),
-            quote.model_tokens,
-            quote.fetches,
-            quote.minutes
-        );
-        inner.update(id, |r| {
-            r.status = CrewRunStatus::NeedsYou;
-            r.note = Some(note);
-            r.current_action = None;
-        });
-        inner.emit(CrewEvent::PlanProposed {
-            run: id.clone(),
-            session: self.hooks.session.clone(),
-            plan: plan.clone(),
-            quote: quote.clone(),
-        });
-        Err(CrewError::Stopped)
-    }
-
-    /// Approving the plan approves its quote: limits rise to cover it (+25% tokens), never fall,
-    /// and an unlimited dimension stays unlimited. Spend beyond that asks again as usual.
-    fn plan_approved(&self, _plan: &ResearchPlan, quote: &CostQuote, steps: u32) {
-        let tokens = quote.model_tokens.saturating_add(quote.model_tokens / 4);
-        let updated = self.hooks.inner.update(&self.hooks.id, |r| {
-            if let Some(t) = r.budget.tokens.as_mut() {
-                *t = (*t).max(tokens);
-            }
-            if let Some(s) = r.budget.steps.as_mut() {
-                *s = (*s).max(steps);
-            }
-        });
-        if let Some(r) = updated {
-            let b = r.budget;
-            self.hooks.progress(&format!(
-                "plan approved; budget now {} tokens, {} steps",
-                b.tokens.map_or("unlimited".into(), |t| t.to_string()),
-                b.steps.map_or("unlimited".into(), |s| s.to_string())
-            ));
-        }
-    }
-
-    fn load(&self, key: &str) -> Option<String> {
-        self.hooks.completed(key).map(|r| r.text)
-    }
-
-    fn save(&self, key: &str, label: &str, data: &str) {
-        self.hooks.save_data(key, label, data);
-    }
-
-    fn profile(&self) -> Option<String> {
-        let mind = self.hooks.inner.deps.mind.as_ref()?;
-        let workspace = self.workspace.as_ref().map(|w| w.display().to_string());
-        let p = mind.profile(ProfileQuery { workspace, budget_tokens: 0 }).ok()?;
-        (!p.block.trim().is_empty()).then_some(p.block)
-    }
-
-    fn recall(&self, query: &str, limit: usize) -> Vec<Recalled> {
-        let Some(mind) = self.hooks.inner.deps.mind.as_ref() else { return Vec::new() };
-        let q = RecallQuery { text: query.to_string(), scope: self.scope(), limit };
-        mind.recall(q)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|h| Recalled { id: h.id, text: h.text, provenance: h.provenance, trust: h.trust })
-            .collect()
-    }
-
-    fn taint(&self) {
-        if !self.hooks.tainted() {
-            self.hooks.inner.update(&self.hooks.id, |r| r.tainted = true);
-        }
-    }
-
-    fn tainted(&self) -> bool {
-        self.hooks.tainted()
-    }
-
-    /// Worst case over lineage: the run's own taint latch counts whatever the playbook says, and
-    /// the recalled memories the finding rests on are its parents in the store.
-    fn remember(&self, finding: &Finding, tainted: bool) -> Result<String, String> {
-        let mind = self.hooks.inner.deps.mind.as_ref().ok_or("no memory store is open")?;
-        let turn = self.hooks.run().map(|r| r.step).unwrap_or(0);
-        let tainted = tainted || self.hooks.tainted();
-        let memory = MemoryIn {
-            text: finding.text.clone(),
-            kind: Kind::Result,
-            scope: self.scope().unwrap_or(MemoryScope::Global),
-            source: Provenance::Agent { session: format!("crew:{}", self.hooks.id), turn, tainted },
-        };
-        mind.remember_derived(memory, finding.derived_from.clone()).map(|r| r.id).map_err(|e| e.to_string())
     }
 }
 

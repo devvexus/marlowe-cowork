@@ -238,7 +238,7 @@ fn start_with(home: &Path, brains: Arc<Brains>, cfg: CrewConfig, gpu_busy: bool)
 fn start_probe(home: &Path, brains: Arc<Brains>, cfg: CrewConfig, gpu_busy: GpuBusy) -> Fixture {
     let approvals = Arc::new(TestApprovals::default());
     let (tx, events) = crossbeam_channel::unbounded();
-    let deps = CrewDeps { brains, tools: tool_factory(), approvals: approvals.clone(), mind: None, gpu_busy, research: None, session_model: None };
+    let deps = CrewDeps { brains, tools: tool_factory(), approvals: approvals.clone(), mind: None, gpu_busy, session_model: None };
     let sup = Supervisor::start(home, deps, cfg, tx).unwrap();
     Fixture { sup, events, approvals }
 }
@@ -260,6 +260,38 @@ fn args(role: &str, goal: &str, playbook: Option<Playbook>, workspace: Option<&P
         budget: None,
         tainted: false,
     }
+}
+
+/// A run of several steps, the shape the supervisor tests below need: a plan, two questions asked
+/// at once, a check and a report (a workflow script; each `agent` is one stored step).
+fn staged(fx: &Fixture, home: &Path, goal: &str, budget: Option<CrewBudget>) -> RunId {
+    let source = r#"META = {"description": "plan, ask, check, report"}
+def main(args):
+    plan = agent("Plan the investigation", agent_type = "researcher", label = "plan")
+    asked = parallel([
+        lambda: agent("Your sub-question: First question?", agent_type = "scout", label = "scout 1"),
+        lambda: agent("Your sub-question: Second question?", agent_type = "scout", label = "scout 2"),
+    ])
+    agent("Try to refute these claims", agent_type = "verifier", label = "verify")
+    return agent("Write the report", agent_type = "researcher", label = "synthesize")
+"#;
+    let script = home.join("staged.star");
+    std::fs::write(&script, source).unwrap();
+    let mut a = args("tester", goal, None, None);
+    a.budget = budget;
+    fx.sup
+        .dispatch_workflow(None, a, |_run| {
+            Ok(marlowe_proto::WorkflowRef {
+                name: Some("staged".into()),
+                script_path: script.display().to_string(),
+                digest: marlowe_workflow::digest(source),
+                args: Value::Null,
+                foreground: false,
+                resumed_from: None,
+            })
+        })
+        .unwrap()
+        .run_id
 }
 
 fn wait(what: &str, mut f: impl FnMut() -> bool) {
@@ -408,7 +440,7 @@ fn a_run_killed_mid_way_resumes_at_its_next_step_after_a_restart() {
         }
     });
     let fx = start(&home, &first);
-    let id = fx.sup.dispatch(None, args("researcher", "LoRA rank sensitivity", Some(Playbook::DeepResearch), None)).unwrap().run_id;
+    let id = staged(&fx, &home, "LoRA rank sensitivity", None);
     wait("both scouts in flight", || {
         first.requests().iter().filter(|r| last_user(r).contains("Your sub-question")).count() == 2
     });
@@ -432,11 +464,9 @@ fn a_run_killed_mid_way_resumes_at_its_next_step_after_a_restart() {
     let run = wait_status(&fx.sup, &id, CrewRunStatus::Done);
     let keys: Vec<String> = fx.sup.transcript(&id).unwrap().1.iter().map(|s| s.action.clone()).collect();
     assert_eq!(keys.len(), 5, "{keys:?}");
-    assert!(keys[0].starts_with("plan"), "{keys:?}");
+    assert!(keys.iter().any(|k| k.starts_with("plan")), "{keys:?}");
     assert_eq!(second.requests().len(), 4, "two scouts, verify, synthesize");
-    let sandbox = PathBuf::from(&run.sandbox.unwrap().root);
-    assert!(std::fs::read_to_string(sandbox.join(playbook::REPORT_FILE)).unwrap().contains("Rank barely matters"));
-    assert_eq!(run.result.unwrap().citations.len(), 1);
+    assert!(run.result.unwrap().summary.contains("Rank barely matters"));
     finish(fx, &[&home]);
 }
 
@@ -454,7 +484,7 @@ fn a_run_the_daemon_died_under_fails_with_the_reason_instead_of_staying_running(
     });
     let fx = start(&home, &first);
     assert!(home.join(ALIVE_FILE).exists(), "a running supervisor leaves its marker");
-    let id = fx.sup.dispatch(None, args("researcher", "LoRA rank sensitivity", Some(Playbook::DeepResearch), None)).unwrap().run_id;
+    let id = staged(&fx, &home, "LoRA rank sensitivity", None);
     wait("both scouts in flight", || {
         first.requests().iter().filter(|r| last_user(r).contains("Your sub-question")).count() == 2
     });
@@ -518,7 +548,7 @@ fn live_step_numbers_match_the_transcript_rows_with_parallel_scouts() {
         })
     });
     let fx = start(&home, &provider);
-    let id = fx.sup.dispatch(None, args("researcher", "Row numbers", Some(Playbook::DeepResearch), None)).unwrap().run_id;
+    let id = staged(&fx, &home, "Row numbers", None);
     wait_status(&fx.sup, &id, CrewRunStatus::Done);
     let (_, rows) = fx.sup.transcript(&id).unwrap();
     let mut numbers: Vec<u32> = rows.iter().map(|s| s.step).collect();
@@ -730,10 +760,10 @@ fn parallel_scouts_cannot_spend_past_the_steps_budget_before_the_approval() {
         })
     });
     let fx = start(&home, &provider);
-    let mut a = args("researcher", "Budget race", Some(Playbook::DeepResearch), None);
-    a.budget = Some(CrewBudget { steps: Some(3), ..Default::default() });
-    let id = fx.sup.dispatch(None, a).unwrap().run_id;
-    let run = wait_status(&fx.sup, &id, CrewRunStatus::Paused);
+    let id = staged(&fx, &home, "Budget race", Some(CrewBudget { steps: Some(3), ..Default::default() }));
+    // The denied approval stops the steps that wait on it; the script goes on without them.
+    wait("the end", || !matches!(info(&fx.sup, &id).status, CrewRunStatus::Running | CrewRunStatus::Queued | CrewRunStatus::NeedsYou));
+    let run = info(&fx.sup, &id);
     assert_eq!(provider.calls.load(Ordering::SeqCst), 3, "the plan and one call per scout, then the approval");
     assert_eq!(run.spent.steps, 3);
     let asked = fx.approvals.asked.lock().unwrap().clone();
@@ -788,7 +818,7 @@ fn a_local_step_waits_while_the_gpu_turns_busy_mid_run() {
     });
     let probe = busy.clone();
     let fx = start_probe(&home, brains(&[("qwen", local.clone())]), CrewConfig::default(), Arc::new(move || probe.load(Ordering::SeqCst)));
-    let id = fx.sup.dispatch(None, args("researcher", "GPU hold", Some(Playbook::DeepResearch), None)).unwrap().run_id;
+    let id = staged(&fx, &home, "GPU hold", None);
     wait("the GPU hold", || info(&fx.sup, &id).current_action.as_deref() == Some("waiting for the GPU"));
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(local.calls.load(Ordering::SeqCst), 1, "only the plan ran on the local model");
@@ -823,7 +853,7 @@ fn local_streams_are_capped_across_runs() {
     b.set_slot(&Slot::Crew("researcher".into()), Some(&gpt), Effort::Low).unwrap();
     let fx = start_with(&home, b, CrewConfig::default(), false);
     let ids: Vec<RunId> = (0..2)
-        .map(|i| fx.sup.dispatch(None, args("researcher", &format!("Cap {i}"), Some(Playbook::DeepResearch), None)).unwrap().run_id)
+        .map(|i| staged(&fx, &home, &format!("Cap {i}"), None))
         .collect();
     for id in &ids {
         wait_status(&fx.sup, id, CrewRunStatus::Done);
@@ -1287,7 +1317,7 @@ fn the_store_round_trips_runs_and_steps() {
 #[test]
 fn the_result_memory_carries_the_run_as_provenance() {
     let roles = Roles::builtin();
-    let mut run = Run::new(None, roles.get("researcher").unwrap(), "LoRA rank", Some(Playbook::DeepResearch), Some(PathBuf::from("C:/w")), CrewBudget::default());
+    let mut run = Run::new(None, roles.get("researcher").unwrap(), "LoRA rank", None, Some(PathBuf::from("C:/w")), CrewBudget::default());
     run.tainted = true;
     let d = Dispatch {
         summary: "Rank barely matters above 8.".into(),

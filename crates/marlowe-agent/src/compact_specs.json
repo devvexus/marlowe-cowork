@@ -1418,7 +1418,7 @@
  },
  {
   "name": "dispatch",
-  "description": "One specialist: a prompt given to one crew subagent in its own sandbox — not a team, no script. Long or bulky work (deep research, big builds, \"in the background\"); returns an agent_ task id, the result comes later. It cannot see this chat: `prompt` needs the context, paths and done-criteria. Tell the user in one line.",
+  "description": "One specialist: a prompt given to one crew subagent in its own sandbox — not a team, no script. Long or bulky work (big builds, \"in the background\"); returns an agent_ task id, the result comes later. It cannot see this chat: `prompt` needs the context, paths and done-criteria. Tell the user in one line.",
   "input_schema": {
    "type": "object",
    "properties": {
@@ -1442,10 +1442,9 @@
     "prompt": {},
     "playbook": {
      "enum": [
-      "deep_research",
       "build"
      ],
-     "description": "deep_research: cited report; build: plan, code, test, review"
+     "description": "build: plan, code, test, review"
     },
     "cwd": {},
     "budget": {

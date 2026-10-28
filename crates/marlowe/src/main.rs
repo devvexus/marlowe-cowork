@@ -7,7 +7,6 @@ mod bench;
 mod client;
 mod commands;
 mod crew_cmd;
-mod crew_plan;
 mod project_cmd;
 mod daemon_ctl;
 mod doctor;
@@ -54,10 +53,8 @@ marlowe brief                             the brief now: what changed since you 
 marlowe say <text>                        speak through the daemon's voice
 marlowe crew [list [N] | show <run> | roles | dispatch <role> <goal> [--playbook P]
               [--workspace DIR] [--session ID] | steer <run> <text> | cancel <run>
-              | pause <run> | resume <run> | plan <run> [approve|edit <file>|reject]
-              | merge <run> [--yes] | discard <run> [--yes]]
-                                          crew runs; merge and discard ask for approval;
-                                          deep research waits for its plan to be approved
+              | pause <run> | resume <run> | merge <run> [--yes] | discard <run> [--yes]]
+                                          crew runs; merge and discard ask for approval
 marlowe project [list [--json] | show <id> | view <id> | overview | card <id>
                 | answer <id> <approve|keep_researching|steer|cancel> [text]
                 | checkin <id> | cancel <id> | reopen <id> <stage>]

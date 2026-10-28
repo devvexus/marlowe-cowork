@@ -66,6 +66,9 @@ pub enum CrewError {
     Step { step: String, message: String },
     #[error("the crew supervisor has stopped")]
     Stopped,
+    /// A playbook that no longer runs (stored runs still name it).
+    #[error("the `{}` playbook is retired: research runs as a project, so start one with manage_project", .0.as_str())]
+    Retired(Playbook),
     /// The operation is declared but its implementation has not landed (a seam stub).
     #[error("not wired yet: {0}")]
     NotWired(&'static str),

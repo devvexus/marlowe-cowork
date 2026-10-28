@@ -14,8 +14,8 @@
 │                           │ GOAL                                                                             │                           │
 │                           │ › compare LoRA ranks for the 22B gates                                           │                           │
 │                           │                                                                                  │                           │
-│                           │ PLAYBOOK  none · deep_research · build                                           │                           │
-│                ask anythin│ plan → scouts in parallel → verify → a cited report                              │                           │
+│                           │ PLAYBOOK  none · build                                                           │                           │
+│                ask anythin│ plan → implement in a worktree → test → review → merge approval                  │                           │
 │                           │ in C:/work/valiance · returns at once; the result comes back here                │                           │
 │                           │                                                                                  │                           │
 │                           │ ↵ dispatch  ·  ↑↓ role  ·  tab playbook  ·  esc cancel                           │                           │

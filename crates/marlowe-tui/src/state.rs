@@ -334,11 +334,6 @@ pub enum Target {
     Thought(usize),
     /// "Remember my choice" in the quit dialog.
     Remember,
-    /// A control on a research plan that waits for the user: the main window's banner and the
-    /// Run view's plan panel.
-    Plan(RunId, crate::crew::PlanAction),
-    /// A row of the plan editor (questions, then add, breadth, depth, sources).
-    PlanRow(usize),
 }
 
 /// A palette command.
@@ -1143,9 +1138,6 @@ impl State {
                         self.note("the daemon restarted; the turn was lost", NoteTone::Amber);
                     }
                     self.approvals.clear();
-                    // A plan that still waits comes back with the run list (and is proposed
-                    // again by a daemon that crashed); one answered meanwhile must not linger.
-                    self.crew.plans.clear();
                     self.reload(out);
                 } else {
                     self.check_gap = true;
@@ -1507,8 +1499,6 @@ impl State {
             Event::Runs { list } => self.on_runs(list),
             Event::RunTranscript { run, steps } => self.on_run_transcript(run, steps),
             Event::Roles { list } => self.on_roles(list),
-            Event::ResearchProgress { run, progress } => self.crew.on_research(run, progress),
-            Event::PlanProposed { run, plan, quote } => self.on_plan_proposed(run, plan, quote),
             Event::Error { message, .. } if reply && message.contains("is not available yet (M4.6") => self.unavailable(message),
             Event::Error { session: None, message } if self.absorb_absent(message) => {}
             // The daemon refused a trust whose digest no longer matches the project's files: the

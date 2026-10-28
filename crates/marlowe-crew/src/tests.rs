@@ -7,7 +7,7 @@ use marlowe_proto::{Confidence, CrewBudget, CrewRunStatus, Playbook, SandboxKind
 use serde_json::json;
 
 use crate::dispatch::dispatch_spec;
-use crate::playbook::{confidence_line, detect_test_command, list_items, markdown_links, slug};
+use crate::playbook::{confidence_line, detect_test_command, list_items, markdown_links};
 use crate::sandbox::{branch_name, no_push_git_env, NO_PUSH_URL};
 use crate::*;
 
@@ -143,16 +143,21 @@ fn the_dispatch_declaration_lists_roles_and_its_arguments_parse() {
             "scout",
             "verifier"
         ]));
-    assert_eq!(schema["properties"]["playbook"]["enum"], json!(["deep_research", "build"]));
+    assert_eq!(schema["properties"]["playbook"]["enum"], json!(["build"]));
 
-    let a = DispatchArgs::parse(&json!({"role": "researcher", "prompt": "LoRA rank", "cwd": "C:/w", "playbook": "deep_research", "budget": {"usd": 2.0}}))
+    let a = DispatchArgs::parse(&json!({"role": "researcher", "prompt": "LoRA rank", "cwd": "C:/w", "playbook": "build", "budget": {"usd": 2.0}}))
         .unwrap();
-    assert_eq!(a.playbook, Some(Playbook::DeepResearch));
+    assert_eq!(a.playbook, Some(Playbook::Build));
     assert_eq!(a.budget, Some(CrewBudget { usd: Some(2.0), ..Default::default() }));
     assert_eq!((a.goal.as_str(), a.workspace.as_deref()), ("LoRA rank", Some("C:/w")), "prompt and cwd are the schema's names for goal and workspace");
     assert!(DispatchArgs::parse(&json!({"role": "scout", "goal": "  "})).unwrap_err().contains("prompt"));
     assert!(DispatchArgs::parse(&json!({"goal": "x"})).is_err());
     assert!(DispatchArgs::parse(&json!({"role": "scout", "goal": "x", "playbook": "dance"})).is_err());
+    // The retired research playbook, under either spelling, is told the way to a project.
+    for name in ["deep_research", "deep-research", "research"] {
+        let e = DispatchArgs::parse(&json!({"role": "researcher", "prompt": "LoRA rank", "playbook": name})).unwrap_err();
+        assert!(e.contains("retired") && e.contains("manage_project"), "{name}: {e}");
+    }
 
     let receipt = DispatchReceipt {
         task_id: "agent_ab".into(),
@@ -225,10 +230,6 @@ fn prose_helpers_read_lists_links_and_confidence() {
     assert_eq!(confidence_line("**Confidence: High.**"), Some(Confidence::High));
     assert_eq!(confidence_line("Confidence: low\nlater\nconfidence: high"), Some(Confidence::High));
     assert_eq!(confidence_line("I am confident."), None);
-
-    assert_eq!(slug("What does the literature say about LoRA rank?"), "what-does-the-literature-say-about-lora-rank");
-    assert_eq!(slug("¿?"), "research");
-    assert!(slug(&"word ".repeat(40)).len() <= 60);
 }
 
 #[test]

@@ -164,7 +164,7 @@ fn scripted() -> bool {
     false
 }
 
-/// `web_search` over the keyless web channel deep research uses (SearXNG, else DuckDuckGo lite),
+/// `web_search` over the keyless web channel a project uses (SearXNG, else DuckDuckGo lite),
 /// configured by `<home>\research.json`. One registry per factory, so a resting backend stays rested.
 fn search_backend(home: &Path) -> Arc<dyn SearchBackend> {
     if scripted() {
@@ -295,19 +295,16 @@ pub fn standalone_deps(home: &Path, memory: bool) -> DaemonDeps {
     }
 }
 
-/// The crew: tools, config, and deep research v2's I/O with `<home>\research.json` applied. A
-/// scripted run has no network, so it keeps deep research on v1.
+/// The crew: tools, config, and the projects' network side with `<home>\research.json` applied.
 fn crew_setup(home: &Path) -> CrewSetup {
     let settings = crate::research_wire::ResearchSettings::load(home);
-    let config = CrewConfig { research: settings.v2(), ..CrewConfig::default() };
-    let research = (!scripted()).then(|| crate::research_wire::research_io(home, &settings));
-    // Projects need the network side too; a scripted run has none.
+    // Projects need the network; a scripted run has none.
     let projects = (!scripted()).then(|| {
         let home = home.to_path_buf();
         let settings = settings.clone();
         marlowe_crew::ProjectSetup { research: Arc::new(move |memory| crate::research_wire::project_research(&home, &settings, memory)) }
     });
-    CrewSetup { tools: crew_tool_factory(home), config, research, projects }
+    CrewSetup { tools: crew_tool_factory(home), config: CrewConfig::default(), projects }
 }
 
 /// The watchers over the persisted roots. A Sentinel that fails to start (or panics doing so)

@@ -43,7 +43,6 @@ fn run(id: &str, role: &str, title: &str, status: CrewRunStatus) -> CrewRunInfo 
 fn research_run() -> CrewRunInfo {
     let mut r = run("aa11bb22cc33dd44", "researcher", "LoRA rank ablations for 22B gates", CrewRunStatus::Running);
     r.goal = "What does the literature say about LoRA rank for gating adapters at 22B?".into();
-    r.playbook = Some(Playbook::DeepResearch);
     r.sandbox = Some(SandboxInfo {
         kind: SandboxKind::Scratch,
         root: "C:/Users/m/AppData/Local/MarloweCowork/scratch/aa11bb22cc33dd44".into(),
@@ -283,25 +282,17 @@ fn an_open_step_shows_whole_and_earlier_steps_keep_their_tail() {
 {}", dump(&buf));
 }
 
+/// A run stored under the retired research playbook still opens: its result reads as a result
+/// (summary and sources), with nothing to accept and no stage strip.
 #[test]
-fn research_run_view_renders_the_report() {
-    let dir = std::env::temp_dir().join(format!("marlowe-tui-crew-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let report = dir.join("report.md");
-    std::fs::write(
-        &report,
-        "# LoRA rank for gating adapters\n\n**Rank 8 is enough** for gates at 22B; rank 64 buys nothing \
-         measurable [1].\n\n## Evidence\n\n- Hu et al. find rank 4–8 matches full fine-tuning [1].\n- \
-         One contested result at rank 2 was dropped by the reviewer.\n",
-    )
-    .unwrap();
+fn a_stored_run_of_the_retired_research_playbook_reads_as_a_plain_result() {
     let mut r = research_run();
-    r.status = CrewRunStatus::NeedsYou;
+    r.playbook = Some(Playbook::DeepResearch);
+    r.status = CrewRunStatus::Done;
     r.current_action = None;
-    r.note = Some("report ready — accept it into research/?".into());
     r.result = Some(Dispatch {
         summary: "Rank 8 is enough for gating adapters at 22B.".into(),
-        artifacts: vec![report.to_string_lossy().into_owned()],
+        artifacts: vec!["C:/scratch/aa11bb22/report.md".into()],
         confidence: Confidence::High,
         citations: vec![
             Citation { title: "LoRA: Low-Rank Adaptation of Large Language Models".into(), url_or_path: "https://arxiv.org/abs/2106.09685".into() },
@@ -315,27 +306,17 @@ fn research_run_view_renders_the_report() {
         CrewStep { step: 1, role: "researcher".into(), action: "plan · 3 sub-questions".into(), text: String::new(), at_ms: NOW - 900_000 },
         CrewStep { step: 9, role: "researcher".into(), action: "synthesize · report.md".into(), text: "(written)".into(), at_ms: NOW - 60_000 },
     ] });
-    assert!(s.crew.open.as_ref().unwrap().report.as_deref().is_some_and(|t| t.contains("Rank 8 is enough")));
     let buf = render(&s, W, H);
-    for want in [
-        "REPORT",
-        "confidence high · 2 sources",
-        "LoRA rank for gating adapters",
-        "Rank 8 is enough",
-        "SOURCES",
-        "https://arxiv.org/abs/2106.09685",
-        "accept: copy the report into C:/work/valiance/research",
-        "m accept report",
-    ] {
-        assert!(contains(&buf, want), "research view is missing {want:?}\n{}", dump(&buf));
+    for want in ["RESULT", "confidence high", "Rank 8 is enough", "SOURCES", "https://arxiv.org/abs/2106.09685", "deep_research"] {
+        assert!(contains(&buf, want), "the stored run is missing {want:?}\n{}", dump(&buf));
     }
-    assert!(!contains(&buf, "# LoRA"), "the report is rendered, not shown raw");
+    for gone in ["m accept report", "accept: copy the report", "Plan →"] {
+        assert!(!contains(&buf, gone), "a retired run offers {gone:?}\n{}", dump(&buf));
+    }
     assert_palette_only(&buf);
-    let _ = std::fs::remove_dir_all(&dir);
-    snapshot("run_research", &buf);
-    // m accepts through the daemon (which asks for approval).
-    let reqs = s.on_key(key(KeyCode::Char('m')));
-    assert_eq!(reqs, vec![Request::MergeRun { run: r.id }]);
+    snapshot("run_retired_research", &buf);
+    // Nothing to merge: m says so.
+    assert!(s.on_key(key(KeyCode::Char('m'))).is_empty());
 }
 
 #[test]
@@ -406,15 +387,15 @@ fn dispatch_prompt_picks_a_role_a_goal_and_a_playbook() {
     type_str(&mut s, "compare LoRA ranks for the 22B gates");
     s.on_key(key(KeyCode::Tab));
     let buf = render(&s, W, H);
-    for want in ["dispatch", "ROLE", "› researcher", "GOAL", "compare LoRA ranks", "PLAYBOOK", "deep_research", "plan → scouts in parallel → verify → a cited report"] {
+    for want in ["dispatch", "ROLE", "› researcher", "GOAL", "compare LoRA ranks", "PLAYBOOK", "none · build", "plan → implement in a worktree"] {
         assert!(contains(&buf, want), "prompt is missing {want:?}\n{}", dump(&buf));
     }
     assert_palette_only(&buf);
     snapshot("dispatch_prompt", &buf);
 
-    // Down to the reviewer; three Tabs go round (build, none) and back to deep_research.
+    assert!(!contains(&buf, "deep_research"), "the retired playbook is not offered");
+    // Down to the reviewer; two more Tabs go round (none) and back to build.
     s.on_key(key(KeyCode::Down));
-    s.on_key(key(KeyCode::Tab));
     s.on_key(key(KeyCode::Tab));
     s.on_key(key(KeyCode::Tab));
     let reqs = s.on_key(key(KeyCode::Enter));
@@ -424,7 +405,7 @@ fn dispatch_prompt_picks_a_role_a_goal_and_a_playbook() {
             session: Some(sid()),
             role: "reviewer".into(),
             goal: "compare LoRA ranks for the 22B gates".into(),
-            playbook: Some(Playbook::DeepResearch),
+            playbook: Some(Playbook::Build),
             workspace: Some("C:/work/valiance".into()),
             budget: None,
         }]

@@ -197,7 +197,7 @@ fn deps_with(provider: Arc<Scripted>, home: &Path, projects: bool, up: Arc<Atomi
         Arc::new(ResearchDeps::new(h.join("projects"), h.join("output"), Arc::new(NoWeb), Arc::new(NoPages), Arc::new(SystemResolver), memory))
     });
     let crew_tools = Arc::new(|_: &marlowe_crew::sandbox::Sandbox, _: Option<&Path>| Arc::new(marlowe_exec::BuiltinTools::new(None)) as Arc<dyn ToolHost>);
-    let setup = CrewSetup { tools: crew_tools, config: CrewConfig::default(), research: None, projects: projects.then_some(ProjectSetup { research }) };
+    let setup = CrewSetup { tools: crew_tools, config: CrewConfig::default(), projects: projects.then_some(ProjectSetup { research }) };
     let home_for_tools = home.to_path_buf();
     DaemonDeps {
         providers,

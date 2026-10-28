@@ -58,11 +58,7 @@ pub use paths::DaemonInfo;
 pub use project::{PatchOp, ProjectGateOption, ProjectPatch, ProjectSummary};
 pub use phase::{PhaseEvent, PhaseKind, PhaseSpan, PhaseState, ReadStat, StageMs, TurnNumbers};
 pub use request::{ApprovalDecision, Request, Secret, Slot, SlotParseError};
-pub use research::{
-    ChannelId, ChannelParseError, CostQuote, PlanDecision, PlanError, ResearchCounts, ResearchPlan, ResearchProgress,
-    ResearchStage, StageState, SubQuestion, PLAN_MAX_BREADTH, PLAN_MAX_DEPTH, PLAN_MAX_QUERIES, PLAN_MAX_SOURCES,
-    PLAN_MAX_SUBQUESTIONS,
-};
+pub use research::{ChannelId, ChannelParseError, SubQuestion};
 pub use user::{clean_user_field, AddressForm, AddressParseError, USER_FIELD_MAX};
 pub use watch::{
     BriefItem, BriefItemKind, GitInfo, GpuDevice, GpuReport, Notice, NoticeSource, OllamaReport, QuietHours,

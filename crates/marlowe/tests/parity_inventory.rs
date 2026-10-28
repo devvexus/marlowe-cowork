@@ -110,7 +110,7 @@ const MAP: &[(&str, Seen)] = &[
     ("workflow-launch-exec", Rows("WF1 (Claude Code's internal launcher for a workflow)")),
     ("reload-plugins", Rows("X17 (bundles are read on every use; nothing to reload)")),
     ("reload-skills", Rows("X11 (skills are read on every use; nothing to reload)")),
-    ("deep-research", Rows("A9 (the research_v2 crew playbook)")),
+    ("deep-research", Rows("projects: a research project (manage_project) replaced the research_v2 crew playbook")),
     ("batch", Rows("A9, WF1 (build_v2 and workflows fan work out over worktrees)")),
     ("verify", Rows("B2, T28")),
     ("run", Rows("T28 (project, service, http_check, browser)")),
