@@ -156,6 +156,11 @@ pub fn expand(question: &str, angles: &[Angle], unknown: &[String], today: &str,
 /// The names an objective is about: words with a capital letter after the first word, or with a
 /// digit (Rust, TUI, GitHub, Qwen4, DeepSeek), at most four, in order.
 fn subject_names(objective: &str) -> Vec<String> {
+    names_of(objective, 4)
+}
+
+/// [`subject_names`] with a cap of the caller's choosing.
+pub(super) fn names_of(objective: &str, cap: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for (i, w) in objective.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '(' | ')' | '"')).filter(|w| !w.is_empty()).enumerate() {
         let w = w.trim_matches(|c: char| !c.is_alphanumeric());
@@ -163,7 +168,7 @@ fn subject_names(objective: &str) -> Vec<String> {
         if named && w.chars().count() >= 2 && !out.iter().any(|o| o.eq_ignore_ascii_case(w)) {
             out.push(w.to_string());
         }
-        if out.len() == 4 {
+        if out.len() == cap {
             break;
         }
     }

@@ -1,0 +1,772 @@
+{
+ "about": "Run m6 (Matthew's prompt about Kimi, DeepSeek and Qwen 4), recorded: the objective, the six questions, every raw claim with its page, and the condensed claim that mixed a DeepSeek fact into the Qwen 4 question.",
+ "objective": "Compile a comprehensive report on latest upcoming AI models, specifically new Kimi models, DeepSeek and Qwen4",
+ "questions": [
+  "What are the announced release dates or availability windows for new Kimi versions?",
+  "What specifications define the newest DeepSeek releases (architecture, parameters, capabilities)?",
+  "What is known about Qwen4 features compared to previous iterations in context window, multimodality and efficiency metrics?",
+  "Are there any official benchmarks comparing these models against their predecessors?",
+  "What are the confirmed public benchmarks for Qwen3 vs Qwen4 tiers to validate current performance claims?",
+  "Which specific new Kimi model versions are currently in public beta versus full GA based on recent announcements?"
+ ],
+ "claims": [
+  {
+   "sub": "q3",
+   "text": "supports text and images as input.",
+   "quote": "Qwen3.8 Max is released under the Qwen3.8-Max License license",
+   "title": "Qwen3.8 Max Benchmarks, Pricing & Context Window",
+   "url": "https://llm-stats.com/models/qwen3.8-max"
+  },
+  {
+   "sub": "q2",
+   "text": "\"DeepSeek-V4.1-Flash-1017... trained with self-feedback-based reinforcement learning... retaining the same 552B-parameter MoE, native multimodal visual understanding\"",
+   "quote": "is the latest iteration of V4.1-Flash, trained with self-feedback-based reinforcement learning to deliver substantial gains over its predecessor across benchmarks such as Terminal-Bench 4.0",
+   "title": "Model releases - QwenCloud",
+   "url": "https://docs.qwencloud.com/changelog/models"
+  },
+  {
+   "sub": "q5",
+   "text": "Alibaba outlined plans for Qwen 4.5 and Qwen 5 models with 5 to 10 trillion parameters.",
+   "quote": "Alibaba also outlined plans for Qwen 4.5 and Qwen 5 models with 5 to 10 trillion parameters",
+   "title": "Qwen 4 announced: what we know so far | LLM Hangar",
+   "url": "https://llmhangar.com/blog/deploy-qwen4"
+  },
+  {
+   "sub": "q6",
+   "text": "The page lists specific parameters for DeepSeek-V3, noting it has 671B MoE parameters and 37B activated parameters.",
+   "quote": "- 671B MoE parameters",
+   "title": "DeepSeek | Introducing DeepSeek-V3",
+   "url": "https://www.deepseek.com/en/news/deepseek-v3/"
+  },
+  {
+   "sub": "q4",
+   "text": "The only line you can actually call or download today is the 3.x generation",
+   "quote": "The gap between the two things is the whole of the practical story.",
+   "title": "Qwen 4: what Alibaba has said, and what runs today",
+   "url": "https://www.orcarouter.ai/blog/qwen-4"
+  },
+  {
+   "sub": "q1",
+   "text": "Delete sessions from the session picker: press Ctrl+X on a session, then y to confirm.",
+   "quote": "Delete sessions from the session picker: press Ctrl+X on a session, then y to confirm.",
+   "title": "Releases · MoonshotAI/kimi-code · GitHub",
+   "url": "https://github.com/MoonshotAI/kimi-code/releases"
+  },
+  {
+   "sub": "q3",
+   "text": "Qwen4 is in training",
+   "quote": "Alibaba said Qwen4 is in training and has not announced a release date.",
+   "title": "Qwen Timeline: Model & Product Release History",
+   "url": "https://www.scriptbyai.com/qwen-timeline/"
+  },
+  {
+   "sub": "q5",
+   "text": "\"The flagship you can actually buy is Qwen3.8-Max\"",
+   "quote": "The flagship you can actually buy is Qwen3.8-Max",
+   "title": "Qwen 4.5 and Qwen 5: what the 5-to-10-trillion band means",
+   "url": "https://www.orcarouter.ai/blog/qwen-4-5-and-qwen-5-roadmap-5-10t-parameters"
+  },
+  {
+   "sub": "q2",
+   "text": "The Global KV cache is projected from the final encoder hidden states rather than derived from each decoder layer's own hidden states.",
+   "quote": "With CED, the decoder's global KV cache is projected from the final encoder hidden states rather than derived from each decoder layer's own hidden states.",
+   "title": "deepseek-ai/DeepSeek-V4.1-Flash · Hugging Face",
+   "url": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash"
+  },
+  {
+   "sub": "q5",
+   "text": "| AIME25 | 70.9 | 65.6 | 81.3",
+   "quote": "| AIME25 | 70.9 | 65.6 | 81.3",
+   "title": "Qwen/Qwen3-4B-Thinking-2507 · Hugging Face",
+   "url": "https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507"
+  },
+  {
+   "sub": "q6",
+   "text": "Model specs:",
+   "quote": "Kimi Code currently offers three models—K3, K2.8 Preview, and K2.7 Code HighSpeed—across four model IDs, selectable by model ID in clients or third-party tools.",
+   "title": "Model Configuration",
+   "url": "https://www.kimi.ai/help/kimi-code/models"
+  },
+  {
+   "sub": "q6",
+   "text": "[L1] DeepSeek releases · 10 in the last 12 months · this family litChangelog →",
+   "quote": "Last refreshed 2026-10-17. Next refresh: weekly.",
+   "title": "DeepSeek V3 by DeepSeek — Models, Pricing & API | LLM Reference",
+   "url": "https://www.llmreference.com/model-family/deepseek-v3"
+  },
+  {
+   "sub": "q1",
+   "text": "We present Kimi-VL, an efficient open-source Mixture-of-Experts (MoE) vision-language model (VLM) that offers advanced multimodal reasoning, long-context understanding, and strong agent capabilities—all while activating only 2.8B parameters",
+   "quote": "We present Kimi-VL, an efficient open-source Mixture-of-Experts (MoE) vision-language model (VLM) that offers advanced multimodal reasoning, long-context understanding, and strong agent capabilities—all while activating only 2.8B parameters in its language decoder",
+   "title": "moonshotai/Kimi-VL-A3B-Instruct · Hugging Face",
+   "url": "https://huggingface.co/moonshotai/Kimi-VL-A3B-Instruct"
+  },
+  {
+   "sub": "q6",
+   "text": "Models are now released under the MIT License, just like DeepSeek-R1!",
+   "quote": "Models are now released under the MIT License, just like DeepSeek-R1!",
+   "title": "DeepSeek-V3-0324 Release | DeepSeek API Docs",
+   "url": "https://api-docs.deepseek.com/news/news250325/?ref=technocient.com"
+  },
+  {
+   "sub": "q3",
+   "text": "We are delighted to announce the official release of Qwen3.5",
+   "quote": "We are delighted to announce the official release of Qwen3.5, introducing the open-weight of the first model in the Qwen3.5 series, namely Qwen3.5-397B-A17B.",
+   "title": "Qwen3.5: Towards Native Multimodal Agents - Alibaba Cloud Community",
+   "url": "https://www.alibabacloud.com/blog/qwen3-5-towards-native-multimodal-agents_602894"
+  },
+  {
+   "sub": "q6",
+   "text": "Kimi K2.6 is cloud-only on Ollama.",
+   "quote": "(Kimi K2.6 is cloud-only on Ollama).",
+   "title": "Ollama Latest Version 2026: v0.40.5 + 10 Best Models",
+   "url": "https://www.promptquorum.com/local-llms/top-open-source-models-ollama"
+  },
+  {
+   "sub": "q1",
+   "text": "Kimii K3.1 Pro landed on the Kimi API today - it's not yet open weights",
+   "quote": "Kimi K3.1 Pro landed on the Kimi API today - it's not yet open weights",
+   "title": "Introducing Kimi K3.1 Pro",
+   "url": "https://simonwillison.net/2026/Oct/23/kimi-k31-pro/"
+  },
+  {
+   "sub": "q6",
+   "text": "Beam 1.0 leads the LLM Stats Score 44.6 to 16.7",
+   "quote": "Beam 1.0 leads the overall LLM Stats Score 44.6 to 16.7, ranking #46 overall.",
+   "title": "Beam 1.0 vs Kimi-k1.5: Benchmarks, Pricing & Which Is Better in 2026",
+   "url": "https://llm-stats.com/models/compare/beam-1.0-501b-a23b-vs-kimi-k1.5"
+  },
+  {
+   "sub": "q2",
+   "text": "Asymmetric architecture with smaller KV cache needs.",
+   "quote": "- Smaller KV cache. Bigger savings",
+   "title": "DeepSeek | Introducing DeepSeek-V4.1-Flash: smarter, faster, more efficient.",
+   "url": "https://www.deepseek.com/en/news/deepseek-v4-1-flash/"
+  },
+  {
+   "sub": "q4",
+   "text": "A complete context comparison is not sourced.",
+   "quote": "No workload recommendation clears the current evidence threshold.",
+   "title": "Kimi K2.5 vs Qwen4 27B: Benchmarks & Cost | BenchLM.ai",
+   "url": "https://benchlm.ai/compare/kimi-k2-5-vs-qwen4-27b"
+  },
+  {
+   "sub": "q6",
+   "text": "Kimi-K2.6 was released recently enough to be listed as currently available with a future deprecation date of 4/16/2027.",
+   "quote": "Deprecation: 4/16/2027",
+   "title": "Kimi-K2.6 by Moonshot AI — Availability on Microsoft Foundry | Model Availability",
+   "url": "https://modelavailability.com/models/moonshot-ai/kimi-k2-6"
+  },
+  {
+   "sub": "q3",
+   "text": "Like-for-like categories",
+   "quote": "- Like-for-like categories",
+   "title": "Qwen3.7 Max vs Qwen4 27B: Benchmarks & Cost | BenchLM.ai",
+   "url": "https://benchlm.ai/compare/qwen3-7-max-vs-qwen4-27b"
+  },
+  {
+   "sub": "q6",
+   "text": "The 32K extension phase has been increased 10-fold to 630B tokens.",
+   "quote": "We have expanded our dataset by collecting additional long documents and substantially extending both training phases. The 32K extension phase has been increased 10-fold to 630B tokens, while the 128K extension phase has been extended by 3.3x to 209B tokens.",
+   "title": "deepseek-ai/DeepSeek-V3.1 · Hugging Face",
+   "url": "https://huggingface.co/deepseek-ai/DeepSeek-V3.1"
+  },
+  {
+   "sub": "q2",
+   "text": "Qwen4-27 and Qwen4-max are announced as new models in this series.",
+   "quote": "- Qwen4-27 - Qwen4-max",
+   "title": "Qwen4 系列模型发布预告|qwen4-27|qwen4-max_新浪新闻",
+   "url": "https://www.sina.cn/news/detail/5352578511547458.html"
+  },
+  {
+   "sub": "q5",
+   "text": "DeepSeek scored 81.5% (212/260), significantly behind Qwen Plus at 96.5% (251/260) on the identical test suite.",
+   "quote": "We needed to pick a model for function calling, so I designed a test suite, ran the experiments, analyzed the results",
+   "title": "DeepSeek V3 Function Calling Agent Performance: Systematic Evaluation by Claude Opus 4.6 (81.5% vs Qwen Plus 96.5%) · Issue #1108 · deepseek-ai/DeepSeek-V3 · GitHub",
+   "url": "https://github.com/deepseek-ai/DeepSeek-V3/issues/1108"
+  },
+  {
+   "sub": "q2",
+   "text": "DeepSeek-V4.1-Flash adopts a Causal Encoder-Decoder (CED) architecture.",
+   "quote": "Architecture. DeepSeek-V4.1-Flash adopts a Causal Encoder-Decoder (CED) architecture: a 40-layer Transformer organized as a 20-layer causal encoder followed by a 20-layer decoder.",
+   "title": "deepseek-ai/DeepSeek-V4.1-Flash · Hugging Face",
+   "url": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash"
+  },
+  {
+   "sub": "q6",
+   "text": "DeepSeek-V3-Base ... is trained using the UE8M0 FP8 scale data format.",
+   "quote": "Additionally, DeepSeek-V3.1 is trained using the UE8M0 FP8 scale data format on both model weights and activations to ensure compatibility with microscaling data formats.",
+   "title": "deepseek-ai/DeepSeek-V3.1 · Hugging Face",
+   "url": "https://huggingface.co/deepseek-ai/DeepSeek-V3.1"
+  },
+  {
+   "sub": "q3",
+   "text": "A complete documented context-window comparison is not available.",
+   "quote": "The public evidence has no benchmark result shared by both models, so it does not support a quality verdict.",
+   "title": "Qwen3.7 Plus vs Qwen4 Flash & Plus: Benchmarks & Cost",
+   "url": "https://benchlm.ai/compare/qwen3-7-plus-vs-qwen4-flash-plus"
+  },
+  {
+   "sub": "q5",
+   "text": "The team also says the base preview beat Qwen3.7-Plus-Base on 8 of 14 benchmarks while using less computation.",
+   "quote": "The team also says the base preview beat Qwen3.7-Plus-Base on 8 of 14 benchmarks while using less computation.",
+   "title": "Qwen 4 announced: what we know so far | LLM Hangar",
+   "url": "https://llmhangar.com/blog/deploy-qwen4"
+  },
+  {
+   "sub": "q2",
+   "text": "It is now served by DeepSeek-V4.1-Flash-1017, and the calling method remains unchanged.",
+   "quote": "(1) Use deepseek-flash as the model name. It is now served by DeepSeek-V4.1-Flash-1017, and the calling method remains unchanged.",
+   "title": "Your First API Call | DeepSeek API Docs",
+   "url": "https://api-docs.deepseek.com/news/news250120"
+  },
+  {
+   "sub": "q6",
+   "text": "'Kimi K3 is an open-weight, native multimodal agentic model and our most capable model to date'",
+   "quote": "Kimi K3 is an open-weight, native multimodal agentic model and our most capable model to date.",
+   "title": "kimi-k3:cloud",
+   "url": "https://ollama.com/library/kimi-k3:cloud"
+  },
+  {
+   "sub": "q3",
+   "text": "Day-0 inference support for Qwen3.8-2.4T-A95B",
+   "quote": "vLLM shipped support on the day of release, making the largest open Qwen servable on standard inference stacks without waiting for a release cycle.",
+   "title": "Qwen release timeline & latest updates | Tongyi Qwen",
+   "url": "https://tongyis.com/updates/"
+  },
+  {
+   "sub": "q2",
+   "text": "DeepSeek V3 [Critical]",
+   "quote": "- DeepSeek-V3: 671B parameters (37B activated per token)",
+   "title": "DeepSeek V3 — Megatron Bridge",
+   "url": "https://docs.nvidia.com/nemo/megatron-bridge/0.6.2/models/deepseek/deepseek-v3.html"
+  },
+  {
+   "sub": "q5",
+   "text": "Status: 'currently in training'.",
+   "quote": "- Status: \"currently in training\", in the words of Alibaba's official press release [L1].",
+   "title": "Qwen 4: Release Date, Models and What's Confirmed (October 2026) - AIToolsReview",
+   "url": "https://aitoolsreview.co.uk/insights/qwen-4"
+  },
+  {
+   "sub": "q3",
+   "text": "has a 1 million-token context window.",
+   "quote": "with multimodal input, a 1.0M-token context window,",
+   "title": "Qwen3.8 Max Benchmarks, Pricing & Context Window",
+   "url": "https://llm-stats.com/models/qwen3.8-max"
+  },
+  {
+   "sub": "q2",
+   "text": "Introducing the smallest model in our new architecture family.",
+   "quote": "- Introducing the smallest model in our new architecture family",
+   "title": "DeepSeek | Introducing DeepSeek-V4.1-Flash: smarter, faster, more efficient.",
+   "url": "https://www.deepseek.com/en/news/deepseek-v4-1-flash/"
+  },
+  {
+   "sub": "q1",
+   "text": "Kimi K3.1 Highspeed delivers two to three times the speed of K3.1 Pro with identical model capabilities.",
+   "quote": "According to the announcement, K3.1 Pro Highspeed delivers two to three times the speed of K3.1 Pro with identical model capabilities.",
+   "title": "Moonshot AI Releases Kimi K3.1 Pro, First Model in New K3.1 Series – Unite.AI",
+   "url": "https://www.unite.ai/moonshot-ai-releases-kimi-k3-1-pro-first-model-in-new-k3-1-series/"
+  },
+  {
+   "sub": "q4",
+   "text": "The page states Qwen4 tiers have no specifications attached.",
+   "quote": "for any of the four, and an announcement of a tier name is a statement about a plan rather than a statement about a model.",
+   "title": "Qwen 4: what Alibaba has said, and what runs today",
+   "url": "https://www.orcarouter.ai/blog/qwen-4"
+  },
+  {
+   "sub": "q5",
+   "text": "Its most impressive finish is second on CorpFin, behind Kimi K2.5",
+   "quote": "Its most impressive finish is second on CorpFin [L3], behind Kimi K2.5 [L4].",
+   "title": "Qwen 3 Max Thinking Benchmarks, Cost and Capabilities | Vals AI",
+   "url": "https://www.vals.ai/models/alibaba_qwen3-max-2026-01-23"
+  },
+  {
+   "sub": "q2",
+   "text": "The paper specifies the training cost as \"$5.576M$ and $2.788M H800 GPU hours$.",
+   "quote": "costs only 2.788M GPU hours for its full training.",
+   "title": "DeepSeek-V3 Technical Report",
+   "url": "https://arxiv.org/html/2412.19437v1"
+  },
+  {
+   "sub": "q3",
+   "text": "Qwen claims it outperforms the much larger hosted Qwen3.7-Plus on coding and office tasks",
+   "quote": "A dense 27B model with 262K native context (extensible to 1M via YaRN), multimodal input across text, images and video, and a thinking mode that is on by default but can be toggled per query. Qwen claims it outperforms the much larger hosted Qwen3.7-Plus on coding and office tasks",
+   "title": "Qwen release timeline & latest updates | Tongyi Qwen",
+   "url": "https://tongyis.com/updates/"
+  },
+  {
+   "sub": "q4",
+   "text": "Kimi K3 demonstrated frontier-level performance across our evaluation suite.",
+   "quote": "While its overall performance still trails the most powerful proprietary models",
+   "title": "Kimi K3 Tech Blog: Open Frontier Intelligence",
+   "url": "https://www.kimi.ai/blog/kimi-k3"
+  },
+  {
+   "sub": "q1",
+   "text": "\"For general multimodal perception and understanding... we recommend Kimi-VL-A3B-Instruct for efficient inference\"",
+   "quote": "For general multimodal perception and understanding, OCR, long video and long document, video perception, and agent uses, we recommend Kimi-VL-A3B-Instruct for efficient inference",
+   "title": "moonshotai/Kimi-VL-A3B-Instruct · Hugging Face",
+   "url": "https://huggingface.co/moonshotai/Kimi-VL-A3B-Instruct"
+  },
+  {
+   "sub": "q2",
+   "text": "We introduce DeepSeek-V4.1-Flash, a multimodal Mixture-of-Experts (MoE) model with 552B backbone parameters and support for contexts of up to one million tokens.",
+   "quote": "We introduce DeepSeek-V4.1-Flash, a multimodal Mixture-of-Experts (MoE) model with 552B backbone parameters and support for contexts of up to one million tokens.",
+   "title": "deepseek-ai/DeepSeek-V4.1-Flash · Hugging Face",
+   "url": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash"
+  },
+  {
+   "sub": "q5",
+   "text": "Qwen 4 is confirmed to be under development, not available for use.",
+   "quote": "That is the whole of the confirmation. There is no Qwen 4 release",
+   "title": "Alibaba Confirms Qwen 4 Is in Training at Apsara",
+   "url": "https://threatfrontier.com/articles/alibaba-confirms-qwen-4-training-apsara-roadmap-10t-parameters"
+  },
+  {
+   "sub": "q6",
+   "text": "Complete directory of 15 DeepSeek AI models ranked by composite score.",
+   "quote": "DeepSeek has been one of the most prolific contributors to the open source AI ecosystem, releasing model weights under permissive licenses that allow commercial use, fine-tuning, and redistribution.",
+   "title": "All DeepSeek Models Ranked (2026) | LM Market Cap",
+   "url": "https://lmmarketcap.com/deepseek-models"
+  },
+  {
+   "sub": "q3",
+   "text": "Qwen3 supports up to over 1 trillion parameters.",
+   "quote": "cross-generation parity: Qwen3.5-397B-A17B matches the >1T-parameter Qwen3-Max-Base.",
+   "title": "Qwen3.5: Towards Native Multimodal Agents - Alibaba Cloud Community",
+   "url": "https://www.alibabacloud.com/blog/qwen3-5-towards-native-multimodal-agents_602894"
+  },
+  {
+   "sub": "q5",
+   "text": "V3.2 level performance [GPT-5].",
+   "quote": "Your daily driver at GPT-5 level performance.",
+   "title": "DeepSeek-V3.2 Release | DeepSeek API Docs",
+   "url": "https://api-docs.deepseek.com/news/news251201/"
+  },
+  {
+   "sub": "q4",
+   "text": "Kimi K3 is the first open model to reach 2.8 trillion parameters.",
+   "quote": "Kimi K3 is the first open model to reach 2.8 trillion parameters.",
+   "title": "Kimi K3 Tech Blog: Open Frontier Intelligence",
+   "url": "https://www.kimi.ai/blog/kimi-k3"
+  },
+  {
+   "sub": "q6",
+   "text": "Recommended model launch",
+   "quote": "K2.8 Preview is now fully rolled out in Kimi Code — kimi-for-coding is upgraded in place with no configuration changes: performance close to K3, with low / high / max thinking effort levels and up to 1M context.",
+   "title": "Model Configuration",
+   "url": "https://www.kimi.ai/help/kimi-code/models"
+  },
+  {
+   "sub": "q6",
+   "text": "The best Ollama model in 2026 is Qwen3.8-27B (61.7 SWE-bench Pro as reported by Qwen, 18 GB).",
+   "quote": "The best Ollama model in 2026 is Qwen3.8-27B (61.7 SWE-bench Pro as reported by Qwen, 18 GB)",
+   "title": "Ollama Latest Version 2026: v0.40.5 + 10 Best Models",
+   "url": "https://www.promptquorum.com/local-llms/top-open-source-models-ollama"
+  },
+  {
+   "sub": "q1",
+   "text": "Moonshot AI introduced Kimi K3.1 Pro on October 24, 2026.",
+   "quote": "Moonshot AI [L2] introduced Kimi K3.1 Pro",
+   "title": "Moonshot AI Releases Kimi K3.1 Pro, First Model in New K3.1 Series – Unite.AI",
+   "url": "https://www.unite.ai/moonshot-ai-releases-kimi-k3-1-pro-first-model-in-new-k3-1-series/"
+  },
+  {
+   "sub": "q6",
+   "text": "The release status or version type (public beta vs full GA) for Kimi K3 relative to the current question's intent about 'new' models versus 'older' ones is implied by context but not explicitly defined as one specific state against another;",
+   "quote": "Updated 2 months ago",
+   "title": "kimi-k3",
+   "url": "https://ollama.com/library/kimi-k3"
+  },
+  {
+   "sub": "q5",
+   "text": "The public evidence has no benchmark result shared by both models, so it does not support a quality verdict.",
+   "quote": "The public evidence has no benchmark result shared by both models, so it does not support a quality verdict.",
+   "title": "Qwen3-Omni-30B-A3B-Instruct vs Qwen4 Max: Benchmarks & Cost",
+   "url": "https://benchlm.ai/compare/qwen3-omni-30b-a3b-instruct-vs-qwen4-max"
+  },
+  {
+   "sub": "q4",
+   "text": "Qwen4 27B is not ranked on the public lane for coding, so no winner is named for coding.",
+   "quote": "Kimi K2.5 only",
+   "title": "Kimi K2.5 vs Qwen4 27B: Benchmarks & Cost | BenchLM.ai",
+   "url": "https://benchlm.ai/compare/kimi-k2-5-vs-qwen4-27b"
+  },
+  {
+   "sub": "q6",
+   "text": "K2 series models will be retired by the end of December 2026",
+   "quote": "starting October 31, 2026, K2 series models will no longer be available to newly registered users; existing users are not affected. We plan to retire all K2 series models by the end of December 2026",
+   "title": "Model List - Kimi API Platform",
+   "url": "https://platform.kimi.ai/docs/models"
+  },
+  {
+   "sub": "q1",
+   "text": "Kimi K2.7 Code our latest coding model is now released",
+   "quote": "Kimi K2.7 Code, our latest coding model, is now released",
+   "title": "What's New | Kimi Code Docs",
+   "url": "https://www.kimi.com/code/docs/en/kimi-code/whats-new.html"
+  },
+  {
+   "sub": "q4",
+   "text": "5. Kimi K3.1 Pro (55)",
+   "quote": "The top models by Intelligence Index are: 1. Claude Opus 5.5 (Max, Default Fallback) (58), 2. Claude Sonnet 5.5 (Max, Default Fallback) (56), 3. Claude Opus 5.5 (Xhigh, Default Fallback) (56), 4. Muse Wonder Full (Max) (56), 5. Kimi K3.1 Pro (55).",
+   "title": "LLM Leaderboard - Comparison of AI models from OpenAI, Anthropic, Google, SpaceXAI & others | Artificial Analysis",
+   "url": "https://artificialanalysis.ai/leaderboards/models"
+  },
+  {
+   "sub": "q1",
+   "text": "Moonshot AI plans to release the model weights by November 4: support for more providers will follow.",
+   "quote": "Moonshot AI plans to release the model weights by November 4",
+   "title": "Kimi K3.1 Pro and Kimi K3.1 Pro Highspeed are available now in AI Gateway - Vercel",
+   "url": "https://vercel.com/changelog/kimi-k3-1-pro-and-kimi-k3-1-pro-highspeed-are-available-now-in-ai-gateway"
+  },
+  {
+   "sub": "q1",
+   "text": "Open weights were released after the launch date",
+   "quote": "July 27, 2026 | Open weights released on Hugging Face (moonshotai/Kimi-K3) under the custom Kimi K3 License [L1]",
+   "title": "Kimi K3 Release Date: Launched July 16, 2026",
+   "url": "https://k3-kimi.com/blog/kimi-k3-release-date/"
+  },
+  {
+   "sub": "q5",
+   "text": "Generally available since August 3, 2026",
+   "quote": "generally available since August 3, 2026",
+   "title": "Qwen 4.5 and Qwen 5: what the 5-to-10-trillion band means",
+   "url": "https://www.orcarouter.ai/blog/qwen-4-5-and-qwen-5-roadmap-5-10t-parameters"
+  },
+  {
+   "sub": "q5",
+   "text": "Alibaba said on Sep 22, 2026 that Qwen 4 is in training",
+   "quote": "Qwen 4 release date: Alibaba said on Sep 22, 2026 that Qwen 4 is in training.",
+   "title": "Qwen 4 Release Date: Confirmed vs Rumored | TechPilot.ai",
+   "url": "https://techpilot.ai/qwen-4-release-date/"
+  },
+  {
+   "sub": "q5",
+   "text": "Alibaba announced Qwen 4 at its Apsara conference in Hangzhou on 22 September.",
+   "quote": "Alibaba announced Qwen 4 [L1] at its Apsara conference in Hangzhou on 22 September.",
+   "title": "Qwen 4 announced: what we know so far | LLM Hangar",
+   "url": "https://llmhangar.com/blog/deploy-qwen4"
+  },
+  {
+   "sub": "q2",
+   "text": "The supported models listed in the table are 'deepseek-flash' and 'deepseek-v4-pro'.",
+   "quote": "| model | deepseek-flash(1) | deepseek-v4-pro |",
+   "title": "Your First API Call | DeepSeek API Docs",
+   "url": "https://api-docs.deepseek.com/news/news250120"
+  },
+  {
+   "sub": "q2",
+   "text": "It uses Multi-head Latent Attention (MLA) and DeepSeekMoE architectures.",
+   "quote": "DeepSeek-V3 still adopts Multi-head Latent Attention (MLA)",
+   "title": "DeepSeek-V3 Technical Report",
+   "url": "https://arxiv.org/html/2412.19437v1"
+  },
+  {
+   "sub": "q3",
+   "text": "is an open-weight model (checkpoint),",
+   "quote": "2.4T parameters",
+   "title": "Qwen3.8 Max Benchmarks, Pricing & Context Window",
+   "url": "https://llm-stats.com/models/qwen3.8-max"
+  },
+  {
+   "sub": "q4",
+   "text": "Kimi K3 is a 2.8T-parameter model built on our Kimi Delta Attention and Attention Residuals, with native vision capabilities and a 1-million-token context window.",
+   "quote": "Today, we are introducing Kimi K3 — our most capable model. Kimi K3 is a 2.8T-parameter model built on our Kimi Delta Attention and Attention Residuals, with native vision capabilities and a 1-million-token context window.",
+   "title": "Kimi K3 Tech Blog: Open Frontier Intelligence",
+   "url": "https://www.kimi.ai/blog/kimi-k3"
+  },
+  {
+   "sub": "q3",
+   "text": "Qwen3.5 includes enhanced multimodality via native vision-language capabilities and early text-vision fusion.",
+   "quote": "Natively multimodal via early text-vision fusion and expanded visual/STEM/video data, outperforming Qwen3-VL at similar scales.",
+   "title": "Qwen3.5: Towards Native Multimodal Agents - Alibaba Cloud Community",
+   "url": "https://www.alibabacloud.com/blog/qwen3-5-towards-native-multimodal-agents_602894"
+  },
+  {
+   "sub": "q6",
+   "text": "The specific new model mentioned is Kimi K3.",
+   "quote": "Kimi K3 is an open-weight, native multimodal agentic model and our most capable model to date.",
+   "title": "kimi-k3",
+   "url": "https://ollama.com/library/kimi-k3"
+  },
+  {
+   "sub": "q5",
+   "text": "No launch day or public API available for Qwen 4",
+   "quote": "No launch day, open weights or public API yet.",
+   "title": "Qwen 4 Release Date: Confirmed vs Rumored | TechPilot.ai",
+   "url": "https://techpilot.ai/qwen-4-release-date/"
+  },
+  {
+   "sub": "q6",
+   "text": "The full model weights will be released by Nov 4",
+   "quote": "Kimi K3.1 Pro and Kimi K3.1 Pro Highspeed are available today on Kimi.ai [L1], Kimi Work [L2], Kimi Code [L3], and the Kimi API [L4]. The full model weights will be released by Nov 4.",
+   "title": "Kimi K3.1 Pro Tech Blog: Advancing Open Intelligence",
+   "url": "https://www.kimi.ai/blog/kimi-k3-1-pro"
+  },
+  {
+   "sub": "q1",
+   "text": "Kimi K3.1 Pro and Kimi K3.1 Pro Highspeed are available now in AI Gateway.",
+   "quote": "is now available on AI Gateway [L3], along with Kimi K3.1 Pro Highspeed",
+   "title": "Kimi K3.1 Pro and Kimi K3.1 Pro Highspeed are available now in AI Gateway - Vercel",
+   "url": "https://vercel.com/changelog/kimi-k3-1-pro-and-kimi-k3-1-pro-highspeed-are-available-now-in-ai-gateway"
+  },
+  {
+   "sub": "q2",
+   "text": "Architecture",
+   "quote": "DeepSeek-V3 [L3] is a large-scale Mixture-of-Experts (MoE) language model",
+   "title": "DeepSeek V3 — Megatron Bridge",
+   "url": "https://docs.nvidia.com/nemo/megatron-bridge/0.6.2/models/deepseek/deepseek-v3.html"
+  },
+  {
+   "sub": "q5",
+   "text": "Qwen 3 Max Thinking is a model from Alibaba, released January 23, 2026.",
+   "quote": "Qwen 3 Max Thinking is a model from Alibaba, released January 23, 2026.",
+   "title": "Qwen 3 Max Thinking Benchmarks, Cost and Capabilities | Vals AI",
+   "url": "https://www.vals.ai/models/alibaba_qwen3-max-2026-01-23"
+  },
+  {
+   "sub": "q3",
+   "text": "released on August 31st",
+   "quote": "released as the Qwen3.8-2.4T-A95B open-weight checkpoint",
+   "title": "Qwen3.8 Max Benchmarks, Pricing & Context Window",
+   "url": "https://llm-stats.com/models/qwen3.8-max"
+  },
+  {
+   "sub": "q6",
+   "text": "Kimi K3.1 Pro is a post-trained version of Kimi K3, with substantially larger post-training compute.",
+   "quote": "We're introducing Kimi K3.1 Pro, the first model in our new K3.1 series and our most capable 3T-class open-weight model to date, with a 1-million-token context window.",
+   "title": "Kimi K3.1 Pro Tech Blog: Advancing Open Intelligence",
+   "url": "https://www.kimi.ai/blog/kimi-k3-1-pro"
+  },
+  {
+   "sub": "q5",
+   "text": "'Alibaba Confirms Qwen 4 Is in Training at Apsara'",
+   "quote": "What Alibaba delivered instead was a roadmap",
+   "title": "Alibaba Confirms Qwen 4 Is in Training at Apsara",
+   "url": "https://threatfrontier.com/articles/alibaba-confirms-qwen-4-training-apsara-roadmap-10t-parameters"
+  },
+  {
+   "sub": "q5",
+   "text": "Its next-generation Qwen 4 model is now in training.",
+   "quote": "Alibaba said its next-generation Qwen 4 model is now in training. It also outlined future Qwen 4.5 and Qwen 5 series models that the company says could scale to between 5 trillion and 10 trillion parameters.",
+   "title": "Alibaba targets 20GW cloud capacity by 2032 in full-stack AI push",
+   "url": "https://technode.global/2026/09/22/alibaba-20gw-data-center-capacity-2032-qwen-zhenwu-ai-roadmap/"
+  },
+  {
+   "sub": "q5",
+   "text": "V3.1-Think delivers results like R1-0528 on various benchmarks...",
+   "quote": "On AIME 2025, R1-0528 scored 87.5 while V3.1 achieved 88.4.",
+   "title": "DeepSeek-V3.1: Smarter, Faster, Leaner.",
+   "url": "https://www.aiai.com/blog/deepseek-v3-1-release"
+  },
+  {
+   "sub": "q4",
+   "text": "There is no benchmark... and no head-to-head between Qwen 4 and anything",
+   "quote": "What Alibaba has claimed about Qwen 4 by comparison is a training status and an architecture preview. There is no benchmark, no price, no speed figure and no head-to-head between Qwen 4 and anything, because one side of every such comparison does not exist.",
+   "title": "Qwen 4: what Alibaba has said, and what runs today",
+   "url": "https://www.orcarouter.ai/blog/qwen-4"
+  },
+  {
+   "sub": "q4",
+   "text": "The top open weights models by Intelligence Index are: 1. MiMo-V2.6-Pro (46), 2. DeepSeek V4.1 Flash 1017 (Max) (45), 3. GLM-5.3 (Max) (45).",
+   "quote": "The top open weights models by Intelligence Index are: 1. MiMo-V2.6-Pro (46), 2. DeepSeek V4.1 Flash 1017 (Max) (45), 3. GLM-5.3 (Max) (45).",
+   "title": "LLM Leaderboard - Comparison of AI models from OpenAI, Anthropic, Google, SpaceXAI & others | Artificial Analysis",
+   "url": "https://artificialanalysis.ai/leaderboards/models"
+  },
+  {
+   "sub": "q4",
+   "text": "Kimi K3 uses Stable LatentMoE framework activating 16 out of 896 experts.",
+   "quote": "We have also scaled up Mixture of Experts (MoE) sparsity, effectively activating 16 out of 896 experts when paired with a Stable LatentMoE framework.",
+   "title": "Kimi K3 Tech Blog: Open Frontier Intelligence",
+   "url": "https://www.kimi.ai/blog/kimi-k3"
+  },
+  {
+   "sub": "q3",
+   "text": "Qwen3.5 features a significantly larger context window compared to previous iterations.",
+   "quote": "a 1M context window by default",
+   "title": "Qwen3.5: Towards Native Multimodal Agents - Alibaba Cloud Community",
+   "url": "https://www.alibabacloud.com/blog/qwen3-5-towards-native-multimodal-agents_602894"
+  },
+  {
+   "sub": "q3",
+   "text": "Qwen3.5 offers improved efficiency metrics including higher decoding throughput compared to the previous generation.",
+   "quote": "Under the 32k/256k context length, the decoding throughput of Qwen3.5-397B-A17B is 8.6x/19.0x that of Qwen3-Max",
+   "title": "Qwen3.5: Towards Native Multimodal Agents - Alibaba Cloud Community",
+   "url": "https://www.alibabacloud.com/blog/qwen3-5-towards-native-multimodal-agents_602894"
+  },
+  {
+   "sub": "q2",
+   "text": "The model uses 1 shared expert and 384 routed experts per MoE layer, activating 6 routed experts per token.",
+   "quote": "The model uses 1 shared expert and 384 routed experts per MoE layer, activating 6 routed experts per token.",
+   "title": "deepseek-ai/DeepSeek-V4.1-Flash · Hugging Face",
+   "url": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash"
+  },
+  {
+   "sub": "q5",
+   "text": "It also improves by 10% over its predecessor on our Finance Agent Benchmark.",
+   "quote": "It also improves by 10% over its predecessor on our Finance Agent Benchmark [L5].",
+   "title": "Qwen 3 Max Thinking Benchmarks, Cost and Capabilities | Vals AI",
+   "url": "https://www.vals.ai/models/alibaba_qwen3-max-2026-01-23"
+  },
+  {
+   "sub": "q5",
+   "text": "Qwen3.8-Max completed automated cycles.",
+   "quote": "Alibaba said Qwen3.8-Max completed 33 automated improvement cycles over one month and increased its score on Artificial Analysis from 40 to 45.",
+   "title": "Alibaba targets 20GW cloud capacity by 2032 in full-stack AI push",
+   "url": "https://technode.global/2026/09/22/alibaba-20gw-data-center-capacity-2032-qwen-zhenwu-ai-roadmap/"
+  },
+  {
+   "sub": "q4",
+   "text": "The full model weights will be released by July 27, 2026.",
+   "quote": "We are currently working closely with inference partners and open-source maintainers",
+   "title": "Kimi K3 Tech Blog: Open Frontier Intelligence",
+   "url": "https://www.kimi.ai/blog/kimi-k3"
+  },
+  {
+   "sub": "q5",
+   "text": "Qwen3.8 Max only",
+   "quote": "- Qwen3.8 Max only",
+   "title": "Qwen3.8 Max vs Qwen4 27B: Benchmarks & Cost | BenchLM.ai",
+   "url": "https://benchlm.ai/compare/qwen3-8-max-vs-qwen4-27b"
+  },
+  {
+   "sub": "q3",
+   "text": "...Qwen-Audio-3.0-TTS in Flash and Plus tiers",
+   "quote": "Hosted text-to-speech across 16 languages with expressive inline delivery controls and continuous output of up to three minutes.",
+   "title": "Qwen release timeline & latest updates | Tongyi Qwen",
+   "url": "https://tongyis.com/updates/"
+  },
+  {
+   "sub": "q3",
+   "text": "has 95 billion active experts,",
+   "quote": "with 95 billion...more",
+   "title": "Qwen3.8 Max Benchmarks, Pricing & Context Window",
+   "url": "https://llm-stats.com/models/qwen3.8-max"
+  },
+  {
+   "sub": "q2",
+   "text": "Today, we officially release the DeepSeek-V4.1-Flash model.",
+   "quote": "It is the smallest model in our new architecture family, with native multimodal visual understanding.",
+   "title": "Change Log | DeepSeek API Docs",
+   "url": "https://api-docs.deepseek.com/updates/"
+  },
+  {
+   "sub": "q5",
+   "text": "Qwen-Image 3.1 is planned.",
+   "quote": "Qwen-Image 3.1, which Alibaba plans to launch later this year.",
+   "title": "Alibaba targets 20GW cloud capacity by 2032 in full-stack AI push",
+   "url": "https://technode.global/2026/09/22/alibaba-20gw-data-center-capacity-2032-qwen-zhenwu-ai-roadmap/"
+  },
+  {
+   "sub": "q5",
+   "text": "There are no Qwen4 prices or benchmarks yet, so it's too early to say how the models compare with what you can use today.",
+   "quote": "There are no Qwen4 prices or benchmarks yet, so it's too early to say how the models compare with what you can use today.",
+   "title": "Qwen 4 announced: what we know so far | LLM Hangar",
+   "url": "https://llmhangar.com/blog/deploy-qwen4"
+  },
+  {
+   "sub": "q2",
+   "text": "DeepSeek reports a higher SWE-bench Verified score for V3.1 (66.0; Change Log, 21 August 2025).",
+   "quote": "DeepSeek reports a higher SWE-bench Verified score for V3.1 (66.0; Change Log, 21 August 2025).",
+   "title": "DeepSeek R1 Review 2026: Benchmarks, License and API Status",
+   "url": "https://deepseekai.guide/reviews/deepseek-r1-review/"
+  },
+  {
+   "sub": "q5",
+   "text": "V3.2-Speciale attains gold-level results in IMO, CMO, ICPC World Finals & IOI 2025.",
+   "quote": "🥇 Gold-Medal Performance: V3.2-Speciale attains gold-level results in IMO, CMO, ICPC World Finals & IOI 2025.",
+   "title": "DeepSeek-V3.2 Release | DeepSeek API Docs",
+   "url": "https://api-docs.deepseek.com/news/news251201/"
+  },
+  {
+   "sub": "q4",
+   "text": "Kimi K3 outperformed GPT-5.5 in kernel optimization tests.",
+   "quote": "substantially outperformed Opus 4.8, GPT 5.6 Sol, and GPT 5.5.",
+   "title": "Kimi K3 Tech Blog: Open Frontier Intelligence",
+   "url": "https://www.kimi.ai/blog/kimi-k3"
+  },
+  {
+   "sub": "q4",
+   "text": "\"Which is better, Kimi K2.6 or Qwen4 27B? The public evidence has no benchmark result shared by both models, so it does not support a quality verdict.\" (\"The coding row is not comparable on the public lane: at least one model is not ranked",
+   "quote": "Qwen4 27B is not ranked on the public lane for agentic tasks, so no winner is named for agentic tasks.",
+   "title": "Kimi K2.6 vs Qwen4 27B: Benchmarks & Cost | BenchLM.ai",
+   "url": "https://benchlm.ai/compare/kimi-2-6-vs-qwen4-27b"
+  },
+  {
+   "sub": "q4",
+   "text": "DeepSWE: GLM-5.2 score is taken from the GLM-5.2 release blog; all remaining scores are from the official DeepSWE leaderboard, under which Kimi K3 attains 67.3.",
+   "quote": "The GLM-5.2 score is taken from the GLM-5.2 release blog (https://z.ai/blog/glm-5.2 [L6]); all remaining scores are from the official DeepSWE leaderboard (https://deepswe.datacurve.ai/ [L7]), under which Kimi K3 attains 67.3 with the mini-SWE-agent harness.",
+   "title": "Kimi K3 Tech Blog: Open Frontier Intelligence",
+   "url": "https://www.kimi.ai/blog/kimi-k3"
+  },
+  {
+   "sub": "q1",
+   "text": "Kimi K3 was officially released on July 16, 2026.",
+   "quote": "Kimi K3 was officially released on July 16, 2026.",
+   "title": "Kimi K3 Release Date: Launched July 16, 2026",
+   "url": "https://k3-kimi.com/blog/kimi-k3-release-date/"
+  },
+  {
+   "sub": "q1",
+   "text": "Add the dynamically_loaded_tools capability to official Kimi Code models when the service declares support for message-level tool declarations.",
+   "quote": "Add the dynamically_loaded_tools capability to official Kimi Code models when the service declares support for message-level tool declarations.",
+   "title": "Releases · MoonshotAI/kimi-code · GitHub",
+   "url": "https://github.com/MoonshotAI/kimi-code/releases"
+  },
+  {
+   "sub": "q4",
+   "text": "Kimi K3 achieved a score of 90.4 on BrowseComp with a 1M-token context window.",
+   "quote": "When evaluated with a 1M-token context window and no context management, Kimi K3 achieves a score of 90.4.",
+   "title": "Kimi K3 Tech Blog: Open Frontier Intelligence",
+   "url": "https://www.kimi.ai/blog/kimi-k3"
+  },
+  {
+   "sub": "q6",
+   "text": "The page introduces DeepSeek-V3 and states it has a biggest leap forward yet with 60 tokens/second (3x faster than V2!).",
+   "quote": "- 60 tokens/second (3x faster than V2!)",
+   "title": "DeepSeek | Introducing DeepSeek-V3",
+   "url": "https://www.deepseek.com/en/news/deepseek-v3/"
+  },
+  {
+   "sub": "q6",
+   "text": "kimi-k3 is Kimi's previous-generation flagship",
+   "quote": "| kimi-k3 | Kimi’s previous-generation flagship",
+   "title": "Model List - Kimi API Platform",
+   "url": "https://platform.kimi.ai/docs/models"
+  }
+ ],
+ "mixed": {
+  "sub": "q5",
+  "claim": "Alibaba announced on September 22 that V3.2 (Qwen 4) is in training; however, the claim regarding achieving gold-level results in specific competitions applies to DeepSeek-V3.2 according to [P1].",
+  "rows": [
+   {
+    "claim_id": "c_8a4c694b",
+    "text": "V3.2-Speciale attains gold-level results in IMO, CMO, ICPC World Finals & IOI 2025.",
+    "quote": "🥇 Gold-Medal Performance: V3.2-Speciale attains gold-level results in IMO, CMO, ICPC World Finals & IOI 2025.",
+    "source": "https://api-docs.deepseek.com/news/news251201/",
+    "credibility": 0.7,
+    "source_item": "i_4ceb0684"
+   },
+   {
+    "claim_id": "c_5dd007ac",
+    "text": "Alibaba announced Qwen 4 at its Apsara conference in Hangzhou on 22 September.",
+    "quote": "Alibaba announced Qwen 4 [L1] at its Apsara conference in Hangzhou on 22 September.",
+    "source": "https://llmhangar.com/blog/deploy-qwen4",
+    "credibility": 0.5,
+    "source_item": "i_49786404"
+   },
+   {
+    "claim_id": "c_e79a933f",
+    "text": "Alibaba said on Sep 22, 2026 that Qwen 4 is in training",
+    "quote": "Qwen 4 release date: Alibaba said on Sep 22, 2026 that Qwen 4 is in training.",
+    "source": "https://techpilot.ai/qwen-4-release-date/",
+    "credibility": 0.3,
+    "source_item": "i_6a7e8507"
+   }
+  ]
+ }
+}

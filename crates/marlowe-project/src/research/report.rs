@@ -180,12 +180,23 @@ fn claim_lines(claims: &[&VClaim]) -> String {
         .join("\n")
 }
 
-const WRITER_RULES: &str = "Write `sentences`, one entry per sentence, in reading order. `text` is the sentence itself, with no claim markers and no web addresses. `claims` lists the numbers of the claims it rests on (for [C3] write 3). Every sentence that states a fact cites at least one claim; a sentence only joins two others when it cites none. Use every claim that answers the question, one sentence each, up to 12; when the question asks for the newest or latest, lead with the most recently dated claims and say what is older. Write nothing the claims do not say. If claims disagree or one is marked contested, say so. Put END in `end`.";
+/// The verified claims one section's writer sees: its question's, and of those only the ones that
+/// do not belong to another subject of the objective (a section on one model never cites a fact
+/// about another).
+pub fn section_claims<'a>(all: &'a [VClaim], objective: &str, question: &str, sub: &str) -> Vec<&'a VClaim> {
+    let subjects = super::subject::Subjects::of(objective);
+    let scope = subjects.scope(question);
+    all.iter().filter(|c| c.sub == sub && subjects.text_fits(&scope, &c.text)).take(CLAIMS_PER_SECTION).collect()
+}
+
+const WRITER_RULES: &str = "Write `sentences`, one entry per sentence, in reading order. `text` is the sentence itself, with no claim markers and no web addresses. `claims` lists the numbers of the claims it rests on (for [C3] write 3). Every sentence that states a fact cites at least one claim; a sentence only joins two others when it cites none. Use every claim that answers the question, one sentence each, up to 12; when the question asks for the newest or latest, lead with the most recently dated claims and say what is older. Write nothing the claims do not say, and never carry a fact of one model, product or project over to another. If claims disagree or one is marked contested, say so. Put END in `end`.";
 
 fn section_prompt(input: &TaskInput) -> Result<Prompt, String> {
     let sub = input.sub.clone();
     let (all, questions) = input.project_handle.read(|st| (verified_claims(st), super::all_questions(st))).map_err(|e| e.to_string())?;
-    let mine: Vec<&VClaim> = all.iter().filter(|c| c.sub == sub).take(CLAIMS_PER_SECTION).collect();
+    // A question from an earlier round is not in this round's plan: take it from the project.
+    let q = questions.into_iter().find(|(id, _)| *id == sub).map(|(_, t)| t).unwrap_or_else(|| super::question_of(&input.plan, &sub));
+    let mine = section_claims(&all, &input.plan.objective, &q, &sub);
     if mine.is_empty() {
         return Ok(Prompt::canned(json!({"text": NOTHING, "end": "END"})));
     }
@@ -194,8 +205,6 @@ fn section_prompt(input: &TaskInput) -> Result<Prompt, String> {
          Objective: {}\n{WRITER_RULES}",
         fence::clean(&input.plan.objective, 500, false)
     );
-    // A question from an earlier round is not in this round's plan: take it from the project.
-    let q = questions.into_iter().find(|(id, _)| *id == sub).map(|(_, t)| t).unwrap_or_else(|| super::question_of(&input.plan, &sub));
     let user = format!("{}\n\n{}", fence::fence("The question", &q, 300), fence::fence("The verified claims", &claim_lines(&mine), 12_000));
     Ok(Prompt::new(vec![SystemBlock { text: system, cache: true }], user))
 }
@@ -272,9 +281,14 @@ fn written(input: &TaskInput, map: Map<String, Value>, allowed: HashSet<u32>, wh
 
 fn section_finish(input: &TaskInput, map: Map<String, Value>) -> Result<Finished, RuleFailure> {
     let sub = input.sub.clone();
+    let objective = input.plan.objective.clone();
+    let fallback = super::question_of(&input.plan, &sub);
     let allowed: HashSet<u32> = input
         .project_handle
-        .read(move |st| verified_claims(st).into_iter().filter(|c| c.sub == sub).take(CLAIMS_PER_SECTION).map(|c| c.n).collect())
+        .read(move |st| {
+            let q = super::all_questions(st).into_iter().find(|(id, _)| *id == sub).map(|(_, t)| t).unwrap_or(fallback);
+            section_claims(&verified_claims(st), &objective, &q, &sub).into_iter().map(|c| c.n).collect()
+        })
         .map_err(|e| RuleFailure::new("state", e.to_string()))?;
     written(input, map, allowed, "section")
 }

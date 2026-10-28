@@ -11,7 +11,7 @@
 //! `min(1, sum over roots of the best credibility in that root)`, so two independent roots at 0.5
 //! reach 1.0 and three blogs on one paper count once.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use marlowe_model::SystemBlock;
@@ -19,6 +19,7 @@ use marlowe_research::text::passage;
 use serde_json::{json, Map, Value};
 
 use super::numbered::locate_quote;
+use super::subject::{split_groups, Subjects};
 use super::{f, norm, object, plain_text, question_of, rows, s, u, Rejected, ResearchDeps};
 use crate::engine::fence;
 use crate::engine::{Finished, Prompt, RuleFailure, TaskInput, Toolbox};
@@ -139,9 +140,17 @@ fn extract_claims(deps: &ResearchDeps, input: &TaskInput) -> Result<Finished, St
     let mut out = Finished::default();
     let mut rej = Rejected::default();
     let mut seen: HashSet<(u64, u64)> = HashSet::new();
+    // A claim about another subject of the objective does not belong under this question.
+    let subjects = Subjects::of(&input.plan.objective);
+    let scope = subjects.scope(&question_of(&input.plan, &input.sub));
+    let page = subjects.page(s(&src.data, "title"), s(&src.data, "source"), &text);
     for c in rows(&src.data, "claims") {
         let (mut start, mut end) = (u(c, "start") as usize, u(c, "end") as usize);
         let quote = s(c, "quote");
+        if !subjects.claim_fits(&scope, s(c, "text"), quote, &page) {
+            rej.add("claim_other_subject", 1);
+            continue;
+        }
         // The stored span is checked against the page; a span that no longer matches is located again.
         if text.get(start..end) != Some(quote) {
             match locate_quote(&text, quote) {
@@ -244,6 +253,21 @@ fn condense_apply(deps: &ResearchDeps, input: &TaskInput, map: Option<Map<String
         }
     };
     let mut rej = Rejected::default();
+    let subjects = Subjects::of(&input.plan.objective);
+    let page_of = |url: &str, title: &str| subjects.page(title, url, "");
+    // The subjects a claim stands for: its own words, else its page's title and address.
+    let new_set = |c: &Item| -> BTreeSet<usize> {
+        let src = srcs.get(s(&c.data, "source"));
+        let pg = page_of(src.map(|x| x.url.as_str()).unwrap_or(""), src.map(|x| x.title.as_str()).unwrap_or(""));
+        subjects.of_claim(s(&c.data, "text"), s(&c.data, "quote"), &pg)
+    };
+    let old_set = |e: &Item| -> BTreeSet<usize> {
+        let mut set = subjects.named(s(&e.data, "claim"));
+        for r in rows(&e.data, "corroborates") {
+            set.extend(subjects.of_claim(s(r, "text"), s(r, "quote"), &page_of(s(r, "source"), "")));
+        }
+        set
+    };
     if let Some(m) = &map {
         for g in rows(m, "groups") {
             let mut ns: Vec<usize> = Vec::new();
@@ -272,8 +296,43 @@ fn condense_apply(deps: &ResearchDeps, input: &TaskInput, map: Option<Map<String
                 .filter(|w| handle(w).is_some())
                 .map(|w| w.trim().to_ascii_uppercase())
                 .collect();
-            let host = es.first().copied();
-            groups.push(Grp { host, merged: es.into_iter().skip(1).collect(), new: ns, text: plain_text(s(g, "claim"), 240), contradicts });
+            // Claims about different subjects are never one claim, whatever the employee grouped:
+            // the group splits by subject, a made earlier group joins only a part it shares one with,
+            // and a sentence that names a subject none of its members names is not used.
+            let sets: Vec<BTreeSet<usize>> = ns.iter().map(|&n| new_set(&h.new[n])).collect();
+            let parts = split_groups(&sets);
+            let mut first: BTreeSet<usize> = parts[0].iter().flat_map(|&k| sets[k].iter().copied()).collect();
+            let (mut joined, mut put_back): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
+            for e in es {
+                let own = old_set(&h.existing[e]);
+                if own.is_empty() || first.is_empty() || !own.is_disjoint(&first) {
+                    first.extend(own);
+                    joined.push(e);
+                } else {
+                    put_back.push(e);
+                }
+            }
+            for e in put_back {
+                taken_e.remove(&e);
+                rej.add("group_other_subject", 1);
+            }
+            let mut text = plain_text(s(g, "claim"), 240);
+            if !subjects.named(&text).is_subset(&first) {
+                text.clear();
+                rej.add("sentence_other_subject", 1);
+            }
+            if parts.len() > 1 {
+                rej.add("group_split_by_subject", parts.len() as u64 - 1);
+            }
+            for (k, part) in parts.iter().enumerate() {
+                let members: Vec<usize> = part.iter().map(|&i| ns[i]).collect();
+                if k == 0 {
+                    let host = joined.first().copied();
+                    groups.push(Grp { host, merged: joined.iter().skip(1).copied().collect(), new: members, text: text.clone(), contradicts: contradicts.clone() });
+                } else {
+                    groups.push(Grp { host: None, merged: Vec::new(), new: members, text: String::new(), contradicts: Vec::new() });
+                }
+            }
         }
     }
     // A claim no group took is a group of its own: none is lost.
@@ -455,7 +514,19 @@ fn verify_finish(deps: &ResearchDeps, input: &TaskInput, map: Map<String, Value>
     let mut data = Map::new();
     data.insert("verdict".into(), json!(verdict));
     data.insert("reason".into(), json!(plain_text(s(&map, "reason"), 200)));
-    let corrected = map.get("corrected_claim").and_then(Value::as_str).map(|t| plain_text(t, 240)).filter(|t| !t.is_empty());
+    let mut corrected = map.get("corrected_claim").and_then(Value::as_str).map(|t| plain_text(t, 240)).filter(|t| !t.is_empty());
+    // A correction narrows the claim; it does not bring in a subject the passages are not about.
+    let subjects = Subjects::of(&input.plan.objective);
+    if let Some(t) = &corrected {
+        let mut about = subjects.named(s(&c.data, "claim"));
+        for r in rows(&c.data, "corroborates") {
+            about.extend(subjects.of_claim(s(r, "text"), s(r, "quote"), &subjects.page("", s(r, "source"), "")));
+        }
+        if !subjects.named(t).is_subset(&about) {
+            rej.add("correction_other_subject", 1);
+            corrected = None;
+        }
+    }
     match (&*verdict, corrected) {
         ("partial", Some(t)) => {
             data.insert("original_claim".into(), c.data.get("claim").cloned().unwrap_or(Value::Null));

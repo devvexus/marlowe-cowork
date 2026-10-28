@@ -30,6 +30,7 @@ pub mod credibility;
 pub mod finish;
 pub mod numbered;
 pub mod report;
+pub mod subject;
 pub mod think;
 pub mod validate;
 pub mod vectors;

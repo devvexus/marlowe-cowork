@@ -26,7 +26,11 @@ fn obj(v: Value) -> Map<String, Value> {
 }
 
 fn lab(questions: usize) -> Lab {
-    let p = Project::new("lab", Registry::builtin(), &research_plan(questions));
+    lab_for(&research_plan(questions))
+}
+
+fn lab_for(plan: &Value) -> Lab {
+    let p = Project::new("lab", Registry::builtin(), plan);
     let rig = rig(&World::load(), &p.home.0);
     let tools = research::toolbox(&rig.deps);
     p.handle.mutate(Mutation::SetGrants(state::Grants { net: Some(state::NetGrant { scope: "run".into(), public_https_get: true, robots: true, quota: 60, used: 0 }) })).unwrap();
@@ -680,4 +684,157 @@ fn a_hit_is_not_read_without_the_grant_or_past_the_quota() {
     let p = l.code("fetch_page", &input).unwrap().emits.remove(0);
     assert_eq!(p.data["status"], "over_quota");
     assert_eq!(l.rig.pages.requests().len(), 0, "nothing was requested");
+}
+
+// ---- subjects: a claim about one thing never lands under a question about another ---------------------------------
+//
+// Run m6 (the prompt about Kimi, DeepSeek and Qwen 4), recorded in tests/fixtures/research/m6_subjects.json:
+// a DeepSeek "V3.2" fact was read for the Qwen 4 question, condensed with Qwen 4 claims, and the report called the
+// model "V3.2 (Qwen 4)".
+
+const M6: &str = include_str!("fixtures/research/m6_subjects.json");
+
+fn m6() -> Value {
+    serde_json::from_str(M6).expect("the recorded fixture")
+}
+
+fn m6_lab() -> Lab {
+    let m = m6();
+    lab_for(&json!({"objective": m["objective"], "questions": m["questions"], "fields": [{"key": "model_name"}]}))
+}
+
+fn m6_question(m: &Value, sub: &str) -> String {
+    let n: usize = sub.trim_start_matches('q').parse().unwrap();
+    m["questions"][n - 1].as_str().unwrap().to_string()
+}
+
+const OFF_SUBJECT: usize = 12;
+
+#[test]
+fn the_recorded_m6_claims_that_leaked_across_subjects_are_held_back_and_the_rest_stay() {
+    use research::subject::Subjects;
+    let m = m6();
+    let subjects = Subjects::of(m["objective"].as_str().unwrap());
+    let mut off: Vec<(String, String)> = Vec::new();
+    let mut kept = 0;
+    for c in m["claims"].as_array().unwrap() {
+        let sub = c["sub"].as_str().unwrap();
+        let scope = subjects.scope(&m6_question(&m, sub));
+        let page = subjects.page(c["title"].as_str().unwrap(), c["url"].as_str().unwrap(), "");
+        if subjects.claim_fits(&scope, c["text"].as_str().unwrap(), c["quote"].as_str().unwrap(), &page) {
+            kept += 1;
+        } else {
+            off.push((sub.to_string(), c["text"].as_str().unwrap().to_string()));
+        }
+    }
+    // The two DeepSeek facts read off api-docs.deepseek.com for the Qwen question (q5) are the leak.
+    for text in ["V3.2 level performance [GPT-5].", "V3.2-Speciale attains gold-level results in IMO, CMO, ICPC World Finals & IOI 2025."] {
+        assert!(off.contains(&("q5".to_string(), text.to_string())), "{text} must not stay under q5: {off:?}");
+    }
+    // DeepSeek pages read for the Kimi question (q6) are held back the same way.
+    assert!(off.iter().any(|(s, t)| s == "q6" && t.contains("DeepSeek-V3")), "{off:?}");
+    // A Qwen claim under the Qwen question and a Kimi comparison on a Qwen page stay.
+    assert!(!off.iter().any(|(_, t)| t.contains("Qwen 4 is in training")), "{off:?}");
+    assert!(!off.iter().any(|(_, t)| t.contains("behind Kimi K2.5")), "{off:?}");
+    assert_eq!((off.len(), kept), (OFF_SUBJECT, 104 - OFF_SUBJECT), "{off:?}");
+}
+
+#[test]
+fn extract_drops_a_claim_read_off_another_subjects_page_before_it_can_be_condensed() {
+    let l = m6_lab();
+    let m = m6();
+    let rows = m["mixed"]["rows"].as_array().unwrap();
+    let (deepseek, qwen) = (&rows[0], &rows[2]);
+    assert!(deepseek["source"].as_str().unwrap().contains("deepseek.com"), "the recorded DeepSeek row");
+    let text = format!("{} {}", deepseek["quote"].as_str().unwrap(), qwen["quote"].as_str().unwrap());
+    let hash = l.page(&text);
+    let at = |q: &str| text.find(q).unwrap();
+    let claim = |row: &Value| {
+        let q = row["quote"].as_str().unwrap();
+        json!({"text": row["text"], "quote": q, "sub": "q5", "start": at(q), "end": at(q) + q.len()})
+    };
+    let q5 = l.question(4);
+    let mk = |id: &str, url: &str, title: &str, row: &Value| {
+        l.put(id, "source", "analyze@1", Some(&q5), json!({"index": 1, "title": title, "relevancy": "High", "credibility": 0.7, "source_kind": "official", "one_line": "x", "source": url, "notes": "",
+            "relevance": 0.7, "page": "i_p", "text_ref": hash, "claims": [claim(row)], "additional_sources": [], "records": []}))
+    };
+    let from_deepseek = mk("i_sd", deepseek["source"].as_str().unwrap(), "DeepSeek-V3.2 release", deepseek);
+    let from_qwen = mk("i_sq", qwen["source"].as_str().unwrap(), "How to deploy Qwen 4", qwen);
+    let fin = l.code("extract_claims", &l.input("extract", Some(from_deepseek.clone()), vec![], vec![], "q5")).unwrap();
+    assert!(fin.emits.is_empty(), "a DeepSeek fact has no place under the Qwen 4 question");
+    assert_eq!(fin.rejected.unwrap()["claim_other_subject"], 1);
+    let fin = l.code("extract_claims", &l.input("extract", Some(from_qwen), vec![], vec![], "q5")).unwrap();
+    assert_eq!(fin.emits.len(), 1, "the Qwen 4 claim stays");
+    // A question that names no subject holds nothing apart.
+    let fin = l.code("extract_claims", &l.input("extract", Some(from_deepseek), vec![], vec![], "q4")).unwrap();
+    assert_eq!(fin.emits.len(), 1);
+}
+
+#[test]
+fn condense_never_merges_claims_of_different_subjects_whatever_the_employee_grouped() {
+    let l = m6_lab();
+    let m = m6();
+    let rows = m["mixed"]["rows"].as_array().unwrap();
+    let q5 = l.question(4);
+    let hash = l.page("x");
+    let mut claims = Vec::new();
+    for (i, r) in rows.iter().enumerate() {
+        let sid = format!("i_s{i}");
+        l.put(&sid, "source", "analyze@1", Some(&q5), json!({"index": i + 1, "title": "t", "relevancy": "High", "credibility": r["credibility"], "source_kind": "news", "one_line": "x", "source": r["source"], "notes": "",
+            "claims": [], "additional_sources": [], "records": [], "relevance": 0.7, "page": "i_p", "text_ref": hash}));
+        claims.push(l.put(&format!("i_c{i}"), "claim", "claim@1", Some(&q5), json!({"id": format!("c_{i}"), "text": r["text"], "quote": r["quote"], "locator": {"doc": hash, "start": 0, "end": 0},
+            "source": sid, "sub": "q5", "credibility": r["credibility"], "status": "new", "text_ref": hash})));
+    }
+    let input = l.input("condense", None, claims, vec![], "q5");
+    // The recorded group: the DeepSeek row and the two Qwen rows as one claim, in the employee's mixed words.
+    let mixed = m["mixed"]["claim"].as_str().unwrap();
+    let reply = json!({"groups": [{"members": ["N1", "N2", "N3"], "claim": mixed, "contradicts": []}]});
+    let fin = l.finish("condense_apply", &input, reply).unwrap();
+    let cc: Vec<&Item> = fin.emits.iter().filter(|i| i.kind == "cclaim").collect();
+    assert_eq!(cc.len(), 2, "one claim per subject");
+    for c in &cc {
+        let hosts: std::collections::BTreeSet<bool> = c.data["corroborates"].as_array().unwrap().iter().map(|r| r["source"].as_str().unwrap().contains("deepseek")).collect();
+        assert_eq!(hosts.len(), 1, "a group holds one subject's claims: {:?}", c.data["corroborates"]);
+        assert_ne!(c.data["claim"], mixed, "the mixed sentence names a subject its first group does not hold");
+    }
+    let rej = fin.rejected.unwrap();
+    assert_eq!((rej["group_split_by_subject"].as_u64(), rej["sentence_other_subject"].as_u64()), (Some(1), Some(1)));
+}
+
+#[test]
+fn a_verifiers_correction_cannot_bring_in_another_subject() {
+    let l = m6_lab();
+    let q5 = l.question(4);
+    let text = "Gold-Medal Performance: V3.2-Speciale attains gold-level results in IMO.";
+    let hash = l.page(text);
+    let row = json!({"claim_id": "c_1", "text": "V3.2-Speciale attains gold-level results.", "quote": text, "source": "https://api-docs.deepseek.com/news/news251201/", "credibility": 0.7,
+        "text_ref": hash, "start": 0, "end": text.len(), "source_item": "i_s1"});
+    let cc = l.put("i_cc1", "cclaim", "cclaim@1", Some(&q5), json!({"claim": "V3.2-Speciale attains gold-level results.", "corroborates": [row], "source_count": 1, "score": 0.7, "stance": "supported", "sub": "q5"}));
+    let input = l.input("verify", Some(cc), vec![], vec![], "q5");
+    let reply = |corrected: &str| json!({"reason": "r", "verdict": "partial", "corrected_claim": corrected, "used": [1]});
+    let fin = l.finish("verify_finish", &input, reply("Qwen 4 attains gold-level results in IMO.")).unwrap();
+    assert!(fin.data.get("claim").is_none(), "the claim stays as it was");
+    assert_eq!(fin.rejected.unwrap()["correction_other_subject"], 1);
+    let fin = l.finish("verify_finish", &input, reply("V3.2-Speciale attains gold-level results in IMO only.")).unwrap();
+    assert_eq!(fin.data["claim"], "V3.2-Speciale attains gold-level results in IMO only.", "a narrower claim about the same thing is fine");
+}
+
+#[test]
+fn a_section_writer_sees_only_claims_that_do_not_belong_to_another_subject() {
+    let l = m6_lab();
+    let q5 = l.question(4);
+    let put = |id: &str, claim: &str| {
+        l.put(id, "cclaim", "cclaim@1", Some(&q5), json!({"claim": claim, "corroborates": [], "source_count": 2, "score": 0.9, "stance": "supported", "sub": "q5", "verdict": "upheld"}))
+    };
+    put("i_a", "Qwen 4 is in training and has no release date.");
+    put("i_b", "DeepSeek-V3.2 attains gold-level results in IMO.");
+    put("i_c", "No benchmarks have been published yet.");
+    let input = l.input("sections", Some(l.p.state().items_of_kind("question")[4].clone()), vec![], vec![], "q5");
+    let p = l.prompt("section-writer", &input);
+    assert!(p.user.contains("Qwen 4 is in training") && p.user.contains("No benchmarks have been published"), "{}", p.user);
+    assert!(!p.user.contains("DeepSeek-V3.2 attains"), "{}", p.user);
+    // Nor can the section cite it: the claim number was never given.
+    let n_b = research::report::verified_claims(&l.p.state()).iter().find(|c| c.id == "i_b").unwrap().n;
+    let reply = json!({"text": format!("DeepSeek attains gold [C{n_b}]."), "end": "END"});
+    assert_eq!(l.finish("section_finish", &input, reply).unwrap_err().rule, "cites_claims");
 }
