@@ -163,6 +163,10 @@ pub fn retain_markers(text: &str, allowed: &HashSet<u32>) -> (String, usize) {
 
 /// Where a writer's claim numbers sit in its form's model schema.
 const CITE_AT: &str = "/properties/sentences/items/properties/claims/items";
+/// A writer's list of claim numbers for one sentence. At least one: found live, dawn left it
+/// empty on every sentence and two sections failed; a sentence that must name a claim is one the
+/// audit can check against its pages, and cut.
+const CLAIMS_AT: &str = "/properties/sentences/items/properties/claims";
 
 /// The claims a writer is shown, numbered 1 to n in the order given, not by their numbers in the
 /// report. Found live: a 9b writer cited the list positions (0, 1, 3) of claims shown as C10, C41
@@ -175,6 +179,12 @@ fn writer_claims(claims: &[&VClaim]) -> String {
 /// The numbers a writer may cite: 1 to `shown`.
 fn cite_values(shown: usize) -> Vec<Value> {
     (1..=shown as u64).map(Value::from).collect()
+}
+
+/// A writer's prompt: each sentence cites at least one of the `shown` claims, by its number in the
+/// list.
+fn writer_prompt(system: String, user: String, shown: usize) -> Prompt {
+    Prompt::new(vec![SystemBlock { text: system, cache: true }], user).narrowed(CITE_AT, cite_values(shown)).limit(CLAIMS_AT, "minItems", json!(1))
 }
 
 /// A writer's sentences with the numbers it cited (1 to n, positions in `shown`) turned into the
@@ -243,7 +253,7 @@ fn section_prompt(input: &TaskInput) -> Result<Prompt, String> {
         fence::clean(&input.plan.objective, 500, false)
     );
     let user = format!("{}\n\n{}", fence::fence("The question", &q, 300), fence::fence("The verified claims", &writer_claims(&mine), 12_000));
-    Ok(Prompt::new(vec![SystemBlock { text: system, cache: true }], user).narrowed(CITE_AT, cite_values(mine.len())))
+    Ok(writer_prompt(system, user, mine.len()))
 }
 
 /// The text a writer's `sentences` make: each sentence with the markers of its claims before
@@ -285,13 +295,20 @@ fn render_sentences(rows: &[&Map<String, Value>], allowed: &HashSet<u32>) -> (St
 fn written(input: &TaskInput, map: Map<String, Value>, allowed: HashSet<u32>, what: &str) -> Result<Finished, RuleFailure> {
     // A writer answers in `sentences`; the fixed lines (nothing verified) come as `text`.
     let sentences = rows(&map, "sentences");
-    let (text, urls, unknown, kept) = if sentences.is_empty() {
+    let (mut text, urls, unknown, mut kept) = if sentences.is_empty() {
         let (t, u) = plain_block(s(&map, "text"), 4000);
         let kept = vec![json!({"text": t.chars().take(400).collect::<String>(), "claims": []})];
         (t, u, 0, kept)
     } else {
         render_sentences(&sentences, &allowed)
     };
+    if text.is_empty() && what == "section" {
+        // A writer with nothing to say from its claims says so: found live, dawn answered a
+        // question its claims could not settle with no sentences, three times, and the section
+        // failed. That is the fixed line, not a failure.
+        text = NOTHING.to_string();
+        kept = vec![json!({"text": NOTHING, "claims": []})];
+    }
     if text.is_empty() {
         return Err(RuleFailure::new("text_present", format!("The {what} is empty. Write it.")));
     }
@@ -361,7 +378,7 @@ fn answer_prompt(input: &TaskInput) -> Result<Prompt, String> {
         secs.push_str(&format!("[{sub}] {}\n\n", fence::clean(&text, 2000, true)));
     }
     let user = format!("{}\n\n{}", fence::fence("The sections", &secs, 14_000), fence::fence("The strongest verified claims", &writer_claims(&top), 6_000));
-    Ok(Prompt::new(vec![SystemBlock { text: system, cache: true }], user).narrowed(CITE_AT, cite_values(top.len())))
+    Ok(writer_prompt(system, user, top.len()))
 }
 
 /// The claims the answer writer is shown: the strongest, in [`verified_claims`] order.
@@ -950,8 +967,12 @@ mod tests {
         assert_eq!(unknown, 2);
         // The schema lets the writer write only 1 to 3 there.
         let schema = json!({"properties": {"sentences": {"items": {"properties": {"claims": {"type": "array", "items": {"type": "integer"}}}}}}});
-        let narrowed = crate::engine::narrow_schema(schema, &[(CITE_AT.to_string(), cite_values(3))]);
+        let narrowed = crate::engine::narrow_schema(schema, &[(CITE_AT.to_string(), "enum".to_string(), Value::Array(cite_values(3)))]);
         assert_eq!(narrowed.pointer(CITE_AT).unwrap()["enum"], json!([1, 2, 3]));
+        let p = writer_prompt(String::new(), String::new(), 2);
+        let s = crate::engine::narrow_schema(json!({"properties": {"sentences": {"items": {"properties": {"claims": {"type": "array", "items": {"type": "integer"}}}}}}}), &p.narrow);
+        assert_eq!(s.pointer(CLAIMS_AT).unwrap()["minItems"], 1);
+        assert_eq!(s.pointer(CITE_AT).unwrap()["enum"], json!([1, 2]));
     }
 
     #[test]

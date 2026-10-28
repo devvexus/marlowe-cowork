@@ -143,10 +143,10 @@ pub struct Prompt {
     /// finish function runs on it exactly as on a model's reply, but no model is called, no slot
     /// is taken and no agent appears.
     pub canned: Option<Value>,
-    /// Values this one call may write at a place in the form's schema: a JSON pointer into the
-    /// model schema and the `enum` set there, so constrained decoding cannot write anything else
-    /// (the claim numbers a writer was shown).
-    pub narrow: Vec<(String, Vec<Value>)>,
+    /// Limits for this one call at places in the form's schema: a JSON pointer into the model
+    /// schema, a keyword and its value (`enum` with the claim numbers a writer was shown,
+    /// `minItems`), so constrained decoding cannot write anything else.
+    pub narrow: Vec<(String, String, Value)>,
 }
 
 impl Prompt {
@@ -160,22 +160,27 @@ impl Prompt {
         Prompt { system: Vec::new(), user: String::new(), canned: Some(answer), narrow: Vec::new() }
     }
 
-    /// Allow only `values` at `pointer` in this call's schema.
-    pub fn narrowed(mut self, pointer: &str, values: Vec<Value>) -> Prompt {
-        self.narrow.push((pointer.to_string(), values));
+    /// Allow only `values` at `pointer` in this call's schema. An empty list adds no limit.
+    pub fn narrowed(self, pointer: &str, values: Vec<Value>) -> Prompt {
+        if values.is_empty() {
+            return self;
+        }
+        self.limit(pointer, "enum", Value::Array(values))
+    }
+
+    /// Set `keyword` to `value` at `pointer` in this call's schema.
+    pub fn limit(mut self, pointer: &str, keyword: &str, value: Value) -> Prompt {
+        self.narrow.push((pointer.to_string(), keyword.to_string(), value));
         self
     }
 }
 
-/// `schema` with each of `narrow`'s places limited to its values. A pointer the schema does not
-/// have, or an empty value list, leaves the schema as it was.
-pub fn narrow_schema(mut schema: Value, narrow: &[(String, Vec<Value>)]) -> Value {
-    for (pointer, values) in narrow {
-        if values.is_empty() {
-            continue;
-        }
+/// `schema` with each of `narrow`'s limits set. A pointer the schema does not have leaves the
+/// schema as it was.
+pub fn narrow_schema(mut schema: Value, narrow: &[(String, String, Value)]) -> Value {
+    for (pointer, keyword, value) in narrow {
         if let Some(Value::Object(node)) = schema.pointer_mut(pointer) {
-            node.insert("enum".into(), Value::Array(values.clone()));
+            node.insert(keyword.clone(), value.clone());
         }
     }
     schema
