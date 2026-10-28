@@ -55,12 +55,52 @@ struct Shared {
     /// What each project was last told about its models, so a restart of its engine with the
     /// same reason says nothing new.
     told: Mutex<HashMap<String, String>>,
+    /// What the user chose on a project's card, by session: told to the model at the head of the
+    /// user's next message (never a turn of its own, never a rewrite of what it has read).
+    answered: Mutex<HashMap<String, Vec<String>>>,
 }
 
 impl Shared {
     fn service(&self) -> &ProjectService {
         self.service.get().expect("the project service is set before anything calls it")
     }
+
+    /// The conversation a project belongs to, read before the user's answer runs it (a running
+    /// project's state is not always readable).
+    fn session_of(&self, project: &str) -> Option<String> {
+        self.service().state(project).ok().and_then(|st| st.session)
+    }
+
+    /// Records what the user chose on a project's card for the conversation that made the project.
+    /// The model hears it at the head of the user's next message; nothing here starts a turn.
+    fn note_answer(&self, project: &str, session: Option<String>, (choice, plan): (&str, bool), text: Option<&str>) {
+        let Some(session) = session else { return };
+        let note = answer_note(project, choice, plan, text);
+        lock(&self.answered).entry(session).or_default().push(note);
+    }
+}
+
+/// One line for the model about a card the user answered.
+fn answer_note(project: &str, choice: &str, plan: bool, text: Option<&str>) -> String {
+    let steer = text.map(|t| t.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|t| !t.is_empty());
+    match (choice, plan) {
+        ("approve", true) => format!("The user approved the plan for project {project}; it is running."),
+        ("approve", false) => format!("The user approved project {project} at its checkin; it is writing the report."),
+        ("keep_researching", _) => format!("The user chose to keep researching on project {project}; it is running another round."),
+        ("steer", _) => match steer {
+            Some(t) => format!("The user steered project {project} (their words: \"{t}\"); it is running again."),
+            None => format!("The user steered project {project}; it is running again."),
+        },
+        ("cancel", _) => format!("The user cancelled project {project}."),
+        (other, _) => format!("The user answered project {project}'s card: {other}."),
+    }
+}
+
+/// What the user chose on project cards since this conversation's last user message, as one
+/// reminder for the head of the next one; taken once. `None` when nothing was answered.
+pub(crate) fn take_answers(core: &Core, session: &str) -> Option<String> {
+    let notes = lock(&link(core)?.shared.answered).remove(session)?;
+    (!notes.is_empty()).then(|| format!("<system-reminder>{}</system-reminder>", notes.join(" ")))
 }
 
 fn link(core: &Core) -> Option<Arc<ProjectLink>> {
@@ -83,6 +123,7 @@ pub(crate) fn start(core: &Arc<Core>, setup: Option<ProjectSetup>) {
         awaiting: Mutex::new(HashMap::new()),
         deferred: AtomicBool::new(false),
         told: Mutex::new(HashMap::new()),
+        answered: Mutex::new(HashMap::new()),
     });
     let cfg = ServiceConfig {
         root: core.home.join("projects"),
@@ -197,8 +238,10 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
             let core = core.clone();
             let _ = std::thread::Builder::new().name("project-answer".into()).spawn(move || {
                 let Some(l) = link(&core) else { return };
+                let session = l.shared.session_of(&project);
                 match l.shared.service().answer(&project, Some(&gate), &choice, text.as_deref()) {
                     Ok(done) => {
+                        l.shared.note_answer(&project, session, (&done.choice, done.plan), text.as_deref());
                         core.bus.publish(Event::ProjectGateAnswered { project, gate: done.gate, choice: done.choice });
                     }
                     Err(e) => {
@@ -213,8 +256,10 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
             }
         }
         Request::CancelProject { project } => {
-            if let Err(e) = svc.cancel(&project) {
-                fail(e.to_string());
+            let session = l.shared.session_of(&project);
+            match svc.cancel(&project) {
+                Ok(()) => l.shared.note_answer(&project, session, ("cancel", false), None),
+                Err(e) => fail(e.to_string()),
             }
         }
         Request::ReopenProject { project, phase } => {
@@ -632,6 +677,19 @@ mod tests {
 
     fn device(index: u32, util_pct: u32, mem_used_mb: u64) -> GpuDevice {
         GpuDevice { index, name: format!("GPU {index}"), util_pct, mem_used_mb, mem_total_mb: 24_000, temp_c: None, processes: Vec::new() }
+    }
+
+    #[test]
+    fn each_answer_on_a_card_has_a_short_note_for_the_model() {
+        assert_eq!(answer_note("p_1", "approve", true, None), "The user approved the plan for project p_1; it is running.");
+        assert_eq!(answer_note("p_1", "approve", false, None), "The user approved project p_1 at its checkin; it is writing the report.");
+        assert_eq!(answer_note("p_1", "keep_researching", false, None), "The user chose to keep researching on project p_1; it is running another round.");
+        assert_eq!(answer_note("p_1", "cancel", true, None), "The user cancelled project p_1.");
+        assert_eq!(
+            answer_note("p_1", "steer", false, Some("  look at
+the  benchmarks ")),
+            "The user steered project p_1 (their words: \"look at the benchmarks\"); it is running again."
+        );
     }
 
     #[test]

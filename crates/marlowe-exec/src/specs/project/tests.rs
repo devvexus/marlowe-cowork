@@ -174,7 +174,7 @@ fn create_returns_the_card_at_once_and_a_bad_plan_is_told_what_to_write() {
     let out = t.call_scoped(&req(json!({"action": "create", "plan": plan()})), &c);
     assert!(started.elapsed() < Duration::from_secs(3), "the tool never waits for the project");
     assert!(!out.is_error, "{}", out.content);
-    assert!(out.content.contains("1. What is the newest Kimi model?") && out.content.contains("ask whether to go ahead") && out.content.contains("Nothing is read before the user approves"), "{}", out.content);
+    assert!(out.content.contains("1. What is the newest Kimi model?") && out.yields && out.content.contains("plan card is on the user's screen") && out.content.contains("your turn ends") && out.content.contains("Nothing is read before the user approves"), "{}", out.content);
     let id = id_of(&out.content);
     wait("the project to park", || !svc.is_running(&id));
     let listed = t.call_scoped(&req(json!({"action": "list"})), &c);
@@ -242,9 +242,10 @@ fn revise_cancel_and_reopen_speak_plainly() {
     let id = id_of(&t.call_scoped(&req(json!({"action": "create", "plan": plan()})), &c).content);
     wait("the project to park", || !svc.is_running(&id));
     let revised = t.call_scoped(&req(json!({"action": "revise", "plan": {"questions": ["What is the newest Kimi model and when did it ship?"]}})), &c);
-    assert!(!revised.is_error && revised.content.contains("1. What is the newest Kimi model and when did it ship?") && revised.content.contains("still waiting"), "{}", revised.content);
+    assert!(!revised.is_error && revised.content.contains("1. What is the newest Kimi model and when did it ship?") && revised.yields && revised.content.contains("on the user's screen again"), "{}", revised.content);
     wait("the revised card", || !svc.is_running(&id));
     let no_keys = t.call_scoped(&req(json!({"action": "revise", "id": id})), &c);
+    assert!(!no_keys.yields, "a refused revise puts no card in front of the user");
     assert!(no_keys.is_error && no_keys.content.contains("only the keys to change"), "{}", no_keys.content);
     let cancelled = t.call_scoped(&req(json!({"action": "cancel", "id": id})), &c);
     assert!(!cancelled.is_error && cancelled.content.contains("cancelled"), "{}", cancelled.content);

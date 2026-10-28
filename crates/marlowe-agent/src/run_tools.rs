@@ -69,6 +69,11 @@ fn refused(why: &str) -> ToolOutcome {
     }
 }
 
+/// Left in the conversation's extensions by a step whose results include one that yields to the
+/// user ([`ToolOutcome::yields`]); the loop ends the turn on it.
+#[derive(Debug, Clone)]
+pub(crate) struct YieldToUser;
+
 enum Msg {
     /// A call's outcome; `ran` is false for denied or interrupted calls.
     Done { i: usize, out: ToolOutcome, ran: bool },
@@ -276,6 +281,10 @@ pub(crate) fn run_calls(
     // Take the extensions back; a tool that kept the scope sees them empty from here on.
     convo.ext = std::mem::take(&mut *ext.lock().unwrap_or_else(|p| p.into_inner()));
 
+    // A result that put a decision in front of the user ends the turn once the batch is answered.
+    if outcomes.iter().flatten().any(|o| o.yields && !o.is_error) {
+        convo.ext.insert(YieldToUser);
+    }
     calls
         .iter()
         .zip(outcomes)

@@ -263,7 +263,7 @@ fn shell_outcome(run: ShellRun, limits: ShellLimits, opts: OutputOpts) -> ToolOu
     } else {
         summary = format!("{} lines", opts.total_lines.unwrap_or_else(|| run.text.lines().count()));
     }
-    ToolOutcome { content: out, is_error: failed, summary, parts: Vec::new(), class: None }
+    ToolOutcome { content: out, is_error: failed, summary, parts: Vec::new(), class: None, yields: false }
 }
 
 /// Shells always ask here (E's rules and modes decide in front of this).

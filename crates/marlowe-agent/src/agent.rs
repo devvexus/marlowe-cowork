@@ -649,6 +649,11 @@ impl Agent {
                 o.on_tools_done(convo, info, &c.tool_calls, &results);
             }
             convo.push(Message::tool_results(results));
+            // A call that put a decision in front of the user ends the turn here: the user answers
+            // on their own, and the model must not write on from the state this result describes.
+            if convo.ext.remove::<run_tools::YieldToUser>() {
+                break TurnStop::Done;
+            }
             // A subagent that handed its report back ends here, after the whole batch has run: a
             // `write` beside the `handback` completed, and what follows is dropped.
             if convo.ext.get::<crate::subagent_tools::Handback>().is_some() {

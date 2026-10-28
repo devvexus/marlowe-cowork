@@ -299,6 +299,7 @@ pub(crate) fn fetch_with(args: &Value, deps: &FetchDeps<'_>, cancel: &CancelToke
                         summary: "interrupted".into(),
                         parts: Vec::new(),
                         class: None,
+                        yields: false,
                     }
                 }
                 Outcome::Unreachable { detail, .. } => return ToolOutcome::error(format!("could not fetch {url}: {detail}")),

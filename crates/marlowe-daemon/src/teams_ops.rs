@@ -143,7 +143,11 @@ pub(crate) fn services(core: &Arc<Core>, convo: &Conversation, services: Service
         let core = weak.upgrade()?;
         let ws = workspace.as_deref();
         let projects = crate::project_ops::live(&core);
-        let running = crate::project_ops::running_reminder(&core, &session.0);
+        // What the user chose on a project's card since their last message comes first.
+        let running = match (crate::project_ops::take_answers(&core, &session.0), crate::project_ops::running_reminder(&core, &session.0)) {
+            (Some(a), Some(r)) => Some(format!("{a}{r}")),
+            (a, r) => a.or(r),
+        };
         let base = match mode(&core, &session, ws) {
             Mode::On if projects => project_reminder(&core, ws, Mode::On, text),
             Mode::On => Some(on_reminder_naming(size(&core, ws), named_task(&core, ws, text).as_deref())),

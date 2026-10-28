@@ -1,9 +1,11 @@
 //! The work block: everything the model did in one assistant turn (its reasoning and its tool
 //! calls) as ONE block in the transcript, and the lines that stay outside it (an edit, a sent file).
 //!
-//! The entries stay flat in [`State::entries`]; [`roles`] groups a turn's reasoning and tool entries
-//! at layout time. The first of them draws the block and the rest draw nothing of their own, so the
-//! cache keeps one rows-list per entry and a streaming frame still lays out one block.
+//! The entries stay flat in [`State::entries`], in the order they happened; [`roles`] groups each
+//! contiguous run of reasoning and tool entries (the text of the assistant ends a run) at layout
+//! time. The first of them draws the block and the rest draw nothing of their own, so the cache
+//! keeps one rows-list per entry and a streaming frame still lays out one block. A short sentence
+//! of text right before a run that holds a call is the run's title ([`preamble`]).
 //!
 //! **Collapsed** (the default), two rows that update live: a header with the clock, the tool count
 //! and the tokens, then the latest reasoning as one dim line; and the most recent call, in the colour
@@ -30,6 +32,8 @@ pub(super) enum Role {
     First(Vec<usize>),
     /// Drawn by the block above.
     Member,
+    /// A short line of text that titles the block under it, drawn in that block's header.
+    Title,
 }
 
 /// The roles of the transcript's entries, and the first entry of the block no later turn has
@@ -44,6 +48,8 @@ pub(super) fn roles(entries: &[Entry]) -> (Vec<Role>, Option<usize>) {
     let mut cur = Vec::new();
     for (i, e) in entries.iter().enumerate() {
         match e {
+            // Text ends the run; a blank one says nothing and ends nothing.
+            Entry::Prose { text } if !text.trim().is_empty() => close(&mut out, &mut cur),
             Entry::Thinking { .. } | Entry::Tool { .. } => {
                 if !cur.is_empty() {
                     out[i] = Role::Member;
@@ -59,7 +65,40 @@ pub(super) fn roles(entries: &[Entry]) -> (Vec<Role>, Option<usize>) {
     }
     let open = cur.first().copied();
     close(&mut out, &mut cur);
+    for i in 0..entries.len() {
+        if let Role::First(members) = &out[i] {
+            if let Some(t) = preamble(entries, i, members) {
+                out[t] = Role::Title;
+            }
+        }
+    }
     (out, open)
+}
+
+/// The entry that titles the block whose first entry is `first`: the text right before it, when it
+/// is one short sentence (at most 100 characters, one line, not a question) and the block holds a
+/// call. Longer text, a question, or text at the end of a turn stays text.
+pub(super) fn preamble(entries: &[Entry], first: usize, members: &[usize]) -> Option<usize> {
+    let at = first.checked_sub(1)?;
+    let Some(Entry::Prose { text }) = entries.get(at) else { return None };
+    if !members.iter().any(|&m| matches!(entries.get(m), Some(Entry::Tool { .. }))) {
+        return None;
+    }
+    let t = text.trim();
+    let sentence = !t.is_empty()
+        && t.chars().count() <= 100
+        && !t.contains('\n')
+        && !t.ends_with('?')
+        && !t.contains(['`', '*', '#', '|', '$', '\\'])
+        // One sentence: a stop inside it, followed by more words, makes it two.
+        && !t.char_indices().any(|(i, c)| matches!(c, '.' | '!' | '?' | '…') && t[i + c.len_utf8()..].starts_with(char::is_whitespace));
+    sentence.then_some(at)
+}
+
+/// A title's words: the sentence without its closing stop or ellipsis.
+fn title_words(text: &str) -> String {
+    let t = text::clean(text.trim());
+    t.trim_end_matches(['.', '…', ':', '!']).trim_end().to_string()
 }
 
 /// Whether entry `e` (with `role`) draws no row at all.
@@ -67,6 +106,7 @@ pub(super) fn silent(state: &State, e: &Entry, role: &Role) -> bool {
     match (e, role) {
         (Entry::Tool { call_id, .. }, Role::Member) => !has_diff(state, call_id),
         (Entry::Thinking { .. }, Role::Member) => true,
+        (Entry::Prose { .. }, Role::Title) => true,
         _ => false,
     }
 }
@@ -78,6 +118,9 @@ fn has_diff(state: &State, call_id: &str) -> bool {
 /// What the block's rows depend on, besides the entries themselves.
 pub(super) fn key(state: &State, first: usize, members: &[usize], live: bool, h: &mut Hasher) {
     h.u64(u64::from(live) | u64::from(state.thought_open(first)) << 1 | u64::from(state.show_thinking) << 2);
+    if let Some(Entry::Prose { text }) = preamble(&state.entries, first, members).and_then(|t| state.entries.get(t)) {
+        h.str(text);
+    }
     if live {
         h.u64((state.now_ms / 1000) as u64);
     }
@@ -219,8 +262,15 @@ pub(super) fn block_lines(
 ) {
     let f = facts(state, members);
     let open = state.thought_open(first);
+    let title = match preamble(&state.entries, first, members).and_then(|t| state.entries.get(t)) {
+        Some(Entry::Prose { text }) => Some(title_words(text)),
+        _ => None,
+    };
     marks.push(Mark { entry: first, line: out.len() });
-    out.push(header(&f, open, live, width, theme));
+    out.push(match &title {
+        Some(t) => titled_header(t, &f, open, width, theme),
+        None => header(&f, open, live, width, theme),
+    });
     if open {
         // A block of one thought and no call says its numbers in the header already.
         let solo = f.calls.is_empty() && members.len() == 1;
@@ -230,6 +280,27 @@ pub(super) fn block_lines(
         hits.push(RowHit { line: out.len(), x: 0, w: width as u16, target: Target::Thought(first) });
         out.push(latest_call(&f, width, theme));
     }
+}
+
+/// `▸ Gathering recent changes · 6.1s · 3 tools`: the model's own words in its speech colour, the
+/// numbers dim. Live or settled it reads the same; the last call is under it when folded.
+fn titled_header(title: &str, f: &Facts, open: bool, width: usize, theme: &Theme) -> Line<'static> {
+    let marker = if open { chrome::DISCLOSURE_OPEN } else { chrome::DISCLOSURE_CLOSED };
+    let mut stats = String::new();
+    if f.ms >= 1000 {
+        stats.push_str(&format!(" · {}", super::strip::took(f.ms)));
+    }
+    match f.calls.len() {
+        0 => {}
+        1 => stats.push_str(" · 1 tool"),
+        n => stats.push_str(&format!(" · {n} tools")),
+    }
+    let room = width.saturating_sub(2 + text::width(&stats)).max(8);
+    Line::from(vec![
+        Span::styled(format!("{marker} "), ink(Ink::Dimmer, theme)),
+        Span::styled(text::truncate(title, room), ink(Ink::Speech, theme)),
+        Span::styled(stats, ink(Ink::Dim, theme)),
+    ])
 }
 
 fn header(f: &Facts, open: bool, live: bool, width: usize, theme: &Theme) -> Line<'static> {

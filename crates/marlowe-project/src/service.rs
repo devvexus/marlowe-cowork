@@ -185,6 +185,8 @@ pub struct Answered {
     pub choice: String,
     /// One line for the manager.
     pub line: String,
+    /// The card was the plan's (not a checkin's).
+    pub plan: bool,
 }
 
 struct Live {
@@ -320,7 +322,7 @@ impl ProjectService {
     pub fn answer(&self, id: &str, gate: Option<&str>, choice: &str, text: Option<&str>) -> Result<Answered, ProjectError> {
         if choice == "cancel" {
             self.cancel(id)?;
-            return Ok(Answered { id: id.into(), gate: gate.unwrap_or("").into(), choice: "cancel".into(), line: format!("{id} is cancelled.") });
+            return Ok(Answered { id: id.into(), gate: gate.unwrap_or("").into(), choice: "cancel".into(), line: format!("{id} is cancelled."), plan: false });
         }
         self.settle(id)?;
         let store = self.store()?;
@@ -351,7 +353,7 @@ impl ProjectService {
             "steer" => format!("{id} goes on with the user's steer. The result will be posted here when it finishes."),
             other => format!("{id}: {other} recorded; it is running again."),
         };
-        Ok(Answered { id: id.into(), gate: gate_id, choice: choice.into(), line })
+        Ok(Answered { id: id.into(), gate: gate_id, choice: choice.into(), line, plan: is_plan })
     }
 
     /// Asks a running project for a checkin at the next safe point (nothing in flight is killed).

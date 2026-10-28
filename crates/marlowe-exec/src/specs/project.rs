@@ -107,12 +107,13 @@ fn call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
                     group(t).created.lock().unwrap_or_else(|e| e.into_inner()).insert(made.id.clone(), (cx.session.0.clone(), cx.turn));
                     ToolOutcome::ok(
                         format!(
-                            "{}\n\nThe project is made and waiting for the user. Tell them in two or three lines what it will look into and ask whether to go ahead. \
-                             When they agree, call manage_project{{action:\"answer\", id:\"{}\", answer:\"approve\"}}. To change the plan first, call revise with only the keys that change.",
-                            made.card, made.id
+                            "{}\n\nThe project is made and its plan card is on the user's screen. Nothing runs until they answer it there, and your turn ends with this result; \
+                             what they choose (approve, change the plan, cancel) reaches you before their next message.",
+                            made.card
                         ),
                         format!("project {} created", made.id),
                     )
+                    .yielding()
                 }
                 // A refused plan made nothing; a small model otherwise goes on to `revise` an id it invented.
                 Err(e @ ProjectError::Plan(_)) => ToolOutcome::error_of(e.class(), format!("{e}\nNothing was created yet. Call manage_project create again with the plan fixed.")),
@@ -129,7 +130,11 @@ fn call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
                 Err(_) => return ToolOutcome::error_of("project_plan", r#"plan: give only the keys to change, e.g. {"questions":["the full new list of questions"]}."#),
             };
             match svc.revise(&id, &changes) {
-                Ok(made) => ToolOutcome::ok(format!("{}\n\nThe plan is revised and still waiting for the user's approval.", made.card), format!("project {id} revised")),
+                Ok(made) => ToolOutcome::ok(
+                    format!("{}\n\nThe plan is revised and its card is on the user's screen again. Your turn ends with this result; what they choose reaches you before their next message.", made.card),
+                    format!("project {id} revised"),
+                )
+                .yielding(),
                 Err(e) => fail(e),
             }
         }
@@ -163,7 +168,7 @@ fn call(t: &BuiltinTools, a: &Value, cx: &CallCtx) -> ToolOutcome {
             }
         }
         "checkin" => match project_id(svc, a).and_then(|id| svc.checkin(&id).map_err(fail)) {
-            Ok(text) => ToolOutcome::ok(text, "checkin requested"),
+            Ok(text) => ToolOutcome::ok(text, "checkin requested").yielding(),
             Err(e) => e,
         },
         "cancel" => match project_id(svc, a).and_then(|id| svc.cancel(&id).map(|()| id).map_err(fail)) {

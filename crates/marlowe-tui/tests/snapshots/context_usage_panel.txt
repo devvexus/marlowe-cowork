@@ -1,11 +1,11 @@
  * marlowe — gate work                                                                                         teams ○  0 runs · 0 need you
 ╭ Conversation · gate work ───────────────────────────────────────────────────── ⣶⣶⣶⣤⣀⣴ writing ─╮╭ Model ─────────────────────────────────╮
 │  you  fix the gate                                                                             ││ Claude Sonnet 4.5 ▾             medium │
-│  Looking at the gate now.                                                                      ││ ctx ━━━━━━━━━━━─── 150k / 200k · cloud │
-│                                                                                                │╰────────────────────────────────── (m) ─╯
-│  ▸ thinking · 1 tool      ╭ context ─────────────────────────────────────────────────────────────────────────╮───────────────────────────╮
-│    └ read  src/gate.rs   ✓│ ctx ━━━━━━━━━━━━━━━━━━────── 150k / 200k · cloud                                 │ance ▾                     │
-│  ⣾ working                │ 75% of the window used                                                           │───────────────────── (w) ─╯
+│  ▸ Looking at the gate now · 1 tool                                                            ││ ctx ━━━━━━━━━━━─── 150k / 200k · cloud │
+│    └ read  src/gate.rs   ✓ 80 lines                                                            │╰────────────────────────────────── (m) ─╯
+│  ⣾ working                ╭ context ─────────────────────────────────────────────────────────────────────────╮───────────────────────────╮
+│                           │ ctx ━━━━━━━━━━━━━━━━━━────── 150k / 200k · cloud                                 │ance ▾                     │
+│                           │ 75% of the window used                                                           │───────────────────── (w) ─╯
 │                           │                                                                                  │───────────────────────────╮
 │                           │ what this screen holds (an estimate; the daemon has not sent its own count)      │                           │
 │                           │ your messages           3       1%   ━                                           │───────────────────── (1) ─╯

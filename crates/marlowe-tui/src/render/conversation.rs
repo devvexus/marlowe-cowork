@@ -385,6 +385,8 @@ fn render_entry(
         out.push(Line::default());
     }
     match e {
+        // A short line before a work block is that block's title ([`work::preamble`]).
+        Entry::Prose { .. } if *role == Role::Title => {}
         Entry::Prose { text } => {
             // Marlowe's prose, with the position of each display formula kept.
             let base = Style::default().fg(theme.speech());
@@ -495,6 +497,7 @@ fn entry_key(state: &State, idx: usize, e: &Entry, role: &Role, gap: bool, (live
     h.entry(e);
     h.u64(u64::from(gap) | u64::from(live) << 1 | u64::from(state.show_thinking) << 3);
     h.u64(idx as u64);
+    h.u64(u64::from(*role == Role::Title));
     // A block is laid out again whenever one of its entries, or the clock it shows, changes.
     if let Role::First(members) = role {
         work::key(state, idx, members, block_live, &mut h);
@@ -1174,11 +1177,17 @@ mod tests {
         state = session(4);
         state.epoch += 1;
         assert_eq!(laid(&mut cache, &state, 70, &other), 12);
-        // A turn starting or ending flips the last entry's live flag, and the last block's.
+        // A turn starting or ending flips the last entry's live flag; its block, closed by the
+        // text under it, is settled either way.
         state.live = Some(live_turn());
-        assert_eq!(laid(&mut cache, &state, 70, &other), 2);
+        assert_eq!(laid(&mut cache, &state, 70, &other), 1);
         state.live = None;
-        assert_eq!(laid(&mut cache, &state, 70, &other), 2);
+        assert_eq!(laid(&mut cache, &state, 70, &other), 1);
+        // A block still being written (no text after it) is live with the turn.
+        state.entries.push(Entry::Tool { call_id: "t".into(), summary: "read a".into(), status: ToolStatus::Running });
+        assert_eq!(laid(&mut cache, &state, 70, &other), 1);
+        state.live = Some(live_turn());
+        assert_eq!(laid(&mut cache, &state, 70, &other), 1);
     }
 
     #[test]

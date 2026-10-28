@@ -178,11 +178,14 @@ pub struct ToolOutcome {
     /// What kind of failure this is, when the tool can say (`"script-invalid"`): the loop guard
     /// counts failures of one class together however each one is worded or numbered.
     pub class: Option<&'static str>,
+    /// The call put a decision in front of the user (a plan card): the turn ends after this
+    /// result, so the model does not go on from a state the user is about to change.
+    pub yields: bool,
 }
 
 impl ToolOutcome {
     pub fn ok(content: impl Into<String>, summary: impl Into<String>) -> Self {
-        Self { content: content.into(), is_error: false, summary: summary.into(), parts: Vec::new(), class: None }
+        Self { content: content.into(), is_error: false, summary: summary.into(), parts: Vec::new(), class: None, yields: false }
     }
 
     /// An error of the given class (see [`ToolOutcome::class`]).
@@ -193,7 +196,13 @@ impl ToolOutcome {
     pub fn error(message: impl Into<String>) -> Self {
         let m = message.into();
         let summary = m.lines().next().unwrap_or("").chars().take(80).collect();
-        Self { content: m, is_error: true, summary, parts: Vec::new(), class: None }
+        Self { content: m, is_error: true, summary, parts: Vec::new(), class: None, yields: false }
+    }
+
+    /// Ends the turn after this result: the user has a decision to make (see [`ToolOutcome::yields`]).
+    pub fn yielding(mut self) -> Self {
+        self.yields = true;
+        self
     }
 
     /// Adds a non-text part.

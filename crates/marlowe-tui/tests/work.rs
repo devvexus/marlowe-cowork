@@ -85,7 +85,7 @@ fn replay(s: &mut State, rec: &Rec, from: usize, until: Until) -> i64 {
             }
             Role::User => break,
             Role::Assistant => {
-                for p in &t.content {
+                for (k, p) in t.content.iter().enumerate() {
                     match p {
                         Part::Thinking(th) => {
                             // Three deltas between the row before this one and this one's own time.
@@ -99,7 +99,11 @@ fn replay(s: &mut State, rec: &Rec, from: usize, until: Until) -> i64 {
                                 at(s, when, Event::ReasoningDelta { session: rec.sid.clone(), turn: 1, text: part.iter().collect(), tokens });
                             }
                         }
-                        Part::Text { text } => at(s, t.at_ms, Event::TextDelta { session: rec.sid.clone(), turn: 1, text: text.clone() }),
+                        // Text the model wrote before it thought and called came out first.
+                        Part::Text { text } => {
+                            let when = if k == 0 { prev + 100 } else { t.at_ms };
+                            at(s, when, Event::TextDelta { session: rec.sid.clone(), turn: 1, text: text.clone() })
+                        }
                         Part::ToolCall(c) => {
                             at(s, t.at_ms - 4, Event::ToolPreparing { session: rec.sid.clone(), turn: 1, call_id: c.id.clone(), tool: c.name.clone() });
                             if until == Until::Streaming(t.idx) {
@@ -455,4 +459,125 @@ fn a_project_that_ended_is_its_entry_and_one_file_row_and_no_relay_line() {
     let out = click_on(&mut s, &buf, "read report");
     assert!(out.is_empty());
     assert!(matches!(s.code.panel, Some(Panel::Report(_))));
+}
+
+// ---- a turn in the order it happened -------------------------------------------------------------
+
+/// r5 with the text the model wrote before it thought and called, put first in its first step.
+/// Everything else is the recording; only this line is composed.
+fn r5_saying(first: &str) -> Rec {
+    let mut rec = recorded("r5");
+    rec.turns[1].content.insert(0, Part::Text { text: first.into() });
+    rec
+}
+
+const LONG_START: &str = "I will set this up as a project: a plan card with the questions about Kimi, DeepSeek and Qwen4 comes first, and nothing is read until you approve it.";
+
+fn row_of(buf: &Buffer, needle: &str) -> u16 {
+    find(buf, needle).1
+}
+
+fn replayed(rec: &Rec) -> State {
+    let mut s = client(rec);
+    replay(&mut s, rec, 0, Until::End);
+    s
+}
+
+#[test]
+fn text_then_work_then_text_draws_in_that_order_and_the_later_text_is_its_own_paragraph() {
+    let rec = r5_saying(LONG_START);
+    let s = replayed(&rec);
+    let buf = shot("work_text_block_text", &s);
+    let text = dump(&buf);
+    let (start, block, answer) = (row_of(&buf, "I will set this up as a project"), row_of(&buf, "▸ thought"), row_of(&buf, "Project created to compile"));
+    assert!(start < block && block < answer, "text, then the block, then the answer:\n{text}");
+    // A long first line is text, never a title; one blank row on each side of the block.
+    assert!(!text.contains("▸ I will set this up"), "{text}");
+    // The transcript's own pane: the left 80 columns.
+    let rows: Vec<String> = text.lines().map(|l| l.chars().skip(1).take(78).collect::<String>()).collect();
+    assert!(rows[(block - 1) as usize].trim().is_empty(), "a blank row above the block:
+{text}");
+    assert!(rows[(answer - 1) as usize].trim().is_empty() && answer == block + 3, "the answer is its own paragraph under the block:
+{text}");
+    // Both texts are Marlowe's prose, and neither carries a label of its own.
+    let th = theme();
+    assert_eq!(ink_at(&buf, "I will set this up"), Ink::Speech.color(&th));
+    assert_eq!(ink_at(&buf, "Project created to compile"), Ink::Speech.color(&th));
+}
+
+#[test]
+fn a_short_sentence_before_the_calls_is_the_blocks_title() {
+    let rec = r5_saying("Gathering recent changes…");
+    let s = replayed(&rec);
+    let buf = shot("work_title", &s);
+    let text = dump(&buf);
+    assert!(text.contains("▸ Gathering recent changes · 7.3s · 2 tools"), "{text}");
+    assert!(text.contains("└ manage_project  create   ✓ Project p_"), "the last call under it:\n{text}");
+    assert_eq!(text.matches("Gathering recent changes").count(), 1, "once, as the title:\n{text}");
+    let th = theme();
+    assert_eq!(ink_at(&buf, "Gathering recent changes"), Ink::Speech.color(&th));
+    assert_eq!(ink_at(&buf, "7.3s"), Ink::Dim.color(&th));
+    // The answer is below the block.
+    assert!(row_of(&buf, "Project created to compile") > row_of(&buf, "▸ Gathering"), "{text}");
+
+    // Opened, the narrative is under the same title.
+    let mut s = s;
+    click_on(&mut s, &buf, "▸ Gathering");
+    let open = render(&s, 120, 60);
+    assert_palette_only(&open);
+    assert!(contains(&open, "▾ Gathering recent changes · 7.3s · 2 tools"), "{}", dump(&open));
+}
+
+#[test]
+fn a_title_ticks_live_and_the_answer_streams_under_the_block() {
+    let rec = r5_saying("Gathering recent changes…");
+    let mut s = client(&rec);
+    let clock = replay(&mut s, &rec, 0, Until::Started(3));
+    s.now_ms = clock + 2_000;
+    let buf = shot("work_title_live", &s);
+    let text = dump(&buf);
+    assert!(text.contains("▸ Gathering recent changes · ") && text.contains("2 tools"), "{text}");
+    assert!(text.contains("└ manage_project  create   running"), "{text}");
+    assert!(!text.contains("▸ thinking"), "{text}");
+}
+
+#[test]
+fn a_question_a_long_line_or_two_sentences_stay_text_and_so_does_text_with_no_call_after_it() {
+    for (said, title) in [
+        ("Shall I start with the Kimi models?", false),
+        ("Gathering recent changes. Then I will look at the diff.", false),
+        (LONG_START, false),
+        ("Gathering recent changes", true),
+        ("Looking at the open issues.", true),
+    ] {
+        let s = replayed(&r5_saying(said));
+        let text = dump(&render(&s, 120, 30));
+        let titled = text.contains(&format!("▸ {}", said.trim_end_matches('.')));
+        assert_eq!(titled, title, "{said:?}\n{text}");
+        assert!(title || text.contains(said.split_whitespace().take(5).collect::<Vec<_>>().join(" ").as_str()), "{said:?} stays on screen as text\n{text}");
+    }
+    // Text at the end of the turn, after a block, is the answer: never a title.
+    let s = replayed(&recorded("r5"));
+    assert!(dump(&render(&s, 120, 30)).contains("▸ thought 7.3s"));
+}
+
+#[test]
+fn a_reopened_session_draws_the_turn_as_the_live_one_did() {
+    for said in ["Gathering recent changes…", LONG_START] {
+        let rec = r5_saying(said);
+        let live = replayed(&rec);
+        let mut reopened = client(&rec);
+        // The turn replayed is the first six rows of the recording.
+        feed(&mut reopened, 5, Event::Transcript { session: rec.sid.clone(), turns: rec.turns[..6].to_vec() });
+        // The same rows, whichever way the entries came (the numbers differ: a stored turn has no clock).
+        let rows = |s: &State| dump(&render(s, 120, 30)).lines().filter(|l| l.contains("Gathering") || l.contains("I will set") || l.contains("thought") || l.contains("manage_project") || l.contains("Project created")).map(|l| l.chars().take(12).collect::<String>()).collect::<Vec<_>>();
+        assert_eq!(rows(&reopened), rows(&live), "{said:?}
+{}
+{}", dump(&render(&reopened, 120, 30)), dump(&render(&live, 120, 30)));
+        let buf = render(&reopened, 120, 30);
+        assert_palette_only(&buf);
+        if said.len() < 40 {
+            snapshot("work_title_reopened_120x30", &buf);
+        }
+    }
 }

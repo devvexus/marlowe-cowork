@@ -885,3 +885,84 @@ fn a_malformed_tool_call_is_retried_once_with_a_tail_note_then_the_error_surface
     assert!(r.outcome.error.unwrap().contains("malformed tool call"));
     assert_eq!(p.requests().len(), 2, "one retry, no more");
 }
+
+// ---------------------------------------------------------------- a result that yields to the user
+
+/// A tool that puts a card in front of the user, and one that does not.
+struct CardTools;
+
+impl ToolHost for CardTools {
+    fn specs(&self) -> Vec<ToolSpec> {
+        ["card", "echo"].iter().map(|n| ToolSpec { name: n.to_string(), description: format!("{n} tool"), input_schema: json!({"type": "object"}) }).collect()
+    }
+
+    fn call(&self, call: &ToolCallReq, _ctx: &ToolCtx) -> ToolOutcome {
+        match call.name.as_str() {
+            "card" if call.args["fail"].as_bool() == Some(true) => ToolOutcome::error("nothing was made"),
+            "card" => ToolOutcome::ok("the card is on screen", "card shown").yielding(),
+            _ => ToolOutcome::ok("echoed", "echoed"),
+        }
+    }
+
+    fn consequence(&self, _call: &ToolCallReq) -> Consequence {
+        Consequence::Free
+    }
+}
+
+fn card_agent(p: Arc<ScriptedProvider>) -> Agent {
+    Agent::new(p, model(), Arc::new(CardTools), SystemPrompt::with_core("core"))
+}
+
+#[test]
+fn a_result_that_yields_to_the_user_ends_the_turn_with_no_second_model_call() {
+    let mut first = vec![text("I will set that up.")];
+    first.extend(call(0, "k1", "card", json!({})));
+    first.push(StreamEvent::Stop(StopReason::ToolUse));
+    let p = ScriptedProvider::new(vec![Step::Events(first), answer("Want me to start the run?")]);
+    let a = card_agent(p.clone());
+    let mut c = convo();
+    let r = run(&a, &mut c, "plan it");
+
+    assert_eq!(r.outcome.stop, TurnStop::Done);
+    assert_eq!(r.outcome.steps, 1);
+    assert_eq!(p.requests().len(), 1, "the model is not asked again");
+    // The text before the call stays; the call's result closes the history.
+    assert_eq!(r.outcome.text, "I will set that up.");
+    let last = c.messages.last().unwrap();
+    assert_eq!(last.role, Role::Tool);
+    assert_eq!(tool_results(last)[0].content, "the card is on screen");
+    // The next turn goes on from there, and the model sees the card's result before the new message.
+    let p2 = ScriptedProvider::new(vec![answer("Running it.")]);
+    let a2 = card_agent(p2.clone());
+    run(&a2, &mut c, "approved");
+    let sent = &p2.requests()[0].messages;
+    assert!(sent.iter().any(|m| m.role == Role::Tool), "{sent:?}");
+}
+
+#[test]
+fn a_failed_call_or_an_ordinary_one_does_not_yield() {
+    let mut first = vec![text("Trying.")];
+    first.extend(call(0, "k1", "card", json!({"fail": true})));
+    first.push(StreamEvent::Stop(StopReason::ToolUse));
+    let mut second = call(0, "k2", "echo", json!({}));
+    second.push(StreamEvent::Stop(StopReason::ToolUse));
+    let p = ScriptedProvider::new(vec![Step::Events(first), Step::Events(second), answer("Done.")]);
+    let a = card_agent(p.clone());
+    let mut c = convo();
+    let r = run(&a, &mut c, "plan it");
+    assert_eq!(r.outcome.steps, 3, "an error result gives the model its next step");
+    assert_eq!(r.outcome.text, "Trying.\n\nDone.");
+}
+
+#[test]
+fn a_yield_waits_for_the_rest_of_its_batch() {
+    let mut first = call(0, "k1", "card", json!({}));
+    first.extend(call(1, "k2", "echo", json!({})));
+    first.push(StreamEvent::Stop(StopReason::ToolUse));
+    let p = ScriptedProvider::new(vec![Step::Events(first)]);
+    let a = card_agent(p.clone());
+    let mut c = convo();
+    let r = run(&a, &mut c, "plan it");
+    assert_eq!(r.outcome.steps, 1);
+    assert_eq!(tool_results(c.messages.last().unwrap()).len(), 2, "both calls answered before the turn ends");
+}

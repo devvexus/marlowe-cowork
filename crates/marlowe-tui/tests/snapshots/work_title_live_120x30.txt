@@ -1,0 +1,30 @@
+ * marlowe — tonight                                                                       teams ○  0 runs · 0 need you
+╭ Conversation · tonight ─────────────────────────────────────── ⣷⣦⣤⣤⣤⣾ working ─╮╭ Model ─────────────────────────────╮
+│  you  Run the web research team task. Focus on the latest upcoming AI models,  ││ Claude Sonnet 4.5 ▾         medium │
+│       specificially new Kimi models, deepseek, and qwen4. Compile a report md  ││ ctx ─────────┊─── 0 / 200k · cloud │
+│       and send it to me when you are done                                      │╰────────────────────────────── (m) ─╯
+│  ▸ Gathering recent changes · 8.0s · 2 tools                                   │╭ Workspace ─────────────────────────╮
+│    └ manage_project  create   running · 2.0s                                   ││ C:/work/valiance ▾                 │
+│  ⣷ running ·  2.0s                                                             │╰────────────────────────────── (w) ─╯
+│                                                                                │╭ 1 Crew 2 Watch 3 Threads 4 Memory ─╮
+│                                                                                ││ no runs                            │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (c) ─╯│                                    │
+╭ Message ───────────────────────────────────────────────────────────────────────╮│                                    │
+│ › queue a message — it goes in at the next step…       esc interrupt · ↵ queue ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────── (1-4) ─╯
+ esc Interrupt  ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^k palette      21:40

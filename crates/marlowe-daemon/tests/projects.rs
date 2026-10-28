@@ -306,7 +306,6 @@ fn a_natural_request_becomes_a_parked_plan_the_card_runs_it_and_the_result_reach
     let home = temp_home("e2e");
     let p = Arc::new(Scripted::default());
     p.say(tool_call("c1", "manage_project", &plan_json()));
-    p.say(reply("I made a plan to look into the newest Kimi models. Shall I go ahead?"));
     p.say(reply("The project finished. Its report is in the path above; nothing was found on the web in this run."));
     let d = start(&home, p.clone(), true);
     let mut a = Client::connect(&d.info);
@@ -387,7 +386,6 @@ fn a_project_parked_on_its_card_survives_a_restart_and_the_same_answer_resumes_i
     let home = temp_home("restart");
     let p = Arc::new(Scripted::default());
     p.say(tool_call("c1", "manage_project", &plan_json()));
-    p.say(reply("I made a plan. Shall I go ahead?"));
     let d = start(&home, p.clone(), true);
     let mut a = Client::connect(&d.info);
     ask(&mut a, "research the newest Kimi models for me");
@@ -541,7 +539,6 @@ fn the_reminders_point_at_projects_with_teams_on_and_only_offer_one_with_teams_o
 /// approve until the relay turn starts; returns the project's id and every event seen.
 fn run_a_project(a: &mut Client, p: &Scripted) -> (String, Vec<Envelope>) {
     p.say(tool_call("c1", "manage_project", &plan_json()));
-    p.say(reply("I made a plan. Shall I go ahead?"));
     p.say(reply("The project finished."));
     ask(a, "do some deep research on the newest Kimi models and tell me what is confirmed");
     let mut seen = a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
@@ -763,5 +760,111 @@ fn a_conversation_model_that_must_load_counts_as_the_one_load_of_the_start() {
     assert!(!models.is_empty() && models.iter().all(|m| m == "scripted"), "the second load was not admitted beside the first: {models:?}");
     let told = notices_of(&seen, &id);
     assert!(told.len() == 1 && told[0].contains("would load beside another model"), "{told:?}");
+    stop(d);
+}
+
+// ---------------------------------------------------------------- a card is the user's to answer
+
+fn session_of(seen: &[Envelope]) -> marlowe_proto::SessionId {
+    seen.iter()
+        .find_map(|e| match &e.event {
+            Event::TurnStarted { session, .. } => Some(session.clone()),
+            _ => None,
+        })
+        .expect("a turn started")
+}
+
+fn say(a: &mut Client, session: &marlowe_proto::SessionId, text: &str) -> Vec<Envelope> {
+    a.send(&Request::Ask { session: Some(session.clone()), text: text.into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
+    a.until_event(|e| matches!(e, Event::TurnFinished { .. }))
+}
+
+/// The text the model read at the head of the latest conductor request's last user message.
+fn head_of(p: &Scripted) -> Vec<String> {
+    let reqs = p.conductor_requests();
+    let last = reqs.last().unwrap().messages.iter().rev().find(|m| m.role == marlowe_model::Role::User).unwrap();
+    last.content
+        .iter()
+        .filter_map(|c| match c {
+            marlowe_model::Part::Text { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn creating_a_plan_ends_the_turn_and_a_cancel_on_the_card_is_told_without_a_turn_of_its_own() {
+    let home = temp_home("card-cancel");
+    let p = Arc::new(Scripted::default());
+    p.say(tool_call("c1", "manage_project", &plan_json()));
+    p.say(reply("Understood: nothing is running. Tell me what you want instead."));
+    let d = start(&home, p.clone(), true);
+    let mut a = Client::connect(&d.info);
+
+    ask(&mut a, "do some deep research on the newest Kimi models and tell me what is confirmed");
+    let first = a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
+    let session = session_of(&first);
+    assert_eq!(p.conductor_requests().len(), 1, "the plan card ended the turn: the model was not asked again");
+    a.send(&Request::ListProjects);
+    let listed = a.until_event(|e| matches!(e, Event::ProjectList { .. }));
+    let Event::ProjectList { projects } = &listed.last().unwrap().event else { unreachable!() };
+    let id = projects[0].id.clone();
+
+    // The user cancels on the card (once its engine has finished parking): no turn starts, and the
+    // model is not asked anything.
+    std::thread::sleep(Duration::from_millis(700));
+    a.send(&Request::CancelProject { project: id.clone() });
+    let deadline = Instant::now() + WAIT;
+    loop {
+        a.send(&Request::GetProject { project: id.clone() });
+        let got = a.until_event(|e| matches!(e, Event::ProjectState { .. }));
+        let Event::ProjectState { state, .. } = &got.last().unwrap().event else { unreachable!() };
+        if state["status"] == "cancelled" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "never cancelled: {} {:?}", state["status"], got.iter().filter(|e| matches!(e.event, Event::Error { .. })).map(|e| format!("{:?}", e.event)).collect::<Vec<_>>());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(p.conductor_requests().len(), 1, "an answer on the card starts no model turn");
+
+    // Their next message (a revise, in their words) is a turn; the model reads the note first, then them.
+    let seen = say(&mut a, &session, "Cancel that and plan it again with fewer questions.");
+    assert!(seen.iter().any(|e| matches!(e.event, Event::TurnStarted { .. })));
+    let reqs = p.conductor_requests();
+    assert_eq!(reqs.len(), 2);
+    let head = head_of(&p);
+    let note_at = head.iter().position(|t| t.contains(&format!("The user cancelled project {id}."))).unwrap_or_else(|| panic!("{head:?}"));
+    let said_at = head.iter().position(|t| t.contains("plan it again with fewer questions")).expect("their words");
+    assert!(note_at < said_at, "the note leads: {head:?}");
+    // Append-only: everything the model had read is the same, byte for byte, in the second request.
+    let n = reqs[0].messages.len();
+    assert!(reqs[1].messages.len() > n);
+    assert_eq!(reqs[1].messages[..n], reqs[0].messages[..n], "nothing already sent was rewritten");
+    assert_eq!(reqs[1].system_text(), reqs[0].system_text());
+
+    // Told once: the turn after that has no note.
+    say(&mut a, &session, "thanks");
+    assert!(!head_of(&p).iter().any(|t| t.contains("The user cancelled project")), "{:?}", head_of(&p));
+    stop(d);
+}
+
+#[test]
+fn an_approval_on_the_card_reaches_the_model_before_the_users_next_message() {
+    let home = temp_home("card-approve");
+    let p = Arc::new(Scripted::default());
+    let d = start(&home, p.clone(), true);
+    let mut a = Client::connect(&d.info);
+    let (id, seen) = run_a_project(&mut a, &p);
+    let session = session_of(&seen);
+    a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
+    let before = p.conductor_requests().len();
+    assert_eq!(before, 2, "the plan's turn, then the relay of the finished project; the approvals started none");
+
+    say(&mut a, &session, "what did you find?");
+    let head = head_of(&p);
+    let plan = head.iter().position(|t| t.contains(&format!("The user approved the plan for project {id}; it is running."))).unwrap_or_else(|| panic!("{head:?}"));
+    let said = head.iter().position(|t| t.contains("what did you find?")).unwrap();
+    assert!(plan < said, "{head:?}");
     stop(d);
 }
