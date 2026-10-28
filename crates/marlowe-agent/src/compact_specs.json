@@ -1437,7 +1437,7 @@
       "scout",
       "verifier"
      ],
-     "description": "analyst: data; engineer: code; researcher: literature; reviewer: critique"
+     "description": "analyst: data; engineer: code; reviewer: critique"
     },
     "prompt": {},
     "playbook": {

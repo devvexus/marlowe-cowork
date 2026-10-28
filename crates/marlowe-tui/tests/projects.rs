@@ -69,7 +69,12 @@ fn client(fx: &Fx) -> State {
 }
 
 fn give_state(s: &mut State, fx: &Fx, rev: u64) -> Vec<Request> {
-    let out = feed(s, 5, Event::ProjectState { project: id_of(fx), rev, state: fx.state.clone() });
+    give_state_at(s, fx, rev, 5)
+}
+
+/// The state again, as a later event of the stream (`seq` later than any before).
+fn give_state_at(s: &mut State, fx: &Fx, rev: u64, seq: u64) -> Vec<Request> {
+    let out = feed(s, seq, Event::ProjectState { project: id_of(fx), rev, state: fx.state.clone() });
     // The report file is a fixture beside the states, not at the path the run recorded.
     if let Some(text) = &fx.report {
         let id = id_of(fx);
@@ -171,6 +176,89 @@ fn a2_done_and_m1_failing_sections() {
     shot("projects_a3_failing", &s, 120, 30);
     let (s, _) = at("m5-04-condense-verify");
     shot("projects_m5_verify", &s, 120, 30);
+}
+
+#[test]
+fn employees_held_back_are_drawn_waiting_with_the_reason_and_not_counted_as_in_flight() {
+    let mut fx = fixture("m6-03-mid-collection");
+    let mut held = 0;
+    for a in fx.state["agents"].as_object_mut().unwrap().values_mut() {
+        if a["status"] == "running" {
+            a["status"] = "waiting".into();
+            a["note"] = "waiting for the GPU".into();
+            held += 1;
+        }
+    }
+    assert!(held >= 2, "the recorded moment has employees in calls");
+    let mut s = client(&fx);
+    give_state(&mut s, &fx, 100);
+    let buf = render(&s, 200, 50);
+    assert_palette_only(&buf);
+    assert!(contains(&buf, &format!("{held} waiting")) && contains(&buf, "waiting for the GPU"), "{}", dump(&buf));
+    assert!(!contains(&buf, "in flight"), "none is in a call: {}", dump(&buf));
+    // The steps' briefs count them apart from the ones in a call (analyze had one, condense two).
+    assert!(contains(&buf, "analyze 15 ◌1") && contains(&buf, "condense 3 ◌2"), "{}", dump(&buf));
+}
+
+fn project_entries(s: &State) -> usize {
+    s.entries.iter().filter(|e| matches!(e, Entry::Project { .. })).count()
+}
+
+#[test]
+fn a_reopened_project_takes_its_old_result_out_while_it_runs_and_settles_again_when_it_ends() {
+    let running = fixture("m6-03-mid-collection");
+    let done = fixture("m6-09-done");
+    let mut s = client(&done);
+    give_state_at(&mut s, &running, 10, 10);
+    assert_eq!(project_entries(&s), 0, "a running project is drawn after the conversation, not in it");
+    give_state_at(&mut s, &done, 20, 20);
+    assert_eq!(project_entries(&s), 1);
+    assert!(matches!(s.entries.last(), Some(Entry::Project { .. })));
+    // More talk, then the project is reopened and runs again.
+    s.entries.push(user_entry("and what about Qwen?".into()));
+    s.entries.push(Entry::Prose { text: "Let me look.".into() });
+    give_state_at(&mut s, &running, 30, 30);
+    assert_eq!(project_entries(&s), 0, "the old result leaves the transcript while the project runs");
+    let buf = render(&s, 200, 50);
+    assert_palette_only(&buf);
+    // When it ends again the result settles at the end, not where the first one stood.
+    give_state_at(&mut s, &done, 40, 40);
+    assert_eq!(project_entries(&s), 1);
+    assert!(matches!(s.entries.last(), Some(Entry::Project { .. })), "it settles after the talk that came since");
+}
+
+#[test]
+fn a_project_that_ends_while_a_turn_streams_settles_after_the_turn_and_never_splits_its_reply() {
+    let running = fixture("m6-03-mid-collection");
+    let done = fixture("m6-09-done");
+    let mut s = client(&done);
+    give_state_at(&mut s, &running, 10, 10);
+    let sid = SessionId::from(done.session.as_str());
+    feed(&mut s, 11, Event::TurnStarted { session: sid.clone(), turn: 7, model: sonnet_ref(), user: "how is the weather".into() });
+    feed(&mut s, 12, Event::TextDelta { session: sid.clone(), turn: 7, text: "It is ".into() });
+    give_state_at(&mut s, &done, 20, 13);
+    assert_eq!(project_entries(&s), 0, "nothing is put into the transcript under a turn that is being written");
+    feed(&mut s, 14, Event::TextDelta { session: sid.clone(), turn: 7, text: "sunny.".into() });
+    let prose: Vec<&str> = s.entries.iter().filter_map(|e| if let Entry::Prose { text } = e { text.as_str().into() } else { None }).collect();
+    assert!(prose.iter().any(|t| t.contains("It is sunny.")), "the reply is one entry: {prose:?}");
+    feed(&mut s, 15, Event::TurnFinished { session: sid, turn: 7, usage: Default::default(), stop: marlowe_proto::TurnStop::Done });
+    assert_eq!(project_entries(&s), 1, "settled when the turn ended");
+    assert!(s.entries.iter().rposition(|e| matches!(e, Entry::Project { .. })) > s.entries.iter().position(|e| matches!(e, Entry::Prose { text } if text.contains("It is sunny."))));
+}
+
+#[test]
+fn a_daemon_without_projects_is_asked_once_and_its_answer_is_never_flashed() {
+    let mut s = state();
+    welcome(&mut s, 0);
+    feed(&mut s, 1, library_with_sonnet());
+    feed(&mut s, 0, Event::Error { session: None, message: marlowe_tui::projects::NO_PROJECTS.into() });
+    assert!(s.flash.is_none());
+    // The conversation opens, and the list is not asked for again.
+    let reqs = feed(&mut s, 0, Event::SessionOpened { session: SessionId::from("5e55"), title: "t".into(), workspace: None });
+    assert!(!reqs.contains(&Request::ListProjects), "{reqs:?}");
+    // An answer to a request sent before the absence was known is not flashed either.
+    feed(&mut s, 0, Event::Error { session: None, message: marlowe_tui::projects::NO_PROJECTS.into() });
+    assert!(s.flash.is_none());
 }
 
 // ---- the protocol -----------------------------------------------------------------------------------

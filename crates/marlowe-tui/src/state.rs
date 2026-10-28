@@ -1348,6 +1348,8 @@ impl State {
                 }
                 self.strip_notes();
                 self.live = None;
+                // A project that ended while the turn streamed settles now, after the turn.
+                self.projects_settle();
                 self.add_totals(usage);
                 self.code.interrupting = false;
                 if *stop == TurnStop::Interrupted {

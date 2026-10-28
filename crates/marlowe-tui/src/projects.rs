@@ -76,6 +76,10 @@ pub struct Loaded {
     pub pending: Option<Pending>,
     /// The client saw this project running (so it settles at the time it ends).
     pub seen_live: bool,
+    /// While the project runs again after it ended (a reopen): how many relays of it the
+    /// transcript held when it went live, so the result of this run settles after its own relay
+    /// and not after an earlier one's. `None` once the run's result is in the transcript.
+    pub relays_seen: Option<usize>,
 }
 
 impl Loaded {
@@ -398,6 +402,9 @@ impl ProjectsUi {
 impl State {
     /// A daemon event about projects. True when it was one.
     pub(crate) fn projects_event(&mut self, ev: &Event, out: &mut Vec<Request>) -> bool {
+        if matches!(ev, Event::ProjectList { .. } | Event::ProjectState { .. } | Event::ProjectUpdated { .. }) {
+            self.wake.projects_presence = crate::wake::Presence::Online;
+        }
         match ev {
             Event::ProjectList { projects } => self.on_project_list(projects, out),
             Event::ProjectState { project, rev, state } => self.on_project_state(project, *rev, state, out),
@@ -474,11 +481,11 @@ impl State {
         let now = self.now_ms;
         let mut replica = Replica::from_state(state.clone());
         replica.rev = rev;
-        let (report, pending, seen_live) = match self.projects.get(project) {
-            Some(old) => (old.report.clone(), old.pending.clone(), old.seen_live),
-            None => (None, None, false),
+        let (report, pending, seen_live, relays_seen) = match self.projects.get(project) {
+            Some(old) => (old.report.clone(), old.pending.clone(), old.seen_live, old.relays_seen),
+            None => (None, None, false, None),
         };
-        let l = Loaded { replica, state: st, parsed_rev: rev, parsed_at: Some(now), version: 0, report, pending, seen_live };
+        let l = Loaded { replica, state: st, parsed_rev: rev, parsed_at: Some(now), version: 0, report, pending, seen_live, relays_seen };
         match self.projects.get_mut(project) {
             Some(slot) => *slot = l,
             None => self.projects.loaded.push(l),
@@ -534,13 +541,25 @@ impl State {
         }
     }
 
-    /// Reads the reports of projects that ended and puts their entries in the transcript.
+    /// Reads the reports of projects that ended and puts their entries in the transcript. A
+    /// project that runs again (a reopen) takes its old entry out: its block is drawn after the
+    /// conversation while it runs, and the result of the new run settles when it ends. Entries
+    /// are not moved while a turn streams (the turn's blocks are found by position); the end of
+    /// the turn settles again.
     pub(crate) fn projects_settle(&mut self) {
+        let writing = self.live.is_some();
         let ids: Vec<String> = self.projects.loaded.iter().map(|l| l.state.id.clone()).collect();
         for id in ids {
+            let held = self.entries.iter().filter(|e| matches!(e, Entry::News { label, .. } if label.contains(id.as_str()))).count();
             let Some(l) = self.projects.get_mut(&id) else { continue };
             if !l.is_final() {
                 l.seen_live = true;
+                l.relays_seen.get_or_insert(held);
+                if !writing {
+                    if let Some(i) = self.project_entry_at(&id) {
+                        self.entries.remove(i);
+                    }
+                }
                 continue;
             }
             if l.report.is_none() {
@@ -549,7 +568,7 @@ impl State {
                     l.report = Some(ReportDoc { path, text });
                 }
             }
-            if self.project_entry_at(&id).is_none() {
+            if !writing && self.project_entry_at(&id).is_none() {
                 self.place_project_entry(&id);
             }
         }
@@ -564,8 +583,20 @@ impl State {
     fn place_project_entry(&mut self, id: &str) {
         let Some(l) = self.projects.get(id) else { return };
         let word = l.state.status.as_str();
-        let seen_live = l.seen_live;
-        let relay = self.entries.iter().rposition(|e| matches!(e, Entry::News { label, .. } if label.contains(id) && label.trim_end().ends_with(word)));
+        let (seen_live, skip) = (l.seen_live, l.relays_seen.unwrap_or(0));
+        // The relay of this run: after the ones of the runs before it.
+        let relay = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, Entry::News { label, .. } if label.contains(id)))
+            .skip(skip)
+            .filter(|(_, e)| matches!(e, Entry::News { label, .. } if label.trim_end().ends_with(word)))
+            .map(|(i, _)| i)
+            .last();
+        if let Some(l) = self.projects.get_mut(id) {
+            l.relays_seen = None;
+        }
         let entry = Entry::Project { id: id.to_string() };
         match relay {
             Some(i) => self.entries.insert(i + 1, entry),
@@ -595,7 +626,7 @@ impl State {
         let session = self.session.clone();
         self.projects.loaded.retain(|l| l.state.session.as_deref() == session.as_ref().map(|s| s.as_str()));
         self.projects_settle();
-        if self.conn.is_online() {
+        if self.conn.is_online() && self.asks_projects() {
             out.push(Request::ListProjects);
         }
     }

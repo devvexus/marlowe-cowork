@@ -382,6 +382,26 @@ fn a_project_that_found_no_model_at_boot_is_listed_and_starts_when_one_appears_w
 }
 
 #[test]
+fn only_a_missing_model_is_waited_for_a_project_that_cannot_start_for_another_reason_is_given_up() {
+    let home = Home::new("svc-give-up");
+    let id = left_running(&home, 1);
+    let host = Host::new(Fake::schema());
+    host.no_model.store(true, Ordering::SeqCst);
+    let svc = service(&home, &host);
+    let _ = svc.recover();
+    assert_eq!(svc.retry_waiting(), [id.clone()], "no model: still waited for");
+    assert_eq!(svc.waiting_for_a_model(), [id.clone()]);
+
+    // Its state no longer reads: no model will mend that, so the watcher has nothing to wait for.
+    std::fs::write(home.0.join("projects").join(&id).join("project.json"), b"not json").unwrap();
+    assert!(svc.retry_waiting().is_empty());
+    assert!(svc.waiting_for_a_model().is_empty(), "not tried again every few seconds");
+    let asked = host.quiet_asked.load(Ordering::SeqCst);
+    assert!(svc.retry_waiting().is_empty());
+    assert_eq!(host.quiet_asked.load(Ordering::SeqCst), asked, "and not asked for parts again");
+}
+
+#[test]
 fn two_starts_of_one_project_at_once_make_one_engine() {
     let home = Home::new("svc-claim");
     let id = left_running(&home, 1);

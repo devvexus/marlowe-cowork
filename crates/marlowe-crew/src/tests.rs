@@ -6,7 +6,7 @@ use marlowe_model::Effort;
 use marlowe_proto::{Confidence, CrewBudget, CrewRunStatus, Playbook, SandboxKind, SessionId, Slot};
 use serde_json::json;
 
-use crate::dispatch::dispatch_spec;
+use crate::dispatch::{dispatch_spec, dispatch_spec_with};
 use crate::playbook::{confidence_line, detect_test_command, list_items, markdown_links};
 use crate::sandbox::{branch_name, no_push_git_env, NO_PUSH_URL};
 use crate::*;
@@ -170,6 +170,23 @@ fn the_dispatch_declaration_lists_roles_and_its_arguments_parse() {
         serde_json::to_string(&receipt).unwrap(),
         r#"{"task_id":"agent_ab","run_id":"ab","role":"scout","estimate":{"minutes":5,"usd":0.1}}"#
     );
+}
+
+#[test]
+fn with_projects_live_dispatch_does_not_offer_the_research_roles() {
+    let roles = Roles::builtin().infos();
+    let spec = dispatch_spec_with(&roles, true);
+    let offered = spec.input_schema["properties"]["role"]["enum"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect::<Vec<_>>();
+    for gone in ["researcher", "scout", "compressor", "verifier"] {
+        assert!(!offered.iter().any(|r| r == gone), "{gone} is a project's now: {offered:?}");
+    }
+    assert!(offered.iter().any(|r| r == "engineer") && offered.iter().any(|r| r == "analyst"), "{offered:?}");
+    let menu = spec.input_schema["properties"]["role"]["description"].as_str().unwrap_or_default();
+    assert!(!menu.contains("researcher"), "{menu}");
+    // Without projects nothing changes.
+    assert_eq!(dispatch_spec_with(&roles, false).input_schema, dispatch_spec(&roles).input_schema);
+    let e = crate::CrewError::ResearchRole("researcher".into()).to_string();
+    assert!(e.contains("retired") && e.contains("manage_project"), "{e}");
 }
 
 #[test]

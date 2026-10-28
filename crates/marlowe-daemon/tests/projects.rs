@@ -672,3 +672,96 @@ fn a_project_that_found_no_model_at_boot_starts_when_one_appears_without_the_use
     assert!(matches!(&raised.last().unwrap().event, Event::ProjectGateRaised { kind, .. } if kind == "plan"), "{raised:#?}");
     stop(d);
 }
+
+// ---------------------------------------------------------------- a planned GPU
+
+/// An engine over a planned GPU: every model has the same 12B header, `eligible` ones may run on
+/// Marlowe's llama-server, `scripted` is loaded while the flag is up, and so is every model in `also`.
+struct Planned {
+    up: Arc<AtomicBool>,
+    eligible: Vec<String>,
+    also: Vec<String>,
+}
+
+impl marlowe_hw::ModelSource for Planned {
+    fn files(&self, _model_id: &str) -> Result<marlowe_hw::ModelFiles, String> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../marlowe-hw/tests/fixtures/gemma3_12b_q4_k_m.json");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        Ok(marlowe_hw::ModelFiles { main: marlowe_hw::ModelHeader::from_show(&v).unwrap(), source: "GGUF header".into(), ..Default::default() })
+    }
+    fn runtime(&self, _: &str, _: Option<&str>) -> marlowe_hw::RunnerObservation {
+        marlowe_hw::RunnerObservation { loaded: self.up.load(Ordering::SeqCst), ..Default::default() }
+    }
+    fn loaded_models(&self) -> Vec<String> {
+        if self.up.load(Ordering::SeqCst) { std::iter::once("scripted".to_string()).chain(self.also.clone()).collect() } else { Vec::new() }
+    }
+    fn engine_eligibility(&self, model_id: &str) -> Result<(), String> {
+        if self.eligible.iter().any(|m| m == model_id) { Ok(()) } else { Err("Ollama renders its prompt itself".into()) }
+    }
+}
+
+struct Room(f64);
+
+impl marlowe_hw::GpuSource for Room {
+    fn snapshot(&self) -> Option<marlowe_hw::GpuSnapshot> {
+        Some(marlowe_hw::GpuSnapshot {
+            gpu: marlowe_hw::GpuBudget {
+                name: "NVIDIA GeForce RTX 4080 SUPER".into(),
+                total_mib: 24_576.0,
+                used_mib: 24_576.0 - self.0,
+                free_mib: self.0,
+                runners_mib: 0.0,
+                runners_shared_mib: 0.0,
+                headroom_mib: 1_024.0,
+                bandwidth_gbs: Some(736.0),
+            },
+            runners: vec![],
+            ram_total_mib: Some(31_914.0),
+            ram_free_mib: Some(20_000.0),
+        })
+    }
+}
+
+/// A daemon over a planned GPU with 20 GB free.
+fn start_planned(home: &Path, p: Arc<Scripted>, up: bool, eligible: &[&str], also: &[&str]) -> Running {
+    let mut d = deps(p, home, true);
+    let engine = Planned { up: Arc::new(AtomicBool::new(up)), eligible: eligible.iter().map(|m| m.to_string()).collect(), also: also.iter().map(|m| m.to_string()).collect() };
+    d.providers.set_hardware(marlowe_brains::Hardware { models: Arc::new(engine), gpu: Arc::new(Room(20_000.0)), server: Arc::new(NoServer) });
+    let d = Daemon::start(d, home, DaemonConfig::default()).expect("daemon starts");
+    Running { info: d.info(), join: std::thread::spawn(move || d.wait()) }
+}
+
+#[test]
+fn two_models_that_both_run_on_the_one_engine_are_not_split_across_a_project() {
+    let home = temp_home("models-engine");
+    add_model(&home, "mini");
+    std::fs::write(home.join("settings.toml"), "[projects.model]\nemployee = \"mini\"\n").unwrap();
+    let p = Arc::new(Scripted::default());
+    // Both are loaded already, and both would be served by the engine's one process.
+    let d = start_planned(&home, p.clone(), true, &["scripted", "mini"], &["mini"]);
+    let mut a = Client::connect(&d.info);
+    let (id, seen) = run_a_project(&mut a, &p);
+    let models = employee_models(&p);
+    assert!(!models.is_empty() && models.iter().all(|m| m == "scripted"), "only one local model was called: {models:?}");
+    let told = notices_of(&seen, &id);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].contains("projects.model.employee is `mini`") && told[0].contains("one model at a time") && told[0].contains("use scripted"), "{}", told[0]);
+    stop(d);
+}
+
+#[test]
+fn a_conversation_model_that_must_load_counts_as_the_one_load_of_the_start() {
+    let home = temp_home("models-one-load");
+    add_model(&home, "mini");
+    std::fs::write(home.join("settings.toml"), "[projects.model]\nemployee = \"mini\"\n").unwrap();
+    let p = Arc::new(Scripted::default());
+    // Neither model is loaded and both fit alone; Ollama keeps both (nothing is eligible).
+    let d = start_planned(&home, p.clone(), false, &[], &[]);
+    let mut a = Client::connect(&d.info);
+    let (id, seen) = run_a_project(&mut a, &p);
+    let models = employee_models(&p);
+    assert!(!models.is_empty() && models.iter().all(|m| m == "scripted"), "the second load was not admitted beside the first: {models:?}");
+    let told = notices_of(&seen, &id);
+    assert!(told.len() == 1 && told[0].contains("would load beside another model"), "{told:?}");
+    stop(d);
+}

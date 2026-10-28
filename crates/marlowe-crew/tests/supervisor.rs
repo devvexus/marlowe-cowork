@@ -799,6 +799,25 @@ fn a_dispatch_after_untrusted_content_asks_and_starts_a_tainted_run() {
 }
 
 #[test]
+fn with_projects_live_a_research_role_is_refused_with_the_way_to_a_project_and_nothing_starts() {
+    let home = home("research-role");
+    let provider = cloud(|_, _, cancel| block(cancel));
+    let fx = start(&home, &provider);
+    let tools = DispatchTools::new(fx.sup.clone()).with_projects(true);
+    let ctx = ToolCtx { session: SessionId("s".into()), turn: 1, workspace: None, cancel: CancelToken::new(), tainted: false };
+    let before = fx.sup.list(50).unwrap().len();
+    for role in ["researcher", "Scout", "verifier", "compressor"] {
+        let call = marlowe_model::ToolCall { id: "d1".into(), name: "dispatch".into(), args: json!({"role": role, "prompt": "find out about LoRA rank"}) };
+        let out = tools.call(&call, &ctx);
+        assert!(out.is_error && out.content.contains("manage_project"), "{role}: {}", out.content);
+    }
+    assert_eq!(fx.sup.list(50).unwrap().len(), before, "no run was queued");
+    let spec = &tools.specs()[0];
+    assert!(!spec.input_schema["properties"]["role"]["enum"].to_string().contains("researcher"));
+    finish(fx, &[&home]);
+}
+
+#[test]
 fn a_local_step_waits_while_the_gpu_turns_busy_mid_run() {
     let home = home("gpu-mid-run");
     let busy = Arc::new(AtomicBool::new(false));

@@ -443,7 +443,7 @@ fn entry_key(state: &State, idx: usize, e: &Entry, gap: bool, live: bool) -> u64
         h.str(&format!("{:?}", (&state.hover, state.projects.focus.as_deref() == Some(id.as_str()) && state.focus == crate::state::Focus::Conversation, state.projects.card_sel)));
     }
     if let Entry::News { label, .. } = e {
-        h.u64(u64::from(super::projects_entry::relay_label_only(state, label)));
+        h.u64(u64::from(super::projects_entry::relay_label_only(state, idx, label)));
     }
     if let Entry::Tool { call_id, .. } = e {
         if state.code.tool_detail.get(call_id).is_some_and(|d| d.diff.is_some()) {
@@ -572,7 +572,7 @@ pub(super) fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, th
             }
         }
         Entry::Job { command, output, code, .. } => job_lines(command, output, *code, width, theme, out),
-        Entry::News { label, .. } if super::projects_entry::relay_label_only(state, label) => {
+        Entry::News { label, .. } if super::projects_entry::relay_label_only(state, idx, label) => {
             out.push(Line::from(vec![
                 Span::styled("↳ ", ink(Ink::Dimmer, theme)),
                 Span::styled(text::truncate(&text::clean(label), width.saturating_sub(4).max(8)), ink(Ink::Dim, theme)),

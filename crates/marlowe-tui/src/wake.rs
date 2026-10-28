@@ -172,6 +172,8 @@ pub struct Wake {
     /// When the current envelope chunk arrived (`now_ms`).
     pub envelope_at_ms: i64,
     pub memory_presence: Presence,
+    /// Whether this daemon runs projects: once it says it does not, the client stops asking.
+    pub projects_presence: Presence,
     /// "not running" errors expected in answer to the connect probes; absorbed, not flashed.
     expected_errors: Vec<&'static str>,
     pub sel: usize,
@@ -294,6 +296,8 @@ impl State {
     /// Requests sent after every Welcome, for the boot lines, the rail and the meter.
     pub(crate) fn wake_probes(&mut self, out: &mut Vec<Request>) {
         self.wake.expected_errors = vec![NO_MEMORY, NO_SENTINEL, NO_SENTINEL, NO_VOICE, NO_CREW, NO_PROJECTS];
+        // A connection may reach another daemon: ask again.
+        self.wake.projects_presence = Presence::Unknown;
         out.push(Request::MemoryStats);
         out.push(Request::WatchList);
         out.push(Request::ListNotices { limit: NOTICE_LIMIT, unseen_only: false });
@@ -319,7 +323,12 @@ impl State {
             NO_SENTINEL => self.wake.sentinel = Presence::Absent,
             NO_VOICE => self.wake.voice_presence = Presence::Absent,
             NO_CREW => self.crew.presence = Presence::Absent,
-            NO_PROJECTS => {}
+            NO_PROJECTS => {
+                self.wake.projects_presence = Presence::Absent;
+                // Every later answer of the same kind (the list is asked for again on each
+                // adoption and transcript) is absorbed too, whether or not one was expected.
+                return true;
+            }
             _ => self.wake.memory_presence = Presence::Absent,
         }
         match self.wake.expected_errors.iter().position(|k| *k == kind) {
@@ -329,6 +338,11 @@ impl State {
             }
             None => false,
         }
+    }
+
+    /// Whether `ListProjects` is worth sending: not once the daemon has said it runs none.
+    pub(crate) fn asks_projects(&self) -> bool {
+        self.wake.projects_presence != Presence::Absent
     }
 
     pub(crate) fn on_watch_state(&mut self, ws: &WatchState) {

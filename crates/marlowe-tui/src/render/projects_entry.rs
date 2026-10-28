@@ -49,6 +49,8 @@ struct Brief {
     skipped_items: u32,
     /// A gate step says what was answered, or that it waits.
     note: Option<String>,
+    /// Its tasks held back from calling a model; the step's `running` count includes them.
+    held: u32,
 }
 
 fn briefs(cx: &Cx, ph: &Phase) -> Vec<Brief> {
@@ -68,7 +70,11 @@ fn briefs(cx: &Cx, ph: &Phase) -> Vec<Brief> {
                 Some(g) => g.answer.as_ref().map(|a| format!("answered {}", a.choice.replace('_', " "))).unwrap_or_default(),
                 None => String::new(),
             });
-            Brief { id: st.id.clone(), status: st.status, kind: st.kind, c: st.counts, failed_items: f, skipped_items: k, note }
+            let held = derive::waiting_agents(cx.s())
+                .into_iter()
+                .filter(|a| a.step == st.id && a.item.as_deref().and_then(|i| cx.s().items.get(i)).is_none_or(|i| i.phase == ph.id))
+                .count() as u32;
+            Brief { id: st.id.clone(), status: st.status, kind: st.kind, c: st.counts, failed_items: f, skipped_items: k, note, held }
         })
         .collect()
 }
@@ -87,8 +93,12 @@ fn brief_spans(p: &Pal, b: &Brief) -> Vec<Span<'static>> {
     }
     v.push(Span::styled(format!("{} ", b.id), p.dim));
     v.push(Span::styled(b.c.done.to_string(), p.body));
-    if b.c.running > 0 {
-        v.push(Span::styled(format!(" ●{}", b.c.running), p.info));
+    let calling = b.c.running.saturating_sub(b.held);
+    if calling > 0 {
+        v.push(Span::styled(format!(" ●{calling}"), p.info));
+    }
+    if b.held > 0 {
+        v.push(Span::styled(format!(" ◌{}", b.held), p.amber));
     }
     if b.c.queued > 0 {
         v.push(Span::styled(format!(" ○{}", b.c.queued), p.dim));
@@ -491,6 +501,17 @@ fn running_entry(cx: &Cx, width: usize) -> Vec<BLine> {
         l.clip(width);
         out.push(l.done());
     }
+    let held = derive::waiting_agents(s);
+    if !held.is_empty() {
+        let mut why: Vec<&str> = held.iter().map(|a| a.note.as_deref().unwrap_or("waiting for a place to call from")).collect();
+        why.dedup();
+        let mut l = L::new();
+        l.sp(3);
+        tick_lead(&mut l, p, ("◌", p.amber), &format!("{} waiting", held.len()), p.body, lead);
+        l.s(why.join(" · "), p.amber);
+        l.clip(width);
+        out.push(l.done());
+    }
     if !pend.is_empty() {
         let mut l = L::new();
         l.sp(3);
@@ -706,6 +727,10 @@ fn block_for(state: &State, theme: &Theme, l: &Loaded, width: usize) -> Vec<BLin
 /// A settled project's rows in the transcript.
 pub fn entry_lines(state: &State, id: &str, width: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
     let Some(l) = state.projects.get(id) else { return };
+    // A project that runs again is drawn after the conversation, once: its old entry waits to be taken out.
+    if !l.is_final() {
+        return;
+    }
     out.extend(entry_block(&Cx::new(state, theme, l), width).into_iter().map(|b| b.line));
 }
 
@@ -732,17 +757,34 @@ pub fn register_hits(state: &State, rows: &[BLine], first: i64, top: usize, pane
 
 /// The click targets of a settled project's rows.
 pub fn entry_hits(state: &State, id: &str, theme: &Theme, pane: Rect, tw: usize, end_line: usize, top: usize) {
-    let Some(l) = state.projects.get(id) else { return };
+    let Some(l) = state.projects.get(id).filter(|l| l.is_final()) else { return };
     let block = block_for(state, theme, l, tw);
     let first = end_line as i64 - block.len() as i64;
     register_hits(state, &block, first, top, pane);
 }
 
-/// A relay's label row only: the project's entry already shows what the lead said. That holds
-/// while the project runs and once its result stands in the transcript.
-pub fn relay_label_only(state: &State, label: &str) -> bool {
+/// A relay's label row only (`idx` is its place in the transcript): the project's entry already
+/// shows what the lead said. That holds for the notes of a project (while it runs and once its
+/// result stands in the transcript) and for the completion relay of its latest run. The completion
+/// relay of an earlier run keeps its text while the project runs again, and next to a newer result.
+pub fn relay_label_only(state: &State, idx: usize, label: &str) -> bool {
+    let completion = |label: &str| {
+        let l = label.trim_end();
+        [ProjectStatus::Finished, ProjectStatus::Failed, ProjectStatus::Cancelled].iter().any(|s| l.ends_with(s.as_str()))
+    };
     state.projects.loaded.iter().any(|l| {
-        label.contains(&l.state.id) && (!l.is_final() || state.entries.iter().any(|e| matches!(e, Entry::Project { id } if *id == l.state.id)))
+        let id = &l.state.id;
+        if !label.contains(id.as_str()) {
+            return false;
+        }
+        if !completion(label) {
+            return !l.is_final() || state.entries.iter().any(|e| matches!(e, Entry::Project { id: p } if p == id));
+        }
+        if !l.is_final() {
+            return false;
+        }
+        let latest = state.entries.iter().rposition(|e| matches!(e, Entry::News { label, .. } if label.contains(id.as_str()) && completion(label)));
+        latest == Some(idx) && state.entries.iter().any(|e| matches!(e, Entry::Project { id: p } if p == id))
     })
 }
 

@@ -69,6 +69,9 @@ pub enum CrewError {
     /// A playbook that no longer runs (stored runs still name it).
     #[error("the `{}` playbook is retired: research runs as a project, so start one with manage_project", .0.as_str())]
     Retired(Playbook),
+    /// A role that only did research, which runs as a project now.
+    #[error("the `{0}` role is retired from dispatch: research runs as a project, so start one with manage_project")]
+    ResearchRole(String),
     /// The operation is declared but its implementation has not landed (a seam stub).
     #[error("not wired yet: {0}")]
     NotWired(&'static str),

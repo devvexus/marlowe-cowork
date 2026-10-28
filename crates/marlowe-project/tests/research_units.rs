@@ -838,3 +838,30 @@ fn a_section_writer_sees_only_claims_that_do_not_belong_to_another_subject() {
     let reply = json!({"text": format!("DeepSeek attains gold [C{n_b}]."), "end": "END"});
     assert_eq!(l.finish("section_finish", &input, reply).unwrap_err().rule, "cites_claims");
 }
+
+#[test]
+fn a_comparison_kept_on_a_qwen_page_reaches_the_qwen_section_though_its_words_name_only_kimi() {
+    let l = m6_lab();
+    let q5 = l.question(4);
+    // The m6 claim: extraction keeps it on its Qwen 4 page, so the section must see it too.
+    let hash = l.page("x");
+    let source = |id: &str, index: u32, title: &str, url: &str| {
+        l.put(id, "source", "analyze@1", Some(&q5), json!({"index": index, "title": title, "relevancy": "High", "credibility": 0.7, "source_kind": "official", "one_line": "x", "source": url, "notes": "",
+            "relevance": 0.7, "page": "i_p", "text_ref": hash, "claims": [], "additional_sources": [], "records": []}))
+    };
+    source("i_sq", 1, "Qwen 4 release date", "https://techpilot.ai/qwen-4-release-date/");
+    source("i_sd", 2, "DeepSeek-V3.2 release", "https://api-docs.deepseek.com/news/news251201/");
+    let put = |id: &str, claim: &str, source: &str| {
+        let row = json!({"claim_id": "c_1", "text": claim, "quote": claim, "source": "https://x.example/", "credibility": 0.7, "text_ref": "h", "start": 0, "end": 1, "source_item": source});
+        l.put(id, "cclaim", "cclaim@1", Some(&q5), json!({"claim": claim, "corroborates": [row], "source_count": 2, "score": 0.9, "stance": "supported", "sub": "q5", "verdict": "upheld"}))
+    };
+    put("i_a", "Second on CorpFin, behind Kimi K2.5.", "i_sq");
+    put("i_b", "Second on CorpFin, behind Kimi K2.5 as well.", "i_sd");
+    let input = l.input("sections", Some(l.p.state().items_of_kind("question")[4].clone()), vec![], vec![], "q5");
+    let p = l.prompt("section-writer", &input);
+    assert!(p.user.contains("Second on CorpFin, behind Kimi K2.5."), "{}", p.user);
+    assert!(!p.user.contains("as well"), "the same words on a DeepSeek page stay out: {}", p.user);
+    let n_a = research::report::verified_claims(&l.p.state()).iter().find(|c| c.id == "i_a").unwrap().n;
+    let ok = l.finish("section_finish", &input, json!({"sentences": [{"text": "It ranks second on CorpFin.", "claims": [n_a]}], "end": "END"})).unwrap();
+    assert!(ok.data["text"].as_str().unwrap().contains(&format!("[C{n_a}]")), "{:?}", ok.data);
+}

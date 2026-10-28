@@ -133,6 +133,14 @@ pub fn running_agents(state: &ProjectState, now_ms: u64) -> Vec<(&Agent, Option<
     v
 }
 
+/// The agents held back from calling their model (the GPU is busy, Windows is short of memory,
+/// no slot is free), oldest first: each says what it waits for in its note.
+pub fn waiting_agents(state: &ProjectState) -> Vec<&Agent> {
+    let mut v: Vec<&Agent> = state.agents.values().filter(|a| a.status == AgentStatus::Waiting).collect();
+    v.sort_by_key(|a| (a.started_ms, a.id.clone()));
+    v
+}
+
 /// Six cells, each the most agents running at once in one 10 s slice of the last 60 s, read from
 /// the agents' start and end times. Level `n` is `SPARK[min(n, 6)]`.
 pub fn activity(state: &ProjectState, now_ms: u64) -> [u8; 6] {

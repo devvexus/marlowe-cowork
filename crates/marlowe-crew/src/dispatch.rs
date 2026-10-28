@@ -21,6 +21,11 @@ pub const DISPATCH_TOOL: &str = "dispatch";
 const PLAYBOOK_ROLES: [&str; 8] =
     ["scout", "compressor", "verifier", "lead", "integrator", "review-correctness", "review-security", "review-performance"];
 
+/// Roles whose work is a project's now: with projects live they are not offered to `dispatch`
+/// and a call naming one is told the way to a project (`scout`, `compressor` and `verifier` only
+/// ever served the retired research playbook).
+pub const RESEARCH_ROLES: [&str; 4] = ["researcher", "scout", "compressor", "verifier"];
+
 /// One-phrase menu entries for the built-in roles one picks directly.
 fn blurb(role: &str) -> Option<&'static str> {
     Some(match role {
@@ -48,8 +53,17 @@ fn short(description: &str) -> String {
 
 /// The tool declaration. `roles` fills the `role` enum and its description.
 pub fn dispatch_spec(roles: &[RoleInfo]) -> ToolSpec {
+    dispatch_spec_with(roles, false)
+}
+
+/// [`dispatch_spec`], with the research roles left out when `projects` are live.
+pub fn dispatch_spec_with(roles: &[RoleInfo], projects: bool) -> ToolSpec {
     // The workflow role runs only a workflow script's agents (the `workflow` tool starts those).
-    let roles: Vec<&RoleInfo> = roles.iter().filter(|r| r.name != crate::playbook::script::WORKFLOW_ROLE).collect();
+    let roles: Vec<&RoleInfo> = roles
+        .iter()
+        .filter(|r| r.name != crate::playbook::script::WORKFLOW_ROLE)
+        .filter(|r| !(projects && RESEARCH_ROLES.contains(&r.name.as_str())))
+        .collect();
     let names: Vec<&str> = roles.iter().map(|r| r.name.as_str()).collect();
     // The playbooks' own stages are named by the enum alone; the menu gives the roles to pick.
     let menu: Vec<String> = roles
@@ -150,11 +164,19 @@ pub struct DispatchReceipt {
 /// The conductor's dispatch host, composed with its other tools when a supervisor is running.
 pub struct DispatchTools {
     supervisor: Supervisor,
+    /// Projects are live: research is theirs, so the research roles are neither offered nor run.
+    projects: bool,
 }
 
 impl DispatchTools {
     pub fn new(supervisor: Supervisor) -> DispatchTools {
-        DispatchTools { supervisor }
+        DispatchTools { supervisor, projects: false }
+    }
+
+    /// Research runs as a project: `dispatch` stops offering the research roles and refuses them.
+    pub fn with_projects(mut self, live: bool) -> DispatchTools {
+        self.projects = live;
+        self
     }
 
     /// Workspace for a call: the argument, else the session's.
@@ -165,7 +187,7 @@ impl DispatchTools {
 
 impl ToolHost for DispatchTools {
     fn specs(&self) -> Vec<ToolSpec> {
-        vec![dispatch_spec(&self.supervisor.roles())]
+        vec![dispatch_spec_with(&self.supervisor.roles(), self.projects)]
     }
 
     /// Queues the run under `ctx.session` and returns the receipt; never waits on the run.
@@ -174,6 +196,9 @@ impl ToolHost for DispatchTools {
             Ok(a) => a,
             Err(e) => return ToolOutcome::error(e),
         };
+        if self.projects && RESEARCH_ROLES.contains(&args.role.trim().to_ascii_lowercase().as_str()) {
+            return ToolOutcome::error(CrewError::ResearchRole(args.role.trim().to_string()).to_string());
+        }
         args.workspace = Self::workspace(&args, ctx).map(|p| p.display().to_string());
         args.tainted = ctx.tainted;
         match self.supervisor.dispatch(Some(ctx.session.clone()), args) {

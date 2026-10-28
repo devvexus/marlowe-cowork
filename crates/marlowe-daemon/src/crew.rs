@@ -554,7 +554,7 @@ fn devices_busy(gpu: &GpuReport, compute: &[(u32, Vec<String>)]) -> bool {
 /// The conductor's tools plus `dispatch`, when the supervisor is running.
 pub(crate) fn with_dispatch(core: &Core, tools: Arc<dyn ToolHost>) -> Arc<dyn ToolHost> {
     match core.crew.get() {
-        Some(link) => Arc::new(WithDispatch { inner: tools, dispatch: DispatchTools::new(link.supervisor.clone()) }),
+        Some(link) => Arc::new(WithDispatch { inner: tools, dispatch: DispatchTools::new(link.supervisor.clone()).with_projects(crate::project_ops::live(core)) }),
         None => tools,
     }
 }

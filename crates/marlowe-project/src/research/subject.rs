@@ -10,8 +10,6 @@
 
 use std::collections::BTreeSet;
 
-use super::vectors::names_of;
-
 /// The subject families of an objective.
 #[derive(Debug, Clone, Default)]
 pub struct Subjects {
@@ -37,12 +35,34 @@ fn family(name: &str) -> Option<String> {
     (stem.chars().filter(|c| c.is_alphabetic()).count() >= 3).then(|| stem.to_string())
 }
 
+/// The names an objective carries: a word with a capital letter that does not just start a
+/// sentence (one that starts a sentence counts only with a digit or a capital inside it, like
+/// DeepSeek or Qwen4), or a word with a digit. A possessive is the name (Kimi's -> Kimi).
+fn names_in(objective: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut starts = true;
+    for raw in objective.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '(' | ')' | '"')).filter(|w| !w.is_empty()) {
+        let initial = std::mem::replace(&mut starts, false);
+        let w = raw.trim_matches(|c: char| !c.is_alphanumeric());
+        // A full stop after a short word or one with a dot inside (vs. e.g.) ends no sentence.
+        starts = raw.ends_with(['.', '!', '?', ':']) && w.chars().count() >= 3 && !w.contains('.');
+        let w = w.strip_suffix("'s").or_else(|| w.strip_suffix("’s")).unwrap_or(w);
+        let has_digit = w.chars().any(|c| c.is_ascii_digit()) && w.chars().any(char::is_alphabetic);
+        let inner_capital = w.chars().skip(1).any(char::is_uppercase);
+        let capital = if initial { inner_capital } else { w.chars().any(char::is_uppercase) };
+        if (capital || has_digit) && w.chars().count() >= 2 && !out.iter().any(|o| o.eq_ignore_ascii_case(w)) {
+            out.push(w.to_string());
+        }
+    }
+    out
+}
+
 impl Subjects {
     /// The families of the names an objective carries. Fewer than two subjects cannot cross, so
     /// then there are none.
     pub fn of(objective: &str) -> Self {
         let mut families: Vec<String> = Vec::new();
-        for n in names_of(objective, usize::MAX) {
+        for n in names_in(objective) {
             if let Some(f) = family(&n) {
                 if !families.contains(&f) {
                     families.push(f);
@@ -109,10 +129,11 @@ impl Subjects {
     }
 
     /// Whether a text that names subjects (a condensed claim, a section's sentence) belongs under
-    /// `scope`: it names one of them, or none at all.
-    pub fn text_fits(&self, scope: &BTreeSet<usize>, text: &str) -> bool {
+    /// `scope`: it names one of them, or none at all, or a page it stands on is about one (a claim
+    /// kept on its page's subject may name only another subject, as a comparison does).
+    pub fn text_fits(&self, scope: &BTreeSet<usize>, text: &str, pages: &[PageSubjects]) -> bool {
         let own = self.named(text);
-        scope.is_empty() || own.is_empty() || own.iter().any(|i| scope.contains(i))
+        scope.is_empty() || own.is_empty() || own.iter().any(|i| scope.contains(i)) || pages.iter().any(|p| p.about.iter().any(|i| scope.contains(i)))
     }
 }
 
@@ -196,6 +217,15 @@ mod tests {
         assert_eq!(s.families, ["kimi", "deepseek", "qwen"], "AI is too short to be a subject; Qwen4 is the Qwen family");
         assert!(Subjects::of("Find a good Rust crate").is_empty(), "one subject has nothing to cross");
         assert!(Subjects::of("what is new").is_empty());
+    }
+
+    #[test]
+    fn a_word_that_starts_a_sentence_and_a_possessive_are_not_new_subjects() {
+        let s = Subjects::of("Compile a report on Mamba and RWKV. Include benchmarks. Also Kimi's results.");
+        assert_eq!(s.families, ["mamba", "rwkv", "kimi"], "Include and Also only start sentences; Kimi's is Kimi");
+        assert_eq!(s.named("The architecture includes token shift"), set(&[]));
+        assert_eq!(Subjects::of("Compare DeepSeek vs. Qwen on code: Tokens per second.").families, ["deepseek", "qwen"], "vs. ends no sentence; Tokens starts one");
+        assert_eq!(Subjects::of("Qwen4 and DeepSeek are new. Kimi too.").families, ["qwen", "deepseek"]);
     }
 
     #[test]

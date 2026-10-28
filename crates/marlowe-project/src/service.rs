@@ -200,6 +200,9 @@ struct Inner {
     /// Projects whose engine is being started: two starts of one project (the user's answer and
     /// the retry that waits for a model) never both get through.
     starting: Mutex<std::collections::HashSet<String>>,
+    /// Projects that could not start for a reason a model will not mend (their files, their
+    /// thread): they are not waited for any more.
+    given_up: Mutex<std::collections::HashSet<String>>,
     events: Sender<ProjectEvent>,
 }
 
@@ -236,7 +239,7 @@ impl ProjectService {
                 h.event(ev);
             }
         })?;
-        Ok(ProjectService { inner: Arc::new(Inner { cfg, host, live: Mutex::new(HashMap::new()), starting: Mutex::new(Default::default()), events }) })
+        Ok(ProjectService { inner: Arc::new(Inner { cfg, host, live: Mutex::new(HashMap::new()), starting: Mutex::new(Default::default()), given_up: Mutex::new(Default::default()), events }) })
     }
 
     /// The registry projects are made from.
@@ -502,7 +505,41 @@ impl ProjectService {
     /// starts it.
     pub fn waiting_for_a_model(&self) -> Vec<String> {
         let Ok(rows) = self.rows() else { return Vec::new() };
-        rows.into_iter().filter(|r| r.status == "running" && !self.is_running(&r.id)).map(|r| r.id).collect()
+        let gave_up = lock(&self.inner.given_up).clone();
+        rows.into_iter().filter(|r| r.status == "running" && !self.is_running(&r.id) && !gave_up.contains(&r.id)).map(|r| r.id).collect()
+    }
+
+    /// Tries to start every project that waits for a model, loading none, and returns the ones
+    /// still waiting for one. A project that cannot start for any other reason (its files, its
+    /// thread) is marked failed with that reason, so it is not tried again every few seconds;
+    /// `reopen` runs it again.
+    pub fn retry_waiting(&self) -> Vec<String> {
+        let mut still = Vec::new();
+        for id in self.waiting_for_a_model() {
+            match self.resume(&id) {
+                Ok(()) => {}
+                Err(ProjectError::NoModel(_)) => still.push(id),
+                Err(e) => self.give_up(&id, &e.to_string()),
+            }
+        }
+        still
+    }
+
+    /// Stops waiting for `id`: marks it failed when its state can be written, and says so.
+    fn give_up(&self, id: &str, why: &str) {
+        lock(&self.inner.given_up).insert(id.to_string());
+        eprintln!("marlowe: project {id} cannot start and is marked failed: {why}");
+        let Ok(store) = self.store() else { return };
+        let Ok(state) = self.load(&store, id) else { return };
+        let Ok(for_actor) = self.store() else { return };
+        let Ok(actor) = ProjectActor::spawn(for_actor, state, self.inner.events.clone(), self.inner.cfg.actor) else { return };
+        let marked = actor.handle().mutate(Mutation::SetStatus(ProjectStatus::Failed));
+        let _ = actor.stop();
+        if marked.is_ok() {
+            if let Ok(state) = store.load(id) {
+                self.inner.host.ended(ended_of(&state, store.dir(id).ok().as_deref(), Some(why)));
+            }
+        }
     }
 
     fn claim(&self, id: &str) -> Option<Claim<'_>> {

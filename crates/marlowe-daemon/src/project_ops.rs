@@ -125,13 +125,10 @@ fn watch_for_a_model(core: &Arc<Core>, service: &ProjectService) {
         if core.is_shutting_down() {
             return;
         }
-        let waiting = service.waiting_for_a_model();
-        if waiting.is_empty() {
+        // No model yet is the usual answer and the next look is soon; the thread ends when no
+        // project waits for one.
+        if service.retry_waiting().is_empty() {
             return;
-        }
-        for id in waiting {
-            // No model yet is the usual answer; the next look is soon.
-            let _ = service.resume(&id);
         }
     });
     if let Err(e) = spawned {
@@ -290,7 +287,8 @@ impl Host {
     }
 
     fn models(&self, core: &Arc<Core>, state: &ProjectState, who: Priority) -> Result<Models, String> {
-        let session = state.session.as_deref().map(|s| SessionId(s.to_string()));
+        // A conversation that is gone has no model of its own: the project runs on the conductor's.
+        let session = state.session.as_deref().map(|s| SessionId(s.to_string())).filter(|s| !core.store.get(s).is_ok_and(|found| found.is_none()));
         let (provider, info) = match &session {
             Some(s) => crate::conductor_ops::session_parts(core, s).map(|(p, i, _)| (p, i))?,
             None => core.brains.agent_parts(&Slot::Conductor).map(|(p, i, _)| (p, i)).map_err(|e| e.to_string())?,
@@ -299,15 +297,18 @@ impl Host {
         // The conversation's model must be usable now without loading anything the user has not
         // seen load: it is the default for every step, the fallback for the others, and the model
         // the result is relayed on.
+        let mut loading: Vec<ModelRef> = Vec::new();
         match core.brains.admit(&mref, who) {
-            Admission::Hosted | Admission::Resident | Admission::Load(_) => {}
+            Admission::Hosted | Admission::Resident => {}
+            // Its load counts as this start's one load: a second model that also needs loading is
+            // admitted against the same free memory, so it is refused rather than loaded beside it.
+            Admission::Load(_) => loading.push(mref.clone()),
             Admission::Refused(why) | Admission::Wait(why) => return Err(format!("{} is not available for the project: {why}", mref.model_id)),
             Admission::Ask(cost) => return Err(format!("{} would have to load first: {}", mref.model_id, cost.describe())),
         }
         let conversation = Chosen { model: mref, provider, info };
         let settings = marlowe_settings::Settings::load(&core.home, None, None);
         let wants = [("employee", settings.project_employee_model()), ("lead", settings.project_lead_model())];
-        let mut loading: Vec<ModelRef> = Vec::new();
         let mut picked: Vec<Chosen> = Vec::new();
         let mut why_not: Vec<String> = Vec::new();
         for (role, name) in wants {
@@ -339,6 +340,12 @@ impl Host {
         let model = find_model(core, name)?;
         if model == *conversation {
             return Ok(None);
+        }
+        // Marlowe's llama-server runs one model per process: two engine models would swap on every
+        // call that changes role, reloading the weights and losing the conversation's prompt cache.
+        // (Admission would also measure the second as if the first were evicted.)
+        if core.brains.engine_wanted(&model) && core.brains.engine_wanted(conversation) {
+            return Err(format!("would run on the llama.cpp engine beside {}, and the engine serves one model at a time", conversation.model_id));
         }
         match core.brains.admit(&model, who) {
             Admission::Hosted | Admission::Resident => {}
@@ -602,9 +609,7 @@ pub(crate) fn retry_deferred(core: &Arc<Core>) {
     let Some(l) = link(core) else { return };
     // A project that was running when the daemon stopped and had no model then: the model is up now.
     let svc = l.shared.service().clone();
-    for id in svc.waiting_for_a_model() {
-        let _ = svc.resume(&id);
-    }
+    let _ = svc.retry_waiting();
     if l.shared.deferred.swap(false, Ordering::SeqCst) {
         deliver_due(core, &l.shared, false);
     }
