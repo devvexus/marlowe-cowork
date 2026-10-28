@@ -29,7 +29,7 @@ pub mod route;
 pub mod runner;
 
 pub use self::core::{answer_gate, Budgets, Control, Engine, EngineConfig, Lanes, RunHandle, RunOutcome};
-pub use self::functions::{default_prompt, CodeFn, Effect, Finished, FinishFn, GateCard, GateCtx, Prompt, PromptFn, TaskInput, Toolbox};
+pub use self::functions::{default_prompt, narrow_schema, CodeFn, Effect, Finished, FinishFn, GateCard, GateCtx, Prompt, PromptFn, TaskInput, Toolbox};
 pub use self::gate::{GateError, ModelGate, Permit, SlotPool, Unlimited};
 pub use self::machine::{Machine, MachineProbe};
 pub use self::route::ByModel;

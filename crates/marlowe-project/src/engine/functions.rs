@@ -143,18 +143,42 @@ pub struct Prompt {
     /// finish function runs on it exactly as on a model's reply, but no model is called, no slot
     /// is taken and no agent appears.
     pub canned: Option<Value>,
+    /// Values this one call may write at a place in the form's schema: a JSON pointer into the
+    /// model schema and the `enum` set there, so constrained decoding cannot write anything else
+    /// (the claim numbers a writer was shown).
+    pub narrow: Vec<(String, Vec<Value>)>,
 }
 
 impl Prompt {
     /// A prompt for the model: `system` blocks, then the one `user` message.
     pub fn new(system: Vec<SystemBlock>, user: String) -> Prompt {
-        Prompt { system, user, canned: None }
+        Prompt { system, user, canned: None, narrow: Vec::new() }
     }
 
     /// No call: `answer` stands in for the model's reply.
     pub fn canned(answer: Value) -> Prompt {
-        Prompt { system: Vec::new(), user: String::new(), canned: Some(answer) }
+        Prompt { system: Vec::new(), user: String::new(), canned: Some(answer), narrow: Vec::new() }
     }
+
+    /// Allow only `values` at `pointer` in this call's schema.
+    pub fn narrowed(mut self, pointer: &str, values: Vec<Value>) -> Prompt {
+        self.narrow.push((pointer.to_string(), values));
+        self
+    }
+}
+
+/// `schema` with each of `narrow`'s places limited to its values. A pointer the schema does not
+/// have, or an empty value list, leaves the schema as it was.
+pub fn narrow_schema(mut schema: Value, narrow: &[(String, Vec<Value>)]) -> Value {
+    for (pointer, values) in narrow {
+        if values.is_empty() {
+            continue;
+        }
+        if let Some(Value::Object(node)) = schema.pointer_mut(pointer) {
+            node.insert("enum".into(), Value::Array(values.clone()));
+        }
+    }
+    schema
 }
 
 /// What a function made.

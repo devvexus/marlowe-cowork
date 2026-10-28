@@ -862,6 +862,7 @@ fn a_comparison_kept_on_a_qwen_page_reaches_the_qwen_section_though_its_words_na
     assert!(p.user.contains("Second on CorpFin, behind Kimi K2.5."), "{}", p.user);
     assert!(!p.user.contains("as well"), "the same words on a DeepSeek page stay out: {}", p.user);
     let n_a = research::report::verified_claims(&l.p.state()).iter().find(|c| c.id == "i_a").unwrap().n;
-    let ok = l.finish("section_finish", &input, json!({"sentences": [{"text": "It ranks second on CorpFin.", "claims": [n_a]}], "end": "END"})).unwrap();
+    // The writer cites the list it was shown (one claim: 1); the report gets the claim's number.
+    let ok = l.finish("section_finish", &input, json!({"sentences": [{"text": "It ranks second on CorpFin.", "claims": [1]}], "end": "END"})).unwrap();
     assert!(ok.data["text"].as_str().unwrap().contains(&format!("[C{n_a}]")), "{:?}", ok.data);
 }

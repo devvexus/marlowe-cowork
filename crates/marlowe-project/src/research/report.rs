@@ -161,23 +161,50 @@ pub fn retain_markers(text: &str, allowed: &HashSet<u32>) -> (String, usize) {
 
 // ---- sections and the answer ----------------------------------------------------------------------
 
-fn claim_lines(claims: &[&VClaim]) -> String {
-    claims
-        .iter()
-        .map(|c| {
-            format!(
-                "[C{}] {} (score {:.2}; {} independent source{}{}{})",
-                c.n,
-                fence::clean(&c.text, 240, false),
-                c.score,
-                c.roots,
-                if c.roots == 1 { "" } else { "s" },
-                c.date.as_deref().map(|d| format!("; dated {d}")).unwrap_or_default(),
-                if c.contested { "; contested" } else { "" }
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+/// Where a writer's claim numbers sit in its form's model schema.
+const CITE_AT: &str = "/properties/sentences/items/properties/claims/items";
+
+/// The claims a writer is shown, numbered 1 to n in the order given, not by their numbers in the
+/// report. Found live: a 9b writer cited the list positions (0, 1, 3) of claims shown as C10, C41
+/// and C53, every number was unknown, and two sections failed on all three attempts. The schema
+/// is narrowed to 1..=n as well ([`CITE_AT`]), so constrained decoding cannot write another.
+fn writer_claims(claims: &[&VClaim]) -> String {
+    claims.iter().enumerate().map(|(i, c)| claim_line(i as u32 + 1, c)).collect::<Vec<_>>().join("\n")
+}
+
+/// The numbers a writer may cite: 1 to `shown`.
+fn cite_values(shown: usize) -> Vec<Value> {
+    (1..=shown as u64).map(Value::from).collect()
+}
+
+/// A writer's sentences with the numbers it cited (1 to n, positions in `shown`) turned into the
+/// claims' report numbers. A number outside the list becomes one no claim has, so it is dropped
+/// and counted as unknown like any other.
+fn to_report_numbers(mut map: Map<String, Value>, shown: &[u32]) -> Map<String, Value> {
+    if let Some(Value::Array(rows)) = map.get_mut("sentences") {
+        for row in rows.iter_mut() {
+            if let Some(Value::Array(ns)) = row.get_mut("claims") {
+                for n in ns.iter_mut() {
+                    let at = n.as_u64().and_then(|k| usize::try_from(k).ok()).and_then(|k| k.checked_sub(1));
+                    *n = Value::from(at.and_then(|k| shown.get(k).copied()).unwrap_or(u32::MAX));
+                }
+            }
+        }
+    }
+    map
+}
+
+fn claim_line(n: u32, c: &VClaim) -> String {
+    format!(
+        "[C{}] {} (score {:.2}; {} independent source{}{}{})",
+        n,
+        fence::clean(&c.text, 240, false),
+        c.score,
+        c.roots,
+        if c.roots == 1 { "" } else { "s" },
+        c.date.as_deref().map(|d| format!("; dated {d}")).unwrap_or_default(),
+        if c.contested { "; contested" } else { "" }
+    )
 }
 
 /// The address and title of each source item's page, by item id.
@@ -215,8 +242,8 @@ fn section_prompt(input: &TaskInput) -> Result<Prompt, String> {
          Objective: {}\n{WRITER_RULES}",
         fence::clean(&input.plan.objective, 500, false)
     );
-    let user = format!("{}\n\n{}", fence::fence("The question", &q, 300), fence::fence("The verified claims", &claim_lines(&mine), 12_000));
-    Ok(Prompt::new(vec![SystemBlock { text: system, cache: true }], user))
+    let user = format!("{}\n\n{}", fence::fence("The question", &q, 300), fence::fence("The verified claims", &writer_claims(&mine), 12_000));
+    Ok(Prompt::new(vec![SystemBlock { text: system, cache: true }], user).narrowed(CITE_AT, cite_values(mine.len())))
 }
 
 /// The text a writer's `sentences` make: each sentence with the markers of its claims before
@@ -293,14 +320,15 @@ fn section_finish(input: &TaskInput, map: Map<String, Value>) -> Result<Finished
     let sub = input.sub.clone();
     let objective = input.plan.objective.clone();
     let fallback = super::question_of(&input.plan, &sub);
-    let allowed: HashSet<u32> = input
+    let shown: Vec<u32> = input
         .project_handle
         .read(move |st| {
             let q = super::all_questions(st).into_iter().find(|(id, _)| *id == sub).map(|(_, t)| t).unwrap_or(fallback);
             section_claims(&verified_claims(st), &source_pages(st), &objective, &q, &sub).into_iter().map(|c| c.n).collect()
         })
         .map_err(|e| RuleFailure::new("state", e.to_string()))?;
-    written(input, map, allowed, "section")
+    let allowed = shown.iter().copied().collect();
+    written(input, to_report_numbers(map, &shown), allowed, "section")
 }
 
 fn answer_prompt(input: &TaskInput) -> Result<Prompt, String> {
@@ -325,18 +353,27 @@ fn answer_prompt(input: &TaskInput) -> Result<Prompt, String> {
          The sections already written are given, and the strongest verified claims. Answer the objective directly in a few short paragraphs, say what is confirmed and what is uncertain.\n{WRITER_RULES}",
         fence::clean(&input.plan.objective, 500, false)
     );
-    let top: Vec<&VClaim> = all.iter().take(20).collect();
+    let top: Vec<&VClaim> = all.iter().take(ANSWER_CLAIMS).collect();
     let mut secs = String::new();
     for (sub, text) in &sections {
-        secs.push_str(&format!("[{sub}] {}\n\n", fence::clean(text, 2000, true)));
+        // The sections' own markers use the report's numbers; the answer cites the list below.
+        let (text, _) = retain_markers(text, &HashSet::new());
+        secs.push_str(&format!("[{sub}] {}\n\n", fence::clean(&text, 2000, true)));
     }
-    let user = format!("{}\n\n{}", fence::fence("The sections", &secs, 14_000), fence::fence("The strongest verified claims", &claim_lines(&top), 6_000));
-    Ok(Prompt::new(vec![SystemBlock { text: system, cache: true }], user))
+    let user = format!("{}\n\n{}", fence::fence("The sections", &secs, 14_000), fence::fence("The strongest verified claims", &writer_claims(&top), 6_000));
+    Ok(Prompt::new(vec![SystemBlock { text: system, cache: true }], user).narrowed(CITE_AT, cite_values(top.len())))
 }
 
+/// The claims the answer writer is shown: the strongest, in [`verified_claims`] order.
+const ANSWER_CLAIMS: usize = 20;
+
 fn answer_finish(input: &TaskInput, map: Map<String, Value>) -> Result<Finished, RuleFailure> {
-    let allowed: HashSet<u32> = input.project_handle.read(|st| verified_claims(st).into_iter().map(|c| c.n).collect()).map_err(|e| RuleFailure::new("state", e.to_string()))?;
-    written(input, map, allowed, "answer")
+    let shown: Vec<u32> = input
+        .project_handle
+        .read(|st| verified_claims(st).into_iter().take(ANSWER_CLAIMS).map(|c| c.n).collect())
+        .map_err(|e| RuleFailure::new("state", e.to_string()))?;
+    let allowed = shown.iter().copied().collect();
+    written(input, to_report_numbers(map, &shown), allowed, "answer")
 }
 
 // ---- cite and audit -------------------------------------------------------------------------------
@@ -892,6 +929,29 @@ mod tests {
         let c = apply_audit(text, &mut spans);
         assert_eq!(c.text, "Alpha is out [C1]. Gamma is cheap [C3] (partly supported).");
         assert_eq!((c.cited, c.supported, c.partial, c.removed), (3, 1, 1, 1));
+    }
+
+    #[test]
+    fn a_writer_cites_the_list_it_was_shown_and_the_report_gets_the_claims_numbers() {
+        // Shown as 1, 2, 3; the report numbers them 10, 41 and 53 (the live run's section).
+        let shown = [10, 41, 53];
+        let reply = object(json!({"sentences": [
+            {"text": "Qwen 4 was announced in September.", "claims": [2]},
+            {"text": "It cannot be dated yet.", "claims": [3, 1]},
+            {"text": "Out of the list.", "claims": [0, 4]}
+        ], "end": "END"}));
+        let mapped = to_report_numbers(reply, &shown);
+        let rows: Vec<Value> = mapped["sentences"].as_array().unwrap().iter().map(|r| r["claims"].clone()).collect();
+        assert_eq!(rows, vec![json!([41]), json!([53, 10]), json!([u32::MAX, u32::MAX])]);
+        let allowed: HashSet<u32> = shown.into_iter().collect();
+        let sentences = super::super::rows(&mapped, "sentences");
+        let (t, _, unknown, _) = render_sentences(&sentences, &allowed);
+        assert_eq!(t, "Qwen 4 was announced in September [C41]. It cannot be dated yet [C10, C53]. Out of the list.");
+        assert_eq!(unknown, 2);
+        // The schema lets the writer write only 1 to 3 there.
+        let schema = json!({"properties": {"sentences": {"items": {"properties": {"claims": {"type": "array", "items": {"type": "integer"}}}}}}});
+        let narrowed = crate::engine::narrow_schema(schema, &[(CITE_AT.to_string(), cite_values(3))]);
+        assert_eq!(narrowed.pointer(CITE_AT).unwrap()["enum"], json!([1, 2, 3]));
     }
 
     #[test]

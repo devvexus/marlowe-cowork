@@ -364,7 +364,7 @@ fn run_model(sh: &Shared, t: &Task, ctx: &Ctx, rec: &mut Record) -> Result<(Fini
         model: model.clone(),
         system: prompt.system,
         prompt: prompt.user,
-        schema,
+        schema: super::functions::narrow_schema(schema, &prompt.narrow),
         think: step.effort,
         think_budget: step.think_budget,
         max_output: step.max_output.unwrap_or(1200),
