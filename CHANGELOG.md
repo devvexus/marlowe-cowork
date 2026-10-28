@@ -4,6 +4,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+- **The engine never runs a model with a window under 16k per agent.** When the GPU has room for the weights but not for a 16k window (or the model's whole window, when smaller), the model stays on Ollama, which splits it and gives it a usable window.
 - **A project's second model is refused when it would share the engine with the conversation's.** Marlowe's llama-server serves one model per process, so two engine models would swap on every change of role, reloading weights and losing the conductor's prompt cache; the project runs on the conversation's model and says why. The conversation's own load counts as the start's one load, so a second model that also needs loading is refused instead of loaded beside it.
 - **Claims keep their place in a report.** A claim kept on its page's subject ("second on CorpFin, behind Kimi K2.5" on a Qwen page) reaches that subject's section and may be cited there; a word that only starts a sentence, or a possessive, no longer becomes a subject of the objective.
 - **`dispatch` no longer offers the research roles when projects are live.** `researcher`, `scout`, `compressor` and `verifier` left the role menu and a call naming one is told to start a project with `manage_project`.

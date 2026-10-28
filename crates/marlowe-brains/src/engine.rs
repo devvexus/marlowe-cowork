@@ -53,8 +53,9 @@ fn disabled_by_env() -> bool {
 }
 
 /// The slots and window the planner starts a model with: the most agents (up to
-/// [`ENGINE_SLOTS`]) that each still get [`ENGINE_MIN_CTX`] on the GPU beside the weights, with
-/// the largest window that many fit; one agent with whatever fits when even that is small.
+/// [`ENGINE_SLOTS`]) that each still get [`ENGINE_MIN_CTX`] (or the model's whole window, when
+/// that is smaller) on the GPU beside the weights, with the largest window that many fit. None
+/// when not even one agent gets that much: Ollama splits such a model and gives it a real window.
 pub fn engine_choice(plan: &PlanModel, kv: KvType) -> Option<(u16, u32)> {
     // Measured live (a 9b model, six slots): the planner's own estimate came out 1.1 GiB under
     // what the server took, and past about 15.5 GiB in all the driver starts spilling to system
@@ -63,10 +64,11 @@ pub fn engine_choice(plan: &PlanModel, kv: KvType) -> Option<(u16, u32)> {
     if let Some(g) = plan.gpu.as_mut() {
         g.headroom_mib += ENGINE_RESERVE_MIB;
     }
+    let floor = ENGINE_MIN_CTX.min(plan.ctx_limit).max(marlowe_proto::MIN_CTX);
     for n in (1..=ENGINE_SLOTS).rev() {
         let Some(fit) = plan.auto_ctx(kv, n) else { continue };
         let ctx = fit.min(plan.ctx_limit);
-        if ctx >= ENGINE_MIN_CTX || (n == 1 && ctx >= marlowe_proto::MIN_CTX) {
+        if ctx >= floor {
             return Some((n, ctx));
         }
     }

@@ -287,6 +287,21 @@ fn a_model_that_does_not_fit_the_free_gpu_stays_on_ollama_and_says_why() {
 }
 
 #[test]
+fn the_engine_never_takes_a_model_with_a_window_under_its_minimum() {
+    // Between "the weights barely fit" and "room to spare" the engine either gives every agent a
+    // usable window or leaves the model to Ollama, which splits it and gives it a real one.
+    let mut refused = 0;
+    for free in (5_000..=20_000).step_by(250) {
+        let b = brains(Models::new(), f64::from(free));
+        match b.factory().allocations().engine_shape("plain:8b") {
+            Some(shape) => assert!(shape.ctx_per_slot >= marlowe_brains::engine::ENGINE_MIN_CTX, "{free} MiB free: {shape:?}"),
+            None => refused += 1,
+        }
+    }
+    assert!(refused > 0 && refused < 61, "the sweep crosses the fit line: {refused} of 61 refused");
+}
+
+#[test]
 fn a_saved_policy_that_does_not_fit_stays_on_ollama_too() {
     let b = brains(Models::new(), 12_500.0);
     assert!(b.engine_wanted(&plain()));
