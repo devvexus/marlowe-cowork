@@ -486,6 +486,9 @@ fn tail_of(p: &Scripted) -> String {
 #[test]
 fn the_reminders_point_at_projects_with_teams_on_and_only_offer_one_with_teams_off() {
     let home = temp_home("remind");
+    // No built-in team task is named like a retired path now; the user's own saved one is the case.
+    std::fs::create_dir_all(home.join("workflows")).unwrap();
+    std::fs::write(home.join("workflows/web-research.star"), "META = {\"description\": \"mine\"}\ndef main(args):\n    return 1\n").unwrap();
     let p = Arc::new(Scripted::default());
     let d = start(&home, p.clone(), true);
     let mut a = Client::connect(&d.info);
@@ -510,7 +513,7 @@ fn the_reminders_point_at_projects_with_teams_on_and_only_offer_one_with_teams_o
     say(&mut a, "can you research how speculative decoding works");
     assert!(tail_of(&p).contains("Start a research project with manage_project"), "{}", tail_of(&p));
 
-    // Teams on: substantive work starts a project; a saved task a kind replaces says so.
+    // Teams on: substantive work starts a project; a saved task a kind has retired says so.
     a.send(&Request::SetTeams { session: session.clone(), on: true });
     a.until_event(|e| matches!(e, Event::TeamsChanged { on: true, .. }));
     say(&mut a, "please summarise the notes");

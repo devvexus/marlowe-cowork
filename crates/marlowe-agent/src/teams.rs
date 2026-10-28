@@ -115,7 +115,7 @@ mod tests {
         assert!(r.starts_with("<system-reminder>Teams is on: for every substantive request start a project"), "{r}");
         assert!(r.contains("manage_project") && r.contains("under 5 specialists") && r.ends_with("</system-reminder>"));
         assert!(on_reminder_projects(5, Some("code-review (args: path)"), false).contains("Run that one now: team{name, args}"));
-        let sup = on_reminder_projects(5, Some("web-research"), true);
+        let sup = on_reminder_projects(5, Some("old-lookup"), true);
         assert!(sup.contains("A project replaces it") && !sup.contains("Run that one now"), "{sup}");
     }
 }

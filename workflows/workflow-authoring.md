@@ -15,7 +15,7 @@ cost and ask.
 ## Saved team tasks come first
 
 The `team` tool's description lists the saved team tasks (built-in, the user's, the project's) with
-what each does and the `args` it takes. When the user names one ("run the web research team task"),
+what each does and the `args` it takes. When the user names one ("run the code review team task"),
 or one fits the request, call `team{name: "<name>", args: {...}}` and stop: put the user's subject,
 focus and wishes in the args the list names, in their words. Write a script only when none fits. A
 name that is not exact still finds its task (case, spaces, underscores and a trailing "team task"
@@ -174,10 +174,10 @@ def main(args):
 
 `args["files"]` comes from your own scouting (`glob`, `grep`), never from a guess.
 
-## Example: web research with a source check
+## Example: claims checked against their sources
 
 ```python
-META = {"name": "web-research", "description": "Researchers take one sub-question each, a checker tests each claim against its source, one writer drafts the cited report", "phases": ["research", "report"]}
+META = {"name": "source-check", "description": "Researchers take one sub-question each, a checker tests each claim against its source, one writer drafts the cited report", "phases": ["research", "report"]}
 
 FINDINGS = {
     "type": "object",
@@ -313,7 +313,7 @@ def main(args):
   `team{path: "..."}`, `team{name: "code-review", args: {...}}`.
 - `validate_only: true` checks without running. `background: false` waits for the result.
 - Saved team tasks: `.marlowe/workflows/<name>.star` (project), `<home>/workflows/<name>.star`
-  (user), plugins' `workflows/`, and the built-ins `code-review`, `simplify` and `web-research`.
+  (user), plugins' `workflows/`, and the built-ins `code-review` and `simplify`.
   Call one by `name` whenever it fits (see "Saved team tasks come first").
 - After a few refused scripts in one turn the tool tells you to stop and run the closest saved
   task, and after five the turn ends: if the checker keeps refusing, simplify (fewer agents, no

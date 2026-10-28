@@ -132,7 +132,7 @@ fn parity_wf6_project_shadows_user_and_builtins() {
     assert!(roots.resolve("simplify").unwrap().origin == saved::Origin::Builtin);
     let list = roots.list();
     let names: Vec<&str> = list.iter().map(|(s, _)| s.name.as_str()).collect();
-    assert_eq!(names, ["code-review", "triage", "only-user", "simplify", "web-research"]);
+    assert_eq!(names, ["code-review", "triage", "only-user", "simplify"]);
     assert_eq!(list[1].0.description, "project triage");
     // The index for the prompt stays within its budget.
     let idx = saved::index(&list.iter().map(|(s, _)| s.clone()).collect::<Vec<_>>(), 120);
@@ -207,63 +207,22 @@ fn builtins_validate() {
     }
 }
 
-/// The built-in web-research team task: found by name, the topic arrives as an argument, the
-/// researchers and checkers are separate agents and one writer saves the cited report.
+/// Web research is a project now: no built-in team task by that name is left, and a file of the
+/// name in a workspace is an ordinary saved task.
 #[test]
-fn web_research_is_built_in_listed_overridable_and_takes_a_topic() {
+fn web_research_is_no_longer_a_built_in() {
     let ws = temp("wr-ws");
-    let home = temp("wr-home");
-    let roots = Roots { workspaces: vec![ws.clone()], home: Some(home), plugins: vec![] };
-    let found = roots.resolve("web-research").unwrap();
-    assert!(found.origin == saved::Origin::Builtin);
-    let list = roots.list();
-    let listed = list.iter().find(|(s, _)| s.name == "web-research").expect("listed");
-    assert!(listed.0.description.starts_with("Web research on a topic") && listed.0.source == "builtin", "{:?}", listed.0);
-    assert_eq!(listed.0.phases, ["research", "report"]);
-
-    let host = ScriptedHost::new(|c| {
-        let label = c.opts.label.clone().unwrap_or_default();
-        if label.starts_with("researcher") {
-            let f = json!({"claim": format!("claim from {label}"), "url": "https://example.org/a"});
-            return Scripted::now(AgentResult::object(json!({"findings": [f]}), 10));
-        }
-        if label == "checker" {
-            return Scripted::now(AgentResult::object(json!({"supported": true}), 5));
-        }
-        Scripted::now(AgentResult::text("report saved", 5))
-    });
-    let out = run(&found.source, RunConfig::new("web-research.star", json!({"topic": "Speculative Decoding on Mamba!"})), host.clone(), &mut marlowe_workflow::NoObserver, &unbounded().1).unwrap();
-    assert_eq!(out.value, "report saved");
-    let calls = host.calls();
-    let count = |p: &str| calls.iter().filter(|c| c.call.opts.label.as_deref().unwrap_or("").starts_with(p)).count();
-    assert_eq!((count("researcher"), count("checker"), count("writer")), (5, 5, 1), "{:?}", host.prompts());
-    assert!(host.prompts().iter().any(|p| p.contains("Speculative Decoding on Mamba!")), "the topic reaches the researchers");
-    let writer = calls.iter().find(|c| c.call.opts.label.as_deref() == Some("writer")).unwrap();
-    assert!(writer.call.prompt.contains("research/speculative-decoding-on-mamba.md") && writer.call.prompt.contains("References list"));
-    assert!(writer.call.prompt.contains("\"id\":\"C5\""), "claims are numbered: {}", writer.call.prompt);
-
-    // `question` works as the topic; a call with none says what to pass.
-    let r = run(&found.source, RunConfig::new("web-research.star", json!({})), ScriptedHost::echo(), &mut marlowe_workflow::NoObserver, &unbounded().1);
-    assert!(format!("{r:?}").contains("needs a topic"), "{r:?}");
-
-    // A workspace file of the same name wins.
-    std::fs::create_dir_all(ws.join(".marlowe/workflows")).unwrap();
-    std::fs::write(ws.join(".marlowe/workflows/web-research.star"), "META = {\"description\": \"mine\"}
-def main(args):
-    return 1
-").unwrap();
-    let over = roots.resolve("web-research").unwrap();
-    assert!(matches!(over.origin, saved::Origin::Project(_)) && over.source.contains("mine"));
-    let list = roots.list();
-    assert_eq!(list.iter().filter(|(s, _)| s.name == "web-research").count(), 1);
-    assert_eq!(list.iter().find(|(s, _)| s.name == "web-research").unwrap().0.description, "mine");
+    let roots = Roots { workspaces: vec![ws.clone()], home: Some(temp("wr-home")), plugins: vec![] };
+    assert!(roots.resolve("web-research").is_err());
+    assert!(roots.list().iter().all(|(s, _)| s.name != "web-research"));
+    assert!(saved::BUILTINS.iter().all(|(n, _)| *n != "web-research"));
 }
 
 #[test]
 fn a_name_is_matched_loosely_and_an_exact_one_always_wins() {
     use marlowe_workflow::saved::fold;
-    for loose in ["Web Research", "web_research", "web research team task", "The Web-Research Task", " WEB--RESEARCH ", "web-research-workflow"] {
-        assert_eq!(fold(loose), "web-research", "{loose}");
+    for loose in ["Code Review", "code_review", "code review team task", "The Code-Review Task", " CODE--REVIEW ", "code-review-workflow"] {
+        assert_eq!(fold(loose), "code-review", "{loose}");
     }
     assert_eq!(fold("task"), "task", "a name that is only the suffix stays");
     let dir = std::env::temp_dir().join(format!("marlowe-fold-{}", std::process::id()));
@@ -278,7 +237,7 @@ fn a_name_is_matched_loosely_and_an_exact_one_always_wins() {
     assert_eq!(roots.resolve("Build").unwrap().name.to_lowercase(), "build");
     assert_eq!(roots.resolve("simplify team task").unwrap().name, "simplify");
     let e = roots.resolve("code reviews").unwrap_err();
-    assert!(e.contains("no team task named `code reviews`") && e.contains("Closest: `code-review`") && e.contains("`web-research`"), "{e}");
+    assert!(e.contains("no team task named `code reviews`") && e.contains("Closest: `code-review`") && e.contains("`simplify`"), "{e}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -287,15 +246,15 @@ fn the_catalog_carries_each_tasks_args_and_clips_to_its_budget() {
     let roots = Roots { workspaces: vec![], home: None, plugins: vec![] };
     let entries = roots.catalog();
     let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-    assert_eq!(names, ["code-review", "simplify", "web-research"]);
+    assert_eq!(names, ["code-review", "simplify"]);
     assert!(entries.iter().all(|e| e.args.is_some()), "every built-in says what args it takes");
     let text = marlowe_workflow::saved::catalog_text(&entries, 100_000);
-    assert!(text.contains("- web-research: cited web research report; args topic*, questions, file"), "{text}");
+    assert!(text.contains("- simplify: "), "{text}");
     assert!(text.contains("- code-review: bug review of a diff, PR or branch; args target, level, fix"), "{text}");
     let tight = marlowe_workflow::saved::catalog_text(&entries, 100);
     assert!(tight.len() < 160 && tight.contains("more: /teams"), "{tight}");
-    let fit = marlowe_workflow::saved::best_match(&entries, "research the latest kimi models on the web").unwrap();
-    assert_eq!(fit.name, "web-research");
+    let fit = marlowe_workflow::saved::best_match(&entries, "review my diff for bugs").unwrap();
+    assert_eq!(fit.name, "code-review");
     assert!(marlowe_workflow::saved::best_match(&entries, "zzz qqq").is_none());
 }
 
@@ -303,12 +262,13 @@ fn the_catalog_carries_each_tasks_args_and_clips_to_its_budget() {
 fn a_message_names_a_saved_task_by_its_words_and_a_common_word_alone_does_not() {
     let entries = Roots { workspaces: vec![], home: None, plugins: vec![] }.catalog();
     let named = |t: &str| marlowe_workflow::saved::named_in(&entries, t).map(|e| e.name.as_str());
-    assert_eq!(named("Run the web research team task. Focus on kimi"), Some("web-research"));
-    assert_eq!(named("use WEB_RESEARCH for this"), Some("web-research"));
+    assert_eq!(named("Run the code review team task. Focus on the daemon"), Some("code-review"));
+    assert_eq!(named("use CODE_REVIEW for this"), Some("code-review"));
+    assert_eq!(named("Run the web research team task on kimi"), None, "web research is a project now");
     assert_eq!(named("please run the code review task on my branch"), Some("code-review"));
     assert_eq!(named("simplify this function"), None, "a one-word name needs to be called a task");
     assert_eq!(named("run the simplify task on src"), Some("simplify"));
     assert_eq!(named("do some web searching about review"), None);
-    let line = marlowe_workflow::saved::describe(entries.iter().find(|e| e.name == "web-research").unwrap());
-    assert_eq!(line, "`web-research` (cited web research report; args topic*, questions, file)");
+    let line = marlowe_workflow::saved::describe(entries.iter().find(|e| e.name == "code-review").unwrap());
+    assert_eq!(line, "`code-review` (bug review of a diff, PR or branch; args target, level, fix)");
 }

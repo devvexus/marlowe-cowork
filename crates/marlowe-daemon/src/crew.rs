@@ -778,7 +778,7 @@ mod tests {
     fn a_team_tasks_files_are_named_in_full_and_never_wait_on_the_merge() {
         let mut run = info(CrewRunStatus::NeedsYou);
         run.workflow = Some(marlowe_proto::WorkflowRef {
-            name: Some("web-research".into()),
+            name: Some("code-review".into()),
             script_path: "s.star".into(),
             digest: "d".into(),
             args: serde_json::Value::Null,
@@ -788,7 +788,7 @@ mod tests {
         let report = std::env::temp_dir().join(format!("marlowe-relay-{}.md", std::process::id()));
         std::fs::write(&report, "# Report ".repeat(500)).unwrap();
         let d = Dispatch {
-            summary: "Team task `web-research` finished: 3 agent(s).".into(),
+            summary: "Team task `code-review` finished: 3 agent(s).".into(),
             artifacts: vec![report.display().to_string(), "C:/h/workflows/runs/r/journal.jsonl".into()],
             confidence: Confidence::Medium,
             citations: vec![],

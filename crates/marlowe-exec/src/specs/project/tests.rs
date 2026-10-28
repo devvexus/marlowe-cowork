@@ -289,8 +289,8 @@ fn a_research_turn_is_routed_to_a_project_once() {
 }
 
 /// Found live: told that a project replaces it, dawn still ran `team{name:"web-research"}`. With a
-/// project service the superseded saved task is refused with the way to the project; without one
-/// it is not refused for that reason.
+/// project service the retired name is refused with the way to the project (whether or not a
+/// file of that name exists); without one it is not refused for that reason.
 #[test]
 fn a_saved_team_task_a_project_replaces_points_at_the_project() {
     let (home, ws) = (temp("sup-h"), temp("sup-w"));
@@ -303,12 +303,20 @@ fn a_saved_team_task_a_project_replaces_points_at_the_project() {
     assert!(!out.content.contains("replaced by a research project"), "{}", out.content);
 }
 
+/// A workspace's own saved task under a name a project kind has retired.
+fn save_retired(ws: &std::path::Path) {
+    std::fs::create_dir_all(ws.join(".marlowe/workflows")).unwrap();
+    std::fs::write(ws.join(".marlowe/workflows/web-research.star"), "META = {\"description\": \"mine\"}\ndef main(args):\n    return 1\n").unwrap();
+}
+
 /// Found live (run 10): the `team` description still listed `web-research`, so a small model
-/// picked it. Where projects run the listing omits what a project kind replaces; elsewhere not.
+/// picked it. There is no built-in of that name now; a saved file of a retired name is listed only
+/// where projects do not run.
 #[test]
 fn the_team_listing_omits_a_task_a_project_replaces_only_where_projects_run() {
     let (home, ws) = (temp("lst-h"), temp("lst-w"));
     let listing = |t: &BuiltinTools| t.specs().into_iter().find(|s| s.name == "team").unwrap().description;
+    save_retired(&ws);
     let plain = listing(&host(&home, &ws));
     assert!(plain.contains("web-research"), "{plain}");
     let with = listing(&host(&home, &ws).with_state(crate::specs::workflow::ProjectsRun(true)));
@@ -322,6 +330,7 @@ fn a_missing_path_message_omits_a_task_a_project_replaces_only_where_projects_ru
     let (home, ws) = (temp("mp-h"), temp("mp-w"));
     let t = host(&home, &ws);
     let svc = service(&home);
+    save_retired(&ws);
     let call = ToolCallReq { id: "c1".into(), name: "team".into(), args: json!({"path": "nowhere/plan.star"}) };
     let with = t.call_scoped(&call, &cx(&ws, 1, Some(&svc))).content;
     assert!(with.contains("code-review") && !with.contains("web-research"), "{with}");

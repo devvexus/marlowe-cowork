@@ -446,13 +446,14 @@ mod launch_forms {
         assert!(out.content.starts_with("code-review.star is valid"), "{}", out.content);
         let out = t.call_scoped(&req("team", json!({"name": "no-such-workflow", "validate_only": true})), &cx(&ws, Services::new()));
         assert!(out.is_error, "{}", out.content);
-        // The built-in web-research task is there by name in any workspace, with its args passed on.
-        let out = t.call_scoped(&req("team", json!({"name": "web-research", "validate_only": true})), &cx(&ws, Services::new()));
-        assert!(out.content.starts_with("web-research.star is valid"), "{}", out.content);
+        // A built-in task is there by name in any workspace, with its args passed on.
         let l = RunLauncher::new(&home, &ws);
-        let out = t.call_scoped(&req("team", json!({"name": "web-research", "args": {"topic": "kv cache"}})), &cx(&ws, svc(&l)));
+        let out = t.call_scoped(&req("team", json!({"name": "simplify", "args": {"target": "diff"}})), &cx(&ws, svc(&l)));
         assert!(!out.is_error, "{}", out.content);
-        assert_eq!(l.seen.lock().unwrap().last().unwrap().args, json!({"topic": "kv cache"}));
+        assert_eq!(l.seen.lock().unwrap().last().unwrap().args, json!({"target": "diff"}));
+        // The retired web-research task is not one of them.
+        let out = t.call_scoped(&req("team", json!({"name": "web-research", "validate_only": true})), &cx(&ws, Services::new()));
+        assert!(out.is_error, "{}", out.content);
     }
 
     #[test]
@@ -552,14 +553,15 @@ fn the_description_lists_the_saved_team_tasks_with_their_args_and_stays_fixed() 
     .unwrap();
     let t = host(&home, &ws);
     let d = team_description(&t);
-    for want in ["Saved tasks:", "- web-research:", "- code-review:", "- simplify:", "- audit-deps: Check each dependency", "args crate", "- web-research: cited web research report; args topic*, questions, file"] {
+    for want in ["Saved tasks:", "- code-review:", "- simplify:", "- audit-deps: Check each dependency", "args crate"] {
         assert!(d.contains(want), "`{want}` missing: {d}");
     }
+    assert!(!d.contains("web-research"), "web research is a project now: {d}");
     // A task saved after the session's tool list was read does not change it.
     std::fs::write(ws.join(".marlowe").join("workflows").join("later.star"), "META = {\"description\": \"Later\"}\ndef main(args):\n    return 1\n").unwrap();
     assert_eq!(team_description(&t), d, "the list is read once per session");
     assert!(team_description(&host(&home, &ws)).contains("- later:"), "a new session reads it");
-    // The conductor's budget: three built-ins and a project task stay small.
+    // The conductor's budget: the built-ins and a project task stay small.
     assert!(d.len() < 3_000, "{} chars", d.len());
 }
 
@@ -569,17 +571,16 @@ fn a_saved_task_is_found_by_a_loose_name_and_an_unknown_name_returns_the_list() 
     let t = host(&home, &ws);
     let fake = Arc::new(FakeLauncher::default());
     let services = Services::new().with(Workflows(fake.clone()));
-    for loose in ["Web Research", "web_research", "web research team task", "the Web-Research task", "WEB-RESEARCH"] {
-        let out = t.call_scoped(&req("team", json!({"name": loose, "args": {"topic": "kimi"}})), &cx(&ws, services.clone()));
+    for loose in ["Code Review", "code_review", "code review team task", "the Code-Review task", "CODE-REVIEW"] {
+        let out = t.call_scoped(&req("team", json!({"name": loose, "args": {"target": "diff"}})), &cx(&ws, services.clone()));
         assert!(!out.is_error, "{loose}: {}", out.content);
     }
     let sent = fake.launched.lock().unwrap().clone();
     assert_eq!(sent.len(), 5);
-    assert!(sent.iter().all(|r| r.name.as_deref() == Some("web-research") && r.args == json!({"topic": "kimi"})), "{sent:?}");
+    assert!(sent.iter().all(|r| r.name.as_deref() == Some("code-review") && r.args == json!({"target": "diff"})), "{sent:?}");
     let out = t.call_scoped(&req("team", json!({"name": "web scraping"})), &cx(&ws, services));
     assert!(out.is_error && out.content.contains("no team task named `web scraping`"), "{}", out.content);
-    assert!(out.content.contains("Closest:") == false || out.content.contains("web-research"), "{}", out.content);
-    for name in ["code-review", "simplify", "web-research"] {
+    for name in ["code-review", "simplify"] {
         assert!(out.content.contains(&format!("`{name}`")), "the list names {name}: {}", out.content);
     }
     assert_eq!(out.class, Some("team-name"));
@@ -612,7 +613,7 @@ fn refused_scripts_are_capped_per_turn_three_to_stop_writing_five_to_end_the_tur
     let cx = cx(&ws, services);
     let attempt = |i: usize| {
         // Each script is wrong a different way, so the loop guard's wording key never repeats.
-        let script = format!("META = {{\"description\": \"Research kimi models on the web\"}}\ndef main(args):\n    x{i} = agent(\"research the web {i}\"\n    return x{i}\n");
+        let script = format!("META = {{\"description\": \"Review the diff for bugs\"}}\ndef main(args):\n    x{i} = agent(\"review the diff for bugs {i}\"\n    return x{i}\n");
         t.call_scoped(&req("team", json!({"script": script})), &cx)
     };
     for i in 1..=2 {
@@ -621,14 +622,14 @@ fn refused_scripts_are_capped_per_turn_three_to_stop_writing_five_to_end_the_tur
     }
     let third = attempt(3);
     assert!(third.content.contains("3 scripts refused this turn") && third.content.contains("Stop writing scripts"), "{}", third.content);
-    assert!(third.content.contains("The closest saved team task is `web-research`") && third.content.contains("topic (required"), "{}", third.content);
+    assert!(third.content.contains("The closest saved team task is `code-review`") && third.content.contains("target"), "{}", third.content);
     assert!(cx.scope.with_ext(|e| e.get::<EndTurn>().is_none()), "not yet");
     let fourth = attempt(4);
     assert!(fourth.content.contains("4 scripts refused") && cx.scope.with_ext(|e| e.get::<EndTurn>().is_none()));
     let fifth = attempt(5);
     let ended = cx.scope.with_ext(|e| e.get::<EndTurn>().map(|x| x.0.clone()));
     let ended = ended.expect("the fifth refusal ends the turn");
-    assert!(ended.contains("refused 5 scripts") && ended.contains("/teams") && ended.contains("web-research"), "{ended}");
+    assert!(ended.contains("refused 5 scripts") && ended.contains("/teams") && ended.contains("code-review"), "{ended}");
     assert!(fifth.content.contains("refused 5 scripts"), "{}", fifth.content);
     // A new turn starts again from one.
     cx.scope.with_ext(|e| e.remove::<EndTurn>());
@@ -659,13 +660,13 @@ fn a_path_that_is_no_file_is_told_the_saved_tasks_and_one_named_like_a_saved_tas
     let t = host(&home, &ws);
     let fake = Arc::new(FakeLauncher::default());
     let services = Services::new().with(Workflows(fake.clone()));
-    let out = t.call_scoped(&req("team", json!({"path": "star/team/research_ai_models.star"})), &cx(&ws, services.clone()));
-    assert!(out.is_error && out.content.contains("No file star/team/research_ai_models.star") && out.content.contains("runs by `name`"), "{}", out.content);
-    assert!(out.content.contains("`web-research` (cited web research report; args topic*"), "{}", out.content);
-    assert!(out.content.contains("Closest to that path: `web-research`"), "{}", out.content);
+    let out = t.call_scoped(&req("team", json!({"path": "star/team/review_the_diff.star"})), &cx(&ws, services.clone()));
+    assert!(out.is_error && out.content.contains("No file star/team/review_the_diff.star") && out.content.contains("runs by `name`"), "{}", out.content);
+    assert!(out.content.contains("`code-review` (bug review of a diff, PR or branch; args target"), "{}", out.content);
+    assert!(out.content.contains("Closest to that path: `code-review`"), "{}", out.content);
     assert_eq!(out.class, Some("team-name"));
     assert!(fake.launched.lock().unwrap().is_empty());
-    let ok = t.call_scoped(&req("team", json!({"path": "web_research.star", "args": {"topic": "kimi"}})), &cx(&ws, services));
-    assert!(!ok.is_error && ok.content.contains("ran the saved team task `web_research`"), "{}", ok.content);
-    assert_eq!(fake.launched.lock().unwrap()[0].name.as_deref(), Some("web-research"));
+    let ok = t.call_scoped(&req("team", json!({"path": "code_review.star", "args": {"target": "diff"}})), &cx(&ws, services));
+    assert!(!ok.is_error && ok.content.contains("ran the saved team task `code_review`"), "{}", ok.content);
+    assert_eq!(fake.launched.lock().unwrap()[0].name.as_deref(), Some("code-review"));
 }

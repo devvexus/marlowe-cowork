@@ -3,7 +3,7 @@
 //! 1. the project's `.marlowe\workflows\<name>.star`,
 //! 2. the user's `<home>\workflows\<name>.star`,
 //! 3. plugin bundles' `<plugin>\workflows\<name>.star` (X17),
-//! 4. the built-ins (`code-review`, `simplify`, `web-research`; `workflows/` in this repository).
+//! 4. the built-ins (`code-review`, `simplify`; `workflows/` in this repository).
 //!
 //! Claude Code's `.claude\workflows\*.js` are listed read-only (9.2-q) with a note to convert
 //! them once (`/workflow convert <name>` writes `.marlowe\workflows\<name>.star`); running one by
@@ -16,10 +16,9 @@ use marlowe_proto::SavedWorkflow;
 use crate::validate::{self, Meta};
 
 /// The built-in workflows: name and source.
-pub const BUILTINS: [(&str, &str); 3] = [
+pub const BUILTINS: [(&str, &str); 2] = [
     ("code-review", include_str!("../../../workflows/code-review.star")),
     ("simplify", include_str!("../../../workflows/simplify.star")),
-    ("web-research", include_str!("../../../workflows/web-research.star")),
 ];
 
 /// The source of the built-in `name`.
@@ -95,7 +94,7 @@ fn star_in(dir: &Path, name: &str) -> Option<(PathBuf, String)> {
 }
 
 /// A name compared loosely: lower case, blanks and underscores as hyphens, and a trailing
-/// "team task" / "task" / "team" / "workflow" dropped, so "Web Research team task" is `web-research`.
+/// "team task" / "task" / "team" / "workflow" dropped, so "Code Review team task" is `code-review`.
 pub fn fold(name: &str) -> String {
     let mut s = String::new();
     for c in name.trim().chars().flat_map(char::to_lowercase) {
@@ -341,7 +340,7 @@ fn first_sentence(s: &str) -> &str {
 }
 
 /// Lower case, every run of other characters one `-`, padded with `-` at both ends: the shape
-/// in which a saved name is looked for in a sentence ("Run the web research task" holds `web-research`).
+/// in which a saved name is looked for in a sentence ("Run the code review task" holds `code-review`).
 fn dashed(s: &str) -> String {
     let mut out = String::from("-");
     for c in s.chars().flat_map(char::to_lowercase) {
@@ -379,7 +378,7 @@ pub fn named_in<'a>(entries: &'a [CatalogEntry], text: &str) -> Option<&'a Catal
         .max_by_key(|e| e.name.len())
 }
 
-/// `web-research (cited report; args topic*, questions)`: one saved task as a sentence names it.
+/// `code-review (bug review of a diff, PR or branch; args target*, level, fix)`: one saved task as a sentence names it.
 pub fn describe(e: &CatalogEntry) -> String {
     let what = match e.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(s) => clip(s, 60),
