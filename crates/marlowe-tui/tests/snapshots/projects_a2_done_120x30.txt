@@ -1,0 +1,30 @@
+ * marlowe — ai models                                                                     teams ○  0 runs · 0 need you
+╭ Conversation · ai models ──────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────╮
+│       specificially new Kimi models, deepseek, and qwen4. Compile a report md │││ Claude Sonnet 4.5 ▾         medium │
+│       and send it to me when you are done                                     █││ ctx ─────────┊─── 0 / 200k · cloud │
+│  Project p_169ded79 is ready with objectives on recent Kimi, DeepSeek, and    █│╰────────────────────────────── (m) ─╯
+│  Qwen4 releases: version numbers/availability dates, new technical            █│╭ Workspace ─────────────────────────╮
+│  capabilities, and performance comparisons versus prior generations.          █││ C:/work/valiance ▾                 │
+│                                                                               █│╰────────────────────────────── (w) ─╯
+│  Approve the plan?                                                            █│╭ 1 Projects 2 3 4 ──────────────────╮
+│  ↳ project p_169ded79 · needs you                                             █││ ✓ Research latest AI m… 0:43 low   │
+│  Lead says nothing could be verified in 40+ web source attempts—Kimi versions █││                                    │
+│  have been elusive online despite multiple model families from Moonshot AI    █││                                    │
+│  appearing at various points; DeepSeek and Qwen updates similarly produced no █││                                    │
+│  clear releases or performance claims to cite across the sources searched.    █││                                    │
+│                                                                               █││                                    │
+│  Approve what we found, steer toward alternative angles (arxiv papers,        █││                                    │
+│  official blogs), keep researching deeper for these models only, or cancel?   █││                                    │
+│  ↳ project p_169ded79 · finished                                              █││                                    │
+│  ✓ p_169ded79 · research · finished · 00:00:43 · low confidence               █││                                    │
+│  ▏ The run found nothing verified that answers the objective.                 █││                                    │
+│  ▏ verified claims 0 · sources cited 0 · cited sentences 0 · removed sentenc… █││                                    │
+│  ▏ ✗ 5 page failed · HTTP 403                                                 █││                                    │
+│  ▏ ✗ 3 hit failed · the result does not match its form: /snippet: longer tha… █││                                    │
+│  ▏ report  …aa9bc52\scratchpad\projects\a2\home\projects\p_169ded79\report.md █││                                    │
+│    read report                                                 8 failed items █││                                    │
+╰────────────────────────────────────────────────────────────────────────── (c) ─╯│                                    │
+╭ Message ───────────────────────────────────────────────────────────────────────╮│                                    │
+│ › message Marlowe…                                      ⇧↵ newline · esc boxes ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────── (1-4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette      21:40

@@ -128,6 +128,8 @@ impl State {
             out.push(Request::UserShell { session, command: cmd });
         }
         self.code.statusline.dirty = true;
+        // The projects this conversation started, for the cards and results it owes the reader.
+        out.push(Request::ListProjects);
     }
 
     /// Run-loop work that is not a reaction to an event or a key: the requests that follow a

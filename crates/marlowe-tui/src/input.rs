@@ -113,6 +113,8 @@ impl State {
                 KeyCode::Char('r' | 'R') => Some(Command::Crew),
                 KeyCode::Char('t' | 'T') => Some(Command::CycleEffort),
                 KeyCode::Char('m' | 'M') => Some(Command::ToggleTeams),
+                // A project runs or waits: alt-p goes to it. Otherwise it still pastes an image.
+                KeyCode::Char('p' | 'P') if self.projects.running() > 0 => Some(Command::Projects),
                 // Windows Terminal keeps ^v for itself: the other way to paste an image.
                 KeyCode::Char('p' | 'P') if self.view == View::Conversation => {
                     self.paste_clipboard_image();
@@ -431,6 +433,7 @@ impl State {
             }
             Target::Chord(cmd) => self.run_command(cmd, out),
             Target::Palette => self.overlay = Some(Overlay::Palette { query: String::new(), sel: 0 }),
+            Target::Summary if self.projects.needs_you() > 0 => self.projects_alt_p(),
             Target::Summary => {
                 if self.view != View::Crew {
                     self.open_crew(out);
@@ -464,6 +467,7 @@ impl State {
             // A fold marker opens or closes its block where it is; the keys stay where they were,
             // so Enter in the Message box still sends.
             Target::Thought(entry) => self.toggle_thought(entry),
+            Target::Proj(t) => self.proj_click(t, out),
             Target::Button(_) | Target::ChoiceButton(_) | Target::PlanCell(..) | Target::PlanField(_) | Target::Remember => {}
         }
     }
@@ -646,6 +650,7 @@ impl State {
                     self.open_crew(out);
                 }
             }
+            Command::Projects => self.projects_alt_p(),
             Command::Dispatch => self.open_dispatch(out),
             Command::Brief => {
                 self.view = View::Conversation;
@@ -1027,6 +1032,10 @@ impl State {
             }
             return;
         }
+        // A project's entry keeps the keys only while the Conversation box has them.
+        if self.focus != Focus::Conversation {
+            self.projects.focus = None;
+        }
         // Focus moves the same way from every box.
         match k.code {
             KeyCode::Tab if !ctrl && !alt && self.popup().is_none_or(|p| p.is_empty()) => {
@@ -1126,6 +1135,10 @@ impl State {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
         let focus = self.focus;
+        // A project's entry that has the keys answers them first.
+        if focus == Focus::Conversation && self.projects_card_key(k, out) {
+            return;
+        }
         match k.code {
             KeyCode::Esc => {
                 self.focus = Focus::Message;

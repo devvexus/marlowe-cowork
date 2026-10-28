@@ -94,6 +94,7 @@ impl State {
     /// Called by the run loop every frame: shows a pending onboarding once the boot is over.
     pub fn on_tick(&mut self) -> Vec<Request> {
         let mut out = Vec::new();
+        self.projects_tick();
         // A checklist left waiting for discovery that never came (no Sentinel) has nothing to show.
         if let Onboard::Active { step: Step::Checklist { items, .. }, .. } = &self.onboard {
             if items.is_empty() && (self.wake.candidates.is_some() || self.wake.sentinel == Presence::Absent) {

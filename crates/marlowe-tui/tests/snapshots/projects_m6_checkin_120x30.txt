@@ -1,0 +1,30 @@
+ * marlowe — ai models                                                                     teams ○  1 run · 1 needs you
+╭ Conversation · ai models ──────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────╮
+│  collection mode while you wait; result arrives when notices end or at        │││ Claude Sonnet 4.5 ▾         medium │
+│  checkin time if needed before completion reaches a deliverable threshold.    │││ ctx ─────────┊─── 0 / 200k · cloud │
+│                                                                               ││╰────────────────────────────── (m) ─╯
+│  you  Thanks. In one short line, is the research still running?               ││╭ Workspace ─────────────────────────╮
+│  Yes, the Kimi/DeepSeek/Qwen4 report continues collecting data from public    │││ C:/work/valiance ▾                 │
+│  sources while waiting for completion notice or manual checkin threshold.     ││╰────────────────────────────── (w) ─╯
+│  ↳ project p_fac325c3 · needs you                                             ││╭ 1 Projects 2 3 4 ──── 1 needs you ─╮
+│  The first data pass captured concrete release windows for DeepSeek V4.1,     │││ ◐ Compile a compre… 6:10 checkin   │
+│  announced Kimi versions and Qwen4 details—though benchmark comparisons       █││                                    │
+│  remain incomplete and some timelines contradict across sources due to        █││                                    │
+│  announcements versus actual availability dates. Shall I keep researching     █││                                    │
+│  those gaps before drafting the final report?                                 █││                                    │
+│                                                                               █││                                    │
+│  ◐ checkin · round 1 · lead recommends keep researching              00:06:10 █││                                    │
+│  ▏ ✓ Plan 1/1  ✓ DC 83/83  ✓ DV 104/104  ✓ Thinking 2/2                       █││                                    │
+│  ▏ 35 sources read · 43 claims verified · 3 contested · 5 failed items ·      █││                                    │
+│  ▏ elapsed 00:06:04                                                           █││                                    │
+│  ▏ ↻ keep_researching  The current research provides specific model names,    █││                                    │
+│  ▏                     architectures, and rough availability dates for        █││                                    │
+│  ▏                     DeepSeek V4.1 and various Kimi versions, but…          █││                                    │
+│  ▏ next  What are the confirmed public benchmarks for Qwen3 vs Qwen4 tiers t… █││                                    │
+│  ▏       Which specific new Kimi model versions are currently in public beta… █││                                    │
+│    Approve and write the report   Keep researching ◆   Steer   Cancel         █││                                    │
+╰────────────────────────────────────────────────────────────────────────── (c) ─╯│                                    │
+╭ Message ───────────────────────────────────────────────────────────────────────╮│                                    │
+│ › message Marlowe…                                      ⇧↵ newline · esc boxes ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────── (1-4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-p Projects  ^w Watch  ^g Memory  ^l Library  ^k palette                 21:40

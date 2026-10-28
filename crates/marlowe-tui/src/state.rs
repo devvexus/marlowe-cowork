@@ -95,6 +95,9 @@ pub enum Entry {
     News { label: String, text: String },
     /// A file the agent sent with `send_file`.
     File { file: marlowe_proto::SentFile },
+    /// A project that ended: its result, settled where it ended. While a project runs it is
+    /// drawn after the last entry instead (`render::projects_entry`).
+    Project { id: String },
 }
 
 /// How long a recall took, stage by stage.
@@ -334,6 +337,8 @@ pub enum Target {
     Thought(usize),
     /// "Remember my choice" in the quit dialog.
     Remember,
+    /// Something a project drew: a card button, a board row.
+    Proj(crate::projects::ProjTarget),
 }
 
 /// A palette command.
@@ -382,10 +387,11 @@ pub enum Command {
     Bench,
     Fast,
     ToggleTeams,
+    Projects,
 }
 
 impl Command {
-    pub const ALL: [Command; 43] = [
+    pub const ALL: [Command; 44] = [
         Command::NewSession,
         Command::Sessions,
         Command::Model,
@@ -429,6 +435,7 @@ impl Command {
         Command::Bench,
         Command::Fast,
         Command::ToggleTeams,
+        Command::Projects,
     ];
 
     pub fn label(self) -> &'static str {
@@ -476,6 +483,7 @@ impl Command {
             Command::Bench => "Bench and eval reports",
             Command::Fast => "Fast — run the conductor on the Quick model",
             Command::ToggleTeams => "Teams — turn the standing opt-in to team tasks on or off",
+            Command::Projects => "Projects — go to the project that needs you or runs",
         }
     }
 
@@ -524,6 +532,7 @@ impl Command {
             Command::Bench => "/bench",
             Command::Fast => "/fast",
             Command::ToggleTeams => "alt-m",
+            Command::Projects => "alt-p",
         }
     }
 }
@@ -724,6 +733,8 @@ pub struct State {
     pub closing: crate::closing::Closing,
     /// Background tasks, workflows, findings, files, plans, threads (M4.6 wave 2, track H3).
     pub bg: crate::bg::Bg,
+    /// The projects of the open conversation and their entries.
+    pub projects: crate::projects::ProjectsUi,
 
     pub view: View,
     /// Which box on the conversation screen has the keys.
@@ -833,6 +844,7 @@ impl State {
             context: crate::context::ContextUi::default(),
             closing: Default::default(),
             bg: Default::default(),
+            projects: Default::default(),
             view: View::Conversation,
             focus: Focus::Message,
             board_tab: BoardTab::Crew,
@@ -897,8 +909,9 @@ impl State {
             .watch
             .as_ref()
             .map_or(0, |w| w.runs.iter().filter(|r| r.status == marlowe_proto::RunStatus::Alive).count());
-        let runs = crew + watched;
-        let needs = self.crew.count(marlowe_proto::CrewRunStatus::NeedsYou) + self.approvals.len();
+        let (live_projects, waiting_projects) = self.project_counts();
+        let runs = crew + watched + live_projects;
+        let needs = self.crew.count(marlowe_proto::CrewRunStatus::NeedsYou) + self.approvals.len() + waiting_projects;
         let mut parts = vec![
             format!("{runs} run{}", if runs == 1 { "" } else { "s" }),
             format!("{needs} need{} you", if needs == 1 { "s" } else { "" }),
@@ -1053,6 +1066,7 @@ impl State {
         self.awaiting_new = false;
         self.code.teams = false;
         self.bg.reset_session();
+        self.projects.reset();
         self.follow_tail();
     }
 
@@ -1194,6 +1208,7 @@ impl State {
                     self.pending_open = None;
                     self.session = Some(session.clone());
                     self.entries = entries_with_notes(turns, &notes);
+                    self.projects_after_transcript(out);
                     self.forget_folds();
                     self.epoch = self.epoch.wrapping_add(1);
                     self.code.tool_detail = transcript_details(turns);
@@ -1218,6 +1233,7 @@ impl State {
                         Some(Entry::User { text, .. }) if text == user);
                     if !shown {
                         self.entries.push(user_entry(user.clone()));
+                        self.projects_news_order();
                     }
                     self.live = Some(LiveTurn { turn: *turn, model: model.clone(), started_ms: at_ms });
                     self.strip.turn_started(*turn);
@@ -1553,6 +1569,13 @@ impl State {
             }
             Event::ShuttingDown => {
                 self.conn = Conn::Offline { reason: "the daemon is shutting down".into(), attempt: 0 };
+            }
+            Event::ProjectList { .. }
+            | Event::ProjectState { .. }
+            | Event::ProjectUpdated { .. }
+            | Event::ProjectGateRaised { .. }
+            | Event::ProjectGateAnswered { .. } => {
+                self.projects_event(ev, out);
             }
             // Session events for other sessions, and the M4.6 events.
             other => self.coding_event(other, reply, out),

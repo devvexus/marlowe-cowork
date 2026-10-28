@@ -171,7 +171,8 @@ struct Ctx<'a> {
     running: bool,
 }
 
-fn scalar_text(v: &Value) -> String {
+/// A JSON scalar as words.
+pub fn scalar_text(v: &Value) -> String {
     match v {
         Value::Null => String::new(),
         Value::String(s) => s.clone(),
@@ -182,7 +183,7 @@ fn scalar_text(v: &Value) -> String {
     }
 }
 
-fn path_in<'a>(data: &'a Map<String, Value>, path: &str) -> Option<&'a Value> {
+pub(crate) fn path_in<'a>(data: &'a Map<String, Value>, path: &str) -> Option<&'a Value> {
     let mut parts = path.split('.');
     let mut cur = data.get(parts.next()?)?;
     for p in parts {
@@ -259,7 +260,7 @@ fn number_text(v: f64, unit: Option<&str>) -> String {
     }
 }
 
-fn host_of(url: &str) -> String {
+pub(crate) fn host_of(url: &str) -> String {
     let rest = url.split_once("://").map(|x| x.1).unwrap_or(url);
     let auth = rest.split(['/', '?', '#']).next().unwrap_or("");
     let auth = auth.rsplit('@').next().unwrap_or(auth);
@@ -399,6 +400,39 @@ fn item_label(form: Option<&Form>, item: &Item, now_ms: u64) -> (String, bool) {
         }
     });
     (clip(&sanitize_line(filled.trim()), 160), tpl.contains("{status}"))
+}
+
+/// The title an item is listed under: its form's `item_label` filled in, except that a label whose
+/// placeholder came out empty (a failed section has no `data.sub`) falls back to the item's own
+/// `label`, so a list of failures does not read `Section` four times.
+pub fn item_title(item: &Item, state: &ProjectState, now_ms: u64) -> String {
+    let form = state.forms.get(&item.form);
+    let (title, _) = item_label(form, item, now_ms);
+    let Some(tpl) = form.and_then(|f| f.item_label.as_deref()) else { return title };
+    let empty = std::cell::Cell::new(false);
+    let _ = fill_template(tpl, &|name| {
+        let v = match name {
+            "status" => Some(item.status.as_str().to_string()),
+            "kind" => Some(item.kind.clone()),
+            "id" => Some(item.id.clone()),
+            "label" => Some(item.label.clone()),
+            n => {
+                if let Some(p) = n.strip_prefix("data.") {
+                    path_in(&item.data, p).map(scalar_text)
+                } else {
+                    n.strip_prefix("live.").and_then(|k| item.live.get(k, now_ms)).map(|v| scalar_text(&v))
+                }
+            }
+        };
+        if v.as_deref().is_none_or(|s| s.is_empty()) {
+            empty.set(true);
+        }
+        v
+    });
+    if empty.get() && !item.label.is_empty() {
+        return clip(&sanitize_line(&item.label), 160);
+    }
+    title
 }
 
 fn chips(item: &Item, state: &ProjectState) -> Vec<AgentChip> {
@@ -635,7 +669,7 @@ fn status_word_tone(w: &str) -> Tone {
     }
 }
 
-fn item_value(item: &Item, by: &str, now_ms: u64) -> Option<String> {
+pub(crate) fn item_value(item: &Item, by: &str, now_ms: u64) -> Option<String> {
     match by {
         "status" => Some(item.status.as_str().into()),
         "kind" => Some(item.kind.clone()),
@@ -658,13 +692,13 @@ fn agent_status_word(s: AgentStatus) -> &'static str {
     }
 }
 
-fn enum_field<'a>(state: &'a ProjectState, kind: &str, by: &str) -> Option<&'a Field> {
+pub(crate) fn enum_field<'a>(state: &'a ProjectState, kind: &str, by: &str) -> Option<&'a Field> {
     let key = by.strip_prefix("data.")?;
     let form_id = state.items_of_kind(kind).first().map(|i| i.form.clone())?;
     state.forms.get(&form_id)?.field(key)
 }
 
-fn make_groups(counts: BTreeMap<String, u32>, field: Option<&Field>, status_like: bool) -> Vec<Group> {
+pub(crate) fn make_groups(counts: BTreeMap<String, u32>, field: Option<&Field>, status_like: bool) -> Vec<Group> {
     let tone_of = |v: &str| -> (Tone, Option<String>) {
         match field.and_then(|f| f.enum_value(v)) {
             Some(e) => (e.tone.unwrap_or(Tone::Info), e.glyph.clone()),
@@ -727,7 +761,7 @@ pub fn rollups(state: &ProjectState, template: Option<&KindTemplate>, now_ms: u6
     out
 }
 
-fn agents_rollup(title: &str, state: &ProjectState, by: &str) -> RollupView {
+pub(crate) fn agents_rollup(title: &str, state: &ProjectState, by: &str) -> RollupView {
     let mut counts = BTreeMap::new();
     for a in state.agents.values() {
         let v = match by {

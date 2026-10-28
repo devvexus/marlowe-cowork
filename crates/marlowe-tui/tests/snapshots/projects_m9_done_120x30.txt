@@ -1,0 +1,30 @@
+ * marlowe — ai models                                                                     teams ○  0 runs · 0 need you
+╭ Conversation · ai models ──────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────╮
+│  Yes—the second round of data collection is in progress right now on the      │││ Claude Sonnet 4.5 ▾         medium │
+│  remaining candidates.                                                        │││ ctx ─────────┊─── 0 / 200k · cloud │
+│  ↳ project p_e8b7fc7e · needs you                                             ││╰────────────────────────────── (m) ─╯
+│  The project has completed data collection but cannot confirm which three     ││╭ Workspace ─────────────────────────╮
+│  libraries are actually ranked #1-3 by GitHub stars—the primary metric needed │││ C:/work/valiance ▾                 │
+│  for an accurate comparison table is missing from available sources. I can    ││╰────────────────────────────── (w) ─╯
+│  proceed with a partial report using best-available candidates (Ratatui and   ││╭ 1 Projects 2 3 4 ──────────────────╮
+│  crossterm) or extend the search; approve, steer, cancel?                     │││ ✓ Research and compare… 9:58 low   │
+│  ↳ project p_e8b7fc7e · finished                                              │││                                    │
+│  ✓ p_e8b7fc7e · research · finished · 00:09:58 · low confidence               │││                                    │
+│  ▏ Ratatui is confirmed as one of the top Rust TUI libraries by GitHub stars, │││                                    │
+│  ▏ gathering over 22,400 recorded stars [1].                                  █││                                    │
+│  ▏ verified claims 21 · sources cited 3 · cited sentences 7 · removed senten… █││                                    │
+│  ▏ Library name     Stars count  License type  Latest release date            █││                                    │
+│  ▏ Ratatui          23.1k        MIT License   2024-08-07                     █││                                    │
+│  ▏ Crossterm                     MIT           2025-04-05                     █││                                    │
+│  ▏ AppCUI-rs                     MIT license   Oct 24, 2026                   █││                                    │
+│  ▏ awesome-ratatui               MIT License   Oct 24, 2026                   █││                                    │
+│  ▏ twc-rs                        MIT                                          █││                                    │
+│  ▏ fdehau/tui-rs    10.9k                                                     █││                                    │
+│  ▏ 6 named with no details                                                    █││                                    │
+│  ▏ report  …aa9bc52\scratchpad\projects\m9\home\projects\p_e8b7fc7e\report.md █││                                    │
+│    read report                                                 6 failed items █││                                    │
+╰────────────────────────────────────────────────────────────────────────── (c) ─╯│                                    │
+╭ Message ───────────────────────────────────────────────────────────────────────╮│                                    │
+│ › message Marlowe…                                      ⇧↵ newline · esc boxes ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────── (1-4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette      21:40

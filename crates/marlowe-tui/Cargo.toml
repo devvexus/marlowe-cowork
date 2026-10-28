@@ -9,6 +9,8 @@ description = "The terminal client: Conversation + Situation Board, Library, app
 marlowe-model.workspace = true
 marlowe-proto.workspace = true
 marlowe-surface.workspace = true
+# The project view-model, forms and state a project's entry is derived from.
+marlowe-project.workspace = true
 # Display maths as typeset images where the terminal speaks Sixel: the worker, cache and the client
 # of `marlowe-typeset.exe`. Typst itself runs in that helper process and is never linked here.
 marlowe-typeset.workspace = true

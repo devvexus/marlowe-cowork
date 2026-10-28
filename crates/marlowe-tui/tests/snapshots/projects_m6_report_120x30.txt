@@ -1,0 +1,30 @@
+ * marlowe — ai models                                                                     teams ○  0 runs · 0 need you
+╭ ╭ report ──────────────────────────────────────────────────────────────────────────────────────────────────────────╮─╮
+│ │ ✓ Compile a comprehensive report on latest upcoming AI models,                                                   │ │
+│ │ p_fac325c3 · research · finished · medium confidence                                                             │ │
+│ │ file  …loweCowork\4550cbe5-d2b5-4091-a6a5-b300aaa9bc52\scratchpad\projects\m6\home\projects\p_fac325c3\report.md │─╯
+│ │                                                                                                                  │─╮
+│ │ Confidence: medium. 70% of cited sentences held up, 13% of verified claims rest on two independent sources, 90%  │ │
+│ │ of planned pages were read.                                                                                      │─╯
+│ │                                                                                                                  │─╮
+│ │ Answer                                                                                                           │ │
+│ │                                                                                                                  │ │
+│ │ The latest coding model, Kimi K2.7 Code, was released specifically for code tasks one day prior to the           │ │
+│ │ announcement of the general-purpose models [1] (partly supported). Kimis newest open-weight offering is Kimi K3, │ │
+│ │ a native multimodal agentic system that outperformed GPT-5.5 in kernel optimization tests and uses an asymmetric │ │
+│ │ architecture to reduce KV cache needs [2, 3, 4, 5]. While Kimi K3 operates with a significant parameter count    │ │
+│ │ reaching up to 2.8 trillion, the model family faces schedule uncertainty as earlier generation models are        │ │
+│ │ scheduled for retirement by late December [2, 6, 7, 8]. In contrast, Qwen4 remains in training with no confirmed │ │
+│ │ public benchmarks or release date currently available despite being designated V3.2 [6, 7, 9, 10, 11, 12, 13].   │ │
+│ │                                                                                                                  │ │
+│ │ What are the announced release dates or availability windows for new Kimi versions?                              │ │
+│ │                                                                                                                  │ │
+│ │ Moonshot AI announced Kimi K3.1 Pro on October 24, 2026 [14]. Kimi K3.1 Highspeed delivers two to three times    │ │
+│ │ the speed of K3.1 Pro with identical model capabilities [14]. Both Kimi K3.1 Pro and Kimi K3.1 Pro Highspeed are │ │
+│ │ currently available in AI Gateway [7].                                                                           │ │
+│ │                                                                                                                  │ │
+╰─│ What specifications define the newest DeepSeek releases (architecture, parameters, capabilities)?                │ │
+╭ ╰─────────────────────────────────────────────────────────────────────────────────────────── ↑↓ scroll · esc back ─╯ │
+│ › message Marlowe…                                      ⇧↵ newline · esc boxes ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────── (1-4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette      21:40

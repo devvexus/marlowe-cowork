@@ -36,6 +36,8 @@ pub mod onboard;
 mod osc;
 pub mod pacing;
 pub mod panel;
+pub mod projects;
+mod projects_input;
 pub mod render;
 pub mod report;
 pub mod seq;

@@ -61,6 +61,7 @@ pub fn welcome_requests() -> Vec<Request> {
         Request::ListNotices { limit: marlowe_tui::wake::NOTICE_LIMIT, unseen_only: false },
         Request::VoiceSettings { enabled: None, voice: None },
         Request::ListRuns { limit: marlowe_tui::crew::RUN_LIMIT },
+        Request::ListProjects,
     ]
 }
 

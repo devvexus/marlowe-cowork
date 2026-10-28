@@ -1,0 +1,30 @@
+ * marlowe — ai models                                                                      teams ○  1 run · 0 need you
+╭ Conversation · ai models ──────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────╮
+│  you  Run the web research team task. Focus on the latest upcoming AI models,  ││ Claude Sonnet 4.5 ▾         medium │
+│       specificially new Kimi models, deepseek, and qwen4. Compile a report md  ││ ctx ─────────┊─── 0 / 200k · cloud │
+│       and send it to me when you are done                                      │╰────────────────────────────── (m) ─╯
+│  Project initialized for research into upcoming Kimi, DeepSeek and Qwen4       │╭ Workspace ─────────────────────────╮
+│  model releases—covering specifications, release timelines and benchmark       ││ C:/work/valiance ▾                 │
+│  comparisons across four dimensions as outlined. It will read up to 60 public  │╰────────────────────────────── (w) ─╯
+│  pages within resource limits once you approve the plan. Do I have approval    │╭ 1 Projects 2 3 4 ────── 1 running ─╮
+│  to proceed?                                                                   ││ ● Compile a compr… 1:42 DC 63/83   │
+│                                                                                ││                                    │
+│  ● p_fac325c3 · research · Compile a comprehensive report …   ⣀⣷⣷⣷⣷⣷ 00:01:42  ││                                    │
+│     ✓  Plan ············· approved · 4 questions                     00:00:03  ││                                    │
+│     ●  DataCollection ··· 63/83  ✓3 · analyze 15 ●1 ○19                        ││                                    │
+│     ●  DataValidation ··· 16/40  extract 13 ○22 · condense 3 ●2 · 2 waiting    ││                                    │
+│     ◆  in flight ········ a_22 analyst 00:00:14 · a_24 condenser 00:00:02 · …  ││                                    │
+│     ○  Thinking · Report · Finish                                              ││                                    │
+│     Sources 16: !7 ●4 ○4 +1 running   Claims 15: +15 running                   ││                                    │
+│     checkin now   cancel   alt-p keys                                          ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (c) ─╯│                                    │
+╭ Message ───────────────────────────────────────────────────────────────────────╮│                                    │
+│ › message Marlowe…                                      ⇧↵ newline · esc boxes ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────── (1-4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-p Projects  ^w Watch  ^g Memory  ^l Library  ^k palette                 21:40

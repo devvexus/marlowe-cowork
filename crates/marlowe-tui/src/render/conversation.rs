@@ -41,7 +41,8 @@ pub fn draw(full: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     // follows them (the pending message, the queue, the wait) is a few lines, built each frame.
     let mut cache = state.layout.borrow_mut();
     sync(&mut cache, state, tw, theme);
-    let tail = tail_lines(state, tw, theme, cache.lines.is_empty());
+    state.projects.pane_rows.set(r.height);
+    let (tail, tail_blocks) = tail_lines(state, tw, theme, cache.lines.is_empty());
     let base = cache.lines.len();
     let total = base + tail.len();
     // The live strip sits directly under the output: at the pane's bottom once the text fills it,
@@ -79,6 +80,16 @@ pub fn draw(full: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     // The Conversation box's cursor: the fold marker Enter acts on.
     let keys = state.focus == Focus::Conversation && state.overlay.is_none() && state.approvals.is_empty();
     let marks = cache.marks.clone();
+    // A project's result in the transcript: where its rows end, for the click map.
+    let results: Vec<(String, usize)> = state
+        .entries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| match e {
+            Entry::Project { id } => cache.entry_end(i).map(|end| (id.clone(), end)),
+            _ => None,
+        })
+        .collect();
     drop(cache);
     let cursor = if keys { pick_thought(&marks, start, h, state.thought) } else { None };
     for (i, l) in window.iter().enumerate() {
@@ -94,6 +105,13 @@ pub fn draw(full: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
         }
     }
     state.marks.replace(marks);
+    let pane = Rect { x: r.x + PAD, width: tw as u16, ..r };
+    for (id, end) in results {
+        super::projects_entry::entry_hits(state, &id, theme, pane, tw, end, start);
+    }
+    for (at, rows) in &tail_blocks {
+        super::projects_entry::register_hits(state, rows, (base + at) as i64, start, pane);
+    }
     if live_h > 0 {
         super::strip::draw(under(total), state, theme, buf, PAD);
     }
@@ -293,6 +311,9 @@ fn gap_before(state: &State, idx: usize, prev: Option<&Entry>, e: &Entry) -> boo
     match (prev, e) {
         (None, _) => false,
         (Some(_), Entry::User { .. }) => true,
+        // A project's result stands apart from the lines around it, except from its own relay label.
+        (Some(Entry::News { label, .. }), Entry::Project { id }) => !label.contains(id.as_str()),
+        (Some(_), Entry::Project { .. }) | (Some(Entry::Project { .. }), _) => true,
         (Some(Entry::User { .. }), _) => false,
         _ if after_open_thought => true,
         (Some(Entry::Tool { .. } | Entry::Thinking { .. }), Entry::Prose { .. }) => true,
@@ -337,15 +358,27 @@ fn render_entry(
     }
 }
 
-/// The rows after the entries: the message just sent, what is queued behind the turn, and the
-/// wait for the first word. `empty` is whether nothing is above them.
-fn tail_lines(state: &State, width: usize, theme: &Theme, empty: bool) -> Vec<Line<'static>> {
+/// The rows after the entries: the projects that run, the message just sent, what is queued
+/// behind the turn, and the wait for the first word. `empty` is whether nothing is above them.
+/// With the rows go the projects' blocks (where each starts in the tail, and its rows), whose
+/// click targets the caller records.
+fn tail_lines(state: &State, width: usize, theme: &Theme, empty: bool) -> (Vec<Line<'static>>, Vec<(usize, Vec<super::projects::BLine>)>) {
     let mut out: Vec<Line<'static>> = Vec::new();
+    let mut blocks = Vec::new();
     let gap = |out: &mut Vec<Line<'static>>| {
         if !(empty && out.is_empty()) {
             out.push(Line::default());
         }
     };
+    // A running project is the last thing in the transcript, above the live strip.
+    for (id, rows) in super::projects_entry::live_blocks(state, width, theme) {
+        let own_relay = out.is_empty() && matches!(state.entries.last(), Some(Entry::News { label, .. }) if label.contains(id.as_str()));
+        if !own_relay {
+            gap(&mut out);
+        }
+        blocks.push((out.len(), rows.clone()));
+        out.extend(rows.into_iter().map(|b| b.line));
+    }
     if let Some(p) = &state.pending_user {
         gap(&mut out);
         user_lines(p, "you", ink(Ink::Dim, theme), width, theme, &mut out);
@@ -361,7 +394,7 @@ fn tail_lines(state: &State, width: usize, theme: &Theme, empty: bool) -> Vec<Li
         ]));
     }
     // Nothing has streamed yet: the live strip under the pane says what the wait is.
-    out
+    (out, blocks)
 }
 
 /// Brings the cache up to date with the entries. Every entry whose key is unchanged keeps its
@@ -404,6 +437,14 @@ fn entry_key(state: &State, idx: usize, e: &Entry, gap: bool, live: bool) -> u64
     h.entry(e);
     h.u64(u64::from(gap) | u64::from(live) << 1 | u64::from(state.thought_open(idx)) << 2 | u64::from(state.show_thinking) << 3);
     h.u64(idx as u64);
+    if let Entry::Project { id } = e {
+        // The project's state, and what the pointer and the keys do to its rows.
+        h.u64(state.projects.version_of(id));
+        h.str(&format!("{:?}", (&state.hover, state.projects.focus.as_deref() == Some(id.as_str()) && state.focus == crate::state::Focus::Conversation, state.projects.card_sel)));
+    }
+    if let Entry::News { label, .. } = e {
+        h.u64(u64::from(super::projects_entry::relay_label_only(state, label)));
+    }
     if let Entry::Tool { call_id, .. } = e {
         if state.code.tool_detail.get(call_id).is_some_and(|d| d.diff.is_some()) {
             h.u64(state.code.detail_gen);
@@ -425,7 +466,7 @@ fn transcript(state: &State, width: usize, theme: &Theme) -> (Vec<Line<'static>>
         render_entry(state, idx, e, gap, streaming == Some(idx), width, theme, &mut out, &mut maths, &mut marks);
         prev = Some(e);
     }
-    let tail = tail_lines(state, width, theme, out.is_empty());
+    let (tail, _) = tail_lines(state, width, theme, out.is_empty());
     out.extend(tail);
     (out, maths, marks)
 }
@@ -531,7 +572,14 @@ pub(super) fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, th
             }
         }
         Entry::Job { command, output, code, .. } => job_lines(command, output, *code, width, theme, out),
+        Entry::News { label, .. } if super::projects_entry::relay_label_only(state, label) => {
+            out.push(Line::from(vec![
+                Span::styled("↳ ", ink(Ink::Dimmer, theme)),
+                Span::styled(text::truncate(&text::clean(label), width.saturating_sub(4).max(8)), ink(Ink::Dim, theme)),
+            ]));
+        }
         Entry::News { label, text } => super::bg::news_lines(label, text, width, theme, out),
+        Entry::Project { id } => super::projects_entry::entry_lines(state, id, width, theme, out),
         Entry::File { file } => super::bg::file_lines(file, width, theme, out),
         Entry::Note { text: t, tone } => {
             for (i, l) in text::wrap(&text::clean(t), width.saturating_sub(2)).into_iter().enumerate() {
@@ -1082,7 +1130,7 @@ mod tests {
         sync(cache, state, width, th);
         let (want, maths, marks) = transcript(state, width, th);
         let mut got = cache.lines.clone();
-        got.extend(tail_lines(state, width, th, cache.lines.is_empty()));
+        got.extend(tail_lines(state, width, th, cache.lines.is_empty()).0);
         assert_eq!(got.len(), want.len(), "row count at width {width}");
         assert!(got == want, "rows differ at width {width}");
         assert_eq!(cache.marks, marks, "fold markers differ at width {width}");

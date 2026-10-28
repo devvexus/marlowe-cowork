@@ -1440,6 +1440,15 @@ fn delimited(chars: &[char], i: usize, delim: &str, ctx: &Ctx) -> Option<(String
         if !ctx.spend(1) {
             return None;
         }
+        // A run of the delimiter character of another length is a different delimiter nested inside
+        // this one (`*em **strong** em*`): skip it whole instead of closing on its last character.
+        if chars[j] == d[0] {
+            let run = chars[j..].iter().take_while(|c| **c == d[0]).count();
+            if run != n && !(run > n && j + run == chars.len()) {
+                j += run;
+                continue;
+            }
+        }
         if chars[j..j + n] == d[..] && chars.get(j + n) != Some(&d[0]) {
             let before = chars[j - 1];
             if before.is_whitespace() {
@@ -1959,6 +1968,21 @@ mod tests {
         assert_eq!(text_of(&lines), vec!["Retrieval".to_string()]);
         assert_eq!(lines[0].spans[0].style.fg, Some(theme.accent()));
         assert!(lines[0].spans[0].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn strong_nested_in_emphasis_leaves_no_asterisks() {
+        // The first line under the title of a project report, verbatim (run m6).
+        let theme = t();
+        let src = "*Confidence: **medium**. 70% of cited sentences held up, 13% of verified claims rest on two independent sources, 90% of planned pages were read.*";
+        let lines = render_prose(src, 200, &theme, Style::default());
+        let text = text_of(&lines).join("");
+        assert!(!text.contains('*'), "{text}");
+        assert!(text.starts_with("Confidence: medium. 70%"), "{text}");
+        let strong = lines.iter().flat_map(|l| l.spans.iter()).find(|s| s.content.as_ref() == "medium").expect("medium is its own run");
+        assert!(strong.style.add_modifier.contains(Modifier::BOLD | Modifier::ITALIC));
+        let em = lines.iter().flat_map(|l| l.spans.iter()).find(|s| s.content.starts_with("Confidence")).unwrap();
+        assert!(em.style.add_modifier.contains(Modifier::ITALIC) && !em.style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]

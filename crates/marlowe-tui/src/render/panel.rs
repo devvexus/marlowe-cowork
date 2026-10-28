@@ -44,6 +44,7 @@ pub fn draw(area: Rect, state: &State, theme: &Theme, buf: &mut Buffer) -> Optio
         Panel::Bench(u) => super::bg::bench(area, state, u, theme, buf),
         Panel::Suggestions(u) => super::bg::suggestions(area, state, u, theme, buf),
         Panel::Thread(u) => return super::bg::thread(area, state, u, theme, buf),
+        Panel::Report(u) => super::projects_report::draw(area, state, u, theme, buf),
     }
     None
 }

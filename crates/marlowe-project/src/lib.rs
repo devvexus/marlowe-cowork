@@ -28,6 +28,7 @@
 #![warn(missing_docs)]
 
 pub mod actor;
+pub mod derive;
 pub mod engine;
 pub mod form;
 pub mod ids;

@@ -52,7 +52,7 @@ fn parity_U9_a_mode_chosen_before_the_session_exists_is_sent_when_it_does() {
     let reqs = feed(&mut s, 0, Event::SessionOpened { session: sid(), title: "hi".into(), workspace: None });
     assert_eq!(
         reqs,
-        vec![Request::SetMode { session: sid(), mode: PermissionMode::AcceptEdits }, Request::GetTeams { session: sid() }]
+        vec![Request::SetMode { session: sid(), mode: PermissionMode::AcceptEdits }, Request::GetTeams { session: sid() }, Request::ListProjects]
     );
 }
 
@@ -280,7 +280,11 @@ fn parity_U8_a_bang_before_any_session_opens_one_first() {
     let reqs = feed(&mut s, 0, Event::SessionOpened { session: sid(), title: String::new(), workspace: None });
     assert_eq!(
         reqs,
-        vec![Request::GetTeams { session: sid() }, Request::UserShell { session: SessionId::from("5e55"), command: "echo hi".into() }]
+        vec![
+            Request::GetTeams { session: sid() },
+            Request::UserShell { session: SessionId::from("5e55"), command: "echo hi".into() },
+            Request::ListProjects
+        ]
     );
 }
 

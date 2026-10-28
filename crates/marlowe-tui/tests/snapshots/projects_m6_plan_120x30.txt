@@ -1,0 +1,30 @@
+ * marlowe — ai models                                                                     teams ○  1 run · 1 needs you
+╭ Conversation · ai models ──────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────╮
+│  you  Run the web research team task. Focus on the latest upcoming AI models,  ││ Claude Sonnet 4.5 ▾         medium │
+│       specificially new Kimi models, deepseek, and qwen4. Compile a report md  ││ ctx ─────────┊─── 0 / 200k · cloud │
+│       and send it to me when you are done                                      │╰────────────────────────────── (m) ─╯
+│  Project initialized for research into upcoming Kimi, DeepSeek and Qwen4       │╭ Workspace ─────────────────────────╮
+│  model releases—covering specifications, release timelines and benchmark       ││ C:/work/valiance ▾                 │
+│  comparisons across four dimensions as outlined. It will read up to 60 public  │╰────────────────────────────── (w) ─╯
+│  pages within resource limits once you approve the plan. Do I have approval    │╭ 1 Projects 2 3 4 ──── 1 needs you ─╮
+│  to proceed?                                                                   ││ ◐ Compile a comprehen… 0:02 plan   │
+│                                                                                ││                                    │
+│  ◐ plan 1 · research · p_fac325c3 · waiting for you            asked just now  ││                                    │
+│  ▏ Compile a comprehensive report on latest upcoming AI models, specifically   ││                                    │
+│  ▏ new Kimi models, DeepSeek and Qwen4                                         ││                                    │
+│  ▏ q1 What are the announced release dates or availability windows for new K…  ││                                    │
+│  ▏ q2 What specifications define the newest DeepSeek releases (architecture,…  ││                                    │
+│  ▏ q3 What is known about Qwen4 features compared to previous iterations in …  ││                                    │
+│  ▏ q4 Are there any official benchmarks comparing these models against their…  ││                                    │
+│  ▏ fields  Model name · Release date · Status · Architecture type · Paramete…  ││                                    │
+│  ▏ limits  40 sources · 60 fetches · 5 vectors per question · 3 rounds         ││                                    │
+│  ▏ Approving lets this project read public https pages it finds, up to 60,     ││                                    │
+│  ▏ honouring robots.txt. Anything else asks.                                   ││                                    │
+│    Approve the plan   revise   Cancel                                          ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (c) ─╯│                                    │
+╭ Message ───────────────────────────────────────────────────────────────────────╮│                                    │
+│ › message Marlowe…                                      ⇧↵ newline · esc boxes ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────── (1-4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-p Projects  ^w Watch  ^g Memory  ^l Library  ^k palette                 21:40

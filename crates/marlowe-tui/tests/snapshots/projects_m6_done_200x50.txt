@@ -1,0 +1,50 @@
+ * marlowe — ai models                                                                                                                                                     teams ○  0 runs · 0 need you
+╭ Conversation · ai models ────────────────────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ───────────────────────────────────────────────────╮
+│  you  Run the web research team task. Focus on the latest upcoming AI models, specificially new Kimi models, deepseek, and qwen4.        ││ Claude Sonnet 4.5 ▾                               medium │
+│       Compile a report md and send it to me when you are done                                                                            ││ ctx ─────────────────┊────── 0 / 200k · cloud            │
+│  Project initialized for research into upcoming Kimi, DeepSeek and Qwen4 model releases—covering specifications, release timelines and   │╰──────────────────────────────────────────────────── (m) ─╯
+│  benchmark comparisons across four dimensions as outlined. It will read up to 60 public pages within resource limits once you approve    │╭ Workspace ───────────────────────────────────────────────╮
+│  the plan. Do I have approval to proceed?                                                                                                ││ C:/work/valiance ▾                                       │
+│                                                                                                                                          │╰──────────────────────────────────────────────────── (w) ─╯
+│  you  Quick check, what is two plus two?                                                                                                 │╭ Projects ────────────────────────────────────────────────╮
+│  Two plus two equals four. The research project continues in background collection mode while you wait; result arrives when notices end  ││ ✓ Compile a comprehensive report on late… 10:53 medium   │
+│  or at checkin time if needed before completion reaches a deliverable threshold.                                                         │╰──────────────────────────────────────────────────── (1) ─╯
+│                                                                                                                                          │╭ Watch ───────────────────────────────────────────────────╮
+│  you  Thanks. In one short line, is the research still running?                                                                          ││ nothing watched                                          │
+│  Yes, the Kimi/DeepSeek/Qwen4 report continues collecting data from public sources while waiting for completion notice or manual         ││                                                          │
+│  checkin threshold.                                                                                                                      ││                                                          │
+│  ↳ project p_fac325c3 · needs you                                                                                                        ││                                                          │
+│  The first data pass captured concrete release windows for DeepSeek V4.1, announced Kimi versions and Qwen4 details—though benchmark     ││                                                          │
+│  comparisons remain incomplete and some timelines contradict across sources due to announcements versus actual availability dates.       ││                                                          │
+│  Shall I keep researching those gaps before drafting the final report?                                                                   ││                                                          │
+│  ↳ project p_fac325c3 · needs you                                                                                                        ││                                                          │
+│  The verification confirms specific architecture for DeepSeek V4.1-Flash and Kimi K3 series status updates, while Qwen4 remains in       ││                                                          │
+│  training without released specifications—and the conflicting availability dates for Kimi weights remain unresolved after checking       ││                                                          │
+│  multiple sources within resource limits given no single official confirmation appears available yet across all three vendors. Continue  ││                                                          │
+│  researching to resolve these conflicts before drafting? Or proceed with current verified details plus clearly documented gaps and       ││                                                          │
+│  contradictions where resolution failed?                                                                                                 ││                                                          │
+│  ↳ project p_fac325c3 · finished                                                                                                         ││                                                          │
+│  ✓ p_fac325c3 · research · finished · 00:10:53 · medium confidence                                                                       ││                                                          │
+│  ▏ The latest coding model, Kimi K2.7 Code, was released specifically for code tasks one day prior to the announcement of the            ││                                                          │
+│  ▏ general-purpose models [1] (partly supported). Kimis newest open-weight offering is Kimi K3, a native multimodal agentic system that  ││                                                          │
+│  ▏ outperformed GPT-5.5 in kernel optimization tests and uses an asymmetric architecture to reduce KV cache needs [2, 3, 4, 5]. While    ││                                                          │
+│  ▏ Kimi K3 operates with a significant parameter count reaching up to 2.8 trillion, the model family faces schedule uncertainty as…      ││                                                          │
+│  ▏ verified claims 69 · sources cited 19 · cited sentences 22 · removed sentences 6                                                      ││                                                          │
+│  ▏ records 61 rows · Model name · Release date · Status · Architecture type · Parameters or range  in the report                         ││                                                          │
+│  ▏ report  …matth-Projects-MarloweCowork\4550cbe5-d2b5-4091-a6a5-b300aaa9bc52\scratchpad\projects\m6\home\projects\p_fac325c3\report.md  ││                                                          │
+│    read report                                                                                                           7 failed items  ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          │╰──────────────────────────────────────────────────── (2) ─╯
+│                                                                                                                                          │╭ Threads ─────────────────────────────────────────────────╮
+│                                                                                                                                          ││ no open threads                                          │
+│                                                                                                                                          │╰──────────────────────────────────────────────────── (3) ─╯
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ──────────────────────────────────────────────────╮
+╭ Message ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                                   │
+│ › message Marlowe…                                                                                                ⇧↵ newline · esc boxes ││ nothing recalled this session                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ⇧tab Mode  ^t Thinking  alt-v Voice  ^k palette                              Friday 9 October · 21:40

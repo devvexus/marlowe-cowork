@@ -1,0 +1,30 @@
+ * marlowe — ai models                                                                     teams ○  0 runs · 0 need you
+╭ Conversation · ai models ──────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────╮
+│  announced Kimi versions and Qwen4 details—though benchmark comparisons       │││ Claude Sonnet 4.5 ▾         medium │
+│  remain incomplete and some timelines contradict across sources due to        │││ ctx ─────────┊─── 0 / 200k · cloud │
+│  announcements versus actual availability dates. Shall I keep researching     ││╰────────────────────────────── (m) ─╯
+│  those gaps before drafting the final report?                                 ││╭ Workspace ─────────────────────────╮
+│  ↳ project p_fac325c3 · needs you                                             │││ C:/work/valiance ▾                 │
+│  The verification confirms specific architecture for DeepSeek V4.1-Flash and  ││╰────────────────────────────── (w) ─╯
+│  Kimi K3 series status updates, while Qwen4 remains in training without       ││╭ 1 Projects 2 3 4 ──────────────────╮
+│  released specifications—and the conflicting availability dates for Kimi      │││ ✓ Compile a compre… 10:53 medium   │
+│  weights remain unresolved after checking multiple sources within resource    │││                                    │
+│  limits given no single official confirmation appears available yet across    │││                                    │
+│  all three vendors. Continue researching to resolve these conflicts before    │││                                    │
+│  drafting? Or proceed with current verified details plus clearly documented   █││                                    │
+│  gaps and contradictions where resolution failed?                             █││                                    │
+│  ↳ project p_fac325c3 · finished                                              █││                                    │
+│  ✓ p_fac325c3 · research · finished · 00:10:53 · medium confidence            █││                                    │
+│  ▏ The latest coding model, Kimi K2.7 Code, was released specifically for     █││                                    │
+│  ▏ code tasks one day prior to the announcement of the general-purpose models █││                                    │
+│  ▏ [1] (partly supported). Kimis newest open-weight offering is Kimi K3, a    █││                                    │
+│  ▏ native multimodal agentic system that outperformed GPT-5.5 in kernel…      █││                                    │
+│  ▏ verified claims 69 · sources cited 19 · cited sentences 22 · removed sent… █││                                    │
+│  ▏ records 61 rows · Model name · Release date · Status · Architecture type … █││                                    │
+│  ▏ report  …aa9bc52\scratchpad\projects\m6\home\projects\p_fac325c3\report.md █││                                    │
+│    read report                                                 7 failed items █││                                    │
+╰────────────────────────────────────────────────────────────────────────── (c) ─╯│                                    │
+╭ Message ───────────────────────────────────────────────────────────────────────╮│                                    │
+│ › message Marlowe…                                      ⇧↵ newline · esc boxes ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────── (1-4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette      21:40

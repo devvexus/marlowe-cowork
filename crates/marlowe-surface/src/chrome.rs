@@ -242,11 +242,13 @@ pub enum Ink {
     /// product would be answering a complaint about *this window* by deleting something else's
     /// colour. What was wrong was a second surface reaching for a hue its neighbour never uses.
     Green,
+    /// State: in flight (running, working). Blue, #7fa8dd.
+    Info,
 }
 
 impl Ink {
     /// Every role, for a test that has to name them all.
-    pub const ALL: [Ink; 11] = [
+    pub const ALL: [Ink; 12] = [
         Ink::Body,
         Ink::Dim,
         Ink::Dimmer,
@@ -258,6 +260,7 @@ impl Ink {
         Ink::Amber,
         Ink::Red,
         Ink::Green,
+        Ink::Info,
     ];
 
     pub fn name(self) -> &'static str {
@@ -273,6 +276,7 @@ impl Ink {
             Ink::Amber => "amber",
             Ink::Red => "red",
             Ink::Green => "green",
+            Ink::Info => "info",
         }
     }
 
@@ -292,6 +296,7 @@ impl Ink {
             Ink::Amber => theme.tone(Tone::Amber),
             Ink::Red => theme.tone(Tone::Red),
             Ink::Green => theme.tone(Tone::Green),
+            Ink::Info => theme.info(),
         }
     }
 

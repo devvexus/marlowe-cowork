@@ -115,8 +115,8 @@ pub struct TabStrip {
 
 /// `1 Crew  2 Watch  3 Threads  4 Memory`, tightening until it fits: one space between tabs, then
 /// the inactive tabs by number only.
-pub fn tab_strip(width: usize, active: BoardTab) -> TabStrip {
-    let full = |t: BoardTab| 2 + text::width(t.label());
+pub fn tab_strip(width: usize, active: BoardTab, projects: bool) -> TabStrip {
+    let full = |t: BoardTab| 2 + text::width(tab_label(t, projects));
     for (sep, compact) in [(2, false), (1, false), (1, true)] {
         let mut cells = Vec::new();
         let mut x = 0;
@@ -135,23 +135,33 @@ pub fn tab_strip(width: usize, active: BoardTab) -> TabStrip {
     unreachable!("the compact strip is always returned")
 }
 
+/// A section's name: the first is the Crew, or the Projects while the conversation has any.
+pub fn tab_label(t: BoardTab, projects: bool) -> &'static str {
+    if projects && t == BoardTab::Crew {
+        "Projects"
+    } else {
+        t.label()
+    }
+}
+
 /// A board line and what a click on it opens.
 pub type Row = (Line<'static>, Option<Target>);
 
-/// Rows the Crew section needs when stacked.
+/// Rows the Crew section needs when stacked: one for each project, then the crew's runs.
 pub fn crew_rows(state: &State) -> usize {
     let n = state.crew.runs.len() + state.bg.subagents(state.session.as_ref()).len();
-    if n == 0 {
-        1
-    } else {
-        n.min(RAIL_RUNS) * 2 + usize::from(n > RAIL_RUNS)
+    let runs = if n == 0 { 0 } else { n.min(RAIL_RUNS) * 2 + usize::from(n > RAIL_RUNS) };
+    let p = state.projects.loaded.len();
+    if p == 0 {
+        return runs.max(1);
     }
+    p.min(RAIL_RUNS) + usize::from(p > RAIL_RUNS) + runs
 }
 
 fn tabbed_box(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     let focus = focus_level(state, Focus::Board);
     let active = state.board_tab;
-    let strip = tab_strip(r.width.saturating_sub(4) as usize, active);
+    let strip = tab_strip(r.width.saturating_sub(4) as usize, active, state.projects.active());
     let mut title: Vec<Span<'static>> = Vec::new();
     for (i, (t, _, _)) in strip.cells.iter().enumerate() {
         if i > 0 {
@@ -171,7 +181,7 @@ fn tabbed_box(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
                 (false, true) => ink(Ink::Hover, theme),
                 (false, false) => ink(Ink::Dim, theme),
             };
-            title.push(Span::styled(format!(" {}", t.label()), name));
+            title.push(Span::styled(format!(" {}", tab_label(*t, state.projects.active())), name));
         }
     }
     let taken = Line::from(title.clone()).width() as u16 + 3;
@@ -194,7 +204,7 @@ fn stacked_box(r: Rect, tab: BoardTab, state: &State, theme: &Theme, buf: &mut B
         _ if hovered(state, &Target::Tab(tab)) && state.overlay.is_none() => FocusLevel::Hovered,
         _ => FocusLevel::Unfocused,
     };
-    let title = titled(tab.label(), None, focus, theme);
+    let title = titled(tab_label(tab, state.projects.active()), None, focus, theme);
     let taken = Line::from(title.clone()).width() as u16 + 3;
     let inner = region_box(r, title, &format!("({})", tab.key()), focus, theme, buf);
     let w = inner.width.saturating_sub(3) as usize;
@@ -234,6 +244,7 @@ fn section_lines(
     theme: &Theme,
 ) -> (Vec<Row>, Option<String>) {
     match tab {
+        BoardTab::Crew if state.projects.active() => projects_lines(state, w, max_runs, theme),
         BoardTab::Crew => super::crew::rail_lines(state, w, max_runs, theme),
         BoardTab::Watch => watch_lines(state, w, rows, theme),
         BoardTab::Threads => (vec![(dimmer("no open threads", theme), None)], None),
@@ -245,6 +256,17 @@ fn section_lines(
             (lines, None)
         }
     }
+}
+
+/// The first section while the conversation has projects: a row for each, then the crew's runs.
+fn projects_lines(state: &State, w: usize, max_runs: usize, theme: &Theme) -> (Vec<Row>, Option<String>) {
+    let (mut rows, count) = super::projects_entry::board_rows(state, w, max_runs, theme);
+    if !state.crew.runs.is_empty() || !state.bg.subagents(state.session.as_ref()).is_empty() {
+        let (crew, crew_count) = super::crew::rail_lines(state, w, max_runs, theme);
+        rows.extend(crew);
+        return (rows, count.or(crew_count));
+    }
+    (rows, count)
 }
 
 fn dimmer(s: &str, theme: &Theme) -> Line<'static> {

@@ -39,6 +39,9 @@ mod memory;
 mod overlay;
 mod panel;
 mod popup;
+pub(crate) mod projects;
+pub(crate) mod projects_entry;
+mod projects_report;
 mod seq;
 mod strip;
 mod transcript;
@@ -220,7 +223,7 @@ fn layout_board(g: &mut Geometry, state: &State) {
     } else {
         g.board_mode = BoardMode::Tabbed;
         g.sections = [b; 4];
-        let strip = board::tab_strip(b.width.saturating_sub(4) as usize, state.board_tab);
+        let strip = board::tab_strip(b.width.saturating_sub(4) as usize, state.board_tab, state.projects.active());
         for (tab, off, len) in strip.cells {
             g.tabs[tab.index()] = Rect { x: b.x + 2 + off as u16, y: b.y, width: len as u16, height: 1 };
         }
@@ -349,7 +352,7 @@ fn plan_links(g: &Geometry, area: Rect, state: &State, buf: &Buffer) {
         (Some(Overlay::Panel), _)
             if matches!(
                 state.code.panel,
-                Some(crate::panel::Panel::Transcript(_) | crate::panel::Panel::Diff(_) | crate::panel::Panel::Findings(_) | crate::panel::Panel::Files { .. })
+                Some(crate::panel::Panel::Transcript(_) | crate::panel::Panel::Diff(_) | crate::panel::Panel::Findings(_) | crate::panel::Panel::Files { .. } | crate::panel::Panel::Report(_))
             ) =>
         {
             Some(area)
@@ -750,7 +753,7 @@ fn draw_footer(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
         ("^n", "New", 8, key, chord(Command::NewSession)),
         ("alt-s", "Sessions", 7, key, chord(Command::Sessions)),
         ("^d", "Dispatch", 7, key, chord(Command::Dispatch)),
-        ("alt-r", "Crew", 6, key, chord(Command::Crew)),
+        if state.projects.running() > 0 { ("alt-p", "Projects", 6, key, chord(Command::Projects)) } else { ("alt-r", "Crew", 6, key, chord(Command::Crew)) },
         ("^w", "Watch", 5, key, chord(Command::Watch)),
         ("^g", "Memory", 5, key, chord(Command::Memory)),
         ("^l", "Library", 4, key, chord(Command::Library)),

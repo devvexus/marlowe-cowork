@@ -1,0 +1,30 @@
+ * marlowe — ai models                                                                      teams ○  1 run · 0 need you
+╭ Conversation · ai models ──────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────╮
+│  ↳ project p_decd28c7 · needs you                                             │││ Claude Sonnet 4.5 ▾         medium │
+│  There are conflicting reports on Qwen-4's actual release—it appears some     │││ ctx ─────────┊─── 0 / 200k · cloud │
+│  sources treat it as finalized pre-release while others suggest ongoing       ││╰────────────────────────────── (m) ─╯
+│  training and no shipping date yet. Similarly, Kimi K3/K3.1 versus DeepSeek   ││╭ Workspace ─────────────────────────╮
+│  V4 launch windows don't align across coverage. The project is at a decision  │││ C:/work/valiance ▾                 │
+│  point: should I approve these findings (acknowledging the inconsistencies),  ││╰────────────────────────────── (w) ─╯
+│  keep researching through them to resolve conflicts, adjust the research      ││╭ 1 Projects 2 3 4 ────── 1 running ─╮
+│  focus on whichever signals appear most credible, or cancel?                  │││ ● Compile comp… 22:49 Report 1/4   │
+│  ↳ project p_decd28c7 · needs you                                             │││                                    │
+│  The research has good data on Kimi K3 and DeepSeek-V releases but finds      │││                                    │
+│  mixed signals for Qwen-4—some sources claim pre-release training while       │││                                    │
+│  others show no official archives entry for it at all. Should I approve these │││                                    │
+│  findings as they stand, keep researching to resolve the Qwen contradictions, █││                                    │
+│  steer toward clearer models instead, or cancel?                              █││                                    │
+│                                                                               █││                                    │
+│  ● p_decd28c7 · research · Compile comprehensive web repor…   ⣄⣄⣄⣄⣄⣄ 00:22:49 █││                                    │
+│     ✓  round 1 ······ 5 phases                                                █││                                    │
+│     ✓  round 2 ······ 5 phases · 1 skipped                                    █││                                    │
+│     ●  Report ······· 1/4  sections 0 ●1 ○2 ✗1 · 4 waiting                    █││                                    │
+│     ◆  in flight ···· a_166 writer 00:00:00                                   █││                                    │
+│     ○  Finish                                                                 █││                                    │
+│     Sources 74: !21 ●19 ◐8 ○16 ×7 none 3   Claims 69: ✓46 ~6 ✗5 ?10 none 2    █││                                    │
+│     checkin now   cancel   alt-p keys                                         █││                                    │
+╰────────────────────────────────────────────────────────────────────────── (c) ─╯│                                    │
+╭ Message ───────────────────────────────────────────────────────────────────────╮│                                    │
+│ › message Marlowe…                                      ⇧↵ newline · esc boxes ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────── (1-4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-p Projects  ^w Watch  ^g Memory  ^l Library  ^k palette                 21:40

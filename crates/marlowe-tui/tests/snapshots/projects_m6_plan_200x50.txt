@@ -1,0 +1,50 @@
+ * marlowe — ai models                                                                                                                                                     teams ○  1 run · 1 needs you
+╭ Conversation · ai models ────────────────────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ───────────────────────────────────────────────────╮
+│  you  Run the web research team task. Focus on the latest upcoming AI models, specificially new Kimi models, deepseek, and qwen4.        ││ Claude Sonnet 4.5 ▾                               medium │
+│       Compile a report md and send it to me when you are done                                                                            ││ ctx ─────────────────┊────── 0 / 200k · cloud            │
+│  Project initialized for research into upcoming Kimi, DeepSeek and Qwen4 model releases—covering specifications, release timelines and   │╰──────────────────────────────────────────────────── (m) ─╯
+│  benchmark comparisons across four dimensions as outlined. It will read up to 60 public pages within resource limits once you approve    │╭ Workspace ───────────────────────────────────────────────╮
+│  the plan. Do I have approval to proceed?                                                                                                ││ C:/work/valiance ▾                                       │
+│                                                                                                                                          │╰──────────────────────────────────────────────────── (w) ─╯
+│  ◐ plan 1 · research · p_fac325c3 · waiting for you                                                                      asked just now  │╭ Projects ────────────────────────────────── 1 needs you ─╮
+│  ▏ Compile a comprehensive report on latest upcoming AI models, specifically new Kimi models, DeepSeek and Qwen4                         ││ ◐ Compile a comprehensive report on latest … 0:02 plan   │
+│  ▏ q1 What are the announced release dates or availability windows for new Kimi versions?                                                │╰──────────────────────────────────────────────────── (1) ─╯
+│  ▏ q2 What specifications define the newest DeepSeek releases (architecture, parameters, capabilities)?                                  │╭ Watch ───────────────────────────────────────────────────╮
+│  ▏ q3 What is known about Qwen4 features compared to previous iterations in context window, multimodality and efficiency metrics?        ││ nothing watched                                          │
+│  ▏ q4 Are there any official benchmarks comparing these models against their predecessors?                                               ││                                                          │
+│  ▏ fields  Model name · Release date · Status · Architecture type · Parameters or range                                                  ││                                                          │
+│  ▏ limits  40 sources · 60 fetches · 5 vectors per question · 3 rounds                                                                   ││                                                          │
+│  ▏ Approving lets this project read public https pages it finds, up to 60, honouring robots.txt. Anything else asks.                     ││                                                          │
+│    Approve the plan   revise   Cancel                                                                                                    ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          │╰──────────────────────────────────────────────────── (2) ─╯
+│                                                                                                                                          │╭ Threads ─────────────────────────────────────────────────╮
+│                                                                                                                                          ││ no open threads                                          │
+│                                                                                                                                          │╰──────────────────────────────────────────────────── (3) ─╯
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ──────────────────────────────────────────────────╮
+╭ Message ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                                   │
+│ › message Marlowe…                                                                                                ⇧↵ newline · esc boxes ││ nothing recalled this session                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-p Projects  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ⇧tab Mode  ^t Thinking  alt-v Voice  ^k palette                          Friday 9 October · 21:40

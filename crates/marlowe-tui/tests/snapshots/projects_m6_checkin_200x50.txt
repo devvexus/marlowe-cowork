@@ -1,0 +1,50 @@
+ * marlowe — ai models                                                                                                                                                     teams ○  1 run · 1 needs you
+╭ Conversation · ai models ────────────────────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ───────────────────────────────────────────────────╮
+│  you  Run the web research team task. Focus on the latest upcoming AI models, specificially new Kimi models, deepseek, and qwen4.        ││ Claude Sonnet 4.5 ▾                               medium │
+│       Compile a report md and send it to me when you are done                                                                            ││ ctx ─────────────────┊────── 0 / 200k · cloud            │
+│  Project initialized for research into upcoming Kimi, DeepSeek and Qwen4 model releases—covering specifications, release timelines and   │╰──────────────────────────────────────────────────── (m) ─╯
+│  benchmark comparisons across four dimensions as outlined. It will read up to 60 public pages within resource limits once you approve    │╭ Workspace ───────────────────────────────────────────────╮
+│  the plan. Do I have approval to proceed?                                                                                                ││ C:/work/valiance ▾                                       │
+│                                                                                                                                          │╰──────────────────────────────────────────────────── (w) ─╯
+│  you  Quick check, what is two plus two?                                                                                                 │╭ Projects ────────────────────────────────── 1 needs you ─╮
+│  Two plus two equals four. The research project continues in background collection mode while you wait; result arrives when notices end  ││ ◐ Compile a comprehensive report on late… 6:10 checkin   │
+│  or at checkin time if needed before completion reaches a deliverable threshold.                                                         │╰──────────────────────────────────────────────────── (1) ─╯
+│                                                                                                                                          │╭ Watch ───────────────────────────────────────────────────╮
+│  you  Thanks. In one short line, is the research still running?                                                                          ││ nothing watched                                          │
+│  Yes, the Kimi/DeepSeek/Qwen4 report continues collecting data from public sources while waiting for completion notice or manual         ││                                                          │
+│  checkin threshold.                                                                                                                      ││                                                          │
+│  ↳ project p_fac325c3 · needs you                                                                                                        ││                                                          │
+│  The first data pass captured concrete release windows for DeepSeek V4.1, announced Kimi versions and Qwen4 details—though benchmark     ││                                                          │
+│  comparisons remain incomplete and some timelines contradict across sources due to announcements versus actual availability dates.       ││                                                          │
+│  Shall I keep researching those gaps before drafting the final report?                                                                   ││                                                          │
+│                                                                                                                                          ││                                                          │
+│  ◐ checkin · round 1 · p_fac325c3 · lead recommends keep researching                                                           00:06:10  ││                                                          │
+│  ▏ ✓ Plan 1/1  ✓ DataCollection 83/83  ✓ DataValidation 104/104  ✓ Thinking 2/2                                                          ││                                                          │
+│  ▏ 35 sources read · 43 claims verified · 3 contested · 5 failed items · elapsed 00:06:04                                                ││                                                          │
+│  ▏ ↻ keep_researching  The current research provides specific model names, architectures, and rough availability dates for DeepSeek      ││                                                          │
+│  ▏                     V4.1 and various Kimi versions, but significant gaps remain regarding official benchmark comparisons between      ││                                                          │
+│  ▏                     predecessors and conflicting release timelines that need further clarification.                                   ││                                                          │
+│  ▏ next  What are the confirmed public benchmarks for Qwen3 vs Qwen4 tiers to validate current performance claims?                       ││                                                          │
+│  ▏       Which specific new Kimi model versions are currently in public beta versus full GA based on recent announcements?               ││                                                          │
+│    Approve and write the report   Keep researching ◆   Steer   Cancel                                                                    ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          │╰──────────────────────────────────────────────────── (2) ─╯
+│                                                                                                                                          │╭ Threads ─────────────────────────────────────────────────╮
+│                                                                                                                                          ││ no open threads                                          │
+│                                                                                                                                          │╰──────────────────────────────────────────────────── (3) ─╯
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ──────────────────────────────────────────────────╮
+╭ Message ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                                   │
+│ › message Marlowe…                                                                                                ⇧↵ newline · esc boxes ││ nothing recalled this session                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-p Projects  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ⇧tab Mode  ^t Thinking  alt-v Voice  ^k palette                          Friday 9 October · 21:40

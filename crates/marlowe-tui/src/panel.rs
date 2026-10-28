@@ -45,6 +45,15 @@ pub enum Panel {
     Bench(crate::bg_panels::BenchUi),
     Suggestions(crate::bg_panels::SuggestUi),
     Thread(crate::bg_panels::ThreadUi),
+    /// A project's report, read in place.
+    Report(ReportUi),
+}
+
+/// A project's report open in a panel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReportUi {
+    pub project: String,
+    pub scroll: Scroll,
 }
 
 /// A scroll position and the furthest it can go, which the renderer writes back (it alone knows
@@ -441,6 +450,7 @@ impl State {
             | Panel::Files { .. }
             | Panel::Plan(_)
             | Panel::Suggestions(_)
+            | Panel::Report(_)
             | Panel::Thread(_) => {}
         }
         self.place_panel(p);
@@ -642,6 +652,7 @@ impl State {
             Panel::Bench(u) => self.bench_key(u, k, out),
             Panel::Suggestions(u) => self.suggestions_key(u, k, out),
             Panel::Thread(u) => self.thread_key(u, k, out),
+            Panel::Report(u) => scroll_key(k, &mut u.scroll),
         };
         let was_question = matches!(panel, Panel::Question(_));
         let was_plan = matches!(panel, Panel::Plan(_));
@@ -700,6 +711,7 @@ impl State {
             Some(Panel::Tasks(u)) if u.output => u.scroll.by(if up { 3 } else { -3 }),
             Some(Panel::Bench(u)) if u.reading => u.scroll.by(if up { -3 } else { 3 }),
             Some(Panel::Thread(t)) => t.scroll.by(if up { 3 } else { -3 }),
+            Some(Panel::Report(r)) => r.scroll.by(if up { -3 } else { 3 }),
             _ => {}
         }
     }

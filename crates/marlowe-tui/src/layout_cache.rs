@@ -50,6 +50,11 @@ impl TranscriptCache {
         }
     }
 
+    /// The transcript line after entry `idx`'s last row.
+    pub fn entry_end(&self, idx: usize) -> Option<usize> {
+        self.recs.get(idx).map(|r| r.lines)
+    }
+
     pub fn key_at(&self, idx: usize) -> Option<u64> {
         self.recs.get(idx).map(|r| r.key)
     }
@@ -167,6 +172,11 @@ impl Hasher {
                 self.u64(8);
                 self.str(label);
                 self.str(text);
+            }
+            // Its rows are the project's: the renderer adds the version of its state to the key.
+            Entry::Project { id } => {
+                self.u64(10);
+                self.str(id);
             }
             // Rare and small: their debug text is every field.
             Entry::Usage { .. } | Entry::Brief { .. } | Entry::File { .. } | Entry::Timings(_) | Entry::Seq(_) => {

@@ -218,6 +218,9 @@ pub struct Theme {
     green: Color,
     amber: Color,
     red: Color,
+    /// **In flight**: running items, steps and agents, a live duration, a recommendation to keep
+    /// going. The `Tone::Info` blue of the project view-model, #7fa8dd.
+    info: Color,
     /// Foreground weight 2 of 3. Body text is weight 1 and is the terminal's own (`Reset`).
     dim: Color,
     /// Foreground weight 3 of 3.
@@ -305,6 +308,7 @@ impl Theme {
             green: pick(depth, (0x8F, 0xD4, 0xA8), 114, Color::Green),
             amber: pick(depth, (0xD6, 0xA9, 0x5F), 179, Color::Yellow),
             red: pick(depth, (0xDD, 0x7F, 0x85), 174, Color::Red),
+            info: pick(depth, (0x7F, 0xA8, 0xDD), 110, Color::Blue),
             dim: pick(depth, (0x6A, 0x64, 0x80), 242, Color::DarkGray),
             dimmer: pick(depth, (0x4A, 0x44, 0x60), 238, Color::DarkGray),
             depth,
@@ -351,6 +355,7 @@ impl Theme {
             self.green,
             self.amber,
             self.red,
+            self.info,
             self.dim,    // weight 2
             self.dimmer, // weight 3
         ]
@@ -398,6 +403,11 @@ impl Theme {
     /// hole exactly where `declared_colours` does not, and the two would disagree.
     pub fn structure_dim(&self) -> Color {
         self.structure_dim
+    }
+
+    /// The in-flight blue, #7fa8dd.
+    pub fn info(&self) -> Color {
+        self.info
     }
 
     /// Foreground weight 2 of 3, as a colour rather than a `Style`.

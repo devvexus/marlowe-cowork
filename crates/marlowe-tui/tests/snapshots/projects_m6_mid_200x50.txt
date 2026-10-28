@@ -1,0 +1,50 @@
+ * marlowe — ai models                                                                                                                                                      teams ○  1 run · 0 need you
+╭ Conversation · ai models ────────────────────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ───────────────────────────────────────────────────╮
+│  you  Run the web research team task. Focus on the latest upcoming AI models, specificially new Kimi models, deepseek, and qwen4.        ││ Claude Sonnet 4.5 ▾                               medium │
+│       Compile a report md and send it to me when you are done                                                                            ││ ctx ─────────────────┊────── 0 / 200k · cloud            │
+│  Project initialized for research into upcoming Kimi, DeepSeek and Qwen4 model releases—covering specifications, release timelines and   │╰──────────────────────────────────────────────────── (m) ─╯
+│  benchmark comparisons across four dimensions as outlined. It will read up to 60 public pages within resource limits once you approve    │╭ Workspace ───────────────────────────────────────────────╮
+│  the plan. Do I have approval to proceed?                                                                                                ││ C:/work/valiance ▾                                       │
+│                                                                                                                                          │╰──────────────────────────────────────────────────── (w) ─╯
+│  ● p_fac325c3 · research · Compile a comprehensive report on latest upcoming AI models,                                 ⣀⣷⣷⣷⣷⣷ 00:01:42  │╭ Projects ──────────────────────────────────── 1 running ─╮
+│     ✓  Plan ············· approved · 4 questions                                                                               00:00:03  ││ ● Compile a comprehensive repo… 1:42 DC 63/83 DV 16/40   │
+│     ●  DataCollection ··· 63/83  vectors 4 · search 4 · fetch 40 (✗3 –2) · analyze 15 ●1 ○19                                             │╰──────────────────────────────────────────────────── (1) ─╯
+│     ●  DataValidation ··· 16/40  extract 13 ○22 · condense 3 ●2 · 2 waiting                                                              │╭ Watch ───────────────────────────────────────────────────╮
+│     ◆  in flight ········ a_22 analyst 00:00:14 · a_24 condenser 00:00:02 · a_25 condenser 00:00:01                                      ││ nothing watched                                          │
+│     ○  Thinking · Report · Finish                                                                                                        ││                                                          │
+│     Sources 16:  ! Critical 7  ● High 4  ○ Low 4  +1 running    Claims 15:  +15 running    Agents 25:  done 22  running 3                ││                                                          │
+│     checkin now   cancel   alt-p keys                                                                                                    ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          ││                                                          │
+│                                                                                                                                          │╰──────────────────────────────────────────────────── (2) ─╯
+│                                                                                                                                          │╭ Threads ─────────────────────────────────────────────────╮
+│                                                                                                                                          ││ no open threads                                          │
+│                                                                                                                                          │╰──────────────────────────────────────────────────── (3) ─╯
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ──────────────────────────────────────────────────╮
+╭ Message ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                                   │
+│ › message Marlowe…                                                                                                ⇧↵ newline · esc boxes ││ nothing recalled this session                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-p Projects  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ⇧tab Mode  ^t Thinking  alt-v Voice  ^k palette                          Friday 9 October · 21:40

@@ -1,0 +1,30 @@
+ * marlowe — ai models                                                                     teams ○  0 runs · 0 need you
+╭ Conversation · ai models ──────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────╮
+│  There are conflicting reports on Qwen-4's actual release—it appears some     │││ Claude Sonnet 4.5 ▾         medium │
+│  sources treat it as finalized pre-release while others suggest ongoing       │││ ctx ─────────┊─── 0 / 200k · cloud │
+│  training and no shipping date yet. Similarly, Kimi K3/K3.1 versus DeepSeek   ││╰────────────────────────────── (m) ─╯
+│  V4 launch windows don't align across coverage. The project is at a decision  ││╭ Workspace ─────────────────────────╮
+│  point: should I approve these findings (acknowledging the inconsistencies),  │││ C:/work/valiance ▾                 │
+│  keep researching through them to resolve conflicts, adjust the research      ││╰────────────────────────────── (w) ─╯
+│  focus on whichever signals appear most credible, or cancel?                  ││╭ 1 Projects 2 3 4 ──────────────────╮
+│  ↳ project p_decd28c7 · needs you                                             │││ ✓ Compile comprehe… 22:49 medium   │
+│  The research has good data on Kimi K3 and DeepSeek-V releases but finds      │││                                    │
+│  mixed signals for Qwen-4—some sources claim pre-release training while       │││                                    │
+│  others show no official archives entry for it at all. Should I approve these │││                                    │
+│  findings as they stand, keep researching to resolve the Qwen contradictions, │││                                    │
+│  steer toward clearer models instead, or cancel?                              █││                                    │
+│  ↳ project p_decd28c7 · finished                                              █││                                    │
+│  ✓ p_decd28c7 · research · finished · 00:22:49 · medium confidence            █││                                    │
+│  ▏ ✗ not written: section 4, answer 1 · the model call failed (bad_request) … █││                                    │
+│  ▏ verified claims 52 · sources cited 0 · cited sentences 0 · removed senten… █││                                    │
+│  ▏ Model name      Release status                                             █││                                    │
+│  ▏ DeepSeek/Dense  fully_available                                            █││                                    │
+│  ▏ Kimi/Kimilab    fully_available                                            █││                                    │
+│  ▏ Qwen/Alibaba    released_beta                                              █││                                    │
+│  ▏ report  …aa9bc52\scratchpad\projects\m1\home\projects\p_decd28c7\report.md █││                                    │
+│    read report                                                12 failed items █││                                    │
+╰────────────────────────────────────────────────────────────────────────── (c) ─╯│                                    │
+╭ Message ───────────────────────────────────────────────────────────────────────╮│                                    │
+│ › message Marlowe…                                      ⇧↵ newline · esc boxes ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────── (1-4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette      21:40

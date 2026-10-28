@@ -3642,6 +3642,7 @@ dependencies = [
  "marlowe-hw",
  "marlowe-model",
  "marlowe-os",
+ "marlowe-project",
  "marlowe-proto",
  "marlowe-surface",
  "marlowe-typeset",

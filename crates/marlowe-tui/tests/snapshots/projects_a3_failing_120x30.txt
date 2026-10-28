@@ -1,0 +1,30 @@
+ * marlowe — ai models                                                                      teams ○  1 run · 0 need you
+╭ Conversation · ai models ──────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────╮
+│  (note: I think you meant 3.5), but context window specifications remain only │││ Claude Sonnet 4.5 ▾         medium │
+│  partially verified from incomplete sources. Do you want me to approve the    │││ ctx ─────────┊─── 0 / 200k · cloud │
+│  current state, keep researching benchmarks, steer with specific priorities,  ││╰────────────────────────────── (m) ─╯
+│  or cancel?                                                                   ││╭ Workspace ─────────────────────────╮
+│  ↳ project p_a09fb60d · needs you                                             │││ C:/work/valiance ▾                 │
+│  The interns delivered Kimi K3.1 Pro details and Qwen3.5-Max specs but left   ││╰────────────────────────────── (w) ─╯
+│  three holes: no confirmed upcoming roadmap from Alibaba's Qwen lab (only     ││╭ 1 Projects 2 3 4 ────── 1 running ─╮
+│  current capabilities), missing context-window numbers across the board, and  │││ ● Compile com… 10:09 Report 0/10   │
+│  DeepSeek's newest announcements lack independent verification. The lead      │││                                    │
+│  recommends we keep researching these gaps before finalizing the report—shall │││                                    │
+│  I approve the incomplete version for now, continue searching specifically    │││                                    │
+│  for those roadmaps and benchmarks, or steer with tighter priorities like     █││                                    │
+│  "Qwen roadmap only" or "Kimi/DeepSeek context windows first"?                █││                                    │
+│                                                                               █││                                    │
+│  ● p_a09fb60d · research · Compile comprehensive report on…   ⣄⣄⣄⣄⣄⣄ 00:10:09 █││                                    │
+│     ✓  round 1 ······ 5 phases                                                █││                                    │
+│     ✓  round 2 ······ 5 phases                                                █││                                    │
+│     ✓  round 3 ······ 4 phases                                                █││                                    │
+│     ●  Report ······· 0/10  sections 0 ●4 ○6 · 4 waiting                      █││                                    │
+│     ◆  in flight ···· a_100 writer 00:00:00 · a_101 writer 00:00:00 · a_102 … █││                                    │
+│     ○  Finish                                                                 █││                                    │
+│     Sources 53: !8 ●4 ◐4 ○12 ×25   Claims 20: ✓16 ~2 ?2                       █││                                    │
+│     checkin now   cancel   alt-p keys                                         █││                                    │
+╰────────────────────────────────────────────────────────────────────────── (c) ─╯│                                    │
+╭ Message ───────────────────────────────────────────────────────────────────────╮│                                    │
+│ › message Marlowe…                                      ⇧↵ newline · esc boxes ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────── (1-4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-p Projects  ^w Watch  ^g Memory  ^l Library  ^k palette                 21:40
