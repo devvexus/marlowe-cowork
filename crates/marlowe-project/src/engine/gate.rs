@@ -66,6 +66,14 @@ pub trait ModelGate: Send + Sync {
     /// Waits for a slot of `model` and returns the permit to call it.
     fn enter(&self, model: &str, cancel: &CancelToken) -> Result<Permit, GateError>;
 
+    /// [`ModelGate::enter`], telling `note` why when the wait is for more than a free slot (the
+    /// GPU is busy with something else, Windows is short of memory). The text is harness-written
+    /// and shown on the waiting employee; a gate that never waits for such things need not
+    /// override this.
+    fn enter_noting(&self, model: &str, cancel: &CancelToken, _note: &mut dyn FnMut(&str)) -> Result<Permit, GateError> {
+        self.enter(model, cancel)
+    }
+
     /// How many calls of `model` can run at once from this project (a hint for the scheduler: it
     /// starts no more model tasks than this, so priority holds instead of threads queueing on the
     /// pool in arrival order). At least 1.

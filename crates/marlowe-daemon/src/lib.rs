@@ -151,6 +151,8 @@ pub struct DaemonConfig {
     /// How long after the last window disconnects without saying goodbye the daemon waits for
     /// one to reconnect before it stops everything (a closed window).
     pub close_grace: Duration,
+    /// How often a project that found no model at boot looks for one.
+    pub project_resume_poll: Duration,
 }
 
 impl Default for DaemonConfig {
@@ -166,6 +168,7 @@ impl Default for DaemonConfig {
             legacy_offer: true,
             local_polish: false,
             close_grace: Duration::from_secs(2),
+            project_resume_poll: Duration::from_secs(5),
         }
     }
 }

@@ -182,6 +182,32 @@ fn edits_keep_comments_and_validate() {
 }
 
 #[test]
+fn project_models_are_unset_by_default_and_read_from_the_user_file() {
+    let t = Tmp::new("project-models");
+    let home = t.0.join("home");
+    let s = Settings::load(&home, None, None);
+    assert_eq!((s.project_employee_model(), s.project_lead_model()), (None, None), "default: the conversation's model");
+    write(&home.join("settings.toml"), "[projects.model]
+employee = \" marlowe-mini:4b-super \"
+lead = \"conversation\"
+");
+    let s = Settings::load(&home, None, None);
+    assert_eq!(s.project_employee_model().as_deref(), Some("marlowe-mini:4b-super"));
+    assert_eq!(s.project_lead_model(), None, "a word that means the conversation's model is no setting");
+    // A repository's file cannot send a project's content to another model, trusted or not.
+    let ws = t.0.join("ws");
+    write(&ws.join(".marlowe/settings.toml"), "[projects.model]
+lead = \"openrouter/some/model\"
+");
+    let s = Settings::load(&home, Some(&ws), None);
+    assert_eq!(s.project_employee_model().as_deref(), Some("marlowe-mini:4b-super"));
+    assert_eq!(s.project_lead_model(), None);
+    // The setting key is writable like any other.
+    edit::set_key(&home.join("settings.toml"), "projects.model.lead", &json!("marlowe-dawn:9b-super")).unwrap();
+    assert_eq!(Settings::load(&home, None, None).project_lead_model().as_deref(), Some("marlowe-dawn:9b-super"));
+}
+
+#[test]
 fn retrust_after_a_user_edit_keeps_a_trusted_project_trusted() {
     let t = Tmp::new("retrust");
     let home = t.0.join("home");

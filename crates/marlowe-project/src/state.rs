@@ -431,6 +431,8 @@ pub struct Gate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentStatus {
+    /// Waiting for a place to call from: a model slot, the GPU, memory (`Agent::note` says which).
+    Waiting,
     /// In a call.
     Running,
     /// Returned a valid form.
@@ -472,6 +474,9 @@ pub struct Agent {
     pub started_ms: u64,
     /// When it ended.
     pub ended_ms: Option<u64>,
+    /// What a `waiting` agent waits for ("waiting for the GPU"); cleared when its call starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// Fetch outcomes so far.

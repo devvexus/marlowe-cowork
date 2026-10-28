@@ -30,6 +30,7 @@ use super::exec::{run_task, MergeTask, Shared, Task};
 use super::functions::{Effect, GateCard, GateCtx, Toolbox};
 use super::gate::ModelGate;
 use super::index::{Index, ItemInfo, PhaseInfo};
+use super::machine::{Machine, MachineProbe, Rounded};
 use super::record::{answer_key, merge_key, task_key, Outcome, Record};
 use super::runner::RunnerConfig;
 use crate::actor::{ActorError, ProjectHandle};
@@ -90,6 +91,10 @@ pub struct EngineConfig {
     pub window_room: Option<u32>,
     /// How often the loop looks up when nothing happens (cancel, budgets, forced checkins).
     pub poll: Duration,
+    /// Reads the machine's load for the project's meters; `None` leaves them at zero.
+    pub probe: Option<Arc<dyn MachineProbe>>,
+    /// How often the probe is read while the engine runs.
+    pub probe_every: Duration,
     /// The clock; tests pass a fixed one.
     pub clock: fn() -> u64,
 }
@@ -106,6 +111,8 @@ impl EngineConfig {
             runner: RunnerConfig::default(),
             window_room: None,
             poll: Duration::from_millis(25),
+            probe: None,
+            probe_every: Duration::from_secs(2),
             clock: crate::ids::now_ms,
         }
     }
@@ -252,6 +259,9 @@ struct Rt {
     touched: bool,
     began: Instant,
     base_active_ms: u64,
+    /// The next time the probe is read, and what was last written (whole numbers).
+    next_probe: Instant,
+    machine: Option<Rounded>,
 }
 
 /// A handle to an engine running on its own thread.
@@ -428,6 +438,10 @@ impl Engine {
             touched: false,
             began: Instant::now(),
             base_active_ms: st.metrics.active_ms,
+            // The first reading comes one interval in: a run that parks at once never writes a meter.
+            next_probe: Instant::now() + self.cfg.probe_every,
+            // Numbers a run that died left behind are this run's to clear.
+            machine: Some(Rounded::of(Machine { cpu_pct: st.metrics.cpu_pct, gpu_pct: st.metrics.gpu_pct, vram_mb: st.metrics.vram_mb })).filter(|m| *m != Rounded::default()),
         };
         for p in &st.phases {
             if let Some(spec) = self.registry.phase_spec(&p.ty) {
@@ -451,6 +465,10 @@ impl Engine {
 
         let outcome = self.drive(&sh, &mut rt);
         self.cancel_stragglers_if_needed(&mut rt);
+        // A project that no longer runs uses nothing: its meters go back to zero.
+        if rt.machine.is_some_and(|m| m != Rounded::default()) {
+            let _ = self.handle.send(Rounded::default().mutation());
+        }
         // Booked once, whatever the outcome: running time (parked time excluded) is what the
         // minutes budget counts.
         rt.metrics.active_ms = rt.base_active_ms + rt.began.elapsed().as_millis() as u64;
@@ -490,9 +508,10 @@ impl Engine {
         for it in st.items.values().filter(|i| i.status == ItemStatus::Running) {
             self.mutate(Mutation::UpdateItem { id: it.id.clone(), update: ItemUpdate { status: Some(ItemStatus::Queued), ..Default::default() } })?;
         }
-        for a in st.agents.values().filter(|a| a.status == AgentStatus::Running) {
+        for a in st.agents.values().filter(|a| matches!(a.status, AgentStatus::Running | AgentStatus::Waiting)) {
             let mut a = a.clone();
             a.status = AgentStatus::Failed;
+            a.note = None;
             a.ended_ms = Some((self.cfg.clock)());
             self.mutate(Mutation::PutAgent(Box::new(a)))?;
         }
@@ -521,6 +540,7 @@ impl Engine {
                 self.launch(sh, rt)?;
             }
             self.sync_counts(rt, &idx)?;
+            self.sample_machine(rt);
             if rt.metrics_dirty {
                 rt.metrics_dirty = false;
                 rt.metrics.active_ms = rt.base_active_ms + rt.began.elapsed().as_millis() as u64;
@@ -550,6 +570,21 @@ impl Engine {
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return Err("the engine's channel closed".into()),
             }
+        }
+    }
+
+    /// Reads the machine's load when it is due and writes it when the whole numbers changed, so
+    /// the state actor coalesces a handful of patches a second at most.
+    fn sample_machine(&self, rt: &mut Rt) {
+        let Some(probe) = self.cfg.probe.as_ref() else { return };
+        if Instant::now() < rt.next_probe {
+            return;
+        }
+        rt.next_probe = Instant::now() + self.cfg.probe_every;
+        let now = Rounded::of(probe.sample());
+        if rt.machine != Some(now) {
+            rt.machine = Some(now);
+            let _ = self.handle.send(now.mutation());
         }
     }
 
@@ -1533,9 +1568,10 @@ impl Engine {
         for it in st.items.values().filter(|i| matches!(i.status, ItemStatus::Queued | ItemStatus::Running)) {
             self.mutate(Mutation::UpdateItem { id: it.id.clone(), update: ItemUpdate { status: Some(ItemStatus::Cancelled), ..Default::default() } })?;
         }
-        for a in st.agents.values().filter(|a| a.status == AgentStatus::Running) {
+        for a in st.agents.values().filter(|a| matches!(a.status, AgentStatus::Running | AgentStatus::Waiting)) {
             let mut a = a.clone();
             a.status = AgentStatus::Failed;
+            a.note = None;
             a.ended_ms = Some(now);
             self.mutate(Mutation::PutAgent(Box::new(a)))?;
         }

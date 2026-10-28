@@ -27,7 +27,7 @@ struct Host {
 
 impl ProjectHost for Host {
     fn parts(&self, _state: &ProjectState) -> Result<RunParts, String> {
-        Ok(RunParts { provider: self.model.clone(), gate: Arc::new(self.pool.clone()), toolbox: Arc::new(research::toolbox(&self.rig.deps)), config: config("mini") })
+        Ok(RunParts { provider: self.model.clone(), gate: Arc::new(self.pool.clone()), toolbox: Arc::new(research::toolbox(&self.rig.deps)), config: config("mini"), notice: None })
     }
 
     fn event(&self, event: ProjectEvent) {

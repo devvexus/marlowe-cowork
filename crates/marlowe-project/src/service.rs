@@ -102,6 +102,9 @@ pub struct RunParts {
     pub toolbox: Arc<Toolbox>,
     /// Models, lanes, budgets.
     pub config: EngineConfig,
+    /// One line for the user when the run is not on the models the settings ask for (a second
+    /// model that does not fit beside the first); told once when the engine starts.
+    pub notice: Option<String>,
 }
 
 /// A project that ended, for the host to tell the conversation about.
@@ -125,6 +128,17 @@ pub struct Ended {
 pub trait ProjectHost: Send + Sync {
     /// The model and gate a run uses now, or why there is none. Never blocks long.
     fn parts(&self, state: &ProjectState) -> Result<RunParts, String>;
+
+    /// [`ProjectHost::parts`] for a project that starts without the user asking: boot recovery and
+    /// the retry that waits for a model to appear. It must not load a model the user has not seen
+    /// load. A host with no such rule keeps this default.
+    fn quiet_parts(&self, state: &ProjectState) -> Result<RunParts, String> {
+        self.parts(state)
+    }
+
+    /// A line for the user about the project `project` (the model fallback). Called once per
+    /// engine start that has one.
+    fn notice(&self, _project: &str, _text: &str) {}
 
     /// A state event (patches, a gate raised or answered). Called from one forwarder thread.
     fn event(&self, event: ProjectEvent);
@@ -183,7 +197,22 @@ struct Inner {
     cfg: ServiceConfig,
     host: Arc<dyn ProjectHost>,
     live: Mutex<HashMap<String, Live>>,
+    /// Projects whose engine is being started: two starts of one project (the user's answer and
+    /// the retry that waits for a model) never both get through.
+    starting: Mutex<std::collections::HashSet<String>>,
     events: Sender<ProjectEvent>,
+}
+
+/// The right to start one project's engine; given back on drop.
+struct Claim<'a> {
+    inner: &'a Inner,
+    id: String,
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        lock(&self.inner.starting).remove(&self.id);
+    }
 }
 
 /// The projects of one Marlowe home. Cheap to clone; every clone is the same service.
@@ -207,7 +236,7 @@ impl ProjectService {
                 h.event(ev);
             }
         })?;
-        Ok(ProjectService { inner: Arc::new(Inner { cfg, host, live: Mutex::new(HashMap::new()), events }) })
+        Ok(ProjectService { inner: Arc::new(Inner { cfg, host, live: Mutex::new(HashMap::new()), starting: Mutex::new(Default::default()), events }) })
     }
 
     /// The registry projects are made from.
@@ -250,7 +279,7 @@ impl ProjectService {
             let _ = store.link_workspace(&id, ws);
         }
         let created = Created { id: id.clone(), card: plan_text(&state.plan, &id), plan: card_json(&state.plan) };
-        self.start_run(state, None)?;
+        self.start_run(state, None, false)?;
         Ok(created)
     }
 
@@ -277,7 +306,7 @@ impl ProjectService {
         let created = Created { id: id.to_string(), card: plan_text(&state.plan, id), plan: card_json(&state.plan) };
         let full = serde_json::to_value(&state).unwrap_or(Value::Null);
         let _ = self.inner.events.send(ProjectEvent::Replaced { project: id.to_string(), rev: state.rev, state: full });
-        self.start_run(state, None)?;
+        self.start_run(state, None, false)?;
         Ok(created)
     }
 
@@ -311,7 +340,7 @@ impl ProjectService {
             return Err(ProjectError::Answer(format!("`{choice}` needs the user's words in `text`.")));
         }
         let (gate_id, is_plan) = (open.id.clone(), open.kind == crate::state::GateKind::Plan);
-        self.start_run(state, Some((gate_id.clone(), choice.to_string(), text.map(str::to_string))))?;
+        self.start_run(state, Some((gate_id.clone(), choice.to_string(), text.map(str::to_string))), false)?;
         let line = match choice {
             "approve" if is_plan => format!("{id} is approved and running. It works in the background; its result will be posted here when it finishes."),
             "approve" => format!("{id} is writing its report. The result will be posted here when it finishes."),
@@ -385,7 +414,7 @@ impl ProjectService {
         })?;
         let _ = std::fs::remove_file(store.dir(id)?.join(RELAYED));
         let line = format!("{id} reopened from {label}; it runs again.");
-        self.start_run(state, None)?;
+        self.start_run(state, None, false)?;
         Ok(line)
     }
 
@@ -451,7 +480,7 @@ impl ProjectService {
 
     /// Starts the engine of a project that was running when the process stopped and could not be
     /// resumed then (no model was loaded). Does nothing for a project that runs, is parked on a
-    /// card or has ended.
+    /// card or has ended. Loads no model: with none available it fails and can be tried again.
     pub fn resume(&self, id: &str) -> Result<(), ProjectError> {
         if self.is_running(id) {
             return Ok(());
@@ -461,16 +490,37 @@ impl ProjectService {
         if state.status.is_terminal() || state.open_gate().is_some() {
             return Ok(());
         }
-        self.start_run(state, None)
+        match self.start_run(state, None, true) {
+            // Another caller got there first: the project runs, which is what was asked.
+            Err(e) if e == ProjectError::State(format!("{id} is already running")) => Ok(()),
+            other => other,
+        }
+    }
+
+    /// Running projects that have no engine, with the reason the last start failed left to the
+    /// caller: a project whose model was missing at boot is listed until [`ProjectService::resume`]
+    /// starts it.
+    pub fn waiting_for_a_model(&self) -> Vec<String> {
+        let Ok(rows) = self.rows() else { return Vec::new() };
+        rows.into_iter().filter(|r| r.status == "running" && !self.is_running(&r.id)).map(|r| r.id).collect()
+    }
+
+    fn claim(&self, id: &str) -> Option<Claim<'_>> {
+        if lock(&self.inner.live).contains_key(id) || !lock(&self.inner.starting).insert(id.to_string()) {
+            return None;
+        }
+        Some(Claim { inner: &self.inner, id: id.to_string() })
     }
 
     /// Starts an engine for `state`, first applying `answer` (gate, choice, text) when given.
-    fn start_run(&self, state: ProjectState, answer: Option<(String, String, Option<String>)>) -> Result<(), ProjectError> {
+    /// `quiet`: nobody asked for it just now, so no model may be loaded for it.
+    fn start_run(&self, state: ProjectState, answer: Option<(String, String, Option<String>)>, quiet: bool) -> Result<(), ProjectError> {
         let id = state.id.clone();
-        if lock(&self.inner.live).contains_key(&id) {
+        let Some(_claim) = self.claim(&id) else {
             return Err(ProjectError::State(format!("{id} is already running")));
-        }
-        let parts = self.inner.host.parts(&state).map_err(ProjectError::NoModel)?;
+        };
+        let parts = if quiet { self.inner.host.quiet_parts(&state) } else { self.inner.host.parts(&state) }.map_err(ProjectError::NoModel)?;
+        let notice = parts.notice.clone();
         let actor = ProjectActor::spawn(self.store()?, state, self.inner.events.clone(), self.inner.cfg.actor).map_err(|e| ProjectError::Other(e.to_string()))?;
         let handle = actor.handle();
         if let Some((gate, choice, text)) = answer {
@@ -489,6 +539,9 @@ impl ProjectService {
             }
         };
         lock(&self.inner.live).insert(id.clone(), Live { actor: Some(actor), handle, control });
+        if let Some(text) = notice {
+            self.inner.host.notice(&id, &text);
+        }
         let me = self.clone();
         let watcher = std::thread::Builder::new().name(format!("project-watch-{id}")).spawn(move || {
             let outcome = run.join();
@@ -573,7 +626,7 @@ impl ProjectService {
                 out.parked.push(state.id.clone());
                 continue;
             }
-            match self.start_run(state, None) {
+            match self.start_run(state, None, true) {
                 Ok(()) => out.resumed.push(row.id),
                 Err(e) => out.stuck.push((row.id, e.to_string())),
             }

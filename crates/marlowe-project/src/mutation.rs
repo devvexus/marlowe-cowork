@@ -195,6 +195,16 @@ pub enum Mutation {
     SetMetrics(Metrics),
     /// Replace the grants.
     SetGrants(Grants),
+    /// The machine's load: the three numbers a probe reads while the engine runs. Nothing else of
+    /// `metrics` changes.
+    SetMachine {
+        /// CPU in use, percent of the machine.
+        cpu_pct: f64,
+        /// GPU in use, percent.
+        gpu_pct: f64,
+        /// GPU memory in use, MB.
+        vram_mb: u64,
+    },
     /// What the engine owns of the live numbers: tokens, running time and budget raises. The
     /// other numbers (fetch counts, machine load) are left as they are.
     SetRunMetrics {
@@ -303,7 +313,7 @@ impl ProjectState {
             Mutation::PushGate(_) | Mutation::AnswerGate { .. } => vec![Part::Top("gates")],
             Mutation::SetMetrics(_) => vec![Part::Top("metrics")],
             Mutation::SetGrants(_) => vec![Part::Top("grants")],
-            Mutation::SetRunMetrics { .. } => vec![Part::Top("metrics")],
+            Mutation::SetRunMetrics { .. } | Mutation::SetMachine { .. } => vec![Part::Top("metrics")],
             Mutation::AddFetch { .. } => vec![Part::Top("metrics"), Part::Top("grants")],
             Mutation::SetTainted(_) => vec![Part::Top("tainted")],
         }
@@ -483,6 +493,11 @@ impl ProjectState {
             }
             Mutation::SetMetrics(m) => self.metrics = m,
             Mutation::SetGrants(g) => self.grants = g,
+            Mutation::SetMachine { cpu_pct, gpu_pct, vram_mb } => {
+                self.metrics.cpu_pct = cpu_pct;
+                self.metrics.gpu_pct = gpu_pct;
+                self.metrics.vram_mb = vram_mb;
+            }
             Mutation::SetRunMetrics { tokens, active_ms, budget_raises } => {
                 self.metrics.tokens = tokens;
                 self.metrics.active_ms = active_ms;
@@ -611,6 +626,7 @@ mod tests {
                 tokens: Tokens::default(),
                 started_ms: 2_000,
                 ended_ms: None,
+                note: None,
             })),
             Mutation::AssignAgent { item: id.clone(), agent: "a_1".into() },
             Mutation::UpdateItem { id: id.clone(), update: ItemUpdate { data: Some(done_data()), status: Some(ItemStatus::Done), ..ItemUpdate::default() } },
@@ -632,6 +648,7 @@ mod tests {
             Mutation::SetMetrics(Metrics { cpu_pct: 12.5, ..Metrics::default() }),
             Mutation::AddFetch { ok: 2, failed: 1, blocked: 1, used: 3 },
             Mutation::SetRunMetrics { tokens: Tokens { input: 5, out: 6 }, active_ms: 7, budget_raises: 1 },
+            Mutation::SetMachine { cpu_pct: 41.0, gpu_pct: 77.0, vram_mb: 9_000 },
             Mutation::SetTainted(true),
             Mutation::SetStatus(ProjectStatus::Running),
             Mutation::SetStatus(ProjectStatus::Finished),
@@ -781,5 +798,18 @@ mod tests {
     #[test]
     fn pointer_segments_are_escaped() {
         assert_eq!(escape_segment("a/b~c"), "a~1b~0c");
+    }
+
+    #[test]
+    fn the_machine_load_changes_three_numbers_and_nothing_else_of_the_metrics() {
+        let mut st = sample();
+        st.apply(Mutation::AddFetch { ok: 3, failed: 0, blocked: 0, used: 3 }, 10).unwrap();
+        st.apply(Mutation::SetRunMetrics { tokens: Tokens { input: 9, out: 4 }, active_ms: 77, budget_raises: 2 }, 11).unwrap();
+        let a = st.apply(Mutation::SetMachine { cpu_pct: 41.0, gpu_pct: 77.0, vram_mb: 9_000 }, 12).unwrap();
+        let paths: Vec<&str> = a.patches.iter().map(|p| p.path.as_str()).collect();
+        assert!(paths.contains(&"/metrics/cpu_pct") && paths.contains(&"/metrics/gpu_pct") && paths.contains(&"/metrics/vram_mb"), "{paths:?}");
+        assert!(!paths.iter().any(|p| p.starts_with("/metrics/fetch") || p.starts_with("/metrics/tokens") || p.contains("active_ms")), "{paths:?}");
+        let m = st.metrics;
+        assert_eq!((m.cpu_pct, m.gpu_pct, m.vram_mb, m.fetch.ok, m.tokens.input, m.active_ms, m.budget_raises), (41.0, 77.0, 9_000, 3, 9, 77, 2));
     }
 }

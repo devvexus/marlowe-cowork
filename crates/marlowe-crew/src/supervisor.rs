@@ -59,6 +59,9 @@ pub type GpuBusy = Arc<dyn Fn() -> bool + Send + Sync>;
 /// default to. Must not block.
 pub type SessionModel = Arc<dyn Fn(&SessionId) -> Option<ModelRef> + Send + Sync>;
 
+/// What a run or a project employee shows while it is held because the GPU is busy.
+pub(crate) const GPU_WAIT: &str = "waiting for the GPU";
+
 /// Characters of a sender id kept.
 const MAX_SENDER: usize = 80;
 /// Characters of a run-inbox message kept.
@@ -94,6 +97,8 @@ pub struct CrewConfig {
     pub memory_wait: Duration,
     /// Reads the commit memory ([`marlowe_os::memory::commit`]; tests fake it).
     pub commit: fn() -> Option<marlowe_os::memory::Commit>,
+    /// How often a call held for a busy GPU looks again.
+    pub gpu_poll: Duration,
 }
 
 impl Default for CrewConfig {
@@ -106,6 +111,7 @@ impl Default for CrewConfig {
             commit_floor: 2 << 30,
             memory_wait: Duration::from_secs(60),
             commit: marlowe_os::memory::commit,
+            gpu_poll: Duration::from_secs(1),
         }
     }
 }
@@ -224,6 +230,15 @@ impl Drop for LocalStream {
     }
 }
 
+/// Why a project employee's call was not admitted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallHold {
+    /// The caller stopped waiting (the project was cancelled).
+    Cancelled,
+    /// The machine cannot take the call; the words are for the user.
+    Refused(String),
+}
+
 /// One run's live controls. Cancel is final; pause and stop end the run thread at its next step
 /// boundary (stop = shutdown, the store keeps the run `running` so the next start resumes it).
 /// `user_cancel` marks a cancel the user asked for, which outranks pause and stop when the run
@@ -283,7 +298,7 @@ pub(crate) struct Choice {
 }
 
 /// Whether `name` (a full ref, or a model id with or without `:latest`) names `model`.
-fn same_name(model: &ModelRef, name: &str) -> bool {
+pub fn same_name(model: &ModelRef, name: &str) -> bool {
     let norm = |s: &str| {
         let s = s.trim().to_ascii_lowercase();
         if s.contains(':') { s } else { format!("{s}:latest") }
@@ -309,6 +324,39 @@ impl Inner {
 
     pub(crate) fn store(&self) -> MutexGuard<'_, RunStore> {
         lock(&self.store)
+    }
+
+    /// Holds a new call on a local model while Windows is short of commit memory (the runner's
+    /// cache grows with each new prompt, and at the limit every process on the machine, the daemon
+    /// and the runner included, fails its next allocation). `interrupt` is looked at every quarter
+    /// second and may end the wait; `say` hears why the call waits. Fails the call with the reason
+    /// when memory does not come back within `memory_wait`.
+    pub(crate) fn wait_for_commit(&self, model: &ModelRef, interrupt: &mut dyn FnMut() -> Result<(), CrewError>, say: &dyn Fn(&str)) -> Result<(), CrewError> {
+        let cfg = &self.cfg;
+        let short = || (cfg.commit)().filter(|c| c.available < cfg.commit_floor);
+        let Some(mut c) = short() else { return Ok(()) };
+        let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
+        say(&format!("waiting for memory: Windows has {:.1} GB of commit left", gb(c.available)));
+        let end = Instant::now() + cfg.memory_wait;
+        while Instant::now() < end {
+            interrupt()?;
+            std::thread::sleep(Duration::from_millis(250).min(cfg.memory_wait));
+            match short() {
+                None => return Ok(()),
+                Some(now) => c = now,
+            }
+        }
+        Err(CrewError::Step {
+            step: model.to_string(),
+            message: format!(
+                "Windows is out of memory: {:.1} GB of its {:.0} GB commit limit is left, under the {:.1} GB a model call \
+                 needs to be safe (the local model's runner grows with each new prompt). Close programs, unload models or \
+                 enlarge the page file, then resume",
+                gb(c.available),
+                gb(c.limit),
+                gb(cfg.commit_floor)
+            ),
+        })
     }
 
     pub(crate) fn emit(&self, ev: CrewEvent) {
@@ -836,6 +884,32 @@ log={log_len}
             }
             n = inner.local_free.wait_timeout(n, Duration::from_millis(100)).unwrap_or_else(|e| e.into_inner()).0;
         }
+    }
+
+    /// A place for one model call of a project's employee on local `model`, under the rules a crew
+    /// run's calls follow: held while another process is computing on the GPU (`say` hears
+    /// "waiting for the GPU"), held while Windows is short of commit memory (and refused with the
+    /// reason when it stays short for `memory_wait`), then one of the crew's stream slots, shared
+    /// with every run. `cancelled` ends any of the waits. The slot is freed when it drops.
+    pub fn acquire_local_call(&self, model: &ModelRef, cancelled: &dyn Fn() -> bool, say: &dyn Fn(&str)) -> Result<LocalStream, CallHold> {
+        let inner = &self.inner;
+        if (inner.deps.gpu_busy)() {
+            say(GPU_WAIT);
+            while (inner.deps.gpu_busy)() {
+                if cancelled() {
+                    return Err(CallHold::Cancelled);
+                }
+                std::thread::sleep(inner.cfg.gpu_poll);
+            }
+        }
+        let mut interrupt = || if cancelled() { Err(CrewError::Cancelled) } else { Ok(()) };
+        match inner.wait_for_commit(model, &mut interrupt, say) {
+            Ok(()) => {}
+            Err(CrewError::Cancelled | CrewError::Stopped) => return Err(CallHold::Cancelled),
+            Err(CrewError::Step { message, .. }) => return Err(CallHold::Refused(message)),
+            Err(other) => return Err(CallHold::Refused(other.to_string())),
+        }
+        self.acquire_local_stream(model, cancelled, say).ok_or(CallHold::Cancelled)
     }
 
     pub fn roles(&self) -> Vec<RoleInfo> {

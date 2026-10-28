@@ -23,6 +23,10 @@
 //! default = false         # new sessions start with Teams on
 //! size = 10               # specialists a team task stays under
 //!
+//! [projects.model]
+//! employee = "marlowe-mini:4b-super"   # project employees; default: the conversation's model
+//! lead = "marlowe-dawn:9b-super"       # the project's lead steps; default: the conversation's model
+//!
 //! [import]
 //! claude = true          # read .claude/settings.json (default)
 //! claude_user = false    # also ~/.claude/settings.json
@@ -49,6 +53,8 @@ pub struct SettingsFile {
     pub import: Import,
     #[serde(default)]
     pub teams: Teams,
+    #[serde(default)]
+    pub projects: Projects,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +86,24 @@ pub struct Teams {
     /// Specialists a team task should stay under (default 10).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u32>,
+}
+
+/// Project settings.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Projects {
+    #[serde(default)]
+    pub model: ProjectModels,
+}
+
+/// Which models a project's steps run on; unset means the conversation's model.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectModels {
+    /// The model of the employees (`projects.model.employee`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub employee: Option<String>,
+    /// The model of the lead steps (`projects.model.lead`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

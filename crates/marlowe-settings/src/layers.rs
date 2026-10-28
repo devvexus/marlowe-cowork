@@ -287,6 +287,24 @@ impl Settings {
         self.layers.iter().filter(|l| self.applies(l)).filter_map(|l| l.file.teams.size).last().unwrap_or(10).clamp(1, 100)
     }
 
+    /// The model project employees run on (`projects.model.employee`), when one is set: the
+    /// highest layer that applies. `None` is the conversation's model.
+    pub fn project_employee_model(&self) -> Option<String> {
+        self.project_model(|m| m.employee.as_deref())
+    }
+
+    /// The model project lead steps run on (`projects.model.lead`), when one is set.
+    pub fn project_lead_model(&self) -> Option<String> {
+        self.project_model(|m| m.lead.as_deref())
+    }
+
+    /// Only the user's own layers: a repository's file does not choose where a project's content goes.
+    fn project_model(&self, pick: impl Fn(&crate::file::ProjectModels) -> Option<&str>) -> Option<String> {
+        let words = ["", "default", "inherit", "conversation"];
+        let set = self.layers.iter().filter(|l| !l.source.project_scoped()).filter_map(|l| pick(&l.file.projects.model)).last()?.trim();
+        (!words.iter().any(|w| set.eq_ignore_ascii_case(w))).then(|| set.to_string())
+    }
+
     /// Hooks that run: from layers that apply, unless a layer that applies disables them all.
     pub fn hooks(&self) -> Vec<HookEntry> {
         if self.layers.iter().any(|l| self.applies(l) && l.file.disable_all_hooks) {

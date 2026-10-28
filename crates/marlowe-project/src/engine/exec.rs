@@ -287,32 +287,50 @@ struct AgentObs<'a> {
     agent: Agent,
     assign: Vec<String>,
     placeholder: Option<Item>,
+    /// The agent is on the screen (it waited for the GPU, or its first call started).
+    shown: bool,
 }
 
 impl AgentObs<'_> {
     fn put(&self) {
         let _ = self.sh.handle.send(Mutation::PutAgent(Box::new(self.agent.clone())));
     }
+
+    /// Puts the agent on the screen with its current status; the first time also starts its
+    /// clock and shows the item it works on.
+    fn show(&mut self) {
+        if std::mem::replace(&mut self.shown, true) {
+            return self.put();
+        }
+        self.agent.started_ms = self.sh.now();
+        if let Some(p) = self.placeholder.as_mut() {
+            p.status = ItemStatus::Running;
+            p.agents = vec![self.agent.id.clone()];
+            p.live.started_ms = Some(self.agent.started_ms);
+            let _ = self.sh.handle.send(Mutation::PutItem(Box::new(p.clone())));
+        }
+        self.put();
+        for id in &self.assign {
+            let _ = self.sh.handle.send(Mutation::AssignAgent { item: id.clone(), agent: self.agent.id.clone() });
+        }
+    }
 }
 
 impl Observer for AgentObs<'_> {
+    fn waiting(&mut self, why: &str) {
+        if self.agent.note.as_deref() == Some(why) {
+            return;
+        }
+        self.agent.status = AgentStatus::Waiting;
+        self.agent.note = Some(why.to_string());
+        self.show();
+    }
+
     fn started(&mut self, attempt: u32) {
         self.agent.attempt = attempt;
-        if attempt == 1 {
-            self.agent.started_ms = self.sh.now();
-            if let Some(p) = self.placeholder.as_mut() {
-                p.status = ItemStatus::Running;
-                p.agents = vec![self.agent.id.clone()];
-                p.live.started_ms = Some(self.agent.started_ms);
-                let _ = self.sh.handle.send(Mutation::PutItem(Box::new(p.clone())));
-            }
-            self.put();
-            for id in &self.assign {
-                let _ = self.sh.handle.send(Mutation::AssignAgent { item: id.clone(), agent: self.agent.id.clone() });
-            }
-        } else {
-            self.put();
-        }
+        self.agent.status = AgentStatus::Running;
+        self.agent.note = None;
+        self.show();
     }
 
     fn finished(&mut self, report: &AttemptReport) {
@@ -370,6 +388,7 @@ fn run_model(sh: &Shared, t: &Task, ctx: &Ctx, rec: &mut Record) -> Result<(Fini
         tokens: Tokens::default(),
         started_ms: 0,
         ended_ms: None,
+        note: None,
     };
     let placeholder = target_item(t, ctx, 0).filter(|it| step.emit.is_some() && it.id != ctx.input.item.as_ref().map_or("", |i| i.id.as_str()));
     let mut assign: Vec<String> = Vec::new();
@@ -379,7 +398,7 @@ fn run_model(sh: &Shared, t: &Task, ctx: &Ctx, rec: &mut Record) -> Result<(Fini
     if let Some(p) = &placeholder {
         assign.push(p.id.clone());
     }
-    let mut obs = AgentObs { sh, agent, assign, placeholder };
+    let mut obs = AgentObs { sh, agent, assign, placeholder, shown: false };
 
     let input = &ctx.input;
     let mut finish = |v: Value| -> Result<(Finished, Map<String, Value>), RuleFailure> {
@@ -392,6 +411,7 @@ fn run_model(sh: &Shared, t: &Task, ctx: &Ctx, rec: &mut Record) -> Result<(Fini
     };
     let result = run_employee(sh.provider.as_ref(), sh.gate.as_ref(), &sh.cancel, &sh.cfg.runner, &call, &mut finish, &mut obs);
     let mut agent = obs.agent;
+    agent.note = None;
     let usage = match &result {
         Ok(s) => s.usage,
         Err(f) => f.usage,

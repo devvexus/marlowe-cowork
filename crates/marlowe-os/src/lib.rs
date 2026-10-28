@@ -23,6 +23,8 @@
 pub mod bash;
 pub mod child;
 pub mod console;
+/// This process's share of the machine's processors ([`cpu::CpuMeter`]).
+pub mod cpu;
 /// Job Object internals. Public as a module so B's additions are reachable as
 /// `marlowe_os::job::X` without editing this file. [`spawn_in_job`] and
 /// [`spawn_in_job_with_flags`] skip the credential scrub: harness code starts children through

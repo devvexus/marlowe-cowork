@@ -651,6 +651,7 @@ fn item_value(item: &Item, by: &str, now_ms: u64) -> Option<String> {
 
 fn agent_status_word(s: AgentStatus) -> &'static str {
     match s {
+        AgentStatus::Waiting => "waiting",
         AgentStatus::Running => "running",
         AgentStatus::Done => "done",
         AgentStatus::Failed => "failed",
@@ -872,7 +873,7 @@ mod tests {
         let id = it.id.clone();
         st.apply(Mutation::PutAgent(Box::new(Agent {
             id: "a_17".into(), role: "analyst".into(), model: "m".into(), step: "analyze".into(), item: Some(id.clone()),
-            status: AgentStatus::Done, attempt: 1, tokens: Tokens::default(), started_ms: 1_000, ended_ms: Some(42_000),
+            status: AgentStatus::Done, attempt: 1, tokens: Tokens::default(), started_ms: 1_000, ended_ms: Some(42_000), note: None,
         })), 1).unwrap();
         st.apply(Mutation::PutItem(Box::new(it)), 2).unwrap();
         id
@@ -913,8 +914,8 @@ mod tests {
             .as_object().unwrap().clone();
         it.live = Live { started_ms: Some(1_000_000), cpu_pct: Some(41.0), gpu_pct: Some(78.0), size_bytes: Some(1_288_490_189), ..Live::default() };
         it.agents = vec!["a_31".into(), "a_32".into()];
-        st.agents.insert("a_31".into(), Agent { id: "a_31".into(), role: "engineer".into(), model: "m".into(), step: "run".into(), item: Some("i_e1".into()), status: AgentStatus::Running, attempt: 1, tokens: Tokens::default(), started_ms: 1, ended_ms: None });
-        st.agents.insert("a_32".into(), Agent { id: "a_32".into(), role: "monitor".into(), model: "m".into(), step: "run".into(), item: Some("i_e1".into()), status: AgentStatus::Running, attempt: 1, tokens: Tokens::default(), started_ms: 1, ended_ms: None });
+        st.agents.insert("a_31".into(), Agent { id: "a_31".into(), role: "engineer".into(), model: "m".into(), step: "run".into(), item: Some("i_e1".into()), status: AgentStatus::Running, attempt: 1, tokens: Tokens::default(), started_ms: 1, ended_ms: None, note: None });
+        st.agents.insert("a_32".into(), Agent { id: "a_32".into(), role: "monitor".into(), model: "m".into(), step: "run".into(), item: Some("i_e1".into()), status: AgentStatus::Running, attempt: 1, tokens: Tokens::default(), started_ms: 1, ended_ms: None, note: None });
         st.order.entry("experiment".into()).or_default().push("i_e1".into());
         st.items.insert("i_e1".into(), it);
         (st, "i_e1".into())

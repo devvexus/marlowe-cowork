@@ -147,7 +147,8 @@ impl PageFetch for NoPages {
 
 // ---------------------------------------------------------------- harness
 
-struct Engine(Arc<AtomicBool>);
+/// The engine: `scripted` is loaded while the flag is up, and so is every model in `also`.
+struct Engine(Arc<AtomicBool>, Vec<String>);
 
 impl marlowe_hw::ModelSource for Engine {
     fn files(&self, model_id: &str) -> Result<marlowe_hw::ModelFiles, String> {
@@ -157,7 +158,7 @@ impl marlowe_hw::ModelSource for Engine {
         marlowe_hw::RunnerObservation { loaded: self.0.load(Ordering::SeqCst), ..Default::default() }
     }
     fn loaded_models(&self) -> Vec<String> {
-        if self.0.load(Ordering::SeqCst) { vec!["scripted".into()] } else { Vec::new() }
+        if self.0.load(Ordering::SeqCst) { std::iter::once("scripted".to_string()).chain(self.1.clone()).collect() } else { Vec::new() }
     }
 }
 
@@ -189,15 +190,20 @@ fn deps(provider: Arc<Scripted>, home: &Path, projects: bool) -> DaemonDeps {
 
 /// `up`: whether the engine has the scripted model loaded.
 fn deps_with(provider: Arc<Scripted>, home: &Path, projects: bool, up: Arc<AtomicBool>) -> DaemonDeps {
+    deps_loaded(provider, home, projects, up, &[])
+}
+
+/// `also`: models the engine has loaded besides `scripted`.
+fn deps_loaded(provider: Arc<Scripted>, home: &Path, projects: bool, up: Arc<AtomicBool>, also: &[&str]) -> DaemonDeps {
     let mut providers = ProviderFactory::new(Arc::new(MemoryStore::new()));
     providers.register(ProviderKind::Ollama, move |_| Ok(provider.clone() as Arc<dyn Provider>));
-    providers.set_hardware(marlowe_brains::Hardware { models: Arc::new(Engine(up)), gpu: Arc::new(NoGpu), server: Arc::new(NoServer) });
+    providers.set_hardware(marlowe_brains::Hardware { models: Arc::new(Engine(up, also.iter().map(|m| m.to_string()).collect())), gpu: Arc::new(NoGpu), server: Arc::new(NoServer) });
     let h = home.to_path_buf();
     let research: marlowe_crew::ResearchFactory = Arc::new(move |memory| {
         Arc::new(ResearchDeps::new(h.join("projects"), h.join("output"), Arc::new(NoWeb), Arc::new(NoPages), Arc::new(SystemResolver), memory))
     });
     let crew_tools = Arc::new(|_: &marlowe_crew::sandbox::Sandbox, _: Option<&Path>| Arc::new(marlowe_exec::BuiltinTools::new(None)) as Arc<dyn ToolHost>);
-    let setup = CrewSetup { tools: crew_tools, config: CrewConfig::default(), projects: projects.then_some(ProjectSetup { research }) };
+    let setup = CrewSetup { tools: crew_tools, config: CrewConfig { commit: || None, ..CrewConfig::default() }, projects: projects.then_some(ProjectSetup { research }) };
     let home_for_tools = home.to_path_buf();
     DaemonDeps {
         providers,
@@ -526,5 +532,143 @@ fn the_reminders_point_at_projects_with_teams_on_and_only_offer_one_with_teams_o
     say(&mut a, "run the code-review task on the diff");
     let kept = tail_of(&p);
     assert!(kept.contains("Run that one now: team{name, args}"), "{kept}");
+    stop(d);
+}
+
+// ---------------------------------------------------------------- models and boot
+
+/// Runs the conversation in which a plan is made and approved, answering every checkin with
+/// approve until the relay turn starts; returns the project's id and every event seen.
+fn run_a_project(a: &mut Client, p: &Scripted) -> (String, Vec<Envelope>) {
+    p.say(tool_call("c1", "manage_project", &plan_json()));
+    p.say(reply("I made a plan. Shall I go ahead?"));
+    p.say(reply("The project finished."));
+    ask(a, "do some deep research on the newest Kimi models and tell me what is confirmed");
+    let mut seen = a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
+    a.send(&Request::ListProjects);
+    let listed = a.until_event(|e| matches!(e, Event::ProjectList { .. }));
+    let Event::ProjectList { projects } = &listed.last().unwrap().event else { unreachable!() };
+    let id = projects[0].id.clone();
+    seen.extend(listed);
+    a.send(&Request::AnswerProjectGate { project: id.clone(), gate: "g_1".into(), choice: "approve".into(), text: None });
+    loop {
+        let more = a.until_event(|e| matches!(e, Event::ProjectGateRaised { .. } | Event::TurnStarted { .. }));
+        let last = more.last().unwrap().event.clone();
+        seen.extend(more);
+        match last {
+            Event::ProjectGateRaised { gate, kind, .. } if kind == "checkin" => {
+                a.send(&Request::AnswerProjectGate { project: id.clone(), gate, choice: "approve".into(), text: None });
+            }
+            Event::TurnStarted { .. } => return (id, seen),
+            _ => {}
+        }
+    }
+}
+
+fn notices_of(seen: &[Envelope], id: &str) -> Vec<String> {
+    seen.iter()
+        .filter_map(|e| match &e.event {
+            Event::Notified { title, body, .. } if title == &format!("project {id}") => Some(body.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn employee_models(p: &Scripted) -> Vec<String> {
+    p.seen.lock().unwrap().iter().filter(|r| r.format.is_some()).map(|r| r.model.clone()).collect()
+}
+
+fn add_model(home: &Path, id: &str) {
+    Library::open(&paths::cowork_db(home)).unwrap().add(&ModelInfo::bare(ProviderKind::Ollama, id)).unwrap();
+}
+
+#[test]
+fn without_the_settings_every_step_runs_on_the_conversations_model_and_nothing_is_said() {
+    let home = temp_home("models-default");
+    let p = Arc::new(Scripted::default());
+    let d = start(&home, p.clone(), true);
+    let mut a = Client::connect(&d.info);
+    let (id, seen) = run_a_project(&mut a, &p);
+    let models = employee_models(&p);
+    assert!(!models.is_empty() && models.iter().all(|m| m == "scripted"), "{models:?}");
+    assert!(notices_of(&seen, &id).is_empty());
+    stop(d);
+}
+
+#[test]
+fn employees_run_on_the_model_the_setting_names_when_it_is_loaded_beside_the_conversations() {
+    let home = temp_home("models-employee");
+    add_model(&home, "mini");
+    std::fs::write(home.join("settings.toml"), "[projects.model]\nemployee = \"mini\"\n").unwrap();
+    let p = Arc::new(Scripted::default());
+    let d = Daemon::start(deps_loaded(p.clone(), &home, true, Arc::new(AtomicBool::new(true)), &["mini"]), &home, DaemonConfig::default()).expect("daemon starts");
+    let d = Running { info: d.info(), join: std::thread::spawn(move || d.wait()) };
+    let mut a = Client::connect(&d.info);
+    let (id, seen) = run_a_project(&mut a, &p);
+    let models = employee_models(&p);
+    // The lead (the thinking phase) has no setting and stays on the conversation's model.
+    let (mini, scripted) = (models.iter().filter(|m| *m == "mini").count(), models.iter().filter(|m| *m == "scripted").count());
+    assert!(mini >= 2 && scripted >= 1 && mini + scripted == models.len(), "employees ran on their own model and the lead on the conversation's: {models:?}");
+    let conductor: Vec<String> = p.seen.lock().unwrap().iter().filter(|r| r.format.is_none()).map(|r| r.model.clone()).collect();
+    assert!(conductor.iter().all(|m| m == "scripted"), "the conversation stayed on its own: {conductor:?}");
+    assert!(notices_of(&seen, &id).is_empty(), "nothing to apologise for");
+    stop(d);
+}
+
+#[test]
+fn a_second_model_that_cannot_be_used_falls_back_to_the_conversations_with_one_notice() {
+    let home = temp_home("models-fallback");
+    // In the library, but not loaded, and nothing measured says it fits: a crew start is refused.
+    add_model(&home, "mini");
+    std::fs::write(home.join("settings.toml"), "[projects.model]\nemployee = \"mini\"\nlead = \"not-a-model\"\n").unwrap();
+    let p = Arc::new(Scripted::default());
+    let d = start(&home, p.clone(), true);
+    let mut a = Client::connect(&d.info);
+    let (id, seen) = run_a_project(&mut a, &p);
+    let models = employee_models(&p);
+    assert!(!models.is_empty() && models.iter().all(|m| m == "scripted"), "the project ran on the conversation's model: {models:?}");
+    let told = notices_of(&seen, &id);
+    // The project started twice (its card, its approval) and said so once, for both settings.
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].contains("projects.model.employee is `mini`") && told[0].contains("projects.model.lead is `not-a-model`") && told[0].contains("use scripted"), "{}", told[0]);
+    stop(d);
+}
+
+#[test]
+fn a_project_that_found_no_model_at_boot_starts_when_one_appears_without_the_user_saying_anything() {
+    let home = temp_home("late-model");
+    let p = Arc::new(Scripted::default());
+    let d = start(&home, p.clone(), true);
+    stop(d);
+
+    // A project the previous daemon left running.
+    let reg = marlowe_project::Registry::builtin();
+    let plan = marlowe_project::parse_plan(
+        &json!({"objective": "Find the newest Kimi models and say what is confirmed.", "questions": ["Which Kimi models are newest?"], "fields": [{"key": "model_name"}]}),
+        &reg,
+        1_792_756_800_000,
+    )
+    .unwrap();
+    let mut st = marlowe_project::ProjectState::new("p_0a1e0b01".into(), plan, &reg, 1_792_756_800_000);
+    st.status = marlowe_project::ProjectStatus::Running;
+    let store = marlowe_project::ProjectStore::open(&home.join("projects"), &paths::cowork_db(&home)).unwrap();
+    store.create(&st).unwrap();
+
+    // The daemon comes up with no model loaded: the project waits, and says nothing.
+    let up = Arc::new(AtomicBool::new(false));
+    let cfg = DaemonConfig { project_resume_poll: Duration::from_millis(100), ..DaemonConfig::default() };
+    let d = Daemon::start(deps_with(p.clone(), &home, true, up.clone()), &home, cfg).expect("daemon starts");
+    let d = Running { info: d.info(), join: std::thread::spawn(move || d.wait()) };
+    let mut a = Client::connect(&d.info);
+    std::thread::sleep(Duration::from_millis(600));
+    a.send(&Request::GetProject { project: "p_0a1e0b01".into() });
+    let got = a.until_event(|e| matches!(e, Event::ProjectState { .. }));
+    let Event::ProjectState { state, .. } = &got.last().unwrap().event else { unreachable!() };
+    assert_eq!(state["status"], "running", "still waiting for a model");
+
+    // A model is loaded. No turn, no request: the project starts and raises its card.
+    up.store(true, Ordering::SeqCst);
+    let raised = a.until_event(|e| matches!(e, Event::ProjectGateRaised { project, .. } if project == "p_0a1e0b01"));
+    assert!(matches!(&raised.last().unwrap().event, Event::ProjectGateRaised { kind, .. } if kind == "plan"), "{raised:#?}");
     stop(d);
 }

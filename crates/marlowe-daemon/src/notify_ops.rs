@@ -329,6 +329,12 @@ pub(crate) fn announce(core: &Arc<Core>, session: &SessionId, title: &str, body:
             eprintln!("marlowe: no toast for {title}: {e}");
         }
     }
+    note(core, session, title, body);
+}
+
+/// A line in the conversation (`Notified`), kept with it, and no toast: for what the user should
+/// see when they next look and not be called to the screen for.
+pub(crate) fn note(core: &Arc<Core>, session: &SessionId, title: &str, body: &str) {
     // Kept with the conversation: a closed window must not lose what nothing else will say.
     if let Err(e) = core.store.put_note(session, now_ms(), title, body) {
         eprintln!("marlowe: could not keep the note for {session}: {e}");

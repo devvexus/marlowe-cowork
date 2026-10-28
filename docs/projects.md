@@ -133,6 +133,27 @@ Cargo only through `scripts/cargo-idle.ps1`.
 
 The manager (the user-facing model) calls `manage_project` (`marlowe-exec/src/specs/project.rs`); the tool calls `ProjectService` (`marlowe-project/src/service.rs`); the service starts an engine through its host (`marlowe-daemon/src/project_ops.rs`). To test the manager side of a new kind you need only the service and a fake `ProjectHost` (`tests/service.rs` shows one in forty lines). A client reads and answers with `ListProjects`, `GetProject` and `AnswerProjectGate`; `marlowe project` does the same from a terminal and prints any project as JSON (`show`), as text through the renderer (`view`) or as a rollup (`overview`).
 
+## Settings: which models a project uses
+
+Two keys in the user's `settings.toml` (`<home>\settings.toml`; a repository's file is not read for them, so a checkout cannot send a project's pages to another model):
+
+```toml
+[projects.model]
+employee = "marlowe-mini:4b-super"   # forced-form employees (analyst, verifier, writers)
+lead     = "marlowe-dawn:9b-super"   # the lead steps (the thinking phase)
+```
+
+Unset (or `default`, `inherit`, `conversation`) means the conversation's model, which is the default for both: one model, one KV cache, nothing else loads. A named model is a library model (full reference, or an id with or without `:latest`) or one of Ollama's local tags (added to the library). It is checked each time an engine starts:
+
+- **Fit.** Admitted like any crew load: loaded already, hosted, or a load the planner says fits beside what is resident (the llama engine's fit gate applies). One load per start: a second model that also needs loading is not admitted beside the first. Boot recovery and the retry that waits for a model (`quiet_parts`) load nothing, so a second model must already be loaded there.
+- **Fallback.** A model that does not fit, cannot be used now or is unknown is not used: that role runs on the conversation's model, and one line in the conversation says so, naming the setting, the model and why, and which model is used instead. The same reason is not repeated when the project's engine restarts at its next card.
+- **Slots and waits.** Every call to a local model takes one of the crew's slots for that model (`ContextGate::crew_slots`, shared with crew runs and subagents) and is held first while another process computes on the GPU ("waiting for the GPU") and while Windows is short of commit memory; the employee shows as `waiting` with that reason until its call starts. A hosted model takes four at once and waits for nothing.
+- **Window.** One reply is bounded by the smallest window of the models in use; reasoning is bounded per request only if every model in use is served by the llama engine.
+
+While a project runs, `metrics.cpu_pct`, `gpu_pct` and `vram_mb` carry the machine's load (the Sentinel's GPU report, this process's processor share), refreshed every two seconds and written only when a whole number changed; they read zero when the project is parked or finished. To feed them from something else, give `EngineConfig::probe` a `MachineProbe`.
+
+A project left running by a closed Marlowe starts again at boot if a model is loaded or hosted then; otherwise a watcher (`DaemonConfig::project_resume_poll`, five seconds) or the user's next turn starts it, whichever comes first. Neither loads a model.
+
 ## Invariants to keep
 
 - The conductor never waits: `create` and `answer` return at once; a card parks the project with no thread held.

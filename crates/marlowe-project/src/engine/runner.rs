@@ -99,6 +99,8 @@ impl RuleFailure {
 
 /// Hears an employee's attempts: when each call is admitted and what it came to.
 pub trait Observer {
+    /// The next attempt is held back for `why` (the GPU is busy, memory is short, no slot is free).
+    fn waiting(&mut self, _why: &str) {}
     /// Attempt `attempt` (1-based) holds a slot and is about to call the model.
     fn started(&mut self, _attempt: u32) {}
     /// An attempt ended.
@@ -210,7 +212,7 @@ pub fn run_employee<T>(
         // Employees have no tools: there is nothing to call and so nothing to approve.
         req.tools = Vec::new();
 
-        let permit = match gate.enter(&call.model, cancel) {
+        let permit = match gate.enter_noting(&call.model, cancel, &mut |why| observe.waiting(why)) {
             Ok(p) => p,
             Err(GateError::Cancelled) => return Err(cancelled(attempt - 1, total, classes)),
             Err(GateError::Refused(why)) => {

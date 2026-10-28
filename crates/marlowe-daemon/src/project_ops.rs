@@ -5,10 +5,10 @@
 //! | Piece | Does |
 //! |---|---|
 //! | [`start`] | Builds the [`ProjectService`] at boot (after the crew, whose model slots projects share), resumes projects a killed daemon left running and relays results that never arrived. |
-//! | `Host` | The service's host: which model to call now (the conversation's, admitted without loading anything new), the slot gate, the events, the relay. |
+//! | `Host` | The service's host: which models to call now (the conversation's, and the ones `projects.model.employee` and `.lead` name when they fit), the slot gate (the crew's, with its GPU and memory holds), the machine meters, the events, the relay. |
 //! | [`services`] | Puts the service into each session's services, where the tool finds it. |
 //! | [`dispatch`] | `ListProjects`, `GetProject`, `AnswerProjectGate`, `CheckinProject`, `CancelProject`, `ReopenProject`. |
-//! | [`defer`], [`delivered`], [`retry_deferred`] | The crew's relay bookkeeping, for projects: a relay that found no model loaded stays due and is sent again after the user's next turn; one that reached the session's history is marked relayed. |
+//! | [`defer`], [`delivered`], [`retry_deferred`] | The crew's relay bookkeeping, for projects: a relay that found no model loaded stays due and is sent again after the user's next turn; one that reached the session's history is marked relayed. A project that found no model at boot is retried by a watcher, and after each user turn, whichever comes first. |
 //!
 //! A parked project holds no thread: the state actor and the engine have ended, and the open
 //! card is in `project.json`. Answering a card (here, from a client; or through the tool) loads
@@ -23,8 +23,9 @@ use marlowe_agent::Services;
 use marlowe_brains::{Admission, Priority};
 use marlowe_crew::ProjectSetup;
 use marlowe_mind::{Kind, MemoryIn, Provenance};
-use marlowe_model::{CancelToken, ModelRef};
-use marlowe_project::engine::{GateError, ModelGate, Permit, ThinkSupport};
+use marlowe_crew::CallHold;
+use marlowe_model::{CancelToken, ModelInfo, ModelRef, Provider, ProviderKind};
+use marlowe_project::engine::{ByModel, GateError, Machine, MachineProbe, ModelGate, Permit, ThinkSupport};
 use marlowe_project::research::{self, MemoryEntry, MemorySink, NoMemory, ResearchDeps};
 use marlowe_project::{ActorConfig, Ended, EngineConfig, GateKind, ProjectEvent, ProjectHost, ProjectService, ProjectState, Registry, RunParts, ServiceConfig};
 use marlowe_proto::{paths, Event, ProjectSummary, Request, SessionId, Slot};
@@ -51,8 +52,9 @@ struct Shared {
     awaiting: Mutex<HashMap<String, String>>,
     /// A relay found no model it could run on: the project stays due until the next user turn.
     deferred: AtomicBool,
-    /// Boot recovery asks for models that are loaded already and never loads one.
-    booting: AtomicBool,
+    /// What each project was last told about its models, so a restart of its engine with the
+    /// same reason says nothing new.
+    told: Mutex<HashMap<String, String>>,
 }
 
 impl Shared {
@@ -80,7 +82,7 @@ pub(crate) fn start(core: &Arc<Core>, setup: Option<ProjectSetup>) {
         research,
         awaiting: Mutex::new(HashMap::new()),
         deferred: AtomicBool::new(false),
-        booting: AtomicBool::new(true),
+        told: Mutex::new(HashMap::new()),
     });
     let cfg = ServiceConfig {
         root: core.home.join("projects"),
@@ -99,7 +101,6 @@ pub(crate) fn start(core: &Arc<Core>, setup: Option<ProjectSetup>) {
     let kept = core.ext.get_or_init(|| ProjectLink { shared: shared.clone() });
     drop(kept);
     let rec = service.recover();
-    shared.booting.store(false, Ordering::SeqCst);
     if !rec.resumed.is_empty() || !rec.parked.is_empty() || !rec.stuck.is_empty() {
         eprintln!("marlowe: projects: {} resumed, {} waiting on a card, {} not resumed", rec.resumed.len(), rec.parked.len(), rec.stuck.len());
     }
@@ -109,7 +110,32 @@ pub(crate) fn start(core: &Arc<Core>, setup: Option<ProjectSetup>) {
     // Results a previous daemon finished but never delivered (relays never load a model).
     deliver_due(core, &shared, false);
     if !rec.stuck.is_empty() {
-        shared.deferred.store(true, Ordering::SeqCst);
+        watch_for_a_model(core, &service);
+    }
+}
+
+/// A project that found no model at boot starts as soon as one is available (loaded, or hosted),
+/// or after the user's next turn, whichever comes first: this thread tries every few seconds and
+/// ends when nothing waits any more. It loads nothing itself.
+fn watch_for_a_model(core: &Arc<Core>, service: &ProjectService) {
+    let (weak, service, every) = (Arc::downgrade(core), service.clone(), core.cfg.project_resume_poll);
+    let spawned = std::thread::Builder::new().name("project-resume-watch".into()).spawn(move || loop {
+        std::thread::sleep(every);
+        let Some(core) = weak.upgrade() else { return };
+        if core.is_shutting_down() {
+            return;
+        }
+        let waiting = service.waiting_for_a_model();
+        if waiting.is_empty() {
+            return;
+        }
+        for id in waiting {
+            // No model yet is the usual answer; the next look is soon.
+            let _ = service.resume(&id);
+        }
+    });
+    if let Err(e) = spawned {
+        eprintln!("marlowe: projects waiting for a model will start after your next message ({e})");
     }
 }
 
@@ -211,31 +237,145 @@ pub(crate) fn dispatch(core: &Arc<Core>, client: u64, req: Request) {
 
 struct Host(Arc<Shared>);
 
-impl ProjectHost for Host {
-    fn parts(&self, state: &ProjectState) -> Result<RunParts, String> {
+/// A model a project's steps run on, ready to call.
+struct Chosen {
+    model: ModelRef,
+    provider: Arc<dyn Provider>,
+    info: ModelInfo,
+}
+
+/// The conversation's model, and the models `projects.model.employee` and `.lead` name when they
+/// can be used now (each admitted against the GPU like any load); `notice` says why one was not.
+struct Models {
+    conversation: Chosen,
+    employee: Chosen,
+    lead: Chosen,
+    notice: Option<String>,
+}
+
+impl Host {
+    /// The parts of a run now. `who` is `Priority::Crew` for a start the user asked for (a model
+    /// that fits beside what is loaded may load) and `Priority::Background` for boot recovery and
+    /// the retry that waits for a model, which load nothing.
+    fn build(&self, state: &ProjectState, who: Priority) -> Result<RunParts, String> {
         let core = self.0.core.upgrade().ok_or("the daemon is stopping")?;
+        let models = self.models(&core, state, who)?;
+        let mut distinct: Vec<&Chosen> = Vec::new();
+        for c in [&models.conversation, &models.employee, &models.lead] {
+            if !distinct.iter().any(|d| d.model == c.model) {
+                distinct.push(c);
+            }
+        }
+        let provider: Arc<dyn Provider> = if distinct.len() == 1 {
+            models.conversation.provider.clone()
+        } else {
+            let mut route = ByModel::new(models.conversation.provider.clone());
+            for c in &distinct {
+                route = route.route(&c.info.id, c.provider.clone());
+            }
+            Arc::new(route)
+        };
+        let mut config = EngineConfig::new(&models.conversation.info.id);
+        config.employee_model = models.employee.info.id.clone();
+        config.lead_model = models.lead.info.id.clone();
+        // The smallest window of the models in use bounds one reply.
+        config.window_room = distinct.iter().filter_map(|c| c.info.context_window).min();
+        // The llama engine bounds reasoning per request; Ollama stays on the form's own `reason` field.
+        if distinct.iter().all(|c| core.brains.engine_wanted(&c.model)) {
+            config.runner.think = ThinkSupport::Budgeted;
+        }
+        config.probe = Some(Arc::new(DaemonProbe::new(self.0.core.clone())));
+        let gate = Arc::new(SlotGate { core: self.0.core.clone(), models: distinct.iter().map(|c| c.model.clone()).collect() });
+        Ok(RunParts { provider, gate, toolbox: Arc::new(research::toolbox(&self.0.research)), config, notice: models.notice })
+    }
+
+    fn models(&self, core: &Arc<Core>, state: &ProjectState, who: Priority) -> Result<Models, String> {
         let session = state.session.as_deref().map(|s| SessionId(s.to_string()));
         let (provider, info) = match &session {
-            Some(s) => crate::conductor_ops::session_parts(&core, s).map(|(p, i, _)| (p, i))?,
+            Some(s) => crate::conductor_ops::session_parts(core, s).map(|(p, i, _)| (p, i))?,
             None => core.brains.agent_parts(&Slot::Conductor).map(|(p, i, _)| (p, i)).map_err(|e| e.to_string())?,
         };
         let mref = info.model_ref();
-        // Employees use the model the conversation is on. It must be usable now without loading
-        // anything the user has not seen load: boot recovery loads nothing at all.
-        let who = if self.0.booting.load(Ordering::SeqCst) { Priority::Background } else { Priority::Crew };
+        // The conversation's model must be usable now without loading anything the user has not
+        // seen load: it is the default for every step, the fallback for the others, and the model
+        // the result is relayed on.
         match core.brains.admit(&mref, who) {
             Admission::Hosted | Admission::Resident | Admission::Load(_) => {}
             Admission::Refused(why) | Admission::Wait(why) => return Err(format!("{} is not available for the project: {why}", mref.model_id)),
             Admission::Ask(cost) => return Err(format!("{} would have to load first: {}", mref.model_id, cost.describe())),
         }
-        let mut config = EngineConfig::new(&info.id);
-        config.window_room = info.context_window;
-        if core.brains.engine_wanted(&mref) {
-            // The llama engine bounds reasoning per request; Ollama stays on the form's own `reason` field.
-            config.runner.think = ThinkSupport::Budgeted;
+        let conversation = Chosen { model: mref, provider, info };
+        let settings = marlowe_settings::Settings::load(&core.home, None, None);
+        let wants = [("employee", settings.project_employee_model()), ("lead", settings.project_lead_model())];
+        let mut loading: Vec<ModelRef> = Vec::new();
+        let mut picked: Vec<Chosen> = Vec::new();
+        let mut why_not: Vec<String> = Vec::new();
+        for (role, name) in wants {
+            let chosen = match name {
+                None => None,
+                Some(name) => match self.second_model(core, &name, who, &conversation.model, &mut loading) {
+                    Ok(c) => c,
+                    Err(why) => {
+                        why_not.push(format!("projects.model.{role} is `{name}`, which {why}; the {role}s use {}", conversation.info.id));
+                        None
+                    }
+                },
+            };
+            picked.push(chosen.unwrap_or_else(|| Chosen { model: conversation.model.clone(), provider: conversation.provider.clone(), info: conversation.info.clone() }));
         }
-        let gate = Arc::new(SlotGate { core: self.0.core.clone(), model: mref });
-        Ok(RunParts { provider, gate, toolbox: Arc::new(research::toolbox(&self.0.research)), config })
+        let lead = picked.pop().expect("two roles");
+        let employee = picked.pop().expect("two roles");
+        let notice = (!why_not.is_empty()).then(|| why_not.join(". "));
+        Ok(Models { conversation, employee, lead, notice })
+    }
+
+    /// The model the setting names, when it can be used beside the conversation's: `Ok(None)` for
+    /// the conversation's own model, `Err` with what is wrong with the choice otherwise. A model
+    /// that has to load is admitted by the planner against the GPU memory free beside what is
+    /// loaded (and one load per start: a second model that also needs loading is not admitted
+    /// beside the first); boot and the retry that waits for a model load nothing, so a second
+    /// model must be loaded already.
+    fn second_model(&self, core: &Arc<Core>, name: &str, who: Priority, conversation: &ModelRef, loading: &mut Vec<ModelRef>) -> Result<Option<Chosen>, String> {
+        let model = find_model(core, name)?;
+        if model == *conversation {
+            return Ok(None);
+        }
+        match core.brains.admit(&model, who) {
+            Admission::Hosted | Admission::Resident => {}
+            Admission::Load(_) if loading.is_empty() || loading.contains(&model) => loading.push(model.clone()),
+            Admission::Load(_) => return Err("would load beside another model this project already loads, and the GPU is checked for one load at a time".into()),
+            Admission::Ask(cost) => return Err(format!("would have to load first, and {}", cost.describe())),
+            Admission::Refused(why) | Admission::Wait(why) => return Err(format!("cannot be used now: {why}")),
+        }
+        let r = crate::conductor_ops::resolve_model(core, &model, None)?;
+        Ok(Some(Chosen { model, provider: r.provider, info: r.info }))
+    }
+}
+
+/// The library model `name` names (a full reference, or a model id with or without `:latest`),
+/// else one of Ollama's local tags, which is added to the library as the crew does.
+fn find_model(core: &Core, name: &str) -> Result<ModelRef, String> {
+    let name = name.trim();
+    let in_library = core.brains.with_library(|l| l.models()).unwrap_or_default().into_iter().map(|m| m.model).find(|m| marlowe_crew::same_name(m, name));
+    if let Some(m) = in_library {
+        return Ok(m);
+    }
+    let tag = core
+        .brains
+        .catalog(ProviderKind::Ollama)
+        .ok()
+        .and_then(|list| list.into_iter().find(|i| marlowe_crew::same_name(&i.model_ref(), name)))
+        .ok_or_else(|| "is not in the model library or Ollama's local models".to_string())?;
+    core.brains.add_model(tag.provider, &tag.id).map(|m| m.model).map_err(|e| format!("could not be added: {e}"))
+}
+
+impl ProjectHost for Host {
+    fn parts(&self, state: &ProjectState) -> Result<RunParts, String> {
+        self.build(state, Priority::Crew)
+    }
+
+    fn quiet_parts(&self, state: &ProjectState) -> Result<RunParts, String> {
+        self.build(state, Priority::Background)
     }
 
     fn event(&self, event: ProjectEvent) {
@@ -248,44 +388,104 @@ impl ProjectHost for Host {
         }
     }
 
+    fn notice(&self, project: &str, text: &str) {
+        let Some(core) = self.0.core.upgrade() else { return };
+        // Told once: every later start of the project with the same reason says nothing new.
+        if lock(&self.0.told).insert(project.to_string(), text.to_string()).is_some_and(|before| before == text) {
+            return;
+        }
+        let Ok(st) = self.0.service().state(project) else { return };
+        let Some(session) = st.session.map(SessionId) else { return };
+        crate::notify_ops::note(&core, &session, &format!("project {project}"), text);
+    }
+
     fn ended(&self, ended: Ended) {
         let Some(core) = self.0.core.upgrade() else { return };
         relay(&core, &self.0, ended, true);
     }
 }
 
+/// The machine's load for a running project's meters: the GPU from the Sentinel's NVML reading
+/// (the busiest device's utilisation, the memory in use on all of them) and the processor time
+/// this process uses, as a share of the machine. No Sentinel: the GPU reads zero.
+struct DaemonProbe {
+    core: Weak<Core>,
+    cpu: Mutex<marlowe_os::cpu::CpuMeter>,
+}
+
+impl DaemonProbe {
+    fn new(core: Weak<Core>) -> DaemonProbe {
+        let mut meter = marlowe_os::cpu::CpuMeter::new();
+        // The first reading has nothing before it; the first real one covers a whole interval.
+        let _ = meter.sample();
+        DaemonProbe { core, cpu: Mutex::new(meter) }
+    }
+}
+
+impl MachineProbe for DaemonProbe {
+    fn sample(&self) -> Machine {
+        let cpu_pct = lock(&self.cpu).sample().unwrap_or(0.0);
+        let gpu = self.core.upgrade().and_then(|c| c.sentinel.as_ref().map(|s| s.state().gpu));
+        machine_of(gpu.as_ref(), cpu_pct)
+    }
+}
+
+/// A reading from the Sentinel's GPU report (the busiest device's utilisation, the memory in use
+/// on every device; zeros without a report) and the processor share.
+fn machine_of(gpu: Option<&marlowe_proto::GpuReport>, cpu_pct: f64) -> Machine {
+    let devices = gpu.map_or(&[][..], |g| g.devices.as_slice());
+    Machine {
+        cpu_pct,
+        gpu_pct: devices.iter().map(|d| d.util_pct).max().map_or(0.0, f64::from),
+        vram_mb: devices.iter().map(|d| d.mem_used_mb).sum(),
+    }
+}
+
 /// The crew's model slots, as a project's employees take them. A hosted model takes a few at
 /// once; a local one takes the crew's share of the runner's slots (the conductor's slot left out),
-/// so projects and crew runs together never oversubscribe it.
+/// so projects and crew runs together never oversubscribe it, and each call is held as a crew
+/// run's call is: while the GPU is busy with something else, and while Windows is short of memory.
 struct SlotGate {
     core: Weak<Core>,
-    model: ModelRef,
+    /// The models this project's steps run on.
+    models: Vec<ModelRef>,
+}
+
+impl SlotGate {
+    fn model(&self, id: &str) -> Option<&ModelRef> {
+        self.models.iter().find(|m| m.model_id == id)
+    }
 }
 
 impl ModelGate for SlotGate {
     fn enter(&self, model: &str, cancel: &CancelToken) -> Result<Permit, GateError> {
+        self.enter_noting(model, cancel, &mut |_| {})
+    }
+
+    fn enter_noting(&self, model: &str, cancel: &CancelToken, note: &mut dyn FnMut(&str)) -> Result<Permit, GateError> {
         if cancel.is_cancelled() {
             return Err(GateError::Cancelled);
         }
-        if model != self.model.model_id {
-            return Err(GateError::Refused(format!("`{model}` is not this project's model")));
-        }
-        if !self.model.provider.is_local() {
+        let Some(mref) = self.model(model) else { return Err(GateError::Refused(format!("`{model}` is not one of this project's models"))) };
+        if !mref.provider.is_local() {
             return Ok(Permit::free());
         }
         let core = self.core.upgrade().ok_or_else(|| GateError::Refused("the daemon is stopping".into()))?;
         let link = core.crew.get().ok_or_else(|| GateError::Refused("the crew is not running".into()))?;
-        match link.supervisor.acquire_local_stream(&self.model, &|| cancel.is_cancelled(), &|_| {}) {
-            Some(stream) => Ok(Permit::new(move |_usage| drop(stream))),
-            None => Err(GateError::Cancelled),
+        let note = std::cell::RefCell::new(note);
+        match link.supervisor.acquire_local_call(mref, &|| cancel.is_cancelled(), &|why| (note.borrow_mut())(why)) {
+            Ok(stream) => Ok(Permit::new(move |_usage| drop(stream))),
+            Err(CallHold::Cancelled) => Err(GateError::Cancelled),
+            Err(CallHold::Refused(why)) => Err(GateError::Refused(why)),
         }
     }
 
-    fn width(&self, _model: &str) -> usize {
-        if !self.model.provider.is_local() {
+    fn width(&self, model: &str) -> usize {
+        let Some(mref) = self.model(model) else { return 1 };
+        if !mref.provider.is_local() {
             return HOSTED_WIDTH;
         }
-        self.core.upgrade().map_or(1, |c| c.brains.context().crew_slots(&self.model)).max(1)
+        self.core.upgrade().map_or(1, |c| c.brains.context().crew_slots(mref)).max(1)
     }
 }
 
@@ -400,16 +600,12 @@ pub(crate) fn defer(core: &Core, text: &str) -> bool {
 /// could not resume at boot are tried again).
 pub(crate) fn retry_deferred(core: &Arc<Core>) {
     let Some(l) = link(core) else { return };
+    // A project that was running when the daemon stopped and had no model then: the model is up now.
+    let svc = l.shared.service().clone();
+    for id in svc.waiting_for_a_model() {
+        let _ = svc.resume(&id);
+    }
     if l.shared.deferred.swap(false, Ordering::SeqCst) {
-        let svc = l.shared.service().clone();
-        for row in svc.rows().unwrap_or_default() {
-            if row.status == "running" && !svc.is_running(&row.id) {
-                // A project that was running when the daemon stopped and had no model then.
-                if let Ok(st) = svc.state(&row.id) {
-                    let _ = svc.resume(&st.id);
-                }
-            }
-        }
         deliver_due(core, &l.shared, false);
     }
 }
@@ -420,5 +616,25 @@ pub(crate) fn delivered(core: &Core, text: &str) {
     let project = lock(&l.shared.awaiting).remove(text);
     if let Some(project) = project {
         let _ = l.shared.service().mark_relayed(&project);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use marlowe_proto::{GpuDevice, GpuReport};
+
+    use super::*;
+
+    fn device(index: u32, util_pct: u32, mem_used_mb: u64) -> GpuDevice {
+        GpuDevice { index, name: format!("GPU {index}"), util_pct, mem_used_mb, mem_total_mb: 24_000, temp_c: None, processes: Vec::new() }
+    }
+
+    #[test]
+    fn the_meters_take_the_busiest_gpu_and_all_the_memory_and_read_zero_without_a_report() {
+        let report = GpuReport { devices: vec![device(0, 31, 9_000), device(1, 78, 2_500)], unavailable: None };
+        assert_eq!(machine_of(Some(&report), 12.0), Machine { cpu_pct: 12.0, gpu_pct: 78.0, vram_mb: 11_500 });
+        let none = GpuReport { devices: Vec::new(), unavailable: Some("no NVML".into()) };
+        assert_eq!(machine_of(Some(&none), 3.0), Machine { cpu_pct: 3.0, gpu_pct: 0.0, vram_mb: 0 });
+        assert_eq!(machine_of(None, 0.0), Machine::default());
     }
 }

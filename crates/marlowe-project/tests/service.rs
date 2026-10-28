@@ -4,7 +4,7 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -19,11 +19,27 @@ struct Host {
     no_model: AtomicBool,
     ended: Mutex<Vec<Ended>>,
     events: Mutex<Vec<ProjectEvent>>,
+    /// How often a start nobody asked for (boot, a model appearing) and a start the user asked for were made.
+    quiet_asked: AtomicUsize,
+    loud_asked: AtomicUsize,
+    /// How long building a run's parts takes.
+    slow_parts: Mutex<Duration>,
+    /// Said with the next run's parts, and what the host was told.
+    notice: Mutex<Option<String>>,
+    told: Mutex<Vec<(String, String)>>,
 }
 
 impl Host {
     fn new(model: Arc<Fake>) -> Arc<Host> {
-        Arc::new(Host { model: Mutex::new(model), pool: SlotPool::new(3), no_model: AtomicBool::new(false), ended: Mutex::new(Vec::new()), events: Mutex::new(Vec::new()) })
+        Arc::new(Host { model: Mutex::new(model), pool: SlotPool::new(3), no_model: AtomicBool::new(false), ended: Mutex::new(Vec::new()), events: Mutex::new(Vec::new()), quiet_asked: AtomicUsize::new(0), loud_asked: AtomicUsize::new(0), slow_parts: Mutex::new(Duration::ZERO), notice: Mutex::new(None), told: Mutex::new(Vec::new()) })
+    }
+
+    fn parts_now(&self) -> Result<RunParts, String> {
+        std::thread::sleep(*self.slow_parts.lock().unwrap());
+        if self.no_model.load(Ordering::SeqCst) {
+            return Err("no model is loaded".into());
+        }
+        Ok(RunParts { provider: self.model(), gate: Arc::new(self.pool.clone()), toolbox: Arc::new(research_tools()), config: config("mini"), notice: self.notice.lock().unwrap().clone() })
     }
 
     fn model(&self) -> Arc<Fake> {
@@ -33,10 +49,17 @@ impl Host {
 
 impl ProjectHost for Host {
     fn parts(&self, _state: &ProjectState) -> Result<RunParts, String> {
-        if self.no_model.load(Ordering::SeqCst) {
-            return Err("no model is loaded".into());
-        }
-        Ok(RunParts { provider: self.model(), gate: Arc::new(self.pool.clone()), toolbox: Arc::new(research_tools()), config: config("mini") })
+        self.loud_asked.fetch_add(1, Ordering::SeqCst);
+        self.parts_now()
+    }
+
+    fn quiet_parts(&self, _state: &ProjectState) -> Result<RunParts, String> {
+        self.quiet_asked.fetch_add(1, Ordering::SeqCst);
+        self.parts_now()
+    }
+
+    fn notice(&self, project: &str, text: &str) {
+        self.told.lock().unwrap().push((project.to_string(), text.to_string()));
     }
 
     fn event(&self, event: ProjectEvent) {
@@ -313,4 +336,83 @@ fn a_project_started_in_a_workspace_leaves_a_pointer_there() {
     let body: Value = serde_json::from_str(&std::fs::read_to_string(&ptr).expect("the pointer")).unwrap();
     let target = std::path::PathBuf::from(body["project"].as_str().unwrap());
     assert!(target.join("project.json").is_file(), "the pointer leads to the project: {target:?}");
+}
+
+/// A project left running by a process that died, with `host2` having no model at boot.
+fn left_running(home: &Home, plan_questions: usize) -> String {
+    let host = Host::new(Fake::with(|_, _, cancel| {
+        while !cancel.is_cancelled() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Say::Schema
+    }));
+    let svc = service(home, &host);
+    let id = svc.create(None, None, &research_plan(plan_questions)).unwrap().id;
+    parked(&svc, &id);
+    svc.answer(&id, None, "approve", None).unwrap();
+    wait_until(20, "an employee to be in a call", || host.model().in_flight.load(Ordering::SeqCst) > 0);
+    svc.shutdown();
+    id
+}
+
+#[test]
+fn a_project_that_found_no_model_at_boot_is_listed_and_starts_when_one_appears_without_loading_any() {
+    let home = Home::new("svc-late-model");
+    let id = left_running(&home, 2);
+
+    let host = Host::new(Fake::schema());
+    host.no_model.store(true, Ordering::SeqCst);
+    let svc = service(&home, &host);
+    let rec = svc.recover();
+    assert_eq!((rec.resumed.len(), rec.parked.len()), (0, 0));
+    assert_eq!(rec.stuck.iter().map(|(i, _)| i.clone()).collect::<Vec<_>>(), [id.clone()]);
+    assert_eq!(svc.waiting_for_a_model(), [id.clone()], "listed, so a watcher knows what to retry");
+    assert_eq!(svc.state(&id).unwrap().status, ProjectStatus::Running, "it stays as it was");
+
+    // Still no model: trying again fails the same way and changes nothing.
+    assert_eq!(svc.resume(&id).unwrap_err().class(), "project_no_model");
+    assert_eq!(svc.waiting_for_a_model(), [id.clone()]);
+
+    // A model is there: the project runs on, and every start of it was one that loads nothing.
+    host.no_model.store(false, Ordering::SeqCst);
+    svc.resume(&id).unwrap();
+    assert!(host.quiet_asked.load(Ordering::SeqCst) >= 3, "boot, the retry that failed, the retry that worked");
+    assert_eq!(host.loud_asked.load(Ordering::SeqCst), 0, "none of the three was a start that may load a model");
+    assert_eq!(run_out(&svc, &id).status, ProjectStatus::Finished);
+}
+
+#[test]
+fn two_starts_of_one_project_at_once_make_one_engine() {
+    let home = Home::new("svc-claim");
+    let id = left_running(&home, 1);
+    let host = Host::new(Fake::schema());
+    host.no_model.store(true, Ordering::SeqCst);
+    let svc = service(&home, &host);
+    let _ = svc.recover();
+    host.no_model.store(false, Ordering::SeqCst);
+    *host.slow_parts.lock().unwrap() = Duration::from_millis(300);
+    let (a, b) = (svc.clone(), svc.clone());
+    let (ida, idb) = (id.clone(), id.clone());
+    let before = host.quiet_asked.load(Ordering::SeqCst);
+    let t1 = std::thread::spawn(move || a.resume(&ida));
+    let t2 = std::thread::spawn(move || b.resume(&idb));
+    assert!(t1.join().unwrap().is_ok() && t2.join().unwrap().is_ok(), "the second caller finds it running or starting: that is what it asked for");
+    assert_eq!(host.quiet_asked.load(Ordering::SeqCst) - before, 1, "one set of parts, one engine");
+    assert_eq!(run_out(&svc, &id).status, ProjectStatus::Finished);
+}
+
+#[test]
+fn a_notice_in_the_parts_reaches_the_host_once_per_engine_start() {
+    let home = Home::new("svc-notice");
+    let host = Host::new(Fake::schema());
+    *host.notice.lock().unwrap() = Some("employees run on dawn: mini does not fit".into());
+    let svc = service(&home, &host);
+    let id = svc.create(None, None, &plan()).unwrap().id;
+    parked(&svc, &id);
+    let told = host.told.lock().unwrap().clone();
+    assert_eq!(told, [(id.clone(), "employees run on dawn: mini does not fit".to_string())]);
+    *host.notice.lock().unwrap() = None;
+    svc.answer(&id, None, "approve", None).unwrap();
+    run_out(&svc, &id);
+    assert_eq!(host.told.lock().unwrap().len(), 1, "a run with nothing to say says nothing");
 }

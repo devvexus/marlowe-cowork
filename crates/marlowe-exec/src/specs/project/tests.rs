@@ -65,7 +65,7 @@ impl ProjectHost for TestHost {
         let deps = Arc::new(ResearchDeps::new(self.root.clone(), self.root.join("output"), Arc::new(NoWeb), Arc::new(NoPages), Arc::new(SystemResolver), Arc::new(NoMemory)));
         let mut cfg = EngineConfig::new("m");
         cfg.poll = Duration::from_millis(5);
-        Ok(RunParts { provider: Arc::new(Silent), gate: Arc::new(Unlimited), toolbox: Arc::new(research::toolbox(&deps)), config: cfg })
+        Ok(RunParts { provider: Arc::new(Silent), gate: Arc::new(Unlimited), toolbox: Arc::new(research::toolbox(&deps)), config: cfg, notice: None })
     }
 
     fn event(&self, _event: ProjectEvent) {}

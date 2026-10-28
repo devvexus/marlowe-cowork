@@ -194,7 +194,7 @@ pub(crate) fn session_parts(core: &Core, session: &SessionId) -> Result<(Arc<dyn
 /// A library model ready to call, for `/model` and agents' model ids. Its window is the context
 /// gate's, as `Brains::agent_parts` gives the conductor's: compaction and the prefix budget work
 /// against what the runner really holds, not the model's advertised window.
-fn resolve_model(core: &Core, model: &ModelRef, effort: Option<Effort>) -> Result<ResolvedModel, String> {
+pub(crate) fn resolve_model(core: &Core, model: &ModelRef, effort: Option<Effort>) -> Result<ResolvedModel, String> {
     let mut info = core.brains.model_info(model).map_err(|e| e.to_string())?;
     let saved = core.brains.with_library(|l| l.policy(model)).map_err(|e| e.to_string())?.is_some();
     if saved || info.context_window.is_some() {

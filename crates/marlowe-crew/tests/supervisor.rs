@@ -1065,6 +1065,64 @@ fn subagents_and_crew_runs_share_one_pool_of_local_slots() {
 }
 
 #[test]
+fn a_project_call_is_held_for_a_busy_gpu_and_for_short_memory_like_a_crew_calls_and_then_takes_a_shared_slot() {
+    let home = home("project-call");
+    let provider = Scripted::new(ProviderKind::Ollama, |_, _, _| Ok(answer("never")));
+    let b = brains(&[("cond", provider)]);
+    b.with_library(|l| l.add(&ModelInfo::bare(ProviderKind::Ollama, "alpha"))).unwrap();
+    let alpha = with_slots(&b, "alpha", 3);
+
+    // The GPU is busy until released: the call says so, holds no slot, and goes on when it is free.
+    let busy = Arc::new(AtomicBool::new(true));
+    let b2 = busy.clone();
+    let cfg = CrewConfig { gpu_poll: Duration::from_millis(10), ..CrewConfig::default() };
+    let fx = start_probe(&home, b, cfg, Arc::new(move || b2.load(Ordering::SeqCst)));
+    let said = Arc::new(Mutex::new(Vec::<String>::new()));
+    let (sup, model, said2) = (fx.sup.clone(), alpha.clone(), said.clone());
+    let call = std::thread::spawn(move || sup.acquire_local_call(&model, &|| false, &|w| said2.lock().unwrap().push(w.to_string())).map(|s| drop(s)));
+    wait("the call says it waits for the GPU", || said.lock().unwrap().iter().any(|w| w == "waiting for the GPU"));
+    assert!(!call.is_finished());
+    busy.store(false, Ordering::SeqCst);
+    assert_eq!(call.join().unwrap(), Ok(()));
+
+    // Cancelling ends the wait with nothing held.
+    busy.store(true, Ordering::SeqCst);
+    assert!(matches!(fx.sup.acquire_local_call(&alpha, &|| true, &|_| {}), Err(CallHold::Cancelled)));
+    busy.store(false, Ordering::SeqCst);
+
+    // It takes the crew's slots: three calls hold the three, a fourth waits for one.
+    let never = || false;
+    let held: Vec<_> = (0..3).map(|_| fx.sup.acquire_local_call(&alpha, &never, &|_| {}).expect("a slot")).collect();
+    let (sup, model, said3) = (fx.sup.clone(), alpha.clone(), said.clone());
+    let fourth = std::thread::spawn(move || sup.acquire_local_call(&model, &|| false, &|w| said3.lock().unwrap().push(w.to_string())).is_ok());
+    wait("the fourth says it waits for a slot", || said.lock().unwrap().iter().any(|w| w.contains("waiting for a model slot")));
+    drop(held);
+    assert!(fourth.join().unwrap());
+    finish(fx, &[&home]);
+
+    // Windows short of commit memory: held, then refused with the reason when it stays short.
+    let home2 = self::home("project-call-memory");
+    let b = brains(&[("cond", Scripted::new(ProviderKind::Ollama, |_, _, _| Ok(answer("never"))))]);
+    b.with_library(|l| l.add(&ModelInfo::bare(ProviderKind::Ollama, "alpha"))).unwrap();
+    let alpha = with_slots(&b, "alpha", 3);
+    let cfg = CrewConfig {
+        commit: || Some(marlowe_os::memory::Commit { available: 1 << 30, limit: 127 << 30 }),
+        memory_wait: Duration::from_millis(300),
+        ..CrewConfig::default()
+    };
+    let fx = start_with(&home2, b, cfg, false);
+    let said = Mutex::new(Vec::<String>::new());
+    let out = fx.sup.acquire_local_call(&alpha, &|| false, &|w| said.lock().unwrap().push(w.to_string()));
+    match out {
+        Err(CallHold::Refused(why)) => assert!(why.contains("Windows is out of memory: 1.0 GB of its 127 GB commit limit is left"), "{why}"),
+        other => panic!("expected a refusal, got {:?}", other.map(|_| "a slot")),
+    }
+    assert!(said.lock().unwrap().iter().any(|w| w.starts_with("waiting for memory")), "{:?}", said.lock().unwrap());
+    assert!(matches!(fx.sup.acquire_local_call(&alpha, &|| true, &|_| {}), Err(CallHold::Cancelled)), "cancel ends the memory wait too");
+    finish(fx, &[&home2]);
+}
+
+#[test]
 fn cloud_runs_still_obey_per_provider() {
     let home = home("slots-cloud");
     let (now, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
