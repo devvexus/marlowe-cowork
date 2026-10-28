@@ -605,6 +605,34 @@ fn md_cell(v: &Value) -> String {
     t.replace('|', "\\|").replace('\n', " ")
 }
 
+/// How many verified claims stand in for a section whose sentences the audit cut.
+const CLAIMS_INSTEAD: usize = 5;
+
+/// What a section says when the audit cut every sentence its writer wrote: the section's strongest
+/// verified claims in their own words, each with its marker, or the fixed line when it has none.
+/// Found live: a 9b writer embellished ("pooled data indicates overall reductions are consistent")
+/// and the audit rightly cut whole sections that had verified claims to report.
+fn claims_instead(claims: &[&VClaim]) -> String {
+    let mut best: Vec<&&VClaim> = claims.iter().collect();
+    best.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal).then(a.n.cmp(&b.n)));
+    let lines: Vec<String> = best
+        .into_iter()
+        .take(CLAIMS_INSTEAD)
+        .filter_map(|c| {
+            let text = plain_text(&c.text, 300);
+            let body = text.trim().trim_end_matches(['.', '!', '?']).trim_end();
+            (!body.is_empty()).then(|| format!("- {body} [C{}].", c.n))
+        })
+        .collect();
+    if lines.is_empty() {
+        return "Nothing in this part survived the citation check.".to_string();
+    }
+    format!("The writer's sentences here did not survive the citation check. The verified claims say:
+
+{}", lines.join("
+"))
+}
+
 fn assemble_report(deps: &ResearchDeps, input: &TaskInput) -> Result<Finished, String> {
     struct Snap {
         st_title: String,
@@ -617,6 +645,7 @@ fn assemble_report(deps: &ResearchDeps, input: &TaskInput) -> Result<Finished, S
         pages: HashMap<String, Item>,
         notes: Vec<String>,
         output: Option<Value>,
+        source_pages: HashMap<String, (String, String)>,
         /// Parts a writer could not write: the section's question (or `answer`) and why.
         unwritten: Vec<(String, String)>,
     }
@@ -635,6 +664,7 @@ fn assemble_report(deps: &ResearchDeps, input: &TaskInput) -> Result<Finished, S
                 pages: st.items_of_kind("page").into_iter().map(|i| (i.id.clone(), i.clone())).collect(),
                 notes: st.items_of_kind("note").into_iter().map(|n| s(&n.data, "text").to_string()).collect(),
                 output: latest_dv,
+                source_pages: source_pages(st),
                 unwritten: st
                     .items_of_kind("section")
                     .into_iter()
@@ -693,8 +723,14 @@ fn assemble_report(deps: &ResearchDeps, input: &TaskInput) -> Result<Finished, S
     let mut final_text: HashMap<String, String> = HashMap::new();
     for (where_, _) in &snap.texts {
         let Some(c) = checked.get(where_) else { continue };
-        let mut t = c.text.clone();
-        for m in markers(&c.text).into_iter().rev() {
+        let mut base = c.text.clone();
+        if base.is_empty() && where_ != "answer" {
+            let question = snap.questions.iter().find(|(id, _)| id == where_).map(|(_, q)| q.as_str()).unwrap_or_default();
+            let mine = section_claims(&snap.claims, &snap.source_pages, &plan.objective, question, where_);
+            base = claims_instead(&mine);
+        }
+        let mut t = base.clone();
+        for m in markers(&base).into_iter().rev() {
             let nums = number_sources(&m.ids);
             let rep = if nums.is_empty() { String::new() } else { format!("[{}]", nums.iter().map(usize::to_string).collect::<Vec<_>>().join(", ")) };
             let mut start = m.start;
@@ -974,6 +1010,28 @@ mod tests {
         let s = crate::engine::narrow_schema(json!({"properties": {"sentences": {"items": {"properties": {"claims": {"type": "array", "items": {"type": "integer"}}}}}}}), &p.narrow);
         assert_eq!(s.pointer(CLAIMS_AT).unwrap()["minItems"], 1);
         assert_eq!(s.pointer(CITE_AT).unwrap()["enum"], json!([1, 2]));
+    }
+
+    #[test]
+    fn a_section_the_audit_emptied_shows_its_strongest_verified_claims() {
+        let claim = |n: u32, text: &str, score: f64| VClaim {
+            n,
+            id: format!("i_{n}"),
+            text: text.into(),
+            score,
+            roots: 1,
+            sub: "q1".into(),
+            verdict: "upheld".into(),
+            contested: false,
+            sources: vec![],
+            date: None,
+        };
+        let (a, b) = (claim(4, "Alternate-day fasting cut weight by 3 kg.", 0.5), claim(2, "Time-restricted eating is the most studied protocol", 0.9));
+        let t = claims_instead(&[&a, &b]);
+        assert!(t.starts_with("The writer's sentences here did not survive the citation check."), "{t}");
+        assert!(t.ends_with("- Time-restricted eating is the most studied protocol [C2].
+- Alternate-day fasting cut weight by 3 kg [C4]."), "{t}");
+        assert_eq!(claims_instead(&[]), "Nothing in this part survived the citation check.");
     }
 
     #[test]
