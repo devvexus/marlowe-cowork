@@ -332,3 +332,13 @@ fn severities_order_and_names_are_stable() {
     let f: Finding = serde_json::from_str(r#"{"lens":"reuse","severity":"low","file":"a.rs","claim":"dup"}"#).unwrap();
     assert_eq!((f.line, f.fix, f.evidence.as_str()), (None, None, ""));
 }
+
+#[test]
+fn a_stored_send_file_result_names_the_file_again() {
+    let f = SentFile { name: "report.md".into(), path: r"C:\h\outbox\s 1\report.md".into(), bytes: 13396, digest: "ab".into(), note: "x".into() };
+    let text = f.tool_result();
+    assert_eq!(text, r"Sent report.md (13396 bytes) to the user. The copy is C:\h\outbox\s 1\report.md; they see a card with open and reveal.");
+    let back = SentFile::from_tool_result(&text).expect("the result names its file");
+    assert_eq!((back.name.as_str(), back.path.as_str(), back.bytes), ("report.md", r"C:\h\outbox\s 1\report.md", 13396));
+    assert!(SentFile::from_tool_result("cannot copy x: nope").is_none());
+}

@@ -865,13 +865,14 @@ fn read_end(e: PhaseEvent, u: &Usage) -> PhaseEvent {
     e
 }
 
-/// Maps provider stream events onto agent events. Tool-call deltas are not forwarded; the loop
-/// reports tools when it runs them.
+/// Maps provider stream events onto agent events. Tool-call arguments are not forwarded, only that a
+/// call began; the loop reports tools when it runs them.
 fn forward(ev: StreamEvent) -> Option<AgentEvent> {
     match ev {
         StreamEvent::TextDelta(t) if !t.is_empty() => Some(AgentEvent::TextDelta(t)),
         StreamEvent::ReasoningDelta { text, tokens } => Some(AgentEvent::ReasoningDelta { text, tokens }),
         StreamEvent::Retract { tokens } => Some(AgentEvent::TextRetracted { tokens }),
+        StreamEvent::ToolCallStart { id, name, .. } if !name.is_empty() => Some(AgentEvent::ToolPreparing { call_id: id, tool: name }),
         _ => None,
     }
 }

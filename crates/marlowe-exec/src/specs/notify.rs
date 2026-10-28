@@ -86,7 +86,7 @@ fn send_file_call(tools: &BuiltinTools, args: &Value, cx: &CallCtx) -> ToolOutco
     let note = str_arg(args, "note").map(str::trim).unwrap_or("");
     match bg.0.send_file(&cx.session, &abs, note) {
         Ok(f) => ToolOutcome::ok(
-            format!("Sent {} ({} bytes) to the user. The copy is {}; they see a card with open and reveal.", f.name, f.bytes, f.path),
+            f.tool_result(),
             format!("sent {}", f.name),
         ),
         Err(e) => ToolOutcome::error(e),

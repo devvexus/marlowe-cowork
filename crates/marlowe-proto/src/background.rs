@@ -288,6 +288,23 @@ pub struct SentFile {
     pub note: String,
 }
 
+impl SentFile {
+    /// What the `send_file` tool tells the model; [`Self::from_tool_result`] reads it back from a
+    /// stored transcript, so a reopened session shows the file as it was sent.
+    pub fn tool_result(&self) -> String {
+        format!("Sent {} ({} bytes) to the user. The copy is {}; they see a card with open and reveal.", self.name, self.bytes, self.path)
+    }
+
+    /// The file a stored `send_file` result names (no digest and no note: those are not in it).
+    pub fn from_tool_result(text: &str) -> Option<SentFile> {
+        let rest = text.strip_prefix("Sent ")?;
+        let (name, rest) = rest.split_once(" (")?;
+        let (bytes, rest) = rest.split_once(" bytes) to the user. The copy is ")?;
+        let (path, _) = rest.rsplit_once("; they see a card with open and reveal.")?;
+        Some(SentFile { name: name.to_string(), path: path.to_string(), bytes: bytes.parse().ok()?, digest: String::new(), note: String::new() })
+    }
+}
+
 // ---- Conductor additions (F3).
 
 /// The user's answer to a plan the conductor submitted with `exit_plan` (M13).

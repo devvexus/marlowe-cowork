@@ -12,6 +12,8 @@ pub enum AgentEvent {
     ReasoningDelta { text: String, tokens: u64 },
     /// Text streamed so far in this model call was reasoning.
     TextRetracted { tokens: u64 },
+    /// The model began streaming a tool call's arguments; `call_id` is empty until the provider names it.
+    ToolPreparing { call_id: String, tool: String },
     ToolStarted { call_id: String, tool: String, summary: String },
     ToolFinished { call_id: String, ok: bool, summary: String },
     /// Usage of one finished model call.

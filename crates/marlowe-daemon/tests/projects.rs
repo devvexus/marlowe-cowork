@@ -353,7 +353,7 @@ fn a_natural_request_becomes_a_parked_plan_the_card_runs_it_and_the_result_reach
     };
     assert!(session_turn.starts_with(&format!("[crew · run project {id} · ")), "{session_turn}");
     assert!(session_turn.contains(&format!("Project {id} finished")), "{session_turn}");
-    let path = session_turn.lines().find_map(|l| l.strip_prefix("Report: ")).expect("the relay names the report");
+    let path = session_turn.split("(file: ").nth(1).and_then(|r| r.split("). ").next()).expect("the relay names the report");
     assert!(Path::new(path).is_file(), "the report exists at {path}");
     a.until_event(|e| matches!(e, Event::TurnFinished { .. }));
 

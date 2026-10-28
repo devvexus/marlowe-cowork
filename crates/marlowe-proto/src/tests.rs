@@ -108,6 +108,7 @@ fn every_event_round_trips_inside_an_envelope() {
         Event::TextDelta { session: sid(), turn: 1, text: "Hel".into() },
         Event::ReasoningDelta { session: sid(), turn: 1, text: "hm".into(), tokens: 1 },
         Event::TextRetracted { session: sid(), turn: 1, tokens: 2 },
+        Event::ToolPreparing { session: sid(), turn: 1, call_id: "c".into(), tool: "read".into() },
         Event::ToolStarted { session: sid(), turn: 1, call_id: "c".into(), tool: "read".into(), summary: "src/main.rs".into() },
         Event::ToolFinished { session: sid(), turn: 1, call_id: "c".into(), ok: true, summary: "41 lines".into() },
         Event::TurnFinished { session: sid(), turn: 1, usage: Usage { input: 3, ..Default::default() }, stop: TurnStop::Done },

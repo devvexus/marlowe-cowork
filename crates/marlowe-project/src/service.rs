@@ -846,10 +846,7 @@ pub fn relay_text(st: &ProjectState, dir: Option<&std::path::Path>, reason: Opti
                 out.push_str(&format!("{flagged} item(s) failed along the way; the report says what is missing.\n"));
             }
             if let Some(path) = deliverable(st) {
-                out.push_str(&format!("Report: {path}\n"));
-                if st.items_of_kind("deliverable").iter().any(|i| i.data.get("send").and_then(Value::as_bool) == Some(true)) {
-                    out.push_str("The user asked for the file: send it with send_file.\n");
-                }
+                out.push_str(&format!("Its report is already on screen: the purple **read report** button in the project's entry above opens it (file: {path}). Tell the user in one sentence that it is ready and where to click.\n"));
             }
         }
         _ => {

@@ -148,6 +148,9 @@ pub enum Event {
     ReasoningDelta { session: SessionId, turn: u32, text: String, tokens: u64 },
     /// Text already streamed in this model call was reasoning; move it to the thinking line.
     TextRetracted { session: SessionId, turn: u32, tokens: u64 },
+    /// The model began streaming a tool call's arguments (before `ToolStarted`, which comes once the
+    /// call is whole). `call_id` is empty when the provider names the call later.
+    ToolPreparing { session: SessionId, turn: u32, call_id: String, tool: String },
     ToolStarted { session: SessionId, turn: u32, call_id: String, tool: String, summary: String },
     ToolFinished { session: SessionId, turn: u32, call_id: String, ok: bool, summary: String },
     TurnFinished { session: SessionId, turn: u32, usage: Usage, stop: TurnStop },
@@ -456,6 +459,7 @@ impl Event {
             | Event::TextDelta { session, .. }
             | Event::ReasoningDelta { session, .. }
             | Event::TextRetracted { session, .. }
+            | Event::ToolPreparing { session, .. }
             | Event::ToolStarted { session, .. }
             | Event::ToolFinished { session, .. }
             | Event::TurnFinished { session, .. }

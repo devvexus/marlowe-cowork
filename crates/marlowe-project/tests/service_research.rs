@@ -112,10 +112,10 @@ fn a_natural_request_becomes_a_parked_plan_then_a_report_and_the_conversation_ge
     let e = &ended[0];
     assert_eq!((e.session.as_deref(), e.status, e.tainted), (Some("s_matthew"), ProjectStatus::Finished, true));
     assert!(e.text.starts_with(&format!("Project {} finished", made.id)), "{}", e.text);
-    let path = e.text.lines().find_map(|l| l.strip_prefix("Report: ")).expect("the path to the report");
+    let path = e.text.split("(file: ").nth(1).and_then(|r| r.split("). ").next()).expect("the path to the report");
     let report = std::fs::read_to_string(path).expect("the report exists at the path the relay names");
     assert!(report.contains("Qwen4") || report.contains("Kimi"), "{}", &report[..report.len().min(300)]);
-    assert!(e.text.contains("send it with send_file") && e.text.contains("web pages") && e.text.contains("project.json"), "{}", e.text);
+    assert!(e.text.contains("already on screen") && !e.text.contains("send_file") && e.text.contains("web pages") && e.text.contains("project.json"), "{}", e.text);
     assert!(e.text.contains("confidence"), "{}", e.text);
     // The relay is due until the conversation has it, then it is not.
     assert_eq!(svc.relays_due().len(), 1);

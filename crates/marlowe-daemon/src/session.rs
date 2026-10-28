@@ -747,6 +747,7 @@ fn to_event(session: &SessionId, turn: u32, window: u32, ev: AgentEvent) -> Opti
         AgentEvent::TextDelta(text) => Event::TextDelta { session, turn, text },
         AgentEvent::ReasoningDelta { text, tokens } => Event::ReasoningDelta { session, turn, text, tokens },
         AgentEvent::TextRetracted { tokens } => Event::TextRetracted { session, turn, tokens },
+        AgentEvent::ToolPreparing { call_id, tool } => Event::ToolPreparing { session, turn, call_id, tool },
         AgentEvent::ToolStarted { call_id, tool, summary } => Event::ToolStarted { session, turn, call_id, tool, summary },
         AgentEvent::ToolFinished { call_id, ok, summary } => Event::ToolFinished { session, turn, call_id, ok, summary },
         // Phases, the wire mark and the first-token stamp go through the turn's clock.
