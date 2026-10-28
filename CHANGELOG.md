@@ -4,6 +4,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+- **A request for a summary, report or overview with sources counts as research.** "Look into what is known about X and write me a summary with sources" did not name research, so with Teams off dawn searched by hand; it now starts a research project like any research request.
 - **A records column for a web address holds the page the row came from**, written by code (a model never writes an address); it held path fragments. A writer's stray "End" sentence (the form's END marker) is dropped.
 - **Every sentence a writer writes cites a claim, and a writer with nothing to say says so.** Constrained decoding now requires at least one claim per sentence (dawn left them all empty and a section failed), so an unsupported sentence is one the audit can check and cut; a writer that returns no sentences gives "Nothing the run read answers this." instead of a failed section.
 - **Report writers cite the claims they are shown, numbered from 1.** A 9b writer cited list positions (0, 1, 3) of claims shown as C10, C41 and C53, every number was unknown and two sections of a live report failed. Writers now see their claims numbered 1 to n, constrained decoding allows only those numbers, and code maps them to the report's numbers.

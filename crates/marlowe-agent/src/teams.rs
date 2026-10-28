@@ -54,13 +54,21 @@ pub const SUGGEST_REMINDER: &str = "<system-reminder>If this request is substant
 
 /// Whether the message asks for research or deep research. Whole words only: "research",
 /// "researching", "literature review", "state of the art"; not "researcher" or "re-search".
+/// Also a written answer backed by sources: a summary, report or overview, or to look into or
+/// find out about something, "with sources" or citations. Found live: "look into what is known
+/// about intermittent fasting and write me a summary with sources" went to the web by hand.
 pub fn is_research_request(text: &str) -> bool {
     let lower = text.to_lowercase();
-    let mut words = lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty());
-    words.any(|w| matches!(w, "research" | "researching" | "researched"))
+    let words: Vec<&str> = lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let has = |set: &[&str]| words.iter().any(|w| set.contains(w));
+    let named = has(&["research", "researching", "researched"])
         || lower.contains("literature review")
         || lower.contains("state of the art")
-        || lower.contains("state-of-the-art")
+        || lower.contains("state-of-the-art");
+    let sourced = has(&["sources", "citations", "cited"]) || lower.contains("with references");
+    let written = has(&["summary", "summarize", "summarise", "report", "overview", "investigate", "compile"])
+        || ["look into", "dig into", "find out", "what is known", "what's known", "write up", "write-up"].iter().any(|p| lower.contains(p));
+    named || (sourced && written)
 }
 
 /// Whether a message looks like work too big for one reply: a long message, or a shorter one
@@ -94,10 +102,21 @@ mod tests {
             "I want a literature review of pruning",
             "what is the state of the art in speculative decoding",
             "Researching this by hand is slow",
+            "Can you look into what is actually known about the health effects of intermittent fasting and write me a summary with sources?",
+            "What are the current best practices for storing lithium-ion batteries long term? Put together a short report with sources.",
+            "give me an overview of RISC-V vector extensions with citations",
         ] {
             assert!(is_research_request(yes), "{yes}");
         }
-        for no in ["fix the failing test", "the researcher notebook", "a re-search of the file tree", "search the web for kimi"] {
+        for no in [
+            "fix the failing test",
+            "the researcher notebook",
+            "a re-search of the file tree",
+            "search the web for kimi",
+            "summarize this file",
+            "look into why the build fails",
+            "list the sources of this crate",
+        ] {
             assert!(!is_research_request(no), "{no}");
         }
     }
