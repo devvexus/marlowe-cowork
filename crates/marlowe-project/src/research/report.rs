@@ -269,7 +269,8 @@ fn render_sentences(rows: &[&Map<String, Value>], allowed: &HashSet<u32>) -> (St
         urls |= u;
         let (t, _) = retain_markers(&t, &HashSet::new());
         let t = t.trim();
-        if t.is_empty() {
+        // Found live: a writer turned the form's END marker into a sentence of its own.
+        if t.is_empty() || t.trim_end_matches(|c: char| !c.is_alphanumeric()).eq_ignore_ascii_case("end") {
             continue;
         }
         let mut ns: Vec<u32> = r.get("claims").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64).map(|n| n as u32).collect();

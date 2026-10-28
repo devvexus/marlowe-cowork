@@ -21,7 +21,8 @@ use super::numbered::{fit, locate_quote};
 use super::{f, object, plain, plain_text, question_of, rows, s, u, Rejected, ResearchDeps};
 use crate::engine::fence;
 use crate::engine::{Finished, Prompt, RuleFailure, TaskInput, Toolbox};
-use crate::plan::Plan;
+use crate::form::FieldType;
+use crate::plan::{Plan, PlanField};
 
 /// Claims kept per source.
 pub const MAX_CLAIMS: usize = 8;
@@ -42,6 +43,13 @@ fn says_missing(v: &str) -> bool {
     let l = v.trim().trim_matches(|c: char| matches!(c, '[' | ']' | '(' | ')')).to_lowercase();
     matches!(l.as_str(), "unknown" | "n/a" | "na" | "none" | "null" | "unclear" | "tbd" | "-" | "?")
         || ["not specified", "not stated", "not given", "not mentioned", "not available", "not disclosed", "not provided", "unspecified"].iter().any(|p| l.contains(p))
+}
+
+/// A plan field that holds a web address. A model never writes one, so code writes the address of
+/// the page the row came from. Found live: a `source_url` column held path fragments (`/`,
+/// `/temperature-effects-...html`) left after the address was cut from the model's text.
+fn holds_address(pf: &PlanField) -> bool {
+    pf.ty == FieldType::Url || words(&pf.key).split(' ').any(|w| matches!(w, "url" | "link" | "website" | "homepage"))
 }
 
 /// `text` lowercased with every run of characters that are not letters or digits as one space,
@@ -259,6 +267,10 @@ fn finish(deps: &ResearchDeps, input: &TaskInput, map: Map<String, Value>) -> Re
             let mut row = Map::new();
             let mut any = false;
             for pf in &input.plan.fields {
+                if holds_address(pf) {
+                    row.insert(pf.key.clone(), json!(s(&page.data, "url")));
+                    continue;
+                }
                 let v = match r.get(&pf.key) {
                     Some(Value::String(t)) => {
                         let (c, dropped) = plain(t, pf.max_len.unwrap_or(120) as usize);
@@ -339,6 +351,16 @@ pub fn priority(source: &Map<String, Value>) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_field_that_holds_an_address_is_written_by_code() {
+        let field = |key: &str, ty: FieldType| PlanField { key: key.into(), label: key.into(), ty, values: vec![], max_len: Some(120) };
+        assert!(holds_address(&field("source_url", FieldType::String)));
+        assert!(holds_address(&field("homepage", FieldType::String)));
+        assert!(holds_address(&field("docs", FieldType::Url)));
+        assert!(!holds_address(&field("storage_temp_range_celsius", FieldType::String)));
+        assert!(!holds_address(&field("urlencoded_name", FieldType::String)));
+    }
+
     use super::*;
 
     /// Found live: an analyst filled `model_name` with "Kimi/Kimilab" and "Qwen/Alibaba", and added
