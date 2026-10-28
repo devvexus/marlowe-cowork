@@ -13,7 +13,7 @@ use crate::bg::{agent_alive, Bg, FindingSet, PlanAsk, ReportFile, ReportKind, TA
 use crate::coding::{Effect, LocalEvent};
 use crate::composer::Composer;
 use crate::panel::{edit_key, scroll_up_key, Panel, Scroll};
-use crate::state::{Focus, NoteTone, Overlay, State, APPROVAL_GUARD_MS};
+use crate::state::{Entry, Focus, NoteTone, Overlay, State, APPROVAL_GUARD_MS};
 
 // ---- /tasks ----------------------------------------------------------------------------------------
 
@@ -509,6 +509,45 @@ impl State {
             _ => {}
         }
         true
+    }
+
+    /// The sent file the Conversation box's cursor is on, by entry.
+    pub(crate) fn cursor_file(&self) -> Option<usize> {
+        let v = self.viewport.get();
+        let at = crate::state::pick_thought(&self.marks.borrow(), v.top, v.size.1 as usize, self.thought)?;
+        matches!(self.entries.get(at), Some(Entry::File { .. })).then_some(at)
+    }
+
+    /// Opens (or, with `reveal`, shows in Explorer) the file of entry `idx`: markdown in the report
+    /// reader, anything else with the system's own app.
+    pub(crate) fn open_sent_file(&mut self, idx: usize, reveal: bool, out: &mut Vec<Request>) {
+        let Some(Entry::File { file }) = self.entries.get(idx) else { return };
+        let path = file.path.clone();
+        let markdown = std::path::Path::new(&path).extension().is_some_and(|x| x.eq_ignore_ascii_case("md") || x.eq_ignore_ascii_case("markdown"));
+        if !markdown || reveal {
+            out.push(Request::OpenFile { path, reveal });
+            return;
+        }
+        match crate::projects::read_report(&path) {
+            Some(text) => self.open_panel(Panel::Report(crate::panel::ReportUi { project: String::new(), file: Some((path, text)), scroll: Scroll::default() }), out),
+            None => out.push(Request::OpenFile { path, reveal: false }),
+        }
+    }
+
+    /// Puts the path of the file of entry `idx` on the clipboard.
+    pub(crate) fn copy_sent_path(&mut self, idx: usize) {
+        if let Some(Entry::File { file }) = self.entries.get(idx) {
+            self.code.effects.push(Effect::CopyText { text: file.path.clone() });
+        }
+    }
+
+    /// Opens a tool call in full: its arguments and its output or diff. Between turns the stored
+    /// transcript is asked for first, when the live events gave only a line.
+    pub(crate) fn open_tool_call(&mut self, call_id: &str, out: &mut Vec<Request>) {
+        if self.live.is_none() {
+            self.refresh_tool_details(out);
+        }
+        self.open_panel(Panel::Call(crate::panel::CallUi { call_id: call_id.to_string(), scroll: Scroll::default() }), out);
     }
 
     /// The files sent in this session (newest first), else every one when no session is open.

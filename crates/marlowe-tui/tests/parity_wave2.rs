@@ -831,8 +831,12 @@ fn parity_BG8_a_sent_file_is_a_card_in_the_conversation_and_in_files() {
     let mut s = coding_session();
     feed(&mut s, 5, Event::FileSent { session: sid(), file: sent("loss.html") });
     let buf = palette_frame(&s);
-    for want in ["loss.html", "12 KB", "the loss curves for the last run", "outbox", "/files"] {
+    // One row: the name, and the path in parentheses at the right; no size, no description.
+    for want in ["loss.html", "(C:/Users/m/AppData/Local/MarloweCowork/outbox/5e55/loss.html)"] {
         assert!(contains(&buf, want), "{want:?}\n{}", dump(&buf));
+    }
+    for gone in ["12 KB", "the loss curves for the last run", "/files ·"] {
+        assert!(!contains(&buf, gone), "{gone:?}\n{}", dump(&buf));
     }
     assert!(matches!(s.entries.last(), Some(Entry::File { .. })));
     snapshot("file_card", &buf);

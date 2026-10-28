@@ -46,6 +46,7 @@ mod seq;
 mod strip;
 mod transcript;
 mod watch;
+mod work;
 
 use marlowe_surface::chrome::Ink;
 use marlowe_surface::{FocusLevel, Region, RegionId, Theme, MIN_COLS, MIN_ROWS};
@@ -462,7 +463,7 @@ fn box_hovered(state: &State, f: Focus) -> bool {
     match (&state.hover, f) {
         (Some(Target::Box(h)), _) => *h == f,
         (Some(Target::Tab(_)), Focus::Board) => true,
-        (Some(Target::Thought(_)), Focus::Conversation) => true,
+        (Some(Target::Thought(_) | Target::Tool(_) | Target::SentFile(_)), Focus::Conversation) => true,
         _ => false,
     }
 }
@@ -645,6 +646,9 @@ fn draw_conversation_box(g: &Geometry, state: &State, theme: &Theme, buf: &mut B
         let v = state.viewport.get();
         let cursor = crate::state::pick_thought(&state.marks.borrow(), v.top, v.size.1 as usize, state.thought);
         let keys = match cursor {
+            Some(e) if matches!(state.entries.get(e), Some(crate::state::Entry::File { .. })) => {
+                hints(&[("↑↓", "scroll"), ("⇧↑↓", "thoughts"), ("↵", "open"), ("r", "reveal"), ("y", "copy path"), ("i", "type")], theme)
+            }
             Some(e) => {
                 let fold = if state.thought_open(e) { "close" } else { "open" };
                 hints(&[("↑↓", "scroll"), ("⇧↑↓", "thoughts"), ("↵", fold), ("end", "latest"), ("i", "type")], theme)

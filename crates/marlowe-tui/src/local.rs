@@ -72,8 +72,36 @@ pub fn run(effect: Effect) -> Option<LocalEvent> {
             let result = read_text(Path::new(&path), READ_CAP);
             LocalEvent::ReportText { path, result }
         }
+        Effect::CopyText { text } => LocalEvent::Copied(copy_text(&text)),
         Effect::OpenEditor { .. } => return None,
     })
+}
+
+/// Puts `text` on the clipboard through the system's own tool (no window opens).
+#[cfg(windows)]
+fn copy_text(text: &str) -> Result<(), String> {
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", "Set-Clipboard -Value $env:MARLOWE_COPY_TEXT"]);
+    let spec = ChildSpec::new().with_env([("MARLOWE_COPY_TEXT".to_string(), text.to_string())]);
+    let limits = child::RunLimits { timeout: Duration::from_secs(10), max_output_bytes: 4096 };
+    match child::run(cmd, &spec, limits, &|| false) {
+        Ok(r) if r.code() == 0 => Ok(()),
+        Ok(r) if r.timed_out => Err("the clipboard did not answer".into()),
+        Ok(r) => Err(format!("clipboard helper exited {}", r.code())),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[cfg(not(windows))]
+fn copy_text(text: &str) -> Result<(), String> {
+    use std::io::Write;
+    for (prog, args) in [("wl-copy", &[][..]), ("xclip", &["-selection", "clipboard"][..])] {
+        let Ok(mut child) = Command::new(prog).args(args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() else { continue };
+        if child.stdin.take().is_some_and(|mut i| i.write_all(text.as_bytes()).is_ok()) && child.wait().is_ok_and(|s| s.success()) {
+            return Ok(());
+        }
+    }
+    Err("no clipboard tool (wl-copy or xclip) found".into())
 }
 
 /// Largest text file the client reads for a panel.

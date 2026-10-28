@@ -15,7 +15,7 @@
 │                                                                               █││                                    │
 │  Approve what we found, steer toward alternative angles (arxiv papers,        █││                                    │
 │  official blogs), keep researching deeper for these models only, or cancel?   █││                                    │
-│  ↳ project p_169ded79 · finished                                              █││                                    │
+│                                                                               █││                                    │
 │  ✓ p_169ded79 · research · finished · 00:00:43 · low confidence               █││                                    │
 │  ▏ The run found nothing verified that answers the objective.                 █││                                    │
 │  ▏ verified claims 0 · sources cited 0 · cited sentences 0 · removed sentenc… █││                                    │

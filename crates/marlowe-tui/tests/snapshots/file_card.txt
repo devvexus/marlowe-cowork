@@ -1,8 +1,8 @@
  * marlowe — gate work                                                                                         teams ○  0 runs · 0 need you
 ╭ Conversation · gate work ──────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
-│  ▪ loss.html · 12 KB                                                                           ││ Claude Sonnet 4.5 ▾             medium │
-│    the loss curves for the last run                                                            ││ ctx ────────────┊──── 0 / 200k · cloud │
-│    C:/Users/m/AppData/Local/MarloweCowork/outbox/5e55/loss.html  /files · ↵ open · r reveal    │╰────────────────────────────────── (m) ─╯
+│  loss.html                     (C:/Users/m/AppData/Local/MarloweCowork/outbox/5e55/loss.html)  ││ Claude Sonnet 4.5 ▾             medium │
+│                                                                                                ││ ctx ────────────┊──── 0 / 200k · cloud │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
 │                                                                                                │╭ Workspace ─────────────────────────────╮
 │                                                                                                ││ C:/work/valiance ▾                     │
 │                                                                                                │╰────────────────────────────────── (w) ─╯

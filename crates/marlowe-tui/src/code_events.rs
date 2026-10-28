@@ -255,6 +255,8 @@ impl State {
                 Ok(()) => self.flash(format!("wrote {}", crate::text::short_path(&path)), NoteTone::Dim),
                 Err(e) => self.flash(format!("could not write {}: {}", crate::text::short_path(&path), crate::text::clean(&e)), NoteTone::Amber),
             },
+            LocalEvent::Copied(Ok(())) => self.flash("copied the path", NoteTone::Dim),
+            LocalEvent::Copied(Err(e)) => self.flash(format!("could not copy: {}", crate::text::clean(&e)), NoteTone::Amber),
             LocalEvent::Instructions(files) => {
                 self.code.instructions = Some(files);
                 self.clamp_panel();

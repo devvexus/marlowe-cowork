@@ -112,16 +112,25 @@ fn parity_U1_an_edit_result_carries_its_diff_under_the_tool_line() {
     feed(&mut s, 3, tool_started("c1", "edit", "edit src/gate.rs"));
     feed(&mut s, 4, tool_finished("c1", true, "edited src/gate.rs · exact"));
     let before = dump(&palette_frame(&s));
-    assert!(before.contains("edit src/gate.rs") && !before.contains("x > 0.62"), "the live line alone has no diff\n{before}");
+    assert!(before.contains("edit  src/gate.rs") && !before.contains("edited src/gate.rs +") && !before.contains("x > 0.62"), "the live line alone has no diff\n{before}");
     let entries = s.entries.len();
     end_turn_and_fetch(&mut s, 5, &[(gate_edit(), "edited src/gate.rs · exact")]);
     let buf = palette_frame(&s);
     let text = dump(&buf);
-    // The gutter carries the file's line numbers, so match the sign and the text after it.
-    for want in ["edit src/gate.rs", "src/gate.rs  +1 −1", "−     x > 0.5", "+     x > 0.62", "fn gate(x: f32) -> bool {"] {
-        assert!(text.contains(want), "{want:?}\n{text}");
-    }
+    // The edit is one row outside the ticker; its diff is a click away.
+    assert!(text.contains("edit  src/gate.rs") && text.contains("edited src/gate.rs +1 −1"), "{text}");
+    assert!(!text.contains("x > 0.62"), "no diff body in the transcript\n{text}");
     snapshot("inline_diff", &buf);
+    let (x, y) = text.lines().enumerate().find_map(|(y, l)| l.find("edited src/gate.rs +1").map(|i| (l[..i].chars().count() as u16, y as u16))).unwrap();
+    s.on_mouse(
+        crossterm::event::MouseEvent { kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left), column: x, row: y, modifiers: crossterm::event::KeyModifiers::NONE },
+        ratatui::layout::Rect::new(0, 0, W, H),
+    );
+    let shown = dump(&palette_frame(&s));
+    // The gutter carries the file's line numbers, so match the sign and the text after it.
+    for want in ["call · edit src/gate.rs", "src/gate.rs  +1 −1", "−     x > 0.5", "+     x > 0.62", "fn gate(x: f32) -> bool {"] {
+        assert!(shown.contains(want), "{want:?}\n{shown}");
+    }
     // The conversation was not rebuilt, and the tool line is still one line.
     assert_eq!(s.entries.len(), entries + 2, "only the usage line and the no-reply note were added");
     assert_eq!(s.entries.iter().filter(|e| matches!(e, Entry::Tool { .. })).count(), 1);
@@ -136,7 +145,7 @@ fn parity_U1_a_long_diff_is_capped_with_the_way_to_the_rest() {
     feed(&mut s, 4, tool_finished("c1", true, "60 lines"));
     end_turn_and_fetch(&mut s, 5, &[(call, "60 lines")]);
     let buf = palette_frame(&s);
-    assert!(contains(&buf, "more rows") && contains(&buf, "^o shows all"), "{}", dump(&buf));
+    assert!(contains(&buf, "edited big.txt +60 −0"), "{}", dump(&buf));
     // The transcript view has them all.
     keys(&mut s, "ctrl-o");
     keys(&mut s, "home");
@@ -191,6 +200,9 @@ fn parity_U1_a_replayed_session_shows_the_diff_of_its_edits() {
             ],
         },
     );
+    let text = dump(&palette_frame(&s));
+    assert!(text.contains("edited src/gate.rs +1 −1"), "{text}");
+    keys(&mut s, "ctrl-o");
     let text = dump(&palette_frame(&s));
     assert!(text.contains("+     x > 0.62") && text.contains("−     x > 0.5"), "{text}");
 }
@@ -320,7 +332,7 @@ fn parity_U11_ctrl_o_shows_every_tool_call_in_full_and_ctrl_o_leaves() {
     feed(&mut s, 6, Event::TextDelta { session: sid(), turn: 1, text: "All thirty pass.".into() });
     let inline = palette_frame(&s);
     assert!(!contains(&inline, "case_17"), "the conversation shows the one line");
-    assert!(!contains(&inline, "The threshold is compared"), "thinking is collapsed");
+    assert!(!contains(&inline, "▏ The threshold is compared"), "thinking is collapsed");
     // Mid-turn the stored transcript has not got this turn yet: the view shows what the client has.
     keys(&mut s, "ctrl-o");
     let live = palette_frame(&s);

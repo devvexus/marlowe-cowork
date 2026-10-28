@@ -202,7 +202,7 @@ impl State {
             self.flash("this project wrote no report file", NoteTone::Amber);
             return;
         }
-        self.open_panel(Panel::Report(ReportUi { project: id.to_string(), scroll: Default::default() }), out);
+        self.open_panel(Panel::Report(ReportUi { project: id.to_string(), file: None, scroll: Default::default() }), out);
     }
 
     /// A click on something a project drew.

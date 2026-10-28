@@ -45,14 +45,24 @@ pub enum Panel {
     Bench(crate::bg_panels::BenchUi),
     Suggestions(crate::bg_panels::SuggestUi),
     Thread(crate::bg_panels::ThreadUi),
-    /// A project's report, read in place.
+    /// A project's report, or a markdown file the agent sent, read in place.
     Report(ReportUi),
+    /// One tool call in full: its arguments and its output or diff.
+    Call(CallUi),
 }
 
-/// A project's report open in a panel.
+/// A report open in a panel: a project's, or (`file`, with the path and the text) a sent file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReportUi {
     pub project: String,
+    pub file: Option<(String, String)>,
+    pub scroll: Scroll,
+}
+
+/// A tool call open in a panel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallUi {
+    pub call_id: String,
     pub scroll: Scroll,
 }
 
@@ -451,6 +461,7 @@ impl State {
             | Panel::Plan(_)
             | Panel::Suggestions(_)
             | Panel::Report(_)
+            | Panel::Call(_)
             | Panel::Thread(_) => {}
         }
         self.place_panel(p);
@@ -653,6 +664,7 @@ impl State {
             Panel::Suggestions(u) => self.suggestions_key(u, k, out),
             Panel::Thread(u) => self.thread_key(u, k, out),
             Panel::Report(u) => scroll_key(k, &mut u.scroll),
+            Panel::Call(u) => scroll_key(k, &mut u.scroll),
         };
         let was_question = matches!(panel, Panel::Question(_));
         let was_plan = matches!(panel, Panel::Plan(_));
@@ -712,6 +724,7 @@ impl State {
             Some(Panel::Bench(u)) if u.reading => u.scroll.by(if up { -3 } else { 3 }),
             Some(Panel::Thread(t)) => t.scroll.by(if up { 3 } else { -3 }),
             Some(Panel::Report(r)) => r.scroll.by(if up { -3 } else { 3 }),
+            Some(Panel::Call(c)) => c.scroll.by(if up { -3 } else { 3 }),
             _ => {}
         }
     }

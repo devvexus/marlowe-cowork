@@ -23,7 +23,7 @@
 │  multiple sources within resource limits given no single official confirmation appears available yet across all three vendors. Continue  ││                                                          │
 │  researching to resolve these conflicts before drafting? Or proceed with current verified details plus clearly documented gaps and       ││                                                          │
 │  contradictions where resolution failed?                                                                                                 ││                                                          │
-│  ↳ project p_fac325c3 · finished                                                                                                         ││                                                          │
+│                                                                                                                                          ││                                                          │
 │  ✓ p_fac325c3 · research · finished · 00:10:53 · medium confidence                                                                       ││                                                          │
 │  ▏ The latest coding model, Kimi K2.7 Code, was released specifically for code tasks one day prior to the announcement of the            ││                                                          │
 │  ▏ general-purpose models [1] (partly supported). Kimis newest open-weight offering is Kimi K3, a native multimodal agentic system that  ││                                                          │

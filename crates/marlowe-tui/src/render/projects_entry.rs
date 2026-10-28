@@ -763,27 +763,35 @@ pub fn entry_hits(state: &State, id: &str, theme: &Theme, pane: Rect, tw: usize,
     register_hits(state, &block, first, top, pane);
 }
 
+/// A project's end ("… finished", "… failed", "… cancelled"): the relay label of its completion.
+fn is_completion(label: &str) -> bool {
+    let l = label.trim_end();
+    [ProjectStatus::Finished, ProjectStatus::Failed, ProjectStatus::Cancelled].iter().any(|s| l.ends_with(s.as_str()))
+}
+
+/// The relay of a project's end, whose own entry in the transcript says all it would: it draws no
+/// row (the entry's header reads `✓ p_… · research · finished`).
+pub fn completion_shown(state: &State, idx: usize, label: &str) -> bool {
+    is_completion(label) && relay_label_only(state, idx, label)
+}
+
 /// A relay's label row only (`idx` is its place in the transcript): the project's entry already
 /// shows what the lead said. That holds for the notes of a project (while it runs and once its
 /// result stands in the transcript) and for the completion relay of its latest run. The completion
 /// relay of an earlier run keeps its text while the project runs again, and next to a newer result.
 pub fn relay_label_only(state: &State, idx: usize, label: &str) -> bool {
-    let completion = |label: &str| {
-        let l = label.trim_end();
-        [ProjectStatus::Finished, ProjectStatus::Failed, ProjectStatus::Cancelled].iter().any(|s| l.ends_with(s.as_str()))
-    };
     state.projects.loaded.iter().any(|l| {
         let id = &l.state.id;
         if !label.contains(id.as_str()) {
             return false;
         }
-        if !completion(label) {
+        if !is_completion(label) {
             return !l.is_final() || state.entries.iter().any(|e| matches!(e, Entry::Project { id: p } if p == id));
         }
         if !l.is_final() {
             return false;
         }
-        let latest = state.entries.iter().rposition(|e| matches!(e, Entry::News { label, .. } if label.contains(id.as_str()) && completion(label)));
+        let latest = state.entries.iter().rposition(|e| matches!(e, Entry::News { label, .. } if label.contains(id.as_str()) && is_completion(label)));
         latest == Some(idx) && state.entries.iter().any(|e| matches!(e, Entry::Project { id: p } if p == id))
     })
 }

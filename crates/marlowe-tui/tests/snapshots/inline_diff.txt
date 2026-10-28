@@ -1,14 +1,14 @@
  * marlowe — gate work                                                                                         teams ○  0 runs · 0 need you
 ╭ Conversation · gate work ──────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
 │  you  fix the gate                                                                             ││ Claude Sonnet 4.5 ▾             medium │
-│  ⋯ edit src/gate.rs · edited src/gate.rs · exact                                               ││ ctx ────────────┊──── 0 / 200k · cloud │
-│      src/gate.rs  +1 −1                                                                        │╰────────────────────────────────── (m) ─╯
-│        fn gate(x: f32) -> bool {                                                               │╭ Workspace ─────────────────────────────╮
-│      −     x > 0.5                                                                             ││ C:/work/valiance ▾                     │
-│      +     x > 0.62                                                                            │╰────────────────────────────────── (w) ─╯
-│        }                                                                                       │╭ Crew ──────────────────────────────────╮
-│  · ended without a reply                                                                       ││ no runs                                │
-│                                                 12.4k in · 830 out · 1.2k reasoning · $0.0496  │╰────────────────────────────────── (1) ─╯
+│  ▸ thought · 1 tool                                                                            ││ ctx ────────────┊──── 0 / 200k · cloud │
+│    └ edit  src/gate.rs   ✓ edited src/gate.rs · exact                                          │╰────────────────────────────────── (m) ─╯
+│  edited src/gate.rs +1 −1                                                                      │╭ Workspace ─────────────────────────────╮
+│  · ended without a reply                                                                       ││ C:/work/valiance ▾                     │
+│                                                 12.4k in · 830 out · 1.2k reasoning · $0.0496  │╰────────────────────────────────── (w) ─╯
+│                                                                                                │╭ Crew ──────────────────────────────────╮
+│                                                                                                ││ no runs                                │
+│                                                                                                │╰────────────────────────────────── (1) ─╯
 │                                                                                                │╭ Watch ─────────────────────────────────╮
 │                                                                                                ││ nothing watched                        │
 │                                                                                                ││                                        │

@@ -103,7 +103,7 @@ impl Rig {
         let (y, line) = text
             .lines()
             .enumerate()
-            .filter(|(_, l)| l.contains("▸ thought") || l.contains("▸ reasoning"))
+            .filter(|(_, l)| l.contains("▸ thought") || l.contains("▸ thinking"))
             .nth(n)
             .unwrap_or_else(|| panic!("no fold header #{n}:\n{text}"));
         let x = line.chars().position(|c| c == '▸').unwrap();
@@ -421,9 +421,10 @@ fn nothing_is_shown_twice_while_the_model_thinks() {
     for ms in [2_700, 3_500, 9_000] {
         r.strip(ms);
         let text = r.frame(ms + 1);
-        assert_eq!(times(&text, "thinking"), 1, "the strip says thinking, the block is only its handle:\n{text}");
-        assert_eq!(times(&text, "▸ reasoning"), 1, "{text}");
-        assert!(!text.contains("tok") || times(&text, " tok") == 1, "the token count is in one place:\n{text}");
+        // The strip is the live activity; the block above it is the turn's ticker, with its own header.
+        assert_eq!(times(&text, "▸ thinking"), 1, "{text}");
+        assert_eq!(times(&text, "thinking"), 2, "the strip says thinking once and the ticker once:\n{text}");
+        assert!(times(&text, " tok ") <= 1, "the strip's token count is in one place:\n{text}");
         assert!(!text.contains("read 8.2k") && !combined(&text), "the read is not shown beside it:\n{text}");
     }
 }
@@ -482,7 +483,7 @@ fn a_later_step_reads_only_what_is_new_and_says_what_was_cached() {
     r.at(5_300, Event::ReasoningDelta { session: sid(), turn: 2, text: "b".into(), tokens: 2 });
     let end = PhaseEvent::end(PhaseKind::Prefill, 290).with_done(1_200).with_total(9_400).with_cached(8_200).unit("tok");
     r.phase(5_400, 2, end);
-    r.open_fold(5_401, 1);
+    r.open_fold(5_401, 0);
     let text = r.frame(5_402);
     assert!(text.contains("read +1.2k (8.2k cached) · 290ms"), "{text}");
     assert!(!combined(&text), "{text}");
@@ -519,7 +520,7 @@ fn thinking_and_writing_have_their_own_inks_and_a_tool_is_green() {
     let (first, _) = r.strip(15_300);
     assert!(first.contains("running · 12.0s"), "the tool's elapsed ticks: {first}");
     let text = r.frame(15_301);
-    assert_eq!(times(&text, "bash cargo test"), 1, "the call is named once, in the transcript:\n{text}");
+    assert_eq!(times(&text, "└ bash  cargo test"), 1, "the call is named once, in the ticker:\n{text}");
 }
 
 #[test]
@@ -837,7 +838,7 @@ fn the_thought_header_keeps_the_rate_on_one_row_and_the_read_lives_under_it() {
     r.at(6_600, Event::TextDelta { session: sid(), turn: 2, text: "Done.".into() });
     r.at(7_100, Event::TurnFinished { session: sid(), turn: 2, usage: usage(), stop: TurnStop::Done });
     let text = r.frame(8_000);
-    assert!(text.contains("▸ thought 4.1s · 312 tok · 76 tok/s"), "{text}");
+    assert!(text.contains("▸ thought 4.1s · 312 tokens · 76 tok/s"), "{text}");
     assert!(!text.contains("read 8.2k") && !combined(&text), "closed, the block hides the read:\n{text}");
     r.open_fold(8_001, 0);
     assert!(r.frame(8_002).contains("read 8.2k · 1.9s"), "opened, it shows the read");

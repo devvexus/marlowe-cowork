@@ -1,0 +1,30 @@
+ * marlowe — tonight                                                                       teams ○  0 runs · 0 need you
+╭ Conversation · tonight ────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────╮
+│  itself on whether a distinct "Qwen 4" even exists as an announced product,   │││ Claude Sonnet 4.5 ▾         medium │
+│  so we lack confirmed technical specs.\n\nShould I approve this with what we  │││ ctx ─────────┊─── 0 / 200k · cloud │
+│  have, continue digging specifically at Qwen sources, steer me elsewhere if   ││╰────────────────────────────── (m) ─╯
+│  you want another focus, or cancel?                                           ││╭ Workspace ─────────────────────────╮
+│                                                                               │││ C:/work/valiance ▾                 │
+│  ✓ p_1ed1613c · research · finished · 00:14:12 · low confidence               ││╰────────────────────────────── (w) ─╯
+│  ▏ ✗ not written: section 2 · form rule `cites_claims` rejected the reply on… ││╭ 1 Projects 2 3 4 ──────────────────╮
+│  ▏ Kimi's latest release, K3.1 Pro, is positioned as its strongest model to   │││ ✓ Research latest upc… 14:12 low   │
+│  ▏ date with a confirmed context window of one million tokens and an          │││                                    │
+│  ▏ approximate parameter count in the trillion range [1, 2]. DeepSeek models  │││                                    │
+│  ▏ are currently available via Workers AI without requiring setup or…         │││                                    │
+│  ▏ verified claims 69 · sources cited 23 · cited sentences 24 · removed sent… │││                                    │
+│  ▏ records 64 rows · Model name · Release status · Specifications  in the re… │││                                    │
+│  ▏ report  …a87535b8a3c\scratchpad\live\r1\home\projects\p_1ed1613c\report.md │││                                    │
+│    read report                                                14 failed items █││                                    │
+│                                                                               █││                                    │
+│  ▸ thought · 121 tokens                                                       █││                                    │
+│  report.md  (…live\r1\home\outbox\20d80460327b41c2a64f12ffc9b56258\report.md) █││                                    │
+│                                                                               █││                                    │
+│  Sent to you. Report covers Kimi K3.1 Pro (confirmed 1M context),             █││                                    │
+│  DeepSeek-V4.1 Flash preview, and Qwen releases; about half the search paths  █││                                    │
+│  failed due to conflicting or missing source data for certain announced       █││                                    │
+│  features.\n\nDone here unless you want a new focus.                          █││                                    │
+╰────────────────────────────────────────────────────────────────────────── (c) ─╯│                                    │
+╭ Message ───────────────────────────────────────────────────────────────────────╮│                                    │
+│ › message Marlowe…                                      ⇧↵ newline · esc boxes ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────── (1-4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette      21:40

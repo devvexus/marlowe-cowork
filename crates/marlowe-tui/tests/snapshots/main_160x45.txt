@@ -2,11 +2,11 @@
 ╭ Conversation · what changed in the gate overnight? ──────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ───────────────────────────────────────╮
 │  you  what changed in the gate overnight?                                                                    ││ Claude Sonnet 4.5 ▾                   medium │
 │  ⋯ recall · 3 memories · valiance gate threshold history                                                     ││ ctx ────────────────┊────── 0 / 200k · cloud │
-│  ⋯ bash git log --since=yesterday · 3 commits                                                                │╰──────────────────────────────────────── (m) ─╯
-│                                                                                                              │╭ Workspace ───────────────────────────────────╮
-│  Two commits touched the gate: the threshold moved to 0.42, and the eval harness now pins the tokenizer.     ││ C:/work/valiance ▾                           │
-│                                                               12.4k in · 830 out · 1.2k reasoning · $0.0496  │╰──────────────────────────────────────── (w) ─╯
-│                                                                                                              │╭ Crew ────────────────────────── 1 needs you ─╮
+│  ▸ thought · 1 tool                                                                                          │╰──────────────────────────────────────── (m) ─╯
+│    └ bash  git log --since=yesterday   ✓ 3 commits                                                           │╭ Workspace ───────────────────────────────────╮
+│                                                                                                              ││ C:/work/valiance ▾                           │
+│  Two commits touched the gate: the threshold moved to 0.42, and the eval harness now pins the tokenizer.     │╰──────────────────────────────────────── (w) ─╯
+│                                                               12.4k in · 830 out · 1.2k reasoning · $0.0496  │╭ Crew ────────────────────────── 1 needs you ─╮
 │                                                                                                              ││ ◐ engineer · fix the gate threshold off-by…  │
 │                                                                                                              ││   waiting on you                             │
 │                                                                                                              ││ ● researcher · LoRA rank ablations for 22B…  │

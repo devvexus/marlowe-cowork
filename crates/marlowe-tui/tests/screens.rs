@@ -133,10 +133,10 @@ fn streamed_turn() -> State {
 }
 
 /// ui-preview5: "a tool call directly under thinking (when thinking is expanded) reads as thinking
-/// (same colour)". Expanded, the reasoning is the dim weight behind a dimmer rule and ends with a
-/// blank row; the call under it has the accent's marker and the body weight.
+/// (same colour)". Expanded, the turn is one narrative: the reasoning is the dim weight behind a
+/// dimmer rule and the call under it has the accent's marker and the body weight.
 #[test]
-fn a_tool_call_under_expanded_thinking_has_its_own_ink_and_a_boundary() {
+fn a_tool_call_under_expanded_thinking_has_its_own_ink() {
     use marlowe_surface::chrome::Ink;
     let mut s = streamed_turn();
     feed(&mut s, 6, Event::ToolStarted { session: sid(), turn: 1, call_id: "c1".into(), tool: "bash".into(), summary: "bash git log --since=yesterday".into() });
@@ -146,10 +146,9 @@ fn a_tool_call_under_expanded_thinking_has_its_own_ink_and_a_boundary() {
     let text = dump(&buf);
     let rows: Vec<&str> = text.lines().collect();
     let think = rows.iter().position(|r| r.contains("Check the log and the gate module.")).expect(&text);
-    let tool = rows.iter().position(|r| r.contains("⋯ bash git log --since=yesterday")).expect(&text);
-    assert_eq!(tool, think + 2, "one blank row between the reasoning and the call:
+    let tool = rows.iter().position(|r| r.contains("› bash  git log --since=yesterday   ✓ 3 commits")).expect(&text);
+    assert_eq!(tool, think + 1, "the call follows the reasoning it came from:
 {text}");
-    assert!(!rows[think + 1].contains('▏') && !rows[think + 1].contains('⋯'), "{text}");
     let th = theme();
     let cell_of = |row: usize, needle: &str| {
         let x = (0..buf.area.width)
@@ -165,31 +164,32 @@ fn a_tool_call_under_expanded_thinking_has_its_own_ink_and_a_boundary() {
     };
     assert_eq!(cell_of(think, "Check").fg, Ink::Dim.color(&th), "reasoning is the dim weight");
     assert_eq!(cell_of(think, "▏").fg, Ink::Dimmer.color(&th));
-    assert_eq!(cell_of(tool, "⋯").fg, Ink::Accent.color(&th), "the call's marker is the accent");
-    assert_eq!(cell_of(tool, "bash git").fg, Ink::Body.color(&th), "the call is the body weight");
-    assert_ne!(cell_of(tool, "bash git").fg, cell_of(think, "Check").fg);
+    assert_eq!(cell_of(tool, "›").fg, Ink::Accent.color(&th), "the call's marker is the accent");
+    assert_eq!(cell_of(tool, "bash").fg, Ink::Body.color(&th), "the call is the body weight");
+    assert_eq!(cell_of(tool, "✓").fg, Ink::Green.color(&th), "a call that worked is green");
+    assert_ne!(cell_of(tool, "bash").fg, cell_of(think, "Check").fg);
     assert_palette_only(&buf);
 
-    // Folded, the call sits straight under the marker as before.
+    // Folded, the latest call sits straight under the header.
     s.on_key(ctrl('t'));
     let text = dump(&render(&s, W, H));
     let rows: Vec<&str> = text.lines().collect();
-    let mark = rows.iter().position(|r| r.contains("▸ thought")).expect(&text);
-    assert!(rows[mark + 1].contains("⋯ bash git log"), "{text}");
+    let mark = rows.iter().position(|r| r.contains("▸ thinking")).expect(&text);
+    assert!(rows[mark + 1].contains("└ bash  git log --since=yesterday   ✓ 3 commits"), "{text}");
 }
 
 #[test]
 fn streamed_turn_with_thinking_tools_and_markdown() {
     let mut s = streamed_turn();
     let buf = render(&s, W, H);
-    assert!(contains(&buf, "▸ reasoning"), "{}", dump(&buf));
+    assert!(contains(&buf, "▸ thinking · 1.2k tokens  ") && contains(&buf, "Check the log and the gate module."), "{}", dump(&buf));
     assert!(contains(&buf, "thinking"), "title bar activity");
 
     feed(&mut s, 6, Event::ToolStarted { session: sid(), turn: 1, call_id: "c1".into(), tool: "bash".into(), summary: "bash git log --since=yesterday".into() });
     feed(&mut s, 7, Event::ToolStarted { session: sid(), turn: 1, call_id: "c2".into(), tool: "read".into(), summary: "read src/gate.rs".into() });
     let buf = render(&s, W, H);
-    assert!(contains(&buf, "▸ thought · 1,204 tokens"), "thinking closes when a tool starts");
-    assert!(contains(&buf, "⋯ read src/gate.rs …"));
+    assert!(contains(&buf, "▸ thinking · 2 tools · 1.2k tokens"), "the ticker counts the calls");
+    assert!(contains(&buf, "└ 2 running · bash, read"), "calls that overlap share the row");
     assert!(contains(&buf, "working"));
     snapshot("streamed_turn_running", &buf);
 
@@ -210,8 +210,8 @@ fn streamed_turn_with_thinking_tools_and_markdown() {
     let buf = render(&s, W, H);
     let text = dump(&buf);
     assert!(text.contains("you  what changed in the gate overnight?"));
-    assert!(text.contains("⋯ bash git log --since=yesterday · 3 commits"));
-    assert!(text.contains("⋯ read src/gate.rs · file not found"));
+    assert!(text.contains("▸ thought · 2 tools"), "settled, the ticker says what the turn did");
+    assert!(text.contains("└ read  src/gate.rs   ✗ file not found"), "and keeps the last call with its end");
     assert!(text.contains("Overnight"), "markdown heading");
     assert!(!text.contains("## Overnight"), "markdown is rendered, not shown raw");
     assert!(text.contains("12.4k in · 830 out · 1.2k reasoning · $0.0496"));
@@ -222,8 +222,9 @@ fn streamed_turn_with_thinking_tools_and_markdown() {
     // ^t opens the thinking.
     s.on_key(ctrl('t'));
     let buf = render(&s, W, H);
-    assert!(contains(&buf, "▾ thought · 1,204 tokens"));
+    assert!(contains(&buf, "▾ thought · 2 tools"));
     assert!(contains(&buf, "Check the log and the gate module."));
+    assert!(contains(&buf, "› bash  git log --since=yesterday   ✓ 3 commits") && contains(&buf, "› read  src/gate.rs   ✗ file not found"), "{}", dump(&buf));
 }
 
 #[test]

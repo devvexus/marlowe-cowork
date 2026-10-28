@@ -664,8 +664,15 @@ fn is_reference_line(line: &str) -> bool {
 /// The report as lines in Marlowe's voice colour (the markdown renderer's own styles). Each
 /// `[n] …` reference renders on its own, so the list stays one entry to a row.
 pub fn report_lines(l: &Loaded, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    match report_text(l) {
+        Some(t) => markdown_lines(&t, width, theme),
+        None => Vec::new(),
+    }
+}
+
+/// Markdown text as lines in Marlowe's voice colour, a reference to a row (a report, or a sent file).
+pub fn markdown_lines(t: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let base = Style::default().fg(theme.speech());
-    let Some(t) = report_text(l) else { return Vec::new() };
     let mut rendered: Vec<Line<'static>> = Vec::new();
     let mut chunk = String::new();
     for line in t.lines() {

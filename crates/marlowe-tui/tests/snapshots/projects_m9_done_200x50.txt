@@ -20,7 +20,7 @@
 │  The project has completed data collection but cannot confirm which three libraries are actually ranked #1-3 by GitHub stars—the         ││                                                          │
 │  primary metric needed for an accurate comparison table is missing from available sources. I can proceed with a partial report using     ││                                                          │
 │  best-available candidates (Ratatui and crossterm) or extend the search; approve, steer, cancel?                                         ││                                                          │
-│  ↳ project p_e8b7fc7e · finished                                                                                                         ││                                                          │
+│                                                                                                                                          ││                                                          │
 │  ✓ p_e8b7fc7e · research · finished · 00:09:58 · low confidence                                                                          ││                                                          │
 │  ▏ Ratatui is confirmed as one of the top Rust TUI libraries by GitHub stars, gathering over 22,400 recorded stars [1].                  ││                                                          │
 │  ▏ verified claims 21 · sources cited 3 · cited sentences 7 · removed sentences 4                                                        ││                                                          │

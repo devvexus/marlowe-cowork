@@ -637,7 +637,7 @@ impl State {
     }
 }
 
-fn read_report(path: &str) -> Option<String> {
+pub(crate) fn read_report(path: &str) -> Option<String> {
     use std::io::Read;
     let f = std::fs::File::open(path).ok()?;
     let mut s = String::new();

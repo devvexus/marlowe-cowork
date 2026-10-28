@@ -45,6 +45,8 @@ pub enum Effect {
     ListReports,
     /// Read one of them.
     ReadReport { path: String },
+    /// Put `text` on the clipboard.
+    CopyText { text: String },
 }
 
 /// Where an image came from.
@@ -77,6 +79,8 @@ pub enum LocalEvent {
     FileText { path: String, result: Result<String, String> },
     Reports(Vec<crate::bg::ReportFile>),
     ReportText { path: String, result: Result<String, String> },
+    /// The clipboard took the text, or why not.
+    Copied(Result<(), String>),
 }
 
 /// An `ask_user` that arrived while another question or panel was up.
@@ -270,6 +274,13 @@ pub struct Coding {
     pub cost: Option<CostReport>,
     pub instructions: Option<Vec<crate::coding::InstructionFile>>,
     pub tool_detail: HashMap<String, ToolDetail>,
+    /// Calls whose arguments the model is still streaming (a call the provider has not named yet
+    /// is `~` and its entry's place), oldest first.
+    pub preparing: Vec<String>,
+    /// When each call started and ended, on the daemon's clock (ms).
+    pub tool_times: HashMap<String, (i64, Option<i64>)>,
+    /// The file a running `send_file` announced: its tool line becomes the file's when the call ends.
+    pub sent: HashMap<String, marlowe_proto::SentFile>,
     /// Bumped whenever a tool call's diff may have changed: the transcript's layout is keyed on it.
     pub detail_gen: u64,
     /// The live events carry one line per call, so the arguments and results come from the stored

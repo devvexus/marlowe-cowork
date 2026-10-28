@@ -1,18 +1,18 @@
  * marlowe — what changed in the gate overnight?                                                               teams ○  0 runs · 0 need you
 ╭ Conversation · what changed in the gate overnight? ────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
 │  you  what changed in the gate overnight?                                                      ││ Claude Sonnet 4.5 ▾             medium │
-│  ▸ thought · 1,204 tokens                                                                      ││ ctx ────────────┊──── 0 / 200k · cloud │
-│  ⋯ bash git log --since=yesterday · 3 commits                                                  │╰────────────────────────────────── (m) ─╯
-│  ⋯ read src/gate.rs · file not found                                                           │╭ Workspace ─────────────────────────────╮
-│                                                                                                ││ C:/work/valiance ▾                     │
-│  Overnight                                                                                     │╰────────────────────────────────── (w) ─╯
-│                                                                                                │╭ Crew ──────────────────────────────────╮
-│  Two commits touched the gate:                                                                 ││ no runs                                │
-│  • gate.rs moved the threshold to 0.42                                                         │╰────────────────────────────────── (1) ─╯
-│  • the eval harness now pins the tokenizer                                                     │╭ Watch ─────────────────────────────────╮
-│                                                                                                ││ nothing watched                        │
-│  The read of src/gate.rs failed — the file moved to crates/gate/src/lib.rs.                    ││                                        │
+│  ▸ thought · 2 tools                                                                           ││ ctx ────────────┊──── 0 / 200k · cloud │
+│    └ read  src/gate.rs   ✗ file not found                                                      │╰────────────────────────────────── (m) ─╯
+│                                                                                                │╭ Workspace ─────────────────────────────╮
+│  Overnight                                                                                     ││ C:/work/valiance ▾                     │
+│                                                                                                │╰────────────────────────────────── (w) ─╯
+│  Two commits touched the gate:                                                                 │╭ Crew ──────────────────────────────────╮
+│  • gate.rs moved the threshold to 0.42                                                         ││ no runs                                │
+│  • the eval harness now pins the tokenizer                                                     │╰────────────────────────────────── (1) ─╯
+│                                                                                                │╭ Watch ─────────────────────────────────╮
+│  The read of src/gate.rs failed — the file moved to crates/gate/src/lib.rs.                    ││ nothing watched                        │
 │                                                 12.4k in · 830 out · 1.2k reasoning · $0.0496  ││                                        │
+│                                                                                                ││                                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │

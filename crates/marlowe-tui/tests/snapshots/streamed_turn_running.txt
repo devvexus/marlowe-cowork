@@ -1,10 +1,10 @@
  * marlowe — what changed in the gate overnight?                                                               teams ○  0 runs · 0 need you
 ╭ Conversation · what changed in the gate overnight? ─────────────────────────── ⣦⣤⣤⣤⣴⣿ working ─╮╭ Model ─────────────────────────────────╮
 │  you  what changed in the gate overnight?                                                      ││ Claude Sonnet 4.5 ▾             medium │
-│  ▸ thought · 1,204 tokens                                                                      ││ ctx ────────────┊──── 0 / 200k · cloud │
-│  ⋯ bash git log --since=yesterday …                                                            │╰────────────────────────────────── (m) ─╯
-│  ⋯ read src/gate.rs …                                                                          │╭ Workspace ─────────────────────────────╮
-│  ⣾ running ·   0ms  +1                                                                         ││ C:/work/valiance ▾                     │
+│  ▸ thinking · 2 tools · 1.2k tokens  … the overnight diff. Check the log and the gate module.  ││ ctx ────────────┊──── 0 / 200k · cloud │
+│    └ 2 running · bash, read                                                                    │╰────────────────────────────────── (m) ─╯
+│  ⣾ running ·   0ms  +1                                                                         │╭ Workspace ─────────────────────────────╮
+│                                                                                                ││ C:/work/valiance ▾                     │
 │                                                                                                │╰────────────────────────────────── (w) ─╯
 │                                                                                                │╭ Crew ──────────────────────────────────╮
 │                                                                                                ││ no runs                                │

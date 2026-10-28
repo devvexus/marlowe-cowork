@@ -467,6 +467,8 @@ impl State {
             // A fold marker opens or closes its block where it is; the keys stay where they were,
             // so Enter in the Message box still sends.
             Target::Thought(entry) => self.toggle_thought(entry),
+            Target::Tool(call_id) => self.open_tool_call(&call_id, out),
+            Target::SentFile(entry) => self.open_sent_file(entry, false, out),
             Target::Proj(t) => self.proj_click(t, out),
             Target::Button(_) | Target::ChoiceButton(_) | Target::PlanCell(..) | Target::PlanField(_) | Target::Remember => {}
         }
@@ -475,7 +477,7 @@ impl State {
     /// Opens or closes reasoning block `entry`. The next frame keeps its marker on the row it was
     /// drawn on, so only the lines under it move.
     pub(crate) fn toggle_thought(&mut self, entry: usize) {
-        if !matches!(self.entries.get(entry), Some(Entry::Thinking { .. })) {
+        if !matches!(self.entries.get(entry), Some(Entry::Thinking { .. } | Entry::Tool { .. })) {
             return;
         }
         let open = self.thought_open(entry);
@@ -1150,8 +1152,19 @@ impl State {
                 let v = self.viewport.get();
                 let marks = self.marks.borrow().clone();
                 match pick_thought(&marks, v.top, v.size.1 as usize, self.thought) {
+                    Some(entry) if matches!(self.entries.get(entry), Some(Entry::File { .. })) => self.open_sent_file(entry, false, out),
                     Some(entry) => self.toggle_thought(entry),
                     None => self.focus = Focus::Message,
+                }
+            }
+            // On a sent file's row: r shows it in Explorer, y copies its path.
+            KeyCode::Char(c @ ('r' | 'y')) if focus == Focus::Conversation && !ctrl && self.cursor_file().is_some() => {
+                if let Some(entry) = self.cursor_file() {
+                    if c == 'r' {
+                        self.open_sent_file(entry, true, out);
+                    } else {
+                        self.copy_sent_path(entry);
+                    }
                 }
             }
             KeyCode::Enter => match focus {

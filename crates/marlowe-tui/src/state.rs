@@ -181,6 +181,15 @@ pub struct Mark {
     pub line: usize,
 }
 
+/// A click target on a laid-out transcript row: columns `x..x + w` of transcript line `line`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowHit {
+    pub line: usize,
+    pub x: u16,
+    pub w: u16,
+    pub target: Target,
+}
+
 /// A fold just toggled: the next frame draws its marker on the same pane row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Anchor {
@@ -339,6 +348,10 @@ pub enum Target {
     Remember,
     /// Something a project drew: a card button, a board row.
     Proj(crate::projects::ProjTarget),
+    /// A tool call's line in the transcript (an inline call, an edit): opens its output or diff.
+    Tool(String),
+    /// A sent file's name, by entry index: opens it.
+    SentFile(usize),
 }
 
 /// A palette command.
@@ -1050,6 +1063,8 @@ impl State {
         self.thinking_since = None;
         self.usage_at.clear();
         self.engine_notes.clear();
+        self.code.preparing.clear();
+        self.code.sent.clear();
     }
 
     /// Clears the conversation for a new session.
@@ -1289,16 +1304,31 @@ impl State {
                     }
                 }
             }
+            Event::ToolPreparing { session, call_id, tool, .. } if self.mine(session) => {
+                self.close_thinking(at_ms);
+                // Its line stands from the first byte of the call; `ToolStarted` fills it in.
+                let key = if call_id.is_empty() { format!("~{}", self.entries.len()) } else { call_id.clone() };
+                self.code.tool_detail.entry(key.clone()).or_default().tool = tool.clone();
+                self.code.tool_times.insert(key.clone(), (at_ms, None));
+                self.code.preparing.push(key.clone());
+                self.entries.push(Entry::Tool { call_id: key, summary: tool.clone(), status: ToolStatus::Running });
+            }
             Event::ToolStarted { session, call_id, tool, summary, .. } if self.mine(session) => {
                 self.close_thinking(at_ms);
                 self.strip.tool_started(call_id, summary, at_ms);
-                self.record_tool_start(call_id, tool, summary);
                 let summary = if summary.trim().is_empty() { tool.clone() } else { summary.clone() };
-                self.entries.push(Entry::Tool {
-                    call_id: call_id.clone(),
-                    summary,
-                    status: ToolStatus::Running,
-                });
+                match self.take_preparing(call_id, tool) {
+                    Some(at) => {
+                        if let Some(Entry::Tool { call_id: c, summary: s, .. }) = self.entries.get_mut(at) {
+                            *c = call_id.clone();
+                            *s = summary.clone();
+                        }
+                    }
+                    None => self.entries.push(Entry::Tool { call_id: call_id.clone(), summary: summary.clone(), status: ToolStatus::Running }),
+                }
+                let started = self.code.tool_times.get(call_id).map_or(at_ms, |t| t.0);
+                self.code.tool_times.insert(call_id.clone(), (started, None));
+                self.record_tool_start(call_id, tool, &summary);
             }
             Event::ToolFinished { session, call_id, ok, summary, .. } if self.mine(session) => {
                 // The first line is the tool line; any more is the call's output or its diff.
@@ -1310,17 +1340,23 @@ impl State {
                 } else {
                     ToolStatus::Failed(first)
                 };
-                let found = self.entries.iter_mut().rev().find_map(|e| match e {
-                    Entry::Tool { call_id: c, status: s, .. } if c == call_id => Some(s),
-                    _ => None,
-                });
-                match found {
-                    Some(s) => *s = status,
-                    None => self.entries.push(Entry::Tool {
-                        call_id: call_id.clone(),
-                        summary: call_id.clone(),
-                        status,
-                    }),
+                if let Some(t) = self.code.tool_times.get_mut(call_id) {
+                    t.1 = Some(at_ms);
+                }
+                let at = self.entries.iter().rposition(|e| matches!(e, Entry::Tool { call_id: c, .. } if c == call_id));
+                match at {
+                    Some(i) => {
+                        // A sent file's tool line gives way to the file's own.
+                        match (self.code.sent.remove(call_id), *ok) {
+                            (Some(file), true) => self.entries[i] = Entry::File { file },
+                            _ => {
+                                if let Entry::Tool { status: s, .. } = &mut self.entries[i] {
+                                    *s = status;
+                                }
+                            }
+                        }
+                    }
+                    None => self.entries.push(Entry::Tool { call_id: call_id.clone(), summary: call_id.clone(), status }),
                 }
                 // A step boundary: what the user queued while the model worked goes in now.
                 self.flush_queue(out);
@@ -1333,6 +1369,7 @@ impl State {
                         *s = ToolStatus::Failed("no result".into());
                     }
                 }
+                self.code.preparing.clear();
                 match stop {
                     TurnStop::Done if self.live.is_some() && !self.turn_said_anything() => {
                         self.note("ended without a reply", NoteTone::Dim)
@@ -1628,6 +1665,24 @@ impl State {
             })
     }
 
+    /// The entry of a call whose arguments were streaming and which has now started: by its id, else
+    /// the oldest unnamed call of the same tool. Its detail moves to the id it is known by.
+    fn take_preparing(&mut self, call_id: &str, tool: &str) -> Option<usize> {
+        let key = self.code.preparing.iter().position(|k| k == call_id).or_else(|| {
+            self.code.preparing.iter().position(|k| k.starts_with('~') && self.code.tool_detail.get(k).is_some_and(|d| d.tool == tool))
+        })?;
+        let key = self.code.preparing.remove(key);
+        if key != call_id {
+            if let Some(d) = self.code.tool_detail.remove(&key) {
+                self.code.tool_detail.insert(call_id.to_string(), d);
+            }
+            if let Some(t) = self.code.tool_times.remove(&key) {
+                self.code.tool_times.insert(call_id.to_string(), t);
+            }
+        }
+        self.entries.iter().rposition(|e| matches!(e, Entry::Tool { call_id: c, .. } if *c == key))
+    }
+
     /// The last reasoning block stops streaming at `at_ms`, which settles how long it took.
     fn close_thinking(&mut self, at_ms: i64) {
         let since = self.thinking_since.take();
@@ -1746,6 +1801,8 @@ pub fn entries_from_transcript(turns: &[StoredTurn]) -> Vec<Entry> {
     // The measured phases of the turn being read, and what its first model call read.
     let mut timings: Option<Timings> = None;
     let mut read: Option<crate::live::Read> = None;
+    // The `send_file` calls: their results name the file, which then stands where the call did.
+    let mut sends: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for t in turns {
         if t.role == Role::User && (t.numbers.is_some() || !t.phases.is_empty()) {
             if let Some(done) = timings.take() {
@@ -1793,11 +1850,16 @@ pub fn entries_from_transcript(turns: &[StoredTurn]) -> Vec<Entry> {
                         Part::Text { text } if !text.trim().is_empty() => {
                             out.push(Entry::Prose { text: text.clone() })
                         }
-                        Part::ToolCall(c) => out.push(Entry::Tool {
-                            call_id: c.id.clone(),
-                            summary: describe_call(&c.name, &c.args),
-                            status: ToolStatus::Running,
-                        }),
+                        Part::ToolCall(c) => {
+                            if c.name == "send_file" {
+                                sends.insert(c.id.as_str());
+                            }
+                            out.push(Entry::Tool {
+                                call_id: c.id.clone(),
+                                summary: describe_call(&c.name, &c.args),
+                                status: ToolStatus::Running,
+                            })
+                        }
                         _ => {}
                     }
                 }
@@ -1816,6 +1878,11 @@ pub fn entries_from_transcript(turns: &[StoredTurn]) -> Vec<Entry> {
                     for e in out.iter_mut().rev() {
                         if let Entry::Tool { call_id, status, .. } = e {
                             if *call_id == r.call_id {
+                                let sent = if !r.is_error && sends.contains(r.call_id.as_str()) { marlowe_proto::SentFile::from_tool_result(&r.content) } else { None };
+                                if let Some(file) = sent {
+                                    *e = Entry::File { file };
+                                    break;
+                                }
                                 *status = if r.is_error {
                                     ToolStatus::Failed(summary.clone())
                                 } else {

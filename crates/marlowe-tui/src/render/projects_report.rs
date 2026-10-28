@@ -21,6 +21,15 @@ use crate::text;
 pub fn rows(state: &State, ui: &ReportUi, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let pal = Pal::new(theme);
     let mut out: Vec<Line<'static>> = Vec::new();
+    if let Some((path, body)) = &ui.file {
+        // A markdown file the agent sent: its name and path, then the text as a report reads.
+        let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+        out.push(Line::from(Span::styled(text::truncate(&text::clean(name), width), pal.bright)));
+        out.push(Line::from(vec![Span::styled("file  ", pal.dim), Span::styled(text::truncate_left(&text::clean(path), width.saturating_sub(6)), pal.body)]));
+        out.push(Line::default());
+        out.extend(super::projects::markdown_lines(body, width, theme));
+        return out;
+    }
     let Some(l) = state.projects.get(&ui.project) else {
         out.push(Line::from(Span::styled("this project is no longer open", pal.dim)));
         return out;

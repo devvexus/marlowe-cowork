@@ -68,7 +68,32 @@ pub fn lines(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     out
 }
 
-fn tool(call_id: &str, summary: &str, status: &ToolStatus, state: &State, width: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
+/// One tool call in full: the diff viewer's rows for an edit, the quoted output for anything else.
+pub fn call(area: Rect, state: &State, ui: &crate::panel::CallUi, theme: &Theme, buf: &mut Buffer) {
+    let entry = state.entries.iter().find_map(|e| match e {
+        Entry::Tool { call_id, summary, status } if *call_id == ui.call_id => Some((summary, status)),
+        _ => None,
+    });
+    let title = entry.map_or_else(|| "call".to_string(), |(s, _)| format!("call · {}", text::truncate(&text::clean(s.lines().next().unwrap_or("")), 80)));
+    let h = area.height.saturating_sub(4).max(8);
+    let inner = super::panel::frame(area, 116, h, &title, &[("↑↓", "scroll"), ("esc", "back")], theme, buf);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    match entry {
+        Some((summary, status)) => tool(&ui.call_id, summary, status, state, inner.width as usize, theme, &mut lines),
+        None => lines.push(Line::from(Span::styled("this call is no longer in the conversation", ink(Ink::Dim, theme)))),
+    }
+    // What the call took, which the one-line summary leaves out.
+    if let Some(&(start, Some(end))) = state.code.tool_times.get(&ui.call_id) {
+        lines.insert(1.min(lines.len()), Line::from(Span::styled(format!("  took {}", super::strip::took((end - start).max(0) as u64)), ink(Ink::Dimmer, theme))));
+    }
+    let n = inner.height as usize;
+    ui.scroll.max.set(lines.len().saturating_sub(n));
+    for (i, l) in lines.iter().skip(ui.scroll.at()).take(n).enumerate() {
+        put(buf, inner.x, inner.y + i as u16, l, inner.width);
+    }
+}
+
+pub(super) fn tool(call_id: &str, summary: &str, status: &ToolStatus, state: &State, width: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
     let (marker_ink, tail) = match status {
         ToolStatus::Running => (Ink::Accent, "running…".to_string()),
         ToolStatus::Done(s) => (Ink::Dim, text::clean(s)),

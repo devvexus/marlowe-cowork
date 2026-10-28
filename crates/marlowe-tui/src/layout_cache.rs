@@ -11,7 +11,7 @@ use marlowe_surface::markdown::MathBlock;
 use marlowe_surface::Theme;
 use ratatui::text::Line;
 
-use crate::state::{Entry, Mark, NoteTone, ToolStatus};
+use crate::state::{Entry, Mark, NoteTone, RowHit, ToolStatus};
 
 /// Where an entry's rows end in the cache's three lists.
 #[derive(Debug, Clone)]
@@ -20,6 +20,7 @@ struct Rec {
     lines: usize,
     maths: usize,
     marks: usize,
+    hits: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -33,6 +34,8 @@ pub struct TranscriptCache {
     pub maths: Vec<MathBlock>,
     /// The reasoning blocks' fold markers, by line.
     pub marks: Vec<Mark>,
+    /// The click targets on the rows (a tool line, a file's name), by line.
+    pub hits: Vec<RowHit>,
     /// Entries laid out by the last frame (the rest came from here).
     pub laid: usize,
 }
@@ -45,6 +48,7 @@ impl TranscriptCache {
             self.lines.clear();
             self.maths.clear();
             self.marks.clear();
+            self.hits.clear();
             self.width = width;
             self.theme = Some(theme.clone());
         }
@@ -61,24 +65,25 @@ impl TranscriptCache {
 
     /// Keeps the first `idx` entries and drops the rest.
     pub fn cut(&mut self, idx: usize) {
-        let (l, m, k) = match idx.checked_sub(1).and_then(|i| self.recs.get(i)) {
-            Some(r) => (r.lines, r.maths, r.marks),
-            None => (0, 0, 0),
+        let (l, m, k, h) = match idx.checked_sub(1).and_then(|i| self.recs.get(i)) {
+            Some(r) => (r.lines, r.maths, r.marks, r.hits),
+            None => (0, 0, 0, 0),
         };
         self.recs.truncate(idx);
         self.lines.truncate(l);
         self.maths.truncate(m);
         self.marks.truncate(k);
+        self.hits.truncate(h);
     }
 
     /// The lists a new entry's rows are appended to.
-    pub fn parts(&mut self) -> (&mut Vec<Line<'static>>, &mut Vec<MathBlock>, &mut Vec<Mark>) {
-        (&mut self.lines, &mut self.maths, &mut self.marks)
+    pub fn parts(&mut self) -> (&mut Vec<Line<'static>>, &mut Vec<MathBlock>, &mut Vec<Mark>, &mut Vec<RowHit>) {
+        (&mut self.lines, &mut self.maths, &mut self.marks, &mut self.hits)
     }
 
     /// Closes the entry just appended, under its key.
     pub fn seal(&mut self, key: u64) {
-        self.recs.push(Rec { key, lines: self.lines.len(), maths: self.maths.len(), marks: self.marks.len() });
+        self.recs.push(Rec { key, lines: self.lines.len(), maths: self.maths.len(), marks: self.marks.len(), hits: self.hits.len() });
     }
 }
 

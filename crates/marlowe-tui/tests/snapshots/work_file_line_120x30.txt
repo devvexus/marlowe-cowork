@@ -1,0 +1,30 @@
+ * marlowe — tonight                                                                       teams ○  0 runs · 0 need you
+╭ Conversation · tonight ────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────╮
+│  ↳ project p_1ed1613c · finished                                               ││ Claude Sonnet 4.5 ▾         medium │
+│    ▏ Project p_1ed1613c finished: Research latest upcoming AI models from Ki…  ││ ctx ─────────┊─── 0 / 200k · cloud │
+│    ▏ Outcome: done, low confidence.                                            │╰────────────────────────────── (m) ─╯
+│    ▏ Kimi's latest release, K3.1 Pro, is positioned as its strongest model t…  │╭ Workspace ─────────────────────────╮
+│    ▏ 14 item(s) failed along the way; the report says what is missing.         ││ C:/work/valiance ▾                 │
+│    ▏ Report: C:\Users\matth\AppData\Local\Temp\claude\c--Users-matth-Project…  │╰────────────────────────────── (w) ─╯
+│    ▏ Project JSON: C:\Users\matth\AppData\Local\Temp\claude\c--Users-matth-P…  │╭ 1 Crew 2 Watch 3 Threads 4 Memory ─╮
+│    1 more lines · ^o shows all                                                 ││ no runs                            │
+│  ▸ thought 2.9s · 120 tokens · 41 tok/s                                        ││                                    │
+│  report.md  (…live\r1\home\outbox\20d80460327b41c2a64f12ffc9b56258\report.md)  ││                                    │
+│                                                                                ││                                    │
+│  Sent to you. Report covers Kimi K3.1 Pro (confirmed 1M context),              ││                                    │
+│  DeepSeek-V4.1 Flash preview, and Qwen releases; about half the search paths   ││                                    │
+│  failed due to conflicting or missing source data for certain announced        ││                                    │
+│  features.\n\nDone here unless you want a new focus.                           ││                                    │
+│                                             7.6k in · 420 out · 380 reasoning  ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (c) ─╯│                                    │
+╭ Message ───────────────────────────────────────────────────────────────────────╮│                                    │
+│ › message Marlowe…                                      ⇧↵ newline · esc boxes ││                                    │
+╰─ report.md is ready · /files ──────────────────────────────────────────── (i) ─╯╰──────────────────────────── (1-4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette      21:40

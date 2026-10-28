@@ -5,12 +5,13 @@ use marlowe_surface::markdown::MathBlock;
 use marlowe_surface::{markdown, Theme};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use super::work::{self, Role};
 use super::{hit, hovered, ink, lit, note_style, put};
 use crate::layout_cache::TranscriptCache;
-use crate::state::{pick_thought, Conn, Entry, Focus, Mark, Pin, State, Target, ToolStatus, Viewport};
+use crate::state::{pick_thought, Conn, Entry, Focus, Mark, Pin, RowHit, State, Target, Viewport};
 use crate::text;
 
 /// Left padding inside the pane.
@@ -80,6 +81,9 @@ pub fn draw(full: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
     // The Conversation box's cursor: the fold marker Enter acts on.
     let keys = state.focus == Focus::Conversation && state.overlay.is_none() && state.approvals.is_empty();
     let marks = cache.marks.clone();
+    // The click targets of the rows on screen.
+    let hits = &cache.hits;
+    let on_screen: Vec<RowHit> = hits[hits.partition_point(|x| x.line < start)..hits.partition_point(|x| x.line < start + h)].to_vec();
     // A project's result in the transcript: where its rows end, for the click map.
     let results: Vec<(String, usize)> = state
         .entries
@@ -97,12 +101,24 @@ pub fn draw(full: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
         // Marks are in line order.
         let at = marks.partition_point(|m| m.line < start + i);
         match marks.get(at).filter(|m| m.line == start + i) {
+            // A sent file's row is not a fold: its name is a click target of its own.
+            Some(m) if matches!(state.entries.get(m.entry), Some(Entry::File { .. })) => {
+                let line = if cursor == Some(m.entry) { work::file_cursor(l.clone(), theme) } else { l.clone() };
+                put(buf, r.x + PAD, y, &line, tw as u16)
+            }
             Some(m) => {
                 let on = cursor == Some(m.entry);
                 marker_row(state, buf, (r.x + PAD, y, tw as u16), l.clone(), m.entry, on, theme)
             }
             None => put(buf, r.x + PAD, y, l, tw as u16),
         }
+    }
+    for h in on_screen {
+        let rect = Rect { x: r.x + PAD + h.x, y: r.y + (h.line - start) as u16, width: h.w.min((tw as u16).saturating_sub(h.x)), height: 1 };
+        if hovered(state, &h.target) {
+            light(buf, rect, theme);
+        }
+        hit(state, rect, h.target);
     }
     state.marks.replace(marks);
     let pane = Rect { x: r.x + PAD, width: tw as u16, ..r };
@@ -152,6 +168,24 @@ fn marker_row(
     hit(state, Rect { x, y, width: (line.width() as u16).min(max), height: 1 }, t.clone());
     let line = if hovered(state, &t) { lit(line, theme) } else { line };
     put(buf, x, y, &line, max);
+}
+
+/// The cells of a click target under the pointer, one weight up: the accent goes to the hover
+/// colour, and the dim weights as [`lit`] has them. Never a fill.
+fn light(buf: &mut Buffer, r: Rect, theme: &Theme) {
+    let (dim, dimmer, accent) = (theme.dim_color(), theme.dimmer_color(), ink(Ink::Accent, theme).fg);
+    let hover = ink(Ink::Hover, theme).fg;
+    for x in r.x..r.right() {
+        let Some(c) = buf.cell_mut((x, r.y)) else { continue };
+        c.fg = match c.fg {
+            f if f == Color::Reset => Color::Reset,
+            f if f == dimmer => dim,
+            f if f == dim => Color::Reset,
+            f if Some(f) == accent => hover.unwrap_or(f),
+            f => f,
+        };
+        c.modifier.insert(Modifier::BOLD);
+    }
 }
 
 /// The transcript line at the top of the pane, and the record of it for the next frame.
@@ -301,13 +335,21 @@ fn typeset_images(
     }
 }
 
-/// Whether a blank row goes before entry `idx`.
-fn gap_before(state: &State, idx: usize, prev: Option<&Entry>, e: &Entry) -> bool {
-    // An expanded reasoning block ends with a blank row, so the tool call under it does not
-    // read as one more line of it.
-    let after_open_thought = idx > 0
-        && matches!(prev, Some(Entry::Thinking { text, read, .. }) if foldable(text, read))
-        && state.thought_open(idx - 1);
+/// Whether entry `e` draws no row at all: a member of a work block with no edit to show, and the
+/// relay of a finished project whose own entry is on screen.
+fn silent(state: &State, idx: usize, e: &Entry, role: &Role) -> bool {
+    match e {
+        Entry::News { label, .. } => super::projects_entry::completion_shown(state, idx, label),
+        _ => work::silent(state, e, role),
+    }
+}
+
+/// Whether a blank row goes before entry `e`. `prev` is the last entry that drew anything.
+fn gap_before(prev: Option<&Entry>, e: &Entry, role: &Role) -> bool {
+    // An edit's row sits under the block it came from.
+    if *role == Role::Member {
+        return false;
+    }
     match (prev, e) {
         (None, _) => false,
         (Some(_), Entry::User { .. }) => true,
@@ -315,46 +357,56 @@ fn gap_before(state: &State, idx: usize, prev: Option<&Entry>, e: &Entry) -> boo
         (Some(Entry::News { label, .. }), Entry::Project { id }) => !label.contains(id.as_str()),
         (Some(_), Entry::Project { .. }) | (Some(Entry::Project { .. }), _) => true,
         (Some(Entry::User { .. }), _) => false,
-        _ if after_open_thought => true,
-        (Some(Entry::Tool { .. } | Entry::Thinking { .. }), Entry::Prose { .. }) => true,
-        (Some(Entry::Prose { .. }), Entry::Tool { .. } | Entry::Thinking { .. }) => true,
+        (Some(Entry::Tool { .. } | Entry::Thinking { .. } | Entry::File { .. }), Entry::Prose { .. }) => true,
+        (Some(Entry::Prose { .. }), Entry::Tool { .. } | Entry::Thinking { .. } | Entry::File { .. }) => true,
         _ => false,
     }
 }
 
-/// One entry's rows (its gap first), with the display formulas and fold markers in them. `live`
-/// is the entry still being written: its unclosed maths is held behind a placeholder.
+/// One entry's rows (its gap first), with the display formulas, fold markers and click targets in
+/// them. `live` is the entry still being written: its unclosed maths is held behind a placeholder.
+/// `block_live` is whether the work block this entry draws belongs to the turn in flight.
 #[allow(clippy::too_many_arguments)]
 fn render_entry(
     state: &State,
     idx: usize,
     e: &Entry,
+    role: &Role,
     gap: bool,
-    live: bool,
+    (live, block_live): (bool, bool),
     width: usize,
     theme: &Theme,
     out: &mut Vec<Line<'static>>,
     maths: &mut Vec<MathBlock>,
     marks: &mut Vec<Mark>,
+    hits: &mut Vec<RowHit>,
 ) {
     if gap {
         out.push(Line::default());
     }
-    if let Entry::Prose { text } = e {
-        // Marlowe's prose, with the position of each display formula kept.
-        let base = Style::default().fg(theme.speech());
-        let (lines, found) = markdown::render_prose_blocks(text, width, theme, base, live);
-        let at = out.len();
-        maths.extend(found.into_iter().map(|mut b| {
-            b.line += at;
-            b
-        }));
-        out.extend(lines);
-    } else {
-        if matches!(e, Entry::Thinking { text, read, .. } if foldable(text, read)) {
-            marks.push(Mark { entry: idx, line: out.len() });
+    match e {
+        Entry::Prose { text } => {
+            // Marlowe's prose, with the position of each display formula kept.
+            let base = Style::default().fg(theme.speech());
+            let (lines, found) = markdown::render_prose_blocks(text, width, theme, base, live);
+            let at = out.len();
+            maths.extend(found.into_iter().map(|mut b| {
+                b.line += at;
+                b
+            }));
+            out.extend(lines);
         }
-        entry_lines(e, idx, state, width, theme, live, out);
+        // The turn's reasoning and calls are the block's; an edit's row stands outside it.
+        Entry::Thinking { .. } | Entry::Tool { .. } => {
+            if let Role::First(members) = role {
+                work::block_lines(state, idx, members, block_live, width, theme, out, marks, hits);
+            }
+            if let Entry::Tool { call_id, .. } = e {
+                work::edit_lines(state, call_id, width, theme, out, hits);
+            }
+        }
+        Entry::File { file } => work::file_line(idx, file, width, theme, out, marks, hits),
+        _ => entry_lines(e, idx, state, width, theme, live, out),
     }
 }
 
@@ -403,14 +455,20 @@ fn tail_lines(state: &State, width: usize, theme: &Theme, empty: bool) -> (Vec<L
 fn sync(cache: &mut TranscriptCache, state: &State, width: usize, theme: &Theme) {
     cache.reset_unless(width, theme, state.no_layout_cache);
     let streaming = state.live.as_ref().map(|_| state.entries.len().saturating_sub(1));
+    let (roles, open_block) = work::roles(&state.entries);
     let mut prev: Option<&Entry> = None;
     let mut same = true;
     let mut laid = 0;
     for (idx, e) in state.entries.iter().enumerate() {
-        let gap = gap_before(state, idx, prev, e);
+        let role = &roles[idx];
+        let quiet = silent(state, idx, e, role);
+        let gap = !quiet && gap_before(prev, e, role);
         let live = streaming == Some(idx);
-        let key = entry_key(state, idx, e, gap, live);
-        prev = Some(e);
+        let block_live = state.live.is_some() && open_block == Some(idx);
+        let key = entry_key(state, idx, e, role, gap, (live, block_live));
+        if !quiet {
+            prev = Some(e);
+        }
         if same && cache.key_at(idx) == Some(key) {
             continue;
         }
@@ -418,8 +476,8 @@ fn sync(cache: &mut TranscriptCache, state: &State, width: usize, theme: &Theme)
             same = false;
             cache.cut(idx);
         }
-        let (lines, maths, marks) = cache.parts();
-        render_entry(state, idx, e, gap, live, width, theme, lines, maths, marks);
+        let (lines, maths, marks, hits) = cache.parts();
+        render_entry(state, idx, e, role, gap, (live, block_live), width, theme, lines, maths, marks, hits);
         cache.seal(key);
         laid += 1;
     }
@@ -432,11 +490,15 @@ fn sync(cache: &mut TranscriptCache, state: &State, width: usize, theme: &Theme)
 /// What an entry's rows depend on besides the width and the theme (a change of either clears the
 /// cache): its content, its place (fold state, the blank row before it, whether it is still being
 /// written) and an edit's diff.
-fn entry_key(state: &State, idx: usize, e: &Entry, gap: bool, live: bool) -> u64 {
+fn entry_key(state: &State, idx: usize, e: &Entry, role: &Role, gap: bool, (live, block_live): (bool, bool)) -> u64 {
     let mut h = crate::layout_cache::Hasher::default();
     h.entry(e);
-    h.u64(u64::from(gap) | u64::from(live) << 1 | u64::from(state.thought_open(idx)) << 2 | u64::from(state.show_thinking) << 3);
+    h.u64(u64::from(gap) | u64::from(live) << 1 | u64::from(state.show_thinking) << 3);
     h.u64(idx as u64);
+    // A block is laid out again whenever one of its entries, or the clock it shows, changes.
+    if let Role::First(members) = role {
+        work::key(state, idx, members, block_live, &mut h);
+    }
     if let Entry::Project { id } = e {
         // The project's state, and what the pointer and the keys do to its rows.
         h.u64(state.projects.version_of(id));
@@ -455,30 +517,27 @@ fn entry_key(state: &State, idx: usize, e: &Entry, gap: bool, live: bool) -> u64
 
 /// The whole transcript laid out from scratch: the reference the cache must equal.
 #[cfg(test)]
-fn transcript(state: &State, width: usize, theme: &Theme) -> (Vec<Line<'static>>, Vec<MathBlock>, Vec<Mark>) {
+fn transcript(state: &State, width: usize, theme: &Theme) -> (Vec<Line<'static>>, Vec<MathBlock>, Vec<Mark>, Vec<RowHit>) {
     let mut maths: Vec<MathBlock> = Vec::new();
     let mut marks: Vec<Mark> = Vec::new();
+    let mut hits: Vec<RowHit> = Vec::new();
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut prev: Option<&Entry> = None;
     let streaming = state.live.as_ref().map(|_| state.entries.len().saturating_sub(1));
+    let (roles, open_block) = work::roles(&state.entries);
     for (idx, e) in state.entries.iter().enumerate() {
-        let gap = gap_before(state, idx, prev, e);
-        render_entry(state, idx, e, gap, streaming == Some(idx), width, theme, &mut out, &mut maths, &mut marks);
-        prev = Some(e);
+        let role = &roles[idx];
+        let quiet = silent(state, idx, e, role);
+        let gap = !quiet && gap_before(prev, e, role);
+        let block_live = state.live.is_some() && open_block == Some(idx);
+        render_entry(state, idx, e, role, gap, (streaming == Some(idx), block_live), width, theme, &mut out, &mut maths, &mut marks, &mut hits);
+        if !quiet {
+            prev = Some(e);
+        }
     }
     let (tail, _) = tail_lines(state, width, theme, out.is_empty());
     out.extend(tail);
-    (out, maths, marks)
-}
-
-/// A tool call's inks: its marker's, then its call's. The accent marks every call (red one that
-/// failed) and the call is the body weight, so a call never shares the reasoning block's dim
-/// weight and dimmer rule, open or closed.
-fn tool_ink(status: &ToolStatus) -> (Ink, Ink) {
-    match status {
-        ToolStatus::Failed(_) => (Ink::Red, Ink::Body),
-        ToolStatus::Running | ToolStatus::Done(_) => (Ink::Accent, Ink::Body),
-    }
+    (out, maths, marks, hits)
 }
 
 pub(super) fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, theme: &Theme, live: bool, out: &mut Vec<Line<'static>>) {
@@ -495,83 +554,11 @@ pub(super) fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, th
                 out.extend(markdown::render_prose(text, width, theme, base));
             }
         }
-        Entry::Thinking { text, tokens, live, ms, read } => {
-            let n = if *tokens > 0 { *tokens } else { (text.chars().count() as u64).div_ceil(4) };
-            let open = state.thought_open(idx) && foldable(text, read);
-            let marker = if open { chrome::DISCLOSURE_OPEN } else { chrome::DISCLOSURE_CLOSED };
-            let head = if *live {
-                // The live count and clock are the strip's: the block is only its fold handle.
-                vec![Span::styled(format!("{marker} "), ink(Ink::Hover, theme)), Span::styled("reasoning", ink(Ink::Dim, theme))]
-            } else if read.is_some() {
-                thought_head(marker, (n, *ms), width, theme)
-            } else {
-                // How long it took, once that is known and at least a second.
-                let took = if *ms >= 1000 { format!(" for {}", text::took(*ms)) } else { String::new() };
-                vec![
-                    Span::styled(format!("{marker} "), ink(Ink::Dimmer, theme)),
-                    Span::styled(format!("thought{took} · {} tokens", text::thousands(n)), ink(Ink::Dimmer, theme)),
-                ]
-            };
-            out.push(Line::from(head));
-            if open {
-                let rule = format!("{} ", chrome::QUOTE_RULE);
-                let body = width.saturating_sub(2);
-                // What the call read is seen here, under the opened block, never beside it.
-                if let Some(r) = read {
-                    let mut spans = vec![Span::styled(rule.clone(), ink(Ink::Dimmer, theme))];
-                    spans.extend(super::strip::read_spans(r, theme));
-                    out.push(Line::from(spans));
-                }
-                let rows: Vec<Line<'static>> = if markdown::has_maths(text) {
-                    // Reasoning is shown as written, except that its maths is typeset: LaTeX never
-                    // reaches the screen as source, here or anywhere.
-                    markdown::render_text(text.trim(), body, theme, ink(Ink::Dim, theme), *live)
-                } else {
-                    text::wrap(&text::clean(text.trim()), body)
-                        .into_iter()
-                        .map(|l| Line::from(Span::styled(l, ink(Ink::Dim, theme))))
-                        .collect()
-                };
-                for l in rows {
-                    let mut spans = vec![Span::styled(rule.clone(), ink(Ink::Dimmer, theme))];
-                    spans.extend(l.spans);
-                    out.push(Line::from(spans));
-                }
-            }
-        }
-        Entry::Tool { summary, status, .. } => {
-            // A tool call is an action, not reasoning: the accent's marker and the body weight,
-            // where a reasoning block is the dim weight behind a dimmer rule ([`tool_ink`]).
-            let marker = format!("{} ", chrome::TOOL_MARKER);
-            let summary = text::clean(summary.lines().next().unwrap_or(""));
-            let (marker_ink, call_ink) = tool_ink(status);
-            let tail = match status {
-                ToolStatus::Running => Some(("…".to_string(), ink(Ink::Dim, theme))),
-                ToolStatus::Done(s) if s.trim().is_empty() => None,
-                ToolStatus::Done(s) => Some((text::clean(s), ink(Ink::Dim, theme))),
-                ToolStatus::Failed(s) => {
-                    let s = if s.trim().is_empty() { "failed".to_string() } else { text::clean(s) };
-                    Some((s, ink(Ink::Red, theme)))
-                }
-            };
-            let tail_w = tail.as_ref().map_or(0, |(t, _)| text::width(t) + 3);
-            let head = text::truncate(&summary, width.saturating_sub(2 + tail_w.min(width / 2)).max(8));
-            let mut spans = vec![Span::styled(marker, ink(marker_ink, theme)), Span::styled(head, ink(call_ink, theme))];
-            if let Some((t, st)) = tail {
-                let room = width.saturating_sub(2 + text::width(&spans[1].content) + 3);
-                if t == "…" {
-                    spans.push(Span::styled(" …", st));
-                } else {
-                    spans.push(Span::styled(" · ", ink(Ink::Dimmer, theme)));
-                    spans.push(Span::styled(text::truncate(t.lines().next().unwrap_or(""), room), st));
-                }
-            }
-            out.push(Line::from(spans));
-            if let Entry::Tool { call_id, .. } = e {
-                inline_diff(call_id, state, width, theme, out);
-            }
-        }
+        // The turn's reasoning and calls are drawn by their work block ([`work`]).
+        Entry::Thinking { .. } | Entry::Tool { .. } => {}
         Entry::Job { command, output, code, .. } => job_lines(command, output, *code, width, theme, out),
+        // The finished project's own entry says it; this relay draws nothing ([`silent`]).
+        Entry::News { label, .. } if super::projects_entry::completion_shown(state, idx, label) => {}
         Entry::News { label, .. } if super::projects_entry::relay_label_only(state, idx, label) => {
             out.push(Line::from(vec![
                 Span::styled("↳ ", ink(Ink::Dimmer, theme)),
@@ -580,7 +567,7 @@ pub(super) fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, th
         }
         Entry::News { label, text } => super::bg::news_lines(label, text, width, theme, out),
         Entry::Project { id } => super::projects_entry::entry_lines(state, id, width, theme, out),
-        Entry::File { file } => super::bg::file_lines(file, width, theme, out),
+        Entry::File { file } => work::file_line(idx, file, width, theme, out, &mut Vec::new(), &mut Vec::new()),
         Entry::Note { text: t, tone } => {
             for (i, l) in text::wrap(&text::clean(t), width.saturating_sub(2)).into_iter().enumerate() {
                 let lead = if i == 0 { "· " } else { "  " };
@@ -647,26 +634,6 @@ pub(super) fn entry_lines(e: &Entry, idx: usize, state: &State, width: usize, th
             ]));
         }
     }
-}
-
-/// Whether a reasoning block has anything to open: its text, or the read that began it.
-pub(super) fn foldable(text: &str, read: &Option<crate::live::Read>) -> bool {
-    !text.trim().is_empty() || read.is_some()
-}
-
-/// A finished reasoning block's header: `▸ thought 4.1s · 312 tok · 76 tok/s`, the rate dropped
-/// when it does not fit. The read that began it is under the opened block.
-fn thought_head(marker: char, (n, ms): (u64, u64), width: usize, theme: &Theme) -> Vec<Span<'static>> {
-    let took = if ms >= 1000 { format!(" {}", super::strip::took(ms)) } else { String::new() };
-    let mark = Span::styled(format!("{marker} "), ink(Ink::Dimmer, theme));
-    let mut words = format!("thought{took} · {} tok", text::thousands(n));
-    if ms >= 500 && n * 1000 / ms > 0 {
-        let with_rate = format!("{words} · {} tok/s", n * 1000 / ms);
-        if 2 + text::width(&with_rate) <= width {
-            words = with_rate;
-        }
-    }
-    vec![mark, Span::styled(words, ink(Ink::Dimmer, theme))]
 }
 
 /// The recall line with its stage timings: `⋯ recall · 3 memories · 84ms  embed 12 · bm25 2 · …`,
@@ -859,20 +826,6 @@ fn draw_todos(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
             Span::styled(tail, ink(if blocked { Ink::Amber } else { Ink::Dimmer }, theme)),
         ]);
         put(buf, r.x + PAD, r.y + 1 + row as u16, &line, r.width.saturating_sub(PAD));
-    }
-}
-
-/// The diff under an edit's tool line, indented, capped, with the way to the rest.
-fn inline_diff(call_id: &str, state: &State, width: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
-    let Some(d) = state.code.tool_detail.get(call_id).and_then(|d| d.diff.as_ref()) else { return };
-    let r = crate::diff::render(d, crate::diff::Layout::inline(width.saturating_sub(4)), theme);
-    for l in r.lines {
-        let mut spans = vec![Span::raw("    ")];
-        spans.extend(l.spans);
-        out.push(Line::from(spans));
-    }
-    if r.hidden > 0 {
-        out.push(Line::from(Span::styled(format!("    … {} more rows · ^o shows all", r.hidden), ink(Ink::Dimmer, theme))));
     }
 }
 
@@ -1090,21 +1043,6 @@ mod tests {
         l.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
-    /// The reasoning header is one row that fits at every width: the rate goes first. It never
-    /// carries the read: that is under the opened block.
-    #[test]
-    fn the_thought_header_shortens_to_fit_and_never_carries_the_read() {
-        let th = theme();
-        let expect = [(80, "▸ thought 4.1s · 312 tok · 76 tok/s"), (30, "▸ thought 4.1s · 312 tok")];
-        for (width, want) in expect {
-            let spans = thought_head(chrome::DISCLOSURE_CLOSED, (312, 4_100), width, &th);
-            let got = text_of(&Line::from(spans));
-            assert_eq!(got, want, "at width {width}");
-            assert!(text::width(&got) <= width, "{got:?} is wider than {width}");
-            assert!(!got.contains("read") && !got.contains('›'), "{got:?}");
-        }
-    }
-
     #[test]
     fn the_recall_line_abbreviates_its_stages_by_width() {
         let th = theme();
@@ -1128,12 +1066,13 @@ mod tests {
     /// The cache brought up to date, compared with the transcript laid out from scratch.
     fn same_as_scratch(cache: &mut TranscriptCache, state: &State, width: usize, th: &Theme) {
         sync(cache, state, width, th);
-        let (want, maths, marks) = transcript(state, width, th);
+        let (want, maths, marks, hits) = transcript(state, width, th);
         let mut got = cache.lines.clone();
         got.extend(tail_lines(state, width, th, cache.lines.is_empty()).0);
         assert_eq!(got.len(), want.len(), "row count at width {width}");
         assert!(got == want, "rows differ at width {width}");
         assert_eq!(cache.marks, marks, "fold markers differ at width {width}");
+        assert_eq!(cache.hits, hits, "click targets differ at width {width}");
         assert_eq!(cache.maths.len(), maths.len());
         for (a, b) in cache.maths.iter().zip(&maths) {
             assert_eq!((a.line, a.col, a.rows, a.cols, a.fg), (b.line, b.col, b.rows, b.cols, b.fg));
@@ -1235,11 +1174,11 @@ mod tests {
         state = session(4);
         state.epoch += 1;
         assert_eq!(laid(&mut cache, &state, 70, &other), 12);
-        // A turn starting or ending flips the last entry's live flag.
+        // A turn starting or ending flips the last entry's live flag, and the last block's.
         state.live = Some(live_turn());
-        assert_eq!(laid(&mut cache, &state, 70, &other), 1);
+        assert_eq!(laid(&mut cache, &state, 70, &other), 2);
         state.live = None;
-        assert_eq!(laid(&mut cache, &state, 70, &other), 1);
+        assert_eq!(laid(&mut cache, &state, 70, &other), 2);
     }
 
     #[test]

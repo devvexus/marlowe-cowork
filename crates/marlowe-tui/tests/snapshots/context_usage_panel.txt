@@ -3,9 +3,9 @@
 │  you  fix the gate                                                                             ││ Claude Sonnet 4.5 ▾             medium │
 │  Looking at the gate now.                                                                      ││ ctx ━━━━━━━━━━━─── 150k / 200k · cloud │
 │                                                                                                │╰────────────────────────────────── (m) ─╯
-│  ⋯ read src/gate.rs · 80 l╭ context ─────────────────────────────────────────────────────────────────────────╮───────────────────────────╮
-│  ⣾ working                │ ctx ━━━━━━━━━━━━━━━━━━────── 150k / 200k · cloud                                 │ance ▾                     │
-│                           │ 75% of the window used                                                           │───────────────────── (w) ─╯
+│  ▸ thinking · 1 tool      ╭ context ─────────────────────────────────────────────────────────────────────────╮───────────────────────────╮
+│    └ read  src/gate.rs   ✓│ ctx ━━━━━━━━━━━━━━━━━━────── 150k / 200k · cloud                                 │ance ▾                     │
+│  ⣾ working                │ 75% of the window used                                                           │───────────────────── (w) ─╯
 │                           │                                                                                  │───────────────────────────╮
 │                           │ what this screen holds (an estimate; the daemon has not sent its own count)      │                           │
 │                           │ your messages           3       1%   ━                                           │───────────────────── (1) ─╯

@@ -398,6 +398,9 @@ fn parity_C14_effort_is_set_for_the_next_turns_and_thinking_stays_collapsed_unti
     s.composer.clear();
     feed(&mut s, 4, Event::ReasoningDelta { session: sid(), turn: 1, text: "Considering the gate threshold carefully".into(), tokens: 6 });
     feed(&mut s, 5, Event::TextDelta { session: sid(), turn: 1, text: "Done.".into() });
+    // While the turn runs the ticker carries the latest thought on its header; once it ends, a count.
+    assert!(contains(&palette_frame(&s), "▸ thinking · 6 tokens  Considering the gate"));
+    feed(&mut s, 6, Event::TurnFinished { session: sid(), turn: 1, usage: marlowe_model::Usage::default(), stop: marlowe_proto::TurnStop::Done });
     let buf = palette_frame(&s);
     assert!(contains(&buf, "thought · 6 tokens") && !contains(&buf, "Considering the gate"), "{}", dump(&buf));
     keys(&mut s, "ctrl-t");

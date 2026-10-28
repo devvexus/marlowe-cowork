@@ -12,7 +12,7 @@ use marlowe_proto::{
     SessionId, TaskInfo, TaskKind, TaskStatus, Urgency, WorkflowAgentStatus, WorkflowInfo,
 };
 
-use crate::state::{Entry, NoteTone, State};
+use crate::state::{Entry, NoteTone, State, ToolStatus};
 
 /// Output a task view keeps (the file has the rest).
 pub const TASK_OUT_CAP: usize = 64 * 1024;
@@ -353,7 +353,20 @@ impl State {
             Event::FileSent { session, file } => {
                 self.bg.files.push((session.clone(), file.clone()));
                 if self.mine(session) {
-                    self.entries.push(Entry::File { file: file.clone() });
+                    // Sent by a `send_file` call that is still running: its line becomes the file's
+                    // when the call ends. Sent by anything else, the file stands on its own.
+                    let call = self.entries.iter().rev().find_map(|e| match e {
+                        Entry::Tool { call_id, status: ToolStatus::Running, .. } if self.code.tool_detail.get(call_id).is_some_and(|d| d.tool == "send_file") => {
+                            Some(call_id.clone())
+                        }
+                        _ => None,
+                    });
+                    match call {
+                        Some(id) => {
+                            self.code.sent.insert(id, file.clone());
+                        }
+                        None => self.entries.push(Entry::File { file: file.clone() }),
+                    }
                     self.flash(format!("{} is ready \u{b7} /files", crate::text::clean(&file.name)), NoteTone::Dim);
                 }
             }

@@ -13,7 +13,7 @@
 │  others show no official archives entry for it at all. Should I approve these │││                                    │
 │  findings as they stand, keep researching to resolve the Qwen contradictions, │││                                    │
 │  steer toward clearer models instead, or cancel?                              █││                                    │
-│  ↳ project p_decd28c7 · finished                                              █││                                    │
+│                                                                               █││                                    │
 │  ✓ p_decd28c7 · research · finished · 00:22:49 · medium confidence            █││                                    │
 │  ▏ ✗ not written: section 4, answer 1 · the model call failed (bad_request) … █││                                    │
 │  ▏ verified claims 52 · sources cited 0 · cited sentences 0 · removed senten… █││                                    │

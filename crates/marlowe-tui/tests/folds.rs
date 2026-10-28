@@ -2,7 +2,7 @@
 //!
 //! Matthew: "In the old TUI, pressing the Enter key opened the thinking block. Right now we have
 //! no way to click to open the thinking block once thinking is done." Every finished block shows
-//! `▸ thought for 12s · 600 tokens`; Enter on the Conversation box folds the block its cursor is
+//! `▸ thought 12s · 600 tokens · 50 tok/s`; Enter on the Conversation box folds the block its cursor is
 //! on (Shift+arrows move the cursor between blocks), and a click on a marker folds that one.
 //!
 //! These replay key and mouse events through the real pane at a real terminal size and record the
@@ -41,7 +41,7 @@ fn answer(t: u32) -> String {
 }
 
 /// A session of `turns` finished turns. Turn `t` thought for `10 + t` seconds, so its marker reads
-/// `thought for 1Ns` and tells the turns apart on screen.
+/// `thought 1Ns` and tells the turns apart on screen.
 fn session(turns: u32) -> (State, u64) {
     let mut s = state();
     welcome(&mut s, 0);
@@ -91,7 +91,7 @@ fn rows(s: &State) -> Vec<String> {
 
 /// The pane row showing turn `t`'s marker.
 fn row_of(rows: &[String], t: u32) -> Option<usize> {
-    let needle = format!("thought for {}s", 10 + t);
+    let needle = format!("thought {}s", 10 + t);
     rows.iter().position(|r| r.contains(&needle))
 }
 
@@ -139,7 +139,7 @@ fn words(text: &str) -> Vec<String> {
 fn a_finished_block_says_how_long_it_thought_and_a_stored_one_its_tokens() {
     let (s, _) = session(1);
     let r = rows(&s);
-    assert!(r.iter().any(|l| l.trim() == "▸ thought for 11s · 600 tokens"), "{}", r.join("\n"));
+    assert!(r.iter().any(|l| l.trim() == "▸ thought 11s · 600 tokens · 54 tok/s"), "{}", r.join("\n"));
     // Reopened from the store there is no timing: the count alone, and it still folds.
     let mut s = state();
     welcome(&mut s, 0);

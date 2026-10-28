@@ -464,25 +464,6 @@ pub fn files(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut Buf
     }
 }
 
-/// The conversation's card for a file the agent sent.
-pub fn file_lines(f: &marlowe_proto::SentFile, width: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
-    out.push(Line::from(vec![
-        Span::styled("\u{25aa} ", ink(Ink::Accent, theme)),
-        Span::styled(text::truncate(&text::clean(&f.name), width.saturating_sub(16).max(8)), theme.bright()),
-        Span::styled(format!(" \u{b7} {}", text::bytes(f.bytes)), ink(Ink::Dim, theme)),
-    ]));
-    if !f.note.trim().is_empty() {
-        for l in text::wrap(&text::clean(&f.note), width.saturating_sub(2)) {
-            out.push(Line::from(vec![Span::raw("  "), Span::styled(l, ink(Ink::Dim, theme))]));
-        }
-    }
-    out.push(Line::from(vec![
-        Span::raw("  "),
-        Span::styled(text::truncate_left(&text::clean(&f.path), width.saturating_sub(24).max(8)), ink(Ink::Dimmer, theme)),
-        Span::styled("  /files \u{b7} \u{21b5} open \u{b7} r reveal", ink(Ink::Dimmer, theme)),
-    ]));
-}
-
 /// The conversation's lines for news from background work: its source, then what it said.
 pub fn news_lines(label: &str, body: &str, width: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
     out.push(Line::from(vec![
