@@ -4,6 +4,8 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+- **Agents never wait for the GPU.** Crew runs, team tasks and project employees use the free slots of Marlowe's own server; another process on the GPU no longer holds them ("waiting for the GPU" is gone) and no longer moves a local run to a cloud slot.
+- **A plan's objective and questions have no length limit**, and a question written as an object (, ) is read for its text; a long title is cut to fit. Nearly every model, good ones too, wrote past the old 500 and 200 character caps and lost detail in the rewrite.
 - **A big model's embedding tables no longer count against the GPU, and stay on disk**: llama.cpp keeps a model's token and n-gram embedding tables on the CPU whatever the GPU layers say, so the planner sizes them apart, and the engine now memory-maps the model file by default (llama.cpp's own default) so they are read lazily instead of loaded into RAM. Qwen3.8-Flash-Next's 26.8 GiB n-gram table no longer makes the model look 27 GiB bigger than it is or fill RAM at load.
 - **The context planner shows where each part lives: GPU, RAM and on disk**, and offers per model to keep the embedding tables on disk (memory-mapped, read lazily) or load them into RAM.
 - **An MoE model that does not fit keeps every layer on the GPU and moves only experts to the CPU** (`--n-cpu-moe`, the fewest blocks that make it fit) before any layer split; the planner says how many and how much slower, and offers auto, all experts on the CPU, or keep them on the GPU.

@@ -10,8 +10,8 @@
 //!
 //! Concurrency: at most `per_provider` runs per cloud provider; on a local model at most
 //! `ContextGate::crew_slots` (its planner slots, less the conductor's one), which also bounds the
-//! model streams in flight per model and a workflow's agents. While the GPU is busy a local step
-//! moves to a cloud slot or waits ("waiting for the GPU").
+//! model streams in flight per model and a workflow's agents. A step never waits for the GPU: its model
+//! runs on Marlowe's own server, whose free slots are the agents'.
 //!
 //! [`AgentRunner`]: crate::playbook::AgentRunner
 
@@ -60,7 +60,7 @@ pub type GpuBusy = Arc<dyn Fn() -> bool + Send + Sync>;
 pub type SessionModel = Arc<dyn Fn(&SessionId) -> Option<ModelRef> + Send + Sync>;
 
 /// What a run or a project employee shows while it is held because the GPU is busy.
-pub(crate) const GPU_WAIT: &str = "waiting for the GPU";
+pub(crate) const GPU_WAIT: &str = "waiting for the model to load";
 
 /// Characters of a sender id kept.
 const MAX_SENDER: usize = 80;
@@ -146,6 +146,8 @@ pub struct CrewDeps {
     pub approvals: Arc<dyn RunApprovals>,
     /// A build recalls from it and remembers its outcome; `None` skips both.
     pub mind: Option<Mind>,
+    /// Whether another process computes on the GPU. Runs no longer wait on it (Matthew,
+    /// 2026-11-20): agents use the free slots of Marlowe's own server whatever else the GPU runs.
     pub gpu_busy: GpuBusy,
     /// The model each conversation is on; `None` (tests, the CLI) defaults runs to the
     /// conductor's model.
@@ -407,8 +409,7 @@ impl Inner {
     }
 
     /// The model for `card` in a run of `session`: the card's own crew slot when the user set
-    /// it, else the model the conversation is on, else the conductor's. A local model while the
-    /// GPU is busy moves to the first slot assigned a cloud model, or reports that it must wait. A
+    /// it, else the model the conversation is on, else the conductor's. A
     /// local model that is not loaded loads only when the planner says it fits beside what is
     /// ([`Priority::Crew`]); a crew slot's model that does not runs on the conversation's model
     /// instead, with a note, and any other is refused with the cost. The agent's window is the
@@ -418,20 +419,13 @@ impl Inner {
         let slots = brains.slots().unwrap_or_default();
         let conversation = self.session_model(session);
         let (mut model, assigned) = self.pick(card, &slots, conversation.as_ref())?;
-        let local = brains.model_info(&model)?.local;
+        brains.model_info(&model)?;
         let mut waits_for_gpu = false;
         let mut note = None;
-        if (local || model.provider.is_local()) && (self.deps.gpu_busy)() {
-            let cloud = slots
-                .iter()
-                .filter_map(|a| a.model.clone())
-                .find(|m| !m.provider.is_local() && m.provider.is_available_now());
-            match cloud {
-                Some(m) => model = m,
-                None => waits_for_gpu = true,
-            }
-        }
-        if !waits_for_gpu {
+        // No GPU-busy hold (Matthew, 2026-11-20): the model runs on Marlowe's own server, whose free
+        // slots are the agents'; another process on the GPU is no reason for an agent to wait. The
+        // engine's own admission and fit checks still decide whether a model may load.
+        {
             match brains.admit_starting(&model, Priority::Crew) {
                 Admission::Refused(why) => match conversation.filter(|m| assigned && *m != model) {
                     Some(own) if brains.admit(&own, Priority::Crew).may_run() => {
@@ -573,7 +567,7 @@ impl Inner {
                     }
                 };
                 if choice.waits_for_gpu {
-                    let waiting = "waiting for the GPU";
+                    let waiting = GPU_WAIT;
                     if action.as_deref() != Some(waiting) {
                         events.extend(self.touch(&mut st, &id, |r| r.current_action = Some(waiting.into())));
                     }
@@ -887,21 +881,11 @@ log={log_len}
     }
 
     /// A place for one model call of a project's employee on local `model`, under the rules a crew
-    /// run's calls follow: held while another process is computing on the GPU (`say` hears
-    /// "waiting for the GPU"), held while Windows is short of commit memory (and refused with the
+    /// run's calls follow: held while Windows is short of commit memory (and refused with the
     /// reason when it stays short for `memory_wait`), then one of the crew's stream slots, shared
     /// with every run. `cancelled` ends any of the waits. The slot is freed when it drops.
     pub fn acquire_local_call(&self, model: &ModelRef, cancelled: &dyn Fn() -> bool, say: &dyn Fn(&str)) -> Result<LocalStream, CallHold> {
         let inner = &self.inner;
-        if (inner.deps.gpu_busy)() {
-            say(GPU_WAIT);
-            while (inner.deps.gpu_busy)() {
-                if cancelled() {
-                    return Err(CallHold::Cancelled);
-                }
-                std::thread::sleep(inner.cfg.gpu_poll);
-            }
-        }
         let mut interrupt = || if cancelled() { Err(CrewError::Cancelled) } else { Ok(()) };
         match inner.wait_for_commit(model, &mut interrupt, say) {
             Ok(()) => {}

@@ -818,7 +818,7 @@ fn with_projects_live_a_research_role_is_refused_with_the_way_to_a_project_and_n
 }
 
 #[test]
-fn a_local_step_waits_while_the_gpu_turns_busy_mid_run() {
+fn a_local_step_never_waits_for_a_busy_gpu() {
     let home = home("gpu-mid-run");
     let busy = Arc::new(AtomicBool::new(false));
     let flag = busy.clone();
@@ -838,12 +838,10 @@ fn a_local_step_waits_while_the_gpu_turns_busy_mid_run() {
     let probe = busy.clone();
     let fx = start_probe(&home, brains(&[("qwen", local.clone())]), CrewConfig::default(), Arc::new(move || probe.load(Ordering::SeqCst)));
     let id = staged(&fx, &home, "GPU hold", None);
-    wait("the GPU hold", || info(&fx.sup, &id).current_action.as_deref() == Some("waiting for the GPU"));
-    std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(local.calls.load(Ordering::SeqCst), 1, "only the plan ran on the local model");
-    assert_eq!(info(&fx.sup, &id).status, CrewRunStatus::Running);
-    busy.store(false, Ordering::SeqCst);
+    // Another process computes on the GPU the whole time: the run still finishes, never held
+    // (Matthew, 2026-11-20: the model runs on Marlowe's own server, whose free slots are the agents').
     wait_status(&fx.sup, &id, CrewRunStatus::Done);
+    assert!(busy.load(Ordering::SeqCst), "the probe said busy throughout");
     finish(fx, &[&home]);
 }
 
@@ -1085,29 +1083,24 @@ fn subagents_and_crew_runs_share_one_pool_of_local_slots() {
 }
 
 #[test]
-fn a_project_call_is_held_for_a_busy_gpu_and_for_short_memory_like_a_crew_calls_and_then_takes_a_shared_slot() {
+fn a_project_call_is_never_held_for_a_busy_gpu_but_is_for_short_memory_and_then_takes_a_shared_slot() {
     let home = home("project-call");
     let provider = Scripted::new(ProviderKind::Ollama, |_, _, _| Ok(answer("never")));
     let b = brains(&[("cond", provider)]);
     b.with_library(|l| l.add(&ModelInfo::bare(ProviderKind::Ollama, "alpha"))).unwrap();
     let alpha = with_slots(&b, "alpha", 3);
 
-    // The GPU is busy until released: the call says so, holds no slot, and goes on when it is free.
+    // Another process computes on the GPU: the call is not held and says nothing about the GPU.
     let busy = Arc::new(AtomicBool::new(true));
     let b2 = busy.clone();
     let cfg = CrewConfig { gpu_poll: Duration::from_millis(10), ..CrewConfig::default() };
     let fx = start_probe(&home, b, cfg, Arc::new(move || b2.load(Ordering::SeqCst)));
     let said = Arc::new(Mutex::new(Vec::<String>::new()));
-    let (sup, model, said2) = (fx.sup.clone(), alpha.clone(), said.clone());
-    let call = std::thread::spawn(move || sup.acquire_local_call(&model, &|| false, &|w| said2.lock().unwrap().push(w.to_string())).map(|s| drop(s)));
-    wait("the call says it waits for the GPU", || said.lock().unwrap().iter().any(|w| w == "waiting for the GPU"));
-    assert!(!call.is_finished());
-    busy.store(false, Ordering::SeqCst);
-    assert_eq!(call.join().unwrap(), Ok(()));
-
-    // Cancelling ends the wait with nothing held.
-    busy.store(true, Ordering::SeqCst);
-    assert!(matches!(fx.sup.acquire_local_call(&alpha, &|| true, &|_| {}), Err(CallHold::Cancelled)));
+    let said2 = said.clone();
+    let slot = fx.sup.acquire_local_call(&alpha, &|| false, &|w| said2.lock().unwrap().push(w.to_string()));
+    assert!(slot.is_ok(), "a busy GPU holds no call");
+    drop(slot);
+    assert!(!said.lock().unwrap().iter().any(|w| w.contains("GPU")), "{:?}", said.lock().unwrap());
     busy.store(false, Ordering::SeqCst);
 
     // It takes the crew's slots: three calls hold the three, a fourth waits for one.
@@ -1163,18 +1156,17 @@ fn cloud_runs_still_obey_per_provider() {
 }
 
 #[test]
-fn a_busy_gpu_moves_local_runs_to_a_cloud_slot_or_holds_them() {
-    // Local default, no cloud model: the run waits for the GPU.
+fn a_busy_gpu_neither_holds_local_runs_nor_moves_them_to_a_cloud_slot() {
+    // Local default, no cloud model, the probe says busy: the run goes on locally.
     let home1 = home("gpu-wait");
     let local = Scripted::new(ProviderKind::Ollama, note_then_answer("local answer"));
     let fx = start_with(&home1, brains(&[("qwen", local.clone())]), CrewConfig::default(), true);
     let id = fx.sup.dispatch(None, args("tester", "x", None, None)).unwrap().run_id;
-    wait("the GPU wait", || info(&fx.sup, &id).current_action.as_deref() == Some("waiting for the GPU"));
-    assert_eq!(info(&fx.sup, &id).status, CrewRunStatus::Queued);
-    assert_eq!(local.calls.load(Ordering::SeqCst), 0);
+    let run = wait_status(&fx.sup, &id, CrewRunStatus::Done);
+    assert_eq!(run.result.unwrap().summary, "local answer");
     finish(fx, &[]);
 
-    // A cloud model assigned to a slot: the run moves there.
+    // A cloud model assigned to another slot: the run stays on its local model.
     let home2 = home("gpu-cloud");
     let local = Scripted::new(ProviderKind::Ollama, note_then_answer("local answer"));
     let remote = cloud(note_then_answer("cloud answer"));
@@ -1184,8 +1176,8 @@ fn a_busy_gpu_moves_local_runs_to_a_cloud_slot_or_holds_them() {
     let fx = start_with(&home2, b, CrewConfig::default(), true);
     let id = fx.sup.dispatch(None, args("tester", "x", None, None)).unwrap().run_id;
     let run = wait_status(&fx.sup, &id, CrewRunStatus::Done);
-    assert_eq!(run.result.unwrap().summary, "cloud answer");
-    assert_eq!(local.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(run.result.unwrap().summary, "local answer");
+    assert_eq!(remote.calls.load(Ordering::SeqCst), 0);
     finish(fx, &[&home1, &home2]);
 }
 
