@@ -2,10 +2,11 @@
 //! should name a GPU. A server that runs but sees no GPU is still installed, listed as CPU with a
 //! note: models would load on the CPU at a tenth of the speed.
 
-use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
+
+use marlowe_os::child::{self, ChildSpec, RunLimits};
 
 use marlowe_engines::Device;
 
@@ -41,42 +42,26 @@ impl Runner for SystemRunner {
     fn run(&self, exe: &Path, args: &[&str]) -> Result<RunOutput, String> {
         let dir = exe.parent().ok_or("the binary has no folder")?;
         let mut cmd = Command::new(exe);
-        cmd.args(args).current_dir(dir).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        for k in &self.scrub {
-            cmd.env_remove(k);
-        }
+        cmd.args(args);
         let inherited = std::env::var_os("PATH").unwrap_or_default();
         let path = std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&inherited))).unwrap_or(inherited);
-        cmd.env("PATH", path);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        // Hidden, in a Job Object, without the credential variables (the scrub plus this runner's own list).
+        let spec = ChildSpec::new()
+            .with_cwd(dir)
+            .with_env_remove(self.scrub.iter().cloned())
+            .with_env([("PATH".to_string(), path.to_string_lossy().into_owned())]);
+        let limits = RunLimits { timeout: self.timeout, max_output_bytes: 1 << 20 };
+        let out = child::run(cmd, &spec, limits, &|| false).map_err(|e| format!("could not start {}: {e}", exe.display()))?;
+        if out.timed_out {
+            return Err(format!("{} did not finish within {} s", exe.display(), self.timeout.as_secs()));
         }
-        let mut child = cmd.spawn().map_err(|e| format!("could not start {}: {e}", exe.display()))?;
-        // Each pipe is read on its own thread so a full pipe never stalls the child.
-        let mut readers = Vec::new();
-        for pipe in [child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>)].into_iter().flatten() {
-            readers.push(std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                let _ = pipe.take(1 << 20).read_to_end(&mut buf);
-                String::from_utf8_lossy(&buf).into_owned()
-            }));
-        }
-        let began = Instant::now();
-        let status = loop {
-            if let Some(s) = child.try_wait().map_err(|e| e.to_string())? {
-                break s;
-            }
-            if began.elapsed() > self.timeout {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("{} did not finish within {} s", exe.display(), self.timeout.as_secs()));
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        };
-        let text = readers.into_iter().filter_map(|r| r.join().ok()).collect::<Vec<_>>().join("\n");
-        Ok(RunOutput { success: status.success(), text })
+        let text = [String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("
+");
+        Ok(RunOutput { success: out.status.success(), text })
     }
 }
 

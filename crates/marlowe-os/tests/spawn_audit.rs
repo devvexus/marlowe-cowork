@@ -23,6 +23,7 @@ const ALLOWED: &[(&str, usize, &str)] = &[
     ("marlowe/src/bench/e2e.rs", 1, "cfg(test) only: a dry run of eval/coding/run.py checks the report card's argv (no model, no network)"),
     ("marlowe/src/daemon_ctl.rs", 1, "relaunches marlowe itself, which needs the key environment fallback"),
     ("marlowe/src/launcher.rs", 1, "opens the user's terminal running marlowe"),
+    ("marlowe-tui/src/local.rs", 1, "non-Windows clipboard helpers (wl-copy, xclip) take the text on stdin; Windows copies through child::run"),
     ("marlowe-voice/src/tests.rs", 11, "`voice.status()` calls, not processes, plus two test-only Python probes (a version check, a process a GPU-gate test holds)"),
     ("marlowe-voice/src/sidecar.rs", 1, "`self.spawn()`, the sidecar's own method; the process starts through child::spawn"),
 ];

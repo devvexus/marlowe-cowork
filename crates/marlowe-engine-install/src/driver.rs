@@ -18,13 +18,8 @@ pub fn from_nvml(v: u32) -> (u32, u32) {
 
 /// The `CUDA Version: 12.9` (or `CUDA UMD Version: 13.4`) in `nvidia-smi`'s header.
 fn nvidia_smi() -> Option<(u32, u32)> {
-    let mut cmd = std::process::Command::new("nvidia-smi");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    let out = cmd.output().ok()?;
+    let limits = marlowe_os::child::RunLimits { timeout: std::time::Duration::from_secs(10), max_output_bytes: 64 * 1024 };
+    let out = marlowe_os::child::run(std::process::Command::new("nvidia-smi"), &marlowe_os::child::ChildSpec::new(), limits, &|| false).ok()?;
     parse_smi(&String::from_utf8_lossy(&out.stdout))
 }
 

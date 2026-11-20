@@ -3333,6 +3333,7 @@ version = "0.1.0"
 dependencies = [
  "marlowe-engines",
  "marlowe-net",
+ "marlowe-os",
  "nvml-wrapper",
  "serde_json",
  "thiserror 2.0.19",
