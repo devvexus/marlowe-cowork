@@ -4,6 +4,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+- **A model from Ollama's library that llama.cpp cannot read says why.** Some of Ollama's own downloads of new architectures use a layout of Ollama's own; the load error now says so and that the same model as a GGUF from Hugging Face or a model folder will run.
 - **Switching backend, or installing or syncing the selected one, no longer cuts off a reply in progress**: the old server stops once its last request ends, with every conversation's cache saved first, and the next request starts the new one; a switch during a load is honoured too.
 - **A crew turn on a one-slot model no longer costs the conversation its cache**: the cache is written out before the agent takes the slot and read back when you return, and a stop keeps the conversation's, not the agent's.
 - **A model that did not fit and ran split is loaded once, not twice**: the server keeps the planner's split shape, so the next message does not restart it.

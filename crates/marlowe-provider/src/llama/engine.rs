@@ -1000,13 +1000,7 @@ impl LlamaEngine {
             }
             if let Some(code) = proc.exited() {
                 let tail = self.log_excerpt(log_from);
-                let unknown = model.unknown_types();
-                let hint = if unknown.is_empty() {
-                    String::new()
-                } else {
-                    let ids = unknown.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
-                    format!(" (the file uses ggml types {ids}, which this llama.cpp may not know: `Sync to upstream` in the engine window installs the newest build)")
-                };
+                let hint = load_failure_hint(&want.model, &tail, &model.unknown_types());
                 return Err(Tried::Fatal(ProviderError::server(format!(
                     "llama-server exited with code {code} while loading {}{}{hint}",
                     want.model,
@@ -1123,6 +1117,25 @@ fn idle_loop(weak: Weak<Inner>, tick: Duration) {
     }
 }
 
+/// What to add to "llama-server exited while loading <model>" so the user knows what to do.
+/// Found live: Ollama's own library downloads of new architectures (`qwen3.5:0.8b`) can be
+/// stored in Ollama's layout, which stock llama.cpp refuses ("qwen35.rope.dimension_sections has
+/// wrong array length"); the same model as a GGUF from Hugging Face or a model folder runs.
+fn load_failure_hint(model: &str, tail: &str, unknown: &[u32]) -> String {
+    if !unknown.is_empty() {
+        let ids = unknown.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
+        return format!(" (the file uses ggml types {ids}, which this llama.cpp may not know: `Sync to upstream` in the engine window installs the newest build)");
+    }
+    let from_ollama = !model.starts_with(crate::sources::FILE_PREFIX);
+    let layout = ["wrong array length", "error loading model hyperparameters", "unknown model architecture", "missing tensor"].iter().any(|s| tail.contains(s));
+    if from_ollama && layout {
+        return " (this download is from Ollama's library, which sometimes stores a model in a layout of its own that llama.cpp cannot read: \
+                 the same model as a GGUF from Hugging Face or your model folder will run)"
+            .to_string();
+    }
+    String::new()
+}
+
 fn humanize(d: Duration) -> String {
     let s = d.as_secs();
     if s >= 3600 && s % 3600 == 0 {
@@ -1138,6 +1151,18 @@ fn humanize(d: Duration) -> String {
 mod tests {
     use super::*;
     use crate::llama::testkit::*;
+
+    #[test]
+    fn a_load_failure_says_what_to_do_about_ollamas_own_layout() {
+        let tail = "llama_model_load: error loading model hyperparameters: key qwen35.rope.dimension_sections has wrong array length; expected 4, got 3";
+        assert!(load_failure_hint("qwen3.5:0.8b", tail, &[]).contains("Ollama's library"));
+        // A file the user picked from Hugging Face or a folder is not Ollama's layout.
+        assert_eq!(load_failure_hint("gguf/hf/org/model/x", tail, &[]), "");
+        // Unknown tensor types point at the newest build instead.
+        assert!(load_failure_hint("qwen3.5:0.8b", tail, &[61]).contains("Sync to upstream"));
+        // Any other exit adds nothing.
+        assert_eq!(load_failure_hint("qwen3.5:0.8b", "CUDA error: out of memory", &[]), "");
+    }
 
     fn want(model: &str, lane: Lane, key: u64) -> Want {
         Want { model: model.into(), shape: EngineShape { slots: 3, ctx_per_slot: 8192, kv: "q8_0".into(), split: false }, lane, key, need_mib: None }
