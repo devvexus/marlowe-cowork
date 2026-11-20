@@ -205,12 +205,12 @@ pub fn register(t: &mut Toolbox, deps: &Arc<ResearchDeps>) {
              Make one angle aim at what you do not know, and list in `unknown_names` any names or versions you suspect exist but cannot confirm (a newer version, a successor), each with a question mark.\n\
              {online_note}\n\
              Every angle's keywords name the subject from the objective, even when the question only says \"each\" or \"they\". Keywords are plain search words, never web addresses. Write at most {} angles.",
-            fence::clean(&input.plan.objective, 500, false),
+            fence::clean(&input.plan.objective, 2000, false),
             input.today,
             input.plan.limits.vectors_per_question
         );
         let q = input.item.as_ref().map(|i| super::s(&i.data, "text").to_string()).unwrap_or_default();
-        Ok(Prompt::new(vec![SystemBlock { text: system, cache: true }], fence::fence("The question", &q, 400)))
+        Ok(Prompt::new(vec![SystemBlock { text: system, cache: true }], fence::fence("The question", &q, 1500)))
     });
 
     let deps = deps.clone();

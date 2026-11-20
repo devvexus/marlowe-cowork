@@ -213,7 +213,7 @@ fn condense_prompt(input: &TaskInput) -> Result<Prompt, String> {
          Each group has `members` (handles such as N3 or E1), `claim` (one sentence that states what the members agree on, in their words, at most 240 characters) and `contradicts` (handles of claims that say the opposite of this group; usually empty).\n\
          Every N claim must be in exactly one group. A claim that says something no other claim says is a group of its own. An E claim is a group made earlier: put N claims in its group when they say the same thing, and do not put an E claim in a group without an N claim.\n\
          Claims differing in a number, date, name or version are different claims. Do not add facts the members do not state.",
-        fence::clean(&input.plan.objective, 500, false)
+        fence::clean(&input.plan.objective, 2000, false)
     );
     let list = |items: &[Item], p: &str, key: &str| -> String {
         items.iter().enumerate().map(|(i, it)| format!("{p}{}: {}", i + 1, fence::clean(s(&it.data, key), 240, false))).collect::<Vec<_>>().join("\n")

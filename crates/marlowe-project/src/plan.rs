@@ -59,7 +59,7 @@ pub enum Deliverable {
 pub struct Question {
     /// `q1`, `q2`, ... (continuations carry on from the last number).
     pub id: String,
-    /// The question, 10 to 200 characters.
+    /// The question, at least 10 characters.
     pub text: String,
 }
 
@@ -143,7 +143,7 @@ impl Default for Limits {
 pub struct Plan {
     /// 1 for the first plan; a continuation is the previous number plus one.
     pub plan_no: u32,
-    /// What the project is for, 20 to 500 characters.
+    /// What the project is for, at least 20 characters.
     pub objective: String,
     /// A short name (the objective's first 60 characters unless written).
     pub title: String,
@@ -282,6 +282,33 @@ fn text_in(path: &str, v: &Value, lo: usize, hi: usize, what: &str, errs: &mut E
     Some(s)
 }
 
+/// A string of at least `lo` characters, with no upper limit: a plan's objective and questions.
+/// Found live, over and over: models good and small wrote longer objectives and questions than
+/// the old caps (500 and 200 characters), the plan was refused, and the rewrite lost detail. The
+/// prompts that carry them clip generously where they must; the plan never refuses length.
+fn text_at_least(path: &str, v: &Value, lo: usize, what: &str, errs: &mut Errs) -> Option<String> {
+    let Some(s) = v.as_str() else {
+        errs.add(path, &format!("need a string; got {}", kind_of(v)), &format!("Write {what}"));
+        return None;
+    };
+    let s = clean(s);
+    let n = s.chars().count();
+    if n < lo {
+        errs.add(path, &format!("need at least {lo} characters; got {n}"), &format!("Write {what}"));
+        return None;
+    }
+    Some(s)
+}
+
+/// A question written as an object: `{"q": ...}`, `{"question": ...}`, `{"question_text": ...}`,
+/// `{"text": ...}` (other keys such as `key` or `id` ignored), or an object with one string value.
+fn question_in(o: &serde_json::Map<String, Value>) -> Option<&Value> {
+    ["q", "question", "question_text", "text", "prompt"].iter().find_map(|k| o.get(*k).filter(|v| v.is_string())).or_else(|| {
+        let strings: Vec<&Value> = o.values().filter(|v| v.is_string()).collect();
+        (strings.len() == 1).then(|| strings[0])
+    })
+}
+
 /// Capitalised key with spaces: `model_name` becomes `Model name`.
 pub fn label_of(key: &str) -> String {
     let s = key.replace('_', " ");
@@ -294,26 +321,26 @@ pub fn label_of(key: &str) -> String {
 
 fn parse_questions(v: &Value, first_no: u32, errs: &mut Errs) -> Vec<Question> {
     let Some(arr) = v.as_array() else {
-        errs.add("questions", &format!("need a list of questions; got {}", kind_of(v)), r#"Write ["one question, 10 to 200 characters"]"#);
+        errs.add("questions", &format!("need a list of questions; got {}", kind_of(v)), r#"Write ["one question as a string"]"#);
         return Vec::new();
     };
     if arr.is_empty() || arr.len() > MAX_QUESTIONS {
         errs.add(
             "questions",
             &format!("need 1 to {MAX_QUESTIONS} items; got {}", arr.len()),
-            r#"Write each question as a string like "one question, 10 to 200 characters""#,
+            r#"Write each question as a string like "one question as a string""#,
         );
         return Vec::new();
     }
     let mut out = Vec::new();
     for (i, q) in arr.iter().enumerate() {
         let path = format!("questions[{i}]");
-        // `{"q": "..."}` is tolerated; nothing else is.
+        // A question written as an object is read for its text (see `question_in`).
         let inner = match q {
-            Value::Object(o) if o.len() == 1 && o.contains_key("q") => &o["q"],
+            Value::Object(o) => question_in(o).unwrap_or(q),
             other => other,
         };
-        if let Some(t) = text_in(&path, inner, 10, 200, "the question as one string", errs) {
+        if let Some(t) = text_at_least(&path, inner, 10, "the question as one string", errs) {
             out.push(Question { id: format!("q{}", first_no + i as u32), text: t });
         }
     }
@@ -477,21 +504,22 @@ pub fn parse_plan(input: &Value, registry: &Registry, now_ms: u64) -> Result<Pla
         }
     }
     let objective = match obj.get("objective") {
-        Some(v) => text_in("objective", v, 20, 500, "what the project is for, in one or two sentences", &mut errs),
+        Some(v) => text_at_least("objective", v, 20, "what the project is for", &mut errs),
         None => {
-            errs.add("objective", "missing", "Write what the project is for, 20 to 500 characters");
+            errs.add("objective", "missing", "Write what the project is for");
             None
         }
     };
     let questions = match obj.get("questions") {
         Some(v) => parse_questions(v, 1, &mut errs),
         None => {
-            errs.add("questions", "missing", r#"Write 1 to 8 questions as strings like "one question, 10 to 200 characters""#);
+            errs.add("questions", "missing", r#"Write 1 to 8 questions as strings like "one question as a string""#);
             Vec::new()
         }
     };
     let fields = obj.get("fields").map(|v| parse_fields(v, &mut errs)).unwrap_or_default();
-    let title = obj.get("title").and_then(|v| text_in("title", v, 3, 80, "a short name", &mut errs));
+    // A long title is cut to fit the screen, never refused.
+    let title = obj.get("title").and_then(|v| text_at_least("title", v, 3, "a short name", &mut errs)).map(|t| t.chars().take(80).collect::<String>().trim_end().to_string());
     let kind = match obj.get("kind") {
         Some(v) => one_of("kind", v, &registry.available_kinds(), &mut errs),
         None => Some("research".to_string()),
@@ -743,9 +771,9 @@ mod tests {
         let cases: Vec<(Value, &str)> = vec![
             (json!("a plan"), "need a JSON object"),
             (json!({"questions": ["Which models are strongest?"]}), "plan.objective: missing"),
-            (json!({"objective": "too short", "questions": ["Which models are strongest?"]}), "plan.objective: need 20 to 500 characters; got 9"),
+            (json!({"objective": "too short", "questions": ["Which models are strongest?"]}), "plan.objective: need at least 20 characters; got 9"),
             (json!({"objective": "Find out which small language models fit in 8 GB.", "questions": []}), "plan.questions: need 1 to 8 items; got 0"),
-            (json!({"objective": "Find out which small language models fit in 8 GB.", "questions": ["short"]}), "plan.questions[0]: need 10 to 200 characters; got 5"),
+            (json!({"objective": "Find out which small language models fit in 8 GB.", "questions": ["short"]}), "plan.questions[0]: need at least 10 characters; got 5"),
             (json!({"objective": "Find out which small language models fit in 8 GB.", "questions": [5]}), "plan.questions[0]: need a string; got a number"),
             (json!({"objective": "Find out which small language models fit in 8 GB.", "questions": ["Which models are strongest?"], "colour": 1}), "plan.colour: not a plan key"),
             (json!({"objective": "Find out which small language models fit in 8 GB.", "questions": ["Which models are strongest?"], "fields": [{"key": "d", "type": "datetime"}]}), "\"datetime\" is not a field type"),
@@ -783,6 +811,30 @@ mod tests {
         assert_eq!(parse_plan(&mk(12), &reg(), 0).unwrap().fields.len(), 12);
         let e = parse_plan(&mk(13), &reg(), 0).unwrap_err();
         assert!(e.to_string().contains("plan.fields: need at most 12 fields; got 13"), "{e}");
+    }
+
+    #[test]
+    fn long_objectives_and_questions_and_questions_written_as_objects_are_accepted() {
+        // The live plan dawn wrote first, refused under the old caps (a 635-character objective,
+        // questions as objects), plus a question far past the old 200 characters.
+        let objective = "Gather comprehensive information about Qwen4: architecture specifications, performance benchmarks against prior versions, \
+                         training methodology insights, resource requirements for inference and fine-tuning, current deployment status, \
+                         documentation quality, known limitations, benchmark scores across standard suites, multi-modal capabilities, \
+                         and safety alignment procedures implemented during development. Deliver a structured report with sources distinguishing verified \n                         claims from vendor marketing assertions, and say which numbers are confirmed and which are rumours.";
+        let long_q = "What exactly has Alibaba said, in official posts and in interviews with its staff since September 2026, about the release window, \
+                      the architecture and the parameter counts of the Qwen 4 family, and how does that compare with what third parties report?";
+        assert!(objective.chars().count() > 500 && long_q.chars().count() > 200);
+        let p = parse_plan(
+            &json!({"objective": objective, "title": "A title that runs on and on well past the eighty characters a screen header can hold",
+                    "questions": [{"key": "architecture", "question_text": "What are the core architectural innovations of Qwen4?"},
+                                  {"question": "How does Qwen4 perform on standard benchmarks?"}, long_q]}),
+            &reg(),
+            0,
+        )
+        .unwrap();
+        assert_eq!(p.objective.chars().count(), objective.chars().count());
+        assert_eq!(p.questions.iter().map(|q| q.text.as_str()).collect::<Vec<_>>(), vec!["What are the core architectural innovations of Qwen4?", "How does Qwen4 perform on standard benchmarks?", long_q]);
+        assert!(p.title.chars().count() <= 80, "{}", p.title);
     }
 
     #[test]

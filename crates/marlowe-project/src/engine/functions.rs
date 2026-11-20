@@ -366,7 +366,7 @@ pub fn default_prompt(input: &TaskInput, form_title: &str) -> Prompt {
     let system = format!(
         "You are the {role} on a project. Do exactly one task and answer with the form `{form_title}` only: a JSON object, nothing else.\n\
          Objective: {}\nToday is {}; your knowledge is older than that.",
-        fence::clean(&input.plan.objective, 500, false),
+        fence::clean(&input.plan.objective, 2000, false),
         input.today
     );
     let mut user = String::new();

@@ -250,9 +250,9 @@ fn section_prompt(input: &TaskInput) -> Result<Prompt, String> {
     let system = format!(
         "You are the writer on a research project. Do exactly one task: write the section of the report that answers ONE question, and answer with the form only, a JSON object.\n\
          Objective: {}\n{WRITER_RULES}",
-        fence::clean(&input.plan.objective, 500, false)
+        fence::clean(&input.plan.objective, 2000, false)
     );
-    let user = format!("{}\n\n{}", fence::fence("The question", &q, 300), fence::fence("The verified claims", &writer_claims(&mine), 12_000));
+    let user = format!("{}\n\n{}", fence::fence("The question", &q, 1500), fence::fence("The verified claims", &writer_claims(&mine), 12_000));
     Ok(writer_prompt(system, user, mine.len()))
 }
 
@@ -369,7 +369,7 @@ fn answer_prompt(input: &TaskInput) -> Result<Prompt, String> {
         "You are the writer on a research project. Do exactly one task: write the summary answer that opens the report, and answer with the form only, a JSON object.\n\
          Objective: {}\n\
          The sections already written are given, and the strongest verified claims. Answer the objective directly in a few short paragraphs, say what is confirmed and what is uncertain.\n{WRITER_RULES}",
-        fence::clean(&input.plan.objective, 500, false)
+        fence::clean(&input.plan.objective, 2000, false)
     );
     let top: Vec<&VClaim> = all.iter().take(ANSWER_CLAIMS).collect();
     let mut secs = String::new();

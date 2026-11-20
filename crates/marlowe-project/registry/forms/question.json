@@ -16,7 +16,7 @@
       "key": "text",
       "type": "text",
       "w": "P",
-      "max_len": 200,
+      "max_len": 4000,
       "show": {
         "as": "hidden"
       }
