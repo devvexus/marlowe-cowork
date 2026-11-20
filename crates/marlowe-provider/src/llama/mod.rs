@@ -31,6 +31,6 @@ pub(crate) mod testkit;
 pub use eligible::{EngineModel, ModelDefaults};
 pub use engine::{conversation_key, same_model, EngineConfig, LlamaEngine, ReadAheads, Status, VramProbe, Want};
 pub use hw::{EngineControl, LlamaModels};
-pub use server::{Spawner, SystemSpawner};
+pub use server::{owns_process as owns_engine_process, Spawner, SystemSpawner};
 pub use settings::{keep_alive_from, saved_user_env, GpuFit, ServerSettings};
 pub use template::Thinking;

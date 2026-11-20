@@ -16,6 +16,11 @@
 //! by the same count, so it rarely does. The conductor never waits for slot 0: when another
 //! request holds it, it takes any free slot, unless the slot is reading ahead for that very
 //! conversation ([`super::warm`]): its next request then follows the read.
+//!
+//! A model with ONE slot has only the conversation's: the crew and the projects share it while the
+//! conversation is idle, and the conversation always goes first (a crew request does not take the
+//! slot while a conversation request waits for it). No request waits forever: past
+//! [`EngineConfig::slot_wait`] it fails with a clear error and the caller decides.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, Weak};
@@ -37,6 +42,10 @@ use crate::sources::Sources;
 
 /// How long a request waits for a model switch to drain before it gives up.
 const SWITCH_WAIT: Duration = Duration::from_secs(300);
+/// How long a request waits for a slot before it gives up.
+const SLOT_WAIT: Duration = Duration::from_secs(20 * 60);
+/// How long a stop waits for the background reads of the next prompts.
+const WARM_GRACE: Duration = Duration::from_secs(8);
 /// A load that failed this recently is not tried again for the same shape.
 const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(15);
 const QUICK: Duration = Duration::from_millis(1500);
@@ -84,6 +93,11 @@ pub struct EngineConfig {
     pub backend: Option<Backend>,
     /// The version of `backend` (its tag), for the MS generations it runs; `None` is not checked.
     pub backend_tag: Option<String>,
+    /// Longest a request waits for a slot of the running model; then it fails.
+    pub slot_wait: Duration,
+    /// Longest an on-purpose stop waits for a background read of the next prompt to end, so the
+    /// slot's cache (the conversation, read in full) is saved with the rest.
+    pub warm_grace: Duration,
     /// How often a starting server is asked whether it is ready.
     pub poll: Duration,
     /// How often the idle check runs.
@@ -109,6 +123,8 @@ impl EngineConfig {
             binary: None,
             backend: None,
             backend_tag: None,
+            slot_wait: SLOT_WAIT,
+            warm_grace: WARM_GRACE,
             poll: Duration::from_millis(250),
             idle_tick: Duration::from_secs(2),
             vram: None,
@@ -220,6 +236,8 @@ impl Running {
 struct State {
     running: Option<Running>,
     loading: Option<String>,
+    /// Conversation requests waiting for a slot: on a one-slot model a crew request lets them pass.
+    conductor_waiting: usize,
     epoch: u64,
     failed: Option<(String, EngineShape, Instant, ProviderError)>,
 }
@@ -258,6 +276,23 @@ impl Inner {
             }
         }
         r.proc.kill();
+    }
+}
+
+/// Takes a waiting conversation request off the count when its `acquire` ends.
+struct QueueGuard<'a> {
+    inner: &'a Arc<Inner>,
+    queued: &'a std::cell::Cell<bool>,
+}
+
+impl Drop for QueueGuard<'_> {
+    fn drop(&mut self) {
+        if self.queued.get() {
+            let mut g = lock(&self.inner.st);
+            g.conductor_waiting = g.conductor_waiting.saturating_sub(1);
+            drop(g);
+            self.inner.cv.notify_all();
+        }
     }
 }
 
@@ -438,6 +473,13 @@ impl LlamaEngine {
         // Killed under the lock: a request that finds nothing running starts a load at once, and
         // that must not overlap a server still letting go of the GPU.
         let mut g = lock(&self.inner.st);
+        // A turn that just ended is reading the next prompt into its slot (see `Lease::read_ahead`):
+        // that slot is not yet whole, and a cache saved now would miss the conversation. A stop
+        // right after a reply lets the read finish first, a few seconds at most.
+        let until = Instant::now() + self.inner.cfg.warm_grace;
+        while g.running.as_ref().is_some_and(|r| model.is_none_or(|m| same_model(&r.model, m)) && r.slots.iter().any(|s| s.warming)) && Instant::now() < until {
+            g = self.inner.cv.wait_timeout(g, Duration::from_millis(50)).unwrap_or_else(|e| e.into_inner()).0;
+        }
         let stopped = match g.running.take_if(|r| model.is_none_or(|m| same_model(&r.model, m))) {
             Some(mut r) => {
                 self.inner.retire(&mut r);
@@ -454,7 +496,11 @@ impl LlamaEngine {
     pub fn acquire(&self, want: &Want, cancel: &CancelToken) -> Result<Lease, ProviderError> {
         let inner = &self.inner;
         let began = Instant::now();
+        let queued = std::cell::Cell::new(false);
+        // Declared before the lock guard, so it drops (and takes the lock) after it is released.
+        let _queue = QueueGuard { inner, queued: &queued };
         let mut g = lock(&inner.st);
+        let mut slot_began: Option<Instant> = None;
         loop {
             if cancel.is_cancelled() {
                 return Err(ProviderError::cancelled());
@@ -467,9 +513,12 @@ impl LlamaEngine {
                 g = self.wait(g, cancel);
                 continue;
             }
+            let conductor_waiting = g.conductor_waiting;
             match g.running.as_mut() {
                 Some(r) if r.matches(want) => {
-                    if let Some(i) = r.pick(want.lane, want.key) {
+                    let single = r.slots.len() == 1;
+                    let yields = single && want.lane != Lane::Conductor && conductor_waiting > 0;
+                    if let Some(i) = r.pick(want.lane, want.key).filter(|_| !yields) {
                         let slot = &mut r.slots[i];
                         slot.busy = true;
                         slot.key = Some(want.key);
@@ -484,6 +533,17 @@ impl LlamaEngine {
                             ctx_per_slot: r.shape.ctx_per_slot,
                             thinking: r.thinking.clone(),
                         });
+                    }
+                    if slot_began.get_or_insert_with(Instant::now).elapsed() > inner.cfg.slot_wait {
+                        return Err(ProviderError::server(format!(
+                            "no slot of {} came free in {}: it is serving other requests",
+                            want.model,
+                            humanize(inner.cfg.slot_wait)
+                        )));
+                    }
+                    if want.lane == Lane::Conductor && single && !queued.get() {
+                        queued.set(true);
+                        g.conductor_waiting += 1;
                     }
                     g = self.wait(g, cancel);
                 }
@@ -958,6 +1018,72 @@ mod tests {
         assert_eq!(t.join().unwrap(), Some(true));
     }
 
+    fn one_slot(model: &str, lane: Lane, key: u64) -> Want {
+        let mut w = want(model, lane, key);
+        w.shape.slots = 1;
+        w
+    }
+
+    #[test]
+    fn on_a_one_slot_model_the_crew_takes_the_idle_conversations_slot() {
+        let fx = Fixture::new("dusk:22b");
+        let e = fx.engine();
+        let c = CancelToken::new();
+        let conv = e.acquire(&one_slot("dusk:22b", Lane::Conductor, 1), &c).unwrap();
+        assert_eq!(conv.slot, 0);
+        drop(conv);
+        let crew = e.acquire(&one_slot("dusk:22b", Lane::Other, 10), &c).unwrap();
+        assert_eq!(crew.slot, 0, "the conversation is idle: the agent shares its slot");
+        drop(crew);
+        assert_eq!(fx.spawner.starts(), 1);
+    }
+
+    #[test]
+    fn on_a_one_slot_model_a_waiting_conversation_request_goes_before_the_crew() {
+        let fx = Fixture::new("dusk:22b");
+        let e = fx.engine();
+        let c = CancelToken::new();
+        let holder = e.acquire(&one_slot("dusk:22b", Lane::Other, 10), &c).unwrap();
+        let order = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let spawn = |lane: Lane, key: u64, name: &'static str| {
+            let (e, order) = (e.clone(), order.clone());
+            std::thread::spawn(move || {
+                let lease = e.acquire(&one_slot("dusk:22b", lane, key), &CancelToken::new()).unwrap();
+                order.lock().unwrap().push(name);
+                std::thread::sleep(Duration::from_millis(150));
+                drop(lease);
+            })
+        };
+        // The crew request queues first, the conversation's second; both wait for the holder.
+        let crew = spawn(Lane::Other, 11, "crew");
+        std::thread::sleep(Duration::from_millis(200));
+        let conv = spawn(Lane::Conductor, 1, "conversation");
+        std::thread::sleep(Duration::from_millis(300));
+        drop(holder);
+        crew.join().unwrap();
+        conv.join().unwrap();
+        assert_eq!(*order.lock().unwrap(), vec!["conversation", "crew"]);
+    }
+
+    #[test]
+    fn no_request_waits_for_a_slot_forever() {
+        let fx = Fixture::new("dusk:22b");
+        let mut cfg = fx.config();
+        cfg.slot_wait = Duration::from_millis(300);
+        let e = LlamaEngine::new(cfg, fx.spawner.clone());
+        let c = CancelToken::new();
+        let _held = e.acquire(&one_slot("dusk:22b", Lane::Conductor, 1), &c).unwrap();
+        let began = Instant::now();
+        let err = e.acquire(&one_slot("dusk:22b", Lane::Other, 10), &c).err().unwrap();
+        assert!(err.detail.starts_with("no slot of dusk:22b came free"), "{}", err.detail);
+        assert!(began.elapsed() < Duration::from_secs(5));
+        // A conversation request that gave up no longer holds the crew back.
+        let err = e.acquire(&one_slot("dusk:22b", Lane::Conductor, 2), &c).err().unwrap();
+        assert!(err.detail.contains("no slot"), "{}", err.detail);
+        drop(_held);
+        assert!(e.acquire(&one_slot("dusk:22b", Lane::Other, 10), &c).is_ok());
+    }
+
     #[test]
     fn the_launch_carries_the_models_draft_and_projector() {
         let fx = Fixture::with_layers("dawn:9b", true, true);
@@ -1077,6 +1203,59 @@ mod tests {
         let before = fx.spawner.seen.slot_calls.lock().unwrap().len();
         again.acquire(&other, &c).unwrap();
         assert!(fx.spawner.seen.slot_calls.lock().unwrap()[before..].iter().all(|c| !c.starts_with("restore ")));
+    }
+
+    /// What a quit does (the daemon's close unloads the engine's model): on either backend the
+    /// caches are written first, then the one server is killed, and nothing is left running.
+    #[test]
+    fn a_quit_saves_the_caches_and_leaves_no_server_on_either_backend() {
+        for backend in [Backend::LlamaCpp, Backend::MsLlamaCpp] {
+            let fx = Fixture::new("dusk:22b");
+            let mut cfg = fx.config();
+            cfg.slots_dir = Some(fx.dir.path().join("slots"));
+            cfg.backend = Some(backend);
+            let e = LlamaEngine::new(cfg, fx.spawner.clone());
+            let c = CancelToken::new();
+            drop((e.acquire(&want("dusk:22b", Lane::Conductor, 11), &c).unwrap(), e.acquire(&want("dusk:22b", Lane::Other, 22), &c).unwrap()));
+            assert_eq!(fx.spawner.starts(), 1);
+            assert!(e.unload(None), "{backend:?}");
+            assert_eq!(fx.spawner.seen.slot_calls.lock().unwrap().iter().filter(|c| c.starts_with("save ")).count(), 2, "{backend:?}");
+            assert_eq!(fx.spawner.killed(), 1, "{backend:?}: the server was killed");
+            assert!(e.status().is_none(), "{backend:?}: nothing runs after the quit");
+        }
+    }
+
+    #[test]
+    fn a_quit_right_after_a_reply_waits_for_the_read_ahead_so_its_cache_is_saved() {
+        let fx = Fixture::new("dusk:22b");
+        let mut cfg = fx.config();
+        cfg.slots_dir = Some(fx.dir.path().join("slots"));
+        let e = LlamaEngine::new(cfg, fx.spawner.clone());
+        fx.spawner.completion_takes(Duration::from_millis(600), 200);
+        let lease = e.acquire(&want("dusk:22b", Lane::Conductor, 11), &CancelToken::new()).unwrap();
+        lease.read_ahead("the next prompt".into());
+        std::thread::sleep(Duration::from_millis(100));
+        let began = Instant::now();
+        assert!(e.unload(None));
+        assert!(began.elapsed() >= Duration::from_millis(300), "the stop let the read end");
+        let calls = fx.spawner.seen.slot_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1, "the conversation's slot was saved: {calls:?}");
+    }
+
+    #[test]
+    fn a_read_ahead_that_will_not_end_does_not_hold_up_a_quit() {
+        let fx = Fixture::new("dusk:22b");
+        let mut cfg = fx.config();
+        cfg.warm_grace = Duration::from_millis(200);
+        let e = LlamaEngine::new(cfg, fx.spawner.clone());
+        fx.spawner.completion_takes(Duration::from_secs(3), 200);
+        let lease = e.acquire(&want("dusk:22b", Lane::Conductor, 11), &CancelToken::new()).unwrap();
+        lease.read_ahead("the next prompt".into());
+        std::thread::sleep(Duration::from_millis(100));
+        let began = Instant::now();
+        assert!(e.unload(None));
+        assert!(began.elapsed() < Duration::from_secs(2));
+        assert_eq!(fx.spawner.killed(), 1);
     }
 
     #[test]

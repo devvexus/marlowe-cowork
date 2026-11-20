@@ -615,7 +615,9 @@ impl Brains {
             .unwrap_or_default();
         let (mut done, mut failed) = (Vec::new(), Vec::new());
         for name in hw.models.loaded_models() {
-            if !ours.iter().any(|o| same_model(o, &name)) {
+            // Marlowe's own server runs whatever it loaded for Marlowe (a Hugging Face or folder file
+            // the library has no row for included): a close stops it, and it saves its caches first.
+            if !ours.iter().any(|o| same_model(o, &name)) && !hw.models.runs_on_own_server(&name) {
                 continue;
             }
             // A restart keeps the engine runner's prompt cache by leaving the model loaded (it

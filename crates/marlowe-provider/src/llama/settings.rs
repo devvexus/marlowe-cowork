@@ -6,7 +6,7 @@
 //! | `flash_attn` | on | `OLLAMA_FLASH_ATTENTION` (a quantized KV cache needs it: off means f16) |
 //! | `keep_alive` | `OLLAMA_KEEP_ALIVE` as saved, else 5 m (negative: never unload) | `OLLAMA_KEEP_ALIVE` |
 //! | `batch` / `ubatch` | 512 / 512 | Ollama's `-b` / `-ub` |
-//! | `mmap` | off (`--no-mmap`) | Ollama's launch |
+//! | `mmap` | off (`--load-mode none`) | Ollama's launch |
 //! | `gpu_fit` | `auto`: whole on the GPU when the planner says it fits, else split | Ollama's layer split |
 //!
 //! The KV type, the context and the slots are per model: the context planner's policy (saved per

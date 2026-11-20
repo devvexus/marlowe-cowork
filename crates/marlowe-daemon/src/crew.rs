@@ -489,9 +489,11 @@ impl RunApprovals for RunGate {
 /// Busy when the Sentinel sees a watched run alive, when another process computes on a GPU (a
 /// training job, another inference server: NVML's compute list minus its graphics list, the same
 /// signal the reranker's GPU gate reads), or when graphics load is heavy with no Ollama runner on
-/// the device. Ollama is Marlowe's own (crew steps check before every step and must not wait on
-/// the model a previous step left loaded), and so is the voice sidecar's process tree
-/// ([`marlowe_voice::owns_process`]). No Sentinel, or no GPU reported: not busy.
+/// the device. Marlowe's own engine server and the voice sidecar are not foreign: both are found
+/// by process tree ([`own_process`]: the PIDs Marlowe started, whatever the binary is called or
+/// which backend it came from), so a crew step never waits on the model a previous step left
+/// loaded. An Ollama runner is the user's own and holds a model they loaded. No Sentinel, or no
+/// GPU reported: not busy.
 fn gpu_probe(core: Weak<Core>) -> GpuBusy {
     let nvml = Mutex::new(None::<marlowe_sentinel::gpu::Gpu>);
     Arc::new(move || {
@@ -500,7 +502,7 @@ fn gpu_probe(core: Weak<Core>) -> GpuBusy {
         catch_unwind(AssertUnwindSafe(|| {
             let compute = lock(&nvml)
                 .get_or_insert_with(marlowe_sentinel::gpu::Gpu::open)
-                .compute_only_except(&marlowe_voice::owns_process);
+                .compute_only_except(&own_process);
             // A device whose compute processes cannot be read may hold a training job: busy.
             // No NVML at all keeps the no-GPU rule above.
             let unreadable = compute.as_ref().is_ok_and(|c| c.iter().any(|(_, n)| n.is_none()));
@@ -510,6 +512,12 @@ fn gpu_probe(core: Weak<Core>) -> GpuBusy {
         }))
         .unwrap_or(false)
     })
+}
+
+/// Whether `pid` is a process Marlowe started for itself: the engine's llama-server (of either
+/// backend) or the voice sidecar, with everything either started.
+pub(crate) fn own_process(pid: u32) -> bool {
+    marlowe_provider::llama::owns_engine_process(pid) || marlowe_voice::owns_process(pid)
 }
 
 /// What a conversation is on now, for its runs' default model.
@@ -776,6 +784,24 @@ mod tests {
         let long = Dispatch { summary: "y".repeat(7000), artifacts: vec!["C:/h/workflows/runs/r/result.md".into()], ..Dispatch::default() };
         let text = relay_text(&run, Some(&long));
         assert!(text.contains("… (the rest: C:/h/workflows/runs/r/result.md)") && !text.contains("marlowe crew show 01234567)"), "{text}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn marlowes_own_server_is_not_foreign_compute_whatever_it_is_called() {
+        use marlowe_provider::llama::{Spawner, SystemSpawner};
+        // A process under a name no label rule knows, started the way the engine starts a server.
+        let plan = marlowe_provider::LaunchPlan {
+            binary: "cmd.exe".into(),
+            args: ["/d", "/c", "ping -n 60 127.0.0.1 >nul"].map(String::from).to_vec(),
+            backend_dll: None,
+            path_prefix: Vec::new(),
+        };
+        let mut server = SystemSpawner::new(Vec::new()).start(&plan, None).unwrap();
+        assert!(own_process(server.id()));
+        assert!(!own_process(std::process::id()));
+        server.kill();
+        assert!(!own_process(server.id()), "gone with the server");
     }
 
     #[test]

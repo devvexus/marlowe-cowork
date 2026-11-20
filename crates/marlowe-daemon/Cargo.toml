@@ -39,6 +39,8 @@ marlowe-engine-install.workspace = true
 marlowe-net.workspace = true
 regex.workspace = true
 blake3.workspace = true
+# The engine's server processes: the GPU gate must not read them as foreign compute.
+marlowe-provider.workspace = true
 
 [dev-dependencies]
 # N: the real background tools run against the real daemon in `tests/parity_n.rs`.
@@ -49,5 +51,3 @@ marlowe-journal.workspace = true
 marlowe-memory.workspace = true
 # K: the scripted MCP server the tests connect to.
 marlowe-mcp = { workspace = true, features = ["fake-server"] }
-# The prefix guard builds the Ollama request body a turn would send.
-marlowe-provider.workspace = true

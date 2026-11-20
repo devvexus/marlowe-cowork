@@ -76,7 +76,9 @@ pub fn args(spec: &Spec) -> Vec<String> {
         s("--jinja"),
     ];
     if !set.mmap {
-        a.push(s("--no-mmap"));
+        // llama.cpp builds from late 2026 dropped `--no-mmap` for `--load-mode`; `none` reads the
+        // weights into memory, as the old flag did.
+        a.extend([s("--load-mode"), s("none")]);
     }
     a.extend([
         s("--cache-type-k"),
@@ -187,7 +189,7 @@ mod tests {
         assert_eq!(after(&a, "--cache-type-v"), "q8_0");
         assert_eq!(after(&a, "--flash-attn"), "on");
         assert_eq!((after(&a, "-ngl"), after(&a, "--fit")), ("99", "off"));
-        assert!(!a.iter().any(|x| x == "--context-shift") && a.iter().any(|x| x == "--no-mmap") && a.iter().any(|x| x == "--jinja"));
+        assert!(!a.iter().any(|x| x == "--context-shift") && after(&a, "--load-mode") == "none" && a.iter().any(|x| x == "--jinja"));
         assert_eq!(after(&a, "--host"), "127.0.0.1");
         // None of the flags Ollama adds only for the models it renders itself, and no draft or
         // projector the model does not have.
@@ -218,7 +220,7 @@ mod tests {
         let a = args(&s);
         assert_eq!((after(&a, "--flash-attn"), after(&a, "--cache-type-k"), after(&a, "--cache-type-v")), ("off", "f16", "f16"));
         assert_eq!((after(&a, "-b"), after(&a, "-ub")), ("2048", "256"));
-        assert!(!a.iter().any(|x| x == "--no-mmap"));
+        assert!(!a.iter().any(|x| x == "--no-mmap" || x == "--load-mode"));
     }
 
     #[test]
