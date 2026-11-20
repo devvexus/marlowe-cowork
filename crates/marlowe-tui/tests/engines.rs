@@ -345,6 +345,14 @@ fn switching_backend_from_the_library_picker_still_relists_the_catalog() {
 
 // ---------------------------------------------------------------- the release prompt
 
+/// llama.cpp v1.0.0 with v1.1.0 out: the report the daemon sends just before it asks.
+fn upgradable() -> State {
+    let mut l = llama();
+    l.state = BackendUpdate::UpdateAvailable;
+    l.latest_release = Some(RemoteTag { tag: "v1.1.0".into(), date: None });
+    with("llama.cpp", vec![l, ms()])
+}
+
 fn upgrade_event(warning: Option<&str>) -> Event {
     Event::BackendUpgrade { backend: "llama.cpp".into(), title: "llama.cpp".into(), tag: "v1.1.0".into(), warning: warning.map(String::from) }
 }
@@ -355,7 +363,7 @@ fn quiet(s: &mut State) {
 
 #[test]
 fn the_release_prompt_asks_once_with_three_answers() {
-    let mut s = up_to_date();
+    let mut s = upgradable();
     feed(&mut s, 3, upgrade_event(None));
     assert!(s.overlay.is_none(), "it waits for a quiet moment");
     quiet(&mut s);
@@ -379,7 +387,7 @@ fn the_release_prompt_asks_once_with_three_answers() {
 
 #[test]
 fn no_and_dont_ask_again() {
-    let mut s = up_to_date();
+    let mut s = upgradable();
     feed(&mut s, 3, upgrade_event(None));
     quiet(&mut s);
     s.on_tick();
@@ -388,7 +396,7 @@ fn no_and_dont_ask_again() {
     assert!(s.overlay.is_none());
     assert!(s.flash.as_ref().unwrap().text.contains("waiting in the engine window"));
 
-    let mut s = up_to_date();
+    let mut s = upgradable();
     feed(&mut s, 3, upgrade_event(Some("ms-v2.0 stops running the Gen 1 MS models: A.")));
     quiet(&mut s);
     s.on_tick();
@@ -399,7 +407,7 @@ fn no_and_dont_ask_again() {
     assert_eq!(s.on_key(key(KeyCode::Enter)), vec![Request::BackendDontAsk { backend: "llama.cpp".into(), dont_ask: true }]);
 
     // Esc is "not now": it answers no.
-    let mut s = up_to_date();
+    let mut s = upgradable();
     feed(&mut s, 3, upgrade_event(None));
     quiet(&mut s);
     s.on_tick();
@@ -410,7 +418,7 @@ fn no_and_dont_ask_again() {
 
 #[test]
 fn a_clicked_choice_answers() {
-    let mut s = up_to_date();
+    let mut s = upgradable();
     feed(&mut s, 3, upgrade_event(None));
     quiet(&mut s);
     s.on_tick();
@@ -423,7 +431,7 @@ fn a_clicked_choice_answers() {
 #[test]
 fn typing_never_meets_the_prompt() {
     // Someone is typing: it does not appear at all.
-    let mut s = up_to_date();
+    let mut s = upgradable();
     type_str(&mut s, "ls");
     feed(&mut s, 3, upgrade_event(None));
     quiet(&mut s);
@@ -431,7 +439,7 @@ fn typing_never_meets_the_prompt() {
     assert!(s.overlay.is_none());
 
     // It appears, and a key typed before it could be read goes to the composer; the prompt waits.
-    let mut s = up_to_date();
+    let mut s = upgradable();
     feed(&mut s, 3, upgrade_event(None));
     quiet(&mut s);
     s.on_tick();
@@ -441,6 +449,28 @@ fn typing_never_meets_the_prompt() {
     assert_eq!(s.composer.text(), "y");
     assert!(s.overlay.is_none());
     assert!(s.engines.upgrade.is_some(), "the question is not lost");
+}
+
+#[test]
+fn a_release_already_installed_or_declined_is_not_asked_again_after_a_relaunch() {
+    // The replay ring holds the offer; a TUI that answered nothing is told what the daemon knows.
+    let mut s = up_to_date();
+    feed(&mut s, 3, upgrade_event(None));
+    quiet(&mut s);
+    s.on_tick();
+    assert!(s.overlay.is_none() && s.engines.upgrade.is_none(), "the report says up to date");
+    let mut s = upgradable();
+    let mut l = llama();
+    l.installed.as_mut().unwrap().tag = "v1.1.0".into();
+    feed(&mut s, 3, backends("llama.cpp", vec![l, ms()]));
+    feed(&mut s, 4, upgrade_event(None));
+    assert!(s.engines.upgrade.is_none(), "installed after a Yes");
+    // A prompt waiting for a quiet moment is withdrawn when the report says it is moot.
+    let mut s = upgradable();
+    feed(&mut s, 3, upgrade_event(None));
+    assert!(s.engines.upgrade.is_some());
+    feed(&mut s, 4, backends("llama.cpp", vec![llama(), ms()]));
+    assert!(s.engines.upgrade.is_none());
 }
 
 // ---------------------------------------------------------------- the first-run engine offer

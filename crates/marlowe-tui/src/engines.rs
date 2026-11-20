@@ -184,6 +184,13 @@ impl State {
             *sel = (*sel).min(backends.len().saturating_sub(1));
             *button = (*button).min(self.engines.backends.get(*sel).map_or(0, |r| buttons(r, false).len().saturating_sub(1)));
         }
+        // A prompt not yet shown that the new report makes moot (installed from another client, or
+        // declined) is withdrawn.
+        if let Some(u) = self.engines.upgrade.as_ref().filter(|u| !u.shown) {
+            if self.release_handled(&u.backend, &u.tag) {
+                self.engines.upgrade = None;
+            }
+        }
         self.offer_models_to_known_user();
     }
 
@@ -218,6 +225,11 @@ impl State {
         if self.engines.answered.iter().any(seen) || self.engines.upgrade.as_ref().is_some_and(|u| u.backend == backend && u.tag == tag) {
             return;
         }
+        // The event is replayed to a relaunched TUI, which has answered nothing: the daemon's own
+        // report says whether the release is still the one to offer.
+        if self.release_handled(backend, tag) {
+            return;
+        }
         self.engines.upgrade = Some(UpgradeAsk {
             backend: backend.to_string(),
             title: title.to_string(),
@@ -227,6 +239,13 @@ impl State {
             shown: false,
             guard_until_ms: 0,
         });
+    }
+
+    /// Whether the latest report says `tag` of `backend` is not an upgrade to offer: installed
+    /// already, declined for good, or no longer newer than what is installed. Unknown is not handled.
+    fn release_handled(&self, backend: &str, tag: &str) -> bool {
+        let Some(r) = self.engines.backends.iter().find(|r| r.id == backend) else { return false };
+        r.dont_ask || r.state != BackendUpdate::UpdateAvailable || r.installed.as_ref().is_some_and(|i| i.tag == tag || i.release.as_deref() == Some(tag))
     }
 
     /// Raises a waiting release prompt once nothing else is asking and the composer is empty.

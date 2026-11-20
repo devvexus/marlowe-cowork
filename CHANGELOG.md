@@ -4,6 +4,14 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+- **Switching backend, or installing or syncing the selected one, no longer cuts off a reply in progress**: the old server stops once its last request ends, with every conversation's cache saved first, and the next request starts the new one; a switch during a load is honoured too.
+- **A crew turn on a one-slot model no longer costs the conversation its cache**: the cache is written out before the agent takes the slot and read back when you return, and a stop keeps the conversation's, not the agent's.
+- **A model that did not fit and ran split is loaded once, not twice**: the server keeps the planner's split shape, so the next message does not restart it.
+- **A saved cache is only restored into the backend and version that made it.**
+- **Crew steps no longer wait while your own conversation is generating hard**: Marlowe's own engine counts as Marlowe's work on the GPU even at high utilisation.
+- **The release prompt is not asked again** for a release you already declined or installed after relaunching, and declining the first-run engine offer no longer silences release prompts once you install later; "builds newer" counts only builds Sync can install.
+- **A file with a tensor type Marlowe does not know is no longer called MS**: only the types an MS build writes switch you to ms-llama.cpp; any other is tried, and a failed load says which type and to Sync to upstream.
+- **Models in your own folders count as local models** for the provider status and `marlowe doctor`, which now reports the model sources found and the selected backend, and shows Ollama's server as informational; the model list reads each file once, and same-named files each carry a path hash so an id never changes meaning.
 - **The engine starts on current llama.cpp and ms-llama.cpp builds**: they renamed `--no-mmap` to `--load-mode`, and a server launched with the old flag exited at once.
 - **Quitting right after a reply keeps that conversation's cache**: the stop waits (a few seconds at most) for the background read of the next prompt, saves every slot and stops the server on either backend, including a model that came from Hugging Face or a folder.
 - **A model with one slot is shared fairly**: crew and project agents use the conversation's slot while it is idle, your next message always goes first, and nothing waits for a slot longer than 20 minutes.

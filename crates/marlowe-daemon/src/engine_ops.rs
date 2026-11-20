@@ -41,9 +41,9 @@ pub(crate) trait Sink {
     fn ephemeral(&self, event: Event);
     /// To the client that asked.
     fn reply(&self, event: Event);
-    /// Stops the running llama-server (saving its slot caches) so the next load starts the
-    /// selected backend's current version.
-    fn stop_engine(&self);
+    /// Replaces the running llama-server once its requests are done (saving its slot caches), so
+    /// the next load starts the selected backend's current version. Nothing in flight is cut off.
+    fn restart_engine(&self);
     /// The MS models on this machine, each with its generation (see `ModelSource::ms_models`).
     fn ms_models(&self) -> Vec<(String, u8)>;
 }
@@ -210,9 +210,9 @@ impl Services {
             Err(m) => return done(false, m),
         };
         if changed {
-            // The running server belongs to the old backend: stop it (its slot caches are saved
-            // first); the next load starts the new one.
-            sink.stop_engine();
+            // The running server belongs to the old backend: it stops when its requests are done
+            // (its slot caches are saved first); the next load starts the new one.
+            sink.restart_engine();
         }
         self.publish_all(sink);
         let installed = self.root().map(|r| marlowe_engines::installed::server(r, backend).is_ok()).unwrap_or(false);
@@ -257,10 +257,11 @@ impl Services {
         match result {
             Ok(rec) => {
                 let moved = before.as_deref() != Some(rec.tag.as_str());
-                // A server of the old version is still running for the selected backend: stop it so
-                // the next load uses what was just installed.
+                clear_first_install_decline(root, backend, before.as_deref());
+                // A server of the old version is still running for the selected backend: replace it
+                // (after its requests) so the next load uses what was just installed.
                 if moved && marlowe_engines::state::selected(root) == backend {
-                    sink.stop_engine();
+                    sink.restart_engine();
                 }
                 let cpu = if rec.device == Device::Cpu { format!(" ({})", rec.note.clone().unwrap_or_default()) } else { String::new() };
                 self.publish_all(sink);
@@ -331,6 +332,16 @@ impl Services {
     }
 }
 
+/// "No" to the first-run offer is saved as "don't ask", which also silences release prompts. The
+/// first install of a backend (nothing was installed before) clears it: whoever installs later
+/// from the engine window wants the prompts. A "don't ask" given to an upgrade prompt means
+/// something was installed, and stays.
+fn clear_first_install_decline(root: &Path, backend: Backend, before: Option<&str>) {
+    if before.is_none() && marlowe_engines::state::load(root).of(backend).dont_ask {
+        let _ = marlowe_engines::state::set_dont_ask(root, backend, false);
+    }
+}
+
 /// What installing ms-llama.cpp `tag` would cost: the MS models it would stop running (a newer
 /// ms-llama.cpp rejects Gen 1 files). `None` for the other backend or when nothing is lost.
 fn stops_ms(backend: Backend, tag: &str, models: &dyn Fn() -> Vec<(String, u8)>) -> Option<String> {
@@ -378,8 +389,8 @@ impl Sink for CoreSink<'_> {
     fn reply(&self, event: Event) {
         self.core.bus.reply(self.client, event);
     }
-    fn stop_engine(&self) {
-        let _ = self.core.brains.unload_local_models();
+    fn restart_engine(&self) {
+        self.core.brains.restart_local_engine();
     }
     fn ms_models(&self) -> Vec<(String, u8)> {
         self.core.brains.factory().hardware().map(|h| h.models.ms_models()).unwrap_or_default()
@@ -496,7 +507,7 @@ mod tests {
         fn reply(&self, e: Event) {
             self.events.lock().unwrap().push(e);
         }
-        fn stop_engine(&self) {
+        fn restart_engine(&self) {
             *self.stops.lock().unwrap() += 1;
         }
         fn ms_models(&self) -> Vec<(String, u8)> {
@@ -637,6 +648,19 @@ mod tests {
         assert!(sink.last_backends().1[0].dont_ask);
         svc.dont_ask(&sink, Backend::LlamaCpp, false);
         assert!(!sink.last_backends().1[0].dont_ask);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn installing_after_declining_the_first_offer_turns_release_prompts_back_on() {
+        let root = scratch("decline");
+        marlowe_engines::state::set_dont_ask(&root, Backend::LlamaCpp, true).unwrap();
+        // A newer release installed over an older one keeps the user's "don't ask again".
+        clear_first_install_decline(&root, Backend::LlamaCpp, Some("v1.0.0"));
+        assert!(marlowe_engines::state::load(&root).of(Backend::LlamaCpp).dont_ask);
+        // The first install clears the decline the onboarding "No" saved.
+        clear_first_install_decline(&root, Backend::LlamaCpp, None);
+        assert!(!marlowe_engines::state::load(&root).of(Backend::LlamaCpp).dont_ask);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -17,9 +17,11 @@
 //!
 //! The model file's own chat template renders the prompt (`--jinja`). A model that has none, so
 //! that only an Ollama Go template or Ollama's own renderer could, an `ADAPTER`, and anything but
-//! GGUF are refused with the reason: "can't run: ...". A GGUF holding tensor types stock ggml does
-//! not know, or the `msffn.*` metadata of an MS file, needs ms-llama.cpp ([`EngineModel::needs`]),
-//! and the installed ms-llama.cpp must run the file's generation ([`EngineModel::refuses_on`]).
+//! GGUF are refused with the reason: "can't run: ...". A GGUF holding the tensor types only an MS
+//! build writes (44..48, 200..215), or the `msffn.*` metadata of an MS file, needs ms-llama.cpp
+//! ([`EngineModel::needs`]), and the installed ms-llama.cpp must run the file's generation
+//! ([`EngineModel::refuses_on`]). Any other type Marlowe's table lacks may be one a newer llama.cpp
+//! added: the server is asked to load it, and a failed load says so ([`EngineModel::unknown_types`]).
 
 use std::path::{Path, PathBuf};
 
@@ -28,7 +30,7 @@ use serde_json::Value;
 
 use crate::ollama::ModelMeta;
 use crate::ollama_store::{manifest_relative_path, resolve_in, Sampling, MODEL_MEDIA_TYPE, PARAMS_MEDIA_TYPE};
-use crate::sources::{Sources, FILE_PREFIX};
+use crate::sources::{Found, Source, Sources, FILE_PREFIX};
 
 /// The `TEMPLATE` layer.
 const TEMPLATE_MEDIA_TYPE: &str = "application/vnd.ollama.image.template";
@@ -73,7 +75,7 @@ pub struct EngineModel {
     pub draft: Option<Draft>,
     pub mmproj: Option<PathBuf>,
     pub defaults: ModelDefaults,
-    /// Tensor type ids stock ggml does not know (`ModelHeader::foreign_types`).
+    /// Tensor type ids stock ggml (as Marlowe knows it) does not know (`ModelHeader::foreign_types`).
     pub foreign_types: Vec<u32>,
     /// The MS (Mad Shift) mark of the model file, or of its MTP head (`ModelHeader::ms`).
     pub ms: Option<marlowe_hw::MsInfo>,
@@ -111,10 +113,16 @@ impl Refusal {
 }
 
 impl EngineModel {
-    /// The backend the model needs, when only one can load it: an MS file (the `msffn.*`
-    /// metadata) or any GGUF with types stock ggml does not know, written by ms-llama.cpp.
+    /// The backend the model needs, when only one can load it: an MS file, by its `msffn.*`
+    /// metadata or the tensor types only an MS build writes ([`marlowe_hw::ms::only_ms_type`]).
     pub fn needs(&self) -> Option<Backend> {
-        (self.ms.is_some() || !self.foreign_types.is_empty()).then_some(Backend::MsLlamaCpp)
+        self.ms.is_some().then_some(Backend::MsLlamaCpp)
+    }
+
+    /// Tensor types that are neither upstream's nor MS's as far as Marlowe knows: a llama.cpp
+    /// built before upstream added them cannot load the file, a newer one can.
+    pub fn unknown_types(&self) -> Vec<u32> {
+        self.foreign_types.iter().copied().filter(|id| !marlowe_hw::ms::only_ms_type(*id)).collect()
     }
 
     /// What the picker calls it: `MS Gen 1`, or `MS`.
@@ -128,13 +136,7 @@ impl EngineModel {
         let (need, have) = (self.needs()?, chosen?);
         let name = &self.display;
         if need != have.backend {
-            let what = if self.ms.is_some() {
-                format!("{name} is an MS (Mad Shift) model: it runs on {need}.")
-            } else {
-                let ids = self.foreign_types.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
-                format!("{name} uses tensor types stock llama.cpp does not know (ggml types {ids}): it runs on {need}.")
-            };
-            return Some(Refusal { message: what, switch_to: Some(need) });
+            return Some(Refusal { message: format!("{name} is an MS (Mad Shift) model: it runs on {need}."), switch_to: Some(need) });
         }
         // The right backend, but a version that no longer runs this generation of file.
         let (gen, tag) = (self.ms.as_ref()?.generation?, have.tag.as_deref()?);
@@ -168,6 +170,20 @@ fn resolve_file(sources: &Sources, model: &str) -> Result<EngineModel, String> {
     let found = sources
         .find_file(model)
         .ok_or_else(|| format!("no model file is named that in {}. Add its folder under `[models] dirs` in settings.toml", sources.describe()))?;
+    file_model(found)
+}
+
+/// [`resolve`] for a model a scan just found: the file is read from where the scan saw it, with
+/// no second walk of every folder (a listing resolves each model it finds).
+pub fn resolve_found(sources: &Sources, found: &Found) -> Result<EngineModel, String> {
+    match found.source {
+        Source::Ollama => resolve_ollama(sources.ollama_root(), &found.id),
+        _ => file_model(found.clone()),
+    }
+}
+
+fn file_model(found: Found) -> Result<EngineModel, String> {
+    let model = found.id.clone();
     let header = marlowe_hw::gguf::read_header(&found.path).map_err(|e| format!("its model file {} did not read: {e}", found.path.display()))?;
     if header.a("pooling_type").is_some() {
         return Err("it is an embedding model, not a chat model".into());
@@ -180,7 +196,7 @@ fn resolve_file(sources: &Sources, model: &str) -> Result<EngineModel, String> {
     let mmproj = mmproj_sidecar(&found.path);
     let ms = header.ms().or_else(|| draft.as_ref().and_then(|d| marlowe_hw::gguf::read_header(&d.path).ok()?.ms()));
     let meta = meta_of(&header, &template, mmproj.is_some(), None, None);
-    Ok(EngineModel { model: model.to_string(), display: found.display, blob: found.path, draft, mmproj, defaults: ModelDefaults::default(), foreign_types: header.foreign_types(), ms, size: found.size, meta })
+    Ok(EngineModel { model, display: found.display, blob: found.path, draft, mmproj, defaults: ModelDefaults::default(), foreign_types: header.foreign_types(), ms, size: found.size, meta })
 }
 
 /// A model in Ollama's store at `root`: its manifest's layers on top of the file.
@@ -488,14 +504,24 @@ pub(crate) mod tests {
         plain(d.path(), "ms-in-the-name:1", &[]);
         let plain_ms = resolve(&Sources::from(d.path()), "ms-in-the-name:1").unwrap();
         assert_eq!((plain_ms.needs(), plain_ms.ms_label()), (None, None));
-        // A type no build knows, without the msffn keys, still needs the fork, in plain words.
+        // A type Marlowe's table lacks that is not an MS one may be a newer llama.cpp's: it is not
+        // proof of MS, nothing is refused or switched, and the server is asked.
         let bare = marlowe_hw::gguf::write_header(
             &[("general.architecture", json!("qwen35")), ("tokenizer.chat_template", json!(TEMPLATE))],
             &[("blk.0.ffn_up.weight", 100, vec![256])],
         );
         store(d.path(), "types-only:1", json!({"model_format": "gguf"}), &[(MODEL_MEDIA_TYPE, &bare[..])]);
         let t = resolve(&Sources::from(d.path()), "types-only:1").unwrap();
-        assert!(t.refuses_on(Some(&chosen(Backend::LlamaCpp, "v1.0.0"))).unwrap().message.contains("ggml types 100"));
+        assert_eq!((t.needs(), t.unknown_types()), (None, vec![100]));
+        assert_eq!(t.refuses_on(Some(&chosen(Backend::LlamaCpp, "v1.0.0"))), None);
+        // The types only an MS build writes do need the fork, keys or not.
+        let only_ms = marlowe_hw::gguf::write_header(
+            &[("general.architecture", json!("qwen35")), ("tokenizer.chat_template", json!(TEMPLATE))],
+            &[("blk.0.ffn_up.weight", 46, vec![256])],
+        );
+        store(d.path(), "types-ms:1", json!({"model_format": "gguf"}), &[(MODEL_MEDIA_TYPE, &only_ms[..])]);
+        let t = resolve(&Sources::from(d.path()), "types-ms:1").unwrap();
+        assert_eq!((t.needs(), t.unknown_types()), (Some(Backend::MsLlamaCpp), vec![]));
     }
 
     #[test]

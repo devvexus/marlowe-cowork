@@ -43,6 +43,17 @@ impl Gpu {
     /// [`Gpu::compute_only`] leaving out, too, every pid `own` claims: Marlowe's own processes
     /// (the voice sidecar's tree), which are not a reason to wait for the GPU.
     pub fn compute_only_except(&self, own: &dyn Fn(u32) -> bool) -> Result<Vec<(u32, Option<Vec<String>>)>, String> {
+        self.compute_lists(own, false)
+    }
+
+    /// [`Gpu::compute_only_except`] that still reports the own processes, as `marlowe:<exe>`: a
+    /// device Marlowe's own engine is computing on is then known to be busy with Marlowe's work
+    /// and not with a game (the crew gate's heavy-utilisation rule exempts it).
+    pub fn compute_only_marked(&self, own: &dyn Fn(u32) -> bool) -> Result<Vec<(u32, Option<Vec<String>>)>, String> {
+        self.compute_lists(own, true)
+    }
+
+    fn compute_lists(&self, own: &dyn Fn(u32) -> bool, mark_own: bool) -> Result<Vec<(u32, Option<Vec<String>>)>, String> {
         let nvml = self.nvml.as_ref().map_err(String::clone)?;
         let count = nvml.device_count().map_err(|e| e.to_string())?;
         let me = std::process::id();
@@ -58,16 +69,7 @@ impl Gpu {
             };
             let graphics: Vec<u32> = graphics.iter().map(|p| p.pid).collect();
             let compute: Vec<u32> = compute.iter().map(|p| p.pid).collect();
-            let mut names: Vec<String> = Vec::new();
-            for pid in foreign_compute(&compute, &graphics, me, own) {
-                let name = crate::process::image_path(pid)
-                    .map(|path| compute_label(&path))
-                    .unwrap_or_else(|| format!("pid {pid}"));
-                if !names.contains(&name) {
-                    names.push(name);
-                }
-            }
-            out.push((index, Some(names)));
+            out.push((index, Some(compute_names(&compute, &graphics, me, own, mark_own, &crate::process::image_path))));
         }
         Ok(out)
     }
@@ -121,10 +123,28 @@ impl Gpu {
     }
 }
 
-/// The pids on a device's compute list that are someone else's work: not on its graphics list,
-/// not `me`, not claimed by `own`.
-fn foreign_compute(compute: &[u32], graphics: &[u32], me: u32, own: &dyn Fn(u32) -> bool) -> Vec<u32> {
-    compute.iter().copied().filter(|&pid| pid != me && !graphics.contains(&pid) && !own(pid)).collect()
+/// The names of a device's compute-only processes. With `mark_own`, the pids `own` claims stay in
+/// the list as `marlowe:<exe>` (labelled by pid: the voice sidecar's interpreter has no engine path).
+fn compute_names(compute: &[u32], graphics: &[u32], me: u32, own: &dyn Fn(u32) -> bool, mark_own: bool, path_of: &dyn Fn(u32) -> Option<String>) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for &pid in compute.iter().filter(|&&p| p != me && !graphics.contains(&p)) {
+        let path = path_of(pid);
+        let name = if own(pid) {
+            if !mark_own {
+                continue;
+            }
+            match path {
+                Some(path) => format!("marlowe:{}", path.rsplit(['\\', '/']).next().unwrap_or(&path)),
+                None => format!("marlowe:pid {pid}"),
+            }
+        } else {
+            path.map(|path| compute_label(&path)).unwrap_or_else(|| format!("pid {pid}"))
+        };
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
 }
 
 /// The name a compute process is reported under: its executable name, prefixed `marlowe:` when it
@@ -183,9 +203,20 @@ mod tests {
         let compute = [10, 20, 30, 31, 40];
         let graphics = [20];
         let own = |pid: u32| pid == 30 || pid == 31;
-        assert_eq!(foreign_compute(&compute, &graphics, 10, &own), vec![40]);
-        assert_eq!(foreign_compute(&compute, &graphics, 10, &|_| false), vec![30, 31, 40], "without the voice, all of it counts");
-        assert!(foreign_compute(&[10, 30], &[], 10, &own).is_empty(), "the voice alone is not foreign");
+        let path = |pid: u32| Some(format!(r"C:\bin\p{pid}.exe"));
+        assert_eq!(compute_names(&compute, &graphics, 10, &own, false, &path), vec!["p40.exe"]);
+        assert_eq!(compute_names(&compute, &graphics, 10, &|_| false, false, &path), vec!["p30.exe", "p31.exe", "p40.exe"], "without the voice, all of it counts");
+        assert!(compute_names(&[10, 30], &[], 10, &own, false, &path).is_empty(), "the voice alone is not foreign");
+    }
+
+    #[test]
+    fn marked_own_processes_stay_on_the_list_as_marlowes() {
+        let own = |pid: u32| pid == 30;
+        let path = |pid: u32| (pid != 31).then(|| format!(r"C:\bin\p{pid}.exe"));
+        // The engine's server (30) is Marlowe's by pid whatever its path; a pid with no readable
+        // path is still labelled; foreign compute keeps its own name.
+        assert_eq!(compute_names(&[10, 30, 40], &[], 10, &own, true, &path), vec!["marlowe:p30.exe", "p40.exe"]);
+        assert_eq!(compute_names(&[31], &[], 10, &|_| true, true, &path), vec!["marlowe:pid 31"]);
     }
 
     #[test]

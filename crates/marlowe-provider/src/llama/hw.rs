@@ -94,12 +94,20 @@ impl ModelSource for LlamaModels {
         self.engine.serves(model_id)
     }
 
+    fn model_folders(&self) -> Vec<PathBuf> {
+        self.store.dirs()
+    }
+
+    fn restart_engine(&self) {
+        self.engine.restart_when_idle();
+    }
+
     fn ms_models(&self) -> Vec<(String, u8)> {
         self.store
             .scan()
             .into_iter()
             .filter_map(|f| {
-                let m = resolve(&self.store, &f.id).ok()?;
+                let m = super::eligible::resolve_found(&self.store, &f).ok()?;
                 Some((f.display, m.ms?.generation?.number()))
             })
             .collect()

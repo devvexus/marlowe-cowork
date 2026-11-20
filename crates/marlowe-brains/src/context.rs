@@ -636,6 +636,14 @@ impl Brains {
         (done, failed)
     }
 
+    /// The backend (or its installed version) changed: Marlowe's own server is replaced when its
+    /// requests are done, and the next request starts the new one. Nothing in flight is cut off.
+    pub fn restart_local_engine(&self) {
+        if let Some(hw) = self.factory().hardware() {
+            hw.models.restart_engine();
+        }
+    }
+
     /// [`Brains::loaded_local_models`], with `None` when the engine did not answer (what is
     /// loaded is unknown) and `Some(empty)` when there is no hardware probe in this build.
     pub fn resident_local_models(&self) -> Option<Vec<String>> {

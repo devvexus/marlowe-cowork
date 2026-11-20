@@ -1,6 +1,6 @@
-//! Provider detection: local model files on disk (Ollama's store or the Hugging Face cache; no
-//! model server need run: Marlowe serves them itself), keys in the environment or the credential
-//! store.
+//! Provider detection: local model files on disk (Ollama's store, the Hugging Face cache or a model
+//! folder the user added; no model server need run: Marlowe serves them itself), keys in the
+//! environment or the credential store.
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -59,23 +59,26 @@ pub fn hf_hub() -> PathBuf {
     var("USERPROFILE").or_else(|| var("HOME")).unwrap_or_else(|| PathBuf::from(".")).join(".cache").join("huggingface").join("hub")
 }
 
-/// Status of every provider in `ProviderKind::ALL` order.
-pub fn detect_providers(credentials: &dyn CredentialStore) -> Vec<ProviderStatus> {
+/// Status of every provider in `ProviderKind::ALL` order. `folders` are the model folders the user
+/// added (`[models] dirs`): files there count as local models by themselves.
+pub fn detect_providers(credentials: &dyn CredentialStore, folders: &[PathBuf]) -> Vec<ProviderStatus> {
     let (store, hub) = (ollama_store(), hf_hub());
     let local = || {
-        (store.join("manifests").is_dir() || hub.is_dir()).then_some(()).ok_or_else(|| format!("{} or {}", store.display(), hub.display()))
+        (store.join("manifests").is_dir() || hub.is_dir() || folders.iter().any(|f| f.exists()))
+            .then_some(())
+            .ok_or_else(|| format!("{} or {}, or a folder under `[models] dirs`", store.display(), hub.display()))
     };
     ProviderKind::ALL.iter().map(|&kind| status(kind, credentials, local)).collect()
 }
 
-/// `ollama` is whether local model files are there: Ollama's store or the Hugging Face cache
-/// (`Err` names where they were looked for; folders added by the user are not known here).
+/// `ollama` is whether local model files are there: Ollama's store, the Hugging Face cache or a
+/// model folder (`Err` names where they were looked for).
 fn status(kind: ProviderKind, creds: &dyn CredentialStore, ollama: impl FnOnce() -> Result<(), String>) -> ProviderStatus {
     let available_now = kind.is_available_now();
     let (configured, detected, note) = match kind {
         ProviderKind::Ollama => match ollama() {
             Ok(()) => (available_now, available_now, None),
-            Err(at) => (false, false, Some(format!("no Ollama model store or Hugging Face cache at {at}"))),
+            Err(at) => (false, false, Some(format!("no Ollama model store, Hugging Face cache or model folder at {at}"))),
         },
         _ if !available_now => (false, false, Some("coming soon".to_string())),
         _ => {
@@ -110,6 +113,14 @@ mod tests {
     }
 
     #[test]
+    fn a_model_folder_alone_makes_the_local_provider_detected() {
+        let local = |folders: &[PathBuf]| detect_providers(&MemoryStore::new(), folders).into_iter().find(|s| s.kind == ProviderKind::Ollama).unwrap();
+        assert!(local(&[std::env::temp_dir()]).detected, "a folder under [models] dirs counts, whatever Ollama and Hugging Face hold");
+        let missing = std::env::temp_dir().join("marlowe-no-such-model-folder");
+        assert!(local(&[missing.clone()]).note.is_none_or(|n| n.contains("`[models] dirs`")));
+    }
+
+    #[test]
     fn statuses_cover_all_kinds_in_order() {
         let store = MemoryStore::new();
         store.set(ProviderKind::OpenRouter, "sk-test").unwrap();
@@ -122,6 +133,6 @@ mod tests {
         assert!(!ant.available_now && !ant.detected && ant.note.as_deref() == Some("coming soon"));
         // No server need run: model files on disk are what count.
         let none = status(ProviderKind::Ollama, &store, || Err("C:/x/models".into()));
-        assert!(!none.detected && none.note.as_deref() == Some("no Ollama model store or Hugging Face cache at C:/x/models"));
+        assert!(!none.detected && none.note.as_deref() == Some("no Ollama model store, Hugging Face cache or model folder at C:/x/models"));
     }
 }

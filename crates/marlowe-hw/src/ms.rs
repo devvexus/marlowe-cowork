@@ -67,6 +67,12 @@ impl MsInfo {
     }
 }
 
+/// Whether tensor type `id` is one only an MS build writes (44..48, 200..215): upstream may reuse
+/// 43 (`F8_E4M3`), and any other id it does not know yet is not proof of MS.
+pub fn only_ms_type(id: u32) -> bool {
+    (44..=48).contains(&id) || (200..=215).contains(&id)
+}
+
 /// Whether tensor type `id` is one of the MS numberings (Gen 1 43..48, Gen 2 200..215).
 fn is_ms_type(id: u32) -> bool {
     (43..=48).contains(&id) || (200..=215).contains(&id)
@@ -90,7 +96,7 @@ impl ModelHeader {
             ids
         };
         let types = ids(is_ms_type);
-        let only_ms = ids(|id| (44..=48).contains(&id) || (200..=215).contains(&id));
+        let only_ms = ids(only_ms_type);
         if !keyed && only_ms.is_empty() {
             return None;
         }

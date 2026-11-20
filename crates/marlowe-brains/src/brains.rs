@@ -49,7 +49,8 @@ impl Brains {
 
     /// Provider statuses (detects Ollama and keys).
     pub fn detect(&self) -> Vec<ProviderStatus> {
-        detect_providers(self.factory.credentials().as_ref())
+        let folders = self.factory.hardware().map(|h| h.models.model_folders()).unwrap_or_default();
+        detect_providers(self.factory.credentials().as_ref(), &folders)
     }
 
     /// The provider's catalog. `Unsupported` for providers not available now.

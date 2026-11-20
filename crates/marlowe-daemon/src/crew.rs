@@ -491,8 +491,8 @@ impl RunApprovals for RunGate {
 /// signal the reranker's GPU gate reads), or when graphics load is heavy with no Ollama runner on
 /// the device. Marlowe's own engine server and the voice sidecar are not foreign: both are found
 /// by process tree ([`own_process`]: the PIDs Marlowe started, whatever the binary is called or
-/// which backend it came from), so a crew step never waits on the model a previous step left
-/// loaded. An Ollama runner is the user's own and holds a model they loaded. No Sentinel, or no
+/// which backend it came from) and reported as `marlowe:` compute, so a crew step never waits on
+/// the model a previous step left loaded or on the conversation's own generation. An Ollama runner is the user's own and holds a model they loaded. No Sentinel, or no
 /// GPU reported: not busy.
 fn gpu_probe(core: Weak<Core>) -> GpuBusy {
     let nvml = Mutex::new(None::<marlowe_sentinel::gpu::Gpu>);
@@ -502,7 +502,7 @@ fn gpu_probe(core: Weak<Core>) -> GpuBusy {
         catch_unwind(AssertUnwindSafe(|| {
             let compute = lock(&nvml)
                 .get_or_insert_with(marlowe_sentinel::gpu::Gpu::open)
-                .compute_only_except(&own_process);
+                .compute_only_marked(&own_process);
             // A device whose compute processes cannot be read may hold a training job: busy.
             // No NVML at all keeps the no-GPU rule above.
             let unreadable = compute.as_ref().is_ok_and(|c| c.iter().any(|(_, n)| n.is_none()));
@@ -846,6 +846,8 @@ mod tests {
         assert!(!gpu_busy(&st, &[(0, vec!["ollama:llama-server.exe".into()])]));
         assert!(!gpu_busy(&st, &[(0, vec!["marlowe:llama-server.exe".into()])]));
         assert!(gpu_busy(&st, &[(0, vec!["llama-server.exe".into()])]));
+        // Marlowe's own server generating hard (the probe keeps own pids, marked) is not a game.
+        assert!(!gpu_busy(&st, &[(0, vec!["marlowe:llama-server.exe".into()])]), "util 80, own compute");
         // A training job waits however idle the device looks.
         st.gpu.devices[0].util_pct = 2;
         assert!(gpu_busy(&st, &[(0, vec!["python.exe".into()])]));

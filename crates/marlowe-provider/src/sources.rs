@@ -334,15 +334,15 @@ fn scan_folder(dir: &Path, budget: &mut usize) -> Vec<Found> {
         .collect()
 }
 
-/// Two folder files of one name keep distinct ids: the later one carries a short hash of its path
-/// (stable for as long as both exist).
+/// Files of one name get ids that name where they are: every one of them carries a short hash of
+/// its path, so an id never changes meaning when a same-named file appears or the first is deleted
+/// (a saved `gguf/<name>~<hash>` is that file or nothing). A name that is unique stays plain.
 fn unique_ids(mut found: Vec<Found>) -> Vec<Found> {
-    let mut seen: Vec<String> = Vec::new();
+    let ids: Vec<String> = found.iter().map(|f| f.id.clone()).collect();
     for f in &mut found {
-        if seen.contains(&f.id) {
+        if ids.iter().filter(|id| **id == f.id).count() > 1 {
             f.id = format!("{}~{:08x}", f.id, fnv(&f.path.display().to_string().to_ascii_lowercase()));
         }
-        seen.push(f.id.clone());
     }
     found
 }
@@ -445,9 +445,13 @@ pub(crate) mod tests {
         put(&d.path().join("two").join("Same.gguf"), b"22");
         let s = Sources::new(d.path().join("x"), Vec::new(), vec![d.path().join("one"), d.path().join("two")]);
         let ids: Vec<String> = s.files().into_iter().map(|f| f.id).collect();
-        assert_eq!(ids[0], "gguf/Same");
-        assert!(ids[1].starts_with("gguf/Same~") && ids[1] != ids[0]);
+        assert!(ids[0].starts_with("gguf/Same~") && ids[1].starts_with("gguf/Same~") && ids[1] != ids[0], "{ids:?}");
         assert_eq!(s.files().into_iter().map(|f| f.id).collect::<Vec<_>>(), ids, "the same on every scan");
+        // With one copy left the name is unique again, and plain.
+        std::fs::remove_file(d.path().join("one").join("Same.gguf")).unwrap();
+        let after: Vec<String> = s.files().into_iter().map(|f| f.id).collect();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0], "gguf/Same", "a name that is unique again is plain");
     }
 
     #[test]

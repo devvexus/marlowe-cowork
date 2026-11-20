@@ -83,17 +83,19 @@ fn by_release_tag(inst: &Installed, latest: &str) -> Update {
     }
 }
 
-/// Builds upstream newer than `inst`: by build number where there is one, else by publish date.
-/// `None` until a builds lookup has happened.
+/// Builds upstream newer than `inst`, up to the newest one that has this platform's files (a Sync
+/// cannot go past it, so a newer build still being uploaded is not counted): by build number where
+/// there is one, else by publish date. `None` until a builds lookup has happened.
 fn builds_newer(inst: &Installed, remote: &Remote) -> Option<u32> {
     if remote.builds.is_empty() {
         return None;
     }
-    if let (Some(have), Some(newest)) = (inst.build_number, remote.builds.iter().filter_map(|b| b.number).max()) {
-        return Some(newest.saturating_sub(have));
+    let Some(newest) = remote.newest_build.as_ref() else { return Some(0) };
+    if let (Some(have), Some(top)) = (inst.build_number, crate::remote::build_number(&newest.tag)) {
+        return Some(top.saturating_sub(have));
     }
     let after = inst.published.as_deref().unwrap_or("");
-    Some(remote.builds.iter().filter(|b| b.published.as_str() > after).count() as u32)
+    Some(remote.builds.iter().filter(|b| b.published.as_str() > after && b.published <= newest.published).count() as u32)
 }
 
 #[cfg(test)]
@@ -129,6 +131,25 @@ mod tests {
     }
 
     #[test]
+    fn builds_without_this_platforms_files_yet_are_not_counted() {
+        let mut inst = record(Backend::LlamaCpp, "b12556", Kind::Build, 1);
+        inst.build_number = Some(12556);
+        // b12600 is listed but has no files: the newest installable build is the installed one.
+        let mut remote = upstream_remote("v1.0.0", 12359, 12556);
+        remote.builds.insert(0, BuildRef { tag: "b12600".into(), published: "2026-11-21T00:00:00Z".into(), number: Some(12600) });
+        let (_, newer) = compare(Backend::LlamaCpp, Some(&inst), Some(&remote));
+        assert_eq!(newer, Some(0));
+        // By date (no numbers): only the builds up to the newest with files count.
+        let mut dated = record(Backend::MsLlamaCpp, "ms-b1", Kind::Build, 1);
+        dated.published = Some("2026-11-10T00:00:00Z".into());
+        let build = |tag: &str, day: u8| BuildRef { tag: tag.into(), published: format!("2026-11-{day}T00:00:00Z"), number: None };
+        let mut remote = upstream_remote("ms-v1.0", 0, 0);
+        remote.builds = vec![build("ms-b3", 22), build("ms-b2", 15), build("ms-b1", 10)];
+        remote.newest_build = Some(Release { tag: "ms-b2".into(), published: "2026-11-15T00:00:00Z".into(), assets: Vec::new() });
+        assert_eq!(compare(Backend::MsLlamaCpp, Some(&dated), Some(&remote)).1, Some(1));
+    }
+
+    #[test]
     fn a_build_ahead_of_the_release_is_up_to_date_and_builds_never_make_an_update() {
         let mut inst = record(Backend::LlamaCpp, "b12500", Kind::Build, 1);
         inst.build_number = Some(12500);
@@ -147,6 +168,7 @@ mod tests {
         let remote = Remote {
             fetched: 3,
             latest_release: Some(rel("ms-v1.1")),
+            newest_build: Some(Release { tag: "ms-b2".into(), published: "2026-11-19T00:00:00Z".into(), assets: Vec::new() }),
             builds: vec![
                 BuildRef { tag: "ms-b2".into(), published: "2026-11-19T00:00:00Z".into(), number: None },
                 BuildRef { tag: "ms-b1".into(), published: "2026-11-18T00:00:00Z".into(), number: None },

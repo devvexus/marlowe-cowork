@@ -60,6 +60,11 @@ pub trait Probe {
     /// Runs a program (scrubbed, short timeout): `(exit code, stdout then stderr)`.
     fn run(&self, program: &Path, args: &[&str]) -> Option<(i32, String)>;
     fn ollama(&self) -> bool;
+    /// What the local model sources hold (`Ollama store 3 / Hugging Face cache 1`), or `None` for
+    /// nothing found.
+    fn models(&self, home: &Path) -> Option<String>;
+    /// The selected backend and its installed version, or why it cannot run (`Err`).
+    fn engine(&self) -> Result<String, String>;
     /// `credential_manager`, `env` or `none` for the provider's key.
     fn key(&self, kind: ProviderKind) -> &'static str;
     fn terminal(&self) -> Option<(u16, u16)>;
@@ -86,6 +91,26 @@ impl Probe for System {
     }
     fn ollama(&self) -> bool {
         detect_ollama(OLLAMA_ADDR, Duration::from_millis(800))
+    }
+    fn models(&self, home: &Path) -> Option<String> {
+        use marlowe_provider::Source;
+        let found = crate::wire::model_sources(home).scan();
+        let count = |s: Source| found.iter().filter(|f| f.source == s).count();
+        let parts: Vec<String> = [(Source::Ollama, "Ollama store"), (Source::HuggingFace, "Hugging Face cache"), (Source::Folder, "model folders")]
+            .into_iter()
+            .filter(|(s, _)| count(*s) > 0)
+            .map(|(s, name)| format!("{name} {}", count(s)))
+            .collect();
+        (!parts.is_empty()).then(|| parts.join(" \u{b7} "))
+    }
+    fn engine(&self) -> Result<String, String> {
+        let Some(c) = marlowe_provider::llama::engine::selected_backend() else {
+            return Ok("MARLOWE_LLAMA_SERVER (a developer's own build)".to_string());
+        };
+        match c.tag {
+            Some(tag) => Ok(format!("{} {tag}", c.backend)),
+            None => Err(format!("{} is selected and not installed: the `engine` window in the title bar installs it", c.backend)),
+        }
     }
     fn key(&self, kind: ProviderKind) -> &'static str {
         key_source(kind, &KeyringStore::new(), &|k| std::env::var(k).ok())
@@ -136,7 +161,20 @@ pub fn report(p: &dyn Probe, home: &Path, daemon: Option<u16>) -> Vec<Check> {
             how => check(name, Status::Ok, format!("present ({})", how.replace('_', " "))),
         });
     }
-    out.push(if p.ollama() { check("ollama", Status::Ok, OLLAMA_ADDR) } else { check("ollama", Status::Missing, "not reachable") });
+    // Ollama is only where model files are read from: its server need not run, and Marlowe never asks it.
+    out.push(if p.ollama() {
+        check("ollama", Status::Info, format!("server answers at {OLLAMA_ADDR} (not used: Marlowe reads its model files and serves them itself)"))
+    } else {
+        check("ollama", Status::Info, "server not running (not needed: Marlowe reads its model files from disk)")
+    });
+    out.push(match p.models(home) {
+        Some(found) => check("models", Status::Ok, found),
+        None => check("models", Status::Missing, "none found in the Ollama store, the Hugging Face cache or `[models] dirs` in settings.toml"),
+    });
+    out.push(match p.engine() {
+        Ok(what) => check("engine", Status::Ok, what),
+        Err(why) => check("engine", Status::Missing, why),
+    });
 
     for (name, bin) in [("rust-analyzer", "rust-analyzer"), ("pyright", "pyright-langserver"), ("typescript-ls", "typescript-language-server")] {
         out.push(match find(p, bin) {
@@ -243,6 +281,8 @@ mod tests {
         keys: HashMap<&'static str, &'static str>,
         gh_signed_in: bool,
         ollama: bool,
+        models: Option<&'static str>,
+        engine: Option<&'static str>,
         term: Option<(u16, u16)>,
         writable: bool,
     }
@@ -262,6 +302,12 @@ mod tests {
         }
         fn ollama(&self) -> bool {
             self.ollama
+        }
+        fn models(&self, _: &Path) -> Option<String> {
+            self.models.map(str::to_string)
+        }
+        fn engine(&self) -> Result<String, String> {
+            self.engine.map(str::to_string).ok_or_else(|| "llama.cpp is selected and not installed".to_string())
         }
         fn key(&self, kind: ProviderKind) -> &'static str {
             self.keys.get(kind.as_str()).copied().unwrap_or("none")
@@ -285,6 +331,8 @@ mod tests {
             keys: HashMap::from([("openrouter", "env")]),
             gh_signed_in: true,
             ollama: true,
+            models: Some("Hugging Face cache 1"),
+            engine: Some("llama.cpp v1.0.0"),
             term: Some((140, 40)),
             writable: true,
         };
@@ -294,7 +342,9 @@ mod tests {
         assert_eq!(by_name(&c, "daemon").detail, "running on port 4242");
         assert_eq!(by_name(&c, "openrouter key").detail, "present (env)");
         assert_eq!(by_name(&c, "anthropic key").status, Status::Info);
-        assert_eq!(by_name(&c, "ollama").status, Status::Ok);
+        assert_eq!(by_name(&c, "ollama").status, Status::Info, "its server is informational");
+        assert_eq!((by_name(&c, "models").status, by_name(&c, "models").detail.as_str()), (Status::Ok, "Hugging Face cache 1"));
+        assert_eq!(by_name(&c, "engine").detail, "llama.cpp v1.0.0");
         assert_eq!(by_name(&c, "rust-analyzer").status, Status::Ok);
         assert_eq!(by_name(&c, "pyright").status, Status::Ok, "the .cmd shim npm installs counts");
         assert_eq!(by_name(&c, "typescript-ls").status, Status::Info);
@@ -307,7 +357,8 @@ mod tests {
     #[test]
     fn a_bare_machine_reports_what_is_missing_without_failing() {
         let c = report(&Fake { writable: true, ..Default::default() }, Path::new("C:/home"), None);
-        assert_eq!(by_name(&c, "ollama").status, Status::Missing);
+        assert_eq!(by_name(&c, "ollama").status, Status::Info, "a stopped Ollama is not a fault: only its files are read");
+        assert_eq!((by_name(&c, "models").status, by_name(&c, "engine").status), (Status::Missing, Status::Missing));
         assert_eq!(by_name(&c, "git").status, Status::Missing);
         assert_eq!(by_name(&c, "gh").status, Status::Info);
         assert_eq!(by_name(&c, "daemon").status, Status::Info);

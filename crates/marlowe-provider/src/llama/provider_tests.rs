@@ -559,9 +559,9 @@ fn a_model_that_does_not_fit_runs_split_in_the_same_request() {
     assert!(r.engine.status().unwrap().split);
     // The planner now plans it split: the next request reuses the split server as it is.
     r.provider.stream(&request(Lane::Conductor, "again"), &CancelToken::new(), &mut |_| {}).unwrap();
-    assert_eq!(r.fx.spawner.starts(), 2, "the shape changed to split, so the server restarted once");
+    assert_eq!(r.fx.spawner.starts(), 1, "the server came up in the planner's split shape: no second load");
     r.provider.stream(&request(Lane::Conductor, "more"), &CancelToken::new(), &mut |_| {}).unwrap();
-    assert_eq!(r.fx.spawner.starts(), 2);
+    assert_eq!(r.fx.spawner.starts(), 1);
 }
 
 #[test]

@@ -185,7 +185,7 @@ impl Provider for OllamaProvider {
         let chosen = self.llama.as_ref().and_then(|e| e.chosen());
         let mut out = Vec::new();
         for found in self.store.scan() {
-            let (meta, model) = match eligible::resolve(&self.store, &found.id) {
+            let (meta, model) = match eligible::resolve_found(&self.store, &found) {
                 Ok(m) => (m.meta.clone(), Some(m)),
                 Err(_) => (ModelMeta::default(), None),
             };

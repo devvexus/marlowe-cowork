@@ -75,6 +75,15 @@ pub trait ModelSource: Send + Sync {
     fn unload(&self, _model_id: &str) -> Result<(), String> {
         Err("this engine cannot unload a model".into())
     }
+    /// The backend or its installed version changed: Marlowe's own server is replaced once its
+    /// requests are done (never cut off), the next request starting the new one. The default
+    /// has no server of its own.
+    fn restart_engine(&self) {}
+    /// The folders (and single files) the user added under `[models] dirs`: model files there make
+    /// the local provider available whatever Ollama and Hugging Face hold. The default has none.
+    fn model_folders(&self) -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
     /// The MS models this machine has with the generation of each (`MS Gen 1` is 1), by name:
     /// what a new ms-llama.cpp could stop running. The default knows none.
     fn ms_models(&self) -> Vec<(String, u8)> {

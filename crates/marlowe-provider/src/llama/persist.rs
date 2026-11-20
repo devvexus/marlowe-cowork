@@ -15,6 +15,7 @@ use marlowe_model::EngineShape;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use super::eligible::Chosen;
 use crate::http::{self, LocalEndpoint};
 
 const SLOT_IO: Duration = Duration::from_secs(120);
@@ -33,7 +34,17 @@ struct Manifest {
     slots: u16,
     ctx_per_slot: u32,
     kv: String,
+    /// The backend and version that computed the state (`""`: a developer's own binary, or a
+    /// manifest from before this was recorded).
+    #[serde(default)]
+    backend: String,
     entries: Vec<Entry>,
+}
+
+/// `llama.cpp v1.0.0`: what a saved cache is tied to. A state computed by another build is never
+/// loaded into this one (another backend's kernels, or a changed state format).
+fn build_of(chosen: Option<&Chosen>) -> String {
+    chosen.map(|c| format!("{} {}", c.backend.id(), c.tag.as_deref().unwrap_or(""))).unwrap_or_default()
 }
 
 fn stem(model: &str) -> String {
@@ -46,7 +57,7 @@ fn manifest_path(dir: &Path, model: &str) -> PathBuf {
 
 /// Writes every used slot (`slot index`, `conversation key`) of the running server to `dir` and
 /// the manifest that says whose they are. Returns how many were saved.
-pub fn save(endpoint: &LocalEndpoint, dir: &Path, model: &str, blob: &Path, shape: &EngineShape, used: &[(u32, u64)]) -> usize {
+pub fn save(endpoint: &LocalEndpoint, dir: &Path, model: &str, blob: &Path, shape: &EngineShape, chosen: Option<&Chosen>, used: &[(u32, u64)]) -> usize {
     let _ = std::fs::remove_file(manifest_path(dir, model));
     let mut entries = Vec::new();
     for &(slot, key) in used {
@@ -63,6 +74,7 @@ pub fn save(endpoint: &LocalEndpoint, dir: &Path, model: &str, blob: &Path, shap
         slots: shape.slots,
         ctx_per_slot: shape.ctx_per_slot,
         kv: shape.kv.clone(),
+        backend: build_of(chosen),
         entries,
     };
     if saved > 0 {
@@ -75,14 +87,14 @@ pub fn save(endpoint: &LocalEndpoint, dir: &Path, model: &str, blob: &Path, shap
 
 /// Reads the saved slots back into a freshly started server, when it is the same model in the
 /// same shape. Returns the (slot, conversation key) pairs that were restored.
-pub fn restore(endpoint: &LocalEndpoint, dir: &Path, model: &str, blob: &Path, shape: &EngineShape) -> Vec<(u32, u64)> {
+pub fn restore(endpoint: &LocalEndpoint, dir: &Path, model: &str, blob: &Path, shape: &EngineShape, chosen: Option<&Chosen>) -> Vec<(u32, u64)> {
     let path = manifest_path(dir, model);
     let Some(m) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Manifest>(&t).ok()) else {
         return Vec::new();
     };
     // Consumed: the next stop writes a new one, and a crash must not restore an older state twice.
     let _ = std::fs::remove_file(&path);
-    if m.blob != blob.display().to_string() || m.slots != shape.slots || m.ctx_per_slot != shape.ctx_per_slot || m.kv != shape.kv {
+    if m.blob != blob.display().to_string() || m.slots != shape.slots || m.ctx_per_slot != shape.ctx_per_slot || m.kv != shape.kv || m.backend != build_of(chosen) {
         return Vec::new();
     }
     let mut back = Vec::new();
@@ -96,4 +108,22 @@ pub fn restore(endpoint: &LocalEndpoint, dir: &Path, model: &str, blob: &Path, s
         }
     }
     back
+}
+
+/// Writes the one slot of a one-slot model to its own file, so another conversation can use the
+/// slot and this one's cache comes back when it returns. `None`: the server did not save it.
+pub fn park(endpoint: &LocalEndpoint, dir: &Path, model: &str, slot: u32, key: u64) -> Option<String> {
+    let file = format!("{}-k{key}.bin", stem(model));
+    http::post_json(endpoint, &format!("/slots/{slot}?action=save"), &json!({"filename": file}), SLOT_IO).ok()?;
+    dir.join(&file).is_file().then_some(file)
+}
+
+/// Reads a parked cache back into `slot`.
+pub fn unpark(endpoint: &LocalEndpoint, dir: &Path, slot: u32, file: &str) -> bool {
+    dir.join(file).is_file() && http::post_json(endpoint, &format!("/slots/{slot}?action=restore"), &json!({"filename": file}), SLOT_IO).is_ok()
+}
+
+/// Deletes a parked cache that will not be asked for again.
+pub fn discard(dir: &Path, file: &str) {
+    let _ = std::fs::remove_file(dir.join(file));
 }

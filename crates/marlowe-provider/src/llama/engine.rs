@@ -20,7 +20,16 @@
 //! A model with ONE slot has only the conversation's: the crew and the projects share it while the
 //! conversation is idle, and the conversation always goes first (a crew request does not take the
 //! slot while a conversation request waits for it). No request waits forever: past
-//! [`EngineConfig::slot_wait`] it fails with a clear error and the caller decides.
+//! [`EngineConfig::slot_wait`] it fails with a clear error and the caller decides. A conversation's
+//! cache is not lost to the crew's turn: the slot is written to its own file before another
+//! conversation takes it and read back when the conversation returns ([`persist::park`]).
+//!
+//! # Restarts
+//!
+//! A change of backend or of its installed version ([`LlamaEngine::restart_when_idle`]) never
+//! cuts a request off: the server that started before the change stops once its last request is
+//! done (every slot's cache saved first) and the next request starts the new one. Only
+//! [`LlamaEngine::unload`] (a quit) stops a server with requests in flight.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, Weak};
@@ -178,6 +187,8 @@ struct Slot {
     /// request waits for it, any other may not take the slot.
     warming: bool,
     key: Option<u64>,
+    /// The conversation (conductor lane) is what `key` names: its cache is worth keeping.
+    conv: bool,
     last: Instant,
 }
 
@@ -198,7 +209,17 @@ struct Running {
     slots: Vec<Slot>,
     /// What the model file's template does with earlier thinking.
     thinking: Thinking,
+    /// The backend and version this server is (read when it started).
+    chosen: Option<Chosen>,
+    /// [`State::restarts`] when its start began: older than that, it is to be replaced.
+    born: u64,
+    /// Conversation caches of a one-slot model written out while the slot served someone else
+    /// (conversation key, file in the slots folder), oldest first.
+    parked: Vec<(u64, String)>,
 }
+
+/// How many parked caches a one-slot model keeps.
+const PARKED_MAX: usize = 2;
 
 impl Running {
     fn matches(&self, want: &Want) -> bool {
@@ -240,6 +261,9 @@ struct State {
     conductor_waiting: usize,
     epoch: u64,
     failed: Option<(String, EngineShape, Instant, ProviderError)>,
+    /// Bumped when the backend or its version changed (and by a stop during a load): a server
+    /// that began before is replaced as soon as it is idle.
+    restarts: u64,
 }
 
 struct Inner {
@@ -269,13 +293,42 @@ impl Inner {
     fn retire(&self, r: &mut Running) {
         if let Some(dir) = &self.cfg.slots_dir {
             if r.proc.exited().is_none() {
+                let endpoint = LocalEndpoint::new("127.0.0.1", r.port).expect("loopback");
+                // A crew turn holds the one slot of a one-slot model: the conversation's cache
+                // parked behind it is what is worth keeping.
+                if let (1, Some((key, file))) = (r.slots.len(), r.parked.last().cloned()) {
+                    if !r.slots[0].busy && !r.slots[0].conv && persist::unpark(&endpoint, dir, 0, &file) {
+                        r.slots[0].key = Some(key);
+                    }
+                }
                 let used: Vec<(u32, u64)> =
                     r.slots.iter().enumerate().filter(|(_, s)| !s.busy).filter_map(|(i, s)| s.key.map(|k| (i as u32, k))).collect();
-                let endpoint = LocalEndpoint::new("127.0.0.1", r.port).expect("loopback");
-                persist::save(&endpoint, dir, &r.model, &r.blob, &r.shape, &used);
+                persist::save(&endpoint, dir, &r.model, &r.blob, &r.shape, r.chosen.as_ref(), &used);
+            }
+            for (_, file) in r.parked.drain(..) {
+                persist::discard(dir, &file);
             }
         }
         r.proc.kill();
+    }
+
+    /// The backend the next server is: the configured one, else the selected one, unless a
+    /// developer's own binary is in use (unknown).
+    fn chosen(&self) -> Option<Chosen> {
+        let cfg = &self.cfg;
+        if cfg.backend.is_some() || cfg.binary.is_some() {
+            return cfg.backend.map(|backend| Chosen { backend, tag: cfg.backend_tag.clone() });
+        }
+        selected_backend()
+    }
+
+    /// Stops the server when it began before the last restart request and nothing is using it.
+    /// Returns what was stopped. Called under the lock.
+    fn retire_stale(&self, g: &mut State) -> Option<Running> {
+        let restarts = g.restarts;
+        let mut gone = g.running.take_if(|r| r.born < restarts && r.busy() == 0)?;
+        self.retire(&mut gone);
+        Some(gone)
     }
 }
 
@@ -480,6 +533,11 @@ impl LlamaEngine {
         while g.running.as_ref().is_some_and(|r| model.is_none_or(|m| same_model(&r.model, m)) && r.slots.iter().any(|s| s.warming)) && Instant::now() < until {
             g = self.inner.cv.wait_timeout(g, Duration::from_millis(50)).unwrap_or_else(|e| e.into_inner()).0;
         }
+        // A server still loading is not there to stop: whatever comes up is replaced as soon as
+        // it is idle.
+        if g.loading.as_ref().is_some_and(|l| model.is_none_or(|m| same_model(l, m))) {
+            g.restarts += 1;
+        }
         let stopped = match g.running.take_if(|r| model.is_none_or(|m| same_model(&r.model, m))) {
             Some(mut r) => {
                 self.inner.retire(&mut r);
@@ -492,9 +550,26 @@ impl LlamaEngine {
         stopped
     }
 
+    /// The backend (or its installed version) changed: the server that runs now, or is loading, is
+    /// replaced. Requests in flight finish first (a long generation is not cut off), then every
+    /// slot's cache is saved and the server stops; the next request starts the selected backend.
+    pub fn restart_when_idle(&self) {
+        let mut g = lock(&self.inner.st);
+        g.restarts += 1;
+        let stopped = self.inner.retire_stale(&mut g);
+        drop(g);
+        self.inner.cv.notify_all();
+        if let (Some(r), Some(o)) = (stopped, self.observer()) {
+            o.note(&format!("llama.cpp stopped {} to start the new backend", r.model));
+        }
+    }
+
     /// Takes a slot for the request, loading (or switching) the model first when it must.
-    pub fn acquire(&self, want: &Want, cancel: &CancelToken) -> Result<Lease, ProviderError> {
+    pub fn acquire(&self, asked: &Want, cancel: &CancelToken) -> Result<Lease, ProviderError> {
         let inner = &self.inner;
+        // The shape a server this request starts came up in, when the engine had to change it
+        // (a misfit makes the model split): the request is served by it, not restarted onto its own.
+        let mut adopted: Option<Want> = None;
         let began = Instant::now();
         let queued = std::cell::Cell::new(false);
         // Declared before the lock guard, so it drops (and takes the lock) after it is released.
@@ -502,6 +577,7 @@ impl LlamaEngine {
         let mut g = lock(&inner.st);
         let mut slot_began: Option<Instant> = None;
         loop {
+            let want = adopted.as_ref().unwrap_or(asked);
             if cancel.is_cancelled() {
                 return Err(ProviderError::cancelled());
             }
@@ -513,18 +589,26 @@ impl LlamaEngine {
                 g = self.wait(g, cancel);
                 continue;
             }
+            if g.running.as_ref().is_some_and(|r| r.born < g.restarts) {
+                // Replaced by the new backend: after the requests it is serving.
+                if g.running.as_ref().is_some_and(|r| r.busy() > 0) {
+                    if began.elapsed() > SWITCH_WAIT {
+                        return Err(ProviderError::server("the llama.cpp server is busy and cannot restart onto the new backend yet".to_string()));
+                    }
+                    g = self.wait(g, cancel);
+                } else {
+                    inner.retire_stale(&mut g);
+                }
+                continue;
+            }
             let conductor_waiting = g.conductor_waiting;
             match g.running.as_mut() {
                 Some(r) if r.matches(want) => {
                     let single = r.slots.len() == 1;
                     let yields = single && want.lane != Lane::Conductor && conductor_waiting > 0;
                     if let Some(i) = r.pick(want.lane, want.key).filter(|_| !yields) {
-                        let slot = &mut r.slots[i];
-                        slot.busy = true;
-                        slot.key = Some(want.key);
-                        slot.last = Instant::now();
-                        r.last_used = Instant::now();
-                        return Ok(Lease {
+                        let swap = self.take_over(r, i, want);
+                        let lease = Lease {
                             inner: inner.clone(),
                             epoch: r.epoch,
                             endpoint: LocalEndpoint::new("127.0.0.1", r.port).expect("loopback"),
@@ -532,7 +616,11 @@ impl LlamaEngine {
                             defaults: r.defaults.clone(),
                             ctx_per_slot: r.shape.ctx_per_slot,
                             thinking: r.thinking.clone(),
-                        });
+                        };
+                        drop(g);
+                        // The slot is ours (busy): the caches move without the lock held.
+                        self.swap_caches(&lease, swap, &want.model);
+                        return Ok(lease);
                     }
                     if slot_began.get_or_insert_with(Instant::now).elapsed() > inner.cfg.slot_wait {
                         return Err(ProviderError::server(format!(
@@ -570,13 +658,17 @@ impl LlamaEngine {
                     }
                     g.loading = Some(want.model.clone());
                     g.epoch += 1;
-                    let epoch = g.epoch;
+                    let (epoch, born) = (g.epoch, g.restarts);
                     drop(g);
                     let result = self.start(want, epoch, cancel);
                     g = lock(&inner.st);
                     g.loading = None;
                     match result {
-                        Ok(r) => {
+                        Ok(mut r) => {
+                            r.born = born;
+                            if r.shape != want.shape {
+                                adopted = Some(Want { shape: r.shape.clone(), ..want.clone() });
+                            }
                             g.failed = None;
                             g.running = Some(r);
                         }
@@ -592,6 +684,55 @@ impl LlamaEngine {
                     inner.cv.notify_all();
                 }
             }
+        }
+    }
+
+    /// Marks slot `i` as `want`'s. On a one-slot model another conversation's cache is leaving it:
+    /// what to write out and what to read back (see [`Swap`]). Called under the lock.
+    fn take_over(&self, r: &mut Running, i: usize, want: &Want) -> Swap {
+        let conductor = want.lane == Lane::Conductor;
+        let slot = &mut r.slots[i];
+        let (was, was_conv) = (slot.key, slot.conv);
+        slot.busy = true;
+        slot.key = Some(want.key);
+        slot.conv = conductor;
+        slot.last = Instant::now();
+        r.last_used = Instant::now();
+        let mut swap = Swap::default();
+        if r.slots.len() != 1 || was == Some(want.key) || self.inner.cfg.slots_dir.is_none() {
+            return swap;
+        }
+        if let Some(prev) = was.filter(|_| was_conv) {
+            r.parked.retain(|(k, _)| *k != prev);
+            swap.park = Some(prev);
+        }
+        if conductor {
+            swap.back = r.parked.iter().position(|(k, _)| *k == want.key).map(|at| r.parked.remove(at).1);
+        }
+        swap
+    }
+
+    /// Writes the leaving conversation's cache out and reads the returning one's back (best
+    /// effort: a failure is a cold cache, as before). The lease is held, so nothing else uses
+    /// the slot meanwhile.
+    fn swap_caches(&self, lease: &Lease, swap: Swap, model: &str) {
+        let Some(dir) = &self.inner.cfg.slots_dir else { return };
+        if let Some(key) = swap.park {
+            if let Some(file) = persist::park(&lease.endpoint, dir, model, lease.slot, key) {
+                let mut g = lock(&self.inner.st);
+                if let Some(r) = g.running.as_mut().filter(|r| r.epoch == lease.epoch) {
+                    r.parked.push((key, file));
+                    while r.parked.len() > PARKED_MAX {
+                        persist::discard(dir, &r.parked.remove(0).1);
+                    }
+                } else {
+                    persist::discard(dir, &file);
+                }
+            }
+        }
+        if let Some(file) = swap.back {
+            persist::unpark(&lease.endpoint, dir, lease.slot, &file);
+            persist::discard(dir, &file);
         }
     }
 
@@ -611,6 +752,13 @@ impl LlamaEngine {
         }
     }
 
+    /// The shape the planner now asks for after `say_split` (one slot of the default window, split);
+    /// the request's own shape when there is no planner, or it does not call it split.
+    fn split_shape(&self, cur: &Want) -> EngineShape {
+        let advised = self.inner.events.read().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|a| a.engine_shape(&cur.model));
+        advised.filter(|s| s.split).unwrap_or_else(|| cur.shape.clone())
+    }
+
     fn observer(&self) -> Option<Arc<dyn EngineObserver>> {
         self.inner.events.read().unwrap_or_else(|e| e.into_inner()).as_ref()?.engine_observer()
     }
@@ -618,11 +766,7 @@ impl LlamaEngine {
     /// The backend the server binary is, and its installed version: the configured one, else the
     /// selected one, unless a developer's own binary is in use (unknown).
     pub fn chosen(&self) -> Option<Chosen> {
-        let cfg = &self.inner.cfg;
-        if cfg.backend.is_some() || cfg.binary.is_some() {
-            return cfg.backend.map(|backend| Chosen { backend, tag: cfg.backend_tag.clone() });
-        }
-        selected_backend()
+        self.inner.chosen()
     }
 
     /// Whether the GPU has room for the whole model now: with the driver's sysmem fallback a model
@@ -682,16 +826,20 @@ impl LlamaEngine {
         let began = Instant::now();
         let cant = |why: String| ProviderError::bad_request(format!("{} can't run: {why}", want.model));
         let model = eligible::resolve(&cfg.store, &want.model).map_err(cant)?;
+        let chosen = self.chosen();
         let binary = match &cfg.binary {
             Some(b) => b.clone(),
             None => launch::server_binary().map_err(|e| ProviderError::bad_request(e.remedy()))?,
         };
-        if let Some(r) = model.refuses_on(self.chosen().as_ref()) {
+        if let Some(r) = model.refuses_on(chosen.as_ref()) {
             return Err(ProviderError::bad_request(r.engine_error()));
         }
         let whole_only = |why: &str| {
             ProviderError::server(format!("{} does not fit whole on the GPU ({why}), and the engine's gpu_fit is `whole`", want.model))
         };
+        // What runs and is remembered as the server's shape: the request's, until a misfit makes the
+        // model split and the planner re-plans it (the next request then asks for that shape).
+        let mut cur = want.clone();
         let mut split = match settings.gpu_fit {
             GpuFit::Auto => want.shape.split,
             GpuFit::Whole => false,
@@ -704,6 +852,7 @@ impl LlamaEngine {
                 }
                 self.say_split(&want.model, &why);
                 split = true;
+                cur.shape = self.split_shape(&cur);
             }
         }
         let backends = launch::backend_candidates(&binary);
@@ -713,7 +862,7 @@ impl LlamaEngine {
             if cancel.is_cancelled() {
                 return Err(ProviderError::cancelled());
             }
-            let mut attempt = self.try_start(&binary, backend.as_deref(), &model, want, split, &settings, cancel);
+            let mut attempt = self.try_start(&binary, backend.as_deref(), &model, &cur, split, &settings, cancel);
             let spilled = match &attempt {
                 Err(Tried::Spilled(m)) => Some(m.clone()),
                 _ => None,
@@ -725,10 +874,11 @@ impl LlamaEngine {
                 }
                 self.say_split(&want.model, &moved);
                 split = true;
-                attempt = self.try_start(&binary, backend.as_deref(), &model, want, split, &settings, cancel);
+                cur.shape = self.split_shape(&cur);
+                attempt = self.try_start(&binary, backend.as_deref(), &model, &cur, split, &settings, cancel);
             }
             match attempt {
-                Ok((proc, port, on_gpu)) => return Ok(self.running(want, &model, epoch, began, proc, port, on_gpu, split)),
+                Ok((proc, port, on_gpu)) => return Ok(self.running(&cur, &model, epoch, began, proc, port, on_gpu, split, chosen)),
                 Err(Tried::Next(m) | Tried::Spilled(m)) => why.push(m),
                 Err(Tried::Fatal(e)) => return Err(e),
             }
@@ -749,13 +899,14 @@ impl LlamaEngine {
         port: u16,
         on_gpu: Option<(u32, u32)>,
         split: bool,
+        chosen: Option<Chosen>,
     ) -> Running {
         let n = usize::from(want.shape.slots.max(1));
-        let mut slots: Vec<Slot> = (0..n).map(|_| Slot { busy: false, warming: false, key: None, last: Instant::now() }).collect();
+        let mut slots: Vec<Slot> = (0..n).map(|_| Slot { busy: false, warming: false, key: None, conv: false, last: Instant::now() }).collect();
         let endpoint = LocalEndpoint::new("127.0.0.1", port).expect("loopback");
         let thinking = self.thinking_of(&endpoint, want, &model.blob);
         if let Some(dir) = &self.inner.cfg.slots_dir {
-            for (i, key) in persist::restore(&endpoint, dir, &want.model, &model.blob, &want.shape) {
+            for (i, key) in persist::restore(&endpoint, dir, &want.model, &model.blob, &want.shape, chosen.as_ref()) {
                 if let Some(s) = slots.get_mut(i as usize) {
                     s.key = Some(key);
                 }
@@ -778,6 +929,9 @@ impl LlamaEngine {
             split,
             slots,
             thinking,
+            chosen,
+            born: 0,
+            parked: Vec::new(),
         }
     }
 
@@ -846,8 +1000,15 @@ impl LlamaEngine {
             }
             if let Some(code) = proc.exited() {
                 let tail = self.log_excerpt(log_from);
+                let unknown = model.unknown_types();
+                let hint = if unknown.is_empty() {
+                    String::new()
+                } else {
+                    let ids = unknown.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
+                    format!(" (the file uses ggml types {ids}, which this llama.cpp may not know: `Sync to upstream` in the engine window installs the newest build)")
+                };
                 return Err(Tried::Fatal(ProviderError::server(format!(
-                    "llama-server exited with code {code} while loading {}{}",
+                    "llama-server exited with code {code} while loading {}{}{hint}",
                     want.model,
                     if tail.is_empty() { String::new() } else { format!(": {tail}") }
                 ))));
@@ -894,6 +1055,15 @@ impl LlamaEngine {
     }
 }
 
+/// What changing hands of a one-slot model's slot moves.
+#[derive(Default)]
+struct Swap {
+    /// The conversation whose cache is leaving: written out first.
+    park: Option<u64>,
+    /// A parked file of the conversation that is back.
+    back: Option<String>,
+}
+
 enum Tried {
     /// This backend did not work; try the next.
     Next(String),
@@ -931,7 +1101,14 @@ fn idle_loop(weak: Weak<Inner>, tick: Duration) {
     loop {
         std::thread::sleep(tick);
         let Some(inner) = weak.upgrade() else { return };
-        let Some(keep) = inner.settings.read().unwrap_or_else(|e| e.into_inner()).keep_alive else { continue };
+        let keep = inner.settings.read().unwrap_or_else(|e| e.into_inner()).keep_alive;
+        let observer = || inner.events.read().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(ContextAllocations::engine_observer);
+        // A server of the backend that was just replaced goes as soon as its last request is done.
+        let replaced = inner.retire_stale(&mut lock(&inner.st));
+        if let (Some(r), Some(o)) = (replaced, observer()) {
+            o.note(&format!("llama.cpp stopped {} to start the new backend", r.model));
+        }
+        let Some(keep) = keep else { continue };
         let expired = {
             let mut g = lock(&inner.st);
             let mut gone = g.running.take_if(|r| r.busy() == 0 && r.last_used.elapsed() >= keep);
@@ -940,10 +1117,8 @@ fn idle_loop(weak: Weak<Inner>, tick: Duration) {
             }
             gone
         };
-        if let Some(r) = expired {
-            if let Some(o) = inner.events.read().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(ContextAllocations::engine_observer) {
-                o.note(&format!("llama.cpp unloaded {} after {} idle", r.model, humanize(keep)));
-            }
+        if let (Some(r), Some(o)) = (expired, observer()) {
+            o.note(&format!("llama.cpp unloaded {} after {} idle", r.model, humanize(keep)));
         }
     }
 }
@@ -1498,5 +1673,168 @@ mod tests {
         assert!(e.serves("dusk:22b"));
         assert!(e.unload(Some("dusk:22b")));
         assert!(!e.serves("dusk:22b"));
+    }
+
+    fn until(what: &str, mut done: impl FnMut() -> bool) {
+        let end = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(Instant::now() < end, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn a_new_backend_waits_for_the_request_in_flight_and_saves_its_slot() {
+        let fx = Fixture::new("dusk:22b");
+        let mut cfg = fx.config();
+        cfg.slots_dir = Some(fx.dir.path().join("slots"));
+        let e = LlamaEngine::new(cfg, fx.spawner.clone());
+        let c = CancelToken::new();
+        let lease = e.acquire(&want("dusk:22b", Lane::Conductor, 11), &c).unwrap();
+        // The user picks the other backend (or a Sync finishes) while a reply is generating.
+        e.restart_when_idle();
+        std::thread::sleep(Duration::from_millis(250));
+        assert_eq!(fx.spawner.killed(), 0, "the request in flight is not cut off");
+        assert!(e.status().is_some());
+        // A request that comes meanwhile waits for the new server, not the old one.
+        let (e2, spawner) = (e.clone(), fx.spawner.clone());
+        let next = std::thread::spawn(move || {
+            drop(e2.acquire(&want("dusk:22b", Lane::Conductor, 11), &CancelToken::new()).unwrap());
+            spawner.starts()
+        });
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(fx.spawner.starts(), 1, "still waiting for the request in flight");
+        drop(lease);
+        assert_eq!(next.join().unwrap(), 2, "the new server serves it");
+        assert_eq!(fx.spawner.killed(), 1, "the old one stopped when its request ended");
+        let calls = fx.spawner.seen.slot_calls.lock().unwrap().clone();
+        assert!(calls.iter().any(|c| c.starts_with("save ")), "the slot was saved before the stop: {calls:?}");
+    }
+
+    #[test]
+    fn an_idle_server_of_the_old_backend_is_stopped_by_the_switch() {
+        let fx = Fixture::new("dusk:22b");
+        let e = fx.engine();
+        drop(e.acquire(&want("dusk:22b", Lane::Conductor, 1), &CancelToken::new()).unwrap());
+        e.restart_when_idle();
+        assert!(e.status().is_none());
+        assert_eq!(fx.spawner.killed(), 1);
+    }
+
+    #[test]
+    fn a_switch_during_a_load_does_not_leave_the_old_backends_server_running() {
+        let fx = Fixture::new("dusk:22b");
+        fx.spawner.start_takes(Duration::from_millis(500));
+        let e = fx.engine();
+        let e2 = e.clone();
+        let loading = std::thread::spawn(move || drop(e2.acquire(&want("dusk:22b", Lane::Conductor, 1), &CancelToken::new()).unwrap()));
+        std::thread::sleep(Duration::from_millis(150));
+        e.restart_when_idle();
+        loading.join().unwrap();
+        // The server that came up began before the switch: it goes when idle, and a request
+        // after the switch starts another.
+        until("the old server to stop", || fx.spawner.killed() == 1);
+        drop(e.acquire(&want("dusk:22b", Lane::Conductor, 1), &CancelToken::new()).unwrap());
+        assert_eq!(fx.spawner.starts(), 2);
+    }
+
+    #[test]
+    fn on_a_one_slot_model_the_conversations_cache_survives_a_crew_turn() {
+        let fx = Fixture::new("dusk:22b");
+        let mut cfg = fx.config();
+        cfg.slots_dir = Some(fx.dir.path().join("slots"));
+        let e = LlamaEngine::new(cfg, fx.spawner.clone());
+        let c = CancelToken::new();
+        drop(e.acquire(&one_slot("dusk:22b", Lane::Conductor, 1), &c).unwrap());
+        // A crew agent takes the idle slot: the conversation's cache is written out first.
+        drop(e.acquire(&one_slot("dusk:22b", Lane::Other, 10), &c).unwrap());
+        let calls = || fx.spawner.seen.slot_calls.lock().unwrap().clone();
+        assert_eq!(calls().len(), 1, "{:?}", calls());
+        assert!(calls()[0].starts_with("save 0 ") && calls()[0].contains("-k1.bin"), "{:?}", calls());
+        // A second crew turn changes nothing about the conversation's file.
+        drop(e.acquire(&one_slot("dusk:22b", Lane::Other, 10), &c).unwrap());
+        assert_eq!(calls().len(), 1, "{:?}", calls());
+        // The conversation returns: its cache is read back into the slot.
+        drop(e.acquire(&one_slot("dusk:22b", Lane::Conductor, 1), &c).unwrap());
+        assert!(calls().last().unwrap().starts_with("restore 0 ") && calls().last().unwrap().contains("-k1.bin"), "{:?}", calls());
+        assert_eq!(fx.spawner.starts(), 1);
+        // A stop with the crew on the slot keeps the conversation's cache, not the agent's.
+        drop(e.acquire(&one_slot("dusk:22b", Lane::Other, 10), &c).unwrap());
+        assert!(e.unload(None));
+        let after = calls();
+        assert!(after.iter().rev().take(2).any(|c| c.starts_with("restore 0 ")) && after.last().unwrap().starts_with("save 0 "), "{after:?}");
+    }
+
+    #[test]
+    fn a_cache_saved_by_another_backend_or_version_is_not_restored() {
+        let fx = Fixture::new("dusk:22b");
+        let mut cfg = fx.config();
+        cfg.slots_dir = Some(fx.dir.path().join("slots"));
+        cfg.backend = Some(Backend::LlamaCpp);
+        cfg.backend_tag = Some("v1.0.0".into());
+        let c = CancelToken::new();
+        let first = LlamaEngine::new(cfg.clone(), fx.spawner.clone());
+        drop(first.acquire(&want("dusk:22b", Lane::Conductor, 11), &c).unwrap());
+        assert!(first.unload(None));
+        // The same backend and version gets it back.
+        let same = LlamaEngine::new(cfg.clone(), fx.spawner.clone());
+        drop(same.acquire(&want("dusk:22b", Lane::Conductor, 11), &c).unwrap());
+        assert_eq!(fx.spawner.seen.slot_calls.lock().unwrap().iter().filter(|c| c.starts_with("restore ")).count(), 1);
+        assert!(same.unload(None));
+        // Another version, or the other backend, starts cold.
+        for (backend, tag) in [(Backend::LlamaCpp, "v1.1.0"), (Backend::MsLlamaCpp, "ms-v1.0")] {
+            let before = fx.spawner.seen.slot_calls.lock().unwrap().len();
+            let mut other = cfg.clone();
+            (other.backend, other.backend_tag) = (Some(backend), Some(tag.into()));
+            let e = LlamaEngine::new(other, fx.spawner.clone());
+            drop(e.acquire(&want("dusk:22b", Lane::Conductor, 11), &c).unwrap());
+            assert!(fx.spawner.seen.slot_calls.lock().unwrap()[before..].iter().all(|c| !c.starts_with("restore ")), "{backend:?} {tag}");
+            assert!(e.unload(None));
+        }
+    }
+
+    /// An advisor that plans the model whole until the engine says it did not fit, then split.
+    #[derive(Default)]
+    struct Replans(Mutex<bool>);
+    impl marlowe_model::EngineAdvisor for Replans {
+        fn shape(&self, _: &str) -> Option<EngineShape> {
+            Some(if *self.0.lock().unwrap() {
+                EngineShape { slots: 1, ctx_per_slot: 4096, kv: "q8_0".into(), split: true }
+            } else {
+                EngineShape { slots: 3, ctx_per_slot: 8192, kv: "q8_0".into(), split: false }
+            })
+        }
+        fn declined(&self, _: &str, _: &str) {
+            *self.0.lock().unwrap() = true;
+        }
+    }
+
+    #[test]
+    fn a_model_made_split_by_a_misfit_is_not_loaded_twice() {
+        let fx = Fixture::new("dusk:22b");
+        let vram = FakeVram::new(Some(11.9 * 1024.0));
+        let mut cfg = fx.config();
+        cfg.vram = Some(vram);
+        cfg.vram_settle = Duration::ZERO;
+        let e = LlamaEngine::new(cfg, fx.spawner.clone());
+        let alloc = ContextAllocations::new();
+        alloc.set_engine_advisor(Arc::new(Replans::default()));
+        e.follow(alloc.clone());
+        let c = CancelToken::new();
+        let ask = |alloc: &ContextAllocations| {
+            let mut w = want("dusk:22b", Lane::Conductor, 1);
+            w.shape = alloc.engine_shape("dusk:22b").unwrap();
+            w.need_mib = Some(13.6 * 1024.0);
+            w
+        };
+        // The first request asks for the whole shape; the check turns it into the planner's split one.
+        drop(e.acquire(&ask(&alloc), &c).unwrap());
+        let st = e.status().unwrap();
+        assert!(st.split && st.shape.split && st.shape.slots == 1, "{st:?}");
+        // The next request carries that shape (the planner now says split): the server is kept.
+        let again = ask(&alloc);
+        assert!(again.shape.split);
+        drop(e.acquire(&again, &c).unwrap());
+        assert_eq!((fx.spawner.starts(), fx.spawner.killed()), (1, 0));
     }
 }
