@@ -3300,6 +3300,8 @@ dependencies = [
  "marlowe-brains",
  "marlowe-contract",
  "marlowe-crew",
+ "marlowe-engine-install",
+ "marlowe-engines",
  "marlowe-exec",
  "marlowe-hw",
  "marlowe-journal",
@@ -3307,6 +3309,7 @@ dependencies = [
  "marlowe-memory",
  "marlowe-mind",
  "marlowe-model",
+ "marlowe-net",
  "marlowe-os",
  "marlowe-permission",
  "marlowe-project",
@@ -3319,6 +3322,27 @@ dependencies = [
  "marlowe-workflow",
  "regex",
  "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "marlowe-engine-install"
+version = "0.1.0"
+dependencies = [
+ "marlowe-engines",
+ "marlowe-net",
+ "nvml-wrapper",
+ "serde_json",
+ "thiserror 2.0.19",
+ "zip",
+]
+
+[[package]]
+name = "marlowe-engines"
+version = "0.1.0"
+dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -3465,6 +3489,7 @@ dependencies = [
  "brotli",
  "flate2",
  "rustls",
+ "sha2 0.10.9",
  "thiserror 2.0.19",
  "webpki-roots 0.26.11",
 ]
@@ -3550,6 +3575,7 @@ name = "marlowe-provider"
 version = "0.1.0"
 dependencies = [
  "image",
+ "marlowe-engines",
  "marlowe-hw",
  "marlowe-model",
  "marlowe-os",
@@ -7952,6 +7978,7 @@ checksum = "caa8cd6af31c3b31c6631b8f483848b91589021b28fffe50adada48d4f4d2ed1"
 dependencies = [
  "arbitrary",
  "crc32fast",
+ "flate2",
  "indexmap",
  "memchr",
 ]

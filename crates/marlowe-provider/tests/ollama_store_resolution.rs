@@ -341,7 +341,7 @@ fn the_launch_command_carries_the_blob_the_backend_dll_the_window_and_the_path_p
 #[test]
 fn a_missing_server_binary_is_refused_by_name_with_every_path_it_tried() {
     // The one product-path read of the machine in this file, and it is deliberately allowed to
-    // succeed: on a box that HAS Ollama this returns the bundled binary, which is the correct
+    // succeed: on a box with the backend installed this returns its binary, which is the correct
     // answer. What is asserted is the failure's shape, forced by pointing the override at nothing.
     let previous = std::env::var("MARLOWE_LLAMA_SERVER").ok();
     std::env::set_var("MARLOWE_LLAMA_SERVER", "no-such-llama-server-anywhere");
@@ -351,9 +351,8 @@ fn a_missing_server_binary_is_refused_by_name_with_every_path_it_tried() {
         None => std::env::remove_var("MARLOWE_LLAMA_SERVER"),
     }
 
-    // The override does not win over a real bundled binary being absent -- it is tried FIRST and
-    // then the bundled paths are, so on a machine with Ollama installed this legitimately
-    // succeeds. Both outcomes are asserted, and neither is a silent pass.
+    // The override is tried first, then the selected backend's install: on a machine with the
+    // backend installed this legitimately succeeds. Both outcomes are asserted.
     match outcome {
         Ok(found) => assert!(
             found.ends_with("llama-server.exe") || found.ends_with("llama-server"),
@@ -369,4 +368,30 @@ fn a_missing_server_binary_is_refused_by_name_with_every_path_it_tried() {
             assert!(e.remedy().contains("MARLOWE_LLAMA_SERVER"), "{}", e.remedy());
         }
     }
+}
+
+#[test]
+fn the_server_is_the_selected_backends_install_and_never_ollamas() {
+    let root = std::env::temp_dir().join(format!("marlowe-store-engines-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    // Nothing installed: a refusal naming the backend and the way out; no search of Ollama's folder.
+    let e = ollama_store::server_binary_in(None, Some(&root)).unwrap_err();
+    let (text, remedy) = (e.to_string(), e.remedy());
+    assert!(matches!(e, ResolveError::NoServerBinary { .. }));
+    assert!(text.contains("llama.cpp") && !text.to_lowercase().contains("programs"), "{text}");
+    assert!(remedy.contains("engine window") && remedy.contains("MARLOWE_LLAMA_SERVER"), "{remedy}");
+    // Installed and current: its binary. The other backend selected: refused again.
+    let tag = root.join("llama.cpp").join("v1.0.0");
+    std::fs::create_dir_all(&tag).unwrap();
+    let exe = tag.join(if cfg!(windows) { "llama-server.exe" } else { "llama-server" });
+    std::fs::write(&exe, b"MZ").unwrap();
+    marlowe_engines::state::update(&root, |s| s.entry(marlowe_engines::Backend::LlamaCpp).current = Some("v1.0.0".into())).unwrap();
+    assert_eq!(ollama_store::server_binary_in(None, Some(&root)).unwrap(), exe);
+    marlowe_engines::state::update(&root, |s| s.selected = Some("ms-llama.cpp".into())).unwrap();
+    let e = ollama_store::server_binary_in(None, Some(&root)).unwrap_err();
+    assert!(e.to_string().contains("ms-llama.cpp"), "{e}");
+    // The developer override wins when it exists.
+    assert_eq!(ollama_store::server_binary_in(Some(exe.to_str().unwrap()), Some(&root)).unwrap(), exe);
+    let _ = std::fs::remove_dir_all(&root);
 }

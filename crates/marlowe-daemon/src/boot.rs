@@ -13,6 +13,7 @@
 //! | `notify_ops::on_boot` | N: load the notification switches |
 //! | `close_ops::on_boot` | N: load the `keep running` setting |
 //! | `crew::on_boot` | I: git worktrees for `agent{isolation:"worktree"}` and `enter_worktree` |
+//! | `engine_ops::on_boot` | the once-a-day llama.cpp release offer |
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
@@ -30,6 +31,7 @@ const HOOKS: &[fn(&Arc<Core>)] = &[
     crate::notify_ops::on_boot,
     crate::close_ops::on_boot,
     crate::crew::on_boot,
+    crate::engine_ops::on_boot,
 ];
 
 /// Runs every boot hook. A panicking hook is reported in the daemon log and the daemon starts

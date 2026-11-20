@@ -1,7 +1,7 @@
 //! The manifest against the pins, and the downloader against fixtures. No network.
 
 use std::collections::HashMap;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -70,7 +70,7 @@ impl Transport for Fake {
     fn get(&self, url: &str) -> Result<Reply, String> {
         self.asked.lock().unwrap().push(url.into());
         let routes = self.routes.lock().unwrap();
-        let reply = |status, redirect_to: Option<String>, body: Box<dyn Read + Send>| Ok(Reply { status, redirect_to, body });
+        let reply = |status, redirect_to: Option<String>, body: Box<dyn Read + Send>| Ok(Reply::new(status, redirect_to, body));
         match routes.get(url) {
             Some(Route::Body(b)) => reply(200, None, Box::new(Cursor::new(b.clone()))),
             Some(Route::Redirect(s, loc)) => reply(*s, Some((*loc).into()), Box::new(std::io::empty())),

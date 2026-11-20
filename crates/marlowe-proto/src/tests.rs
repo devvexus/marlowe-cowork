@@ -671,3 +671,39 @@ fn old_wire_shapes_still_decode_and_new_ones_are_skippable() {
     assert!(serde_json::from_str::<Envelope>(r#"{"seq":1,"at_ms":1,"event":{"ev":"from_the_future"}}"#).is_err());
     assert_eq!(PROTO_VERSION, 1);
 }
+
+#[test]
+fn backend_requests_and_events_round_trip() {
+    for r in [
+        Request::Backends,
+        Request::BackendSelect { backend: "ms-llama.cpp".into() },
+        Request::BackendInstall { backend: "llama.cpp".into() },
+        Request::BackendCheck { backend: "llama.cpp".into() },
+        Request::BackendSync { backend: "llama.cpp".into() },
+        Request::BackendDontAsk { backend: "llama.cpp".into(), dont_ask: false },
+    ] {
+        let s = round_trip(&r);
+        assert!(s.starts_with(r#"{"op":""#), "{s}");
+    }
+    // "Don't ask again" is the default meaning of the request.
+    let r: Request = serde_json::from_str(r#"{"op":"backend_dont_ask","backend":"llama.cpp"}"#).unwrap();
+    assert_eq!(r, Request::BackendDontAsk { backend: "llama.cpp".into(), dont_ask: true });
+    let report = BackendReport {
+        id: "llama.cpp".into(),
+        selected: true,
+        installed: Some(BackendBuild { tag: "b12556".into(), label: "v1.0.0 + 197 builds".into(), device: "gpu".into(), ..Default::default() }),
+        state: BackendUpdate::UpToDate,
+        builds_newer: Some(4),
+        ..Default::default()
+    };
+    for event in [
+        Event::Backends { selected: "llama.cpp".into(), backends: vec![report] },
+        Event::BackendProgress { backend: "llama.cpp".into(), op: BackendOp::Sync, message: "downloading".into(), done: 5, total: 10 },
+        Event::BackendDone { backend: "llama.cpp".into(), op: BackendOp::Install, ok: false, message: "no".into() },
+        Event::BackendUpgrade { backend: "llama.cpp".into(), title: "llama.cpp".into(), tag: "v1.1.0".into() },
+    ] {
+        let env = Envelope { seq: 3, at_ms: 1, event };
+        let s = serde_json::to_string(&env).unwrap();
+        assert_eq!(serde_json::from_str::<Envelope>(&s).unwrap(), env, "{s}");
+    }
+}

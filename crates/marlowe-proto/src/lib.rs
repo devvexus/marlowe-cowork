@@ -16,6 +16,7 @@ pub mod background;
 pub mod coding;
 mod context;
 mod crew;
+mod engines;
 mod event;
 mod frame;
 mod ids;
@@ -47,6 +48,7 @@ pub use crew::{
     Citation, Confidence, CrewBudget, CrewRunInfo, CrewRunStatus, CrewSpent, CrewStep, DiffSummary, Dispatch, Playbook,
     PlaybookParseError, RoleInfo, RunId, SandboxInfo, SandboxKind,
 };
+pub use engines::{BackendBuild, BackendBusy, BackendOp, BackendReport, BackendUpdate, RemoteTag};
 pub use event::{
     Envelope, Event, LibraryModel, ProviderStatus, SessionSummary, SlotAssignment, StatusReport,
     StoredNote, StoredTurn, TurnStop,

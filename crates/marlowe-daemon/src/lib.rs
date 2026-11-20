@@ -26,6 +26,7 @@ mod context_ops;
 mod crew;
 mod crew_ops;
 mod daemon;
+mod engine_ops;
 mod engine_work;
 mod exp_ops;
 mod f3_ops;
@@ -153,6 +154,9 @@ pub struct DaemonConfig {
     pub close_grace: Duration,
     /// How often a project that found no model at boot looks for one.
     pub project_resume_poll: Duration,
+    /// Look for a newer release of the selected llama.cpp backend once a day and offer it. Off by
+    /// default so tests and headless runs never reach GitHub; `run` turns it on.
+    pub engine_updates: bool,
 }
 
 impl Default for DaemonConfig {
@@ -169,6 +173,7 @@ impl Default for DaemonConfig {
             local_polish: false,
             close_grace: Duration::from_secs(2),
             project_resume_poll: Duration::from_secs(5),
+            engine_updates: false,
         }
     }
 }
@@ -190,7 +195,7 @@ pub enum DaemonError {
 /// `daemon.json`, serves clients, and removes `daemon.json` on exit.
 pub fn run(deps: DaemonDeps, home: &Path) -> Result<(), DaemonError> {
     let local_polish = std::env::var("MARLOWE_BRIEF_LOCAL_POLISH").is_ok_and(|v| v.trim() == "1");
-    Daemon::start(deps, home, DaemonConfig { local_polish, ..DaemonConfig::default() })?.wait()
+    Daemon::start(deps, home, DaemonConfig { local_polish, engine_updates: true, ..DaemonConfig::default() })?.wait()
 }
 
 /// Unix epoch milliseconds.

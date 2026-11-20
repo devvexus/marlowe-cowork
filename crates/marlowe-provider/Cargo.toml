@@ -9,6 +9,8 @@ license.workspace = true
 marlowe-model.workspace = true
 marlowe-hw.workspace = true
 marlowe-os.workspace = true
+# Where the selected backend's llama-server is installed (no network: see `no_tls_in_the_default_path`).
+marlowe-engines.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

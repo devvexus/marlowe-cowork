@@ -9,16 +9,14 @@
 //!
 //! A redirect is a second destination: at most [`MAX_HOPS`], https only, and only to the Hugging
 //! Face family (`huggingface.co`, `*.huggingface.co`, `*.hf.co`) or the configured base's host.
-//! The transport is a trait so the policy and the digest handling run against fixtures.
+//! The streaming, the policy and the digest check are `marlowe_net::download`, shared with the
+//! backend installer; the transport is a trait so they run against fixtures.
 
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use marlowe_memory::cascade::FUSION_GRAPHS;
 use marlowe_memory::cue::dense::embedder;
 use marlowe_memory::rerank;
-use sha2::{Digest, Sha256};
 
 use crate::paths::{install_dir, EMBEDDER_DIR, MODELS_ENV, RERANKER_DIR};
 
@@ -26,8 +24,6 @@ use crate::paths::{install_dir, EMBEDDER_DIR, MODELS_ENV, RERANKER_DIR};
 pub const MODELS_REPO: &str = "devvexus/marlowe-memory";
 /// Environment override for the base URL the `<dir>/<file>` layout hangs off.
 pub const MODELS_URL_ENV: &str = "MARLOWE_MODELS_URL";
-/// Redirects followed for one file; the next one is refused.
-pub const MAX_HOPS: usize = 5;
 /// Whether this build offers the GPU rerank cascade with the models.
 pub const WITH_CASCADE: bool = cfg!(feature = "cuda");
 
@@ -35,10 +31,6 @@ const HUB: &str = "https://huggingface.co";
 /// `jinaai/jina-embeddings-v2-small-en` at the revision the embedder pins.
 const JINA_BASE: &str =
     "https://huggingface.co/jinaai/jina-embeddings-v2-small-en/resolve/44e7d1d6caec8c883c2d4b207588504d519788d0";
-/// Longest wait for a read before the transfer is called stalled.
-const READ_TIMEOUT: Duration = Duration::from_secs(60);
-/// Bytes between progress callbacks.
-const PROGRESS_STEP: u64 = 256 * 1024;
 
 /// Sizes of the files in `models/`, for the question and the progress line (the pins guard
 /// integrity, not these). The cascade's five graphs each carry the shared tokenizer.
@@ -140,135 +132,25 @@ pub fn absent(entries: &[Entry], dest: &Path) -> Vec<Entry> {
     entries.iter().filter(|e| !dest.join(e.dir).join(e.file).is_file()).cloned().collect()
 }
 
-/// Why a download stopped.
-#[derive(Debug, thiserror::Error)]
-pub enum DownloadError {
-    /// A 404 or 410: the file is not at its URL (the fine-tunes before they are uploaded).
-    #[error("not published at {url}")]
-    NotPublished { url: String },
-    /// A 401 or 403. Hugging Face answers 401 for a repo that does not exist, as for a private one.
-    #[error("not public at {url} (HTTP {status})")]
-    NotPublic { url: String, status: u16 },
-    #[error("{url} answered HTTP {status}")]
-    Http { url: String, status: u16 },
-    #[error("could not fetch {url}: {detail}")]
-    Network { url: String, detail: String },
-    /// A redirect (or the URL itself) the policy does not allow.
-    #[error("refused {url}: {detail}")]
-    Refused { url: String, detail: String },
-    #[error("{name}: sha256 {got} does not match the pinned {want}; the file was deleted")]
-    Digest { name: String, got: String, want: &'static str },
-    #[error("{path}: {detail}")]
-    Io { path: String, detail: String },
-}
+pub use marlowe_net::download::{DownloadError, Net, Reply, Transport, MAX_HOPS};
 
-fn io_err(path: &Path, e: std::io::Error) -> DownloadError {
-    DownloadError::Io { path: path.display().to_string(), detail: e.to_string() }
-}
-
-/// One response. A redirect carries its `Location`; a body is read only for a 200.
-pub struct Reply {
-    pub status: u16,
-    pub redirect_to: Option<String>,
-    pub body: Box<dyn Read + Send>,
-}
-
-/// One GET that follows no redirect. The real one is [`Net`]; tests supply fixtures.
-pub trait Transport {
-    fn get(&self, url: &str) -> Result<Reply, String>;
-}
-
-/// The workspace's rustls client.
-pub struct Net;
-
-struct Body(marlowe_net::ResponseStream);
-
-impl Read for Body {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.0.body().read(buf)
-    }
-}
-
-impl Transport for Net {
-    fn get(&self, url: &str) -> Result<Reply, String> {
-        let target = marlowe_net::Target::parse(url).map_err(|e| e.to_string())?;
-        let headers = marlowe_net::Headers { user_agent: "marlowe", accept: "*/*" };
-        let r = marlowe_net::shared().get_streaming(&target, &headers, READ_TIMEOUT).map_err(|e| e.to_string())?;
-        Ok(Reply { status: r.status, redirect_to: r.redirect_to.clone(), body: Box::new(Body(r)) })
-    }
-}
-
-/// Where a request may go.
+/// Where a request may go: the Hugging Face family, and the configured base's host.
 #[derive(Debug, Clone)]
-pub struct Policy {
-    /// The configured base URL's host, allowed besides the Hugging Face family.
-    extra_host: Option<String>,
-}
+pub struct Policy(marlowe_net::download::Policy);
 
 impl Policy {
     pub fn for_base(base: &str) -> Self {
         let host = marlowe_net::Target::parse(base).ok().map(|t| t.host);
-        Self { extra_host: host.filter(|h| !hugging_face(h)) }
-    }
-
-    fn host_ok(&self, host: &str, port: u16) -> bool {
-        (port == 443 && hugging_face(host)) || self.extra_host.as_deref() == Some(host)
+        let hf = marlowe_net::download::Policy::new(&["huggingface.co", "hf.co"], &[]);
+        let extra = host.filter(|h| !hf.under_root(h));
+        Self(hf.with_any_port(extra))
     }
 
     /// `url`'s host if it is https and allowed.
+    #[cfg(test)]
     fn check(&self, url: &str) -> Result<String, DownloadError> {
-        let refused = |detail: String| DownloadError::Refused { url: url.to_string(), detail };
-        let t = marlowe_net::Target::parse(url).map_err(|e| match e {
-            marlowe_net::FetchError::Unsupported { detail, .. } => refused(detail),
-            other => refused(other.to_string()),
-        })?;
-        if !self.host_ok(&t.host, t.port) {
-            return Err(refused(format!("{}:{} is not a Hugging Face host", t.host, t.port)));
-        }
-        Ok(t.host)
+        self.0.check(url)
     }
-}
-
-/// `huggingface.co`, `hf.co` or a subdomain of either.
-fn hugging_face(host: &str) -> bool {
-    let under = |root: &str| host == root || host.strip_suffix(root).is_some_and(|p| p.ends_with('.'));
-    under("huggingface.co") || under("hf.co")
-}
-
-/// An absolute https `Location`, or a path on the current host; anything else is refused.
-fn resolve(host: &str, location: &str) -> Result<String, DownloadError> {
-    let refused = |detail: &str| DownloadError::Refused { url: location.to_string(), detail: detail.to_string() };
-    if location.starts_with("//") {
-        return Err(refused("a scheme-relative redirect"));
-    }
-    if location.starts_with('/') {
-        return Ok(format!("https://{host}{location}"));
-    }
-    if location.starts_with("https://") || location.starts_with("http://") {
-        return Ok(location.to_string());
-    }
-    Err(refused("an unusable redirect"))
-}
-
-/// Opens `url`, following at most [`MAX_HOPS`] allowed redirects.
-fn open(t: &dyn Transport, policy: &Policy, url: &str) -> Result<Reply, DownloadError> {
-    let mut url = url.to_string();
-    for hop in 0..=MAX_HOPS {
-        let host = policy.check(&url)?;
-        let reply = t.get(&url).map_err(|detail| DownloadError::Network { url: url.clone(), detail })?;
-        let redirect = matches!(reply.status, 301 | 302 | 303 | 307 | 308);
-        match (redirect, reply.redirect_to.as_deref()) {
-            (true, Some(loc)) => {
-                if hop == MAX_HOPS {
-                    return Err(DownloadError::Refused { url, detail: format!("more than {MAX_HOPS} redirects") });
-                }
-                url = resolve(&host, loc)?;
-            }
-            (true, None) => return Err(DownloadError::Http { url, status: reply.status }),
-            _ => return Ok(reply),
-        }
-    }
-    unreachable!("the last hop returns")
 }
 
 /// Progress through a download.
@@ -279,19 +161,6 @@ pub struct Progress<'a> {
     /// Bytes of the whole manifest in place so far, files already present included.
     pub done: u64,
     pub total: u64,
-}
-
-fn sha256_of(path: &Path) -> std::io::Result<String> {
-    let mut f = std::fs::File::open(path)?;
-    let mut h = Sha256::new();
-    let mut buf = vec![0u8; 1 << 16];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            return Ok(format!("{:x}", h.finalize()));
-        }
-        h.update(&buf[..n]);
-    }
 }
 
 /// Fetches every entry into `dest\<dir>\<file>`, skipping files already there with the right
@@ -308,69 +177,13 @@ pub fn download(
     for e in entries {
         let name = e.name();
         let path = dest.join(e.dir).join(e.file);
-        if path.is_file() && sha256_of(&path).is_ok_and(|h| h == e.sha256) {
-            done += e.bytes;
-            on(Progress { file: &name, done, total });
-            continue;
-        }
-        std::fs::create_dir_all(dest.join(e.dir)).map_err(|err| io_err(&dest.join(e.dir), err))?;
-        let part = path.with_file_name(format!("{}.part", e.file));
-        let got = fetch_one(e, &part, t, policy, &mut |n| on(Progress { file: &name, done: done + n, total }));
-        let got = match got {
-            Ok(h) => h,
-            Err(err) => {
-                let _ = std::fs::remove_file(&part);
-                return Err(err);
-            }
-        };
-        if got != e.sha256 {
-            let _ = std::fs::remove_file(&part);
-            return Err(DownloadError::Digest { name, got, want: e.sha256 });
-        }
-        std::fs::rename(&part, &path).map_err(|err| io_err(&path, err))?;
+        marlowe_net::download::fetch_verified(&e.url, &path, e.sha256, &name, t, &policy.0, &mut |n| {
+            on(Progress { file: &name, done: done + n, total })
+        })?;
         done += e.bytes;
         on(Progress { file: &name, done, total });
     }
     Ok(())
-}
-
-/// Streams `e` into `part`; returns the sha256 of what arrived. `on` gets the bytes so far.
-fn fetch_one(
-    e: &Entry,
-    part: &Path,
-    t: &dyn Transport,
-    policy: &Policy,
-    on: &mut dyn FnMut(u64),
-) -> Result<String, DownloadError> {
-    let mut reply = open(t, policy, &e.url)?;
-    match reply.status {
-        200 => {}
-        404 | 410 => return Err(DownloadError::NotPublished { url: e.url.clone() }),
-        status @ (401 | 403) => return Err(DownloadError::NotPublic { url: e.url.clone(), status }),
-        status => return Err(DownloadError::Http { url: e.url.clone(), status }),
-    }
-    let mut out = std::fs::File::create(part).map_err(|err| io_err(part, err))?;
-    let mut hash = Sha256::new();
-    let mut buf = vec![0u8; 1 << 16];
-    let (mut n, mut reported) = (0u64, 0u64);
-    loop {
-        let k = reply
-            .body
-            .read(&mut buf)
-            .map_err(|err| DownloadError::Network { url: e.url.clone(), detail: err.to_string() })?;
-        if k == 0 {
-            break;
-        }
-        hash.update(&buf[..k]);
-        out.write_all(&buf[..k]).map_err(|err| io_err(part, err))?;
-        n += k as u64;
-        if n - reported >= PROGRESS_STEP {
-            reported = n;
-            on(n);
-        }
-    }
-    out.flush().map_err(|err| io_err(part, err))?;
-    Ok(format!("{:x}", hash.finalize()))
 }
 
 /// Megabytes as shown to the user (decimal, rounded).

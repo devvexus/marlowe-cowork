@@ -48,6 +48,7 @@
 /// The crate's only monotonic clock read, isolated so `determinism_guard`'s fence names one
 /// twenty-line file rather than this four-hundred-line fetch path. See its header.
 pub mod age;
+pub mod download;
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -543,6 +544,9 @@ struct Head {
     /// `Retry-After`, verbatim. Read here rather than re-parsed by a caller, because a caller
     /// that re-reads the socket to find it has already consumed the body.
     retry_after: Option<String>,
+    /// `X-RateLimit-Remaining` and `-Reset` (epoch seconds), as GitHub's API sends them.
+    rate_remaining: Option<u64>,
+    rate_reset: Option<u64>,
     content_encoding: Option<String>,
     content_length: Option<usize>,
     chunked: bool,
@@ -571,6 +575,8 @@ fn read_head(reader: &mut BufReader<TlsStream>, host: &str) -> Result<Head, Fetc
         content_type: None,
         location: None,
         retry_after: None,
+        rate_remaining: None,
+        rate_reset: None,
         content_encoding: None,
         content_length: None,
         chunked: false,
@@ -594,6 +600,8 @@ fn read_head(reader: &mut BufReader<TlsStream>, host: &str) -> Result<Head, Fetc
             "content-type" => head.content_type = Some(value),
             "location" => head.location = Some(value),
             "retry-after" => head.retry_after = Some(value),
+            "x-ratelimit-remaining" => head.rate_remaining = value.parse().ok(),
+            "x-ratelimit-reset" => head.rate_reset = value.parse().ok(),
             "content-encoding" => head.content_encoding = Some(value.to_ascii_lowercase()),
             "transfer-encoding" if value.eq_ignore_ascii_case("chunked") => head.chunked = true,
             "content-length" => head.content_length = value.parse().ok(),
@@ -931,6 +939,9 @@ pub struct ResponseStream {
     pub redirect_to: Option<String>,
     /// `Content-Length`, when the server sent one.
     pub content_length: Option<u64>,
+    /// `X-RateLimit-Remaining`, and `X-RateLimit-Reset` as epoch seconds, when sent.
+    pub rate_remaining: Option<u64>,
+    pub rate_reset: Option<u64>,
     body: Box<dyn BufRead + Send>,
     host: String,
 }
@@ -1040,6 +1051,21 @@ impl Client {
         headers: &Headers<'_>,
         read_timeout: Duration,
     ) -> Result<ResponseStream, FetchError> {
+        self.get_streaming_with(target, headers, &[], read_timeout)
+    }
+
+    /// [`Client::get_streaming`] with extra request headers (an `Authorization` for an API that
+    /// takes a token). Names and values are checked like [`Client::post_streaming`]'s.
+    pub fn get_streaming_with(
+        &self,
+        target: &Target,
+        headers: &Headers<'_>,
+        extra: &[(&str, &str)],
+        read_timeout: Duration,
+    ) -> Result<ResponseStream, FetchError> {
+        for (name, value) in extra {
+            validate_header(name, value, &target.host)?;
+        }
         if !headers.valid() {
             return Err(FetchError::Unsupported {
                 url: target.host.clone(),
@@ -1092,6 +1118,8 @@ fn stream_of(reader: BufReader<TlsStream>, head: Head, host: &str) -> ResponseSt
         retry_after: head.retry_after,
         redirect_to,
         content_length: head.content_length.map(|n| n as u64),
+        rate_remaining: head.rate_remaining,
+        rate_reset: head.rate_reset,
         body,
         host: host.to_string(),
     }

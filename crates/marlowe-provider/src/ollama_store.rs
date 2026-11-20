@@ -60,8 +60,8 @@ pub enum ResolveError {
     MissingBlob { model: String, digest: String, path: String },
     #[error("`{model}`'s `{PARAMS_MEDIA_TYPE}` layer at {path} did not parse: {detail}")]
     UnreadableParams { model: String, path: String, detail: String },
-    #[error("no `llama-server` binary was found. Looked in: {looked}")]
-    NoServerBinary { looked: String },
+    #[error("no `llama-server` binary for {backend}. Looked in: {looked}")]
+    NoServerBinary { backend: String, looked: String },
 }
 
 impl ResolveError {
@@ -94,9 +94,9 @@ impl ResolveError {
                 "{self}. Ollama applies this layer to every request it serves; running the same \
                  model without it changes the sampler silently, so it is read or it refuses"
             ),
-            ResolveError::NoServerBinary { .. } => format!(
-                "{self}. `llamacpp` serves inference with the `llama-server` Ollama bundles. \
-                 Install Ollama, or set MARLOWE_LLAMA_SERVER to the binary"
+            ResolveError::NoServerBinary { backend, .. } => format!(
+                "{self}. Marlowe runs every local model on a llama.cpp backend it installs itself: install {backend} in the \
+                 engine window (click `engine` in the title bar, or the palette), or set MARLOWE_LLAMA_SERVER to a llama-server binary"
             ),
         }
     }
@@ -452,51 +452,37 @@ fn home() -> PathBuf {
     PathBuf::from(".")
 }
 
-/// The `llama-server` binary Ollama bundles, or every path that was tried.
+/// The `llama-server` of the selected backend (`marlowe-engines`), or every path that was tried.
 ///
 /// `MARLOWE_LLAMA_SERVER` overrides it. That is an escape hatch for a user who built their own,
-/// **not** a fallback: an unset variable takes the bundled path, and a set one that does not exist
-/// is still a refusal naming the path.
+/// **not** a fallback: an unset variable takes the selected backend's install, and a set one that
+/// does not exist is still a refusal naming the path. Ollama's own `llama-server` is never used.
 pub fn server_binary() -> Result<PathBuf, ResolveError> {
+    server_binary_in(std::env::var("MARLOWE_LLAMA_SERVER").ok().as_deref(), marlowe_engines::default_root().as_deref())
+}
+
+/// [`server_binary`] with the override and the engines root given.
+pub fn server_binary_in(override_path: Option<&str>, engines_root: Option<&Path>) -> Result<PathBuf, ResolveError> {
     let mut looked: Vec<String> = Vec::new();
-    if let Ok(v) = std::env::var("MARLOWE_LLAMA_SERVER") {
+    if let Some(v) = override_path {
         let p = PathBuf::from(v);
         if p.is_file() {
             return Ok(p);
         }
         looked.push(format!("{} (MARLOWE_LLAMA_SERVER)", p.display()));
     }
-    for candidate in bundled_binary_candidates() {
-        if candidate.is_file() {
-            return Ok(candidate);
+    let Some(root) = engines_root else {
+        looked.push("no install folder (LOCALAPPDATA is not set)".into());
+        return Err(ResolveError::NoServerBinary { backend: marlowe_engines::DEFAULT.id().into(), looked: looked.join(", ") });
+    };
+    let backend = marlowe_engines::state::selected(root);
+    match marlowe_engines::server(root, backend) {
+        Ok(s) => Ok(s.binary),
+        Err(e) => {
+            looked.push(e.looked);
+            Err(ResolveError::NoServerBinary { backend: backend.id().into(), looked: looked.join(", ") })
         }
-        looked.push(candidate.display().to_string());
     }
-    Err(ResolveError::NoServerBinary { looked: looked.join(", ") })
-}
-
-fn bundled_binary_candidates() -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        // Joined component by component rather than as one slash-separated string: both work on
-        // Windows, but a single embedded `/` makes `Display` render
-        // `...\AppData\Local\Programs/Ollama/lib/ollama\cuda_v12\...`, and this path goes into a
-        // command a person copies into a shell.
-        out.push(
-            PathBuf::from(local)
-                .join("Programs")
-                .join("Ollama")
-                .join("lib")
-                .join("ollama")
-                .join("llama-server.exe"),
-        );
-    }
-    // Ollama's Linux/macOS layouts. Listed so the refusal names every path tried rather than
-    // implying Windows is the only place this could work.
-    out.push(PathBuf::from("/usr/local/lib/ollama/llama-server"));
-    out.push(PathBuf::from("/usr/lib/ollama/llama-server"));
-    out.push(home().join(".ollama").join("lib").join("ollama").join("llama-server"));
-    out
 }
 
 /// The CUDA backend `ggml` must be told about **by file**, beside the binary.

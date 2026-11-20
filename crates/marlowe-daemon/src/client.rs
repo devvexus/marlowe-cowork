@@ -158,6 +158,12 @@ fn dispatch(core: &Arc<Core>, client: u64, client_name: &str, req: Request) {
         | Request::LegacyStatus
         | Request::MemoryProbe { .. }
         | Request::MemoryProfile { .. }) => crate::mind_ops::dispatch(core, client, mem),
+        eng @ (Request::Backends
+        | Request::BackendSelect { .. }
+        | Request::BackendInstall { .. }
+        | Request::BackendCheck { .. }
+        | Request::BackendSync { .. }
+        | Request::BackendDontAsk { .. }) => crate::engine_ops::dispatch(core, client, eng),
         watch @ (Request::Brief
         | Request::WatchList
         | Request::WatchAdd { .. }

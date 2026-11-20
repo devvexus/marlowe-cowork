@@ -21,3 +21,5 @@ thiserror = "2"
 # the fetch path — HTML compresses 3-5x, and those are bytes that never cross the network.
 flate2 = "1"
 brotli = "7"
+# The checked file download (`download.rs`): the digest is computed while the bytes stream to disk.
+sha2.workspace = true

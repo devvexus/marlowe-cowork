@@ -7,6 +7,7 @@ use crate::background::{
     FastState, Finding, InterruptedRun, NotifyState, RuleSuggestion, SavedWorkflow, SentFile, TaskInfo, Urgency, WorkflowInfo,
 };
 use crate::context::{ContextPlan, ContextPolicy, ModelContext, PlannedChange};
+use crate::engines::{BackendOp, BackendReport};
 use crate::crew::{CrewRunInfo, CrewStep, Dispatch, RoleInfo, RunId};
 use crate::ids::{ApprovalId, SessionId};
 use crate::memory::{ImportReport, MemoryChange, MemoryHit, MemoryStatsReport};
@@ -256,6 +257,16 @@ pub enum Event {
     Notice(Notice),
     /// Reply to `ListNotices`.
     Notices { list: Vec<Notice> },
+    /// The llama.cpp backends (reply to `Backends` and the other backend requests; broadcast when
+    /// one changes).
+    Backends { selected: String, backends: Vec<BackendReport> },
+    /// A backend operation moved on (ephemeral: not replayed). `total` is 0 while unknown.
+    BackendProgress { backend: String, op: BackendOp, message: String, done: u64, total: u64 },
+    /// A backend operation ended; `ok` false carries the reason in `message`.
+    BackendDone { backend: String, op: BackendOp, ok: bool, message: String },
+    /// The selected backend has a newer release (at most one ask a day, never for a build). The
+    /// answer is `BackendInstall`, nothing, or `BackendDontAsk`.
+    BackendUpgrade { backend: String, title: String, tag: String },
     /// What the Sentinel watches (reply to `WatchList`/`WatchAdd`/`WatchRemove`; also broadcast on
     /// change).
     WatchState(WatchState),

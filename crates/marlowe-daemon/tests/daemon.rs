@@ -639,6 +639,48 @@ fn library_ops_reply_or_broadcast() {
 }
 
 #[test]
+fn backend_requests_are_answered_over_the_wire_against_the_engines_folder() {
+    // Read when the daemon first needs it, so set before the first request.
+    let engines = temp_home("engines");
+    std::env::set_var("MARLOWE_ENGINES_DIR", &engines);
+    let home = temp_home("backends");
+    seed_model(&home);
+    let d = start(&home, Arc::new(Scripted::default()), DaemonConfig::default());
+    let mut a = Client::connect(&d.info, None);
+    let mut b = Client::connect(&d.info, None);
+
+    a.send(&Request::Backends);
+    let got = a.until(|e| matches!(e, Event::Backends { .. }));
+    let env = got.last().unwrap();
+    assert_eq!(env.seq, 0, "a list is a reply");
+    match &env.event {
+        Event::Backends { selected, backends } => {
+            assert_eq!(selected, "llama.cpp");
+            assert_eq!(backends.iter().map(|b| b.id.as_str()).collect::<Vec<_>>(), ["llama.cpp", "ms-llama.cpp"]);
+            assert!(backends.iter().all(|b| b.installed.is_none()));
+        }
+        _ => unreachable!(),
+    }
+
+    // A choice is broadcast: the other client sees it, and so does the one that asked.
+    a.send(&Request::BackendSelect { backend: "ms-llama.cpp".into() });
+    let seen = b.until(|e| matches!(e, Event::BackendDone { op: marlowe_proto::BackendOp::Select, .. }));
+    assert!(seen.iter().any(|e| matches!(&e.event, Event::Backends { selected, .. } if selected == "ms-llama.cpp" && e.seq > 0)), "{seen:?}");
+    assert_eq!(marlowe_engines::state::selected(&engines), marlowe_engines::Backend::MsLlamaCpp);
+
+    a.send(&Request::BackendDontAsk { backend: "llama.cpp".into(), dont_ask: true });
+    let seen = b.until(|e| matches!(e, Event::Backends { backends, .. } if backends[0].dont_ask));
+    assert!(seen.last().unwrap().seq > 0);
+
+    // Nothing is installed, so an install of a made-up backend and a select of an unknown id fail loudly.
+    a.send(&Request::BackendInstall { backend: "ollama".into() });
+    let err = a.until(|e| matches!(e, Event::Error { .. }));
+    assert!(matches!(&err.last().unwrap().event, Event::Error { message, .. } if message.contains("not a backend")));
+    stop(d, &home);
+    let _ = std::fs::remove_dir_all(&engines);
+}
+
+#[test]
 fn a_wrong_token_is_refused_and_a_second_daemon_will_not_start() {
     let home = temp_home("auth");
     seed_model(&home);

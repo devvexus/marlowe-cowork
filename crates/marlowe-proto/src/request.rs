@@ -218,6 +218,24 @@ pub enum Request {
     ModelsInstall,
     /// Turns the memory models down; remembered, so onboarding does not ask again.
     ModelsDecline,
+    /// The llama.cpp backends and their state; answered with `Backends`.
+    Backends,
+    /// Makes `backend` the one that serves models. Stops the running server so the next load
+    /// starts the new one (its slot caches are saved first). Answered with `Backends`.
+    BackendSelect { backend: String },
+    /// Installs `backend`, or upgrades it to the newest release. Progress is `BackendProgress`,
+    /// the end is `BackendDone` and `Backends`.
+    BackendInstall { backend: String },
+    /// Looks up the newest build and release of `backend` now. Answered with `Backends`.
+    BackendCheck { backend: String },
+    /// Installs the newest build of `backend`, even within the installed release.
+    BackendSync { backend: String },
+    /// Sets or clears "don't ask again" for the release upgrade prompt of `backend`.
+    BackendDontAsk {
+        backend: String,
+        #[serde(default = "yes")]
+        dont_ask: bool,
+    },
     /// Runs the auto-injection pipeline for `query` outside a turn (diagnostics, `memory bench`).
     /// Answered with `MemoryProbed`; the decision is journalled like any injection.
     MemoryProbe {
@@ -621,4 +639,8 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         on: Option<bool>,
     },
+}
+
+fn yes() -> bool {
+    true
 }

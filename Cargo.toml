@@ -51,6 +51,9 @@ members = [
     "crates/marlowe-workflow",
     # Projects: plan, state JSON, forms with display hints, the generic view-model, the store.
     "crates/marlowe-project",
+    # The llama.cpp backends: the registry and install layout (no network), and the GitHub installer.
+    "crates/marlowe-engines",
+    "crates/marlowe-engine-install",
 ]
 # Reference sources only; never built.
 exclude = ["legacy"]
@@ -95,6 +98,8 @@ marlowe-settings = { path = "crates/marlowe-settings" }
 marlowe-anthropic = { path = "crates/marlowe-anthropic" }
 marlowe-workflow = { path = "crates/marlowe-workflow" }
 marlowe-project = { path = "crates/marlowe-project" }
+marlowe-engines = { path = "crates/marlowe-engines" }
+marlowe-engine-install = { path = "crates/marlowe-engine-install" }
 
 # Terminal. crossterm, not termion: Windows is the primary platform.
 ratatui = "0.30"

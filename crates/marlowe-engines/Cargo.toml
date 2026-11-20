@@ -1,0 +1,14 @@
+[package]
+name = "marlowe-engines"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The llama.cpp backends Marlowe runs models on: the registry, the install layout, the selected backend and what is installed. No network."
+
+# No TLS and no Marlowe crates: `marlowe-provider` depends on this to find its `llama-server`, and
+# `tests/no_tls_in_the_default_path.rs` keeps that crate off the network. Looking upstream and
+# installing is `marlowe-engine-install`.
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

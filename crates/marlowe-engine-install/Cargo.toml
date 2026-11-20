@@ -1,0 +1,17 @@
+[package]
+name = "marlowe-engine-install"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Looks up, downloads, checks, unpacks and smoke-tests the llama.cpp backends from GitHub."
+
+[dependencies]
+marlowe-engines.workspace = true
+# The checked downloader and the one TLS surface the workspace has.
+marlowe-net.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# NVML (loaded at runtime) names the CUDA version the driver supports.
+nvml-wrapper.workspace = true
+# Unpacking the release zips: deflate only, no encryption, no extra codecs.
+zip = { version = "4", default-features = false, features = ["deflate-flate2"] }

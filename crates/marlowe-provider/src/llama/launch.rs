@@ -1,8 +1,8 @@
 //! The `llama-server` command line for a model served by Marlowe.
 //!
-//! Mirrors the launch Ollama 0.32.5 makes for a model it hands to llama-server whole (measured
+//! Mirrors the launch Ollama 0.32.5 made for a model it handed to llama-server whole (measured
 //! off a live Ollama process, 2026-10), with the slot count and the per-slot context Marlowe's
-//! planner chose. `-c` is the product of the two and the KV cache is split per slot (no
+//! planner chose. The binary is the selected backend's (`marlowe-engines`), never Ollama's. `-c` is the product of the two and the KV cache is split per slot (no
 //! `--kv-unified`), so one agent can never take another's context. `-ngl 99 --fit off` keeps
 //! llama.cpp from moving layers to the CPU on its own, but it does NOT make a misfit fail: under
 //! the Windows driver's sysmem fallback (NVIDIA "CUDA - Sysmem Fallback Policy", on by default)
@@ -97,12 +97,13 @@ pub fn plan(binary: &Path, backend_dll: Option<&Path>, spec: &Spec) -> LaunchPla
     LaunchPlan { binary: binary.to_path_buf(), args: args(spec), backend_dll: backend_dll.map(Path::to_path_buf), path_prefix: dirs }
 }
 
-/// The CUDA backends Ollama ships beside the binary, newest first: Ollama itself picks the newest
-/// its driver runs, and the engine falls back to the next when the log says the first did not load.
+/// The CUDA backends beside the binary, best first. A backend install has `ggml-cuda.dll` in the
+/// binary's own folder; the `cuda_v13`/`cuda_v12` subfolders are the layout of a developer's own
+/// build. The engine falls back to the next when the log says the first did not load.
 pub fn backend_candidates(binary: &Path) -> Vec<PathBuf> {
     let Some(dir) = binary.parent() else { return Vec::new() };
     let mut out = Vec::new();
-    for sub in ["cuda_v13", "cuda_v12"] {
+    for sub in ["", "cuda_v13", "cuda_v12"] {
         for name in ["ggml-cuda.dll", "libggml-cuda.so"] {
             let p = dir.join(sub).join(name);
             if p.is_file() {
@@ -113,7 +114,7 @@ pub fn backend_candidates(binary: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// The bundled server binary (`MARLOWE_LLAMA_SERVER` overrides it).
+/// The selected backend's server binary (`MARLOWE_LLAMA_SERVER` overrides it).
 pub fn server_binary() -> Result<PathBuf, ResolveError> {
     crate::ollama_store::server_binary()
 }
@@ -158,6 +159,18 @@ mod tests {
         assert!(!args(&s).iter().any(|x| x == "--slot-save-path"));
         s.slot_save = Some(PathBuf::from("C:/m/slots"));
         assert_eq!(after(&args(&s), "--slot-save-path"), "C:/m/slots");
+    }
+
+    #[test]
+    fn a_backend_installs_cuda_dll_beside_the_binary_comes_first() {
+        let dir = std::env::temp_dir().join(format!("marlowe-launch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("cuda_v12")).unwrap();
+        std::fs::write(dir.join("ggml-cuda.dll"), b"x").unwrap();
+        std::fs::write(dir.join("cuda_v12").join("ggml-cuda.dll"), b"x").unwrap();
+        let got = backend_candidates(&dir.join("llama-server.exe"));
+        assert_eq!(got, vec![dir.join("ggml-cuda.dll"), dir.join("cuda_v12").join("ggml-cuda.dll")]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -58,7 +58,7 @@ Windows x64 or ARM64:
 1. Clone the repo.
 2. Install Rust with rustup (the native `aarch64-pc-windows-msvc` toolchain on ARM64); `rust-toolchain.toml` pins the version and adds both Windows targets.
 3. Visual Studio Build Tools with "Desktop development with C++", plus the components "MSVC v143 ARM64 build tools" and "C++ Clang tools for Windows" on ARM64 (`ring` compiles C with `clang` there; `rusqlite`, `blake3` and `psm` need the MSVC tools). The first build also downloads ONNX Runtime (sha256-checked, cached) and needs the network.
-4. Install Ollama for the local models.
+4. Install Ollama to download local models: Marlowe reads its model files from disk. The engine runs them on a llama.cpp backend that Marlowe installs and updates itself from GitHub (`llama.cpp`, or `ms-llama.cpp` for MS-quantised models) into `%LOCALAPPDATA%\MarloweCowork\engines`, never on Ollama's own `llama-server`; with no backend installed it says how to install one. The NVIDIA driver picks the CUDA build (13.5 where the driver supports it, else 12.4).
 5. `cargo build --release`, then `marlowe`. The first Wake offers the memory LMs (about 193 MB): they let Marlowe recall past conversations by meaning, and nothing downloads without a yes.
 
 ## Palette
