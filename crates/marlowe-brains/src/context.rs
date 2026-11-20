@@ -52,13 +52,11 @@ pub(crate) struct ContextState {
     pub seen: Mutex<HashMap<ModelRef, EngineSettings>>,
     /// When [`Brains::serving`] last looked at each model's runner.
     pub looked: Mutex<HashMap<ModelRef, Instant>>,
-    /// Whether the llama.cpp engine may serve a model, by Ollama model id (the manifest, read once).
+    /// Whether llama.cpp can run a model, by model id (its files, read once).
     pub eligibility: Mutex<HashMap<String, Result<(), String>>>,
-    /// Models the user turned the engine off for.
-    pub engine_off: Mutex<HashMap<ModelRef, bool>>,
-    /// Whether the engine takes a model whole on the GPU or Ollama keeps it, per model.
+    /// Whether the engine takes a model whole on the GPU or runs it split, per model.
     pub engine_fit: Mutex<HashMap<ModelRef, crate::engine::Verdict>>,
-    /// How long a "Ollama keeps it" verdict stands before the GPU is read again (`None`: the default).
+    /// How long a "split" verdict stands before the GPU is read again (`None`: the default).
     pub engine_recheck: Mutex<Option<Duration>>,
 }
 
@@ -152,10 +150,11 @@ impl ContextGate<'_> {
             return None;
         }
         let planned = self.policy(model).map_or(1, |p| p.parallel.max(1));
-        let serial = self.b.ctx.seen.lock().unwrap_or_else(|e| e.into_inner()).get(model).and_then(|e| e.serial_arch.clone());
+        let seen = self.b.ctx.seen.lock().unwrap_or_else(|e| e.into_inner()).get(model).map(|e| (e.serial_arch.clone(), e.engine.label()));
+        let (serial, engine) = seen.unwrap_or((None, "the engine"));
         Some(match serial {
             Some(arch) => format!("Ollama runs {arch} models one request at a time"),
-            None if planned > serving => format!("Ollama is serving {serving} at a time, not the {planned} planned"),
+            None if planned > serving => format!("{engine} is serving {serving} at a time, not the {planned} planned"),
             None => format!("its {serving} slot{} are all busy", if serving == 1 { "" } else { "s" }),
         })
     }

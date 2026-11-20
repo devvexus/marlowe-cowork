@@ -565,8 +565,9 @@ fn run_one(
     // for a run that just ended loads the conductor's model when it fits, so a result the user asked
     // to be sent is not stranded until their next message.
     let who = input.priority();
-    // The user's own turn on a local model, and a relay of a run that just ended: a stopped Ollama
-    // is started first, not reported. A relay that cannot start it waits like any held relay.
+    // The user's own turn on a local model, and a relay of a run that just ended: an engine that
+    // must be started ahead of its first request is started first, not reported (Marlowe's own
+    // llama.cpp engine starts with the request itself). A relay that cannot start it waits.
     let started = if !input.relay || input.live { ensure_engine(core, &clock, &model) } else { Ok(()) };
     let admitted = match started {
         Err(message) if !input.relay => {
@@ -811,9 +812,10 @@ fn admit_conductor(core: &Arc<Core>, session: &SessionId, model: &ModelRef, canc
     }
 }
 
-/// Starts the local engine `model` needs if it is not answering, with a live "starting Ollama"
-/// line while it comes up. `Err` is why it could not be started, for the user. A running engine,
-/// a hosted model and a remote server cost nothing and say nothing.
+/// Starts the local engine `model` needs if it is not answering and must be started ahead of a
+/// request, with a live line while it comes up. `Err` is why it could not be started, for the
+/// user. Marlowe's llama.cpp engine starts with the request, and a hosted model has no engine:
+/// both cost nothing and say nothing.
 fn ensure_engine(core: &Arc<Core>, clock: &Arc<TurnClock>, model: &ModelRef) -> Result<(), String> {
     let began = Instant::now();
     let mut said = false;

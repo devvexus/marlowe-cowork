@@ -42,7 +42,7 @@ pub mod rules;
 #[cfg(test)]
 mod tests;
 
-pub use file::{HookCommand, MatcherGroup, SettingsFile};
+pub use file::{EngineFile, HookCommand, MatcherGroup, SettingsFile};
 pub use hooks::{HookEntry, HookKind, HookEvent};
 pub use layers::{Layer, Settings, Source};
 pub use rules::RuleEntry;

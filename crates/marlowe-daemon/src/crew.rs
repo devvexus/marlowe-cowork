@@ -538,8 +538,11 @@ pub(crate) fn gpu_busy(state: &WatchState, compute: &[(u32, Vec<String>)]) -> bo
     devices_busy(&state.gpu, compute) || state.runs.iter().any(|r| r.status.is_live())
 }
 
+/// Marlowe's own engine server (labelled `marlowe:` by the Sentinel), or an Ollama runner, which
+/// holds a model the user loaded rather than doing work Marlowe must wait for.
 fn is_ollama(name: &str) -> bool {
-    name.to_ascii_lowercase().starts_with("ollama")
+    let n = name.to_ascii_lowercase();
+    n.starts_with("ollama") || n.starts_with("marlowe:")
 }
 
 fn devices_busy(gpu: &GpuReport, compute: &[(u32, Vec<String>)]) -> bool {
@@ -812,9 +815,10 @@ mod tests {
         assert!(gpu_busy(&st, &[(0, vec![])]));
         // Ollama computing (a model a crew step left loaded) is Marlowe's own.
         assert!(!gpu_busy(&st, &[(0, vec!["ollama.exe".into()])]));
-        // Current Ollama computes in its own llama-server (labelled by the Sentinel); a llama.cpp
-        // server outside Ollama's install is someone else's.
+        // Current Ollama computes in its own llama-server and Marlowe in its engine's (both
+        // labelled by the Sentinel); a llama.cpp server outside both installs is someone else's.
         assert!(!gpu_busy(&st, &[(0, vec!["ollama:llama-server.exe".into()])]));
+        assert!(!gpu_busy(&st, &[(0, vec!["marlowe:llama-server.exe".into()])]));
         assert!(gpu_busy(&st, &[(0, vec!["llama-server.exe".into()])]));
         // A training job waits however idle the device looks.
         st.gpu.devices[0].util_pct = 2;

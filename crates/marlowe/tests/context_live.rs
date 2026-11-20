@@ -1,6 +1,7 @@
-//! The context planner against this machine: the real Ollama store, runner log, `/api/ps`, NVML
+//! The context planner against this machine: the real model store, the engine's own log, NVML
 //! and PDH. Ignored by default (machine-specific). Loads nothing, restarts nothing, changes no
-//! environment: it reads the model that is already loaded, if any.
+//! environment: it reads the load of `MARLOWE_LIVE_MODEL` that Marlowe's engine (running under
+//! `MARLOWE_HOME`) logged last, if any.
 //!
 //! ```text
 //! powershell -NoProfile -File scripts/cargo-idle.ps1 test -p marlowe --test context_live -j 2 -- --ignored --nocapture
@@ -12,34 +13,35 @@ use marlowe_brains::{Brains, Hardware, Library, MemoryStore, ProviderFactory};
 use marlowe_hw::arch::{ArchProfile, Role};
 use marlowe_hw::{build, log, predict, CacheType, Calibration, GpuSource, KvType, ModelSource, PlanInputs, ServerChange, ServerControl};
 use marlowe_model::{ModelInfo, ModelRef, ProviderKind};
-use marlowe_provider::{ollama_runtime, LocalEndpoint, OllamaHw};
+use marlowe_provider::llama::{EngineConfig, LlamaEngine, LlamaModels, SystemSpawner};
+use marlowe_provider::ollama_store::store_root;
 use marlowe_sentinel::vram::SentinelGpu;
 
 struct Refuse;
 impl ServerControl for Refuse {
     fn apply(&self, _: &ServerChange) -> Result<String, String> {
-        Err("this test never restarts Ollama".into())
+        Err("this test never restarts the engine".into())
     }
 }
 
 #[test]
 #[ignore]
-fn prediction_against_pdh_and_api_ps() {
-    let ep = LocalEndpoint::default_ollama();
-    let ps = marlowe_provider::http::get_json(&ep, "/api/ps", std::time::Duration::from_secs(3)).expect("Ollama answers /api/ps");
-    let loaded = ollama_runtime::parse_ps(&ps);
-    let Some(m) = loaded.first() else {
-        eprintln!("no model is loaded; nothing to measure (this test never loads one)");
+fn prediction_against_pdh_and_the_engines_log() {
+    let (Ok(name), Some(home)) = (std::env::var("MARLOWE_LIVE_MODEL"), std::env::var_os("MARLOWE_HOME")) else {
+        eprintln!("set MARLOWE_LIVE_MODEL and MARLOWE_HOME to a model Marlowe's engine has loaded (this test never loads one)");
         return;
     };
-    let hw = OllamaHw::new(ep.clone());
+    let engine = LlamaEngine::new(EngineConfig::new(store_root()), Arc::new(SystemSpawner::new(Vec::new())));
+    let hw = LlamaModels::new(engine, store_root());
     let gpu = SentinelGpu::open();
-    let files = hw.files(&m.name).expect("the store resolves the loaded model");
-    let rt = hw.runtime(&m.name, files.blob.as_deref());
+    let files = hw.files(&name).expect("the store resolves the model");
+    let text = marlowe_provider::server_log::read_tail(&std::path::Path::new(&home).join("logs").join("llama-server.log"), 16 << 20).expect("the engine's log");
+    let blocks = log::parse(&text);
     let snap = gpu.snapshot().expect("an NVIDIA GPU");
     let main = ArchProfile::analyze(&files.main, Role::Main).unwrap();
     let draft = files.draft.as_ref().map(|d| ArchProfile::analyze(d, Role::Draft).unwrap());
-    let load = rt.load.clone().filter(|l| !l.contexts.is_empty()).expect("the runner log has this load");
+    let load = files.blob.as_deref().and_then(|b| log::last_for_blob(&blocks, b)).cloned().filter(|l| !l.contexts.is_empty()).expect("the engine's log has this load");
+    let m = ModelInfo::bare(ProviderKind::Ollama, &name);
     let l = &load.launch;
     let kv = l.cache_k.as_deref().and_then(CacheType::parse).unwrap_or(CacheType::F16);
     let ctx = l.ctx.unwrap_or(4096);
@@ -47,7 +49,7 @@ fn prediction_against_pdh_and_api_ps() {
     let spec = l.spec_n.unwrap_or(0);
     let ub = l.ubatch.unwrap_or(512);
 
-    eprintln!("model {} · ctx {ctx} · np {np} · kv {} · draft {} (n={spec}) · ub {ub}", m.name, kv.name(), draft.is_some());
+    eprintln!("model {} · ctx {ctx} · np {np} · kv {} · draft {} (n={spec}) · ub {ub}", m.id, kv.name(), draft.is_some());
     eprintln!("arch  {}", main.summary());
 
     // Buffer by buffer against the runner's own log.
@@ -66,7 +68,7 @@ fn prediction_against_pdh_and_api_ps() {
         row("draft KV", p.draft_kv, d.kv_total());
     }
 
-    // The whole runner: uncalibrated prediction vs PDH (dedicated) vs /api/ps.
+    // The whole server: uncalibrated prediction vs PDH (dedicated).
     let plan = build(&PlanInputs {
         main: &main,
         draft: draft.as_ref(),
@@ -80,12 +82,10 @@ fn prediction_against_pdh_and_api_ps() {
     let kvt = KvType::from_cache(kv).unwrap_or(KvType::F16);
     let need = plan.need_mib(ctx / np, kvt, np as u16);
     let dedicated: f64 = snap.runners.iter().map(|r| r.1).sum();
-    let ps_mib = m.size_vram as f64 / 1048576.0;
     eprintln!("whole runner (MiB):");
     eprintln!("  log, every GPU buffer      {:>10.1}", load.gpu_mib());
     eprintln!("  predicted (uncalibrated)   {need:>10.1}   vs PDH {:+.2}%", (need - dedicated) / dedicated * 100.0);
     eprintln!("  PDH dedicated              {dedicated:>10.1}   (runners {:?})", snap.runners);
-    eprintln!("  /api/ps size_vram          {ps_mib:>10.1}   vs PDH {:+.2}%", (ps_mib - dedicated) / dedicated * 100.0);
     eprintln!("  driver overhead measured   {:>10.1}", dedicated - load.gpu_mib());
     eprintln!("  NVML: used {:.0}, free {:.0}, others {:.0}, budget {:.0}, bandwidth {:?} GB/s", snap.gpu.used_mib, snap.gpu.free_mib, snap.gpu.others_mib(), snap.gpu.budget_mib(), snap.gpu.bandwidth_gbs);
 
@@ -93,9 +93,9 @@ fn prediction_against_pdh_and_api_ps() {
     let mut f = ProviderFactory::new(Arc::new(MemoryStore::new()));
     f.set_hardware(Hardware { models: Arc::new(hw), gpu: Arc::new(gpu), server: Arc::new(Refuse) });
     let lib = Library::open_in_memory().unwrap();
-    lib.add(&ModelInfo::bare(ProviderKind::Ollama, &m.name)).unwrap();
+    lib.add(&m).unwrap();
     let b = Brains::new(lib, f);
-    let r: ModelRef = format!("ollama/{}", m.name).parse().unwrap();
+    let r: ModelRef = format!("ollama/{}", m.id).parse().unwrap();
     let cp = b.context_plan(&r).unwrap();
     let pm = cp.plan.as_ref().unwrap();
     eprintln!("plan: calibrated {} · fixed at {ctx}: {:.0} MiB · auto {:?} · in effect {:?}", pm.calibrated, pm.fixed_mib(ctx), cp.auto, cp.in_effect.kv_type);

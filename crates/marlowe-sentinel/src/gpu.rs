@@ -127,12 +127,14 @@ fn foreign_compute(compute: &[u32], graphics: &[u32], me: u32, own: &dyn Fn(u32)
     compute.iter().copied().filter(|&pid| pid != me && !graphics.contains(&pid) && !own(pid)).collect()
 }
 
-/// The name a compute process is reported under: its executable name, prefixed `ollama:` when it
-/// is one of Ollama's runners. Current Ollama computes in `lib\ollama\llama-server.exe`, a name
-/// that alone cannot be told from a llama.cpp build Matthew runs himself.
+/// The name a compute process is reported under: its executable name, prefixed `marlowe:` when it
+/// is Marlowe's own engine server and `ollama:` when it is one of Ollama's runners. Both compute in
+/// a `llama-server.exe`, a name that alone cannot be told from a llama.cpp build Matthew runs himself.
 pub fn compute_label(path: &str) -> String {
     let name = path.rsplit(['\\', '/']).next().unwrap_or(path).to_string();
-    if crate::vram::is_ollama_runner(path) && !name.to_ascii_lowercase().starts_with("ollama") {
+    if crate::vram::is_engine_runner(path) {
+        format!("marlowe:{name}")
+    } else if crate::vram::is_ollama_runner(path) && !name.to_ascii_lowercase().starts_with("ollama") {
         format!("ollama:{name}")
     } else {
         name
@@ -150,6 +152,10 @@ mod tests {
         assert_eq!(compute_label(r"C:\Users\m\AppData\Local\Programs\Ollama\ollama.exe"), "ollama.exe");
         assert_eq!(compute_label(r"C:\src\llama.cpp\build\bin\Release\llama-server.exe"), "llama-server.exe");
         assert_eq!(compute_label(r"C:\Python311\python.exe"), "python.exe");
+        if let Some(root) = marlowe_engines::default_root() {
+            let ours = root.join("llama.cpp").join("v1.0.0").join("llama-server.exe");
+            assert_eq!(compute_label(&ours.display().to_string()), "marlowe:llama-server.exe");
+        }
     }
 
     #[test]

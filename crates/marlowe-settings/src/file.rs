@@ -27,6 +27,14 @@
 //! employee = "marlowe-mini:4b-super"   # project employees; default: the conversation's model
 //! lead = "marlowe-dawn:9b-super"       # the project's lead steps; default: the conversation's model
 //!
+//! [engine]               # the local llama.cpp engine (user settings only)
+//! flash_attn = true      # default on; off runs an f16 KV cache
+//! keep_alive = "5m"      # idle unload, Ollama's spelling; default OLLAMA_KEEP_ALIVE as saved, else 5m
+//! batch = 512            # -b
+//! ubatch = 512           # -ub
+//! mmap = false           # default --no-mmap
+//! gpu_fit = "auto"       # auto (whole when it fits, else split) | whole | split
+//!
 //! [import]
 //! claude = true          # read .claude/settings.json (default)
 //! claude_user = false    # also ~/.claude/settings.json
@@ -55,6 +63,29 @@ pub struct SettingsFile {
     pub teams: Teams,
     #[serde(default)]
     pub projects: Projects,
+    #[serde(default)]
+    pub engine: EngineFile,
+}
+
+/// The local engine's server-wide settings (`[engine]`); an unset key keeps the default
+/// (`marlowe_provider::llama::settings`). The KV type, context and slots are per model: the
+/// context planner's policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flash_attn: Option<bool>,
+    /// Ollama's spelling: `5m`, `90`, `1h`, `-1` (never).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_alive: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ubatch: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mmap: Option<bool>,
+    /// `auto`, `whole` or `split`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_fit: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

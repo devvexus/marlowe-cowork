@@ -26,7 +26,8 @@ unicode); a tool error; a tool result with trailing whitespace; a memory write a
 partial answer; a steer in the middle of a turn; a file changed outside; the Teams toggle on and off; several user messages;
 and a daemon restart between turns. The model chooses its own calls, so `coverage` in the report says what it did.
 
-Engines:
+Engines (since 2026-11 Ollama never serves a Marlowe model: `ollama` below no longer runs, and `llama` covers every
+model; its wrapper still starts Ollama's bundled server as the real one and should point at the selected backend's):
 
 - `ollama`: the daemon with `MARLOWE_LLAMA_ENGINE=0`; every call goes to Ollama through a tee (`tap.py`) set as
   `MARLOWE_OLLAMA_ADDR`. Ollama 0.32 runs every model on a llama-server and relays that server's log into `server.log`;

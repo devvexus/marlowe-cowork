@@ -1,5 +1,5 @@
-//! Fakes for the engine's tests: a server process, a llama-server and an Ollama over real
-//! loopback HTTP, so the engine's HTTP code runs as it does in production.
+//! Fakes for the engine's tests: a server process and a llama-server over real loopback HTTP, so
+//! the engine's HTTP code runs as it does in production, and a model store on disk.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -355,99 +355,50 @@ impl VramProbe for FakeVram {
     }
 }
 
-/// A fake Ollama: `/api/ps` lists what is resident, `/api/generate` with `keep_alive: 0`
-/// unloads, `/api/show` and `/api/tags` describe one chat model.
-pub struct FakeOllama {
-    http: Http,
-    state: Arc<Mutex<(Vec<String>, Vec<String>)>>,
-    chats: Arc<AtomicUsize>,
+/// The model file a fixture's store holds: a qwen35 GGUF header with a chat template that takes
+/// tools and thinking.
+pub fn fixture_gguf() -> Vec<u8> {
+    super::eligible::tests::gguf(Some(super::eligible::tests::TEMPLATE))
 }
 
-impl FakeOllama {
-    pub fn new(model: &str) -> Self {
-        let state: Arc<Mutex<(Vec<String>, Vec<String>)>> = Arc::new(Mutex::new((Vec::new(), Vec::new())));
-        let s = state.clone();
-        let chats = Arc::new(AtomicUsize::new(0));
-        let c = chats.clone();
-        let model = model.to_string();
-        let handler: Arc<Handler> = Arc::new(move |method, path, body| match (method, path) {
-            ("GET", "/api/ps") => {
-                let resident = s.lock().unwrap().0.clone();
-                Reply::json(json!({"models": resident.iter().map(|m| json!({"name": m, "context_length": 32768})).collect::<Vec<_>>()}))
-            }
-            ("POST", "/api/generate") => {
-                let m = body.get("model").and_then(Value::as_str).unwrap_or_default().to_string();
-                let mut g = s.lock().unwrap();
-                g.0.retain(|x| x != &m);
-                g.1.push(m);
-                Reply::json(json!({"done": true}))
-            }
-            ("POST", "/api/show") => Reply::json(json!({
-                "capabilities": ["completion", "tools", "thinking"],
-                "model_info": {"general.architecture": "qwen35", "qwen35.context_length": 262144},
-                "details": {"family": "qwen35"},
-            })),
-            ("GET", "/api/tags") => Reply::json(json!({"models": [{"name": model, "model": model}]})),
-            ("POST", "/api/chat") => {
-                c.fetch_add(1, Ordering::SeqCst);
-                Reply {
-                    status: 200,
-                    content_type: "application/x-ndjson",
-                    body: format!("{}\n", json!({"message": {"content": "from ollama"}, "done": true, "prompt_eval_count": 1, "eval_count": 1})),
-                }
-            }
-            _ => Reply::status(404, json!({"error": "not found"})),
-        });
-        Self { http: Http::start(handler), state, chats }
-    }
+/// The `.params` layer a fixture's model carries.
+pub const FIXTURE_PARAMS: &str = r#"{"temperature":1,"top_k":20,"top_p":0.95,"presence_penalty":0,"repeat_penalty":1,"min_p":0}"#;
 
-    /// How many `/api/chat` requests Ollama itself served.
-    pub fn chats(&self) -> usize {
-        self.chats.load(Ordering::SeqCst)
-    }
-
-    pub fn endpoint(&self) -> LocalEndpoint {
-        self.http.endpoint()
-    }
-
-    pub fn resident(&self, model: &str) {
-        self.state.lock().unwrap().0.push(model.to_string());
-    }
-
-    pub fn unloaded(&self) -> Vec<String> {
-        self.state.lock().unwrap().1.clone()
-    }
-}
-
-/// A store holding `model`, a fake Ollama, a fake spawner and a log, in one temp dir.
+/// A store holding `model`, a fake spawner and a log, in one temp dir.
 pub struct Fixture {
     pub dir: TempDir,
-    pub ollama: FakeOllama,
     pub spawner: Arc<FakeSpawner>,
 }
 
 impl Fixture {
     pub fn new(model: &str) -> Self {
+        Self::with_layers(model, false, false)
+    }
+
+    /// A store whose model also has an MTP draft layer and/or a vision projector layer.
+    pub fn with_layers(model: &str, draft: bool, projector: bool) -> Self {
         let dir = TempDir::new();
-        super::eligible::tests::store(
-            &dir.path().join("store"),
-            model,
-            json!({"model_format": "gguf", "model_family": "qwen35"}),
-            &[
-                (crate::ollama_store::MODEL_MEDIA_TYPE, "gguf"),
-                (crate::ollama_store::PARAMS_MEDIA_TYPE, r#"{"temperature":1,"top_k":20,"top_p":0.95,"presence_penalty":0,"repeat_penalty":1,"min_p":0}"#),
-            ],
-        );
-        Self { ollama: FakeOllama::new(model), spawner: FakeSpawner::new(), dir }
+        let main = fixture_gguf();
+        let head = super::eligible::tests::gguf_with(None, &[("qwen35.nextn_predict_layers", json!(1))]);
+        let mut layers: Vec<(&str, &[u8])> =
+            vec![(crate::ollama_store::MODEL_MEDIA_TYPE, &main[..]), (crate::ollama_store::PARAMS_MEDIA_TYPE, FIXTURE_PARAMS.as_bytes())];
+        if draft {
+            layers.push((super::eligible::DRAFT_MEDIA_TYPE, &head[..]));
+        }
+        if projector {
+            layers.push((super::eligible::PROJECTOR_MEDIA_TYPE, b"mmproj"));
+        }
+        super::eligible::tests::store(&dir.path().join("store"), model, json!({"model_format": "gguf", "model_family": "qwen35"}), &layers);
+        Self { spawner: FakeSpawner::new(), dir }
     }
 
     pub fn config(&self) -> EngineConfig {
-        let mut cfg = EngineConfig::new(self.ollama.endpoint(), self.dir.path().join("store"));
+        let mut cfg = EngineConfig::new(self.dir.path().join("store"));
         cfg.log = Some(self.dir.path().join("llama.log"));
         cfg.binary = Some(self.dir.path().join("llama-server.exe"));
         cfg.poll = Duration::from_millis(10);
         cfg.idle_tick = Duration::from_millis(50);
-        cfg.keep_alive = None;
+        cfg.settings.keep_alive = None;
         cfg.start_timeout = Duration::from_secs(10);
         cfg
     }

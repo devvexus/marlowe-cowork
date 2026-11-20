@@ -8,7 +8,7 @@
 //!   [`Priority::Crew`] is refused when it does not fit; [`Priority::Background`] never
 //!   cold-loads at all: it runs on a resident (or hosted) model or not at all.
 //! * Unknown is not "fits": a cost or free memory nobody measured asks the user's turn and
-//!   refuses a crew step, and when the engine does not say what is loaded (a failed `/api/ps`)
+//!   refuses a crew step, and when the engine does not say what is loaded (it cannot be read)
 //!   a crew step waits and background work does not run. Only a build with no hardware probe at
 //!   all (tests) loads unmeasured.
 
@@ -189,16 +189,9 @@ impl Brains {
         let plan = self.context_plan(model).ok().and_then(|p| p.plan);
         let need_mib = plan.as_ref().map(|p| p.need_mib(ctx, kv, agents));
         // The engine's server gives the card back to the model it starts (it stops the one it
-        // runs first), so it is measured as the planner measures it: free plus what Ollama's
-        // runners hold, less the headroom. A model it would not fit never reaches the engine.
-        let on_engine = self.engine_wanted(model);
-        let free_mib = plan.as_ref().and_then(|p| p.gpu.as_ref()).map(|g| {
-            if on_engine {
-                g.free_for_marlowe_mib() - g.headroom_mib.max(HEADROOM_MIB)
-            } else {
-                g.free_mib - g.headroom_mib.max(HEADROOM_MIB)
-            }
-        });
+        // runs first), so it is measured as the planner measures it: free plus what Marlowe's
+        // own server holds, less the headroom.
+        let free_mib = plan.as_ref().and_then(|p| p.gpu.as_ref()).map(|g| g.free_for_marlowe_mib() - g.headroom_mib.max(HEADROOM_MIB));
         LoadCost { model: model.clone(), ctx, agents, kv, need_mib, free_mib, resident, resident_known: true }
     }
 

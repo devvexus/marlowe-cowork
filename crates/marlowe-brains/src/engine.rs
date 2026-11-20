@@ -1,15 +1,16 @@
-//! Which models Marlowe's own llama-server serves, and with how many slots.
+//! How Marlowe's own llama-server serves each local model, and with how many slots.
 //!
-//! A local model goes to the llama.cpp engine when Ollama itself would hand it to llama-server
-//! whole (the hardware source says so: [`ModelSource::engine_eligibility`]), the user has not
-//! turned the engine off for it, and the planner says it fits whole on the GPU beside what is
-//! there now ([`Brains::engine_fit`]). Its policy then means: `parallel` slots of `max_ctx` tokens
-//! each. Without a saved policy the planner picks them: six slots when each agent still gets
+//! Every local model runs on the llama.cpp engine; Ollama is only where its files come from. One
+//! llama.cpp cannot run (the hardware source says why: [`ModelSource::engine_eligibility`]) is an
+//! error at its first request. A model the planner says fits whole on the GPU beside what is there
+//! now ([`Brains::engine_fit`]) runs there, its policy meaning `parallel` slots of `max_ctx`
+//! tokens each. Without a saved policy the planner picks them: six slots when each agent still gets
 //! [`ENGINE_MIN_CTX`], fewer slots with more context each when it does not.
 //!
-//! A model that does not fit stays on Ollama, which splits layers between the GPU and the CPU
-//! itself and says so. No GPU reading and no estimate of what the model needs are not "fits":
-//! the driver's sysmem fallback would load it anyway, into system memory, at a crawl.
+//! A model that does not fit runs split: llama.cpp places what fits on the GPU and keeps the rest
+//! on the CPU, as Ollama does, with one slot of the model's default window unless a policy is
+//! saved. No GPU reading and no estimate of what the model needs are not "fits": the driver's
+//! sysmem fallback would load it whole anyway, into system memory, at a crawl.
 
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -28,13 +29,15 @@ pub const ENGINE_SLOTS: u16 = 6;
 pub const ENGINE_RESERVE_MIB: f64 = 1024.0;
 /// The smallest window per agent at which the planner still prefers more agents.
 pub const ENGINE_MIN_CTX: u32 = 16_384;
-/// How long "Ollama keeps this model" stands before the GPU is read again.
+/// How long "this model runs split" stands before the GPU is read again.
 const RECHECK: Duration = Duration::from_secs(30);
 /// How much more GPU memory than when a load turned out not to fit must be free before the
 /// engine tries that model again.
 const REGAIN_MIB: f64 = 1024.0;
 /// Micro-batch the engine's server runs with (the planner's compute buffers depend on it).
 const ENGINE_UBATCH: u32 = 512;
+/// Draft positions the engine's speculative decoding runs with, as Ollama's launch.
+const ENGINE_SPEC_N: u32 = 3;
 
 /// Whether the engine takes a model whole on the GPU, as last worked out.
 #[derive(Debug, Clone)]
@@ -42,20 +45,16 @@ pub(crate) enum Verdict {
     /// It fits: the policy the server starts with (kept so a model never changes shape, and
     /// restarts, between two requests) and the GPU memory the planner expects it to take.
     Fits { saved: Option<ContextPolicy>, policy: ContextPolicy, need_mib: f64 },
-    /// Ollama keeps it. `free_mib` is what was free for Marlowe then; `sticky` is a load that
-    /// turned out not to fit, tried again only once memory has been given back.
-    Stays { at: Instant, why: String, free_mib: Option<f64>, sticky: bool, announced: bool },
-}
-
-/// The engine's own switch: `MARLOWE_LLAMA_ENGINE=0` keeps every model on Ollama.
-fn disabled_by_env() -> bool {
-    std::env::var("MARLOWE_LLAMA_ENGINE").is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "off" | "false" | "no"))
+    /// It runs split between the GPU and the CPU. `free_mib` is what was free for Marlowe then;
+    /// `sticky` is a load that turned out not to fit, tried whole again only once memory has been
+    /// given back.
+    Split { at: Instant, why: String, free_mib: Option<f64>, sticky: bool, announced: bool },
 }
 
 /// The slots and window the planner starts a model with: the most agents (up to
 /// [`ENGINE_SLOTS`]) that each still get [`ENGINE_MIN_CTX`] (or the model's whole window, when
 /// that is smaller) on the GPU beside the weights, with the largest window that many fit. None
-/// when not even one agent gets that much: Ollama splits such a model and gives it a real window.
+/// when not even one agent gets that much: such a model runs split, with a real window.
 pub fn engine_choice(plan: &PlanModel, kv: KvType) -> Option<(u16, u32)> {
     // Measured live (a 9b model, six slots): the planner's own estimate came out 1.1 GiB under
     // what the server took, and past about 15.5 GiB in all the driver starts spilling to system
@@ -102,13 +101,13 @@ impl EngineAdvisor for Advisor {
 }
 
 impl Brains {
-    /// Lets the Ollama provider ask which models the engine serves. Called once the library is
-    /// shared; until then everything stays on Ollama.
+    /// Lets the local provider ask how the engine serves each model. Called once the library is
+    /// shared; until then the engine's defaults apply.
     pub fn install_engine_advisor(self: &Arc<Self>) {
         self.factory().allocations().set_engine_advisor(Arc::new(Advisor(Arc::downgrade(self))));
     }
 
-    /// Why Ollama must keep serving `model` (or `Ok`): the manifest, read once.
+    /// Why llama.cpp can't run `model` (or `Ok`): its files, read once.
     fn engine_eligible(&self, model: &ModelRef) -> Result<(), String> {
         if let Some(r) = self.ctx.eligibility.lock().unwrap_or_else(|e| e.into_inner()).get(&model.model_id) {
             return r.clone();
@@ -121,27 +120,17 @@ impl Brains {
         r
     }
 
-    fn engine_off(&self, model: &ModelRef) -> bool {
-        if let Some(off) = self.ctx.engine_off.lock().unwrap_or_else(|e| e.into_inner()).get(model) {
-            return *off;
-        }
-        let off = self.with_library(|l| l.engine_off(model)).unwrap_or(false);
-        self.ctx.engine_off.lock().unwrap_or_else(|e| e.into_inner()).insert(model.clone(), off);
-        off
-    }
-
-    /// Whether Marlowe's llama-server serves `model`: a local Ollama model the engine may run, the
-    /// user has not turned it off for, and that fits whole on the GPU.
+    /// Whether `model` runs whole on the GPU: a local model llama.cpp can run that fits there.
     pub fn engine_wanted(&self, model: &ModelRef) -> bool {
         self.engine_allowed(model) && matches!(self.engine_fit(model), Verdict::Fits { .. })
     }
 
-    /// Everything but the fit: the build, the switch, the user's choice and the manifest.
+    /// Everything but the fit: a local model whose files llama.cpp can run.
     fn engine_allowed(&self, model: &ModelRef) -> bool {
-        self.is_local_ollama(model) && !disabled_by_env() && !self.engine_off(model) && self.engine_eligible(model).is_ok()
+        self.is_local_ollama(model) && self.engine_eligible(model).is_ok()
     }
 
-    /// How long a verdict that Ollama keeps a model stands before the GPU is read again.
+    /// How long a verdict that a model runs split stands before the GPU is read again.
     pub fn set_engine_recheck(&self, every: Duration) {
         *self.ctx.engine_recheck.lock().unwrap_or_else(|e| e.into_inner()) = Some(every);
     }
@@ -156,8 +145,9 @@ impl Brains {
         let calib = self.calibration_for(a.files.blob.as_deref(), ENGINE_UBATCH, &gpu_name);
         Some(build(&PlanInputs {
             main: &a.main,
-            draft: None,
-            spec_n: 0,
+            // The draft the engine runs beside it (Ollama's `--spec-draft-n-max 3`).
+            draft: a.draft.as_ref(),
+            spec_n: if a.draft.is_some() { ENGINE_SPEC_N } else { 0 },
             draft_kv: marlowe_hw::CacheType::F16,
             ubatch: ENGINE_UBATCH,
             mmproj_b: a.files.mmproj_bytes,
@@ -167,27 +157,27 @@ impl Brains {
     }
 
     /// Whether the engine can take `model` whole on the GPU now. A fit is kept as long as the
-    /// settings stand; "Ollama keeps it" is looked at again after a while, because what is free
-    /// changes. Never "fits" for want of a GPU reading or of an estimate.
+    /// settings stand; "split" is looked at again after a while, because what is free changes.
+    /// Never "fits" for want of a GPU reading or of an estimate.
     pub(crate) fn engine_fit(&self, model: &ModelRef) -> Verdict {
         let saved = self.with_library(|l| l.policy(model)).ok().flatten();
         let held = self.ctx.engine_fit.lock().unwrap_or_else(|e| e.into_inner()).get(model).cloned();
         let recheck = self.ctx.engine_recheck.lock().unwrap_or_else(|e| e.into_inner()).unwrap_or(RECHECK);
         match &held {
             Some(Verdict::Fits { saved: s, .. }) if *s == saved => return held.expect("matched"),
-            Some(Verdict::Stays { at, .. }) if at.elapsed() < recheck => return held.expect("matched"),
+            Some(Verdict::Split { at, .. }) if at.elapsed() < recheck => return held.expect("matched"),
             _ => {}
         }
         let mut fresh = self.engine_verdict(model, saved);
-        if let (Some(Verdict::Stays { why, free_mib: Some(then), sticky: true, announced, .. }), Verdict::Fits { .. }) = (&held, &fresh) {
-            // It did not fit after all, last time: not again until memory has been given back.
+        if let (Some(Verdict::Split { why, free_mib: Some(then), sticky: true, announced, .. }), Verdict::Fits { .. }) = (&held, &fresh) {
+            // It did not fit after all, last time: not whole again until memory has been given back.
             let now = self.engine_plan(model).and_then(|p| p.gpu).map(|g| g.free_for_marlowe_mib());
             if now.is_none_or(|n| n < *then + REGAIN_MIB) {
-                fresh = Verdict::Stays { at: Instant::now(), why: why.clone(), free_mib: Some(*then), sticky: true, announced: *announced };
+                fresh = Verdict::Split { at: Instant::now(), why: why.clone(), free_mib: Some(*then), sticky: true, announced: *announced };
             }
         }
         // A model already announced is not announced again every time the GPU is read.
-        if let (Some(Verdict::Stays { announced: true, .. }), Verdict::Stays { announced, .. }) = (&held, &mut fresh) {
+        if let (Some(Verdict::Split { announced: true, .. }), Verdict::Split { announced, .. }) = (&held, &mut fresh) {
             *announced = true;
         }
         self.ctx.engine_fit.lock().unwrap_or_else(|e| e.into_inner()).insert(model.clone(), fresh.clone());
@@ -195,7 +185,7 @@ impl Brains {
     }
 
     fn engine_verdict(&self, model: &ModelRef, saved: Option<ContextPolicy>) -> Verdict {
-        let stays = |why: String, free_mib: Option<f64>| Verdict::Stays { at: Instant::now(), why, free_mib, sticky: false, announced: false };
+        let stays = |why: String, free_mib: Option<f64>| Verdict::Split { at: Instant::now(), why, free_mib, sticky: false, announced: false };
         if !self.engine_allowed(model) {
             return stays(String::new(), None);
         }
@@ -232,15 +222,15 @@ impl Brains {
         Verdict::Fits { saved, policy, need_mib: need }
     }
 
-    /// Says once, in one line, that Ollama runs a model the engine could have run: the user would
-    /// otherwise see the model run partly on the CPU and not know why.
-    fn announce_stay(&self, model: &ModelRef) {
+    /// Says once, in one line, that a model runs split: the user would otherwise see it run partly
+    /// on the CPU and not know why.
+    fn announce_split(&self, model: &ModelRef) {
         let line = {
             let mut g = self.ctx.engine_fit.lock().unwrap_or_else(|e| e.into_inner());
             match g.get_mut(model) {
-                Some(Verdict::Stays { why, announced, .. }) if !*announced && !why.is_empty() => {
+                Some(Verdict::Split { why, announced, .. }) if !*announced && !why.is_empty() => {
                     *announced = true;
-                    Some(format!("{} runs on Ollama: {why}", model.model_id))
+                    Some(format!("{} runs split between the GPU and the CPU: {why}", model.model_id))
                 }
                 _ => None,
             }
@@ -250,20 +240,22 @@ impl Brains {
         }
     }
 
-    /// The engine started `model` and could not keep it: it did not fit after all, or the driver
-    /// spilled it into system memory. Ollama keeps it until memory has been given back.
+    /// The engine could not start `model` whole: it did not fit after all, or the driver spilled it
+    /// into system memory. It runs split until memory has been given back.
     pub(crate) fn engine_declined(&self, model: &ModelRef, why: &str) {
         let free = self.engine_plan(model).and_then(|p| p.gpu).map(|g| g.free_for_marlowe_mib());
-        let v = Verdict::Stays { at: Instant::now(), why: why.to_string(), free_mib: free, sticky: true, announced: true };
+        let v = Verdict::Split { at: Instant::now(), why: why.to_string(), free_mib: free, sticky: true, announced: true };
         self.ctx.engine_fit.lock().unwrap_or_else(|e| e.into_inner()).insert(model.clone(), v);
         self.ctx.seen.lock().unwrap_or_else(|e| e.into_inner()).remove(model);
     }
 
-    /// Turns the llama.cpp engine on or off for `model` (saved). A model that is eligible runs on
-    /// the engine by default.
+    /// The old per-model switch back to Ollama. Every local model runs on the engine now, so only
+    /// "on" is accepted (it clears a switch saved before).
     pub fn set_model_engine(&self, model: &ModelRef, on: bool) -> Result<(), BrainsError> {
-        self.with_library(|l| l.set_engine_off(model, !on))?;
-        self.ctx.engine_off.lock().unwrap_or_else(|e| e.into_inner()).insert(model.clone(), !on);
+        if !on {
+            return Err(BrainsError::Invalid("every local model runs on the llama.cpp engine; Ollama only provides the model files".into()));
+        }
+        self.with_library(|l| l.set_engine_off(model, false))?;
         self.ctx.engine_fit.lock().unwrap_or_else(|e| e.into_inner()).remove(model);
         self.ctx.seen.lock().unwrap_or_else(|e| e.into_inner()).remove(model);
         Ok(())
@@ -277,57 +269,64 @@ impl Brains {
         self.engine_eligible(model)
     }
 
-    /// How the engine serves `model`, or `None` when Ollama does.
+    /// How the engine serves `model`: whole on the GPU with its policy, or split. `None` for a
+    /// hosted model and one llama.cpp can't run (its request then says why).
     pub fn engine_shape(&self, model: &ModelRef) -> Option<EngineShape> {
-        if !self.engine_wanted(model) {
-            self.announce_stay(model);
+        if !self.engine_allowed(model) {
             return None;
         }
+        let split = !self.engine_wanted(model);
+        if split {
+            self.announce_split(model);
+        }
         let p = self.context().policy(model).ok()?;
-        Some(EngineShape { slots: p.parallel.max(1), ctx_per_slot: p.max_ctx, kv: p.kv_type.ollama_name().to_string() })
+        Some(EngineShape { slots: p.parallel.max(1), ctx_per_slot: p.max_ctx, kv: p.kv_type.ollama_name().to_string(), split })
     }
 
     /// The planner's choice for an engine model with no saved policy, held so a model never
-    /// changes shape (and restarts) between two requests. `None` when Ollama keeps the model,
-    /// and when a policy is saved.
+    /// changes shape (and restarts) between two requests: the slots that fit whole, or for a split
+    /// model one slot of its default window. `None` when a policy is saved or llama.cpp can't run
+    /// the model.
     pub(crate) fn engine_auto_policy(&self, model: &ModelRef) -> Option<ContextPolicy> {
         if !self.engine_allowed(model) {
             return None;
         }
         match self.engine_fit(model) {
             Verdict::Fits { saved: None, policy, .. } => Some(policy),
+            Verdict::Split { .. } if self.with_library(|l| l.policy(model)).ok().flatten().is_none() => {
+                let kv = match self.analyzed(model) {
+                    Ok(a) if a.main.quantizable() => KvType::Q8_0,
+                    _ => KvType::F16,
+                };
+                let max_ctx = self.default_window(model).ok()?.min(self.ctx_limit(model).ok()?);
+                Some(ContextPolicy { max_ctx, kv_type: kv, parallel: 1, source: PolicySource::Auto, updated_ms: 0 })
+            }
             _ => None,
         }
     }
 
-    /// Says on `e` which engine serves `model`: the llama.cpp engine takes over the Ollama-only
-    /// facts (a qwen35 model served one request at a time, the server environment), and a model
-    /// that stays on Ollama carries the reason.
+    /// Says on `e` how the engine serves `model`: every local model runs on llama.cpp, so the
+    /// Ollama-only facts (a qwen35 model served one request at a time, Ollama's environment) do
+    /// not apply; a split model, and one llama.cpp can't run, carry the reason.
     pub(crate) fn mark_engine(&self, model: &ModelRef, e: &mut EngineSettings) {
-        if self.engine_wanted(model) {
-            e.engine = Engine::LlamaCpp;
-            e.serial_arch = None;
-            e.saved_kv_type = None;
-            e.saved_parallel = None;
-            e.saved_flash_attn = None;
+        if !self.is_local_ollama(model) {
             return;
         }
-        if !self.is_local_ollama(model) || self.factory().hardware().is_none() {
+        e.engine = Engine::LlamaCpp;
+        e.serial_arch = None;
+        e.saved_kv_type = None;
+        e.saved_parallel = None;
+        e.saved_flash_attn = None;
+        e.engine_user_off = false;
+        if self.factory().hardware().is_none() {
             return;
         }
-        e.engine_user_off = self.engine_off(model) && self.engine_eligible(model).is_ok() && !disabled_by_env();
-        e.engine_note = if disabled_by_env() {
-            Some("the llama.cpp engine is switched off (MARLOWE_LLAMA_ENGINE=0)".into())
-        } else if self.engine_off(model) {
-            Some("the llama.cpp engine is turned off for this model".into())
-        } else {
-            match self.engine_eligible(model) {
-                Err(why) => Some(format!("Ollama keeps this model: {why}")),
-                Ok(()) => match self.engine_fit(model) {
-                    Verdict::Stays { why, .. } if !why.is_empty() => Some(format!("Ollama keeps this model: {why}")),
-                    _ => None,
-                },
-            }
+        e.engine_note = match self.engine_eligible(model) {
+            Err(why) => Some(format!("llama.cpp can't run this model: {why}")),
+            Ok(()) => match self.engine_fit(model) {
+                Verdict::Split { why, .. } if !why.is_empty() => Some(format!("llama.cpp runs it split between the GPU and the CPU: {why}")),
+                _ => None,
+            },
         };
     }
 }

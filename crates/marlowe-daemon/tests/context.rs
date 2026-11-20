@@ -106,7 +106,7 @@ struct Recorder(Mutex<Vec<ServerChange>>);
 impl ServerControl for Recorder {
     fn apply(&self, c: &ServerChange) -> Result<String, String> {
         self.0.lock().unwrap().push(*c);
-        Ok("set OLLAMA_KV_CACHE_TYPE=q4_0 and restarted Ollama".into())
+        Ok("llama.cpp restarts on the next request with KV cache q4_0".into())
     }
 }
 
@@ -210,22 +210,24 @@ fn usage_policies_and_the_approval_gated_restart() {
         Event::ContextPolicySaved { pending_restart, changes, .. } => Some((*pending_restart, changes.len())),
         _ => None,
     });
-    assert_eq!(pending, Some((true, 3)), "{saved:#?}");
+    // The KV type is the llama.cpp server's launch: saving it needs no restart of anything.
+    assert_eq!(pending, Some((false, 3)), "{saved:#?}");
 
     // The next turn's agent compacts against the policy's window.
     c.send(&Request::Ask { session: None, text: "again".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });
     let evs = c.until(|e| matches!(e, Event::TurnFinished { .. }));
     assert!(evs.iter().any(|e| matches!(e, Event::ContextUsage { window: 4_096, .. })), "{evs:#?}");
 
-    // A restart asks first. Denied: nothing runs, and the manual steps come back.
+    // An engine restart asks first. Denied: nothing runs, and the manual steps come back.
     c.send(&Request::ApplyOllamaServer { kv_type: Some(KvType::Q4_0), parallel: None, flash_attn: None });
     let asked = c.until(|e| matches!(e, Event::ApprovalRequested { .. }));
-    let Some(Event::ApprovalRequested { approval, tool, detail, .. }) = asked.last() else { unreachable!() };
+    let Some(Event::ApprovalRequested { approval, tool, summary, detail, .. }) = asked.last() else { unreachable!() };
     assert_eq!(tool, SERVER_RESTART_TOOL);
-    assert!(detail.contains("every Ollama model") && detail.contains("setx OLLAMA_KV_CACHE_TYPE q4_0"), "{detail}");
+    assert_eq!(summary, "Restart the llama.cpp engine with kv_type q4_0, flash_attn on");
+    assert!(detail.contains("stops the llama.cpp server") && detail.contains("Ollama is not touched") && !detail.contains("setx"), "{detail}");
     c.send(&Request::Approve { approval: *approval, decision: ApprovalDecision::Deny, reason: None });
     let done = c.until(|e| matches!(e, Event::ServerApplied { .. }));
-    assert!(matches!(done.last(), Some(Event::ServerApplied { ok: false, message }) if message.contains("setx")));
+    assert!(matches!(done.last(), Some(Event::ServerApplied { ok: false, message }) if message.contains("context planner")));
     assert!(server.0.lock().unwrap().is_empty(), "denied means not run");
 
     // Allowed: the control is called with exactly that change.

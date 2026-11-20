@@ -208,6 +208,27 @@ lead = \"openrouter/some/model\"
 }
 
 #[test]
+fn engine_settings_come_from_the_users_own_file_and_are_writable() {
+    let t = Tmp::new("engine");
+    let home = t.0.join("home");
+    assert_eq!(Settings::load(&home, None, None).engine(), crate::EngineFile::default(), "unset: the engine's defaults");
+    write(&home.join("settings.toml"), "[engine]
+flash_attn = false
+keep_alive = \"10m\"
+gpu_fit = \"split\"
+");
+    let ws = t.0.join("ws");
+    write(&ws.join(".marlowe/settings.toml"), "[engine]
+mmap = true
+gpu_fit = \"whole\"
+");
+    let e = Settings::load(&home, Some(&ws), None).engine();
+    assert_eq!((e.flash_attn, e.keep_alive.as_deref(), e.gpu_fit.as_deref(), e.mmap), (Some(false), Some("10m"), Some("split"), None), "a repository does not configure the engine");
+    edit::set_key(&home.join("settings.toml"), "engine.flash_attn", &json!(true)).unwrap();
+    assert_eq!(Settings::load(&home, None, None).engine().flash_attn, Some(true));
+}
+
+#[test]
 fn retrust_after_a_user_edit_keeps_a_trusted_project_trusted() {
     let t = Tmp::new("retrust");
     let home = t.0.join("home");

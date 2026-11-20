@@ -10,18 +10,20 @@ use std::sync::{Arc, RwLock};
 
 /// How Marlowe's own llama-server serves one model: `slots` parallel conversations of
 /// `ctx_per_slot` tokens each (`-c` is their product), with the KV cache at type `kv`
-/// (`f16`, `q8_0` or `q4_0`).
+/// (`f16`, `q8_0` or `q4_0`). `split`: the model does not fit whole on the GPU, so llama.cpp
+/// places what fits there and keeps the rest on the CPU, as Ollama does for such a model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineShape {
     pub slots: u16,
     pub ctx_per_slot: u32,
     pub kv: String,
+    pub split: bool,
 }
 
-/// Decides, per model, whether Marlowe's own llama-server serves it (and how) or Ollama does.
-/// The library implements it over the planner; the Ollama provider asks it on every request.
+/// Decides, per model, how Marlowe's own llama-server serves it. Every local model runs there;
+/// the library implements this over the planner and the local provider asks it on every request.
 pub trait EngineAdvisor: Send + Sync {
-    /// The shape for `model_id`, or `None` when Ollama serves the model.
+    /// The shape for `model_id`, or `None` when the planner has no opinion (the engine's defaults).
     fn shape(&self, model_id: &str) -> Option<EngineShape>;
 
     /// GPU memory the planner required to be free for the shape of `model_id` (weights, every
@@ -31,8 +33,8 @@ pub trait EngineAdvisor: Send + Sync {
         None
     }
 
-    /// The engine did not run `model_id` after all, and why (it did not fit, or the driver spilled
-    /// it into system memory). The advisor keeps the model on Ollama from here on.
+    /// The engine could not run `model_id` whole on the GPU after all, and why (it did not fit, or
+    /// the driver spilled it into system memory). The advisor plans it split from here on.
     fn declined(&self, _model_id: &str, _why: &str) {}
 }
 
@@ -86,8 +88,8 @@ impl ContextAllocations {
         *self.hooks.advisor.write().unwrap_or_else(|e| e.into_inner()) = Some(advisor);
     }
 
-    /// How Marlowe's own llama-server should serve `model_id`; `None` leaves it to Ollama (also
-    /// while no advisor is installed).
+    /// How Marlowe's own llama-server should serve `model_id`; `None` leaves the shape to the
+    /// engine's defaults (also while no advisor is installed).
     pub fn engine_shape(&self, model_id: &str) -> Option<EngineShape> {
         let advisor = self.hooks.advisor.read().unwrap_or_else(|e| e.into_inner()).clone()?;
         advisor.shape(model_id)
@@ -122,11 +124,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_advisor_is_shared_by_every_clone_and_absent_means_ollama() {
+    fn the_advisor_is_shared_by_every_clone_and_absent_means_no_opinion() {
         struct Six;
         impl EngineAdvisor for Six {
             fn shape(&self, id: &str) -> Option<EngineShape> {
-                (id == "m").then(|| EngineShape { slots: 6, ctx_per_slot: 49_152, kv: "q8_0".into() })
+                (id == "m").then(|| EngineShape { slots: 6, ctx_per_slot: 49_152, kv: "q8_0".into(), split: false })
             }
         }
         let a = ContextAllocations::new();

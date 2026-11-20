@@ -256,6 +256,18 @@ mod tests {
     }
 
     #[test]
+    fn types_stock_ggml_does_not_know_are_found_by_id() {
+        // MS types (44-48, ms-llama.cpp) beside known ones, and NVFP4 (40), which upstream loads.
+        let bytes = write_header(
+            &[("general.architecture", json!("qwen35"))],
+            &[("a", 0, vec![4]), ("b", 45, vec![256]), ("c", 47, vec![256]), ("d", 45, vec![256]), ("e", 40, vec![64])],
+        );
+        assert_eq!(parse_header(&bytes[..]).unwrap().foreign_types(), vec![45, 47]);
+        let stock = write_header(&[("general.architecture", json!("llama"))], &[("a", 8, vec![32]), ("b", 39, vec![32])]);
+        assert!(parse_header(&stock[..]).unwrap().foreign_types().is_empty());
+    }
+
+    #[test]
     fn rejects_what_is_not_a_gguf_and_truncation() {
         assert!(matches!(parse_header(&b"GGML\x03\0\0\0"[..]), Err(GgufError::Magic(_))));
         let mut bytes = write_header(&[("general.architecture", json!("llama"))], &[("a", 0, vec![4])]);

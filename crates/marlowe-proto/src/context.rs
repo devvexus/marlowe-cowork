@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 pub use marlowe_hw::plan::{ctx_label, Fit, GpuBudget, PlanModel, MAX_AGENTS};
 pub use marlowe_hw::{KvType, LayerRole};
 
-/// The approval tool name for restarting the Ollama server with new settings. The client offers
-/// Allow and Deny only for it (never "for this session").
+/// The approval tool name for restarting the local engine with new settings (the name is the
+/// Ollama era's, kept for the wire). The client offers Allow and Deny only for it.
 pub const SERVER_RESTART_TOOL: &str = "ollama_server_restart";
 
 /// Who chose a policy.
@@ -45,13 +45,14 @@ pub const MIN_CTX: u32 = 2048;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Engine {
-    /// Ollama's bundled llama-server: KV type and parallel are server-wide settings.
+    /// Ollama's own runner, where KV type and parallel were server-wide settings. No local model
+    /// runs there any more (every one runs on [`Engine::LlamaCpp`]); kept for the wire.
     #[default]
     Ollama,
     /// A hosted model: the planner offers the context choice only.
     Cloud,
-    /// Marlowe's own llama-server (Ollama's bundled binary): the policy's window and agent count
-    /// are its launch, so changing them needs no Ollama restart.
+    /// Marlowe's own llama-server (the selected backend's): the policy's window and agent count
+    /// are its launch, so changing them restarts only that server.
     LlamaCpp,
 }
 
@@ -170,9 +171,10 @@ impl EngineSettings {
         if serving >= planned {
             return None;
         }
-        Some(match &self.serial_arch {
-            Some(arch) => format!("Ollama runs {arch} models one request at a time, not the {planned} planned"),
-            None => format!("planned {planned} parallel, Ollama is serving {serving} — restart Ollama to apply"),
+        Some(match (&self.serial_arch, self.engine) {
+            (Some(arch), _) => format!("Ollama runs {arch} models one request at a time, not the {planned} planned"),
+            (None, Engine::LlamaCpp) => format!("planned {planned} parallel, llama.cpp is serving {serving}: it restarts with {planned} on the next request"),
+            (None, _) => format!("planned {planned} parallel, Ollama is serving {serving} — restart Ollama to apply"),
         })
     }
 

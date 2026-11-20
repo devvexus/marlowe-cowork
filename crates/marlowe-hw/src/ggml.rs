@@ -51,6 +51,15 @@ pub const TYPES: &[GgmlType] = &[
     t(39, "MXFP4", 32, 17),
 ];
 
+/// Type ids upstream ggml loads that [`TYPES`] does not size yet (`NVFP4`).
+const UPSTREAM_ONLY: &[u32] = &[40];
+
+/// Whether stock ggml (upstream llama.cpp) knows tensor type `id`. A GGUF holding any other type
+/// was written for a fork with types of its own (ms-llama.cpp's MS types) and loads only there.
+pub fn upstream_knows(id: u32) -> bool {
+    GgmlType::from_id(id).is_some() || UPSTREAM_ONLY.contains(&id)
+}
+
 impl GgmlType {
     pub fn from_id(id: u32) -> Option<GgmlType> {
         TYPES.iter().copied().find(|t| t.id == id)

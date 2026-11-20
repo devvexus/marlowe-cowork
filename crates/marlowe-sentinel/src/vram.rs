@@ -1,5 +1,5 @@
-//! The GPU budget for the context planner: NVML's device totals, the model runners' dedicated
-//! memory per process, peak memory bandwidth, and system RAM.
+//! The GPU budget for the context planner: NVML's device totals, the dedicated memory of Marlowe's
+//! own engine server per process, peak memory bandwidth, and system RAM.
 //!
 //! Under WDDM NVML reports per-process memory as "not available", so per-pid dedicated and
 //! shared memory come from the `GPU Process Memory` performance counters (PDH), the same numbers
@@ -11,7 +11,7 @@ use nvml_wrapper::enum_wrappers::device::Clock;
 
 const MIB: f64 = 1024.0 * 1024.0;
 
-/// Executable names of model runners whose memory a new load may take over.
+/// Executable names of model runners.
 const RUNNERS: &[&str] = &["llama-server", "ollama"];
 
 /// Whether a process name is a model runner.
@@ -35,6 +35,13 @@ pub fn is_ollama_runner(path: &str) -> bool {
 /// `pid_8236_luid_0x00000000_0x0000D3E1_phys_0` → 8236.
 pub fn pid_of_instance(instance: &str) -> Option<u32> {
     instance.strip_prefix("pid_")?.split('_').next()?.parse().ok()
+}
+
+/// Whether the process at `path` is Marlowe's own engine server (`marlowe_engines::is_own_server`):
+/// the engine stops it before it starts another model, so its memory is the next load's. Ollama's
+/// runners are the user's own now, and a `llama-server` run by hand is someone else's.
+pub fn is_engine_runner(path: &str) -> bool {
+    marlowe_engines::is_own_server(path)
 }
 
 /// Sums counter instances per pid.
@@ -133,7 +140,7 @@ impl SentinelGpu {
         Self { nvml: nvml_wrapper::Nvml::init().map_err(|e| e.to_string()) }
     }
 
-    /// Dedicated and shared memory of every runner process on the GPU, MiB.
+    /// Dedicated and shared memory of every engine server process on the GPU, MiB.
     pub fn runner_memory(&self) -> Vec<(u32, f64, f64)> {
         let Ok(nvml) = &self.nvml else { return Vec::new() };
         let Ok(d) = nvml.device_by_index(0) else { return Vec::new() };
@@ -143,7 +150,7 @@ impl SentinelGpu {
             .into_iter()
             .chain(d.running_graphics_processes().unwrap_or_default())
             .map(|p| p.pid)
-            .filter(|pid| crate::process::image_path(*pid).is_some_and(|p| is_ollama_runner(&p)))
+            .filter(|pid| crate::process::image_path(*pid).is_some_and(|p| is_engine_runner(&p)))
             .collect();
         pids.sort_unstable();
         pids.dedup();
@@ -211,7 +218,7 @@ mod tests {
         assert_eq!(per_pid(&items), vec![(8236, 3.0 * MIB), (99, 5.0)]);
         assert!(is_runner("llama-server.exe") && is_runner("ollama.exe"));
         assert!(!is_runner("ollama app.exe") && !is_runner("python.exe"));
-        // Only Ollama's own runners count as memory a load can take over.
+        // Ollama's runners are told apart from a llama.cpp build run by hand.
         assert!(is_ollama_runner(r"C:\Users\m\AppData\Local\Programs\Ollama\lib\ollama\llama-server.exe"));
         assert!(is_ollama_runner(r"C:\Users\m\AppData\Local\Programs\Ollama\ollama.exe"));
         assert!(!is_ollama_runner(r"C:\src\llama.cpp\build\bin\Release\llama-server.exe"));

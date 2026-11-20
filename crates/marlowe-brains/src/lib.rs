@@ -23,7 +23,7 @@ pub use brains::Brains;
 pub use credentials::{
     api_key, env_var, scrubbed_env, CredentialStore, KeyringStore, MemoryStore, SCRUBBED_ENV,
 };
-pub use detect::{detect_ollama, detect_providers, OLLAMA_ADDR};
+pub use detect::{detect_ollama, detect_providers, ollama_store, OLLAMA_ADDR};
 pub use error::BrainsError;
 pub use context::{ContextGate, SlotLease, DEFAULT_WINDOW};
 pub use factory::{Hardware, ProviderConfig, ProviderCtor, ProviderFactory};

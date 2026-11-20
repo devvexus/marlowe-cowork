@@ -1,6 +1,6 @@
 //! Context and hardware requests: the plan, the policies, saving one, and the approval-gated
-//! Ollama restart. On a worker thread: a plan reads a GGUF header, the runner log, `/api/ps` and
-//! the GPU, and a restart waits on the user.
+//! engine restart. On a worker thread: a plan reads a GGUF header, the engine's log and the GPU,
+//! and a restart waits on the user.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
@@ -71,16 +71,16 @@ fn handle(core: &Core, client: u64, req: Request) {
     }
 }
 
-/// Asks first, always: what restarts, what it unloads, what every Ollama model will use.
+/// Asks first, always: what restarts and what it unloads.
 fn apply(core: &Core, change: ServerChange) {
     if change.is_empty() {
         core.bus.publish(Event::ServerApplied { ok: true, message: "nothing to change".into() });
         return;
     }
-    let vars = change.variables();
+    let vars = change.settings();
     let summary = format!(
-        "Restart Ollama with {}",
-        vars.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(", ")
+        "Restart the llama.cpp engine with {}",
+        vars.iter().map(|(k, v)| format!("{k} {v}")).collect::<Vec<_>>().join(", ")
     );
     let engine = core.brains.resolve(&Slot::Conductor).ok().map(|(m, _)| core.brains.context_plan(&m).map(|p| p.in_effect));
     let running = match engine {
@@ -94,9 +94,9 @@ fn apply(core: &Core, change: ServerChange) {
         n => format!("That unloads {n} model{} ({})", if n == 1 { "" } else { "s" }, loaded.join(", ")),
     };
     let mut detail = vec![
-        "These are Ollama server settings: every Ollama model uses them, not only this one.".to_string(),
+        "Flash attention is the engine's own setting; the KV type and the agents are this model's policy.".to_string(),
         format!(
-            "Marlowe sets them in your user environment, quits the Ollama app and starts it again. {unloads}, stops every request in flight ({running} on the conductor's model now) and ends any `ollama` command running in a terminal.",
+            "Marlowe saves them and stops the llama.cpp server (each conversation's cache is written first); the next request starts it with them. {unloads} and stops every request in flight ({running} on the conductor's model now). Ollama is not touched.",
         ),
         String::new(),
         "To do it yourself instead:".to_string(),

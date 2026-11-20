@@ -1,4 +1,5 @@
-//! The Ollama provider with Marlowe's llama-server behind it, against fakes of both servers.
+//! The local provider with Marlowe's llama-server behind it, against a fake server and a store on
+//! disk. Ollama's server is never part of it.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -32,15 +33,17 @@ impl EngineAdvisor for Advice {
         *self.1.lock().unwrap()
     }
 
-    // As the planner does: the model stays on Ollama from here on.
+    // As the planner does: the model is planned split from here on.
     fn declined(&self, _: &str, why: &str) {
         self.2.lock().unwrap().push(why.to_string());
-        *self.0.lock().unwrap() = None;
+        if let Some(s) = self.0.lock().unwrap().as_mut() {
+            s.split = true;
+        }
     }
 }
 
 fn shape(slots: u16, ctx: u32) -> EngineShape {
-    EngineShape { slots, ctx_per_slot: ctx, kv: "q8_0".into() }
+    EngineShape { slots, ctx_per_slot: ctx, kv: "q8_0".into(), split: false }
 }
 
 struct Rig {
@@ -51,12 +54,15 @@ struct Rig {
 }
 
 fn rig(initial: Option<EngineShape>) -> Rig {
-    let fx = Fixture::new(MODEL);
+    rig_on(Fixture::new(MODEL), initial)
+}
+
+fn rig_on(fx: Fixture, initial: Option<EngineShape>) -> Rig {
     let alloc = ContextAllocations::new();
     let advice = Arc::new(Advice::new(initial));
     alloc.set_engine_advisor(advice.clone());
     let engine = fx.engine();
-    let provider = OllamaProvider::new(fx.ollama.endpoint()).with_allocations(alloc).with_llama_engine(engine.clone());
+    let provider = OllamaProvider::new(fx.dir.path().join("store")).with_allocations(alloc).with_llama_engine(engine.clone());
     Rig { fx, provider, advice, engine }
 }
 
@@ -71,7 +77,7 @@ fn answer(text: &str, timings: Value) -> Vec<Value> {
 }
 
 #[test]
-fn a_model_the_planner_gave_the_engine_is_served_by_llama_server_not_ollama() {
+fn a_model_is_served_by_llama_server_with_its_modelfile_parameters() {
     let r = rig(Some(shape(3, 16_384)));
     r.fx.spawner.answer_chat(|_| {
         Reply::sse(&[
@@ -83,7 +89,6 @@ fn a_model_the_planner_gave_the_engine_is_served_by_llama_server_not_ollama() {
     let mut events = Vec::new();
     let c = r.provider.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |e| events.push(e)).unwrap();
     assert_eq!(c.text, "hello from llama");
-    assert_eq!(r.fx.ollama.chats(), 0, "Ollama never saw the request");
     assert_eq!((c.usage.input, c.usage.cached_input, c.usage.prompt_eval), (40, 10, None));
     assert_eq!((c.usage.prefill_ms, c.usage.decode_ms), (Some(25), Some(20)));
     assert!(events.iter().any(|e| matches!(e, StreamEvent::ReadProgress { total: 40, cached: 10, processed: 40, ms: 5 })));
@@ -96,7 +101,58 @@ fn a_model_the_planner_gave_the_engine_is_served_by_llama_server_not_ollama() {
     let plan = r.fx.spawner.plans.lock().unwrap()[0].clone();
     let at = |f: &str| plan.args.iter().position(|a| a == f).map(|i| plan.args[i + 1].clone());
     assert_eq!((at("-np").as_deref(), at("-c").as_deref()), (Some("3"), Some("49152")));
-    assert_eq!(sent["top_k"], 20);
+    assert_eq!((sent["top_k"].as_i64(), sent["temperature"].as_f64(), sent["top_p"].as_f64()), (Some(20), Some(1.0), Some(0.95)));
+}
+
+#[test]
+fn the_modelfile_system_prompt_stands_in_only_when_the_request_has_none() {
+    let fx = Fixture::new(MODEL);
+    crate::llama::eligible::tests::store(
+        &fx.dir.path().join("store"),
+        "sys:1",
+        json!({"model_format": "gguf"}),
+        &[(crate::ollama_store::MODEL_MEDIA_TYPE, &super::testkit::fixture_gguf()[..]), ("application/vnd.ollama.image.system", &b"You are Sys."[..])],
+    );
+    let r = rig_on(fx, Some(shape(2, 16_384)));
+    let mut bare = ChatRequest::new("sys:1", vec![Message::user("hi")]);
+    bare.lane = Lane::Conductor;
+    r.provider.stream(&bare, &CancelToken::new(), &mut |_| {}).unwrap();
+    let mut own = bare.clone();
+    own.system = vec![marlowe_model::SystemBlock { text: "Marlowe's own".into(), cache: false }];
+    r.provider.stream(&own, &CancelToken::new(), &mut |_| {}).unwrap();
+    let sent = r.fx.spawner.seen.chats.lock().unwrap().clone();
+    assert_eq!((sent[0]["messages"][0]["role"].as_str(), sent[0]["messages"][0]["content"].as_str()), (Some("system"), Some("You are Sys.")));
+    let systems: Vec<&Value> = sent[1]["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "system").collect();
+    assert_eq!(systems.len(), 1);
+    assert_eq!(systems[0]["content"], "Marlowe's own");
+}
+
+#[test]
+fn a_model_llama_cpp_cannot_run_is_an_error_naming_why() {
+    let fx = Fixture::new(MODEL);
+    let bare = crate::llama::eligible::tests::gguf(None);
+    crate::llama::eligible::tests::store(
+        &fx.dir.path().join("store"),
+        "go:1",
+        json!({"model_format": "gguf"}),
+        &[(crate::ollama_store::MODEL_MEDIA_TYPE, &bare[..]), ("application/vnd.ollama.image.template", &b"[INST] {{ .Prompt }} [/INST]"[..])],
+    );
+    let r = rig_on(fx, None);
+    let e = r.provider.stream(&ChatRequest::new("go:1", vec![Message::user("hi")]), &CancelToken::new(), &mut |_| {}).unwrap_err();
+    assert!(e.detail.starts_with("go:1 can't run: its only chat template is an Ollama Go template"), "{}", e.detail);
+    assert_eq!(r.fx.spawner.starts(), 0);
+    // The catalog still lists it, so choosing it says why.
+    let ids: Vec<String> = r.provider.list_models().unwrap().into_iter().map(|m| m.id).collect();
+    assert_eq!(ids, vec![MODEL.to_string(), "go:1".to_string()]);
+}
+
+#[test]
+fn the_catalog_is_read_from_the_store_on_disk_with_each_models_capabilities() {
+    let r = rig_on(Fixture::with_layers(MODEL, true, true), None);
+    let models = r.provider.list_models().unwrap();
+    assert_eq!(models.len(), 1);
+    let m = &models[0];
+    assert!(m.supports_tools && m.supports_vision && m.supports_reasoning && m.local, "{m:?}");
 }
 
 #[test]
@@ -161,23 +217,13 @@ fn six_conversations_run_at_once_each_on_its_own_slot_and_the_conductor_keeps_sl
 }
 
 #[test]
-fn a_model_the_planner_did_not_assign_stays_on_ollama() {
+fn a_model_the_planner_has_no_shape_for_still_runs_on_the_engine_with_one_slot() {
     let r = rig(None);
     let c = r.provider.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |_| {}).unwrap();
-    assert_eq!(c.text, "from ollama");
-    assert_eq!(r.fx.ollama.chats(), 1);
-    assert_eq!(r.fx.spawner.starts(), 0, "no llama-server was started");
-}
-
-#[test]
-fn turning_the_engine_off_stops_the_server_before_ollama_loads_the_model() {
-    let r = rig(Some(shape(2, 16_384)));
-    r.provider.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |_| {}).unwrap();
-    assert_eq!(r.fx.spawner.killed(), 0);
-    *r.advice.0.lock().unwrap() = None;
-    let c = r.provider.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |_| {}).unwrap();
-    assert_eq!(c.text, "from ollama");
-    assert_eq!(r.fx.spawner.killed(), 1, "the model is never in memory twice");
+    assert_eq!(c.text, "ok");
+    let plan = r.fx.spawner.plans.lock().unwrap()[0].clone();
+    let at = |f: &str| plan.args.iter().position(|a| a == f).map(|i| plan.args[i + 1].clone());
+    assert_eq!((at("-np").as_deref(), at("-c").as_deref()), (Some("1"), Some("32768")));
 }
 
 #[test]
@@ -444,7 +490,7 @@ fn a_models_template_is_asked_once_per_file_even_across_engine_restarts() {
         let engine = LlamaEngine::new(cfg.clone(), r.fx.spawner.clone());
         let alloc = ContextAllocations::new();
         alloc.set_engine_advisor(r.advice.clone());
-        let p = OllamaProvider::new(r.fx.ollama.endpoint()).with_allocations(alloc).with_llama_engine(engine.clone());
+        let p = OllamaProvider::new(r.fx.dir.path().join("store")).with_allocations(alloc).with_llama_engine(engine.clone());
         p.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |_| {}).unwrap();
         assert_eq!(engine.thinking(), Some(super::Thinking::Drops));
         engine.unload(None);
@@ -469,7 +515,7 @@ fn rig_gpu(free: Option<f64>) -> (Rig, Arc<FakeVram>) {
     let alloc = ContextAllocations::new();
     alloc.set_engine_advisor(r.advice.clone());
     engine.follow(alloc.clone());
-    let provider = OllamaProvider::new(r.fx.ollama.endpoint()).with_allocations(alloc).with_llama_engine(engine.clone());
+    let provider = OllamaProvider::new(r.fx.dir.path().join("store")).with_allocations(alloc).with_llama_engine(engine.clone());
     (Rig { provider, engine, ..r }, vram)
 }
 
@@ -501,36 +547,40 @@ fn a_cold_server_is_a_load_the_call_is_on_its_way_before_it_and_only_once() {
 }
 
 #[test]
-fn a_model_that_does_not_fit_is_served_by_ollama_in_the_same_request() {
+fn a_model_that_does_not_fit_runs_split_in_the_same_request() {
     let (r, _vram) = rig_gpu(Some(11.9 * 1024.0));
     *r.advice.1.lock().unwrap() = Some(13.6 * 1024.0);
     let mut sent = 0;
     let c = r.provider.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |e| sent += usize::from(matches!(e, StreamEvent::Sent))).unwrap();
-    assert_eq!(c.text, "from ollama");
-    assert_eq!((r.fx.ollama.chats(), r.fx.spawner.starts()), (1, 0));
-    assert_eq!(sent, 1, "one request, one announcement, whichever engine ran it");
+    assert_eq!(c.text, "ok");
+    assert_eq!(r.fx.spawner.starts(), 1);
+    assert_eq!(sent, 1, "one request, one announcement");
     assert_eq!(r.advice.2.lock().unwrap().clone(), vec!["needs 13.6 GiB on the GPU, 11.9 GiB free".to_string()]);
-    // The planner now keeps it on Ollama: the next request does not touch the engine at all.
+    assert!(r.engine.status().unwrap().split);
+    // The planner now plans it split: the next request reuses the split server as it is.
     r.provider.stream(&request(Lane::Conductor, "again"), &CancelToken::new(), &mut |_| {}).unwrap();
-    assert_eq!((r.fx.ollama.chats(), r.fx.spawner.starts()), (2, 0));
+    assert_eq!(r.fx.spawner.starts(), 2, "the shape changed to split, so the server restarted once");
+    r.provider.stream(&request(Lane::Conductor, "more"), &CancelToken::new(), &mut |_| {}).unwrap();
+    assert_eq!(r.fx.spawner.starts(), 2);
 }
 
 #[test]
-fn a_server_the_driver_spilled_is_stopped_and_ollama_answers() {
+fn a_server_the_driver_spilled_is_restarted_split_and_answers() {
     let (r, vram) = rig_gpu(Some(20_000.0));
     *vram.process.lock().unwrap() = Some((9_000.0, 5_000.0));
     let c = r.provider.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |_| {}).unwrap();
-    assert_eq!(c.text, "from ollama");
-    assert_eq!((r.fx.spawner.starts(), r.fx.spawner.killed(), r.fx.ollama.chats()), (1, 1, 1));
-    assert!(r.engine.status().is_none());
+    assert_eq!(c.text, "ok");
+    assert_eq!((r.fx.spawner.starts(), r.fx.spawner.killed()), (2, 1));
+    assert!(r.engine.status().unwrap().split);
     assert!(r.advice.2.lock().unwrap()[0].starts_with("the driver moved"), "{:?}", r.advice.2.lock().unwrap());
 }
 
 #[test]
-fn a_server_that_fits_runs_the_request_and_ollama_never_sees_it() {
+fn a_server_that_fits_runs_whole_on_the_gpu() {
     let (r, _vram) = rig_gpu(Some(20_000.0));
     *r.advice.1.lock().unwrap() = Some(13.6 * 1024.0);
     let c = r.provider.stream(&request(Lane::Conductor, "hi"), &CancelToken::new(), &mut |_| {}).unwrap();
     assert_eq!(c.text, "ok");
-    assert_eq!((r.fx.ollama.chats(), r.fx.spawner.starts()), (0, 1));
+    assert_eq!(r.fx.spawner.starts(), 1);
+    assert!(!r.engine.status().unwrap().split);
 }

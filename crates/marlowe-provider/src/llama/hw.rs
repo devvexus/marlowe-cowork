@@ -1,40 +1,59 @@
-//! The planner's view of the machine with Marlowe's llama-server in it: Ollama's store and
-//! runners as before, plus the engine's own model, slots and log.
+//! The planner's view of the engine: the model files (from Ollama's store on disk, the draft and
+//! the projector the engine runs beside them included), what the engine runs now with its slots
+//! and its own log, and the server change the planner applies by restarting the engine.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
-use marlowe_hw::log;
-use marlowe_hw::{ModelFiles, ModelSource, RunnerObservation, SlotObservation};
+use marlowe_hw::{gguf, log, ModelFiles, ModelSource, RunnerObservation, ServerChange, ServerControl, SlotObservation};
+use serde_json::Value;
 
-use super::eligible::facts_in;
+use super::eligible::resolve;
 use super::engine::{same_model, LlamaEngine};
+use super::settings::ServerSettings;
 use crate::http::{self, LocalEndpoint};
-use crate::ollama_runtime::{parse_slots, OllamaHw};
 
 const QUICK: Duration = Duration::from_millis(1500);
 const LOG_TAIL_BYTES: u64 = 4 << 20;
 
-/// [`OllamaHw`] and the engine as one [`ModelSource`].
+/// The engine and Ollama's store as one [`ModelSource`]. Ollama's server is never asked anything.
 pub struct LlamaModels {
-    ollama: OllamaHw,
     engine: LlamaEngine,
     store: PathBuf,
 }
 
 impl LlamaModels {
-    pub fn new(ollama: OllamaHw, engine: LlamaEngine, store: PathBuf) -> Self {
-        Self { ollama, engine, store }
+    pub fn new(engine: LlamaEngine, store: PathBuf) -> Self {
+        Self { engine, store }
     }
+}
+
+/// `GET /slots` on a llama-server.
+pub fn parse_slots(v: &Value) -> Vec<SlotObservation> {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .map(|s| SlotObservation {
+            id: s.get("id").and_then(Value::as_u64).unwrap_or(0) as u32,
+            n_ctx: s.get("n_ctx").and_then(Value::as_u64).unwrap_or(0) as u32,
+            n_prompt_tokens: s.get("n_prompt_tokens").and_then(Value::as_u64).unwrap_or(0) as u32,
+            is_processing: s.get("is_processing").and_then(Value::as_bool).unwrap_or(false),
+        })
+        .collect()
 }
 
 impl ModelSource for LlamaModels {
     fn files(&self, model_id: &str) -> Result<ModelFiles, String> {
-        self.ollama.files(model_id)
+        let m = resolve(&self.store, model_id).map_err(|why| format!("{model_id} can't run: {why}"))?;
+        let main = gguf::read_header(&m.blob).map_err(|e| format!("{}: {e}", m.blob.display()))?;
+        let draft = m.draft.as_ref().map(|d| gguf::read_header(&d.path).map_err(|e| format!("draft {}: {e}", d.path.display()))).transpose()?;
+        let mmproj_bytes = m.mmproj.as_deref().and_then(|p| std::fs::metadata(p).ok()).map_or(0, |md| md.len());
+        Ok(ModelFiles { main, draft, mmproj_bytes, blob: Some(m.blob.display().to_string()), source: "GGUF header".into(), quant: None })
     }
 
     fn runtime(&self, model_id: &str, blob: Option<&str>) -> RunnerObservation {
-        let mut rt = self.ollama.runtime(model_id, blob);
+        let mut rt = RunnerObservation::default();
         let Some(st) = self.engine.status().filter(|s| same_model(&s.model, model_id)) else { return rt };
         rt.loaded = true;
         rt.ps_context = Some(st.shape.ctx_per_slot);
@@ -57,32 +76,17 @@ impl ModelSource for LlamaModels {
     }
 
     fn loaded_models(&self) -> Vec<String> {
-        self.resident().unwrap_or_default()
+        self.engine.status().map(|s| vec![s.model]).unwrap_or_default()
     }
 
+    /// The engine answers for itself: what it runs is always known.
     fn resident(&self) -> Option<Vec<String>> {
-        let engine = self.engine.status();
-        // Ollama not answering says nothing about the engine, which holds its model on its own
-        // server: with the engine serving, Ollama counts as holding nothing; with neither
-        // answering, what is loaded is unknown.
-        let mut v = match (self.ollama.resident(), &engine) {
-            (Some(v), _) => v,
-            (None, Some(_)) => Vec::new(),
-            (None, None) => return None,
-        };
-        if let Some(s) = engine {
-            if !v.iter().any(|m| same_model(m, &s.model)) {
-                v.push(s.model);
-            }
-        }
-        Some(v)
+        Some(self.loaded_models())
     }
 
     fn unload(&self, model_id: &str) -> Result<(), String> {
-        if self.engine.unload(Some(model_id)) {
-            return Ok(());
-        }
-        self.ollama.unload(model_id)
+        self.engine.unload(Some(model_id));
+        Ok(())
     }
 
     fn runs_on_own_server(&self, model_id: &str) -> bool {
@@ -90,10 +94,59 @@ impl ModelSource for LlamaModels {
     }
 
     fn engine_eligibility(&self, model_id: &str) -> Result<(), String> {
-        match facts_in(&self.store, model_id)?.why_not() {
-            None => Ok(()),
-            Some(why) => Err(why),
+        resolve(&self.store, model_id).map(|_| ())
+    }
+}
+
+/// Applies the planner's server change to the engine: flash attention is the engine's own setting
+/// (saved through `save`); the KV type and the slots are the model's policy, already saved. The
+/// server restarts with them: it saves its slot caches and stops, and the next request starts it.
+pub struct EngineControl {
+    engine: LlamaEngine,
+    save: Arc<dyn Fn(&ServerSettings) -> Result<(), String> + Send + Sync>,
+    log: Option<PathBuf>,
+}
+
+impl EngineControl {
+    pub fn new(engine: LlamaEngine, save: Arc<dyn Fn(&ServerSettings) -> Result<(), String> + Send + Sync>) -> Self {
+        Self { engine, save, log: None }
+    }
+
+    /// The engine's log, for the live meter.
+    pub fn with_log(mut self, path: PathBuf) -> Self {
+        self.log = Some(path);
+        self
+    }
+}
+
+impl ServerControl for EngineControl {
+    fn apply(&self, change: &ServerChange) -> Result<String, String> {
+        if change.is_empty() {
+            return Ok("nothing to change".into());
         }
+        let mut what: Vec<String> = Vec::new();
+        if let Some(on) = change.flash_attn {
+            let s = ServerSettings { flash_attn: on, ..self.engine.settings() };
+            (self.save)(&s)?;
+            self.engine.set_settings(s);
+            what.push(format!("flash attention {}", if on { "on" } else { "off" }));
+        }
+        if let Some(k) = change.kv_type {
+            what.push(format!("KV cache {}", k.ollama_name()));
+        }
+        if let Some(n) = change.parallel {
+            what.push(format!("{n} slot{}", if n == 1 { "" } else { "s" }));
+        }
+        let stopped = self.engine.unload(None);
+        Ok(format!(
+            "llama.cpp {} with {}",
+            if stopped { "restarts on the next request" } else { "starts on the next request" },
+            what.join(", ")
+        ))
+    }
+
+    fn log_feed(&self) -> Option<Box<dyn marlowe_hw::LogFeed>> {
+        self.log.as_deref().map(|p| Box::new(crate::server_log::EngineLogFeed::new(p)) as Box<dyn marlowe_hw::LogFeed>)
     }
 }
 
@@ -107,9 +160,11 @@ mod tests {
     const MODEL: &str = "dusk:22b";
 
     fn source(fx: &Fixture, engine: &LlamaEngine) -> LlamaModels {
-        let store = fx.dir.path().join("store");
-        let ollama = OllamaHw::with_paths(fx.ollama.endpoint(), store.clone(), None);
-        LlamaModels::new(ollama, engine.clone(), store)
+        LlamaModels::new(engine.clone(), fx.dir.path().join("store"))
+    }
+
+    fn want(slots: u16) -> Want {
+        Want { model: MODEL.into(), shape: EngineShape { slots, ctx_per_slot: 8192, kv: "q8_0".into(), split: false }, lane: Lane::Conductor, key: 1, need_mib: None }
     }
 
     #[test]
@@ -119,9 +174,8 @@ mod tests {
         let hw = source(&fx, &engine);
         let before = hw.runtime(MODEL, None);
         assert!(!before.loaded && before.slots.is_empty());
-        assert_eq!(hw.resident(), Some(vec![]));
-        let want = Want { model: MODEL.into(), shape: EngineShape { slots: 4, ctx_per_slot: 8192, kv: "q8_0".into() }, lane: Lane::Conductor, key: 1, need_mib: None };
-        let _lease = engine.acquire(&want, &CancelToken::new()).unwrap();
+        assert_eq!(hw.resident(), Some(vec![]), "nothing loaded is known, not unknown");
+        let _lease = engine.acquire(&want(4), &CancelToken::new()).unwrap();
         let rt = hw.runtime(MODEL, None);
         assert!(rt.loaded);
         assert_eq!((rt.slots.len(), rt.ps_context), (4, Some(8192)));
@@ -131,36 +185,48 @@ mod tests {
     }
 
     #[test]
-    fn the_engines_model_is_loaded_even_when_ollama_does_not_answer() {
-        let fx = Fixture::new(MODEL);
-        let engine = fx.engine();
-        let store = fx.dir.path().join("store");
-        let down = OllamaHw::with_paths(LocalEndpoint::new("127.0.0.1", 1).unwrap(), store.clone(), None);
-        let hw = LlamaModels::new(down, engine.clone(), store);
-        assert_eq!(hw.resident(), None, "neither answering: unknown");
-        let want = Want { model: MODEL.into(), shape: EngineShape { slots: 2, ctx_per_slot: 8192, kv: "q8_0".into() }, lane: Lane::Conductor, key: 1, need_mib: None };
-        let _lease = engine.acquire(&want, &CancelToken::new()).unwrap();
-        assert_eq!(hw.resident(), Some(vec![MODEL.to_string()]), "the engine serves it");
-    }
-
-    #[test]
-    fn unloading_a_model_the_engine_runs_stops_the_server_not_ollama() {
+    fn unloading_a_model_stops_the_server() {
         let fx = Fixture::new(MODEL);
         let engine = fx.engine();
         let hw = source(&fx, &engine);
-        let want = Want { model: MODEL.into(), shape: EngineShape { slots: 2, ctx_per_slot: 8192, kv: "q8_0".into() }, lane: Lane::Conductor, key: 1, need_mib: None };
-        drop(engine.acquire(&want, &CancelToken::new()).unwrap());
+        drop(engine.acquire(&want(2), &CancelToken::new()).unwrap());
         hw.unload(MODEL).unwrap();
         assert!(engine.status().is_none());
-        assert!(fx.ollama.unloaded().is_empty() || fx.ollama.unloaded() == vec![MODEL.to_string()], "only the pre-load unload");
     }
 
     #[test]
-    fn eligibility_is_the_manifests() {
-        let fx = Fixture::new(MODEL);
+    fn the_files_are_read_from_the_store_with_the_draft_and_projector_the_engine_runs() {
+        let fx = Fixture::with_layers("dawn:9b", true, true);
         let engine = fx.engine();
         let hw = source(&fx, &engine);
-        assert_eq!(hw.engine_eligibility(MODEL), Ok(()));
+        let f = hw.files("dawn:9b").unwrap();
+        assert_eq!(f.main.arch(), Some("qwen35"));
+        assert!(f.draft.is_some() && f.mmproj_bytes > 0 && f.source == "GGUF header");
+        assert_eq!(hw.engine_eligibility("dawn:9b"), Ok(()));
         assert!(hw.engine_eligibility("missing:1").is_err());
+    }
+
+    #[test]
+    fn the_planners_apply_saves_the_setting_and_restarts_the_engine() {
+        let fx = Fixture::new(MODEL);
+        let engine = fx.engine();
+        drop(engine.acquire(&want(2), &CancelToken::new()).unwrap());
+        let saved = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let s2 = saved.clone();
+        let control = EngineControl::new(engine.clone(), Arc::new(move |s: &ServerSettings| {
+            s2.lock().unwrap().push(s.flash_attn);
+            Ok(())
+        }));
+        let change = ServerChange { kv_type: Some(marlowe_hw::KvType::Q4_0), parallel: Some(4), flash_attn: Some(false) };
+        let msg = control.apply(&change).unwrap();
+        assert_eq!(msg, "llama.cpp restarts on the next request with flash attention off, KV cache q4_0, 4 slots");
+        assert!(engine.status().is_none(), "the server stopped");
+        assert_eq!(fx.spawner.killed(), 1);
+        assert_eq!((saved.lock().unwrap().clone(), engine.settings().flash_attn), (vec![false], false));
+        // The next request starts it again with the new settings.
+        drop(engine.acquire(&want(4), &CancelToken::new()).unwrap());
+        let plan = fx.spawner.plans.lock().unwrap()[1].clone();
+        assert!(plan.args.windows(2).any(|p| p == ["--flash-attn", "off"]) && plan.args.windows(2).any(|p| p == ["-np", "4"]));
+        assert_eq!(control.ensure_running(&mut |_| {}), marlowe_hw::EngineStart::NotApplicable, "nothing to start ahead of a request");
     }
 }

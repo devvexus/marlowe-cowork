@@ -4,7 +4,9 @@
 //! template of its own (`POST /v1/chat/completions`): the messages and tools as the OpenAI
 //! dialect has them, the model's `.params` over Ollama's defaults for every sampler field, and
 //! `chat_template_kwargs.enable_thinking`. llama-server applies the GGUF's own chat template and
-//! parses the tool calls, so no tool-call parser of Marlowe's is involved.
+//! parses the tool calls, so no tool-call parser of Marlowe's is involved. What the Modelfile adds
+//! is added as Ollama adds it: its `SYSTEM` when the request has no system prompt, its `MESSAGE`s
+//! before the conversation. Images go as `image_url` parts, read by the server's `--mmproj`.
 //!
 //! It is built from the body the Ollama path would send (same message rules, typed tool schemas,
 //! window check), so a model moving between the two engines sees the same conversation. History
@@ -21,9 +23,9 @@ use std::io::BufRead;
 use marlowe_model::{CancelToken, ProviderError, StreamEvent};
 use serde_json::{json, Map, Value};
 
+use super::eligible::ModelDefaults;
 use super::template::Thinking;
 use crate::ollama::{Folder, CONTEXT_OVERFLOW};
-use crate::ollama_store::Sampling;
 use crate::sse::{Frame, SseStream};
 
 /// Ollama's defaults for every sampler field a model's `.params` does not set.
@@ -44,14 +46,18 @@ impl Defaults {
 }
 
 /// llama-server's body for `planned` (the Ollama-shaped body from `plan_request`) on `slot`.
-/// `thinking` is what the model file's template needs to keep earlier thinking; `raw` asks the
-/// server for the tokens it generated, so the exact text of the reply is known.
-pub fn chat_body(planned: &Value, sampling: Option<&Sampling>, slot: u32, thinking: &Thinking, raw: bool) -> Value {
-    let s = sampling.cloned().unwrap_or_default();
+/// `defaults` is what the model's Modelfile adds; `thinking` is what the model file's template
+/// needs to keep earlier thinking; `raw` asks the server for the tokens it generated, so the exact
+/// text of the reply is known.
+pub fn chat_body(planned: &Value, defaults: Option<&ModelDefaults>, slot: u32, thinking: &Thinking, raw: bool) -> Value {
+    let s = defaults.and_then(|d| d.sampling.clone()).unwrap_or_default();
     let options = planned.get("options").cloned().unwrap_or(Value::Null);
     let opt_f = |k: &str| options.get(k).and_then(Value::as_f64);
-    let messages: Vec<Value> =
+    let mut messages: Vec<Value> =
         planned.get("messages").and_then(Value::as_array).into_iter().flatten().map(convert_message).collect();
+    if let Some(d) = defaults {
+        modelfile_messages(&mut messages, d);
+    }
     let mut body = Map::new();
     body.insert("messages".into(), Value::Array(messages));
     body.insert("stream".into(), json!(true));
@@ -143,8 +149,22 @@ pub fn set_think_budget(body: &mut Value, budget: Option<u32>) {
     }
 }
 
+/// Ollama's Modelfile rules: `SYSTEM` only when the request has no system message, `MESSAGE`s
+/// after the system message and before the conversation.
+fn modelfile_messages(messages: &mut Vec<Value>, d: &ModelDefaults) {
+    let has_system = messages.first().is_some_and(|m| m["role"] == "system");
+    let mut head: Vec<Value> = Vec::new();
+    if let (false, Some(sys)) = (has_system, &d.system) {
+        head.push(json!({"role": "system", "content": sys}));
+    }
+    head.extend(d.messages.iter().map(|(role, content)| json!({"role": role, "content": content})));
+    let at = usize::from(has_system);
+    messages.splice(at..at, head);
+}
+
 /// One Ollama-shaped message as an OpenAI one: arguments as a JSON string, thinking as
-/// `reasoning_content`, the tool's name beside its result.
+/// `reasoning_content`, the tool's name beside its result, images as `image_url` parts after the
+/// text.
 fn convert_message(m: &Value) -> Value {
     let mut out = Map::new();
     out.insert("role".into(), m.get("role").cloned().unwrap_or(json!("user")));
@@ -154,7 +174,17 @@ fn convert_message(m: &Value) -> Value {
     if let Some(name) = m.get("tool_name").filter(|v| !v.is_null()) {
         out.insert("name".into(), name.clone());
     }
-    out.insert("content".into(), m.get("content").cloned().filter(|c| !c.is_null()).unwrap_or(json!("")));
+    let text = m.get("content").cloned().filter(|c| !c.is_null()).unwrap_or(json!(""));
+    match m.get("images").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+        Some(images) => {
+            let mut parts = vec![json!({"type": "text", "text": text})];
+            parts.extend(images.iter().filter_map(Value::as_str).map(|b64| json!({"type": "image_url", "image_url": {"url": data_url(b64)}})));
+            out.insert("content".into(), Value::Array(parts));
+        }
+        None => {
+            out.insert("content".into(), text);
+        }
+    }
     if let Some(t) = m.get("thinking").and_then(Value::as_str).filter(|t| !t.is_empty()) {
         out.insert("reasoning_content".into(), json!(t));
     }
@@ -180,6 +210,22 @@ fn convert_message(m: &Value) -> Value {
         out.insert("tool_calls".into(), Value::Array(calls));
     }
     Value::Object(out)
+}
+
+/// A base64 image as a data URL, its type read from its first bytes.
+fn data_url(b64: &str) -> String {
+    let mime = if b64.starts_with("iVBOR") {
+        "image/png"
+    } else if b64.starts_with("/9j/") {
+        "image/jpeg"
+    } else if b64.starts_with("R0lG") {
+        "image/gif"
+    } else if b64.starts_with("UklG") {
+        "image/webp"
+    } else {
+        "image/png"
+    };
+    format!("data:{mime};base64,{b64}")
 }
 
 /// A tool call being assembled from argument fragments.
@@ -390,6 +436,7 @@ pub fn error_from(err: &Value) -> ProviderError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ollama_store::Sampling;
     use marlowe_model::{CompletionBuilder, StopReason};
     use std::io::Cursor;
 
@@ -429,7 +476,7 @@ mod tests {
             "think": true,
             "tools": [{"type": "function", "function": {"name": "read", "description": "", "parameters": {}}}],
         });
-        let s = Sampling { temperature: Some(1.0), top_k: Some(20), top_p: Some(0.95), presence_penalty: Some(0.0), repeat_penalty: Some(1.0), min_p: Some(0.0), ..Default::default() };
+        let s = defaults(Sampling { temperature: Some(1.0), top_k: Some(20), top_p: Some(0.95), presence_penalty: Some(0.0), repeat_penalty: Some(1.0), min_p: Some(0.0), ..Default::default() });
         let b = chat_body(&planned, Some(&s), 3, &Thinking::Switch(vec![("preserve_thinking".into(), true)]), false);
         assert_eq!(b["id_slot"], 3);
         assert!(b.get("n_probs").is_none(), "the sampled tokens are asked for only when the caller wants them");
@@ -457,6 +504,35 @@ mod tests {
         assert_eq!((d["temperature"].as_f64(), d["top_k"].as_i64(), d["repeat_penalty"].as_f64()), (Some(0.8), Some(40), Some(1.1)));
     }
 
+    fn defaults(s: Sampling) -> ModelDefaults {
+        ModelDefaults { sampling: Some(s), ..Default::default() }
+    }
+
+    #[test]
+    fn the_modelfile_system_prompt_is_used_only_when_the_request_has_none_and_its_messages_lead() {
+        let d = ModelDefaults {
+            system: Some("You are Dawn.".into()),
+            messages: vec![("user".into(), "ping".into()), ("assistant".into(), "pong".into())],
+            ..Default::default()
+        };
+        let roles = |b: &Value| b["messages"].as_array().unwrap().iter().map(|m| format!("{}:{}", m["role"].as_str().unwrap(), m["content"].as_str().unwrap())).collect::<Vec<_>>();
+        let bare = json!({"messages": [{"role": "user", "content": "hi"}], "options": {}});
+        assert_eq!(roles(&chat_body(&bare, Some(&d), 0, &Thinking::Keeps, false)), ["system:You are Dawn.", "user:ping", "assistant:pong", "user:hi"]);
+        let own = json!({"messages": [{"role": "system", "content": "Marlowe's"}, {"role": "user", "content": "hi"}], "options": {}});
+        assert_eq!(roles(&chat_body(&own, Some(&d), 0, &Thinking::Keeps, false)), ["system:Marlowe's", "user:ping", "assistant:pong", "user:hi"]);
+        assert_eq!(roles(&chat_body(&own, None, 0, &Thinking::Keeps, false)), ["system:Marlowe's", "user:hi"]);
+    }
+
+    #[test]
+    fn images_go_as_image_url_parts_after_the_text() {
+        let planned = json!({"messages": [{"role": "user", "content": "what is this?", "images": ["iVBORw0KGgo=", "/9j/4AAQ"]}], "options": {}});
+        let b = chat_body(&planned, None, 0, &Thinking::Keeps, false);
+        let parts = b["messages"][0]["content"].as_array().unwrap().clone();
+        assert_eq!(parts[0], json!({"type": "text", "text": "what is this?"}));
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,iVBORw0KGgo=");
+        assert_eq!(parts[2]["image_url"]["url"], "data:image/jpeg;base64,/9j/4AAQ");
+    }
+
     #[test]
     fn a_think_budget_rides_as_thinking_budget_tokens_and_is_absent_otherwise() {
         let mut b = chat_body(&json!({"messages": [], "options": {}}), None, 0, &Thinking::Keeps, false);
@@ -469,7 +545,7 @@ mod tests {
     #[test]
     fn a_request_temperature_wins_and_think_off_reaches_the_template() {
         let planned = json!({"messages": [], "options": {"num_predict": 8, "temperature": 0.0}, "think": false});
-        let b = chat_body(&planned, Some(&Sampling { temperature: Some(1.0), ..Default::default() }), 0, &Thinking::Keeps, false);
+        let b = chat_body(&planned, Some(&defaults(Sampling { temperature: Some(1.0), ..Default::default() })), 0, &Thinking::Keeps, false);
         assert_eq!(b["temperature"].as_f64(), Some(0.0));
         assert_eq!(b["chat_template_kwargs"]["enable_thinking"], false);
         assert!(b.get("tools").is_none());

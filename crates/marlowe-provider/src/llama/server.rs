@@ -76,7 +76,7 @@ impl Spawner for SystemSpawner {
             cmd.env("GGML_BACKEND_PATH", dll);
         }
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        if let Some(out) = log.and_then(|p| crate::ollama_log::open_own_log(p, crate::ollama_log::OWN_LOG_CAP).ok()) {
+        if let Some(out) = log.and_then(|p| crate::server_log::open_own_log(p, crate::server_log::OWN_LOG_CAP).ok()) {
             if let Ok(err) = out.try_clone() {
                 cmd.stdout(out).stderr(err);
             }

@@ -287,6 +287,20 @@ impl Settings {
         self.layers.iter().filter(|l| self.applies(l)).filter_map(|l| l.file.teams.size).last().unwrap_or(10).clamp(1, 100)
     }
 
+    /// The local engine's settings: per key, the highest of the user's own layers that sets it (a
+    /// repository's file does not configure the machine's engine).
+    pub fn engine(&self) -> crate::file::EngineFile {
+        let own = || self.layers.iter().filter(|l| !l.source.project_scoped()).map(|l| &l.file.engine);
+        crate::file::EngineFile {
+            flash_attn: own().filter_map(|e| e.flash_attn).last(),
+            keep_alive: own().filter_map(|e| e.keep_alive.clone()).last(),
+            batch: own().filter_map(|e| e.batch).last(),
+            ubatch: own().filter_map(|e| e.ubatch).last(),
+            mmap: own().filter_map(|e| e.mmap).last(),
+            gpu_fit: own().filter_map(|e| e.gpu_fit.clone()).last(),
+        }
+    }
+
     /// The model project employees run on (`projects.model.employee`), when one is set: the
     /// highest layer that applies. `None` is the conversation's model.
     pub fn project_employee_model(&self) -> Option<String> {

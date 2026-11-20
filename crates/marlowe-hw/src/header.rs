@@ -56,6 +56,21 @@ impl ModelHeader {
         Ok(ModelHeader { kv, tensors })
     }
 
+    /// Tensor type ids stock ggml does not know (`ggml::upstream_knows`), sorted: a model that
+    /// holds any needs the fork that wrote them (ms-llama.cpp). Read from the types, never the name.
+    pub fn foreign_types(&self) -> Vec<u32> {
+        let mut ids: Vec<u32> = self
+            .tensors
+            .iter()
+            .filter(|t| t.ty.is_none())
+            .filter_map(|t| t.ty_name.strip_prefix("type ")?.parse().ok())
+            .filter(|id| !crate::ggml::upstream_knows(*id))
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
     pub fn arch(&self) -> Option<&str> {
         self.kv.get("general.architecture").and_then(Value::as_str)
     }

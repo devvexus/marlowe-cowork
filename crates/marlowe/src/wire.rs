@@ -34,40 +34,49 @@ fn make_ollama(
     blobs: Arc<dyn BlobStore>,
     engine: Option<marlowe_provider::llama::LlamaEngine>,
 ) -> Result<Arc<dyn Provider>, ProviderError> {
-    // Every request for a model sends that model's context policy window (one allocation per
-    // model), so Ollama never reloads a runner because two agents asked for different sizes.
-    let mut p = marlowe_provider::OllamaProvider::from_base_url(cfg.base_url.as_deref())?
+    // The models in Ollama's store, every one served by Marlowe's own llama.cpp engine with its
+    // context policy's window; Ollama's server is never asked.
+    let mut p = marlowe_provider::OllamaProvider::default()
         .with_allocations(cfg.context.clone())
         .with_blobs(blobs)
         .with_repair_stats(repair_stats());
-    // The models the context policy gives Marlowe's own llama-server run there, not on Ollama.
     if let Some(e) = engine {
         p = p.with_llama_engine(e);
     }
     Ok(Arc::new(p))
 }
 
-/// Marlowe's parallel local engine: Ollama's bundled llama-server, started by Marlowe for the
-/// models Ollama hands to llama-server whole. Off for a scripted run, a remote Ollama and
-/// `MARLOWE_LLAMA_ENGINE=0`.
-fn llama_engine(
-    home: &Path,
-    endpoint: &marlowe_provider::LocalEndpoint,
-    gpu: Option<&Arc<marlowe_sentinel::vram::SentinelGpu>>,
-) -> Option<marlowe_provider::llama::LlamaEngine> {
-    use marlowe_provider::llama::{keep_alive_from, EngineConfig, LlamaEngine, SystemSpawner};
-    if scripted() || std::env::var("MARLOWE_LLAMA_ENGINE").is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "off" | "false" | "no")) {
+/// The engine's server settings: `[engine]` in the user's `settings.toml` over the defaults, the
+/// keep-alive starting from Ollama's saved `OLLAMA_KEEP_ALIVE` as it did when Ollama served.
+fn engine_settings(home: &Path) -> marlowe_provider::llama::ServerSettings {
+    use marlowe_provider::llama::{keep_alive_from, saved_user_env, GpuFit, ServerSettings};
+    let file = marlowe_settings::Settings::load(home, None, None).engine();
+    let d = ServerSettings::default();
+    let keep = file.keep_alive.clone().or_else(|| saved_user_env("OLLAMA_KEEP_ALIVE")).or_else(|| std::env::var("OLLAMA_KEEP_ALIVE").ok());
+    ServerSettings {
+        flash_attn: file.flash_attn.unwrap_or(d.flash_attn),
+        keep_alive: keep_alive_from(keep.as_deref()),
+        batch: file.batch.unwrap_or(d.batch).max(1),
+        ubatch: file.ubatch.unwrap_or(d.ubatch).max(1),
+        mmap: file.mmap.unwrap_or(d.mmap),
+        gpu_fit: file.gpu_fit.as_deref().and_then(GpuFit::parse).unwrap_or(d.gpu_fit),
+    }
+}
+
+/// Marlowe's local engine: the selected backend's llama-server, which serves every local model.
+/// Off only for a scripted run.
+fn llama_engine(home: &Path, gpu: Option<&Arc<marlowe_sentinel::vram::SentinelGpu>>) -> Option<marlowe_provider::llama::LlamaEngine> {
+    use marlowe_provider::llama::{EngineConfig, LlamaEngine, SystemSpawner};
+    if scripted() {
         return None;
     }
-    let mut cfg = EngineConfig::new(endpoint.clone(), marlowe_provider::ollama_store::store_root());
+    let mut cfg = EngineConfig::new(marlowe_provider::ollama_store::store_root());
     cfg.log = Some(home.join("logs").join("llama-server.log"));
     // Each conversation's cache is written here when the server stops and read back on the next load.
     cfg.slots_dir = Some(home.join("llama-slots"));
     // What each model file's own chat template does with earlier thinking, asked once per file.
     cfg.thinking_cache = Some(home.join("llama-thinking.json"));
-    // Ollama's own keep-alive: the setting it was started with, else five minutes.
-    let keep = marlowe_provider::ollama_runtime::saved_user_env("OLLAMA_KEEP_ALIVE").or_else(|| std::env::var("OLLAMA_KEEP_ALIVE").ok());
-    cfg.keep_alive = keep_alive_from(keep.as_deref());
+    cfg.settings = engine_settings(home);
     // The card is read before a server starts and after it loaded: the Windows driver pages a
     // model that does not fit into system memory instead of failing the load.
     cfg.vram = gpu.map(|g| Arc::new(GpuProbe(g.clone())) as Arc<dyn marlowe_provider::llama::VramProbe>);
@@ -109,13 +118,8 @@ pub fn provider_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> P
     let mut f = ProviderFactory::new(credentials);
     let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::new(home.join("blobs")));
     let b = blobs.clone();
-    let ollama_url = std::env::var("MARLOWE_OLLAMA_ADDR").ok();
-    let endpoint = ollama_url
-        .as_deref()
-        .and_then(marlowe_provider::LocalEndpoint::parse)
-        .unwrap_or_else(marlowe_provider::LocalEndpoint::default_ollama);
     let gpu = (!scripted()).then(|| Arc::new(marlowe_sentinel::vram::SentinelGpu::open()));
-    let engine = llama_engine(home, &endpoint, gpu.as_ref());
+    let engine = llama_engine(home, gpu.as_ref());
     if let Some(e) = &engine {
         // Loads and idle unloads show as background work once the daemon is listening.
         e.follow(f.allocations().clone());
@@ -123,29 +127,18 @@ pub fn provider_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> P
     let for_provider = engine.clone();
     f.register(ProviderKind::Ollama, move |cfg| make_ollama(cfg, b.clone(), for_provider.clone()));
     f.register(ProviderKind::OpenRouter, move |cfg| make_openrouter(cfg, blobs.clone()));
-    if let Some(url) = &ollama_url {
-        f.set_base_url(ProviderKind::Ollama, url.clone());
-    }
-    // The context planner reads Ollama's store, its runner log and the GPU; it changes nothing
-    // but the server settings, and only after an approval. A scripted run has no engine to read:
-    // nothing loads, so nothing is gated.
-    if !scripted() {
-        let ollama_hw = marlowe_provider::OllamaHw::new(endpoint.clone());
-        // With the engine in the build the planner also sees what it runs and which models it may.
-        let models: Arc<dyn marlowe_hw::ModelSource> = match engine {
-            Some(e) => Arc::new(marlowe_provider::llama::LlamaModels::new(ollama_hw, e, marlowe_provider::ollama_store::store_root())),
-            None => Arc::new(ollama_hw),
-        };
+    // The context planner reads the model files in Ollama's store, the engine's own log and the
+    // GPU; its server change (after an approval) restarts the engine. A scripted run has no
+    // engine to read: nothing loads, so nothing is gated.
+    if let (Some(e), Some(gpu)) = (engine, gpu) {
+        let settings_file = home.join("settings.toml");
+        let save = Arc::new(move |s: &marlowe_provider::llama::ServerSettings| {
+            marlowe_settings::edit::set_key(&settings_file, "engine.flash_attn", &serde_json::json!(s.flash_attn)).map_err(|e| e.to_string())
+        });
         f.set_hardware(marlowe_brains::Hardware {
-            models,
-            gpu: gpu.unwrap_or_else(|| Arc::new(marlowe_sentinel::vram::SentinelGpu::open())),
-            server: Arc::new(
-                marlowe_provider::OllamaServerControl::new(endpoint)
-                    // A remote Ollama is not ours to start.
-                    .auto_start(ollama_url.as_deref().is_none_or(|u| marlowe_provider::LocalEndpoint::parse(u).is_some()))
-                    .with_own_log(home.join("logs").join("ollama-serve.log"))
-                    .with_scrub(marlowe_brains::scrubbed_env().iter().copied()),
-            ),
+            models: Arc::new(marlowe_provider::llama::LlamaModels::new(e.clone(), marlowe_provider::ollama_store::store_root())),
+            gpu,
+            server: Arc::new(marlowe_provider::llama::EngineControl::new(e, save).with_log(home.join("logs").join("llama-server.log"))),
         });
     }
     #[cfg(debug_assertions)]
@@ -423,6 +416,21 @@ mod tests {
             return;
         }
         assert!(super::start_voice(&std::env::temp_dir()).is_none());
+    }
+
+    /// `[engine]` in the user's settings.toml reaches the engine's server settings; an unset key
+    /// keeps the default Marlowe used under Ollama.
+    #[test]
+    fn engine_settings_come_from_the_users_settings_file() {
+        use marlowe_provider::llama::{GpuFit, ServerSettings};
+        let home = std::env::temp_dir().join(format!("marlowe-wire-engine-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("settings.toml"), "[engine]\nflash_attn = false\nkeep_alive = \"10m\"\nubatch = 256\ngpu_fit = \"split\"\n").unwrap();
+        let s = super::engine_settings(&home);
+        let d = ServerSettings::default();
+        assert_eq!((s.flash_attn, s.keep_alive, s.ubatch, s.gpu_fit), (false, Some(std::time::Duration::from_secs(600)), 256, GpuFit::Split));
+        assert_eq!((s.batch, s.mmap), (d.batch, d.mmap));
+        let _ = std::fs::remove_dir_all(&home);
     }
     use marlowe_agent::ToolHost;
     use marlowe_crew::{Sandbox, SandboxKind};

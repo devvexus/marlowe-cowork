@@ -472,7 +472,7 @@ mod tests {
     fn an_absent_endpoint_is_unreachable_rather_than_a_panic() {
         let e = get_json(
             &LocalEndpoint::new("127.0.0.1", 1).unwrap(),
-            "/api/tags",
+            "/health",
             Duration::from_millis(500),
         )
         .unwrap_err();

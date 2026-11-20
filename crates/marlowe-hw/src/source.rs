@@ -1,6 +1,6 @@
 //! Where the planner's inputs come from. The library calls these traits; the binary implements
-//! them over Ollama's store and logs (`marlowe-provider`) and NVML/PDH (`marlowe-sentinel`), so
-//! the planner itself never touches the machine and tests use fakes.
+//! them over the model store and the engine's own log (`marlowe-provider`) and NVML/PDH
+//! (`marlowe-sentinel`), so the planner itself never touches the machine and tests use fakes.
 
 use crate::ggml::KvType;
 use crate::header::ModelHeader;
@@ -102,7 +102,8 @@ pub trait GpuSource: Send + Sync {
     fn snapshot(&self) -> Option<GpuSnapshot>;
 }
 
-/// A change to Ollama's server-wide settings.
+/// A change to the local engine's settings: the KV type and slots of the model's policy, and
+/// flash attention, which is server-wide. Applying it restarts the engine.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ServerChange {
     pub kv_type: Option<KvType>,
@@ -115,36 +116,41 @@ impl ServerChange {
         self.kv_type.is_none() && self.parallel.is_none() && self.flash_attn.is_none()
     }
 
-    /// The user environment variables this sets, as (name, value).
-    pub fn variables(&self) -> Vec<(&'static str, String)> {
+    /// The settings this sets, as (name, value): `kv_type`, `parallel`, `flash_attn`. A quantized
+    /// V cache needs flash attention, so a quantized KV type turns it on unless it is set.
+    pub fn settings(&self) -> Vec<(&'static str, String)> {
         let mut v = Vec::new();
         if let Some(k) = self.kv_type {
-            v.push(("OLLAMA_KV_CACHE_TYPE", k.ollama_name().to_string()));
-            // Quantized V needs flash attention; Ollama ignores the KV type without it.
+            v.push(("kv_type", k.ollama_name().to_string()));
             if k != KvType::F16 && self.flash_attn.is_none() {
-                v.push(("OLLAMA_FLASH_ATTENTION", "1".into()));
+                v.push(("flash_attn", "on".into()));
             }
         }
         if let Some(n) = self.parallel {
-            v.push(("OLLAMA_NUM_PARALLEL", n.to_string()));
+            v.push(("parallel", n.to_string()));
         }
         if let Some(f) = self.flash_attn {
-            v.push(("OLLAMA_FLASH_ATTENTION", if f { "1" } else { "0" }.into()));
+            v.push(("flash_attn", if f { "on" } else { "off" }.into()));
         }
         v
     }
 
     /// What a person would do by hand, step by step.
     pub fn manual_steps(&self) -> Vec<String> {
-        let mut v: Vec<String> =
-            self.variables().into_iter().map(|(k, val)| format!("setx {k} {val}")).collect();
-        v.push("quit Ollama from its tray icon, then start Ollama again".into());
+        let mut v = Vec::new();
+        if self.kv_type.is_some() || self.parallel.is_some() {
+            v.push("save the KV type and the agents in the context planner".to_string());
+        }
+        if let Some(f) = self.flash_attn {
+            v.push(format!("set `flash_attn = {f}` under [engine] in settings.toml"));
+        }
+        v.push("unload the model (the next request starts the engine with the new settings)".into());
         v
     }
 }
 
-/// Applies a server change: sets the user environment variables and restarts the Ollama server.
-/// Only ever called after the user approved it; tests use a fake.
+/// Applies a server change to the local engine and restarts it. Only ever called after the user
+/// approved it; tests use a fake.
 pub trait ServerControl: Send + Sync {
     fn apply(&self, change: &ServerChange) -> Result<String, String>;
 

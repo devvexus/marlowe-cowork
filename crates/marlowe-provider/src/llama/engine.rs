@@ -1,10 +1,11 @@
 //! Marlowe's own llama-server: one process, one model, several slots.
 //!
-//! The engine starts Ollama's bundled `llama-server.exe` on demand for a model the planner
-//! assigned to it, serves every request for that model on one of its slots, and stops it after
-//! the keep-alive Ollama would have used. It never runs a model Ollama also has loaded: before a
-//! load it asks Ollama to unload the same model (`keep_alive: 0`), and the other models Ollama
-//! holds too when the card is short of what the load needs.
+//! Every local model runs here; Ollama is only where the files come from ([`super::eligible`]).
+//! The engine starts the selected backend's `llama-server` on demand, serves every request for
+//! the model on one of its slots, and stops it after the keep-alive. A model that fits whole on
+//! the GPU runs there (`-ngl 99 --fit off`); one that does not, by the planner's estimate, the
+//! memory free at the start or the driver's spill after the load, runs split: llama.cpp places
+//! what fits on the GPU and keeps the rest on the CPU, as Ollama does ([`super::settings`]).
 //!
 //! # Slots
 //!
@@ -22,14 +23,16 @@ use std::time::{Duration, Instant};
 
 use marlowe_model::{CancelToken, ContextAllocations, EngineObserver, EngineShape, Lane, ProviderError};
 
+use marlowe_engines::Backend;
+
+use super::eligible::{self, EngineModel, ModelDefaults};
 use super::launch::{self, Spec};
 use super::persist;
 use super::server::{offloaded, Process, Spawner};
+use super::settings::{GpuFit, ServerSettings};
 use super::template::{self, Thinking, ThinkingCache};
 use super::warm;
 use crate::http::{self, LocalEndpoint};
-use crate::ollama_runtime::{parse_ps, unload_body};
-use crate::ollama_store::{self, Sampling};
 
 /// How long a request waits for a model switch to drain before it gives up.
 const SWITCH_WAIT: Duration = Duration::from_secs(300);
@@ -57,25 +60,26 @@ pub trait VramProbe: Send + Sync + std::fmt::Debug {
 /// What the engine needs to know about the machine.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
-    /// Ollama, asked to unload a model before the engine loads it.
-    pub ollama: LocalEndpoint,
-    /// Ollama's model store.
+    /// Ollama's model store, where the model files are read (Ollama itself is never asked).
     pub store: PathBuf,
     /// Where the server's output goes (appended, capped).
     pub log: Option<PathBuf>,
-    /// Idle time before the server is stopped; `None` keeps it until something else needs the GPU.
-    pub keep_alive: Option<Duration>,
+    /// Flash attention, keep-alive, batch sizes, mmap and the GPU fit; changed later with
+    /// [`LlamaEngine::set_settings`].
+    pub settings: ServerSettings,
     /// Longest a load may take.
     pub start_timeout: Duration,
-    pub ubatch: u32,
     /// Where each slot's cache is written when the server stops and read back when it starts
     /// again; `None` keeps no caches across a stop.
     pub slots_dir: Option<PathBuf>,
     /// Where what each model file's template does with earlier thinking is kept; `None` asks again
     /// at every start of the engine.
     pub thinking_cache: Option<PathBuf>,
-    /// The server binary; `None` finds the one Ollama bundles.
+    /// The server binary; `None` finds the selected backend's.
     pub binary: Option<PathBuf>,
+    /// Which backend `binary` is. `None` with no `binary` reads the selected backend; `None` with
+    /// one is a build of unknown kind, whose tensor types are not second-guessed.
+    pub backend: Option<Backend>,
     /// How often a starting server is asked whether it is ready.
     pub poll: Duration,
     /// How often the idle check runs.
@@ -84,50 +88,28 @@ pub struct EngineConfig {
     /// loaded (did the driver spill it into system memory). A server starts without the checks
     /// only when this is `None`; with a probe, no reading is not "fits".
     pub vram: Option<Arc<dyn VramProbe>>,
-    /// How long the free memory may take to show what Ollama just unloaded before a misfit is final.
+    /// How long the free memory may take to show what a stopped server gave back before a
+    /// misfit is final.
     pub vram_settle: Duration,
 }
 
 impl EngineConfig {
-    pub fn new(ollama: LocalEndpoint, store: PathBuf) -> Self {
+    pub fn new(store: PathBuf) -> Self {
         Self {
-            ollama,
             store,
             log: None,
-            keep_alive: Some(Duration::from_secs(300)),
+            settings: ServerSettings::default(),
             start_timeout: Duration::from_secs(240),
-            ubatch: 512,
             slots_dir: None,
             thinking_cache: None,
             binary: None,
+            backend: None,
             poll: Duration::from_millis(250),
             idle_tick: Duration::from_secs(2),
             vram: None,
             vram_settle: Duration::from_secs(2),
         }
     }
-}
-
-/// Ollama's `OLLAMA_KEEP_ALIVE`: seconds, or a number with `s`, `m` or `h`; negative keeps the
-/// model loaded for good, and unset is five minutes.
-pub fn keep_alive_from(value: Option<&str>) -> Option<Duration> {
-    let Some(v) = value.map(str::trim).filter(|v| !v.is_empty()) else { return Some(Duration::from_secs(300)) };
-    let (num, unit) = match v.char_indices().find(|(_, c)| c.is_ascii_alphabetic()) {
-        Some((i, _)) => v.split_at(i),
-        None => (v, "s"),
-    };
-    let n: f64 = num.parse().ok()?;
-    if n < 0.0 {
-        return None;
-    }
-    let secs = match unit {
-        "ms" => n / 1000.0,
-        "s" => n,
-        "m" => n * 60.0,
-        "h" => n * 3600.0,
-        _ => return Some(Duration::from_secs(300)),
-    };
-    Some(Duration::from_secs_f64(secs))
 }
 
 /// What to serve and for whom.
@@ -177,7 +159,10 @@ struct Running {
     load_secs: f64,
     last_used: Instant,
     on_gpu: Option<(u32, u32)>,
-    sampling: Option<Sampling>,
+    /// What the Modelfile adds to every request.
+    defaults: Arc<ModelDefaults>,
+    /// Split between the GPU and the CPU.
+    split: bool,
     slots: Vec<Slot>,
     /// What the model file's template does with earlier thinking.
     thinking: Thinking,
@@ -221,26 +206,11 @@ struct State {
     loading: Option<String>,
     epoch: u64,
     failed: Option<(String, EngineShape, Instant, ProviderError)>,
-    /// The model the engine would not run, and why (until it loads).
-    declined: Option<(String, String)>,
-}
-
-/// Why a start produced no server.
-enum Failure {
-    Error(ProviderError),
-    /// The engine will not run this model now; Ollama must. The reason reads after
-    /// "<model> runs on Ollama:".
-    Declined(String),
-}
-
-impl From<ProviderError> for Failure {
-    fn from(e: ProviderError) -> Self {
-        Failure::Error(e)
-    }
 }
 
 struct Inner {
     cfg: EngineConfig,
+    settings: RwLock<ServerSettings>,
     spawner: Arc<dyn Spawner>,
     st: Mutex<State>,
     cv: Condvar,
@@ -285,6 +255,8 @@ pub struct Status {
     pub load_secs: f64,
     /// `offloaded N/M layers` from the load.
     pub on_gpu: Option<(u32, u32)>,
+    /// Split between the GPU and the CPU.
+    pub split: bool,
     /// Slots with a request in flight.
     pub busy: usize,
 }
@@ -301,7 +273,8 @@ pub struct Lease {
     epoch: u64,
     pub endpoint: LocalEndpoint,
     pub slot: u32,
-    pub sampling: Option<Sampling>,
+    /// What the Modelfile adds to every request: sampler defaults, `SYSTEM`, `MESSAGE`s.
+    pub defaults: Arc<ModelDefaults>,
     /// The model's per-slot window, for the request's own check.
     pub ctx_per_slot: u32,
     /// What the model file's template does with earlier thinking.
@@ -368,6 +341,7 @@ impl LlamaEngine {
     pub fn new(cfg: EngineConfig, spawner: Arc<dyn Spawner>) -> Self {
         let thinking = ThinkingCache::new(cfg.thinking_cache.clone());
         let inner = Arc::new(Inner {
+            settings: RwLock::new(cfg.settings.clone()),
             cfg,
             spawner,
             st: Mutex::new(State::default()),
@@ -383,6 +357,16 @@ impl LlamaEngine {
             .spawn(move || idle_loop(weak, tick))
             .ok();
         Self { inner }
+    }
+
+    /// The server settings the next start uses.
+    pub fn settings(&self) -> ServerSettings {
+        self.inner.settings.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Changes the server settings; a running server keeps the old ones until it restarts.
+    pub fn set_settings(&self, s: ServerSettings) {
+        *self.inner.settings.write().unwrap_or_else(|e| e.into_inner()) = s;
     }
 
     /// Reports loads and unloads to whoever the shared allocations name (the daemon).
@@ -402,6 +386,7 @@ impl LlamaEngine {
             pid: r.proc.id(),
             load_secs: r.load_secs,
             on_gpu: r.on_gpu,
+            split: r.split,
             busy: r.busy(),
         })
     }
@@ -418,13 +403,7 @@ impl LlamaEngine {
 
     /// The end of the server's log (at most `max` bytes), for the planner.
     pub fn log_tail(&self, max: u64) -> String {
-        self.inner.cfg.log.as_deref().and_then(|p| crate::ollama_runtime::read_tail(p, max).ok()).unwrap_or_default()
-    }
-
-    /// Why the engine would not run `model` (it did not fit, or the driver spilled it), if that is
-    /// why the last start failed: the caller serves the request on Ollama.
-    pub fn declined(&self, model: &str) -> Option<String> {
-        lock(&self.inner.st).declined.as_ref().filter(|(m, _)| same_model(m, model)).map(|(_, why)| why.clone())
+        self.inner.cfg.log.as_deref().and_then(|p| crate::server_log::read_tail(p, max).ok()).unwrap_or_default()
     }
 
     /// Whether a server for exactly this model and shape is up: a request for it starts nothing.
@@ -485,7 +464,7 @@ impl LlamaEngine {
                             epoch: r.epoch,
                             endpoint: LocalEndpoint::new("127.0.0.1", r.port).expect("loopback"),
                             slot: i as u32,
-                            sampling: r.sampling.clone(),
+                            defaults: r.defaults.clone(),
                             ctx_per_slot: r.shape.ctx_per_slot,
                             thinking: r.thinking.clone(),
                         });
@@ -514,7 +493,6 @@ impl LlamaEngine {
                         }
                     }
                     g.loading = Some(want.model.clone());
-                    g.declined = None;
                     g.epoch += 1;
                     let epoch = g.epoch;
                     drop(g);
@@ -524,25 +502,14 @@ impl LlamaEngine {
                     match result {
                         Ok(r) => {
                             g.failed = None;
-                            g.declined = None;
                             g.running = Some(r);
                         }
-                        Err(f) => {
-                            let (e, why) = match f {
-                                Failure::Error(e) => (e, None),
-                                Failure::Declined(why) => (ProviderError::server(format!("{} runs on Ollama: {why}", want.model)), Some(why)),
-                            };
+                        Err(e) => {
                             if !e.is_cancelled() {
                                 g.failed = Some((want.model.clone(), want.shape.clone(), Instant::now(), e.clone()));
                             }
-                            if let Some(why) = &why {
-                                g.declined = Some((want.model.clone(), why.clone()));
-                            }
                             drop(g);
                             inner.cv.notify_all();
-                            if let Some(why) = why {
-                                self.say_declined(&want.model, &why);
-                            }
                             return Err(e);
                         }
                     }
@@ -557,13 +524,14 @@ impl LlamaEngine {
         self.inner.cv.wait_timeout(g, Duration::from_millis(100)).unwrap_or_else(|e| e.into_inner()).0
     }
 
-    /// The advisor keeps the model on Ollama from here on, and the user is told in one line.
-    fn say_declined(&self, model: &str, why: &str) {
+    /// The model does not fit whole on the GPU: the advisor plans it split from here on, and the
+    /// user is told in one line.
+    fn say_split(&self, model: &str, why: &str) {
         if let Some(a) = self.inner.events.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
             a.engine_declined(model, why);
         }
         if let Some(o) = self.observer() {
-            o.note(&format!("{model} runs on Ollama: {why}"));
+            o.note(&format!("{model} runs split between the GPU and the CPU: {why}"));
         }
     }
 
@@ -571,78 +539,44 @@ impl LlamaEngine {
         self.inner.events.read().unwrap_or_else(|e| e.into_inner()).as_ref()?.engine_observer()
     }
 
-    /// Asks Ollama to let go of `model`, so it is never in memory twice.
-    fn make_room(&self, model: &str) {
-        let ollama = &self.inner.cfg.ollama;
-        let resident = |_: ()| {
-            http::get_json(ollama, "/api/ps", QUICK)
-                .map(|v| parse_ps(&v))
-                .unwrap_or_default()
-                .into_iter()
-                .find(|p| same_model(&p.name, model))
-        };
-        let Some(p) = resident(()) else { return };
-        let _ = http::post_json(ollama, "/api/generate", &unload_body(&p.name), Duration::from_secs(8));
-        let until = Instant::now() + Duration::from_secs(12);
-        while resident(()).is_some() && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(200));
+    /// The backend the server binary is: the configured one, else the selected one, unless a
+    /// developer's own binary is in use (unknown).
+    fn backend_kind(&self) -> Option<Backend> {
+        let cfg = &self.inner.cfg;
+        if cfg.backend.is_some() || cfg.binary.is_some() {
+            return cfg.backend;
         }
+        if std::env::var_os(marlowe_engines::SERVER_ENV).is_some_and(|v| !v.is_empty()) {
+            return None;
+        }
+        marlowe_engines::default_root().map(|r| marlowe_engines::state::selected(&r))
     }
 
-    /// Asks Ollama to let go of every model it holds but `model`: the planner counts what
-    /// Ollama's runners hold as free for a load, so a start that finds the card short of it makes
-    /// that true, as Ollama itself would for a model it loads. Returns the models it unloaded.
-    fn release_ollama(&self, model: &str) -> Vec<String> {
-        let ollama = &self.inner.cfg.ollama;
-        let held = |_: ()| -> Vec<String> {
-            http::get_json(ollama, "/api/ps", QUICK).map(|v| parse_ps(&v)).unwrap_or_default().into_iter().map(|p| p.name).collect()
-        };
-        let others: Vec<String> = held(()).into_iter().filter(|n| !same_model(n, model)).collect();
-        for name in &others {
-            let _ = http::post_json(ollama, "/api/generate", &unload_body(name), Duration::from_secs(8));
-        }
-        let until = Instant::now() + Duration::from_secs(12);
-        while held(()).iter().any(|n| others.contains(n)) && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(200));
-        }
-        others
-    }
-
-    /// Whether the GPU has room for the model now, measured after Ollama let go of it. A model
-    /// that does not fit is not started: with the driver's sysmem fallback it would load anyway,
-    /// into system memory, and read at a few tokens a second. No reading is not "fits".
-    fn check_room(&self, want: &Want, blob: &Path) -> Result<(), Failure> {
+    /// Whether the GPU has room for the whole model now: with the driver's sysmem fallback a model
+    /// that does not fit would load anyway, into system memory, and read at a few tokens a
+    /// second. `Err` says why it does not fit; no reading is not "fits".
+    fn check_room(&self, want: &Want, model: &EngineModel) -> Result<(), String> {
         let cfg = &self.inner.cfg;
         let Some(probe) = &cfg.vram else { return Ok(()) };
-        let weights = std::fs::metadata(blob).map_or(0.0, |m| m.len() as f64 / MIB);
-        let need = want.need_mib.unwrap_or(0.0).max(weights + SPILL_SLACK_MIB / 2.0);
+        let need = want.need_mib.unwrap_or(0.0).max(weights_mib(model) + SPILL_SLACK_MIB / 2.0);
         let until = Instant::now() + cfg.vram_settle;
         let mut free = probe.free_mib();
-        if free.is_some_and(|f| f < need) {
-            // Short of room: the planner counted what Ollama holds for another model as free.
-            let freed = self.release_ollama(&want.model);
-            if !freed.is_empty() {
-                if let Some(o) = self.observer() {
-                    o.note(&format!("Ollama let go of {} to make room for {}", freed.join(", "), want.model));
-                }
-                free = probe.free_mib();
-            }
-        }
+        // A server this engine just stopped takes a moment to show as free.
         while free.is_none_or(|f| f < need) && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(200).min(cfg.vram_settle));
             free = probe.free_mib();
         }
         match free {
             Some(f) if f >= need => Ok(()),
-            Some(f) => Err(Failure::Declined(format!("needs {} GiB on the GPU, {} GiB free", gib(need), gib(f)))),
-            None => Err(Failure::Declined("there is no reading of the GPU's free memory to check the load against".into())),
+            Some(f) => Err(format!("needs {} GiB on the GPU, {} GiB free", gib(need), gib(f))),
+            None => Err("there is no reading of the GPU's free memory to check the load against".into()),
         }
     }
 
     /// Whether the driver paged the loaded model into system memory: the server holds shared
     /// memory well past its pinned buffers, or far less dedicated memory than the model's weights.
     /// `None` when it did not, or when the GPU cannot be read for the process.
-    fn spilled(&self, pid: u32, blob: &Path) -> Option<String> {
+    fn spilled(&self, pid: u32, model: &EngineModel) -> Option<String> {
         let probe = self.inner.cfg.vram.as_ref()?;
         let (dedicated, shared) = probe.process_mib(pid)?;
         // A server that has loaded a model holds some memory: nothing at all is a counter that
@@ -650,8 +584,7 @@ impl LlamaEngine {
         if dedicated <= 0.0 && shared <= 0.0 {
             return None;
         }
-        let weights = std::fs::metadata(blob).map_or(0.0, |m| m.len() as f64 / MIB);
-        let missing = (weights - dedicated).max(0.0);
+        let missing = (weights_mib(model) - dedicated).max(0.0);
         if shared <= PINNED_ALLOWANCE_MIB && missing <= SPILL_SLACK_MIB {
             return None;
         }
@@ -662,8 +595,9 @@ impl LlamaEngine {
         ))
     }
 
-    fn start(&self, want: &Want, epoch: u64, cancel: &CancelToken) -> Result<Running, Failure> {
+    fn start(&self, want: &Want, epoch: u64, cancel: &CancelToken) -> Result<Running, ProviderError> {
         let cfg = &self.inner.cfg;
+        let settings = self.settings();
         let detail = format!(
             "{} slot{} x {} tokens, kv {}",
             want.shape.slots,
@@ -673,55 +607,105 @@ impl LlamaEngine {
         );
         let _meter = self.observer().map(|o| o.loading(&want.model, &detail));
         let began = Instant::now();
-        let resolved = ollama_store::resolve_in(&cfg.store, &want.model).map_err(|e| Failure::from(ProviderError::bad_request(e.remedy())))?;
+        let cant = |why: String| ProviderError::bad_request(format!("{} can't run: {why}", want.model));
+        let model = eligible::resolve(&cfg.store, &want.model).map_err(cant)?;
         let binary = match &cfg.binary {
             Some(b) => b.clone(),
-            None => launch::server_binary().map_err(|e| Failure::from(ProviderError::bad_request(e.remedy())))?,
+            None => launch::server_binary().map_err(|e| ProviderError::bad_request(e.remedy()))?,
         };
-        self.make_room(&want.model);
-        self.check_room(want, &resolved.blob)?;
+        if let Some(why) = model.refuses_on(self.backend_kind()) {
+            return Err(cant(why));
+        }
+        let whole_only = |why: &str| {
+            ProviderError::server(format!("{} does not fit whole on the GPU ({why}), and the engine's gpu_fit is `whole`", want.model))
+        };
+        let mut split = match settings.gpu_fit {
+            GpuFit::Auto => want.shape.split,
+            GpuFit::Whole => false,
+            GpuFit::Split => true,
+        };
+        if !split {
+            if let Err(why) = self.check_room(want, &model) {
+                if settings.gpu_fit == GpuFit::Whole {
+                    return Err(whole_only(&why));
+                }
+                self.say_split(&want.model, &why);
+                split = true;
+            }
+        }
         let backends = launch::backend_candidates(&binary);
         let tries: Vec<Option<PathBuf>> = if backends.is_empty() { vec![None] } else { backends.into_iter().map(Some).collect() };
         let mut why: Vec<String> = Vec::new();
         for backend in tries {
             if cancel.is_cancelled() {
-                return Err(ProviderError::cancelled().into());
+                return Err(ProviderError::cancelled());
             }
-            match self.try_start(&binary, backend.as_deref(), &resolved.blob, want, cancel) {
-                Ok((proc, port, on_gpu)) => {
-                    let n = usize::from(want.shape.slots.max(1));
-                    let mut slots: Vec<Slot> = (0..n).map(|_| Slot { busy: false, warming: false, key: None, last: Instant::now() }).collect();
-                    let endpoint = LocalEndpoint::new("127.0.0.1", port).expect("loopback");
-                    let thinking = self.thinking_of(&endpoint, want, &resolved.blob);
-                    // The conversations this model served before it was stopped read their caches back.
-                    if let Some(dir) = &cfg.slots_dir {
-                        for (i, key) in persist::restore(&endpoint, dir, &want.model, &resolved.blob, &want.shape) {
-                            if let Some(s) = slots.get_mut(i as usize) {
-                                s.key = Some(key);
-                            }
-                        }
-                    }
-                    return Ok(Running {
-                        model: want.model.clone(),
-                        shape: want.shape.clone(),
-                        port,
-                        blob: resolved.blob.clone(),
-                        proc,
-                        epoch,
-                        load_secs: began.elapsed().as_secs_f64(),
-                        last_used: Instant::now(),
-                        on_gpu,
-                        sampling: resolved.sampling.clone(),
-                        slots,
-                        thinking,
-                    });
+            let mut attempt = self.try_start(&binary, backend.as_deref(), &model, want, split, &settings, cancel);
+            let spilled = match &attempt {
+                Err(Tried::Spilled(m)) => Some(m.clone()),
+                _ => None,
+            };
+            if let Some(moved) = spilled {
+                // It loaded and the driver paged it out: the same backend again, split.
+                if settings.gpu_fit == GpuFit::Whole {
+                    return Err(whole_only(&moved));
                 }
-                Err(Tried::Next(m)) => why.push(m),
-                Err(Tried::Fatal(e)) => return Err(e.into()),
-                Err(Tried::Declined(why)) => return Err(Failure::Declined(why)),
+                self.say_split(&want.model, &moved);
+                split = true;
+                attempt = self.try_start(&binary, backend.as_deref(), &model, want, split, &settings, cancel);
+            }
+            match attempt {
+                Ok((proc, port, on_gpu)) => return Ok(self.running(want, &model, epoch, began, proc, port, on_gpu, split)),
+                Err(Tried::Next(m) | Tried::Spilled(m)) => why.push(m),
+                Err(Tried::Fatal(e)) => return Err(e),
             }
         }
-        Err(ProviderError::server(format!("llama-server for {} did not start on the GPU: {}", want.model, why.join("; "))).into())
+        Err(ProviderError::server(format!("llama-server for {} did not start on the GPU: {}", want.model, why.join("; "))))
+    }
+
+    /// The server that came up, with its slots (each conversation it served before a stop given
+    /// its cache back).
+    #[allow(clippy::too_many_arguments)]
+    fn running(
+        &self,
+        want: &Want,
+        model: &EngineModel,
+        epoch: u64,
+        began: Instant,
+        proc: Box<dyn Process>,
+        port: u16,
+        on_gpu: Option<(u32, u32)>,
+        split: bool,
+    ) -> Running {
+        let n = usize::from(want.shape.slots.max(1));
+        let mut slots: Vec<Slot> = (0..n).map(|_| Slot { busy: false, warming: false, key: None, last: Instant::now() }).collect();
+        let endpoint = LocalEndpoint::new("127.0.0.1", port).expect("loopback");
+        let thinking = self.thinking_of(&endpoint, want, &model.blob);
+        if let Some(dir) = &self.inner.cfg.slots_dir {
+            for (i, key) in persist::restore(&endpoint, dir, &want.model, &model.blob, &want.shape) {
+                if let Some(s) = slots.get_mut(i as usize) {
+                    s.key = Some(key);
+                }
+            }
+        }
+        if let (true, Some((n, m)), Some(o)) = (split, on_gpu, self.observer()) {
+            o.note(&format!("llama.cpp placed {n} of {m} layers of {} on the GPU", want.model));
+        }
+        Running {
+            model: want.model.clone(),
+            shape: want.shape.clone(),
+            port,
+            blob: model.blob.clone(),
+            proc,
+            epoch,
+            load_secs: began.elapsed().as_secs_f64(),
+            last_used: Instant::now(),
+            on_gpu,
+            defaults: Arc::new(model.defaults.clone()),
+            split,
+            slots,
+            thinking,
+        }
     }
 
     /// What the template of this model file does with earlier thinking: asked of the loaded server
@@ -741,12 +725,15 @@ impl LlamaEngine {
         t
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn try_start(
         &self,
         binary: &Path,
         backend: Option<&Path>,
-        blob: &Path,
+        model: &EngineModel,
         want: &Want,
+        split: bool,
+        settings: &ServerSettings,
         cancel: &CancelToken,
     ) -> Result<(Box<dyn Process>, u16, Option<(u32, u32)>), Tried> {
         let cfg = &self.inner.cfg;
@@ -756,18 +743,21 @@ impl LlamaEngine {
             std::fs::create_dir_all(dir).map_err(io)?;
         }
         let spec = Spec {
-            blob: blob.to_path_buf(),
+            blob: model.blob.clone(),
             port,
             slots: want.shape.slots.max(1),
             ctx_per_slot: want.shape.ctx_per_slot,
             kv: want.shape.kv.clone(),
-            ubatch: cfg.ubatch,
             slot_save: cfg.slots_dir.clone(),
+            draft: model.draft.clone(),
+            mmproj: model.mmproj.clone(),
+            split,
+            settings: settings.clone(),
         };
         let plan = launch::plan(binary, backend, &spec);
         // The same line Ollama logs for its runners, so the planner reads this load like any other.
         if let Some(path) = cfg.log.as_deref() {
-            if let Ok(mut f) = crate::ollama_log::open_own_log(path, crate::ollama_log::OWN_LOG_CAP) {
+            if let Ok(mut f) = crate::server_log::open_own_log(path, crate::server_log::OWN_LOG_CAP) {
                 use std::io::Write as _;
                 let _ = writeln!(f, "msg=\"starting llama-server\" cmd=\"{} {}\"", plan.binary.display(), plan.args.join(" "));
             }
@@ -804,6 +794,10 @@ impl LlamaEngine {
         }
         let text = cfg.log.as_deref().map(|p| log_since(p, log_from)).unwrap_or_default();
         let on_gpu = offloaded(&text).map(|o| (o.on_gpu, o.total));
+        if split {
+            // llama.cpp placed the layers against the free memory: what is on the CPU is meant to be.
+            return Ok((proc, port, on_gpu));
+        }
         // A backend that did not load leaves a healthy server on the CPU, ten times slower.
         if backend.is_some() && on_gpu.is_some_and(|(n, _)| n == 0) {
             proc.kill();
@@ -811,9 +805,9 @@ impl LlamaEngine {
         }
         // `--fit off` does not fail when the card is full under the Windows driver's sysmem
         // fallback: the server is healthy, and slow. The weights are resident now, so look.
-        if let Some(why) = self.spilled(proc.id(), blob) {
+        if let Some(why) = self.spilled(proc.id(), model) {
             proc.kill();
-            return Err(Tried::Declined(why));
+            return Err(Tried::Spilled(why));
         }
         Ok((proc, port, on_gpu))
     }
@@ -831,8 +825,14 @@ enum Tried {
     /// This backend did not work; try the next.
     Next(String),
     Fatal(ProviderError),
-    /// The server loaded, and the driver spilled the model into system memory: Ollama runs it.
-    Declined(String),
+    /// The server loaded whole, and the driver spilled the model into system memory: it runs split.
+    Spilled(String),
+}
+
+/// The model's files on disk, MiB: the weights, the draft and the projector.
+fn weights_mib(model: &EngineModel) -> f64 {
+    let size = |p: &Path| std::fs::metadata(p).map_or(0.0, |m| m.len() as f64 / MIB);
+    size(&model.blob) + model.draft.as_ref().map_or(0.0, |d| size(&d.path)) + model.mmproj.as_deref().map_or(0.0, size)
 }
 
 /// `13.6` (GiB, one decimal) from MiB.
@@ -858,7 +858,7 @@ fn idle_loop(weak: Weak<Inner>, tick: Duration) {
     loop {
         std::thread::sleep(tick);
         let Some(inner) = weak.upgrade() else { return };
-        let Some(keep) = inner.cfg.keep_alive else { continue };
+        let Some(keep) = inner.settings.read().unwrap_or_else(|e| e.into_inner()).keep_alive else { continue };
         let expired = {
             let mut g = lock(&inner.st);
             let mut gone = g.running.take_if(|r| r.busy() == 0 && r.last_used.elapsed() >= keep);
@@ -892,17 +892,7 @@ mod tests {
     use crate::llama::testkit::*;
 
     fn want(model: &str, lane: Lane, key: u64) -> Want {
-        Want { model: model.into(), shape: EngineShape { slots: 3, ctx_per_slot: 8192, kv: "q8_0".into() }, lane, key, need_mib: None }
-    }
-
-    #[test]
-    fn keep_alive_reads_ollamas_spellings() {
-        assert_eq!(keep_alive_from(None), Some(Duration::from_secs(300)));
-        assert_eq!(keep_alive_from(Some("10m")), Some(Duration::from_secs(600)));
-        assert_eq!(keep_alive_from(Some("90")), Some(Duration::from_secs(90)));
-        assert_eq!(keep_alive_from(Some("1h")), Some(Duration::from_secs(3600)));
-        assert_eq!(keep_alive_from(Some("-1")), None);
-        assert_eq!(keep_alive_from(Some("0")), Some(Duration::ZERO));
+        Want { model: model.into(), shape: EngineShape { slots: 3, ctx_per_slot: 8192, kv: "q8_0".into(), split: false }, lane, key, need_mib: None }
     }
 
     #[test]
@@ -956,12 +946,47 @@ mod tests {
     }
 
     #[test]
-    fn loading_asks_ollama_to_unload_the_model_first() {
-        let fx = Fixture::new("dusk:22b");
-        fx.ollama.resident("dusk:22b");
+    fn the_launch_carries_the_models_draft_and_projector() {
+        let fx = Fixture::with_layers("dawn:9b", true, true);
         let e = fx.engine();
-        e.acquire(&want("dusk:22b", Lane::Conductor, 1), &CancelToken::new()).unwrap();
-        assert_eq!(fx.ollama.unloaded(), vec!["dusk:22b".to_string()]);
+        e.acquire(&want("dawn:9b", Lane::Conductor, 1), &CancelToken::new()).unwrap();
+        let plan = fx.spawner.plans.lock().unwrap()[0].clone();
+        let at = |f: &str| plan.args.iter().position(|a| a == f).map(|i| plan.args[i + 1].clone());
+        assert_eq!((at("--spec-type").as_deref(), at("--spec-draft-n-max").as_deref()), (Some("draft-mtp"), Some("3")));
+        assert!(at("--spec-draft-model").is_some() && at("--mmproj").is_some(), "{:?}", plan.args);
+    }
+
+    #[test]
+    fn a_model_the_engine_cannot_run_is_an_error_with_the_reason_and_starts_nothing() {
+        let fx = Fixture::new("dusk:22b");
+        crate::llama::eligible::tests::store(
+            &fx.dir.path().join("store"),
+            "lora:1",
+            serde_json::json!({"model_format": "gguf"}),
+            &[(crate::ollama_store::MODEL_MEDIA_TYPE, &crate::llama::testkit::fixture_gguf()[..]), ("application/vnd.ollama.image.adapter", &b"lora"[..])],
+        );
+        let e = fx.engine();
+        let err = e.acquire(&want("lora:1", Lane::Conductor, 1), &CancelToken::new()).err().unwrap();
+        assert!(err.detail.starts_with("lora:1 can't run: it applies a LoRA adapter"), "{}", err.detail);
+        assert_eq!(fx.spawner.starts(), 0);
+    }
+
+    #[test]
+    fn an_ms_model_on_stock_llama_cpp_is_refused_and_runs_on_ms_llama_cpp() {
+        let fx = Fixture::new("dusk:22b");
+        let ms = marlowe_hw::gguf::write_header(
+            &[("general.architecture", serde_json::json!("qwen35")), ("tokenizer.chat_template", serde_json::json!("{{ messages }}"))],
+            &[("blk.0.ffn_up.weight", 46, vec![256])],
+        );
+        crate::llama::eligible::tests::store(&fx.dir.path().join("store"), "q:ms", serde_json::json!({"model_format": "gguf"}), &[(crate::ollama_store::MODEL_MEDIA_TYPE, &ms[..])]);
+        let mut cfg = fx.config();
+        cfg.backend = Some(Backend::LlamaCpp);
+        let err = LlamaEngine::new(cfg.clone(), fx.spawner.clone()).acquire(&want("q:ms", Lane::Conductor, 1), &CancelToken::new()).err().unwrap();
+        assert!(err.detail.contains("can't run") && err.detail.contains("needs ms-llama.cpp"), "{}", err.detail);
+        assert_eq!(fx.spawner.starts(), 0);
+        cfg.backend = Some(Backend::MsLlamaCpp);
+        LlamaEngine::new(cfg, fx.spawner.clone()).acquire(&want("q:ms", Lane::Conductor, 1), &CancelToken::new()).unwrap();
+        assert_eq!(fx.spawner.starts(), 1);
     }
 
     #[test]
@@ -1029,7 +1054,7 @@ mod tests {
     fn an_idle_server_is_stopped_after_the_keep_alive() {
         let fx = Fixture::new("dusk:22b");
         let mut cfg = fx.config();
-        cfg.keep_alive = Some(Duration::from_millis(150));
+        cfg.settings.keep_alive = Some(Duration::from_millis(150));
         cfg.idle_tick = Duration::from_millis(40);
         let e = LlamaEngine::new(cfg, fx.spawner.clone());
         let lease = e.acquire(&want("dusk:22b", Lane::Conductor, 1), &CancelToken::new()).unwrap();
@@ -1071,7 +1096,7 @@ mod tests {
     fn a_load_is_a_live_line_while_it_lasts_and_an_idle_unload_is_said() {
         let fx = Fixture::new("dusk:22b");
         let mut cfg = fx.config();
-        cfg.keep_alive = Some(Duration::from_millis(100));
+        cfg.settings.keep_alive = Some(Duration::from_millis(100));
         cfg.idle_tick = Duration::from_millis(30);
         let e = LlamaEngine::new(cfg, fx.spawner.clone());
         let heard = Arc::new(Heard::default());
@@ -1116,44 +1141,72 @@ mod tests {
         (e, vram, told, heard)
     }
 
+    fn args_of(fx: &Fixture, i: usize) -> Vec<String> {
+        fx.spawner.plans.lock().unwrap()[i].args.clone()
+    }
+
     #[test]
-    fn a_model_bigger_than_the_free_gpu_is_not_started_and_ollama_is_told() {
+    fn a_model_bigger_than_the_free_gpu_runs_split_and_never_whole() {
         let fx = Fixture::new("dusk:22b");
-        // 13.6 GiB planned, 11.9 GiB free: llama-server would load it anyway, into system memory.
+        // 13.6 GiB planned, 11.9 GiB free: `-ngl 99` would load it anyway, into system memory.
         let (e, _vram, told, heard) = with_gpu(&fx, Some(11.9 * 1024.0));
         let mut w = want("dusk:22b", Lane::Conductor, 1);
         w.need_mib = Some(13.6 * 1024.0);
-        let err = e.acquire(&w, &CancelToken::new()).err().expect("refused");
-        assert_eq!(err.detail, "dusk:22b runs on Ollama: needs 13.6 GiB on the GPU, 11.9 GiB free");
-        assert_eq!(fx.spawner.starts(), 0, "no server was started");
-        assert_eq!(e.declined("dusk:22b").as_deref(), Some("needs 13.6 GiB on the GPU, 11.9 GiB free"));
+        e.acquire(&w, &CancelToken::new()).unwrap();
+        assert_eq!(fx.spawner.starts(), 1);
+        let a = args_of(&fx, 0);
+        assert!(a.windows(2).any(|p| p == ["--fit", "on"]) && !a.iter().any(|x| x == "-ngl"), "{a:?}");
+        assert!(e.status().unwrap().split);
         assert_eq!(told.0.lock().unwrap().clone(), vec!["dusk:22b: needs 13.6 GiB on the GPU, 11.9 GiB free".to_string()]);
-        assert_eq!(heard.lines.lock().unwrap().last().map(String::as_str), Some("dusk:22b runs on Ollama: needs 13.6 GiB on the GPU, 11.9 GiB free"));
+        assert!(heard.lines.lock().unwrap().iter().any(|l| l == "dusk:22b runs split between the GPU and the CPU: needs 13.6 GiB on the GPU, 11.9 GiB free"));
     }
 
     #[test]
-    fn no_gpu_reading_does_not_start_a_server() {
+    fn with_gpu_fit_whole_a_model_that_does_not_fit_is_an_error() {
+        let fx = Fixture::new("dusk:22b");
+        let (e, _vram, _, _) = with_gpu(&fx, Some(11.9 * 1024.0));
+        e.set_settings(ServerSettings { gpu_fit: GpuFit::Whole, ..e.settings() });
+        let mut w = want("dusk:22b", Lane::Conductor, 1);
+        w.need_mib = Some(13.6 * 1024.0);
+        let err = e.acquire(&w, &CancelToken::new()).err().expect("refused");
+        assert!(err.detail.contains("does not fit whole on the GPU (needs 13.6 GiB on the GPU, 11.9 GiB free)"), "{}", err.detail);
+        assert_eq!(fx.spawner.starts(), 0);
+    }
+
+    #[test]
+    fn no_gpu_reading_never_starts_a_whole_server() {
         let fx = Fixture::new("dusk:22b");
         let (e, _vram, told, _) = with_gpu(&fx, None);
-        let err = e.acquire(&want("dusk:22b", Lane::Conductor, 1), &CancelToken::new()).err().expect("refused");
-        assert!(err.detail.contains("no reading of the GPU"), "{}", err.detail);
-        assert_eq!(fx.spawner.starts(), 0);
-        assert_eq!(told.0.lock().unwrap().len(), 1);
+        e.acquire(&want("dusk:22b", Lane::Conductor, 1), &CancelToken::new()).unwrap();
+        assert!(args_of(&fx, 0).windows(2).any(|p| p == ["--fit", "on"]), "split: llama.cpp measures for itself");
+        assert!(told.0.lock().unwrap()[0].contains("no reading of the GPU"));
     }
 
     #[test]
-    fn with_room_on_the_gpu_the_server_starts() {
+    fn a_shape_the_planner_made_split_starts_split_without_a_check() {
+        let fx = Fixture::new("dusk:22b");
+        let (e, _vram, told, _) = with_gpu(&fx, Some(20_000.0));
+        let mut w = want("dusk:22b", Lane::Conductor, 1);
+        w.shape.split = true;
+        e.acquire(&w, &CancelToken::new()).unwrap();
+        assert!(args_of(&fx, 0).windows(2).any(|p| p == ["--fit", "on"]));
+        assert!(told.0.lock().unwrap().is_empty(), "nothing new to tell the planner");
+    }
+
+    #[test]
+    fn with_room_on_the_gpu_the_server_starts_whole() {
         let fx = Fixture::new("dusk:22b");
         let (e, _vram, told, _) = with_gpu(&fx, Some(20_000.0));
         let mut w = want("dusk:22b", Lane::Conductor, 1);
         w.need_mib = Some(13.6 * 1024.0);
         e.acquire(&w, &CancelToken::new()).unwrap();
         assert_eq!(fx.spawner.starts(), 1);
-        assert!(told.0.lock().unwrap().is_empty() && e.declined("dusk:22b").is_none());
+        assert!(args_of(&fx, 0).windows(2).any(|p| p == ["-ngl", "99"]));
+        assert!(told.0.lock().unwrap().is_empty() && !e.status().unwrap().split);
     }
 
     #[test]
-    fn memory_ollama_just_let_go_of_gets_a_moment_to_show_as_free() {
+    fn memory_a_stopped_server_gave_back_gets_a_moment_to_show_as_free() {
         let fx = Fixture::new("dusk:22b");
         let vram = FakeVram::new(Some(2_000.0));
         let mut cfg = fx.config();
@@ -1169,72 +1222,21 @@ mod tests {
         w.need_mib = Some(13.6 * 1024.0);
         e.acquire(&w, &CancelToken::new()).unwrap();
         assert_eq!(fx.spawner.starts(), 1);
+        assert!(args_of(&fx, 0).windows(2).any(|p| p == ["-ngl", "99"]), "it fit once the memory showed");
     }
 
     #[test]
-    fn a_model_the_driver_paged_into_system_memory_is_stopped_and_handed_to_ollama() {
+    fn a_model_the_driver_paged_into_system_memory_is_stopped_and_started_again_split() {
         let fx = Fixture::new("dusk:22b");
         let (e, vram, told, heard) = with_gpu(&fx, Some(20_000.0));
         // The server is healthy and holds 4 GiB of shared memory beyond its pinned buffers.
         *vram.process.lock().unwrap() = Some((11_000.0, 4_500.0));
-        let err = e.acquire(&want("dusk:22b", Lane::Conductor, 1), &CancelToken::new()).err().expect("refused");
-        assert!(err.detail.starts_with("dusk:22b runs on Ollama: the driver moved 4.4 GiB of it into system memory"), "{}", err.detail);
-        assert_eq!((fx.spawner.starts(), fx.spawner.killed()), (1, 1), "the server was stopped");
-        assert!(e.status().is_none());
+        e.acquire(&want("dusk:22b", Lane::Conductor, 1), &CancelToken::new()).unwrap();
+        assert_eq!((fx.spawner.starts(), fx.spawner.killed()), (2, 1), "the spilled server was stopped");
+        assert!(args_of(&fx, 0).windows(2).any(|p| p == ["-ngl", "99"]) && args_of(&fx, 1).windows(2).any(|p| p == ["--fit", "on"]));
+        assert!(e.status().unwrap().split);
         assert_eq!(told.0.lock().unwrap().len(), 1);
-        assert!(heard.lines.lock().unwrap().iter().any(|l| l.starts_with("dusk:22b runs on Ollama: the driver moved")));
-    }
-
-    /// A card whose free memory is what is left while Ollama holds any model.
-    #[derive(Debug)]
-    struct HeldByOllama {
-        ollama: LocalEndpoint,
-        free_when_held: f64,
-        free_when_not: f64,
-    }
-    impl VramProbe for HeldByOllama {
-        fn free_mib(&self) -> Option<f64> {
-            let held = http::get_json(&self.ollama, "/api/ps", QUICK).map(|v| !parse_ps(&v).is_empty()).unwrap_or(false);
-            Some(if held { self.free_when_held } else { self.free_when_not })
-        }
-        fn process_mib(&self, _: u32) -> Option<(f64, f64)> {
-            Some((8_000.0, 100.0))
-        }
-    }
-
-    #[test]
-    fn another_model_ollama_holds_is_let_go_when_the_card_is_short_of_the_load() {
-        let fx = Fixture::new("dusk:22b");
-        // The planner counted what Ollama's runner holds as free; the server starts after it lets go.
-        fx.ollama.resident("other:9b");
-        let mut cfg = fx.config();
-        cfg.vram = Some(Arc::new(HeldByOllama { ollama: fx.ollama.endpoint(), free_when_held: 2_000.0, free_when_not: 20_000.0 }));
-        cfg.vram_settle = Duration::ZERO;
-        let e = LlamaEngine::new(cfg, fx.spawner.clone());
-        let heard = Arc::new(Heard::default());
-        let alloc = ContextAllocations::new();
-        alloc.set_engine_observer(Arc::new(Ears(heard.clone())));
-        e.follow(alloc);
-        let mut w = want("dusk:22b", Lane::Conductor, 1);
-        w.need_mib = Some(13.6 * 1024.0);
-        e.acquire(&w, &CancelToken::new()).unwrap();
-        assert_eq!((fx.spawner.starts(), fx.ollama.unloaded()), (1, vec!["other:9b".to_string()]));
-        assert!(heard.lines.lock().unwrap().iter().any(|l| l == "Ollama let go of other:9b to make room for dusk:22b"), "{:?}", heard.lines.lock().unwrap());
-    }
-
-    #[test]
-    fn a_card_that_stays_short_after_ollama_let_go_still_declines() {
-        let fx = Fixture::new("dusk:22b");
-        fx.ollama.resident("other:9b");
-        let mut cfg = fx.config();
-        cfg.vram = Some(Arc::new(HeldByOllama { ollama: fx.ollama.endpoint(), free_when_held: 2_000.0, free_when_not: 6_000.0 }));
-        cfg.vram_settle = Duration::ZERO;
-        let e = LlamaEngine::new(cfg, fx.spawner.clone());
-        let mut w = want("dusk:22b", Lane::Conductor, 1);
-        w.need_mib = Some(13.6 * 1024.0);
-        let err = e.acquire(&w, &CancelToken::new()).err().expect("refused");
-        assert_eq!(err.detail, "dusk:22b runs on Ollama: needs 13.6 GiB on the GPU, 5.9 GiB free");
-        assert_eq!(fx.spawner.starts(), 0);
+        assert!(heard.lines.lock().unwrap().iter().any(|l| l.starts_with("dusk:22b runs split between the GPU and the CPU: the driver moved 4.4 GiB")));
     }
 
     #[test]

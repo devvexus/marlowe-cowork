@@ -172,7 +172,7 @@ fn a_manifest_with_no_model_layer_names_the_media_types_it_did_find() {
         e.to_string().contains("application/vnd.ollama.image.weights.v2"),
         "the refusal must show what the layout actually held: {e}"
     );
-    assert!(e.remedy().contains("/provider ollama"), "{}", e.remedy());
+    assert!(e.remedy().contains("not a documented interface") && !e.remedy().contains("/provider ollama"), "{}", e.remedy());
 }
 
 #[test]

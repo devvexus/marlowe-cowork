@@ -171,7 +171,8 @@ fn no_background_path_can_load_valiance_in_the_preview_library() {
             assert_eq!(cost.fits(), Some(false));
             assert_eq!(cost.resident, vec![DAWN.to_string()]);
             assert!(cost.need_mib.unwrap() > cost.free_mib.unwrap(), "{cost:?}");
-            assert_eq!(cost.free_mib, Some(9_376.0 - 1_024.0));
+            // One engine, one model: dawn's server stops before valiance starts, so its memory counts.
+            assert_eq!(cost.free_mib, Some(9_376.0 + 6_000.0 - 1_024.0));
         }
         other => panic!("{other:?}"),
     }

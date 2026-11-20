@@ -27,7 +27,7 @@ pub mod testkit;
 pub use assets::{cuda_for, plan as asset_plan, Arch, AssetPlan, Cuda};
 pub use backend::{Backend, DEFAULT};
 pub use installed::{server, Device, Installed, Kind, NotInstalled, Server};
-pub use layout::{default_root, root_from, ROOT_ENV, SERVER_EXE};
+pub use layout::{default_root, is_own_server, root_from, ROOT_ENV, SERVER_ENV, SERVER_EXE};
 pub use status::{status, Status, Update};
 
 /// Seconds since the epoch.

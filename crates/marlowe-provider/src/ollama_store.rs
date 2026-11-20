@@ -1,34 +1,14 @@
-//! Reading Ollama's on-disk model store, so a **local `llama-server`** can be pointed at the blob
-//! Ollama already downloaded. **ADR-060 §7.**
+//! Reading Ollama's on-disk model store: Marlowe's llama.cpp engine runs the GGUF Ollama already
+//! downloaded, and Ollama itself never serves a Marlowe model (it need not even run).
 //!
-//! # This is a dependency on another program's internals, and that belongs in the cost column
+//! `~/.ollama/models` (or `OLLAMA_MODELS`) is not a documented public interface: this is the same
+//! class of dependency as parsing another program's cache directory, and an Ollama update can
+//! change it. Every read here happens at load time and every failure is a distinct variant that
+//! names the path it looked at and the remedy, rather than a wrong answer four minutes into a run.
 //!
-//! `~/.ollama/models` is not a documented public interface and `lib/ollama/llama-server.exe` is a
-//! vendored private binary with no stability promise. ADR-060 §7 states the honest framing: *this
-//! is the same class of dependency as parsing another program's cache directory.* It works because
-//! it was measured working, on this machine, on 2026-08-27. It can break on any Ollama update.
-//!
-//! Two things bound the damage, and neither removes it:
-//!
-//! * **Every read here happens at load time**, never mid-turn. A missing binary or an unparseable
-//!   manifest becomes a refusal that names the remedy — CLAUDE.md's *prefer a load-time error to a
-//!   sensible default* — rather than a wrong answer arriving four minutes into a run.
-//! * **Every failure is a distinct variant with its own remedy.** "Could not resolve the model" is
-//!   a sentence a user cannot act on; "the manifest at `<path>` has no
-//!   `application/vnd.ollama.image.model` layer, only [...]" is one they can.
-//!
-//! # The `.params` layer is the reason this is not optional
-//!
-//! Ollama applies a model's `.params` layer to every request it serves. `qwen3.5:9b`'s is 65 bytes:
-//! `{"presence_penalty":1.5,"temperature":1,"top_k":20,"top_p":0.95}`. `llama-server` pointed at
-//! the raw blob applies **its own** defaults instead — temperature 0.8, top_k 40,
-//! presence_penalty 0.0 — so moving the runtime silently moves the sampler, the model still answers
-//! coherently, and nothing anywhere reports a mismatch. That is precisely the shape this project
-//! keeps deleting.
-//!
-//! So a `llama-server` driver reads the layer and sends it, and announces where it came
-//! from. A model with **no** `.params` layer is a legitimate, reported state (`qwen3.5:9b` has
-//! none); a store that could not be read at all is not, and refuses.
+//! The `.params` layer is read because Ollama applies it to every request: `llama-server` pointed
+//! at the raw blob would apply its own sampler defaults instead, silently. A model with no
+//! `.params` layer is a reported state; one that will not parse refuses.
 
 use std::path::{Path, PathBuf};
 
@@ -70,21 +50,19 @@ impl ResolveError {
     pub fn remedy(&self) -> String {
         match self {
             ResolveError::NoStore { root, .. } => format!(
-                "{self}. `llamacpp` serves the GGUF Ollama already downloaded, so it needs \
-                 Ollama's store. Install Ollama, or set OLLAMA_MODELS to the store's location \
-                 (looked at {root})"
+                "{self}. Marlowe runs the GGUF Ollama already downloaded, so it needs Ollama's \
+                 store. Install Ollama, or set OLLAMA_MODELS to the store's location (looked at {root})"
             ),
             ResolveError::UnreadableModelName { .. } => format!(
                 "{self}. Names look like `qwen3.5:9b`, `library/qwen3.5:9b` or \
                  `hf.co/unsloth/model:TAG`"
             ),
             ResolveError::NoManifest { model, .. } => {
-                format!("{self}. Run `ollama pull {model}` first — `llamacpp` never downloads")
+                format!("{self}. Run `ollama pull {model}` first; Marlowe reads Ollama's store and never downloads into it")
             }
             ResolveError::UnreadableManifest { .. } | ResolveError::NoModelLayer { .. } => format!(
                 "{self}. This is Ollama's own on-disk layout and it is not a documented \
-                 interface (ADR-060 §7); an Ollama upgrade may have changed it. Switch back with \
-                 `/provider ollama`, which reads none of this"
+                 interface; an Ollama upgrade may have changed it"
             ),
             ResolveError::MissingBlob { model, .. } => format!(
                 "{self}. The manifest and the blob store disagree. `ollama pull {model}` \
@@ -485,37 +463,6 @@ pub fn server_binary_in(override_path: Option<&str>, engines_root: Option<&Path>
     }
 }
 
-/// The CUDA backend `ggml` must be told about **by file**, beside the binary.
-///
-/// `None` when there is none, which is a real state on a CPU-only machine. The caller decides what
-/// that means; this only reports it.
-///
-/// # `cuda_v12` is tried FIRST, and the order is not "newest wins"
-///
-/// Ollama ships `cuda_v12/` and `cuda_v13/` side by side and picks between them against the
-/// installed driver. **`cuda_v12` is the one ADR-060's measurement actually loaded on this
-/// machine**, at 107 tok/s; nothing has been measured through `cuda_v13` here. A driver new enough
-/// for 13 runs 12 as well, so preferring the measured one costs nothing and preferring the higher
-/// number would be choosing an unmeasured path on the strength of its version.
-///
-/// **The ordering is still a guess**, and it is the guess with the smaller blast radius: if the
-/// chosen build does not load, `ggml` FAILS OPEN to CPU — health 200, tool calls correct,
-/// ~10 tok/s — so a wrong choice here is a slow run with a correct-looking log line. That is the
-/// same failure `GGML_BACKEND_PATH` exists to prevent, one level down, and the launch log's
-/// `load_backend:` line is what settles it.
-pub fn backend_dll(binary: &Path) -> Option<PathBuf> {
-    let dir = binary.parent()?;
-    for sub in ["cuda_v12", "cuda_v13"] {
-        for name in ["ggml-cuda.dll", "libggml-cuda.so"] {
-            let p = dir.join(sub).join(name);
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-    }
-    None
-}
-
 /// `qwen3.5:9b` → `manifests/registry.ollama.ai/library/qwen3.5/9b`, relative to the store root.
 ///
 /// The tag defaults to `latest`, exactly as Ollama's CLI does. One, two or three path components
@@ -643,6 +590,48 @@ pub fn resolve_in(root: &Path, model: &str) -> Result<ResolvedModel, ResolveErro
     Ok(ResolvedModel { model: model.to_string(), blob, manifest, sampling })
 }
 
+/// Every model the store at `root` holds, by the name Ollama gives it (`qwen3.5:9b`,
+/// `ns/name:tag`, `hf.co/ns/name:tag`): every manifest with a model layer. A missing store is no
+/// models; cloud stubs carry no weights and are left out.
+pub fn list_in(root: &Path) -> Vec<String> {
+    let base = root.join("manifests");
+    let dirs = |p: &Path| -> Vec<(String, PathBuf)> {
+        std::fs::read_dir(p)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| Some((e.file_name().to_str()?.to_string(), e.path())))
+            .collect()
+    };
+    let mut out = Vec::new();
+    for (host, h) in dirs(&base) {
+        for (ns, n) in dirs(&h) {
+            for (name, m) in dirs(&n) {
+                for (tag, file) in dirs(&m) {
+                    if !file.is_file() {
+                        continue;
+                    }
+                    let full = match (host.as_str(), ns.as_str()) {
+                        ("registry.ollama.ai", "library") => format!("{name}:{tag}"),
+                        ("registry.ollama.ai", _) => format!("{ns}/{name}:{tag}"),
+                        _ => format!("{host}/{ns}/{name}:{tag}"),
+                    };
+                    let has_weights = std::fs::read_to_string(&file)
+                        .ok()
+                        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                        .and_then(|v| v.get("layers").and_then(|l| l.as_array()).cloned())
+                        .is_some_and(|ls| ls.iter().any(|l| l.get("mediaType").and_then(|m| m.as_str()) == Some(MODEL_MEDIA_TYPE)));
+                    if has_weights {
+                        out.push(full);
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Resolve against the machine's own store. The product path; tests use [`resolve_in`].
 pub fn resolve(model: &str) -> Result<ResolvedModel, ResolveError> {
     resolve_in(&store_root(), model)
@@ -716,5 +705,18 @@ mod tests {
         // `is_empty` is what stops the announcement saying "sampling from Ollama's layer" over
         // nothing — a disclosure with no content is worse than the absent one it replaces.
         assert!(Sampling::from_params_json(&serde_json::json!({})).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_store_lists_every_model_with_weights_by_the_name_ollama_gives_it() {
+        let d = crate::llama::testkit::TempDir::new();
+        let weights = [(MODEL_MEDIA_TYPE, "gguf")];
+        crate::llama::eligible::tests::store(d.path(), "qwen3.5:9b", serde_json::json!({}), &weights);
+        crate::llama::eligible::tests::store(d.path(), "devvexus/dusk:27b", serde_json::json!({}), &weights);
+        crate::llama::eligible::tests::store(d.path(), "hf.co/unsloth/m:Q4", serde_json::json!({}), &weights);
+        // A cloud stub has no model layer.
+        crate::llama::eligible::tests::store(d.path(), "glm-5:cloud", serde_json::json!({}), &[("application/vnd.ollama.image.license", "x")]);
+        assert_eq!(list_in(d.path()), vec!["devvexus/dusk:27b", "hf.co/unsloth/m:Q4", "qwen3.5:9b"]);
+        assert!(list_in(&d.path().join("absent")).is_empty());
     }
 }

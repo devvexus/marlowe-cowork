@@ -1,9 +1,14 @@
-//! The Ollama provider: `/api/chat` NDJSON streaming, catalog via `/api/tags` + `/api/show`.
+//! The local provider: the models in Ollama's store, served by Marlowe's own llama.cpp engine.
 //!
-//! Beyond the wire: images ride as base64 `images` when the model reports the `vision`
-//! capability (`request.rs`); every request is checked against its `num_ctx` before it is sent
-//! (A15); tool-call arguments are repaired against the request's schemas and calls written as
-//! text are recovered (`repair.rs`, `scan.rs`), counted in [`RepairStats`] for the bench (A4).
+//! Ollama is only a source of model files. The catalog and each model's capabilities are read from
+//! the store on disk ([`crate::ollama_store::list_in`], [`crate::llama::eligible`]); Ollama's
+//! server is never asked anything and need not run. Every request goes to the engine
+//! ([`crate::llama`]) as the body Ollama would have sent its llama-server.
+//!
+//! The Ollama-shaped body is still the one the request is planned as (`request.rs`): images ride
+//! as base64 when the model has a projector, every request is checked against its window before
+//! it is sent (A15), and tool-call arguments are repaired against the request's schemas and calls
+//! written as text recovered (`repair.rs`, `scan.rs`), counted in [`RepairStats`] (A4).
 
 mod leak;
 mod models;
@@ -13,53 +18,46 @@ pub mod scan;
 mod stream;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use marlowe_model::image::BlobStore;
 use marlowe_model::{
-    CancelToken, ChatRequest, Completion, ContextAllocations, Lane, ModelInfo, Provider, ProviderError, ProviderKind,
+    CancelToken, ChatRequest, Completion, ContextAllocations, EngineShape, Lane, ModelInfo, Provider, ProviderError, ProviderKind,
     StreamEvent,
 };
-use serde_json::{json, Value};
+use serde_json::Value;
 
-use crate::http::{self, HttpError, LocalEndpoint, NdjsonError, NdjsonStream};
+use crate::http::{self, HttpError};
 use crate::llama::render::RenderGuard;
-use crate::llama::{chat as llama_chat, conversation_key, LlamaEngine, Want};
+use crate::llama::{chat as llama_chat, conversation_key, eligible, LlamaEngine, Want};
+use crate::ollama_store;
 
 pub use leak::{defang_tool_markup, recover_leaked_call};
-pub use models::{
-    is_cloud_tag, model_info, parse_show, parse_tags, think_value, ModelMeta, TagEntry, ThinkMode,
-};
+pub use models::{is_cloud_tag, model_info, think_value, ModelMeta, ThinkMode};
 pub use repair::{RepairSnapshot, RepairStats};
 pub use request::{
     is_context_overflow, plan_request, request_body, request_body_with, BodyOptions, Planned, CONTEXT_OVERFLOW,
 };
 pub use stream::{clip_detail, is_tool_parse_error, Folder};
 
-/// Context window sent as `num_ctx` when the model allows it. Ollama's own default is 2048.
+/// Context window a model with no context policy gets.
 pub const DEFAULT_CONTEXT_TOKENS: u32 = 32_768;
 
-/// Longest a streaming read may wait for the next byte (model load included).
-pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
-
-/// Timeout for catalog calls.
-pub const CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
-
 pub struct OllamaProvider {
-    endpoint: LocalEndpoint,
+    /// Ollama's model store.
+    store: PathBuf,
     /// The window for a model with no context policy.
     num_ctx: u32,
-    /// Per-model windows from the context policy: one allocation per model, sent on every
-    /// request, so Ollama never reloads a runner because two agents asked for different sizes.
+    /// Per-model windows from the context policy, and the planner's engine shapes.
     alloc: ContextAllocations,
-    idle: Duration,
     meta: Mutex<HashMap<String, ModelMeta>>,
     /// Where image bytes live (`<home>\blobs`). Without one, images are sent as a text note.
     blobs: Option<Arc<dyn BlobStore>>,
     stats: Arc<RepairStats>,
-    /// Marlowe's own llama-server, for the models the planner gave it (see [`crate::llama`]).
+    /// Marlowe's own llama-server, which serves every model (see [`crate::llama`]).
     llama: Option<LlamaEngine>,
     /// Checks that each request to the engine renders as the last prompt plus its reply.
     render: RenderGuard,
@@ -70,17 +68,17 @@ pub struct OllamaProvider {
 
 impl Default for OllamaProvider {
     fn default() -> Self {
-        Self::new(LocalEndpoint::default_ollama())
+        Self::new(ollama_store::store_root())
     }
 }
 
 impl OllamaProvider {
-    pub fn new(endpoint: LocalEndpoint) -> Self {
+    /// The models in the store at `store`.
+    pub fn new(store: PathBuf) -> Self {
         Self {
-            endpoint,
+            store,
             num_ctx: DEFAULT_CONTEXT_TOKENS,
             alloc: ContextAllocations::new(),
-            idle: DEFAULT_IDLE_TIMEOUT,
             meta: Mutex::new(HashMap::new()),
             blobs: None,
             stats: Arc::new(RepairStats::new()),
@@ -90,8 +88,7 @@ impl OllamaProvider {
         }
     }
 
-    /// Serves the models the context policy assigns to Marlowe's own llama-server through
-    /// `engine`; every other model stays on Ollama.
+    /// Serves every model through `engine`. Without one a request is an error naming why.
     pub fn with_llama_engine(mut self, engine: LlamaEngine) -> Self {
         self.llama = Some(engine);
         self
@@ -114,17 +111,7 @@ impl OllamaProvider {
         self.stats.clone()
     }
 
-    /// From an optional base URL (`http://127.0.0.1:11434`). Only loopback hosts are accepted.
-    pub fn from_base_url(url: Option<&str>) -> Result<Self, ProviderError> {
-        match url {
-            None => Ok(Self::default()),
-            Some(u) => LocalEndpoint::parse(u).map(Self::new).ok_or_else(|| {
-                ProviderError::bad_request(format!("'{u}' is not a loopback Ollama address"))
-            }),
-        }
-    }
-
-    /// Caps `num_ctx` for every request (the model's own limit still applies).
+    /// Caps the window of a model with no policy (the model's own limit still applies).
     pub fn with_context_tokens(mut self, tokens: u32) -> Self {
         self.num_ctx = tokens.max(512);
         self
@@ -136,107 +123,54 @@ impl OllamaProvider {
         self
     }
 
-    /// The `num_ctx` requests for `model` send: its policy's allocation, else the default; never
+    /// The window requests for `model` use: its policy's allocation, else the default; never
     /// above the model's own maximum.
     pub fn context_for(&self, model: &str, meta: &ModelMeta) -> u32 {
         let want = self.alloc.get(model).unwrap_or(self.num_ctx);
         meta.context.map_or(want, |c| c.min(want))
     }
 
-    pub fn with_idle_timeout(mut self, idle: Duration) -> Self {
-        self.idle = idle;
-        self
-    }
-
-    pub fn endpoint(&self) -> &LocalEndpoint {
-        &self.endpoint
-    }
-
     pub fn context_tokens(&self) -> u32 {
         self.num_ctx
     }
 
-    /// True when something answering like Ollama is listening.
-    pub fn is_running(&self, timeout: Duration) -> bool {
-        http::get_json(&self.endpoint, "/api/tags", timeout)
-            .ok()
-            .and_then(|v| parse_tags(&v))
-            .is_some()
+    pub fn store(&self) -> &std::path::Path {
+        &self.store
     }
 
-    fn cached(&self, model: &str) -> Option<ModelMeta> {
-        self.meta.lock().unwrap_or_else(|e| e.into_inner()).get(model).cloned()
-    }
-
-    fn remember(&self, model: &str, meta: ModelMeta) {
-        self.meta.lock().unwrap_or_else(|e| e.into_inner()).insert(model.to_string(), meta);
-    }
-
-    fn show(&self, model: &str) -> Result<ModelMeta, ProviderError> {
-        let v = http::post_json(&self.endpoint, "/api/show", &json!({ "model": model }), CATALOG_TIMEOUT)
-            .map_err(|e| self.error(e, Some(model)))?;
-        Ok(parse_show(&v))
-    }
-
-    /// What is known about `model`, asking `/api/show` once if needed.
+    /// What is known about `model`, read from the store once.
     pub fn meta(&self, model: &str) -> Result<ModelMeta, ProviderError> {
-        if let Some(m) = self.cached(model) {
-            if m.is_complete() {
-                return Ok(m);
-            }
+        if let Some(m) = self.meta.lock().unwrap_or_else(|e| e.into_inner()).get(model) {
+            return Ok(m.clone());
         }
-        let shown = self.show(model)?;
-        let merged = match self.cached(model) {
-            Some(m) => models::merge(&m, &shown),
-            None => shown,
-        };
-        self.remember(model, merged.clone());
-        Ok(merged)
+        let m = eligible::resolve(&self.store, model).map_err(|why| ProviderError::bad_request(format!("{model} can't run: {why}")))?;
+        self.meta.lock().unwrap_or_else(|e| e.into_inner()).insert(model.to_string(), m.meta.clone());
+        Ok(m.meta)
     }
 
-    fn body_options<'a>(&'a self, req: &ChatRequest, meta: &ModelMeta) -> BodyOptions<'a> {
-        BodyOptions {
-            vision: meta.has("vision"),
-            blobs: self.blobs.as_deref(),
-            ..BodyOptions::new(self.context_for(&req.model, meta), think_value(meta.think_mode(), req.effort))
-        }
+    fn body_options<'a>(&'a self, req: &ChatRequest, meta: &ModelMeta, num_ctx: u32) -> BodyOptions<'a> {
+        BodyOptions { vision: meta.has("vision"), blobs: self.blobs.as_deref(), ..BodyOptions::new(num_ctx, think_value(meta.think_mode(), req.effort)) }
     }
 
-    /// The body `stream` would send, for inspection (no window check).
+    /// The Ollama-shaped body a request is planned as, for inspection (no window check).
     pub fn build_body(&self, req: &ChatRequest, meta: &ModelMeta) -> Value {
-        request_body_with(req, &self.body_options(req, meta))
+        request_body_with(req, &self.body_options(req, meta, self.context_for(&req.model, meta)))
     }
 
-    /// The body `stream` sends, or the `context_overflow` error it would stop on.
+    /// The planned body, or the `context_overflow` error a request would stop on.
     pub fn plan(&self, req: &ChatRequest, meta: &ModelMeta) -> Result<Planned, ProviderError> {
-        plan_request(req, &self.body_options(req, meta))
+        plan_request(req, &self.body_options(req, meta, self.context_for(&req.model, meta)))
     }
 
-    fn error(&self, e: HttpError, model: Option<&str>) -> ProviderError {
-        match e {
-            HttpError::Cancelled => ProviderError::cancelled(),
-            HttpError::Unreachable { detail, .. } => ProviderError::network(format!(
-                "Ollama is not reachable at {} ({detail}). Start it with `ollama serve`.",
-                self.endpoint
-            )),
-            HttpError::Status { status, body, .. } => {
-                let said = serde_json::from_str::<Value>(&body)
-                    .ok()
-                    .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_string))
-                    .unwrap_or(body);
-                let detail = match (status, model) {
-                    (404, Some(m)) => format!("Ollama has no model `{m}`. Run `ollama pull {m}`. ({said})"),
-                    _ => format!("Ollama returned HTTP {status}: {said}"),
-                };
-                if status >= 500 && stream::is_tool_parse_error(&said) {
-                    return ProviderError::malformed_call(stream::clip_detail(&said));
-                }
-                ProviderError::from_status(status, detail)
-            }
-            HttpError::Malformed { detail, .. } => {
-                ProviderError::server(format!("malformed response from Ollama: {detail}"))
-            }
-        }
+    /// The planner's shape for `model`, else one slot of the model's window on the GPU (the engine
+    /// still checks the room and runs it split when it does not fit).
+    fn shape_for(&self, model: &str, meta: &ModelMeta) -> EngineShape {
+        self.alloc.engine_shape(model).unwrap_or_else(|| EngineShape {
+            slots: 1,
+            ctx_per_slot: self.context_for(model, meta),
+            kv: "f16".into(),
+            split: false,
+        })
     }
 }
 
@@ -245,27 +179,20 @@ impl Provider for OllamaProvider {
         ProviderKind::Ollama
     }
 
+    /// Every chat model in the store. One llama.cpp cannot run is still listed, so choosing it says
+    /// why instead of the model being missing.
     fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        let v = http::get_json(&self.endpoint, "/api/tags", CATALOG_TIMEOUT)
-            .map_err(|e| self.error(e, None))?;
-        let tags = parse_tags(&v).ok_or_else(|| {
-            ProviderError::server(format!("{} answered /api/tags without a `models` list", self.endpoint))
-        })?;
-        let mut out = Vec::with_capacity(tags.len());
-        for t in tags {
-            let meta = if t.meta.is_complete() {
-                t.meta
-            } else {
-                match self.show(&t.name) {
-                    Ok(shown) => models::merge(&t.meta, &shown),
-                    Err(_) => t.meta,
-                }
+        let mut out = Vec::new();
+        for name in ollama_store::list_in(&self.store) {
+            let meta = match eligible::resolve(&self.store, &name) {
+                Ok(m) => m.meta,
+                Err(_) => ModelMeta::default(),
             };
             if !meta.can_chat() {
                 continue;
             }
-            out.push(model_info(&t.name, &meta, self.alloc.get(&t.name).unwrap_or(self.num_ctx)));
-            self.remember(&t.name, meta);
+            out.push(model_info(&name, &meta, self.alloc.get(&name).unwrap_or(self.num_ctx)));
+            self.meta.lock().unwrap_or_else(|e| e.into_inner()).insert(name, meta);
         }
         out.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(out)
@@ -280,8 +207,14 @@ impl Provider for OllamaProvider {
         if cancel.is_cancelled() {
             return Err(ProviderError::cancelled());
         }
+        let Some(engine) = &self.llama else {
+            return Err(ProviderError::bad_request(format!(
+                "{} is a local model and this run has no llama.cpp engine to serve it",
+                req.model
+            )));
+        };
         let meta = self.meta(&req.model)?;
-        // The request is on its way once, however many engines were tried for it.
+        // The request is on its way once, however long the engine takes to start.
         let mut sent = false;
         let mut once = |ev: StreamEvent| {
             if matches!(ev, StreamEvent::Sent) && std::mem::replace(&mut sent, true) {
@@ -289,81 +222,25 @@ impl Provider for OllamaProvider {
             }
             on(ev)
         };
-        let on: &mut dyn FnMut(StreamEvent) = &mut once;
-        if let Some(engine) = &self.llama {
-            match self.alloc.engine_shape(&req.model) {
-                Some(shape) => match self.stream_llama(engine, shape, req, &meta, cancel, on) {
-                    // The engine would not run it (it did not fit, or the driver spilled it into
-                    // system memory): Ollama serves this request, and the planner keeps the model there.
-                    Err(e) if !e.is_cancelled() && engine.declined(&req.model).is_some() => {}
-                    done => return done,
-                },
-                // Ollama serves it now (the setting was turned off): never in memory twice.
-                None => {
-                    engine.unload(Some(&req.model));
-                }
-            }
-        }
-        let body = self.plan(req, &meta)?.body;
-        let thinking = body.get("think").is_some_and(|t| t != &Value::Bool(false));
-
-        // One slot per model: a request made here replaces the engine's cache for the next one.
-        marlowe_model::prefix::note_request(&req.model);
-        // The model's metadata and the body are ready; what follows is the engine's time.
-        on(StreamEvent::Sent);
-        let reader = http::post_stream(
-            &self.endpoint,
-            "/api/chat",
-            &body,
-            "application/x-ndjson",
-            cancel,
-            self.idle,
-        )
-        .map_err(|e| self.error(e, Some(&req.model)))?;
-
-        let mut frames = NdjsonStream::new(reader);
-        let mut folder = Folder::new(thinking, on).with_tools(&req.tools).with_stats(self.stats.clone());
-        while let Some(frame) = frames.next_value() {
-            if cancel.is_cancelled() {
-                return Err(ProviderError::cancelled());
-            }
-            match frame {
-                Ok(v) => folder.frame(&v)?,
-                Err(NdjsonError::Io(e)) => {
-                    return Err(self.error(http::read_error(&self.endpoint, e, Some(cancel)), None))
-                }
-                Err(NdjsonError::Json(detail)) => {
-                    return Err(ProviderError::server(format!("malformed frame from Ollama: {detail}")))
-                }
-            }
-            if folder.is_done() {
-                break;
-            }
-        }
-        if cancel.is_cancelled() {
-            return Err(ProviderError::cancelled());
-        }
-        if !folder.is_done() {
-            return Err(ProviderError::network("Ollama closed the stream before it finished"));
-        }
-        Ok(folder.finish())
+        let shape = self.shape_for(&req.model, &meta);
+        self.stream_llama(engine, shape, req, &meta, cancel, &mut once)
     }
 }
 
 impl OllamaProvider {
     /// One call on Marlowe's own llama-server: the window check at the slot's size, a slot for the
-    /// conversation, the request Ollama would have sent llama-server, its answer through the same
-    /// folder as Ollama's.
+    /// conversation, the request Ollama would have sent llama-server, its answer through the
+    /// folder that repairs and recovers tool calls.
     fn stream_llama(
         &self,
         engine: &LlamaEngine,
-        shape: marlowe_model::EngineShape,
+        shape: EngineShape,
         req: &ChatRequest,
         meta: &ModelMeta,
         cancel: &CancelToken,
         on: &mut dyn FnMut(StreamEvent),
     ) -> Result<Completion, ProviderError> {
-        let opts = BodyOptions::new(shape.ctx_per_slot, think_value(meta.think_mode(), req.effort));
+        let opts = self.body_options(req, meta, shape.ctx_per_slot);
         let planned = plan_request(req, &opts)?;
         let thinking = planned.body.get("think").is_some_and(|t| t != &Value::Bool(false));
         let want = Want {
@@ -383,7 +260,7 @@ impl OllamaProvider {
         // The user's conversation is the one that can be read ahead, so it is the one whose exact
         // generated text is worth asking the server for.
         let mut raw_asked = req.lane == Lane::Conductor && self.raw_capture.load(Ordering::Relaxed);
-        let mut body = llama_chat::chat_body(&planned.body, lease.sampling.as_ref(), lease.slot, &lease.thinking, raw_asked);
+        let mut body = llama_chat::chat_body(&planned.body, Some(&lease.defaults), lease.slot, &lease.thinking, raw_asked);
         llama_chat::set_think_budget(&mut body, req.think_budget);
         // The prompt must extend the last one plus its reply, as the model's template renders it.
         self.render.before(&lease.endpoint, &req.model, want.key, &body);
@@ -395,7 +272,7 @@ impl OllamaProvider {
                 // the reply stands in for them from now on.
                 self.raw_capture.store(false, Ordering::Relaxed);
                 raw_asked = false;
-                body = llama_chat::chat_body(&planned.body, lease.sampling.as_ref(), lease.slot, &lease.thinking, false);
+                body = llama_chat::chat_body(&planned.body, Some(&lease.defaults), lease.slot, &lease.thinking, false);
                 llama_chat::set_think_budget(&mut body, req.think_budget);
                 post(&body)
             }
@@ -438,7 +315,7 @@ impl OllamaProvider {
         let mut next = req.clone();
         next.messages.push(message);
         let planned = plan_request(&next, opts).ok()?;
-        let sent = llama_chat::chat_body(&planned.body, lease.sampling.as_ref(), lease.slot, &lease.thinking, false);
+        let sent = llama_chat::chat_body(&planned.body, Some(&lease.defaults), lease.slot, &lease.thinking, false);
         let reply = sent.get("messages").and_then(Value::as_array).and_then(|m| m.last()).cloned()?;
         let tail = if done.text.trim().is_empty() {
             done.thinking.as_ref().map(|t| t.text.as_str()).unwrap_or("")
@@ -489,7 +366,7 @@ mod alloc_tests {
     #[test]
     fn num_ctx_follows_the_policy_and_never_exceeds_the_model() {
         let alloc = ContextAllocations::new();
-        let p = OllamaProvider::default().with_allocations(alloc.clone());
+        let p = OllamaProvider::new(PathBuf::from("no-store")).with_allocations(alloc.clone());
         let meta = ModelMeta { capabilities: Some(vec!["completion".into()]), context: Some(262_144), family: None };
         let req = ChatRequest::new("dusk", vec![Message::user("hi")]);
         assert_eq!(p.build_body(&req, &meta)["options"]["num_ctx"], DEFAULT_CONTEXT_TOKENS);
@@ -501,5 +378,12 @@ mod alloc_tests {
         // The backstop: never above what the model supports.
         alloc.set("dusk", 1_000_000);
         assert_eq!(p.build_body(&req, &meta)["options"]["num_ctx"], 262_144);
+    }
+
+    #[test]
+    fn without_an_engine_a_request_is_an_error_and_nothing_is_sent_anywhere() {
+        let p = OllamaProvider::new(PathBuf::from("no-store"));
+        let e = p.stream(&ChatRequest::new("dusk", vec![Message::user("hi")]), &CancelToken::new(), &mut |_| {}).unwrap_err();
+        assert!(e.detail.contains("no llama.cpp engine"), "{}", e.detail);
     }
 }

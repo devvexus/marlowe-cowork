@@ -1,12 +1,12 @@
-//! `/api/tags` and `/api/show` into [`ModelInfo`], and how each model takes the `think` knob.
+//! A local model's capabilities into [`ModelInfo`], and how each model takes the `think` knob.
 
 use marlowe_model::{Effort, ModelInfo, ProviderKind};
 use serde_json::Value;
 
-/// What Ollama reports about one model.
+/// What a local model can do, read from its files (`crate::llama::eligible`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModelMeta {
-    /// `None` when the server did not say (older Ollama without `capabilities`).
+    /// `None` when unknown (the file could not be read).
     pub capabilities: Option<Vec<String>>,
     /// Native context length.
     pub context: Option<u32>,
@@ -66,79 +66,6 @@ pub fn think_value(mode: ThinkMode, effort: Effort) -> Option<Value> {
     }
 }
 
-/// One `/api/tags` entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TagEntry {
-    pub name: String,
-    pub meta: ModelMeta,
-}
-
-/// Parses `/api/tags`. `None` when the body is not Ollama's shape.
-pub fn parse_tags(v: &Value) -> Option<Vec<TagEntry>> {
-    let models = v.get("models")?.as_array()?;
-    Some(
-        models
-            .iter()
-            .filter_map(|m| {
-                let name = m.get("name").or_else(|| m.get("model"))?.as_str()?.to_string();
-                if name.is_empty() {
-                    return None;
-                }
-                let details = m.get("details");
-                let meta = ModelMeta {
-                    capabilities: string_array(m.get("capabilities")),
-                    context: details
-                        .and_then(|d| d.get("context_length"))
-                        .and_then(Value::as_u64)
-                        .map(clamp_u32),
-                    family: details
-                        .and_then(|d| d.get("family"))
-                        .and_then(Value::as_str)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string),
-                };
-                Some(TagEntry { name, meta })
-            })
-            .collect(),
-    )
-}
-
-/// Parses `/api/show`.
-pub fn parse_show(v: &Value) -> ModelMeta {
-    let info = v.get("model_info");
-    let arch = info
-        .and_then(|i| i.get("general.architecture"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let context = arch
-        .as_ref()
-        .and_then(|a| info?.get(format!("{a}.context_length"))?.as_u64())
-        .or_else(|| {
-            // Some architectures name the key differently; take any `*.context_length`.
-            info?.as_object()?.iter().find_map(|(k, v)| {
-                k.ends_with(".context_length").then(|| v.as_u64()).flatten()
-            })
-        })
-        .map(clamp_u32);
-    let family = v
-        .get("details")
-        .and_then(|d| d.get("family"))
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .or(arch);
-    ModelMeta { capabilities: string_array(v.get("capabilities")), context, family }
-}
-
-/// Fills fields `base` lacks from `other`.
-pub fn merge(base: &ModelMeta, other: &ModelMeta) -> ModelMeta {
-    ModelMeta {
-        capabilities: base.capabilities.clone().or_else(|| other.capabilities.clone()),
-        context: base.context.or(other.context),
-        family: base.family.clone().or_else(|| other.family.clone()),
-    }
-}
-
 /// Ollama tags that proxy to Ollama's hosted service rather than running here.
 pub fn is_cloud_tag(name: &str) -> bool {
     let tag = name.rsplit_once(':').map(|(_, t)| t).unwrap_or("");
@@ -162,44 +89,10 @@ pub fn model_info(name: &str, meta: &ModelMeta, num_ctx: u32) -> ModelInfo {
     info
 }
 
-fn string_array(v: Option<&Value>) -> Option<Vec<String>> {
-    Some(v?.as_array()?.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
-}
-
-fn clamp_u32(n: u64) -> u32 {
-    n.min(u32::MAX as u64) as u32
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn tags_with_capabilities_need_no_show_call() {
-        let v = json!({"models":[
-            {"name":"qwen3.5:9b","details":{"family":"qwen35","context_length":262144},
-             "capabilities":["vision","completion","tools","thinking"]},
-            {"name":"old:1b","details":{"family":"llama"}}
-        ]});
-        let tags = parse_tags(&v).unwrap();
-        assert!(tags[0].meta.is_complete());
-        assert_eq!(tags[0].meta.think_mode(), ThinkMode::Bool);
-        assert!(!tags[1].meta.is_complete());
-        assert!(parse_tags(&json!({"nope": 1})).is_none());
-    }
-
-    #[test]
-    fn show_reads_the_architecture_context_key() {
-        let v = json!({
-            "capabilities": ["completion", "tools", "thinking"],
-            "details": {"family": "gptoss"},
-            "model_info": {"general.architecture": "gptoss", "gptoss.context_length": 131072}
-        });
-        let m = parse_show(&v);
-        assert_eq!(m.context, Some(131072));
-        assert_eq!(m.think_mode(), ThinkMode::Levels);
-    }
 
     #[test]
     fn effort_maps_to_the_think_field_each_model_accepts() {

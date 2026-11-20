@@ -1,7 +1,9 @@
-//! Provider detection: a running Ollama, keys in the environment or the credential store.
+//! Provider detection: Ollama's model store on disk (its server need not run: Marlowe serves its
+//! models itself), keys in the environment or the credential store.
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use marlowe_model::ProviderKind;
@@ -33,21 +35,30 @@ pub fn detect_ollama(addr: &str, timeout: Duration) -> bool {
     buf[..got].starts_with(b"HTTP/1.") && buf[..got].windows(4).any(|w| w == b" 200")
 }
 
-/// Status of every provider in `ProviderKind::ALL` order.
-pub fn detect_providers(credentials: &dyn CredentialStore) -> Vec<ProviderStatus> {
-    ProviderKind::ALL
-        .iter()
-        .map(|&kind| status(kind, credentials, || detect_ollama(OLLAMA_ADDR, Duration::from_millis(400))))
-        .collect()
+/// Ollama's model store: `OLLAMA_MODELS`, else `~/.ollama/models` (the same rule as
+/// `marlowe_provider::ollama_store::store_root`).
+pub fn ollama_store() -> PathBuf {
+    if let Some(v) = std::env::var_os("OLLAMA_MODELS").filter(|v| !v.is_empty()) {
+        return PathBuf::from(v);
+    }
+    let home = ["USERPROFILE", "HOME"].iter().find_map(|k| std::env::var_os(k).filter(|v| !v.is_empty())).map(PathBuf::from);
+    home.unwrap_or_else(|| PathBuf::from(".")).join(".ollama").join("models")
 }
 
-fn status(kind: ProviderKind, creds: &dyn CredentialStore, ollama: impl FnOnce() -> bool) -> ProviderStatus {
+/// Status of every provider in `ProviderKind::ALL` order.
+pub fn detect_providers(credentials: &dyn CredentialStore) -> Vec<ProviderStatus> {
+    let store = ollama_store();
+    ProviderKind::ALL.iter().map(|&kind| status(kind, credentials, || store.join("manifests").is_dir().then_some(()).ok_or_else(|| store.display().to_string()))).collect()
+}
+
+/// `ollama` is whether Ollama's store is there (`Err` names where it was looked for).
+fn status(kind: ProviderKind, creds: &dyn CredentialStore, ollama: impl FnOnce() -> Result<(), String>) -> ProviderStatus {
     let available_now = kind.is_available_now();
     let (configured, detected, note) = match kind {
-        ProviderKind::Ollama => {
-            let up = available_now && ollama();
-            (up, up, (!up).then(|| "not running at 127.0.0.1:11434".to_string()))
-        }
+        ProviderKind::Ollama => match ollama() {
+            Ok(()) => (available_now, available_now, None),
+            Err(at) => (false, false, Some(format!("no Ollama model store at {at}"))),
+        },
         _ if !available_now => (false, false, Some("coming soon".to_string())),
         _ => {
             let stored = matches!(creds.get(kind), Ok(Some(s)) if !s.is_empty());
@@ -84,12 +95,15 @@ mod tests {
     fn statuses_cover_all_kinds_in_order() {
         let store = MemoryStore::new();
         store.set(ProviderKind::OpenRouter, "sk-test").unwrap();
-        let all: Vec<_> = ProviderKind::ALL.iter().map(|&k| status(k, &store, || true)).collect();
+        let all: Vec<_> = ProviderKind::ALL.iter().map(|&k| status(k, &store, || Ok(()))).collect();
         assert_eq!(all.len(), 5);
         assert!(all[0].detected && all[0].available_now);
         let or = all.iter().find(|s| s.kind == ProviderKind::OpenRouter).unwrap();
         assert!(or.configured && or.detected);
         let ant = all.iter().find(|s| s.kind == ProviderKind::Anthropic).unwrap();
         assert!(!ant.available_now && !ant.detected && ant.note.as_deref() == Some("coming soon"));
+        // Ollama's server need not run: its store on disk is what counts.
+        let none = status(ProviderKind::Ollama, &store, || Err("C:/x/models".into()));
+        assert!(!none.detected && none.note.as_deref() == Some("no Ollama model store at C:/x/models"));
     }
 }

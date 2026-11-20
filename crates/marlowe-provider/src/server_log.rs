@@ -1,6 +1,5 @@
-//! Ollama's own output, read-only: the log of an `ollama serve` Marlowe started (kept in the
-//! Marlowe home, size-capped) and the app's `server.log`. A server started by hand in a console
-//! writes to neither, and then there is nothing to read.
+//! The engine's `llama-server` output: the log every server Marlowe starts appends to (kept in the
+//! Marlowe home, size-capped), its tail for the planner, and a feed of new lines for the live meter.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
@@ -8,13 +7,13 @@ use std::path::{Path, PathBuf};
 
 use marlowe_hw::LogFeed;
 
-/// The most Marlowe's own copy of Ollama's output may grow to before it is rotated or emptied.
+/// The most the engine's log may grow to before it is rotated at a server's start.
 pub const OWN_LOG_CAP: u64 = 8 << 20;
 /// The most one poll reads; a burst beyond it is read by the next.
 const POLL_BYTES: u64 = 4 << 20;
 
-/// Opens the log an `ollama serve` Marlowe starts will write to (appending), after making room: a
-/// log over `cap` is moved to `<name>.1` (replacing the older one).
+/// Opens the log a server Marlowe starts writes to (appending), after making room: a log over
+/// `cap` is moved to `<name>.1` (replacing the older one).
 pub fn open_own_log(path: &Path, cap: u64) -> std::io::Result<File> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -81,33 +80,33 @@ impl FileTail {
     }
 }
 
-/// Ollama's output as the files it can be read from give it, from the moment this was made.
-pub struct OllamaLogFeed {
-    tails: Vec<FileTail>,
+/// The last `max` bytes of a file, from the first whole line.
+pub fn read_tail(path: &Path, max: u64) -> std::io::Result<String> {
+    let mut f = File::open(path)?;
+    let len = f.metadata()?.len();
+    let start = len.saturating_sub(max);
+    f.seek(SeekFrom::Start(start))?;
+    let mut buf = Vec::with_capacity((len - start) as usize);
+    f.read_to_end(&mut buf)?;
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    Ok(if start > 0 { text.split_once('\n').map(|(_, t)| t.to_string()).unwrap_or(text) } else { text })
 }
 
-impl OllamaLogFeed {
-    /// `own` is the log of a server Marlowe started; `app` the app's `server.log`.
-    pub fn new(own: Option<&Path>, app: Option<&Path>) -> Self {
-        let mut tails = Vec::new();
-        if let Some(p) = own {
-            tails.push(FileTail::at_end(p).trimmed_over(OWN_LOG_CAP));
-        }
-        if let Some(p) = app {
-            tails.push(FileTail::at_end(p));
-        }
-        Self { tails }
-    }
+/// The engine's output from the moment this was made. Never emptied: the planner reads the loads
+/// in it, and a server's start rotates it.
+pub struct EngineLogFeed {
+    tail: FileTail,
+}
 
-    /// Whether any file is being read at all.
-    pub fn is_empty(&self) -> bool {
-        self.tails.is_empty()
+impl EngineLogFeed {
+    pub fn new(path: &Path) -> Self {
+        Self { tail: FileTail::at_end(path) }
     }
 }
 
-impl LogFeed for OllamaLogFeed {
+impl LogFeed for EngineLogFeed {
     fn poll(&mut self) -> Vec<String> {
-        self.tails.iter_mut().flat_map(FileTail::poll).collect()
+        self.tail.poll()
     }
 }
 
@@ -177,16 +176,15 @@ mod tests {
     }
 
     #[test]
-    fn the_feed_merges_both_files() {
+    fn the_feed_reads_the_engines_new_lines_and_the_tail_starts_on_a_whole_line() {
         let dir = scratch("feed");
-        let (own, app) = (dir.join("own.log"), dir.join("server.log"));
-        append(&own, "");
-        append(&app, "");
-        let mut f = OllamaLogFeed::new(Some(&own), Some(&app));
-        assert!(!f.is_empty());
-        append(&app, "from the app\n");
-        assert_eq!(f.poll(), vec!["from the app".to_string()]);
-        assert!(OllamaLogFeed::new(None, None).is_empty());
+        let log = dir.join("llama-server.log");
+        append(&log, "before\n");
+        let mut f = EngineLogFeed::new(&log);
+        append(&log, "slot a | task 0 | new\n");
+        assert_eq!(f.poll(), vec!["slot a | task 0 | new".to_string()]);
+        assert_eq!(read_tail(&log, 12).unwrap(), "", "the cut line is dropped");
+        assert_eq!(read_tail(&log, 1 << 20).unwrap(), "before\nslot a | task 0 | new\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

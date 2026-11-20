@@ -1,5 +1,5 @@
-//! Which models Marlowe's llama.cpp engine serves, and the slots and window the planner gives
-//! them, over fakes of the hardware.
+//! How Marlowe's llama.cpp engine serves every local model (whole on the GPU or split), and the
+//! slots and window the planner gives them, over fakes of the hardware.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -23,7 +23,7 @@ fn header(name: &str) -> ModelHeader {
     ModelHeader::from_show(&v).unwrap()
 }
 
-/// `plain:8b` is a model Ollama hands to llama-server whole; `rendered:8b` has a renderer.
+/// `plain:8b` is a model llama.cpp runs; `rendered:8b` has only Ollama's renderer to go on.
 struct Models {
     serial: bool,
     running: Mutex<Option<(u16, u32)>>,
@@ -57,7 +57,7 @@ impl ModelSource for Models {
     fn engine_eligibility(&self, model_id: &str) -> Result<(), String> {
         match model_id {
             "plain:8b" => Ok(()),
-            _ => Err("Ollama renders its prompt itself (renderer qwen3.5)".into()),
+            _ => Err("Ollama renders its prompt with its own code (renderer qwen3.5)".into()),
         }
     }
 }
@@ -156,13 +156,13 @@ fn user(max_ctx: u32, parallel: u16) -> ContextPolicy {
 }
 
 #[test]
-fn an_eligible_model_runs_on_the_engine_and_ollamas_models_stay_on_ollama() {
+fn every_local_model_is_on_the_engine_and_one_llama_cpp_cannot_run_says_why() {
     let b = brains(Models::new(), 20_000.0);
     assert!(b.engine_wanted(&plain()));
     assert!(!b.engine_wanted(&rendered()));
-    let kept = b.context_plan(&rendered()).unwrap();
-    assert_eq!(kept.in_effect.engine, Engine::Ollama);
-    assert_eq!(kept.in_effect.engine_note.as_deref(), Some("Ollama keeps this model: Ollama renders its prompt itself (renderer qwen3.5)"));
+    let cant = b.context_plan(&rendered()).unwrap();
+    assert_eq!(cant.in_effect.engine, Engine::LlamaCpp, "no model is left to Ollama");
+    assert_eq!(cant.in_effect.engine_note.as_deref(), Some("llama.cpp can't run this model: Ollama renders its prompt with its own code (renderer qwen3.5)"));
     assert_eq!(b.context_plan(&plain()).unwrap().in_effect.engine, Engine::LlamaCpp);
 }
 
@@ -217,16 +217,12 @@ fn saving_a_policy_for_an_engine_model_restarts_no_ollama() {
 }
 
 #[test]
-fn turning_the_engine_off_hands_the_model_back_to_ollama() {
+fn the_old_switch_back_to_ollama_is_refused() {
     let b = brains(Models::new(), 20_000.0);
+    let e = b.set_model_engine(&plain(), false).unwrap_err();
+    assert!(e.to_string().contains("every local model runs on the llama.cpp engine"), "{e}");
     assert!(b.factory().allocations().engine_shape("plain:8b").is_some());
-    b.set_model_engine(&plain(), false).unwrap();
-    assert!(b.factory().allocations().engine_shape("plain:8b").is_none());
-    let plan = b.context_plan(&plain()).unwrap();
-    assert_eq!(plan.in_effect.engine, Engine::Ollama);
-    assert_eq!(plan.in_effect.engine_note.as_deref(), Some("the llama.cpp engine is turned off for this model"));
     b.set_model_engine(&plain(), true).unwrap();
-    assert!(b.factory().allocations().engine_shape("plain:8b").is_some());
 }
 
 #[test]
@@ -264,51 +260,56 @@ fn a_model_with_no_engine_in_the_build_is_never_assigned() {
 }
 
 #[test]
-fn a_model_that_does_not_fit_the_free_gpu_stays_on_ollama_and_says_why() {
-    // A 12b model at q4 needs far more than 5 GiB: llama-server would take it anyway and the
-    // driver would page it into system memory.
+fn a_model_that_does_not_fit_the_free_gpu_runs_split_and_says_why() {
+    // A 12b model at q4 needs far more than 5 GiB: `-ngl 99` would take it anyway and the driver
+    // would page it into system memory. llama.cpp places what fits instead, as Ollama would.
     let b = brains(Models::new(), 5_000.0);
     let ears = Arc::new(Ears::default());
     b.factory().allocations().set_engine_observer(ears.clone());
     assert!(!b.engine_wanted(&plain()));
-    assert!(b.factory().allocations().engine_shape("plain:8b").is_none(), "no shape: Ollama serves it");
+    let shape = b.factory().allocations().engine_shape("plain:8b").expect("it still runs, split");
+    assert!(shape.split);
+    assert_eq!((shape.slots, shape.ctx_per_slot, shape.kv.as_str()), (1, 8_192, "q8_0"), "one slot of its default window");
     assert!(b.factory().allocations().engine_need_mib("plain:8b").is_none());
     let plan = b.context_plan(&plain()).unwrap();
-    assert_eq!(plan.in_effect.engine, Engine::Ollama);
+    assert_eq!(plan.in_effect.engine, Engine::LlamaCpp);
     let note = plan.in_effect.engine_note.expect("the reason is on the plan");
-    assert!(note.starts_with("Ollama keeps this model: needs ") && note.contains(" GiB on the GPU, 4.9 GiB free"), "{note}");
+    assert!(note.starts_with("llama.cpp runs it split between the GPU and the CPU: needs ") && note.contains(" GiB on the GPU, 4.9 GiB free"), "{note}");
     // The user hears it once, in one line, however many requests ask.
     for _ in 0..3 {
         let _ = b.factory().allocations().engine_shape("plain:8b");
     }
     let heard = ears.0.lock().unwrap().clone();
     assert_eq!(heard.len(), 1, "{heard:?}");
-    assert!(heard[0].starts_with("plain:8b runs on Ollama: needs ") && heard[0].ends_with(" GiB on the GPU, 4.9 GiB free"), "{heard:?}");
+    assert!(heard[0].starts_with("plain:8b runs split between the GPU and the CPU: needs ") && heard[0].ends_with(" GiB on the GPU, 4.9 GiB free"), "{heard:?}");
 }
 
 #[test]
-fn the_engine_never_takes_a_model_with_a_window_under_its_minimum() {
+fn the_engine_never_runs_a_model_whole_with_a_window_under_its_minimum() {
     // Between "the weights barely fit" and "room to spare" the engine either gives every agent a
-    // usable window or leaves the model to Ollama, which splits it and gives it a real one.
-    let mut refused = 0;
+    // usable window on the GPU or runs the model split with a real one.
+    let mut split = 0;
     for free in (5_000..=20_000).step_by(250) {
         let b = brains(Models::new(), f64::from(free));
-        match b.factory().allocations().engine_shape("plain:8b") {
-            Some(shape) => assert!(shape.ctx_per_slot >= marlowe_brains::engine::ENGINE_MIN_CTX, "{free} MiB free: {shape:?}"),
-            None => refused += 1,
+        let shape = b.factory().allocations().engine_shape("plain:8b").expect("every local model runs");
+        if shape.split {
+            split += 1;
+        } else {
+            assert!(shape.ctx_per_slot >= marlowe_brains::engine::ENGINE_MIN_CTX, "{free} MiB free: {shape:?}");
         }
     }
-    assert!(refused > 0 && refused < 61, "the sweep crosses the fit line: {refused} of 61 refused");
+    assert!(split > 0 && split < 61, "the sweep crosses the fit line: {split} of 61 split");
 }
 
 #[test]
-fn a_saved_policy_that_does_not_fit_stays_on_ollama_too() {
+fn a_saved_policy_that_does_not_fit_runs_split_with_that_policy() {
     let b = brains(Models::new(), 12_500.0);
     assert!(b.engine_wanted(&plain()));
     // Six slots of 128k are far more cache than the card has left beside the weights.
     b.context().set_policy(&plain(), user(131_072, 6)).unwrap();
     assert!(!b.engine_wanted(&plain()));
-    assert!(b.factory().allocations().engine_shape("plain:8b").is_none());
+    let shape = b.factory().allocations().engine_shape("plain:8b").unwrap();
+    assert_eq!((shape.split, shape.slots, shape.ctx_per_slot), (true, 6, 131_072));
 }
 
 #[test]
@@ -316,20 +317,20 @@ fn no_gpu_reading_is_not_a_fit() {
     let gpu = Arc::new(Dial(Mutex::new(None)));
     let b = brains_on(Models::new(), gpu);
     assert!(!b.engine_wanted(&plain()));
-    assert!(b.factory().allocations().engine_shape("plain:8b").is_none());
+    assert!(b.factory().allocations().engine_shape("plain:8b").is_some_and(|s| s.split));
     let note = b.context_plan(&plain()).unwrap().in_effect.engine_note.expect("a reason");
-    assert_eq!(note, "Ollama keeps this model: there is no reading of the GPU to fit it against");
+    assert_eq!(note, "llama.cpp runs it split between the GPU and the CPU: there is no reading of the GPU to fit it against");
 }
 
 #[test]
-fn what_stays_on_ollama_is_looked_at_again_when_the_gpu_frees_up() {
+fn what_runs_split_is_looked_at_again_when_the_gpu_frees_up() {
     let gpu = Arc::new(Dial(Mutex::new(Some(5_000.0))));
     let b = brains_on(Models::new(), gpu.clone());
     b.set_engine_recheck(std::time::Duration::ZERO);
-    assert!(b.factory().allocations().engine_shape("plain:8b").is_none());
+    assert!(b.factory().allocations().engine_shape("plain:8b").is_some_and(|s| s.split));
     *gpu.0.lock().unwrap() = Some(20_000.0);
-    let shape = b.factory().allocations().engine_shape("plain:8b").expect("room now: the engine takes it");
-    assert_eq!(shape.slots, 6);
+    let shape = b.factory().allocations().engine_shape("plain:8b").expect("room now: the engine takes it whole");
+    assert_eq!((shape.slots, shape.split), (6, false));
     assert!(b.factory().allocations().engine_need_mib("plain:8b").is_some_and(|n| n > 4_000.0), "the planner's estimate goes to the engine");
     // Once it fits it keeps its shape: less free memory later does not restart the server with another.
     *gpu.0.lock().unwrap() = Some(14_000.0);
@@ -357,13 +358,13 @@ fn a_load_the_engine_gave_up_is_not_tried_again_until_memory_comes_back() {
     assert!(b.factory().allocations().engine_shape("plain:8b").is_some());
     // The server loaded and the driver had moved part of it into system memory.
     b.factory().allocations().engine_declined("plain:8b", "the driver moved 3.0 GiB of it into system memory");
-    assert!(b.factory().allocations().engine_shape("plain:8b").is_none());
+    assert!(b.factory().allocations().engine_shape("plain:8b").is_some_and(|s| s.split));
     let note = b.context_plan(&plain()).unwrap().in_effect.engine_note.unwrap();
-    assert_eq!(note, "Ollama keeps this model: the driver moved 3.0 GiB of it into system memory");
-    // The planner would still say it fits; nothing has been given back, so Ollama keeps it.
-    assert!(b.factory().allocations().engine_shape("plain:8b").is_none());
+    assert_eq!(note, "llama.cpp runs it split between the GPU and the CPU: the driver moved 3.0 GiB of it into system memory");
+    // The planner would still say it fits; nothing has been given back, so it stays split.
+    assert!(b.factory().allocations().engine_shape("plain:8b").is_some_and(|s| s.split));
     *gpu.0.lock().unwrap() = Some(22_000.0);
-    assert!(b.factory().allocations().engine_shape("plain:8b").is_some(), "2 GiB more is free: try again");
+    assert!(b.factory().allocations().engine_shape("plain:8b").is_some_and(|s| !s.split), "2 GiB more is free: whole again");
 }
 
 #[test]
@@ -394,7 +395,4 @@ fn an_engine_model_is_admitted_against_the_memory_its_own_server_gives_back() {
     let b = brains_on(Models::new(), Arc::new(Held));
     assert!(b.engine_wanted(&plain()), "free plus the runner's memory fits it");
     assert!(matches!(b.admit(&plain(), Priority::Foreground), Admission::Load(_)), "no question asked: the engine stops what is there first");
-    // The same card for a model Ollama keeps: only what is free counts, and the user is asked.
-    b.set_model_engine(&plain(), false).unwrap();
-    assert!(matches!(b.admit(&plain(), Priority::Foreground), Admission::Ask(_)));
 }

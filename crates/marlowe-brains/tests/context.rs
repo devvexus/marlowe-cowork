@@ -119,6 +119,18 @@ fn dusk() -> ModelRef {
     "ollama/marlowe-dusk:27b-super".parse().unwrap()
 }
 
+fn thousands(n: u32) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 fn user(max_ctx: u32, kv_type: KvType, parallel: u16) -> ContextPolicy {
     ContextPolicy { max_ctx, kv_type, parallel, source: PolicySource::User, updated_ms: 0 }
 }
@@ -147,10 +159,11 @@ fn the_plan_reads_the_runner_and_counts_agents() {
     assert!(matches!(row256.fit[KvType::Q8_0.index()], Fit::NoFit { .. }));
     let auto = p.auto.unwrap();
     assert_eq!((auto.kv_type, auto.parallel), (KvType::Q8_0, 1));
-    assert!((40_960..=49_152).contains(&auto.max_ctx), "{}", auto.max_ctx);
-    // No saved policy: the window requests use now.
-    assert_eq!(p.policy.max_ctx, 32_768);
-    assert_eq!(p.policy.source, PolicySource::Auto);
+    // The engine runs it whole with its draft, keeping a GiB in reserve: one agent, past the 16k
+    // floor, and that is the policy until one is saved.
+    assert!((16_384..=24_576).contains(&auto.max_ctx), "{}", auto.max_ctx);
+    assert_eq!(p.policy, auto);
+    assert_eq!(p.in_effect.engine, marlowe_proto::Engine::LlamaCpp);
 }
 
 #[test]
@@ -182,42 +195,6 @@ fn allowed_ctx_is_never_above_max_ctx() {
     }
 }
 
-/// Ollama launched the runner with `-c 65536 -np 2` and split it: two slots of 32k each.
-struct SplitSlots;
-impl ModelSource for SplitSlots {
-    fn files(&self, model_id: &str) -> Result<ModelFiles, String> {
-        FakeModels.files(model_id)
-    }
-    fn runtime(&self, model_id: &str, blob: Option<&str>) -> RunnerObservation {
-        let mut rt = FakeModels.runtime(model_id, blob);
-        if let Some(l) = rt.load.as_mut() {
-            l.launch.ctx = Some(65_536);
-            l.launch.parallel = Some(2);
-        }
-        rt.slots = (0..2).map(|id| SlotObservation { id, n_ctx: 32_768, n_prompt_tokens: 0, is_processing: false }).collect();
-        rt
-    }
-}
-
-#[test]
-fn a_window_split_across_slots_caps_every_agent_at_the_slot() {
-    let mut f = ProviderFactory::new(Arc::new(MemoryStore::new()));
-    f.register(ProviderKind::Ollama, |_| Ok(Arc::new(NoChat)));
-    f.set_hardware(Hardware { models: Arc::new(SplitSlots), gpu: Arc::new(FakeGpu), server: Arc::<RecordingServer>::default() });
-    let b = Brains::new(Library::open_in_memory().unwrap(), f);
-    b.add_model(ProviderKind::Ollama, "marlowe-dusk:27b-super").unwrap();
-    let m = dusk();
-    b.context().set_policy(&m, user(65_536, KvType::Q8_0, 2)).unwrap();
-    let p = b.context_plan(&m).unwrap();
-    assert_eq!(p.in_effect.split_slot_ctx(65_536), Some(32_768));
-    assert!(p.warnings.iter().any(|w| w.contains("split num_ctx 65536 across 2 slots")), "{:?}", p.warnings);
-    // Past the slot the runner's context shift would drop tokens: the slot is the cap.
-    assert_eq!(b.context().allowed_ctx(&m, None).unwrap(), 32_768);
-    assert_eq!(b.context().allowed_ctx(&m, Some(16_384)).unwrap(), 16_384);
-    let (_, info, _) = b.agent_parts(&Slot::Conductor).unwrap();
-    assert_eq!(info.context_window, Some(32_768));
-}
-
 #[test]
 fn set_policy_refuses_what_the_model_cannot_do_and_reports_changes() {
     let server = Arc::new(RecordingServer::default());
@@ -228,10 +205,13 @@ fn set_policy_refuses_what_the_model_cannot_do_and_reports_changes() {
     assert!(gate.set_policy(&m, user(1_024, KvType::Q8_0, 1)).is_err());
     assert!(gate.set_policy(&m, user(32_768, KvType::Q8_0, 0)).is_err());
     assert!(gate.set_policy(&m, user(32_768, KvType::Q8_0, 17)).is_err());
+    let was = gate.policy(&m).unwrap().max_ctx;
     let changes = gate.set_policy(&m, user(47_104, KvType::Q4_0, 1)).unwrap();
     assert_eq!(changes[0].when, ChangeWhen::Now);
-    assert!(changes[0].text.contains("num_ctx 47,104 (was 32,768)"), "{}", changes[0].text);
-    assert!(changes.iter().any(|c| c.when == ChangeWhen::Restart && c.text.contains("q8_0 → q4_0")));
+    assert!(changes[0].text.contains(&format!("num_ctx 47,104 (was {})", thousands(was))), "{}", changes[0].text);
+    // The KV type and the slots are the llama.cpp server's launch: no Ollama restart, ever.
+    assert!(changes.iter().all(|c| c.when == ChangeWhen::Now), "{changes:?}");
+    assert!(changes.iter().any(|c| c.text.starts_with("llama.cpp serves 1 slot of 46k")), "{changes:?}");
     assert!(server.0.lock().unwrap().is_empty(), "saving never touches the server");
     // The provider allocation follows, and the conductor's window is the policy's.
     assert_eq!(b.factory().allocations().get("marlowe-dusk:27b-super"), Some(47_104));
@@ -315,9 +295,7 @@ fn slots_are_what_the_runner_serves_and_a_shortfall_is_said_plainly() {
     b.context().set_policy(&m, user(32_768, KvType::Q8_0, 6)).unwrap();
     assert_eq!(b.context().slots(&m).unwrap(), 1);
     let note = b.context().slots_note(&m).expect("a shortfall");
-    assert_eq!(note, "planned 6 parallel, Ollama is serving 1 — restart Ollama to apply");
-    let plan = b.context_plan(&m).unwrap();
-    assert!(plan.warnings.contains(&note), "the context planner says it too: {:?}", plan.warnings);
+    assert_eq!(note, "planned 6 parallel, llama.cpp is serving 1: it restarts with 6 on the next request");
     assert_eq!(b.context().slots_note(&"ollama/dolphin-llama3:8b".parse().unwrap()), None, "not loaded: the next load decides");
 
     let mut f = ProviderFactory::new(Arc::new(MemoryStore::new()));
@@ -330,40 +308,16 @@ fn slots_are_what_the_runner_serves_and_a_shortfall_is_said_plainly() {
     assert_eq!(b.context().slots_note(&m), None);
 }
 
-/// What Ollama 0.32.5 logs before it launches a qwen35 model (2026-10-21, server.log 18:54):
-/// `model architecture does not currently support parallel requests architecture=qwen35`.
-struct SerialDusk;
-impl ModelSource for SerialDusk {
-    fn files(&self, model_id: &str) -> Result<ModelFiles, String> {
-        FakeModels.files(model_id)
-    }
-    fn runtime(&self, model_id: &str, blob: Option<&str>) -> RunnerObservation {
-        RunnerObservation { serial_archs: vec!["qwen35".into()], ..FakeModels.runtime(model_id, blob) }
-    }
-}
-
-/// Session 82cb2e7f, 2026-10-21: OLLAMA_NUM_PARALLEL=6, yet Ollama served the qwen35 dusk one
-/// request at a time. The conductor's calls queued 5 to 25 s behind a team task's agent under
-/// "waiting for the GPU", and the slots note said a restart would apply the 6. The wait and the
-/// note now say what is true.
+/// A qwen35 model is no longer served one request at a time: that was Ollama's runner, and every
+/// local model runs on llama.cpp now. A server started with one slot says it restarts with the
+/// plan, and the wait says what is true.
 #[test]
-fn a_model_ollama_serves_one_at_a_time_says_so_in_its_wait_and_its_note() {
-    let mut f = ProviderFactory::new(Arc::new(MemoryStore::new()));
-    f.register(ProviderKind::Ollama, |_| Ok(Arc::new(NoChat)));
-    f.set_hardware(Hardware { models: Arc::new(SerialDusk), gpu: Arc::new(FakeGpu), server: Arc::<RecordingServer>::default() });
-    let b = Brains::new(Library::open_in_memory().unwrap(), f);
-    b.add_model(ProviderKind::Ollama, "marlowe-dusk:27b-super").unwrap();
+fn a_server_with_fewer_slots_than_planned_says_so_in_its_wait() {
     let m = dusk();
-    b.context().set_policy(&m, user(32_768, KvType::Q8_0, 6)).unwrap();
-    assert_eq!((b.context().slots(&m).unwrap(), b.context().crew_slots(&m)), (1, 1));
-    assert_eq!(b.context().slots_note(&m).as_deref(), Some("Ollama runs qwen35 models one request at a time, not the 6 planned"));
-    assert_eq!(b.context().queue_reason(&m, 1).as_deref(), Some("Ollama runs qwen35 models one request at a time"));
-    assert_eq!(b.context().queue_reason(&m, 0), None, "no crew call in flight: nothing to wait behind");
-
-    // A server started with one slot: a restart applies the plan, and the wait says that.
     let old = brains(Arc::default());
     old.context().set_policy(&m, user(32_768, KvType::Q8_0, 6)).unwrap();
-    assert_eq!(old.context().queue_reason(&m, 1).as_deref(), Some("Ollama is serving 1 at a time, not the 6 planned"));
+    assert_eq!(old.context().queue_reason(&m, 1).as_deref(), Some("llama.cpp is serving 1 at a time, not the 6 planned"));
+    assert_eq!(old.context().queue_reason(&m, 0), None, "no crew call in flight: nothing to wait behind");
 
     // Six slots served: two crew calls leave the conductor room; six fill it.
     let mut f = ProviderFactory::new(Arc::new(MemoryStore::new()));
