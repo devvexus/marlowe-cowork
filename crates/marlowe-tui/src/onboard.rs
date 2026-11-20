@@ -18,6 +18,8 @@ use crate::wake::{norm, Presence, NO_SENTINEL};
 pub const ONBOARD_GUARD_MS: i64 = 600;
 /// What the memory models are for, under the question that asks for them.
 pub const MODELS_PURPOSE: &str = "They let me recall our past conversations by meaning, not just matching words. Without them, memory is keyword-only.";
+/// What the engine is for, under the question that asks for it.
+pub const ENGINE_PURPOSE: &str = "Local models run on it, and I keep it up to date. Nothing downloads until you say yes; without it only hosted models work.";
 /// Folders offered in the checklist at most.
 pub const MAX_FOLDERS: usize = 4;
 
@@ -58,6 +60,9 @@ pub enum Step {
     Address { name: Option<String>, sel: usize },
     /// "Install memory LMs?" `sel`: 0 yes, 1 no. Only when the daemon reports them missing.
     Models { bytes: u64, cascade: bool, sel: usize },
+    /// "Install the llama.cpp engine?" `sel`: 0 yes, 1 no. Only when the selected backend is not
+    /// installed. `bytes` is about how much it downloads.
+    Engine { backend: String, title: String, bytes: u64, sel: usize },
     Checklist { items: Vec<Item>, sel: usize },
 }
 
@@ -95,6 +100,7 @@ impl State {
     pub fn on_tick(&mut self) -> Vec<Request> {
         let mut out = Vec::new();
         self.projects_tick();
+        self.engines_tick();
         // A checklist left waiting for discovery that never came (no Sentinel) has nothing to show.
         if let Onboard::Active { step: Step::Checklist { items, .. }, .. } = &self.onboard {
             if items.is_empty() && (self.wake.candidates.is_some() || self.wake.sentinel == Presence::Absent) {
@@ -219,6 +225,20 @@ impl State {
                     _ => {}
                 }
             }
+            Step::Engine { backend, bytes, sel, .. } => {
+                let (backend, bytes) = (backend.clone(), *bytes);
+                match k.code {
+                    KeyCode::Left | KeyCode::Up | KeyCode::BackTab => *sel = 0,
+                    KeyCode::Right | KeyCode::Down | KeyCode::Tab => *sel = 1,
+                    KeyCode::Char('y' | '1') => self.answer_engine(true, &backend, bytes, guard_until_ms, out),
+                    KeyCode::Char('n' | '2') => self.answer_engine(false, &backend, bytes, guard_until_ms, out),
+                    KeyCode::Enter => {
+                        let yes = *sel == 0;
+                        self.answer_engine(yes, &backend, bytes, guard_until_ms, out);
+                    }
+                    _ => {}
+                }
+            }
             Step::Checklist { items, sel } => match k.code {
                 KeyCode::Up | KeyCode::BackTab => *sel = sel.saturating_sub(1),
                 KeyCode::Down | KeyCode::Tab => *sel = (*sel + 1).min(items.len().saturating_sub(1)),
@@ -266,19 +286,43 @@ impl State {
     /// Raises onboarding for a user who is already named when the models are missing, so the
     /// offer is not only for a first launch with no name. Never over a finished or running one.
     pub(crate) fn offer_models_to_known_user(&mut self) {
-        if self.onboard == Onboard::Idle && self.user.as_ref().is_some_and(|u| u.set) && self.models_offer().is_some() {
+        let offers = self.models_offer().is_some() || self.engine_offer().is_some();
+        if self.onboard == Onboard::Idle && self.user.as_ref().is_some_and(|u| u.set) && offers {
             self.onboard = Onboard::Pending;
         }
     }
 
-    /// After the name and address: the memory-model offer if it applies, else the checklist.
+    /// After the name and address: the memory-model offer if it applies, then the engine's.
     fn after_user(&mut self, guard_until_ms: i64) {
         match self.models_offer() {
             Some((bytes, cascade)) => {
                 self.onboard = Onboard::Active { step: Step::Models { bytes, cascade, sel: 0 }, guard_until_ms };
             }
+            None => self.after_models(guard_until_ms),
+        }
+    }
+
+    /// The engine offer if no backend is installed, else the checklist.
+    fn after_models(&mut self, guard_until_ms: i64) {
+        match self.engine_offer() {
+            Some((backend, title, bytes)) => {
+                self.onboard = Onboard::Active { step: Step::Engine { backend, title, bytes, sel: 0 }, guard_until_ms };
+            }
             None => self.enter_checklist(guard_until_ms),
         }
+    }
+
+    /// Yes installs on the daemon's own thread (progress is in the engine window); no is
+    /// remembered as "no release prompts", so the offer does not come back every launch.
+    fn answer_engine(&mut self, yes: bool, backend: &str, _bytes: u64, guard_until_ms: i64, out: &mut Vec<Request>) {
+        if yes {
+            self.start(backend, crate::engines::Btn::Install, out);
+            self.flash(format!("installing {backend} in the background \u{b7} progress is in the engine window"), NoteTone::Dim);
+        } else {
+            out.push(Request::BackendDontAsk { backend: backend.to_string(), dont_ask: true });
+            self.flash("no local engine for now \u{b7} `engine` in the title bar installs it later", NoteTone::Dim);
+        }
+        self.enter_checklist(guard_until_ms);
     }
 
     /// Yes asks the daemon to download on its own thread; no is remembered by it. Either way the
@@ -302,7 +346,7 @@ impl State {
             s.models = state;
         }
         self.flash(said, NoteTone::Dim);
-        self.enter_checklist(guard_until_ms);
+        self.after_models(guard_until_ms);
     }
 
     /// The checklist of what applies now, or the end when nothing does.
@@ -390,7 +434,7 @@ impl State {
             (false, Onboard::Idle) => self.onboard = Onboard::Pending,
             // Named elsewhere (another client, `marlowe me`) before it showed. The memory-model
             // offer, if there is one, still shows.
-            (true, Onboard::Pending) if self.models_offer().is_none() => self.onboard = Onboard::Done,
+            (true, Onboard::Pending) if self.models_offer().is_none() && self.engine_offer().is_none() => self.onboard = Onboard::Done,
             _ => {}
         }
         self.user = Some(u);

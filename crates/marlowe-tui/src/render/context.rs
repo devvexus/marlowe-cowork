@@ -573,14 +573,14 @@ fn plan_lines(
     ));
 }
 
-/// `Engine  llama.cpp · Marlowe's server (Ollama's llama-server) · 6 slots of 48k` or why Ollama
+/// `Engine  llama.cpp · Marlowe's own engine · 6 slots of 48k` or why Ollama
 /// serves the model.
 fn engine_fact(p: &ContextPlan, d: &ContextPolicy, theme: &Theme) -> Line<'static> {
     let e = &p.in_effect;
     let spans = match e.engine {
         Engine::LlamaCpp => vec![
             body("llama.cpp", theme),
-            dim(" · Marlowe starts Ollama's llama-server itself", theme),
+            dim(" · Marlowe's own engine", theme),
             sep(theme),
             body(format!("{} slot{} of {} each", d.parallel, if d.parallel == 1 { "" } else { "s" }, ctx_label(d.max_ctx)), theme),
             dim("   e turns it off", theme),

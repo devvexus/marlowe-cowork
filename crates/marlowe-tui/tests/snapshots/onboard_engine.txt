@@ -1,0 +1,40 @@
+ * marlowe — new session                                                    engine: llama.cpp · not installed  teams ○  0 runs · 0 need you
+╭ Conversation ──────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ add a model ▾                          │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
+│                                                                                                │╭ Workspace ─────────────────────────────╮
+│                                                                                                ││ C:/work/valiance ▾                     │
+│                                                                                                │╰────────────────────────────────── (w) ─╯
+│                                                                                                │╭ Crew ──────────────────────────────────╮
+│                                                                                                ││ no runs                                │
+│                                                                                                │╰────────────────────────────────── (1) ─╯
+│                                           ⣿  MARLOWE                                           │╭ Watch ─────────────────────────────────╮
+│                                                                                                ││ nothing watched                        │
+│                                                                                                ││                                        │
+│                                  You have no models. Add one?                                  ││                                        │
+│                                 ╭ setup ───────────────────────────────────────────────────────────────╮                                 │
+│                       Marlowe th│ Install the llama.cpp engine · 710 MB                                │                                 │
+│             local ones from your│ Local models run on it, and I keep it up to date. Nothing downloads  │                                 │
+│                                 │ until you say yes; without it only hosted models work.               │                                 │
+│                                 │                                                                      │                                 │
+│                               ↵ │ › 1 yes        2 no                                                  │                                 │
+│                                 │                                                                      │                                 │
+│                                 │ ↵ choose   ← → move   esc skip setup                                 │                                 │
+│                                 ╰──────────────────────────────────────────────────────────────────────╯                                 │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                                                                                                │╭ Threads ───────────────────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › press ↵ to add a model                                                ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰─ saved · Matthew · “sir” in greetings ─────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ⇧tab Mode  ^k palette               21:40

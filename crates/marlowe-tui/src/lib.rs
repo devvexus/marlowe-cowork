@@ -23,6 +23,7 @@ pub mod context;
 pub mod crew;
 pub mod dag;
 pub mod diff;
+pub mod engines;
 pub mod history;
 pub mod images;
 pub mod layout_cache;

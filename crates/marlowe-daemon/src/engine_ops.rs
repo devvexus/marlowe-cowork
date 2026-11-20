@@ -129,6 +129,7 @@ impl Services {
             title: backend.title().into(),
             description: backend.description().into(),
             repo: backend.repo().into(),
+            approx_bytes: backend.approx_download_bytes(),
             busy: lock(&self.busy).get(&backend).cloned(),
             note: lock(&self.notes).get(&backend).cloned(),
             ..Default::default()

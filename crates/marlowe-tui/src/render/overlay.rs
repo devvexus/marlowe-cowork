@@ -476,7 +476,7 @@ fn quit_dialog(area: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut B
 
 /// First-run onboarding. Returns where the cursor goes on the name step.
 pub fn onboard(area: Rect, state: &State, theme: &Theme, buf: &mut Buffer) -> Option<(u16, u16)> {
-    use crate::onboard::{address_choices, ItemKind, ItemState, Onboard, Step, MODELS_PURPOSE};
+    use crate::onboard::{address_choices, ItemKind, ItemState, Onboard, Step, ENGINE_PURPOSE, MODELS_PURPOSE};
     use crate::text::megabytes;
     let Onboard::Active { step, .. } = &state.onboard else { return None };
     let accent = ink(Ink::Accent, theme);
@@ -533,6 +533,26 @@ pub fn onboard(area: Rect, state: &State, theme: &Theme, buf: &mut Buffer) -> Op
             }
             if *cascade {
                 lines.push(Line::from(Span::styled("Includes the GPU rerank cascade.", dimmer)));
+            }
+            lines.push(Line::from(""));
+            let mut spans = Vec::new();
+            for (i, label) in ["yes", "no"].into_iter().enumerate() {
+                let on = i == *sel;
+                spans.push(Span::styled(if on { "› " } else { "  " }, accent));
+                spans.push(Span::styled(format!("{} ", i + 1), dimmer));
+                spans.push(Span::styled(label, if on { accent.add_modifier(Modifier::BOLD) } else { theme.normal() }));
+                spans.push(Span::raw("      "));
+            }
+            lines.push(Line::from(spans));
+            [key("↵", " choose   "), key("← →", " move   "), key("esc", " skip setup")].concat()
+        }
+        Step::Engine { title, bytes, sel, .. } => {
+            lines.push(Line::from(vec![
+                Span::styled(format!("Install the {} engine", text::clean(title)), theme.bright()),
+                Span::styled(format!(" \u{b7} {} MB", megabytes(*bytes)), dim),
+            ]));
+            for l in text::wrap(ENGINE_PURPOSE, tw) {
+                lines.push(Line::from(Span::styled(l, theme.normal())));
             }
             lines.push(Line::from(""));
             let mut spans = Vec::new();

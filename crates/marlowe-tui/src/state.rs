@@ -336,6 +336,12 @@ pub enum Target {
     StopRun,
     /// The Model box's context meter: opens the planner.
     ContextMeter,
+    /// The header's `engine: <backend>`: opens the engine window.
+    Engine,
+    /// A backend's card in the engine window, and optionally one of its buttons.
+    EngineCard(usize, Option<usize>),
+    /// A choice of the release prompt: 0 yes, 1 no, 2 don't ask again.
+    EngineChoice(usize),
     /// A Library model's window column: opens the planner for model `i`.
     ModelCtx(usize),
     /// A context in the planner's table (row `i`), and optionally a KV column.
@@ -401,10 +407,11 @@ pub enum Command {
     Fast,
     ToggleTeams,
     Projects,
+    Engine,
 }
 
 impl Command {
-    pub const ALL: [Command; 44] = [
+    pub const ALL: [Command; 45] = [
         Command::NewSession,
         Command::Sessions,
         Command::Model,
@@ -449,6 +456,7 @@ impl Command {
         Command::Fast,
         Command::ToggleTeams,
         Command::Projects,
+        Command::Engine,
     ];
 
     pub fn label(self) -> &'static str {
@@ -459,6 +467,7 @@ impl Command {
             Command::Workspace => "Workspace — where new sessions start",
             Command::Library => "Library — models and slots",
             Command::Context => "Context & hardware — what fits on this GPU",
+            Command::Engine => "Engine — llama.cpp backends, install and update",
             Command::Memory => "Memory — search, correct, forget",
             Command::Watch => "Watch — runs, notices, roots",
             Command::Crew => "Crew — runs and results",
@@ -508,6 +517,7 @@ impl Command {
             Command::Workspace => "",
             Command::Library => "^l",
             Command::Context => "",
+            Command::Engine => "",
             Command::Memory => "^g",
             Command::Watch => "^w",
             Command::Crew => "alt-r",
@@ -572,6 +582,10 @@ pub enum Overlay {
     Choice { sel: usize },
     /// The context and hardware planner for `model`: the field ←/→ adjust, the policy being
     /// edited (`None` until the plan arrives), and whether the review screen is up.
+    /// The engine window: the backend under the cursor and its focused button.
+    Engines { sel: usize, button: usize },
+    /// The release prompt; its state is `State::engines.upgrade`.
+    EngineUpgrade,
     ContextPlan {
         model: marlowe_model::ModelRef,
         field: crate::context::PlanField,
@@ -742,6 +756,8 @@ pub struct State {
     pub code: crate::coding::Coding,
     /// Context windows, the live meter, the planner's plan.
     pub context: crate::context::ContextUi,
+    /// The llama.cpp backends: what is installed, what is running, the release prompt.
+    pub engines: crate::engines::EnginesUi,
     /// Quitting, closing the window and resuming what a close interrupted (track N).
     pub closing: crate::closing::Closing,
     /// Background tasks, workflows, findings, files, plans, threads (M4.6 wave 2, track H3).
@@ -855,6 +871,7 @@ impl State {
             crew: Crew::default(),
             code: crate::coding::Coding::default(),
             context: crate::context::ContextUi::default(),
+            engines: Default::default(),
             closing: Default::default(),
             bg: Default::default(),
             projects: Default::default(),
@@ -1173,6 +1190,7 @@ impl State {
                 }
                 out.push(Request::LibraryState);
                 out.push(Request::ContextPolicies);
+                out.push(Request::Backends);
                 self.wake_probes(out);
                 self.code.bootstrapped = false;
             }
@@ -1466,15 +1484,10 @@ impl State {
             Event::Catalog { provider, models } => {
                 self.library.set_catalog(*provider, models.clone());
             }
-            // A backend was chosen: what the open catalog says cannot run is read again.
-            Event::BackendDone { op: marlowe_proto::BackendOp::Select, ok, message, .. } if self.view == View::Library => {
-                if let crate::library::LibStep::Catalog { provider, .. } = self.library.step {
-                    if *ok {
-                        out.push(Request::ListCatalog { provider });
-                    }
-                }
-                self.flash(crate::text::clean(message), if *ok { NoteTone::Dim } else { NoteTone::Amber });
-            }
+            Event::Backends { selected, backends } => self.on_backends(selected, backends),
+            Event::BackendProgress { backend, op, message, done, total } => self.on_backend_progress(backend, *op, message, *done, *total),
+            Event::BackendDone { backend, op, ok, message } => self.on_backend_done(backend, *op, *ok, message, out),
+            Event::BackendUpgrade { backend, title, tag, warning } => self.on_backend_upgrade(backend, title, tag, warning.as_ref()),
             Event::MemoryResults { hits } => self.memory_results(hits),
             Event::MemoryChanged { id, change } => self.memory_changed(id, change, out),
             Event::MemoryProfile { hits, tokens, omitted } => self.memory_profile(hits, *tokens, *omitted),

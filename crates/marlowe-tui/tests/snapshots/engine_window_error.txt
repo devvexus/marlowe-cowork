@@ -1,0 +1,40 @@
+ * marlowe — new session                                                                    engine: llama.cpp  teams ○  0 runs · 0 need you
+╭ Conversation ──────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ Claude Sonnet 4.5 ▾             medium │
+│                                                                                                ││ ctx ────────────┊──── 0 / 200k · cloud │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
+│                                                                                                │╭ Workspace ─────────────────────────────╮
+│                                                                                                ││ C:/work/valiance ▾                     │
+│                                                                                                │╰────────────────────────────────── (w) ─╯
+│                                                                                                │╭ Crew ──────────────────────────────────╮
+│                                                                                                ││ no runs                                │
+│                                                                                                │╰────────────────────────────────── (1) ─╯
+│                                                                                                │╭ Watch ─────────────────────────────────╮
+│                   ╭ engine · the llama.cpp that serves local models ─────────────────────────────────────────────────╮                   │
+│                   │ › llama.cpp   serving local models                                                               │                   │
+│                   │   The standard llama.cpp backend.                                                                │                   │
+│                   │   v1.0.0 · build b12359 · 2026-11-02 · GPU  ·  up to date                                        │                   │
+│                   │   197 newer builds upstream · newest b12556 · checked 3h ago                                     │                   │
+│                ask│   [Check for updates]  [Sync to upstream]  [Release prompts: on]                                 │                   │
+│                   │   ✗ GitHub rate limit: try again after 21:40                                                     │                   │
+│                   │                                                                                                  │                   │
+│                   │   ms-llama.cpp                                                                                   │                   │
+│                   │   A much more accurate MS-capable model backend.                                                 │                   │
+│                   │   not installed  ·  about 751 MB to download                                                     │                   │
+│                   │   builds not looked at yet                                                                       │                   │
+│                   │   [Select]  [Install]  [Check for updates]  [Sync to upstream]  [Release prompts: on]            │                   │
+│                   │                                                                                                  │                   │
+│                   │ GitHub rate limit: try again after 21:40                                                         │                   │
+│                   ╰────────────────────────────────── ↑↓ backend · ←→ button · ↵ press · s u c b a keys · esc close ─╯                   │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                                                                                                │╭ Threads ───────────────────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰─ GitHub rate limit: try again after 21:40 ─────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ⇧tab Mode  ^k palette               21:40

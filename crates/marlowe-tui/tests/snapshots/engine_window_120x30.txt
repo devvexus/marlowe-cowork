@@ -1,0 +1,30 @@
+ * marlowe — new session                                              engine: llama.cpp ↑  teams ○  0 runs · 0 need you
+╭ Conversation ──────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────╮
+│                                                                                ││ Claude Sonnet 4.5 ▾         medium │
+│                                                                                ││ ctx ─────────┊─── 0 / 200k · cloud │
+│                                                                                │╰────────────────────────────── (m) ─╯
+│                                                                                │╭ Workspace ─────────────────────────╮
+│                                                                                ││ C:/work/valiance ▾                 │
+│         ╭ engine · the llama.cpp that serves local models ─────────────────────────────────────────────────╮─── (w) ─╯
+│         │ › llama.cpp   serving local models                                                               │ Memory ─╮
+│         │   The standard llama.cpp backend.                                                                │         │
+│         │   v1.0.0 · build b12359 · 2026-11-02 · GPU  ·  update available: v1.1.0                          │         │
+│         │   197 newer builds upstream · newest b12556 · checked 3h ago                                     │         │
+│         │   [Upgrade to v1.1.0]  [Check for updates]  [Sync to upstream]  [Release prompts: on]            │         │
+│        a│                                                                                                  │         │
+│         │   ms-llama.cpp                                                                                   │         │
+│         │   A much more accurate MS-capable model backend.                                                 │         │
+│         │   ms-v1.0 · 2026-10-20 · GPU  ·  update available: ms-v2.0                                       │         │
+│         │   no newer build upstream · checked 3h ago                                                       │         │
+│         │   ! ms-v2.0 stops running the Gen 1 MS models: Qwen3.8-27B-MS2.7.                                │         │
+│         │   [Select]  [Upgrade to ms-v2.0]  [Check for updates]  [Sync to upstream]  [Release prompts: on] │         │
+│         │                                                                                                  │         │
+│         ╰────────────────────────────────── ↑↓ backend · ←→ button · ↵ press · s u c b a keys · esc close ─╯         │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+│                                                                                ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (c) ─╯│                                    │
+╭ Message ───────────────────────────────────────────────────────────────────────╮│                                    │
+│ › message Marlowe…                                      ⇧↵ newline · esc boxes ││                                    │
+╰────────────────────────────────────────────────────────────────────────── (i) ─╯╰──────────────────────────── (1-4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ^k palette      21:40

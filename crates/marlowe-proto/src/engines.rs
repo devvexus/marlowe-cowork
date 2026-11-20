@@ -77,6 +77,9 @@ pub struct BackendReport {
     pub title: String,
     pub description: String,
     pub repo: String,
+    /// About how much a first install downloads, for the offer that asks first.
+    #[serde(default)]
+    pub approx_bytes: u64,
     pub selected: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installed: Option<BackendBuild>,

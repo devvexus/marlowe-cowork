@@ -56,6 +56,7 @@ pub fn welcome_requests() -> Vec<Request> {
     vec![
         Request::LibraryState,
         Request::ContextPolicies,
+        Request::Backends,
         Request::MemoryStats,
         Request::WatchList,
         Request::ListNotices { limit: marlowe_tui::wake::NOTICE_LIMIT, unseen_only: false },

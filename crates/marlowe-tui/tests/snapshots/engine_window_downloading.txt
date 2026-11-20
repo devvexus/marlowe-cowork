@@ -1,0 +1,40 @@
+ * marlowe — new session                                                                  engine: llama.cpp …  teams ○  0 runs · 0 need you
+╭ Conversation ──────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ Claude Sonnet 4.5 ▾             medium │
+│                                                                                                ││ ctx ────────────┊──── 0 / 200k · cloud │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
+│                                                                                                │╭ Workspace ─────────────────────────────╮
+│                                                                                                ││ C:/work/valiance ▾                     │
+│                                                                                                │╰────────────────────────────────── (w) ─╯
+│                                                                                                │╭ Crew ──────────────────────────────────╮
+│                                                                                                ││ no runs                                │
+│                                                                                                │╰────────────────────────────────── (1) ─╯
+│                                                                                                │╭ Watch ─────────────────────────────────╮
+│                   ╭ engine · the llama.cpp that serves local models ─────────────────────────────────────────────────╮                   │
+│                   │ › llama.cpp   serving local models                                                               │                   │
+│                   │   The standard llama.cpp backend.                                                                │                   │
+│                   │   v1.0.0 · build b12359 · 2026-11-02 · GPU  ·  update available: v1.1.0                          │                   │
+│                   │   197 newer builds upstream · newest b12556 · checked 3h ago                                     │                   │
+│                ask│   [Upgrade to v1.1.0]  [Check for updates]  [Sync to upstream]  [Release prompts: on]            │                   │
+│                   │   ━━━━━━━─────────  44% · 310 of 710 MB · downloading llama-b12359-bin-win-cuda-12.4-x64.zip     │                   │
+│                   │                                                                                                  │                   │
+│                   │   ms-llama.cpp                                                                                   │                   │
+│                   │   A much more accurate MS-capable model backend.                                                 │                   │
+│                   │   not installed  ·  about 751 MB to download                                                     │                   │
+│                   │   builds not looked at yet                                                                       │                   │
+│                   │   [Select]  [Install]  [Check for updates]  [Sync to upstream]  [Release prompts: on]            │                   │
+│                   │                                                                                                  │                   │
+│                   │ Check for updates: it is busy                                                                    │                   │
+│                   ╰────────────────────────────────── ↑↓ backend · ←→ button · ↵ press · s u c b a keys · esc close ─╯                   │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                                                                                                │╭ Threads ───────────────────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰─ Check for updates: it is busy ────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ⇧tab Mode  ^k palette               21:40

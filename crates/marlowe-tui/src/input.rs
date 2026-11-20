@@ -59,6 +59,8 @@ impl State {
         if self.overlay == Some(Overlay::Onboard) && self.onboard_typeahead(&k) {
             // Typed before the question could be read: the key goes where it was meant to.
             self.close_onboarding();
+        } else if self.overlay == Some(Overlay::EngineUpgrade) && self.upgrade_typeahead(&k) {
+            // The release prompt waits for a quiet moment; the key goes where it was meant to.
         } else if self.overlay.is_some() {
             self.overlay_key(k, &mut out);
             return out;
@@ -318,6 +320,20 @@ impl State {
                 }
                 return;
             }
+            Some(Overlay::Engines { .. }) => {
+                match self.target_at(at) {
+                    Some(Target::EngineCard(i, b)) => self.engines_click(i, b, out),
+                    Some(_) => {}
+                    None => self.overlay = None,
+                }
+                return;
+            }
+            Some(Overlay::EngineUpgrade) => {
+                if let Some(Target::EngineChoice(i)) = self.target_at(at) {
+                    self.answer_upgrade(i.min(2), out);
+                }
+                return;
+            }
             Some(Overlay::ModelPicker { .. }) => {
                 if let Some(r) = g.picker.filter(|r| r.contains(at)) {
                     let row = at.y.saturating_sub(r.y + 1) as usize;
@@ -459,6 +475,7 @@ impl State {
             }
             Target::StopRun => self.ask_stop_run(),
             Target::ContextMeter => self.open_context_for_conductor(out),
+            Target::Engine => self.open_engines(out),
             Target::ModelCtx(i) => {
                 if let Some(m) = self.library.models.get(i).map(|m| m.model.clone()) {
                     self.open_context(m, out);
@@ -470,7 +487,7 @@ impl State {
             Target::Tool(call_id) => self.open_tool_call(&call_id, out),
             Target::SentFile(entry) => self.open_sent_file(entry, false, out),
             Target::Proj(t) => self.proj_click(t, out),
-            Target::Button(_) | Target::ChoiceButton(_) | Target::PlanCell(..) | Target::PlanField(_) | Target::Remember => {}
+            Target::Button(_) | Target::ChoiceButton(_) | Target::PlanCell(..) | Target::PlanField(_) | Target::Remember | Target::EngineCard(..) | Target::EngineChoice(_) => {}
         }
     }
 
@@ -622,6 +639,7 @@ impl State {
             }
             Command::Workspace => self.open_workspace_picker(out),
             Command::Context => self.open_context_for_conductor(out),
+            Command::Engine => self.open_engines(out),
             Command::Library => {
                 if self.view == View::Library {
                     self.view = View::Conversation;
@@ -847,6 +865,14 @@ impl State {
             self.context_key(k, out);
             return;
         }
+        if matches!(self.overlay, Some(Overlay::Engines { .. })) {
+            self.engines_key(k, out);
+            return;
+        }
+        if self.overlay == Some(Overlay::EngineUpgrade) {
+            self.upgrade_key(k, out);
+            return;
+        }
         if self.overlay == Some(Overlay::Panel) {
             self.panel_key(k, out);
             return;
@@ -953,7 +979,7 @@ impl State {
             }
             Overlay::ImportOffer { sel } => self.offer_key(k, sel, out),
             Overlay::Choice { sel } => self.choice_key(k, sel, out),
-            Overlay::Onboard | Overlay::Dispatch | Overlay::Panel | Overlay::ContextPlan { .. } => {}
+            Overlay::Onboard | Overlay::Dispatch | Overlay::Panel | Overlay::ContextPlan { .. } | Overlay::Engines { .. } | Overlay::EngineUpgrade => {}
             Overlay::Sessions { sel } => {
                 let n = self.session_rows().len();
                 match k.code {

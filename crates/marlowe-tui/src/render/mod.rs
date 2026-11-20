@@ -31,6 +31,7 @@ mod bg;
 mod board;
 mod boot;
 mod context;
+mod engines;
 mod conversation;
 mod farewell;
 mod crew;
@@ -303,6 +304,8 @@ pub fn draw(frame: &mut Frame, state: &State, theme: &Theme) {
         Some(Overlay::Panel) => overlay_cursor = panel::draw(area, state, theme, buf),
         Some(Overlay::Sessions { sel }) => overlay::sessions(area, state, *sel, theme, buf),
         Some(Overlay::ContextPlan { .. }) => context::planner(area, state, theme, buf),
+        Some(Overlay::Engines { .. }) => engines::window(area, state, theme, buf),
+        Some(Overlay::EngineUpgrade) => engines::upgrade(area, state, theme, buf),
         Some(Overlay::ModelPicker { sel }) => {
             if let Some(r) = g.picker {
                 overlay::model_picker(r, state, *sel, theme, buf)
@@ -729,6 +732,23 @@ fn draw_header(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
         put(buf, mx, r.y, &Line::from(Span::styled(MEM_LABEL, style)), mem_w);
         hit(state, Rect { x: mx, y: r.y, width: mem_w, height: 1 }, target);
         edge = mx.saturating_sub(2);
+    }
+    // The engine that serves local models: a click opens its window.
+    if let Some((label, tone, busy)) = state.engine_title() {
+        let ew = text::width(&label) as u16;
+        if edge.saturating_sub(r.x) >= ew + MIN_TITLE + 4 {
+            let target = Target::Engine;
+            let style = match (hovered(state, &target), tone, busy) {
+                (true, ..) => theme.normal(),
+                (false, NoteTone::Amber, _) => ink(Ink::Amber, theme),
+                (false, _, true) => ink(Ink::Info, theme),
+                _ => ink(Ink::Dim, theme),
+            };
+            let ex = edge.saturating_sub(ew);
+            put(buf, ex, r.y, &Line::from(Span::styled(label, style)), ew);
+            hit(state, Rect { x: ex, y: r.y, width: ew, height: 1 }, target);
+            edge = ex.saturating_sub(2);
+        }
     }
     let room = edge.saturating_sub(r.x + 1);
     let title = text::truncate(&format!("marlowe — {}", state.session_label()), (room as usize).saturating_sub(2));

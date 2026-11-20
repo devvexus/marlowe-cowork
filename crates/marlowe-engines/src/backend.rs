@@ -45,6 +45,15 @@ impl Backend {
         }
     }
 
+    /// About how much a first install downloads (the Windows x64 CUDA 12 archives), for the offer
+    /// that asks before anything is fetched; the install reports the real total as it goes.
+    pub fn approx_download_bytes(self) -> u64 {
+        match self {
+            Backend::LlamaCpp => 710_000_000,
+            Backend::MsLlamaCpp => 751_000_000,
+        }
+    }
+
     /// The GitHub repository, `owner/name`.
     pub fn repo(self) -> &'static str {
         match self {
