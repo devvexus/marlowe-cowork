@@ -83,6 +83,41 @@ pub struct EngineModel {
     pub size: u64,
     /// What the catalog says about it: capabilities, window, family.
     pub meta: ModelMeta,
+    /// Where the weights of the files go, from their headers; `None` when a header could not be
+    /// analysed (the checks then count whole files).
+    pub parts: Option<WeightParts>,
+}
+
+/// The weights of a model's files by where llama.cpp places them, bytes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WeightParts {
+    /// On the GPU when every layer is: blocks, output layer, vision, the draft's and the projector.
+    pub gpu: u64,
+    /// The input layer (token and n-gram embedding tables): on the CPU whatever `-ngl` says.
+    pub host: u64,
+    /// The routed experts of each block (inside `gpu`), for `--n-cpu-moe`.
+    pub experts: Vec<u64>,
+}
+
+impl WeightParts {
+    /// Reads them from the model's header, its draft's and the projector's size.
+    pub fn of(header: &marlowe_hw::ModelHeader, draft: Option<&Path>, mmproj: Option<&Path>) -> Option<WeightParts> {
+        use marlowe_hw::arch::{ArchProfile, Role};
+        let main = ArchProfile::analyze(header, Role::Main).ok()?;
+        let mut p = WeightParts { gpu: main.weights.gpu() + main.weights.vision, host: main.weights.host, experts: main.weights.experts };
+        if let Some(d) = draft {
+            let d = ArchProfile::analyze(&marlowe_hw::gguf::read_header(d).ok()?, Role::Draft).ok()?;
+            p.gpu += d.weights.gpu();
+            p.host += d.weights.host;
+        }
+        p.gpu += mmproj.and_then(|m| std::fs::metadata(m).ok()).map_or(0, |m| m.len());
+        Some(p)
+    }
+
+    /// On the GPU with the experts of the first `cpu_moe` blocks on the CPU.
+    pub fn gpu_with(&self, cpu_moe: u32) -> u64 {
+        self.gpu.saturating_sub(self.experts.iter().take(cpu_moe as usize).sum())
+    }
 }
 
 /// The backend the engine runs: the selected one and the version installed. A developer's own
@@ -196,7 +231,8 @@ fn file_model(found: Found) -> Result<EngineModel, String> {
     let mmproj = mmproj_sidecar(&found.path);
     let ms = header.ms().or_else(|| draft.as_ref().and_then(|d| marlowe_hw::gguf::read_header(&d.path).ok()?.ms()));
     let meta = meta_of(&header, &template, mmproj.is_some(), None, None);
-    Ok(EngineModel { model, display: found.display, blob: found.path, draft, mmproj, defaults: ModelDefaults::default(), foreign_types: header.foreign_types(), ms, size: found.size, meta })
+    let parts = WeightParts::of(&header, draft.as_ref().map(|d| d.path.as_path()), mmproj.as_deref());
+    Ok(EngineModel { model, display: found.display, blob: found.path, draft, mmproj, defaults: ModelDefaults::default(), foreign_types: header.foreign_types(), ms, size: found.size, meta, parts })
 }
 
 /// A model in Ollama's store at `root`: its manifest's layers on top of the file.
@@ -256,7 +292,8 @@ fn resolve_ollama(root: &Path, model: &str) -> Result<EngineModel, String> {
     let meta = meta_of(&header, template.as_deref().unwrap_or(""), mmproj.is_some(), name("model_family"), defaults.num_ctx);
     let ms = header.ms().or_else(|| draft.as_ref().and_then(|d| marlowe_hw::gguf::read_header(&d.path).ok()?.ms()));
     let size = std::fs::metadata(&resolved.blob).map_or(0, |m| m.len());
-    Ok(EngineModel { model: model.to_string(), display: model.to_string(), blob: resolved.blob, draft, mmproj, defaults, foreign_types: header.foreign_types(), ms, size, meta })
+    let parts = WeightParts::of(&header, draft.as_ref().map(|d| d.path.as_path()), mmproj.as_deref());
+    Ok(EngineModel { model: model.to_string(), display: model.to_string(), blob: resolved.blob, draft, mmproj, defaults, foreign_types: header.foreign_types(), ms, size, meta, parts })
 }
 
 /// The catalog's view of a model file: chat or embedding, tools and thinking from what its chat

@@ -2,8 +2,10 @@
 //!
 //! * A hosted model loads nothing here; a resident one is already paid for.
 //! * A cold load is costed by the context planner at the window agents are allowed
-//!   ([`ContextGate::allowed_ctx`](crate::ContextGate::allowed_ctx)) × the policy's agents,
-//!   against the GPU memory free beside the runners already loaded.
+//!   ([`ContextGate::allowed_ctx`](crate::ContextGate::allowed_ctx)) × the policy's agents:
+//!   its GPU part against the GPU memory free beside the runners already loaded, and the weights
+//!   it holds in RAM (experts on the CPU, the input layer when not memory-mapped) against the
+//!   free RAM when that is read. A memory-mapped table costs neither.
 //! * [`Priority::Foreground`] (the user's own turn) asks when it does not fit, with the cost;
 //!   [`Priority::Crew`] is refused when it does not fit; [`Priority::Background`] never
 //!   cold-loads at all: it runs on a resident (or hosted) model or not at all.
@@ -43,6 +45,11 @@ pub struct LoadCost {
     pub need_mib: Option<f64>,
     /// GPU memory free beside what is loaded, less the runner's headroom, MiB.
     pub free_mib: Option<f64>,
+    /// System RAM the load holds from the start (experts on the CPU, the input layer when not
+    /// memory-mapped, layers a split leaves there), MiB. `None` without a plan.
+    pub ram_need_mib: Option<f64>,
+    /// Free system RAM, MiB; `None` when it is not read (the RAM side is then not gated).
+    pub ram_free_mib: Option<f64>,
     /// Models the engine has loaded now.
     pub resident: Vec<String>,
     /// False when the engine did not say what is loaded: `resident` is then empty for want of an
@@ -51,9 +58,17 @@ pub struct LoadCost {
 }
 
 impl LoadCost {
-    /// Whether the load fits beside what is resident. `None`: unknown.
+    /// Whether the load fits beside what is resident: its GPU part in the GPU memory free, and its
+    /// RAM part in the free RAM when that is read. `None`: unknown.
     pub fn fits(&self) -> Option<bool> {
-        Some(self.need_mib? <= self.free_mib?)
+        Some(self.need_mib? <= self.free_mib? && self.ram_fits())
+    }
+
+    fn ram_fits(&self) -> bool {
+        match (self.ram_need_mib, self.ram_free_mib) {
+            (Some(need), Some(free)) => need <= free,
+            _ => true,
+        }
     }
 
     /// `marlowe-valiance:22b needs 15.2 GiB of GPU memory (32k × 1 agent, f16); 6.1 GiB is free
@@ -77,9 +92,13 @@ impl LoadCost {
         } else {
             format!("beside {}", self.resident.join(", "))
         };
+        let ram = match (self.ram_need_mib, self.ram_free_mib) {
+            (Some(n), Some(f)) if !self.ram_fits() => format!("; it also holds {} GiB in RAM, and {} GiB is free", gib(n), gib(f.max(0.0))),
+            _ => String::new(),
+        };
         match self.free_mib {
-            Some(f) => format!("{need}; {} GiB is free {beside}", gib(f.max(0.0))),
-            None => format!("{need}; free GPU memory is unknown {beside}"),
+            Some(f) => format!("{need}; {} GiB is free {beside}{ram}", gib(f.max(0.0))),
+            None => format!("{need}; free GPU memory is unknown {beside}{ram}"),
         }
     }
 }
@@ -186,13 +205,21 @@ impl Brains {
         // What the runner will serve, not only what is planned (a qwen35 model loads with one).
         let agents = gate.slots(model).map_or(1, |n| n.max(1));
         let kv = policy.as_ref().map_or(KvType::F16, |p| p.kv_type);
-        let plan = self.context_plan(model).ok().and_then(|p| p.plan);
+        let cp = self.context_plan(model).ok();
+        let ram_free_mib = cp.as_ref().and_then(|p| p.ram_free_mib);
+        // Placed as the policy says (the plan is built for it): the GPU part is what the GPU holds.
+        let plan = cp.and_then(|p| p.plan).map(|m| match &policy {
+            Some(pol) => m.with_placement(pol.placement),
+            None => m,
+        });
+        let split = plan.as_ref().map(|p| p.split(ctx, kv, agents));
         let need_mib = plan.as_ref().map(|p| p.need_mib(ctx, kv, agents));
+        let ram_need_mib = split.map(|s| s.ram_weights_mib);
         // The engine's server gives the card back to the model it starts (it stops the one it
         // runs first), so it is measured as the planner measures it: free plus what Marlowe's
         // own server holds, less the headroom.
         let free_mib = plan.as_ref().and_then(|p| p.gpu.as_ref()).map(|g| g.free_for_marlowe_mib() - g.headroom_mib.max(HEADROOM_MIB));
-        LoadCost { model: model.clone(), ctx, agents, kv, need_mib, free_mib, resident, resident_known: true }
+        LoadCost { model: model.clone(), ctx, agents, kv, need_mib, free_mib, ram_need_mib, ram_free_mib, resident, resident_known: true }
     }
 
     /// The model background work on `slot` may use now: the slot's model, else the conductor's,
@@ -234,6 +261,8 @@ mod tests {
             kv: KvType::F16,
             need_mib: Some(15.2 * 1024.0),
             free_mib: Some(6.1 * 1024.0),
+            ram_need_mib: None,
+            ram_free_mib: Some(12.0 * 1024.0),
             resident: vec!["marlowe-dawn:9b".into()],
             resident_known: true,
         };
@@ -242,6 +271,13 @@ mod tests {
             c.describe(),
             "marlowe-valiance:22b needs 15.2 GiB of GPU memory (32k × 1 agent, f16); 6.1 GiB is free beside marlowe-dawn:9b"
         );
-        assert_eq!(LoadCost { need_mib: None, ..c }.fits(), None);
+        assert_eq!(LoadCost { need_mib: None, ..c.clone() }.fits(), None);
+        // An MoE with its experts on the CPU: the GPU part fits, the experts must fit in RAM.
+        let moe = LoadCost { need_mib: Some(13.5 * 1024.0), free_mib: Some(14.0 * 1024.0), ram_need_mib: Some(67.4 * 1024.0), resident: Vec::new(), ..c };
+        assert_eq!(moe.fits(), Some(false));
+        assert!(moe.describe().ends_with("with nothing else loaded; it also holds 67.4 GiB in RAM, and 12.0 GiB is free"), "{}", moe.describe());
+        assert_eq!(LoadCost { ram_free_mib: Some(80.0 * 1024.0), ..moe.clone() }.fits(), Some(true));
+        // Free RAM not read: only the GPU part is gated.
+        assert_eq!(LoadCost { ram_free_mib: None, ..moe }.fits(), Some(true));
     }
 }

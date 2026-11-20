@@ -121,6 +121,7 @@ fn uncalibrated_total_is_within_half_a_percent_of_the_measured_runner() {
         mmproj_b: 0,
         gpu: None,
         calib: Calibration::default(),
+        placement: Default::default(),
     });
     let need = plan.need_mib(32_768, KvType::Q8_0, 1);
     let err = (need - 13_485.7) / 13_485.7;
@@ -158,6 +159,7 @@ fn clean_desktop(m: &ArchProfile, d: Option<&ArchProfile>) -> marlowe_hw::PlanMo
             bandwidth_gbs: Some(736.0),
         }),
         calib,
+        placement: Default::default(),
     })
 }
 

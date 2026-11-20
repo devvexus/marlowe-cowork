@@ -6,7 +6,7 @@
 //! | `flash_attn` | on | `OLLAMA_FLASH_ATTENTION` (a quantized KV cache needs it: off means f16) |
 //! | `keep_alive` | `OLLAMA_KEEP_ALIVE` as saved, else 5 m (negative: never unload) | `OLLAMA_KEEP_ALIVE` |
 //! | `batch` / `ubatch` | 512 / 512 | Ollama's `-b` / `-ub` |
-//! | `mmap` | off (`--load-mode none`) | Ollama's launch |
+//! | `mmap` | on (`--load-mode mmap --lazy-mode on`): the input layer is read lazily from the file | llama.cpp's own default (Ollama's launch had it off) |
 //! | `gpu_fit` | `auto`: whole on the GPU when the planner says it fits, else split | Ollama's layer split |
 //!
 //! The KV type, the context and the slots are per model: the context planner's policy (saved per
@@ -46,13 +46,16 @@ pub struct ServerSettings {
     pub keep_alive: Option<Duration>,
     pub batch: u32,
     pub ubatch: u32,
+    /// Memory-map the model file (llama.cpp's default): what stays on the CPU, the token and
+    /// n-gram embedding tables above all, is read from the file as it is used instead of into RAM
+    /// at load. Off reads every model's host side into RAM, whatever its planner placement says.
     pub mmap: bool,
     pub gpu_fit: GpuFit,
 }
 
 impl Default for ServerSettings {
     fn default() -> Self {
-        Self { flash_attn: true, keep_alive: Some(Duration::from_secs(300)), batch: 512, ubatch: 512, mmap: false, gpu_fit: GpuFit::Auto }
+        Self { flash_attn: true, keep_alive: Some(Duration::from_secs(300)), batch: 512, ubatch: 512, mmap: true, gpu_fit: GpuFit::Auto }
     }
 }
 
@@ -126,9 +129,9 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_are_what_marlowe_launched_with_under_ollama() {
+    fn the_defaults_are_what_marlowe_launched_with_under_ollama_but_mmap() {
         let s = ServerSettings::default();
-        assert!(s.flash_attn && !s.mmap);
+        assert!(s.flash_attn && s.mmap, "memory-mapped, as llama.cpp loads by default");
         assert_eq!((s.batch, s.ubatch, s.gpu_fit, s.keep_alive), (512, 512, GpuFit::Auto, Some(Duration::from_secs(300))));
         assert_eq!(GpuFit::parse(" Split "), Some(GpuFit::Split));
         assert_eq!(GpuFit::parse("sometimes"), None);

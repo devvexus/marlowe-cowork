@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use marlowe_model::{Effort, ModelInfo, ModelRef};
-use marlowe_proto::{ContextPolicy, KvType, LibraryModel, PolicySource, Slot, SlotAssignment};
+use marlowe_proto::{ContextPolicy, Experts, HostTables, KvType, LibraryModel, Placement, PolicySource, Slot, SlotAssignment};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::BrainsError;
@@ -30,7 +30,9 @@ CREATE TABLE IF NOT EXISTS context_policy (
     kv_type    TEXT NOT NULL CHECK (kv_type IN ('f16','q8_0','q4_0')),
     parallel   INTEGER NOT NULL CHECK (parallel BETWEEN 1 AND 16),
     source     TEXT NOT NULL CHECK (source IN ('auto','user')),
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    host       TEXT NOT NULL DEFAULT 'disk',
+    experts    TEXT NOT NULL DEFAULT 'auto'
 );
 CREATE TABLE IF NOT EXISTS engine_off (
     model_ref TEXT PRIMARY KEY
@@ -71,6 +73,15 @@ impl Library {
     /// Wraps an existing connection and applies the schema.
     pub fn from_connection(conn: Connection) -> Result<Self, BrainsError> {
         conn.execute_batch(SCHEMA)?;
+        // A policy table from before the weights' placement was saved gets its columns.
+        for (col, default) in [("host", "disk"), ("experts", "auto")] {
+            let has: bool = conn
+                .prepare("SELECT 1 FROM pragma_table_info('context_policy') WHERE name = ?1")?
+                .exists([col])?;
+            if !has {
+                conn.execute_batch(&format!("ALTER TABLE context_policy ADD COLUMN {col} TEXT NOT NULL DEFAULT '{default}'"))?;
+            }
+        }
         Ok(Self { conn })
     }
 
@@ -233,21 +244,30 @@ impl Library {
 
     /// The saved context policy of `model`, if any.
     pub fn policy(&self, model: &ModelRef) -> Result<Option<ContextPolicy>, BrainsError> {
-        let row: Option<(i64, String, i64, String, i64)> = self
+        type PolicyRow = (i64, String, i64, String, i64, String, String);
+        let row: Option<PolicyRow> = self
             .conn
             .query_row(
-                "SELECT max_ctx, kv_type, parallel, source, updated_at FROM context_policy WHERE model_ref = ?1",
+                "SELECT max_ctx, kv_type, parallel, source, updated_at, host, experts FROM context_policy WHERE model_ref = ?1",
                 [model.to_string()],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
             )
             .optional()?;
-        Ok(row.and_then(|(max_ctx, kv, parallel, source, at)| {
+        Ok(row.and_then(|(max_ctx, kv, parallel, source, at, host, experts)| {
             Some(ContextPolicy {
                 max_ctx: max_ctx as u32,
                 kv_type: KvType::parse(&kv)?,
                 parallel: parallel as u16,
                 source: if source == "user" { PolicySource::User } else { PolicySource::Auto },
                 updated_ms: at,
+                placement: Placement {
+                    host: if host == "ram" { HostTables::Ram } else { HostTables::Disk },
+                    experts: match experts.as_str() {
+                        "cpu" => Experts::Cpu,
+                        "gpu" => Experts::Gpu,
+                        _ => Experts::Auto,
+                    },
+                },
             })
         }))
     }
@@ -272,12 +292,22 @@ impl Library {
             PolicySource::User => "user",
             PolicySource::Auto => "auto",
         };
+        let host = match p.placement.host {
+            HostTables::Disk => "disk",
+            HostTables::Ram => "ram",
+        };
+        let experts = match p.placement.experts {
+            Experts::Auto => "auto",
+            Experts::Cpu => "cpu",
+            Experts::Gpu => "gpu",
+        };
         self.conn.execute(
-            "INSERT INTO context_policy (model_ref, max_ctx, kv_type, parallel, source, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO context_policy (model_ref, max_ctx, kv_type, parallel, source, updated_at, host, experts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(model_ref) DO UPDATE SET max_ctx = excluded.max_ctx, kv_type = excluded.kv_type,
-               parallel = excluded.parallel, source = excluded.source, updated_at = excluded.updated_at",
-            params![model.to_string(), p.max_ctx, p.kv_type.ollama_name(), p.parallel, source, p.updated_ms],
+               parallel = excluded.parallel, source = excluded.source, updated_at = excluded.updated_at,
+               host = excluded.host, experts = excluded.experts",
+            params![model.to_string(), p.max_ctx, p.kv_type.ollama_name(), p.parallel, source, p.updated_ms, host, experts],
         )?;
         Ok(())
     }
@@ -424,12 +454,33 @@ mod tests {
     }
 
     #[test]
+    fn a_policy_table_from_before_the_placement_gets_its_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE context_policy (model_ref TEXT PRIMARY KEY, max_ctx INTEGER NOT NULL, kv_type TEXT NOT NULL,
+               parallel INTEGER NOT NULL, source TEXT NOT NULL, updated_at INTEGER NOT NULL);
+             INSERT INTO context_policy VALUES ('ollama/a', 32768, 'q8_0', 2, 'user', 7);",
+        )
+        .unwrap();
+        let lib = Library::from_connection(conn).unwrap();
+        let p = lib.policy(&"ollama/a".parse().unwrap()).unwrap().unwrap();
+        assert_eq!((p.max_ctx, p.parallel, p.placement), (32_768, 2, Placement::default()), "memory-mapped, experts auto");
+    }
+
+    #[test]
     fn policies_persist_validate_in_sql_and_go_with_their_model() {
         let lib = Library::open_in_memory().unwrap();
         let a = lib.add(&info("a")).unwrap();
-        let p = ContextPolicy { max_ctx: 47_104, kv_type: KvType::Q4_0, parallel: 2, source: PolicySource::User, updated_ms: 5 };
+        let p = ContextPolicy {
+            max_ctx: 47_104,
+            kv_type: KvType::Q4_0,
+            parallel: 2,
+            source: PolicySource::User,
+            updated_ms: 5,
+            placement: Placement { host: HostTables::Ram, experts: Experts::Cpu },
+        };
         lib.set_policy(&a, &p).unwrap();
-        assert_eq!(lib.policy(&a).unwrap(), Some(p));
+        assert_eq!(lib.policy(&a).unwrap(), Some(p), "the weights' placement is saved with the policy");
         assert_eq!(lib.policies().unwrap(), vec![(a.clone(), p)]);
         // The table's CHECKs are the last line: a window under 2048 or 17 agents never lands.
         assert!(lib.set_policy(&a, &ContextPolicy { max_ctx: 1024, ..p }).is_err());

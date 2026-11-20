@@ -1,0 +1,40 @@
+ * marlowe — kv planning                                                                                       teams ○  0 runs · 0 need you
+╭ Conversation · kv planning ────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ marlowe-dusk:27b-super ▾     llama.cpp │
+│                 ╭─ Context & hardware · marlowe-dusk:27b-super ────────────────────────────────────────────────── esc ─╮8 · 6 slots      │
+│                 │ Engine llama.cpp · Marlowe's own engine · 1 slot of 32k each   e turns it off                        │─────────── (m) ─╯
+│                 │ GPU    RTX 4080 SUPER 16.0 GiB · other apps 1.3 · free for Marlowe 14.7 · keep 1.0                   │─────────────────╮
+│                 │ Load   weights 12.3 (Q4_K_M 176.9B) · compute 0.1 · driver 0.5 = 13.0 fixed  (estimate until a load  │                 │
+│                 │ Arch   48 layers, 12 keep a KV cache, 36 Gated DeltaNet                                              │─────────── (w) ─╯
+│                 │        ···┃···┃···┃···┃···┃···┃···┃···┃···┃···┃···┃···┃                                              │─────────────────╮
+│                 │ State  112 MiB per agent, fixed at any context (Gated DeltaNet)                                      │                 │
+│                 │ KV     per token  f16 24 KiB · q8_0 13 KiB · q4_0 7 KiB                                              │─────────── (1) ─╯
+│                 │ Memory GPU 13.5 GiB · RAM 75.5 GiB · on disk 27.5 GiB, read lazily                                   │─────────────────╮
+│                 │ RAM    experts of 43/48 blocks 63.9 · host 0.1 · checkpoints ≤3.5 · prompt cache ≤8.0 · 39.1 of 63.8 │                 │
+│                 │                                                                                                      │                 │
+│                 │    context   per agent (q8_0)    f16  q8_0  q4_0   ← agents that fit                                 │                 │
+│                 │         8k   0.2 GiB              16    16    16   experts of 45/48 blocks on CPU · ~3.5× slower     │                 │
+│                 │        16k   0.3 GiB              16    16    16   experts of 46/48 blocks on CPU · ~3.5× slower     │                 │
+│                a│ ›      32k   0.5 GiB               9    16    16   experts of 48/48 blocks on CPU · ~3.7× slower     │                 │
+│                 │        64k   0.9 GiB               5     9    16   experts of 48/48 blocks on CPU · ~3.7× slower     │                 │
+│                 │       128k   1.7 GiB               2     4     8   experts of 48/48 blocks on CPU · ~3.7× slower     │                 │
+│                 │       256k   3.3 GiB               1     2     4   experts of 47/48 blocks on CPU · ~3.6× slower     │                 │
+│                 │   max one agent: 256k (q8_0) · 256k (q4_0)                                                           │                 │
+│                 │                                                                                                      │                 │
+│                 │ max context ◂ 32k ▸   kv ◂ q8_0 ▸   agents at once ◂ 1 ▸ (you + crew)   a auto                       │                 │
+│                 │ embedding tables ◂ keep on disk (memory-mapped, read lazily) ▸   experts ◂ auto ▸                    │                 │
+│                 │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╍╍─  13.5 of 13.7 GiB · 0.2 spare                       │                 │
+│                 │ The experts of the first 43 of 48 blocks run on the CPU from RAM; attention, the shared layers and   │                 │
+│                 │ every cache stay on the GPU. About 3.4× slower writing than all on the GPU; 0.2 GiB spare.           │                 │
+│                 │ Each agent gets its own slot of 32k: you keep one, the crew runs on the other 1. Agents may ask for  │                 │
+│                 │ less, never more.                                                                                    │                 │
+│                 │                                                                                                      │                 │
+│                 │ ↵ review changes   ←→ adjust · ↑↓ context · tab field · e engine · esc close                         │─────────── (2) ─╯
+│                 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯─────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ⇧tab Mode  ^k palette               21:40

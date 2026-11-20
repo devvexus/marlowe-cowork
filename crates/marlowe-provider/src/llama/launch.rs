@@ -7,7 +7,12 @@
 //! backend's (`marlowe-engines`), never Ollama's. `-c` is the product of the two and the KV cache
 //! is split per slot (no `--kv-unified`), so one agent can never take another's context. A model
 //! that does not fit whole runs split: `--fit on` and no `-ngl`, so llama.cpp places what fits on
-//! the GPU against the memory free, as Ollama splits such a model. `-ngl 99 --fit off` keeps
+//! the GPU against the memory free, as Ollama splits such a model. An MoE model whose experts do
+//! not fit keeps every layer on the GPU and the experts of its first blocks on the CPU
+//! (`--n-cpu-moe N`, sized by the planner). The file is memory-mapped (`--load-mode mmap`, named
+//! so an integrated GPU's `auto` does not turn it off) and the tables llama.cpp marks lazy (the
+//! n-gram embeddings) are read row by row from it (`--lazy-mode on`); the input layer is on the
+//! CPU whatever `-ngl` says, so mapped it costs neither VRAM nor resident RAM. `-ngl 99 --fit off` keeps
 //! llama.cpp from moving layers to the CPU on its own, but it does NOT make a misfit fail: under
 //! the Windows driver's sysmem fallback (NVIDIA "CUDA - Sysmem Fallback Policy", on by default)
 //! a `cudaMalloc` past the card's memory succeeds by paging into system RAM, so the server loads
@@ -39,6 +44,11 @@ pub struct Spec {
     pub mmproj: Option<PathBuf>,
     /// llama.cpp places the layers against the free memory (the model does not fit whole).
     pub split: bool,
+    /// The experts of the first blocks kept on the CPU (`--n-cpu-moe`); 0 keeps them all on the
+    /// GPU. Not passed with `split` (llama.cpp's fit step places experts itself).
+    pub cpu_moe: u32,
+    /// The input layer read into RAM rather than memory-mapped.
+    pub host_ram: bool,
     /// Flash attention, batch sizes and mmap.
     pub settings: ServerSettings,
 }
@@ -75,10 +85,12 @@ pub fn args(spec: &Spec) -> Vec<String> {
         // calls: what Ollama does for a model with no renderer, parser or template of its own.
         s("--jinja"),
     ];
-    if !set.mmap {
-        // llama.cpp builds from late 2026 dropped `--no-mmap` for `--load-mode`; `none` reads the
-        // weights into memory, as the old flag did.
-        a.extend([s("--load-mode"), s("none")]);
+    // llama.cpp builds from late 2026 dropped `--no-mmap` for `--load-mode`. `mmap` is named
+    // rather than left to `auto`, which turns mapping off on an integrated GPU (GB10).
+    if set.mmap && !spec.host_ram {
+        a.extend([s("--load-mode"), s("mmap"), s("--lazy-mode"), s("on")]);
+    } else {
+        a.extend([s("--load-mode"), s("none"), s("--lazy-mode"), s("off")]);
     }
     a.extend([
         s("--cache-type-k"),
@@ -98,6 +110,9 @@ pub fn args(spec: &Spec) -> Vec<String> {
         a.extend([s("--fit"), s("on")]);
     } else {
         a.extend([s("--fit"), s("off"), s("-ngl"), s("99")]);
+        if spec.cpu_moe > 0 {
+            a.extend([s("--n-cpu-moe"), spec.cpu_moe.to_string()]);
+        }
     }
     if let Some(p) = &spec.mmproj {
         a.push(s("--mmproj"));
@@ -165,6 +180,8 @@ mod tests {
             draft: None,
             mmproj: None,
             split: false,
+            cpu_moe: 0,
+            host_ram: false,
             settings: ServerSettings::default(),
         }
     }
@@ -189,7 +206,10 @@ mod tests {
         assert_eq!(after(&a, "--cache-type-v"), "q8_0");
         assert_eq!(after(&a, "--flash-attn"), "on");
         assert_eq!((after(&a, "-ngl"), after(&a, "--fit")), ("99", "off"));
-        assert!(!a.iter().any(|x| x == "--context-shift") && after(&a, "--load-mode") == "none" && a.iter().any(|x| x == "--jinja"));
+        assert!(!a.iter().any(|x| x == "--context-shift") && a.iter().any(|x| x == "--jinja"));
+        // Memory-mapped by default, the lazy tables read from the file as they are used.
+        assert_eq!((after(&a, "--load-mode"), after(&a, "--lazy-mode")), ("mmap", "on"));
+        assert!(!a.iter().any(|x| x == "--n-cpu-moe" || x == "--cpu-moe" || x == "--no-mmap"));
         assert_eq!(after(&a, "--host"), "127.0.0.1");
         // None of the flags Ollama adds only for the models it renders itself, and no draft or
         // projector the model does not have.
@@ -216,11 +236,25 @@ mod tests {
         let a = args(&s);
         assert_eq!(after(&a, "--fit"), "on");
         assert!(!a.iter().any(|x| x == "-ngl"), "llama.cpp decides the layers");
-        s.settings = ServerSettings { flash_attn: false, batch: 2048, ubatch: 256, mmap: true, ..ServerSettings::default() };
+        s.settings = ServerSettings { flash_attn: false, batch: 2048, ubatch: 256, mmap: false, ..ServerSettings::default() };
+        s.cpu_moe = 12;
         let a = args(&s);
         assert_eq!((after(&a, "--flash-attn"), after(&a, "--cache-type-k"), after(&a, "--cache-type-v")), ("off", "f16", "f16"));
         assert_eq!((after(&a, "-b"), after(&a, "-ub")), ("2048", "256"));
-        assert!(!a.iter().any(|x| x == "--no-mmap" || x == "--load-mode"));
+        assert_eq!((after(&a, "--load-mode"), after(&a, "--lazy-mode")), ("none", "off"), "mmap off reads it all into RAM");
+        assert!(!a.iter().any(|x| x == "--n-cpu-moe"), "a split leaves the experts to llama.cpp's fit step");
+    }
+
+    #[test]
+    fn experts_offloaded_keep_every_layer_on_the_gpu_and_the_host_side_can_be_loaded_into_ram() {
+        let mut s = spec();
+        s.cpu_moe = 43;
+        let a = args(&s);
+        assert_eq!((after(&a, "-ngl"), after(&a, "--fit"), after(&a, "--n-cpu-moe")), ("99", "off", "43"));
+        assert_eq!(after(&a, "--load-mode"), "mmap", "the experts on the CPU are the file's pages");
+        s.host_ram = true;
+        let a = args(&s);
+        assert_eq!((after(&a, "--load-mode"), after(&a, "--lazy-mode")), ("none", "off"));
     }
 
     #[test]

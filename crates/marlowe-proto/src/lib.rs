@@ -40,7 +40,8 @@ pub use coding::{
     RuleInfo, ScheduleInfo, SettingsLayer, SettingsScope, TodoItem, TodoStatus,
 };
 pub use context::{
-    ctx_label, planned_changes, policy_label, server_change, ArchSummary, ChangeWhen, ContextPlan, ContextPolicy, Engine, EngineSettings, Fit, GpuBudget,
+    ctx_label, planned_changes, policy_label, server_change, ArchSummary, ChangeWhen, ContextPlan, ContextPolicy, Engine, EngineSettings, Experts, Fit, GpuBudget,
+    HostTables, MemorySplit, Placement, placement_text,
     KvType, LayerRole, ModelContext, PlanModel, PlanRow, PlannedChange, PolicySource, RunnerSlot, MAX_AGENTS, MIN_CTX,
     SERVER_RESTART_TOOL,
 };

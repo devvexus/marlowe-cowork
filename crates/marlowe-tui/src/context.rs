@@ -8,8 +8,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use marlowe_model::ModelRef;
 use marlowe_proto::{
-    planned_changes, server_change, ContextPlan, ContextPolicy, Engine, KvType, ModelContext, PlannedChange, PolicySource,
-    Request, SessionId, MAX_AGENTS, MIN_CTX,
+    planned_changes, server_change, ContextPlan, ContextPolicy, Engine, Experts, HostTables, KvType, ModelContext, PlannedChange,
+    PolicySource, Request, SessionId, MAX_AGENTS, MIN_CTX,
 };
 
 use crate::state::{NoteTone, Overlay, State};
@@ -24,21 +24,34 @@ pub enum PlanField {
     Ctx,
     Kv,
     Parallel,
+    /// The input layer (token and n-gram embedding tables): on disk or in RAM.
+    Host,
+    /// An MoE model's experts: auto, all on the CPU, or kept on the GPU.
+    Experts,
 }
 
-impl PlanField {
-    pub const ALL: [PlanField; 3] = [PlanField::Ctx, PlanField::Kv, PlanField::Parallel];
+/// The order of the experts choice under ←/→.
+const EXPERTS: [Experts; 3] = [Experts::Auto, Experts::Cpu, Experts::Gpu];
 
-    pub fn next(self) -> PlanField {
-        match self {
-            PlanField::Ctx => PlanField::Kv,
-            PlanField::Kv => PlanField::Parallel,
-            PlanField::Parallel => PlanField::Ctx,
+impl PlanField {
+    /// The fields in tab order; the experts choice only for an MoE model.
+    pub fn order(moe: bool) -> &'static [PlanField] {
+        const ALL: [PlanField; 5] = [PlanField::Ctx, PlanField::Kv, PlanField::Parallel, PlanField::Host, PlanField::Experts];
+        if moe {
+            &ALL
+        } else {
+            &ALL[..4]
         }
     }
 
-    pub fn prev(self) -> PlanField {
-        self.next().next()
+    pub fn next(self, moe: bool) -> PlanField {
+        let o = Self::order(moe);
+        o[(o.iter().position(|f| *f == self).unwrap_or(0) + 1) % o.len()]
+    }
+
+    pub fn prev(self, moe: bool) -> PlanField {
+        let o = Self::order(moe);
+        o[(o.iter().position(|f| *f == self).unwrap_or(0) + o.len() - 1) % o.len()]
     }
 }
 
@@ -189,11 +202,12 @@ impl State {
         }
         let before = d;
         let local = plan.in_effect.engine.is_local() && plan.plan.is_some();
+        let moe = plan.plan.as_ref().is_some_and(|m| m.has_experts());
         let rows: Vec<u32> = self.plan_rows().into_iter().filter(|c| *c <= plan.ctx_limit).collect();
         match k.code {
             KeyCode::Tab | KeyCode::BackTab if !local => field = PlanField::Ctx,
-            KeyCode::Tab => field = field.next(),
-            KeyCode::BackTab => field = field.prev(),
+            KeyCode::Tab => field = field.next(moe),
+            KeyCode::BackTab => field = field.prev(moe),
             KeyCode::Left | KeyCode::Right => {
                 let up = k.code == KeyCode::Right;
                 match field {
@@ -212,6 +226,13 @@ impl State {
                     PlanField::Parallel if local => {
                         d.parallel = if up { (d.parallel + 1).min(MAX_AGENTS) } else { d.parallel.saturating_sub(1).max(1) };
                     }
+                    PlanField::Host if local => {
+                        d.placement.host = if up { HostTables::Ram } else { HostTables::Disk };
+                    }
+                    PlanField::Experts if local && moe => {
+                        let i = EXPERTS.iter().position(|e| *e == d.placement.experts).unwrap_or(0);
+                        d.placement.experts = EXPERTS[if up { (i + 1).min(2) } else { i.saturating_sub(1) }];
+                    }
                     _ => {}
                 }
             }
@@ -228,7 +249,8 @@ impl State {
                 field = PlanField::Ctx;
             }
             KeyCode::Char('a') => match plan.auto {
-                Some(a) => d = ContextPolicy { source: PolicySource::Auto, ..a },
+                // The automatic window and agents; where the weights go stays the user's choice.
+                Some(a) => d = ContextPolicy { source: PolicySource::Auto, placement: d.placement, ..a },
                 None => self.flash("no automatic choice without a GPU measurement", NoteTone::Amber),
             },
             KeyCode::Char('f') if local => d.kv_type = KvType::F16,

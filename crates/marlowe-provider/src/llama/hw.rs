@@ -188,7 +188,7 @@ mod tests {
     }
 
     fn want(slots: u16) -> Want {
-        Want { model: MODEL.into(), shape: EngineShape { slots, ctx_per_slot: 8192, kv: "q8_0".into(), split: false }, lane: Lane::Conductor, key: 1, need_mib: None }
+        Want { model: MODEL.into(), shape: EngineShape { slots, ctx_per_slot: 8192, kv: "q8_0".into(), split: false, cpu_moe: 0, host_ram: false }, lane: Lane::Conductor, key: 1, need_mib: None }
     }
 
     #[test]

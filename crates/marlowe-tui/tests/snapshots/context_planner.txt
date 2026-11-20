@@ -10,26 +10,26 @@
 │                 │        ···┃···┃···┃···┃···┃···┃···┃···┃···┃···┃···┃···┃···┃···┃···┃···┃ +MTP                         │                 │
 │                 │ State  150 MiB per agent, fixed at any context (Gated DeltaNet); ×4 with the draft = 598 MiB         │─────────── (1) ─╯
 │                 │ KV     per token  f16 64 KiB · q8_0 34 KiB · q4_0 18 KiB  (+ draft 4 KiB f16)                        │─────────────────╮
-│                 │ RAM    pinned 1.0 · checkpoints ≤4.7 · prompt cache ≤8.0 · 12.0 of 31.2 GiB free                     │                 │
+│                 │ Memory GPU 13.2 GiB · RAM 12.7 GiB · on disk 0.9 GiB, read lazily                                    │                 │
+│                 │ RAM    host 0.1 · checkpoints ≤4.7 · prompt cache ≤8.0 · 12.0 of 31.2 GiB free                       │                 │
 │                 │                                                                                                      │                 │
 │                 │    context   per agent (q8_0)    f16  q8_0  q4_0   ← agents that fit                                 │                 │
 │                 │         8k   0.9 GiB               2     2     3                                                     │                 │
-│                 │        16k   1.2 GiB               1     1     2                                                     │                 │
-│                a│ ›      32k   1.8 GiB               –     1     1                                                     │                 │
+│                a│        16k   1.2 GiB               1     1     2                                                     │                 │
+│                 │ ›      32k   1.8 GiB               –     1     1                                                     │                 │
 │                 │        64k   3.0 GiB               –     –     1   partial offload · 62/66 on GPU · ~2× slower       │                 │
 │                 │       128k   5.3 GiB               –     –     –   partial offload · 51/66 on GPU · ~3× slower       │                 │
 │                 │       256k   10.1 GiB              –     –     –   does not fit                                      │                 │
 │                 │   max one agent: 45k (q8_0) · 77k (q4_0) · without the draft: 89k · 165k                             │                 │
 │                 │                                                                                                      │                 │
 │                 │ max context ◂ 32k ▸   kv ◂ q8_0 ▸   agents at once ◂ 1 ▸ (you + crew)   a auto                       │                 │
+│                 │ embedding tables ◂ keep on disk (memory-mapped, read lazily) ▸                                       │                 │
 │                 │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╍╍╍╍╍╍──  13.2 of 13.7 GiB · 0.5 spare                       │                 │
 │                 │ Loads fully on the GPU with 2.3 GiB for agents: one at 45k, two at 15k, or three at 5k (q8_0). This  │                 │
 │                 │ setting leaves 0.5 GiB spare.                                                                        │                 │
 │                 │                                                                                                      │                 │
 │                 │ ↵ review changes   ←→ adjust · ↑↓ context · tab field · e engine · esc close                         │                 │
-│                 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯                 │
-│                                                                                                ││                                        │
-│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯─────────── (2) ─╯
 │                                                                                                │╭ Threads ───────────────────────────────╮
 │                                                                                                ││ no open threads                        │
 │                                                                                                │╰────────────────────────────────── (3) ─╯

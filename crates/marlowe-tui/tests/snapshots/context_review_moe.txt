@@ -1,0 +1,40 @@
+ * marlowe — kv planning                                                                                       teams ○  0 runs · 0 need you
+╭ Conversation · kv planning ────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮╭ Model ─────────────────────────────────╮
+│                                                                                                ││ marlowe-dusk:27b-super ▾     llama.cpp │
+│                                                                                                ││ ctx 12.4k / 48k · kv q8 · 6 slots      │
+│                                                                                                │╰────────────────────────────────── (m) ─╯
+│                                                                                                │╭ Workspace ─────────────────────────────╮
+│                                                                                                ││ C:/work/valiance ▾                     │
+│                                                                                                │╰────────────────────────────────── (w) ─╯
+│                                                                                                │╭ Crew ──────────────────────────────────╮
+│                 ╭─ Context & hardware · marlowe-dusk:27b-super ────────────────────────────────────────────────── esc ─╮                 │
+│                 │ Saving 32k · q8 · 1× for marlowe-dusk:27b-super:                                                     │─────────── (1) ─╯
+│                 │                                                                                                      │─────────────────╮
+│                 │   ✓ now      Agents on this model: at most 32k each, never more; at most 1 at once                   │                 │
+│                 │   ✓ now      llama.cpp serves 1 slot of 32k each (32k in all); the conductor keeps one, the crew     │                 │
+│                 │              runs on the rest                                                                        │                 │
+│                 │   ✓ now      Embedding tables are loaded into RAM; every MoE expert runs on the CPU                  │                 │
+│                 │                                                                                                      │                 │
+│                a│ s save                                                                                               │                 │
+│                 │ esc back                                                                                             │                 │
+│                 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯                 │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                ││                                        │
+│                                                                                                │╰────────────────────────────────── (2) ─╯
+│                                                                                                │╭ Threads ───────────────────────────────╮
+│                                                                                                ││ no open threads                        │
+│                                                                                                │╰────────────────────────────────── (3) ─╯
+╰────────────────────────────────────────────────────────────────────────────────────────── (c) ─╯╭ Memory ────────────────────────────────╮
+╭ Message ───────────────────────────────────────────────────────────────────────────────────────╮│ waiting for its stats…                 │
+│ › message Marlowe…                                                      ⇧↵ newline · esc boxes ││ nothing recalled this session          │
+╰────────────────────────────────────────────────────────────────────────────────────────── (i) ─╯╰────────────────────────────────── (4) ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ⇧tab Mode  ^k palette               21:40

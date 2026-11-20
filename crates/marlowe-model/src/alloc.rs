@@ -12,12 +12,17 @@ use std::sync::{Arc, RwLock};
 /// `ctx_per_slot` tokens each (`-c` is their product), with the KV cache at type `kv`
 /// (`f16`, `q8_0` or `q4_0`). `split`: the model does not fit whole on the GPU, so llama.cpp
 /// places what fits there and keeps the rest on the CPU, as Ollama does for such a model.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `cpu_moe`: the experts of the first blocks kept on the CPU (`--n-cpu-moe`), the rest on the
+/// GPU. `host_ram`: the input layer (token and n-gram embedding tables) is read into RAM instead
+/// of being memory-mapped from the file.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EngineShape {
     pub slots: u16,
     pub ctx_per_slot: u32,
     pub kv: String,
     pub split: bool,
+    pub cpu_moe: u32,
+    pub host_ram: bool,
 }
 
 /// Decides, per model, how Marlowe's own llama-server serves it. Every local model runs there;
@@ -128,7 +133,7 @@ mod tests {
         struct Six;
         impl EngineAdvisor for Six {
             fn shape(&self, id: &str) -> Option<EngineShape> {
-                (id == "m").then(|| EngineShape { slots: 6, ctx_per_slot: 49_152, kv: "q8_0".into(), split: false })
+                (id == "m").then(|| EngineShape { slots: 6, ctx_per_slot: 49_152, kv: "q8_0".into(), split: false, cpu_moe: 0, host_ram: false })
             }
         }
         let a = ContextAllocations::new();

@@ -201,6 +201,7 @@ impl ContextGate<'_> {
             parallel: seen.next_parallel().unwrap_or(1).max(1),
             source: PolicySource::Auto,
             updated_ms: 0,
+            placement: Default::default(),
         })
     }
 
@@ -223,6 +224,12 @@ impl ContextGate<'_> {
         let p = ContextPolicy { updated_ms: now_ms(), ..p };
         self.b.with_library(|l| l.set_policy(model, &p))?;
         self.b.allocate(model, p.max_ctx);
+        // A new policy (another placement above all) is planned afresh; a load the engine gave up
+        // stays split until memory comes back.
+        let mut fit = self.b.ctx.engine_fit.lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(fit.get(model), Some(crate::engine::Verdict::Split { sticky: false, .. })) {
+            fit.remove(model);
+        }
         Ok(changes)
     }
 }
@@ -436,6 +443,7 @@ impl Brains {
         }
         let calib = self.calibration_for(blob.as_deref(), ub, &gpu_name);
         let spec_n = if a.draft.is_some() { in_effect.spec_n.unwrap_or(3) } else { 0 };
+        let saved = self.with_library(|l| l.policy(model))?;
         let plan = build(&PlanInputs {
             main: &a.main,
             draft: a.draft.as_ref(),
@@ -445,9 +453,11 @@ impl Brains {
             mmproj_b: a.files.mmproj_bytes,
             gpu: snap.as_ref().map(|s| s.gpu.clone()),
             calib,
+            // The table and the verdict are for the weights placed as saved (the popup re-plans a
+            // placement being edited with `PlanModel::with_placement`).
+            placement: saved.map(|p| p.placement).unwrap_or_default(),
         });
 
-        let saved = self.with_library(|l| l.policy(model))?;
         // The engine's own start: q8_0 where the head size allows, and as many agents as still get
         // a useful window. Ollama's models keep what the server runs (the saved environment).
         let kv = if engine_on {
@@ -459,7 +469,7 @@ impl Brains {
             // The choice the engine holds for this model (it started, or will start, with it).
             let held = self.engine_auto_policy(model);
             match held.map(|p| (p.parallel, p.max_ctx)).or_else(|| crate::engine::engine_choice(&plan, kv)) {
-                Some((n, c)) => (n, Some(ContextPolicy { max_ctx: c, kv_type: kv, parallel: n, source: PolicySource::Auto, updated_ms: 0 })),
+                Some((n, c)) => (n, Some(ContextPolicy { max_ctx: c, kv_type: kv, parallel: n, source: PolicySource::Auto, updated_ms: 0, placement: Default::default() })),
                 None => (1, None),
             }
         } else {
@@ -470,6 +480,7 @@ impl Brains {
                 parallel,
                 source: PolicySource::Auto,
                 updated_ms: 0,
+                placement: Default::default(),
             });
             (parallel, auto)
         };
@@ -490,8 +501,9 @@ impl Brains {
                 parallel: 1,
                 source: PolicySource::Auto,
                 updated_ms: 0,
+                placement: Default::default(),
             }),
-            None => ContextPolicy { max_ctx: self.default_window(model)?, kv_type: kv, parallel, source: PolicySource::Auto, updated_ms: 0 },
+            None => ContextPolicy { max_ctx: self.default_window(model)?, kv_type: kv, parallel, source: PolicySource::Auto, updated_ms: 0, placement: Default::default() },
         };
         if engine_on {
             warnings.push(format!(

@@ -199,7 +199,7 @@ fn usage_policies_and_the_approval_gated_restart() {
     assert!(plan.plan.as_ref().unwrap().agents(8_192, KvType::Q8_0).unwrap() >= 1);
 
     // A window above the model's maximum is refused; a good one is saved and broadcast.
-    let too_big = ContextPolicy { max_ctx: 16_384, kv_type: KvType::Q8_0, parallel: 1, source: PolicySource::User, updated_ms: 0 };
+    let too_big = ContextPolicy { max_ctx: 16_384, kv_type: KvType::Q8_0, parallel: 1, source: PolicySource::User, updated_ms: 0, placement: Default::default() };
     c.send(&Request::SetContextPolicy { model: model.clone(), policy: too_big });
     let err = c.until(|e| matches!(e, Event::Error { .. }));
     assert!(matches!(err.last(), Some(Event::Error { message, .. }) if message.contains("at most 8192")), "{err:?}");
@@ -210,8 +210,9 @@ fn usage_policies_and_the_approval_gated_restart() {
         Event::ContextPolicySaved { pending_restart, changes, .. } => Some((*pending_restart, changes.len())),
         _ => None,
     });
-    // The KV type is the llama.cpp server's launch: saving it needs no restart of anything.
-    assert_eq!(pending, Some((false, 3)), "{saved:#?}");
+    // The KV type is the llama.cpp server's launch: saving it needs no restart of anything. The
+    // review lists the window, the agents, the slots and where the weights go.
+    assert_eq!(pending, Some((false, 4)), "{saved:#?}");
 
     // The next turn's agent compacts against the policy's window.
     c.send(&Request::Ask { session: None, text: "again".into(), workspace: None, images: Vec::new(), options: None, client_ms: None });

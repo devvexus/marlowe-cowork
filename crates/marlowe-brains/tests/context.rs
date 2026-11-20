@@ -132,7 +132,7 @@ fn thousands(n: u32) -> String {
 }
 
 fn user(max_ctx: u32, kv_type: KvType, parallel: u16) -> ContextPolicy {
-    ContextPolicy { max_ctx, kv_type, parallel, source: PolicySource::User, updated_ms: 0 }
+    ContextPolicy { max_ctx, kv_type, parallel, source: PolicySource::User, updated_ms: 0, placement: Default::default() }
 }
 
 #[test]

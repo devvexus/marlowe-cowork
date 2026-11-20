@@ -10,8 +10,8 @@ use marlowe_hw::arch::{ArchProfile, Role};
 use marlowe_hw::{build, calibrate, log, CacheType, GpuBudget, ModelHeader, PlanInputs};
 use marlowe_model::{Effort, ModelInfo, ModelRef, ProviderKind};
 use marlowe_proto::{
-    ApprovalId, ArchSummary, ContextPlan, ContextPolicy, Engine, EngineSettings, Event, KvType, LibraryModel, ModelContext,
-    PolicySource, Request, RunnerSlot, Slot, SlotAssignment, SERVER_RESTART_TOOL,
+    ApprovalId, ArchSummary, ContextPlan, ContextPolicy, Engine, EngineSettings, Event, Experts, HostTables, KvType, LibraryModel,
+    ModelContext, Placement, PolicySource, Request, RunnerSlot, Slot, SlotAssignment, SERVER_RESTART_TOOL,
 };
 use marlowe_tui::state::{Overlay, Target};
 use marlowe_tui::State;
@@ -84,8 +84,9 @@ fn dusk_plan() -> ContextPlan {
             bandwidth_gbs: Some(736.0),
         }),
         calib: calibrate(&load, Some(13_485.7)),
+        placement: Default::default(),
     });
-    let policy = ContextPolicy { max_ctx: 32_768, kv_type: KvType::Q8_0, parallel: 1, source: PolicySource::Auto, updated_ms: 0 };
+    let policy = ContextPolicy { max_ctx: 32_768, kv_type: KvType::Q8_0, parallel: 1, source: PolicySource::Auto, updated_ms: 0, placement: Default::default() };
     ContextPlan {
         model: dusk_ref(),
         ctx_limit: plan.ctx_limit,
@@ -163,7 +164,7 @@ fn the_meter_drops_the_bar_first_on_a_narrow_board_and_warns_in_amber() {
     let mut e = running();
     e.gpu_layers = Some((57, 65));
     e.saved_kv_type = Some(KvType::Q8_0);
-    let pol = ContextPolicy { max_ctx: 32_768, kv_type: KvType::Q4_0, parallel: 1, source: PolicySource::User, updated_ms: 1 };
+    let pol = ContextPolicy { max_ctx: 32_768, kv_type: KvType::Q4_0, parallel: 1, source: PolicySource::User, updated_ms: 1, placement: Default::default() };
     feed(&mut s, 0, Event::ContextPolicies { models: vec![ModelContext { model: dusk_ref(), max_ctx: 32_768, policy: Some(pol), in_effect: e }] });
     let wide = dump(&render(&s, 160, 45));
     assert!(wide.contains("57/65 on GPU") && wide.contains("q4 pending"), "{wide}");
@@ -228,7 +229,7 @@ fn adjusting_reviewing_and_saving_with_a_restart() {
     assert!(t.contains("num_ctx 36,864 (was 32,768)"), "{t}");
     assert!(t.contains("OLLAMA_KV_CACHE_TYPE q8_0 → q4_0"), "{t}");
     let out = s.on_key(key(KeyCode::Char('r')));
-    let want = ContextPolicy { max_ctx: 36_864, kv_type: KvType::Q4_0, parallel: 1, source: PolicySource::User, updated_ms: 0 };
+    let want = ContextPolicy { max_ctx: 36_864, kv_type: KvType::Q4_0, parallel: 1, source: PolicySource::User, updated_ms: 0, placement: Default::default() };
     assert_eq!(
         out,
         vec![
@@ -323,7 +324,7 @@ fn a_server_restart_is_allow_or_deny_never_for_the_session() {
 #[test]
 fn saved_and_applied_events_flash() {
     let mut s = with_dusk();
-    let pol = ContextPolicy { max_ctx: 47_104, kv_type: KvType::Q4_0, parallel: 1, source: PolicySource::User, updated_ms: 1 };
+    let pol = ContextPolicy { max_ctx: 47_104, kv_type: KvType::Q4_0, parallel: 1, source: PolicySource::User, updated_ms: 1, placement: Default::default() };
     feed(&mut s, 6, Event::ContextPolicySaved { model: dusk_ref(), policy: pol, changes: vec![], pending_restart: true });
     assert!(s.flash.as_ref().unwrap().text.contains("waits for an Ollama restart"));
     assert_eq!(s.context.model(&dusk_ref()).unwrap().max_ctx, 47_104);
@@ -358,7 +359,7 @@ fn llama_state() -> State {
     e.engine = Engine::LlamaCpp;
     e.parallel = Some(6);
     e.slots = (0..6).map(|id| RunnerSlot { id, n_ctx: 49_152, n_prompt_tokens: 0, is_processing: false }).collect();
-    let pol = ContextPolicy { max_ctx: 49_152, kv_type: KvType::Q8_0, parallel: 6, source: PolicySource::Auto, updated_ms: 0 };
+    let pol = ContextPolicy { max_ctx: 49_152, kv_type: KvType::Q8_0, parallel: 6, source: PolicySource::Auto, updated_ms: 0, placement: Default::default() };
     feed(&mut s, 0, Event::ContextPolicies { models: vec![ModelContext { model: dusk_ref(), max_ctx: 49_152, policy: Some(pol), in_effect: e }] });
     s
 }
@@ -383,7 +384,7 @@ fn the_planner_says_what_each_agent_gets_and_e_hands_the_model_back_to_ollama() 
     s.on_key(key(KeyCode::Enter));
     let mut plan = dusk_plan();
     plan.in_effect = s.context.model(&dusk_ref()).unwrap().in_effect.clone();
-    plan.policy = ContextPolicy { max_ctx: 49_152, kv_type: KvType::Q8_0, parallel: 6, source: PolicySource::Auto, updated_ms: 0 };
+    plan.policy = ContextPolicy { max_ctx: 49_152, kv_type: KvType::Q8_0, parallel: 6, source: PolicySource::Auto, updated_ms: 0, placement: Default::default() };
     feed(&mut s, 0, Event::ContextPlan(Box::new(plan)));
     let buf = render(&s, W, H);
     assert_palette_only(&buf);
@@ -408,4 +409,115 @@ fn a_model_ollama_keeps_says_why_and_e_explains() {
     let t = dump(&render(&s, W, H));
     assert!(t.contains("Ollama · Ollama keeps this model: its manifest has a template layer"), "{t}");
     assert!(s.on_key(key(KeyCode::Char('e'))).is_empty(), "nothing to switch");
+}
+
+/// The plan for Qwen3.8-Flash-Next (the real header of its four shards: a 512-expert MoE with a
+/// 26.8 GiB n-gram table) on the 16 GiB desktop card, served by llama.cpp.
+fn flash_next_plan(in_effect: EngineSettings) -> ContextPlan {
+    let first = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../marlowe-hw/tests/fixtures/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf");
+    let main = ArchProfile::analyze(&marlowe_hw::gguf::read_header(&first).unwrap(), Role::Main).unwrap();
+    let plan = build(&PlanInputs {
+        main: &main,
+        draft: None,
+        spec_n: 0,
+        draft_kv: CacheType::F16,
+        ubatch: 512,
+        mmproj_b: 0,
+        gpu: Some(GpuBudget {
+            name: "NVIDIA GeForce RTX 4080 SUPER".into(),
+            total_mib: 16_376.0,
+            used_mib: 1_314.0,
+            free_mib: 15_062.0,
+            runners_mib: 0.0,
+            runners_shared_mib: 0.0,
+            headroom_mib: 1_024.0,
+            bandwidth_gbs: Some(736.0),
+        }),
+        calib: marlowe_hw::Calibration::default(),
+        placement: Placement::default(),
+    });
+    let policy = ContextPolicy { max_ctx: 32_768, kv_type: KvType::Q8_0, parallel: 1, source: PolicySource::Auto, updated_ms: 0, placement: Placement::default() };
+    ContextPlan {
+        model: dusk_ref(),
+        ctx_limit: plan.ctx_limit,
+        auto: Some(policy),
+        plan: Some(plan),
+        arch: ArchSummary {
+            arch: "qwen4exp".into(),
+            params: main.params,
+            quant: Some("Q4_K_M".into()),
+            layers: main.roles.clone(),
+            summary: main.summary(),
+            state_kind: Some("Gated DeltaNet".into()),
+            source: "GGUF header".into(),
+            ..Default::default()
+        },
+        rows: Vec::new(),
+        in_effect,
+        policy,
+        ram_total_mib: Some(65_336.0),
+        ram_free_mib: Some(40_000.0),
+        warnings: Vec::new(),
+    }
+}
+
+#[test]
+fn an_moe_with_an_ngram_table_shows_gpu_ram_and_disk_and_offers_where_its_weights_go() {
+    let mut s = llama_state();
+    open_planner(&mut s);
+    let e = s.context.model(&dusk_ref()).unwrap().in_effect.clone();
+    feed(&mut s, 0, Event::ContextPlan(Box::new(flash_next_plan(e))));
+    let buf = render(&s, W, H);
+    snapshot("context_planner_moe", &buf);
+    assert_palette_only(&buf);
+    let t = dump(&buf);
+    // The three numbers: the GPU part, the experts in RAM, the n-gram table on disk.
+    let mem = t.lines().find(|l| l.contains("Memory")).unwrap_or_else(|| panic!("{t}"));
+    for want in ["GPU 13.5 GiB", "RAM 75.5 GiB", "on disk 27.5 GiB, read lazily"] {
+        assert!(mem.contains(want), "{want}
+{mem}");
+    }
+    for want in ["experts of 43/48 blocks 63.9", "embedding tables ◂ keep on disk (memory-mapped, read lazily) ▸", "experts ◂ auto ▸", "The experts of the first 43 of 48 blocks run on the CPU"] {
+        assert!(t.contains(want), "{want}
+{t}");
+    }
+    // Tab to the tables: load them into RAM, and the disk part moves to RAM.
+    for _ in 0..3 {
+        s.on_key(key(KeyCode::Tab));
+    }
+    s.on_key(key(KeyCode::Right));
+    let t = dump(&render(&s, W, H));
+    let mem = t.lines().find(|l| l.contains("Memory")).unwrap();
+    assert!(mem.contains("RAM 102.9 GiB") && mem.contains("on disk 0.0 GiB") && !mem.contains("lazily"), "{mem}");
+    assert!(t.contains("embedding tables ◂ load into RAM ▸"), "{t}");
+    // Then every expert on the CPU.
+    s.on_key(key(KeyCode::Tab));
+    s.on_key(key(KeyCode::Right));
+    let Some(Overlay::ContextPlan { draft: Some(d), .. }) = &s.overlay else { panic!() };
+    assert_eq!(d.placement, Placement { host: HostTables::Ram, experts: Experts::Cpu });
+    s.on_key(key(KeyCode::Enter));
+    let buf = render(&s, W, H);
+    snapshot("context_review_moe", &buf);
+    assert_palette_only(&buf);
+    assert!(contains(&buf, "Embedding tables are loaded into RAM; every MoE expert runs on the CPU"), "{}", dump(&buf));
+    let out = s.on_key(key(KeyCode::Char('s')));
+    assert!(
+        matches!(&out[..], [Request::SetContextPolicy { policy, .. }] if policy.placement == Placement { host: HostTables::Ram, experts: Experts::Cpu }),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn a_dense_model_has_no_experts_choice() {
+    let mut s = llama_state();
+    open_planner(&mut s);
+    feed(&mut s, 0, Event::ContextPlan(Box::new(dusk_plan())));
+    let t = dump(&render(&s, W, H));
+    assert!(t.contains("embedding tables ◂ keep on disk") && !t.contains("experts ◂"), "{t}");
+    // Tab walks ctx, kv, agents, tables and back: no experts field.
+    for _ in 0..4 {
+        s.on_key(key(KeyCode::Tab));
+    }
+    assert!(matches!(s.overlay, Some(Overlay::ContextPlan { field: marlowe_tui::context::PlanField::Ctx, .. })), "{:?}", s.overlay);
 }

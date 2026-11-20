@@ -12,7 +12,7 @@ use marlowe_hw::{
 use marlowe_model::{
     CancelToken, ChatRequest, Completion, ModelInfo, ModelRef, Provider, ProviderError, ProviderKind, StreamEvent,
 };
-use marlowe_proto::{ChangeWhen, ContextPolicy, Engine, KvType, PolicySource, Slot};
+use marlowe_proto::{ChangeWhen, ContextPolicy, Engine, Experts, HostTables, KvType, Placement, PolicySource, Slot};
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../marlowe-hw/tests/fixtures")
@@ -39,6 +39,8 @@ impl ModelSource for Models {
     fn files(&self, model_id: &str) -> Result<ModelFiles, String> {
         match model_id {
             "plain:8b" | "rendered:8b" => Ok(ModelFiles { main: header("gemma3_12b_q4_k_m.json"), source: "GGUF header".into(), ..Default::default() }),
+            "moe:30b" => Ok(ModelFiles { main: synthetic(48, 64, 0), source: "GGUF header".into(), ..Default::default() }),
+            "ngram:4b" => Ok(ModelFiles { main: synthetic(8, 0, 4 * 1024 * 1024 * 1024 / 272), source: "GGUF header".into(), ..Default::default() }),
             other => Err(format!("no model {other}")),
         }
     }
@@ -56,7 +58,7 @@ impl ModelSource for Models {
     }
     fn engine_eligibility(&self, model_id: &str) -> Result<(), String> {
         match model_id {
-            "plain:8b" => Ok(()),
+            "plain:8b" | "moe:30b" | "ngram:4b" => Ok(()),
             _ => Err("Ollama renders its prompt with its own code (renderer qwen3.5)".into()),
         }
     }
@@ -121,7 +123,11 @@ impl Provider for NoChat {
         plain.context_window = Some(8_192);
         let mut rendered = ModelInfo::bare(ProviderKind::Ollama, "rendered:8b");
         rendered.context_window = Some(8_192);
-        Ok(vec![plain, rendered])
+        let mut moe = ModelInfo::bare(ProviderKind::Ollama, "moe:30b");
+        moe.context_window = Some(32_768);
+        let mut ngram = ModelInfo::bare(ProviderKind::Ollama, "ngram:4b");
+        ngram.context_window = Some(32_768);
+        Ok(vec![plain, rendered, moe, ngram])
     }
     fn stream(&self, _: &ChatRequest, _: &CancelToken, _: &mut dyn FnMut(StreamEvent)) -> Result<Completion, ProviderError> {
         Err(ProviderError::unsupported("no chat in this test"))
@@ -139,8 +145,51 @@ fn brains_on(models: Arc<Models>, gpu: Arc<dyn GpuSource>) -> Arc<Brains> {
     let b = Arc::new(Brains::new(Library::open_in_memory().unwrap(), f));
     b.add_model(ProviderKind::Ollama, "plain:8b").unwrap();
     b.add_model(ProviderKind::Ollama, "rendered:8b").unwrap();
+    b.add_model(ProviderKind::Ollama, "moe:30b").unwrap();
+    b.add_model(ProviderKind::Ollama, "ngram:4b").unwrap();
     b.install_engine_advisor();
     b
+}
+
+/// A model header: `blocks` blocks of attention and FFN (MoE with `experts` experts when not 0),
+/// and an n-gram table of `ngram_rows` rows of 256 when not 0. Q8_0 throughout.
+fn synthetic(blocks: u32, experts: u32, ngram_rows: u64) -> ModelHeader {
+    use serde_json::json;
+    let kv = vec![
+        ("general.architecture", json!("testarch")),
+        ("testarch.block_count", json!(blocks)),
+        ("testarch.embedding_length", json!(2048)),
+        ("testarch.attention.head_count", json!(16)),
+        ("testarch.attention.head_count_kv", json!(4)),
+        ("testarch.context_length", json!(32_768)),
+        ("testarch.expert_count", json!(experts)),
+        ("testarch.expert_used_count", json!(if experts > 0 { 4 } else { 0 })),
+    ];
+    let mut t: Vec<(String, u32, Vec<u64>)> = vec![
+        ("token_embd.weight".into(), 8, vec![2048, 150_000]),
+        ("output.weight".into(), 8, vec![2048, 150_000]),
+    ];
+    if ngram_rows > 0 {
+        t.push(("per_layer_token_embd.weight".into(), 8, vec![256, ngram_rows]));
+    }
+    for b in 0..blocks {
+        for (n, shape) in [("attn_q", vec![2048, 2048]), ("attn_k", vec![2048, 512]), ("attn_v", vec![2048, 512]), ("attn_output", vec![2048, 2048])] {
+            t.push((format!("blk.{b}.{n}.weight"), 8, shape));
+        }
+        if experts > 0 {
+            for n in ["ffn_gate_exps", "ffn_up_exps"] {
+                t.push((format!("blk.{b}.{n}.weight"), 8, vec![2048, 768, u64::from(experts)]));
+            }
+            t.push((format!("blk.{b}.ffn_down_exps.weight"), 8, vec![768, 2048, u64::from(experts)]));
+        } else {
+            for n in ["ffn_gate", "ffn_up"] {
+                t.push((format!("blk.{b}.{n}.weight"), 8, vec![2048, 8192]));
+            }
+            t.push((format!("blk.{b}.ffn_down.weight"), 8, vec![8192, 2048]));
+        }
+    }
+    let tensors: Vec<(&str, u32, Vec<u64>)> = t.iter().map(|(n, ty, s)| (n.as_str(), *ty, s.clone())).collect();
+    marlowe_hw::gguf::parse_header(&marlowe_hw::gguf::write_header(&kv, &tensors)[..]).unwrap()
 }
 
 fn plain() -> ModelRef {
@@ -152,7 +201,7 @@ fn rendered() -> ModelRef {
 }
 
 fn user(max_ctx: u32, parallel: u16) -> ContextPolicy {
-    ContextPolicy { max_ctx, kv_type: KvType::Q8_0, parallel, source: PolicySource::User, updated_ms: 0 }
+    ContextPolicy { max_ctx, kv_type: KvType::Q8_0, parallel, source: PolicySource::User, updated_ms: 0, placement: Default::default() }
 }
 
 #[test]
@@ -396,3 +445,83 @@ fn an_engine_model_is_admitted_against_the_memory_its_own_server_gives_back() {
     assert!(b.engine_wanted(&plain()), "free plus the runner's memory fits it");
     assert!(matches!(b.admit(&plain(), Priority::Foreground), Admission::Load(_)), "no question asked: the engine stops what is there first");
 }
+
+/// A 16 GiB card with `free` MiB free and `ram` MiB of system RAM free.
+struct Card {
+    free: f64,
+    ram: f64,
+}
+impl GpuSource for Card {
+    fn snapshot(&self) -> Option<GpuSnapshot> {
+        let mut s = Gpu(self.free).snapshot()?;
+        s.gpu.total_mib = 16_376.0;
+        s.gpu.used_mib = 16_376.0 - self.free;
+        s.ram_free_mib = Some(self.ram);
+        Some(s)
+    }
+}
+
+fn moe() -> ModelRef {
+    "ollama/moe:30b".parse().unwrap()
+}
+
+#[test]
+fn an_moe_that_does_not_fit_keeps_its_layers_on_the_gpu_and_its_first_experts_on_the_cpu() {
+    // 48 blocks of 64 experts: about 17 GiB on the GPU whole, 15 of it experts, on a 14 GiB card.
+    let b = brains_on(Models::new(), Arc::new(Card { free: 14_000.0, ram: 40_000.0 }));
+    assert!(b.engine_wanted(&moe()), "not a layer split");
+    let shape = b.factory().allocations().engine_shape("moe:30b").expect("the engine serves it");
+    assert!(!shape.split && shape.cpu_moe > 0 && shape.cpu_moe < 48, "{shape:?}");
+    assert!(!shape.host_ram, "the input layer is memory-mapped by default");
+    // The engine is held to the GPU part, under the card's free memory.
+    let need = b.factory().allocations().engine_need_mib("moe:30b").unwrap();
+    assert!(need <= 14_000.0 - 1_024.0, "{need}");
+    // Admitted against the VRAM for the GPU part and the RAM for the experts.
+    use marlowe_brains::{Admission, Priority};
+    match b.admit(&moe(), Priority::Crew) {
+        Admission::Load(c) => {
+            assert!(c.need_mib.unwrap() <= c.free_mib.unwrap());
+            assert!(c.ram_need_mib.unwrap() > 1024.0, "the experts are in RAM: {c:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    // Experts kept on the GPU: the old layer split.
+    let keep = ContextPolicy { placement: Placement { experts: Experts::Gpu, ..Default::default() }, ..b.context().policy(&moe()).unwrap() };
+    b.context().set_policy(&moe(), keep).unwrap();
+    let shape = b.factory().allocations().engine_shape("moe:30b").unwrap();
+    assert!(shape.split && shape.cpu_moe == 0, "{shape:?}");
+    // All on the CPU, the input layer in RAM.
+    let all = ContextPolicy { placement: Placement { experts: Experts::Cpu, host: HostTables::Ram }, ..keep };
+    b.context().set_policy(&moe(), all).unwrap();
+    let shape = b.factory().allocations().engine_shape("moe:30b").unwrap();
+    assert_eq!((shape.split, shape.cpu_moe, shape.host_ram), (false, 48, true));
+}
+
+#[test]
+fn experts_that_do_not_fit_in_free_ram_are_refused_to_the_crew_and_asked_of_the_user() {
+    use marlowe_brains::{Admission, Priority};
+    let b = brains_on(Models::new(), Arc::new(Card { free: 14_000.0, ram: 1_000.0 }));
+    match b.admit(&moe(), Priority::Crew) {
+        Admission::Refused(why) => assert!(why.contains("in RAM") && why.contains("1.0 GiB is free"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(b.admit(&moe(), Priority::Foreground), Admission::Ask(_)));
+}
+
+#[test]
+fn a_large_ngram_table_is_not_counted_against_the_gpu() {
+    use marlowe_brains::{Admission, Priority};
+    // 1.3 GiB of weights beside a 4 GiB n-gram table, on a card with 5 GiB free and 2 GiB of RAM:
+    // the table is on disk, memory-mapped, and costs neither.
+    let b = brains_on(Models::new(), Arc::new(Card { free: 5_000.0, ram: 2_000.0 }));
+    let m: ModelRef = "ollama/ngram:4b".parse().unwrap();
+    assert!(b.engine_wanted(&m), "{:?}", b.context_plan(&m).unwrap().in_effect.engine_note);
+    let plan = b.context_plan(&m).unwrap().plan.unwrap();
+    assert!(plan.host_tables_mib > 4_000.0 && plan.weights_main_mib < 2_000.0, "{} {}", plan.host_tables_mib, plan.weights_main_mib);
+    assert!(matches!(b.admit(&m, Priority::Crew), Admission::Load(_)));
+    // Loaded into RAM instead it no longer fits the 2 GiB free.
+    let ram = ContextPolicy { placement: Placement { host: HostTables::Ram, ..Default::default() }, ..b.context().policy(&m).unwrap() };
+    b.context().set_policy(&m, ram).unwrap();
+    assert!(matches!(b.admit(&m, Priority::Crew), Admission::Refused(_)));
+}
+

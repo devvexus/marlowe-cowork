@@ -550,7 +550,7 @@ fn parity_c15_a_switched_model_works_against_the_gated_window() {
         info.supports_tools = true;
         info.context_window = Some(262_144);
         lib.add(&info).unwrap();
-        let policy = ContextPolicy { max_ctx: 32_768, kv_type: KvType::F16, parallel: 1, source: PolicySource::User, updated_ms: 0 };
+        let policy = ContextPolicy { max_ctx: 32_768, kv_type: KvType::F16, parallel: 1, source: PolicySource::User, updated_ms: 0, placement: Default::default() };
         lib.set_policy(&big, &policy).unwrap();
     }
     let p = Arc::new(Scripted::default());

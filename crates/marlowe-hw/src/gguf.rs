@@ -33,11 +33,34 @@ pub enum GgufError {
 }
 
 /// Reads the header of the GGUF at `path`, and sizes every tensor by the file's own offsets (the
-/// way a type this table does not know, a fork's, still has a size).
+/// way a type this table does not know, a fork's, still has a size). The first shard of a split
+/// model (`name-00001-of-00004.gguf` with `split.count`) brings the tensors of every shard: the
+/// metadata is the first shard's, and llama.cpp loads them all as one model.
 pub fn read_header(path: &Path) -> Result<ModelHeader, GgufError> {
+    let mut h = read_one(path)?;
+    let count = h.kv.get("split.count").and_then(Value::as_u64).unwrap_or(1);
+    if count > 1 {
+        for shard in shard_paths(path, count) {
+            let other = read_one(&shard)?;
+            h.tensors.extend(other.tensors);
+        }
+    }
+    Ok(h)
+}
+
+fn read_one(path: &Path) -> Result<ModelHeader, GgufError> {
     let file = File::open(path)?;
     let len = file.metadata().map(|m| m.len()).ok();
     parse_sized(BufReader::with_capacity(1 << 20, file), len)
+}
+
+/// The other shards of `first` (`name-00001-of-00004.gguf`), in order; none when `first` is not
+/// named as a first shard.
+pub fn shard_paths(first: &Path, count: u64) -> Vec<std::path::PathBuf> {
+    let Some(name) = first.file_name().and_then(|n| n.to_str()) else { return Vec::new() };
+    let Some((prefix, rest)) = name.rsplit_once("-00001-of-") else { return Vec::new() };
+    let ext = rest.split_once('.').map_or("gguf", |(_, e)| e);
+    (2..=count).map(|i| first.with_file_name(format!("{prefix}-{i:05}-of-{count:05}.{ext}"))).collect()
 }
 
 /// Reads a GGUF header from any reader positioned at the start of the file.

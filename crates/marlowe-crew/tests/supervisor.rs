@@ -909,6 +909,7 @@ fn with_slots(b: &Brains, model: &str, slots: u16) -> marlowe_model::ModelRef {
         parallel: slots,
         source: marlowe_proto::PolicySource::User,
         updated_ms: 1,
+        placement: Default::default(),
     };
     b.with_library(|l| l.set_policy(&m, &policy)).unwrap();
     m

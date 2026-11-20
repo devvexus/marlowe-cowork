@@ -375,6 +375,15 @@ impl Fixture {
         Self::with_layers(model, false, false)
     }
 
+    /// A store holding `model` with `main` as its model file.
+    pub fn with_main(model: &str, main: Vec<u8>) -> Self {
+        let dir = TempDir::new();
+        let layers: Vec<(&str, &[u8])> =
+            vec![(crate::ollama_store::MODEL_MEDIA_TYPE, &main[..]), (crate::ollama_store::PARAMS_MEDIA_TYPE, FIXTURE_PARAMS.as_bytes())];
+        super::eligible::tests::store(&dir.path().join("store"), model, json!({"model_format": "gguf", "model_family": "qwen35"}), &layers);
+        Self { spawner: FakeSpawner::new(), dir }
+    }
+
     /// A store whose model also has an MTP draft layer and/or a vision projector layer.
     pub fn with_layers(model: &str, draft: bool, projector: bool) -> Self {
         let dir = TempDir::new();

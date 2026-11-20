@@ -32,7 +32,7 @@ pub use arch::{ArchProfile, LayerRole, Recurrent, Role, Weights};
 pub use ggml::{CacheType, GgmlType, KvType};
 pub use header::{ModelHeader, Tensor};
 pub use ms::{MsGen, MsInfo};
-pub use plan::{build, ctx_label, Calibration, Fit, GpuBudget, PlanInputs, PlanModel};
+pub use plan::{build, ctx_label, Calibration, Experts, Fit, GpuBudget, HostTables, MemorySplit, Placement, PlanInputs, PlanModel};
 pub use source::{
     EngineStart, GpuSnapshot, GpuSource, LogFeed, ModelFiles, ModelSource, RunnerObservation, ServerChange, ServerControl, ServerEnv,
     SlotObservation,

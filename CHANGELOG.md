@@ -4,6 +4,11 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+- **A big model's embedding tables no longer count against the GPU, and stay on disk**: llama.cpp keeps a model's token and n-gram embedding tables on the CPU whatever the GPU layers say, so the planner sizes them apart, and the engine now memory-maps the model file by default (llama.cpp's own default) so they are read lazily instead of loaded into RAM. Qwen3.8-Flash-Next's 26.8 GiB n-gram table no longer makes the model look 27 GiB bigger than it is or fill RAM at load.
+- **The context planner shows where each part lives: GPU, RAM and on disk**, and offers per model to keep the embedding tables on disk (memory-mapped, read lazily) or load them into RAM.
+- **An MoE model that does not fit keeps every layer on the GPU and moves only experts to the CPU** (`--n-cpu-moe`, the fewest blocks that make it fit) before any layer split; the planner says how many and how much slower, and offers auto, all experts on the CPU, or keep them on the GPU.
+- **Loading checks the GPU part against free GPU memory and the experts and tables held in RAM against free RAM**; a memory-mapped table is never taken for the driver spilling the model.
+- **A model split into several files (`-00001-of-00004.gguf`) is planned from all its files**, not the first alone.
 - **A model from Ollama's library that llama.cpp cannot read says why.** Some of Ollama's own downloads of new architectures use a layout of Ollama's own; the load error now says so and that the same model as a GGUF from Hugging Face or a model folder will run.
 - **Switching backend, or installing or syncing the selected one, no longer cuts off a reply in progress**: the old server stops once its last request ends, with every conversation's cache saved first, and the next request starts the new one; a switch during a load is honoured too.
 - **A crew turn on a one-slot model no longer costs the conversation its cache**: the cache is written out before the agent takes the slot and read back when you return, and a stop keeps the conversation's, not the agent's.

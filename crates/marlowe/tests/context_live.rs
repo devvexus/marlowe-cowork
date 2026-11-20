@@ -78,6 +78,7 @@ fn prediction_against_pdh_and_the_engines_log() {
         mmproj_b: files.mmproj_bytes,
         gpu: Some(snap.gpu.clone()),
         calib: Calibration::default(),
+        placement: Default::default(),
     });
     let kvt = KvType::from_cache(kv).unwrap_or(KvType::F16);
     let need = plan.need_mib(ctx / np, kvt, np as u16);

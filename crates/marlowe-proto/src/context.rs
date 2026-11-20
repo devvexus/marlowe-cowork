@@ -7,7 +7,7 @@
 use marlowe_model::ModelRef;
 use serde::{Deserialize, Serialize};
 
-pub use marlowe_hw::plan::{ctx_label, Fit, GpuBudget, PlanModel, MAX_AGENTS};
+pub use marlowe_hw::plan::{ctx_label, Experts, Fit, GpuBudget, HostTables, MemorySplit, Placement, PlanModel, MAX_AGENTS};
 pub use marlowe_hw::{KvType, LayerRole};
 
 /// The approval tool name for restarting the local engine with new settings (the name is the
@@ -25,7 +25,8 @@ pub enum PolicySource {
 }
 
 /// The context policy of one model: the window every request allocates (`num_ctx`), the KV
-/// type, and how many agents may run on it at once. Agents get `max_ctx` or less, never more.
+/// type, how many agents may run on it at once, and where its weights go. Agents get `max_ctx`
+/// or less, never more.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextPolicy {
     pub max_ctx: u32,
@@ -36,6 +37,9 @@ pub struct ContextPolicy {
     pub source: PolicySource,
     #[serde(default)]
     pub updated_ms: i64,
+    /// The input layer on disk or in RAM, and the MoE experts' placement.
+    #[serde(default)]
+    pub placement: Placement,
 }
 
 /// The smallest window a policy may set.
@@ -344,6 +348,7 @@ pub fn planned_changes(old_max_ctx: u32, in_effect: &EngineSettings, new: &Conte
             ctx_label(new.max_ctx),
             ctx_label(new.max_ctx.saturating_mul(u32::from(new.parallel)))
         )));
+        v.push(now(placement_text(&new.placement)));
     }
     let (kv, parallel, flash) = server_change(in_effect, new);
     let running = in_effect.slots.iter().filter(|s| s.is_processing).count();
@@ -369,6 +374,20 @@ pub fn planned_changes(old_max_ctx: u32, in_effect: &EngineSettings, new: &Conte
     v
 }
 
+/// What a placement means, in one line of the review screen.
+pub fn placement_text(p: &Placement) -> String {
+    let host = match p.host {
+        HostTables::Disk => "Embedding tables stay on disk, memory-mapped and read lazily",
+        HostTables::Ram => "Embedding tables are loaded into RAM",
+    };
+    let experts = match p.experts {
+        Experts::Auto => "",
+        Experts::Cpu => "; every MoE expert runs on the CPU",
+        Experts::Gpu => "; MoE experts stay on the GPU (a model that does not fit is split by layers)",
+    };
+    format!("{host}{experts}")
+}
+
 fn thousands(n: u32) -> String {
     let s = n.to_string();
     let mut out = String::new();
@@ -392,7 +411,7 @@ mod tests {
 
     #[test]
     fn policies_round_trip_and_pending_means_not_running_yet() {
-        let p = ContextPolicy { max_ctx: 47_104, kv_type: KvType::Q4_0, parallel: 1, source: PolicySource::User, updated_ms: 1 };
+        let p = ContextPolicy { max_ctx: 47_104, kv_type: KvType::Q4_0, parallel: 1, source: PolicySource::User, updated_ms: 1, placement: Default::default() };
         let s = serde_json::to_string(&p).unwrap();
         assert!(s.contains("\"kv_type\":\"q4_0\""), "{s}");
         assert_eq!(serde_json::from_str::<ContextPolicy>(&s).unwrap(), p);
@@ -415,11 +434,17 @@ mod tests {
     #[test]
     fn llama_cpp_changes_restart_nothing_and_say_what_each_agent_gets() {
         let running = EngineSettings { engine: Engine::LlamaCpp, loaded: true, kv_type: Some(KvType::Q8_0), parallel: Some(6), load_secs: Some(9.4), ..Default::default() };
-        let p = ContextPolicy { max_ctx: 49_152, kv_type: KvType::Q4_0, parallel: 6, source: PolicySource::User, updated_ms: 0 };
+        let p = ContextPolicy { max_ctx: 49_152, kv_type: KvType::Q4_0, parallel: 6, source: PolicySource::User, updated_ms: 0, placement: Default::default() };
         let c = planned_changes(32_768, &running, &p);
         assert!(c.iter().all(|c| c.when == ChangeWhen::Now), "{c:?}");
         assert!(c[0].text.contains("the llama.cpp server restarts with it on the next request (~9 s)"), "{}", c[0].text);
         assert_eq!(c[2].text, "llama.cpp serves 6 slots of 48k each (288k in all); the conductor keeps one, the crew runs on the rest");
+        assert_eq!(c[3].text, "Embedding tables stay on disk, memory-mapped and read lazily");
+        let ram = ContextPolicy { placement: Placement { host: HostTables::Ram, experts: Experts::Cpu }, ..p };
+        assert_eq!(planned_changes(32_768, &running, &ram)[3].text, "Embedding tables are loaded into RAM; every MoE expert runs on the CPU");
+        // A policy saved before the placement was part of it reads as the default.
+        let old = r#"{"max_ctx":49152,"kv_type":"q4_0","parallel":6,"source":"user","updated_ms":0}"#;
+        assert_eq!(serde_json::from_str::<ContextPolicy>(old).unwrap().placement, Placement::default());
         assert_eq!(server_change(&running, &p), (None, None, None));
         assert!(Engine::LlamaCpp.is_local() && !Engine::Cloud.is_local());
         assert_eq!(serde_json::to_string(&Engine::LlamaCpp).unwrap(), "\"llama_cpp\"");
@@ -435,7 +460,7 @@ mod tests {
             load_secs: Some(6.8),
             ..Default::default()
         };
-        let p = ContextPolicy { max_ctx: 47_104, kv_type: KvType::Q4_0, parallel: 1, source: PolicySource::User, updated_ms: 0 };
+        let p = ContextPolicy { max_ctx: 47_104, kv_type: KvType::Q4_0, parallel: 1, source: PolicySource::User, updated_ms: 0, placement: Default::default() };
         let c = planned_changes(32_768, &running, &p);
         assert_eq!(c.len(), 3, "{c:?}");
         assert_eq!(c[0].text, "Requests to this model use num_ctx 47,104 (was 32,768); Ollama reloads it on the next request (~7 s)");

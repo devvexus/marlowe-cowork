@@ -43,7 +43,7 @@ impl EngineAdvisor for Advice {
 }
 
 fn shape(slots: u16, ctx: u32) -> EngineShape {
-    EngineShape { slots, ctx_per_slot: ctx, kv: "q8_0".into(), split: false }
+    EngineShape { slots, ctx_per_slot: ctx, kv: "q8_0".into(), split: false, cpu_moe: 0, host_ram: false }
 }
 
 struct Rig {

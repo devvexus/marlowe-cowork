@@ -1,7 +1,7 @@
 //! The context meter on the Model box and the "Context & hardware" planner popup. Glyphs and
 //! foreground colours only: the bars are `━ ╍ ─ ┊`, never a fill.
 
-use marlowe_proto::{ctx_label, ChangeWhen, ContextPlan, ContextPolicy, Engine, Fit, KvType, LayerRole, PlanModel};
+use marlowe_proto::{ctx_label, ChangeWhen, ContextPlan, ContextPolicy, Engine, Experts, Fit, HostTables, KvType, LayerRole, PlanModel};
 use marlowe_surface::chrome::Ink;
 use marlowe_surface::Theme;
 use ratatui::buffer::Buffer;
@@ -228,10 +228,16 @@ fn spread(m: &PlanModel, kv: KvType) -> String {
     }
 }
 
+/// The fixed GPU costs of the policy being edited: the weights less the experts it moves to the
+/// CPU, compute and the driver.
+fn gpu_fixed(m: &PlanModel, d: &ContextPolicy) -> f64 {
+    m.fixed_mib(d.max_ctx) - m.experts_first_mib(m.cpu_moe(d.max_ctx, d.kv_type, d.parallel))
+}
+
 /// The usage bar for the policy being edited: fixed costs, agents, spare (or overflow).
 fn usage_bar(m: &PlanModel, d: &ContextPolicy, cells: usize, theme: &Theme) -> Vec<Span<'static>> {
     let Some(budget) = m.budget_mib() else { return vec![dim("no GPU measured", theme)] };
-    let fixed = m.fixed_mib(d.max_ctx);
+    let fixed = gpu_fixed(m, d);
     let agents = f64::from(d.parallel) * m.per_agent_mib(d.max_ctx, d.kv_type);
     let total = (fixed + agents).max(budget);
     let at = |mib: f64| ((mib / total) * cells as f64).round() as usize;
@@ -282,9 +288,16 @@ fn verdict(m: &PlanModel, d: &ContextPolicy, theme: &Theme) -> (String, Style) {
             ),
             theme.normal(),
         ),
+        Fit::Experts { cpu_blocks, expert_blocks, slowdown, spare_mib } => (
+            format!(
+                "The experts of the first {cpu_blocks} of {expert_blocks} blocks run on the CPU from RAM; attention, the shared layers and every cache stay on the GPU. About {slowdown:.1}× slower writing than all on the GPU; {} GiB spare.",
+                gib(spare_mib)
+            ),
+            ink(Ink::Amber, theme),
+        ),
         Fit::Partial { gpu_layers, total_layers, slowdown } => (
             format!(
-                "Over the budget: Ollama would keep {gpu_layers}/{total_layers} layers on the GPU and move the rest to the CPU, about {slowdown:.0}× slower writing. Nothing fails visibly; it is just slow."
+                "Over the budget: llama.cpp would keep {gpu_layers}/{total_layers} layers on the GPU and move the rest to the CPU, about {slowdown:.0}× slower writing. Nothing fails visibly; it is just slow."
             ),
             ink(Ink::Amber, theme),
         ),
@@ -363,7 +376,9 @@ fn plan_lines(
 ) {
     let push = |out: &mut Vec<(Line<'static>, Option<Target>)>, l: Line<'static>| out.push((l, None));
     let local = p.in_effect.engine.is_local();
-    let Some(m) = p.plan.as_ref().filter(|_| local) else {
+    // Every number below is for the weights placed as the draft says.
+    let placed = p.plan.as_ref().map(|m| m.with_placement(d.placement));
+    let Some(m) = placed.as_ref().filter(|_| local) else {
         push(out, fact("Model", vec![body(format!("hosted · up to {} tokens of context", text::thousands(u64::from(p.ctx_limit))), theme)], theme));
         push(out, Line::from(dim("Nothing loads on this machine: the planner sets the window agents get, nothing else.", theme)));
         push(out, Line::from(""));
@@ -397,8 +412,10 @@ fn plan_lines(
         }
         None => push(out, fact("GPU", vec![Span::styled("no NVIDIA GPU measured (NVML unavailable)", ink(Ink::Amber, theme))], theme)),
     }
-    // Load.
-    let mut load = vec![body(format!("weights {}", gib(m.weights_main_mib)), theme)];
+    // Load: what the GPU holds.
+    let split = m.split(d.max_ctx, d.kv_type, d.parallel);
+    let moved = m.experts_first_mib(split.cpu_moe);
+    let mut load = vec![body(format!("weights {}", gib(m.weights_main_mib - moved)), theme)];
     let what: Vec<String> = [p.arch.quant.clone(), p.arch.params.map(|n| format!("{:.1}B", n as f64 / 1e9))].into_iter().flatten().collect();
     if !what.is_empty() {
         load.push(dim(format!(" ({})", what.join(" ")), theme));
@@ -415,7 +432,7 @@ fn plan_lines(
     load.push(dim(format!("compute {}", gib(m.compute_mib(d.max_ctx))), theme));
     load.push(sep(theme));
     load.push(dim(format!("driver {}", gib(m.driver_mib)), theme));
-    load.push(body(format!(" = {} fixed", gib(m.fixed_mib(d.max_ctx))), theme));
+    load.push(body(format!(" = {} fixed", gib(gpu_fixed(m, d))), theme));
     if !m.calibrated {
         load.push(Span::styled("  (estimate until a load is measured)", ink(Ink::Dimmer, theme)));
     }
@@ -450,18 +467,46 @@ fn plan_lines(
         kv.push(dim(format!("  · window {sw} on {} MiB/agent", m.swa_agent_b[d.kv_type.index()] / 1048576), theme));
     }
     push(out, fact("KV", kv, theme));
-    // Host RAM.
-    let mut ram = vec![dim(format!("pinned {}", gib(m.host_fixed_mib)), theme)];
-    if m.checkpoint_mib > 0.0 {
-        ram.push(sep(theme));
-        ram.push(dim(format!("checkpoints ≤{}", gib(m.checkpoint_mib * 32.0 * f64::from(d.parallel))), theme));
+    // Where each part lives: the GPU, resident RAM, and the file (memory-mapped, read lazily).
+    let ram_short = p.ram_free_mib.is_some_and(|f| split.ram_weights_mib > f);
+    let mut place = vec![
+        dim("GPU ", theme),
+        body(format!("{} GiB", gib(split.gpu_mib)), theme),
+        sep(theme),
+        dim("RAM ", theme),
+        Span::styled(format!("{} GiB", gib(split.ram_mib)), if ram_short { ink(Ink::Amber, theme) } else { theme.normal() }),
+        sep(theme),
+        dim("on disk ", theme),
+        body(format!("{} GiB", gib(split.disk_mib)), theme),
+    ];
+    if split.disk_mib > 0.0 {
+        place.push(dim(", read lazily", theme));
     }
-    ram.push(sep(theme));
-    ram.push(dim("prompt cache ≤8.0", theme));
+    push(out, fact("Memory", place, theme));
+    let mut ram = Vec::new();
+    let part = |ram: &mut Vec<Span<'static>>, s: String| {
+        if !ram.is_empty() {
+            ram.push(sep(theme));
+        }
+        ram.push(dim(s, theme));
+    };
+    if d.placement.host == HostTables::Ram && m.host_tables_mib > 0.0 {
+        part(&mut ram, format!("embedding tables {}", gib(m.host_tables_mib)));
+    }
+    if moved > 0.0 {
+        part(&mut ram, format!("experts of {}/{} blocks {}", split.cpu_moe, m.expert_blocks(), gib(moved)));
+    }
+    if split.cpu_layers > 0 {
+        part(&mut ram, format!("{} layers", split.cpu_layers));
+    }
+    part(&mut ram, format!("host {}", gib(m.host_fixed_mib)));
+    if m.checkpoint_mib > 0.0 {
+        part(&mut ram, format!("checkpoints ≤{}", gib(m.checkpoint_mib * 32.0 * f64::from(d.parallel))));
+    }
+    part(&mut ram, "prompt cache ≤8.0".to_string());
     if let (Some(t), Some(f)) = (p.ram_total_mib, p.ram_free_mib) {
         ram.push(sep(theme));
-        let need = m.host_mib(d.parallel);
-        let st = if need > f { ink(Ink::Amber, theme) } else { theme.normal() };
+        let st = if ram_short { ink(Ink::Amber, theme) } else { theme.normal() };
         ram.push(Span::styled(format!("{} of {} GiB free", gib(f), gib(t)), st));
     }
     push(out, fact("RAM", ram, theme));
@@ -490,17 +535,17 @@ fn plan_lines(
             dim(format!("   {:<18}", format!("{} GiB", gib(m.per_agent_mib(ctx, d.kv_type)))), theme),
         ];
         let agents = KvType::ALL.map(|t| m.agents(ctx, t).unwrap_or(0));
-        let note = if agents[kvi] == 0 {
-            match m.fit(ctx, d.kv_type, 1) {
-                Fit::Partial { gpu_layers, total_layers, slowdown } => Some((
-                    format!("partial offload · {gpu_layers}/{total_layers} on GPU · ~{slowdown:.0}× slower"),
-                    Ink::Amber,
-                )),
-                Fit::NoFit { .. } => Some(("does not fit".to_string(), Ink::Red)),
-                _ => None,
-            }
-        } else {
-            None
+        let note = match m.fit(ctx, d.kv_type, agents[kvi].max(1)) {
+            Fit::Experts { cpu_blocks, expert_blocks, slowdown, .. } => Some((
+                format!("experts of {cpu_blocks}/{expert_blocks} blocks on CPU · ~{slowdown:.1}× slower"),
+                Ink::Amber,
+            )),
+            Fit::Partial { gpu_layers, total_layers, slowdown } if agents[kvi] == 0 => Some((
+                format!("partial offload · {gpu_layers}/{total_layers} on GPU · ~{slowdown:.0}× slower"),
+                Ink::Amber,
+            )),
+            Fit::NoFit { .. } if agents[kvi] == 0 => Some(("does not fit".to_string(), Ink::Red)),
+            _ => None,
         };
         for (j, n) in agents.iter().enumerate() {
             let s = if *n == 0 { "–".to_string() } else { n.to_string() };
@@ -540,7 +585,28 @@ fn plan_lines(
         c.push(Span::styled("   a", ink(Ink::Accent, theme)));
         c.push(dim(" auto", theme));
     }
-    out.push((Line::from(c), Some(Target::PlanField(field.next()))));
+    let moe = m.has_experts();
+    out.push((Line::from(c), Some(Target::PlanField(field.next(moe)))));
+    // Where the weights go.
+    let host = match d.placement.host {
+        HostTables::Disk => "keep on disk (memory-mapped, read lazily)",
+        HostTables::Ram => "load into RAM",
+    };
+    let mut c = control("embedding tables", host.to_string(), field == PlanField::Host, true, theme);
+    let mut target = PlanField::Host;
+    if moe {
+        let e = match d.placement.experts {
+            Experts::Auto => "auto",
+            Experts::Cpu => "all on CPU",
+            Experts::Gpu => "on GPU",
+        };
+        c.push(Span::raw("   "));
+        c.extend(control("experts", e.to_string(), field == PlanField::Experts, true, theme));
+        if field == PlanField::Host {
+            target = PlanField::Experts;
+        }
+    }
+    out.push((Line::from(c), Some(Target::PlanField(target))));
     let bar_w = tw.saturating_sub(34).clamp(10, 48);
     push(out, Line::from(usage_bar(m, d, bar_w, theme)));
     let (v, st) = verdict(m, d, theme);

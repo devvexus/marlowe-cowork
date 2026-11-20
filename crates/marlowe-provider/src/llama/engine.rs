@@ -62,7 +62,8 @@ const QUICK: Duration = Duration::from_millis(1500);
 /// What the spill check tolerates, MiB: weights missing from dedicated memory beyond this are
 /// somewhere else.
 const SPILL_SLACK_MIB: f64 = 1024.0;
-/// Shared (system) memory a healthy server may hold as pinned host buffers, MiB.
+/// Shared (system) memory a healthy server may hold as pinned host buffers, MiB, beyond the
+/// weights it reads into pinned memory on purpose (the host side when not memory-mapped).
 const PINNED_ALLOWANCE_MIB: f64 = 1536.0;
 const MIB: f64 = 1024.0 * 1024.0;
 
@@ -151,7 +152,7 @@ pub struct Want {
     /// Identifies the conversation (see [`conversation_key`]).
     pub key: u64,
     /// GPU memory the planner expects the shape to take, MiB; `None` when it has no estimate (the
-    /// check at the start then counts the model file alone).
+    /// check at the start then counts the model's GPU weights alone).
     pub need_mib: Option<f64>,
 }
 
@@ -769,13 +770,14 @@ impl LlamaEngine {
         self.inner.chosen()
     }
 
-    /// Whether the GPU has room for the whole model now: with the driver's sysmem fallback a model
-    /// that does not fit would load anyway, into system memory, and read at a few tokens a
-    /// second. `Err` says why it does not fit; no reading is not "fits".
+    /// Whether the GPU has room for the model's GPU part now: with the driver's sysmem fallback a
+    /// model that does not fit would load anyway, into system memory, and read at a few tokens a
+    /// second. Only what goes on the GPU counts: the input layer stays on the CPU and the experts
+    /// `--n-cpu-moe` moves are in RAM. `Err` says why it does not fit; no reading is not "fits".
     fn check_room(&self, want: &Want, model: &EngineModel) -> Result<(), String> {
         let cfg = &self.inner.cfg;
         let Some(probe) = &cfg.vram else { return Ok(()) };
-        let need = want.need_mib.unwrap_or(0.0).max(weights_mib(model) + SPILL_SLACK_MIB / 2.0);
+        let need = want.need_mib.unwrap_or(0.0).max(gpu_weights_mib(model, want.shape.cpu_moe) + SPILL_SLACK_MIB / 2.0);
         let until = Instant::now() + cfg.vram_settle;
         let mut free = probe.free_mib();
         // A server this engine just stopped takes a moment to show as free.
@@ -791,9 +793,12 @@ impl LlamaEngine {
     }
 
     /// Whether the driver paged the loaded model into system memory: the server holds shared
-    /// memory well past its pinned buffers, or far less dedicated memory than the model's weights.
+    /// memory well past its pinned buffers, or far less dedicated memory than the model's GPU
+    /// weights. What is meant to be on the CPU is not a spill: memory-mapped, the input layer and
+    /// the experts `--n-cpu-moe` keeps there are the file's pages, not GPU memory at all; read
+    /// into RAM they are pinned host buffers, which the driver counts as shared.
     /// `None` when it did not, or when the GPU cannot be read for the process.
-    fn spilled(&self, pid: u32, model: &EngineModel) -> Option<String> {
+    fn spilled(&self, pid: u32, model: &EngineModel, shape: &EngineShape, settings: &ServerSettings) -> Option<String> {
         let probe = self.inner.cfg.vram.as_ref()?;
         let (dedicated, shared) = probe.process_mib(pid)?;
         // A server that has loaded a model holds some memory: nothing at all is a counter that
@@ -801,11 +806,13 @@ impl LlamaEngine {
         if dedicated <= 0.0 && shared <= 0.0 {
             return None;
         }
-        let missing = (weights_mib(model) - dedicated).max(0.0);
-        if shared <= PINNED_ALLOWANCE_MIB && missing <= SPILL_SLACK_MIB {
+        let missing = (gpu_weights_mib(model, shape.cpu_moe) - dedicated).max(0.0);
+        let pinned = if settings.mmap && !shape.host_ram { 0.0 } else { host_weights_mib(model, shape.cpu_moe) };
+        let allowance = PINNED_ALLOWANCE_MIB + pinned;
+        if shared <= allowance && missing <= SPILL_SLACK_MIB {
             return None;
         }
-        let moved = if shared > PINNED_ALLOWANCE_MIB { shared } else { missing };
+        let moved = if shared > allowance { shared - pinned } else { missing };
         Some(format!(
             "the driver moved {} GiB of it into system memory, where it reads at a fraction of the speed",
             gib(moved)
@@ -979,6 +986,8 @@ impl LlamaEngine {
             draft: model.draft.clone(),
             mmproj: model.mmproj.clone(),
             split,
+            cpu_moe: want.shape.cpu_moe,
+            host_ram: want.shape.host_ram,
             settings: settings.clone(),
         };
         let plan = launch::plan(binary, backend, &spec);
@@ -1033,7 +1042,7 @@ impl LlamaEngine {
         }
         // `--fit off` does not fail when the card is full under the Windows driver's sysmem
         // fallback: the server is healthy, and slow. The weights are resident now, so look.
-        if let Some(why) = self.spilled(proc.id(), model) {
+        if let Some(why) = self.spilled(proc.id(), model, &want.shape, settings) {
             proc.kill();
             return Err(Tried::Spilled(why));
         }
@@ -1066,10 +1075,22 @@ enum Tried {
     Spilled(String),
 }
 
-/// The model's files on disk, MiB: the weights, the draft and the projector.
-fn weights_mib(model: &EngineModel) -> f64 {
-    let size = |p: &Path| std::fs::metadata(p).map_or(0.0, |m| m.len() as f64 / MIB);
-    size(&model.blob) + model.draft.as_ref().map_or(0.0, |d| size(&d.path)) + model.mmproj.as_deref().map_or(0.0, size)
+/// The weights the GPU holds with the experts of the first `cpu_moe` blocks on the CPU, MiB:
+/// everything but the input layer (llama.cpp keeps it on the CPU) and those experts. The files'
+/// sizes when the headers could not be analysed.
+fn gpu_weights_mib(model: &EngineModel, cpu_moe: u32) -> f64 {
+    match &model.parts {
+        Some(p) => p.gpu_with(cpu_moe) as f64 / MIB,
+        None => {
+            let size = |p: &Path| std::fs::metadata(p).map_or(0.0, |m| m.len() as f64 / MIB);
+            size(&model.blob) + model.draft.as_ref().map_or(0.0, |d| size(&d.path)) + model.mmproj.as_deref().map_or(0.0, size)
+        }
+    }
+}
+
+/// The weights on the CPU, MiB: the input layer and the experts of the first `cpu_moe` blocks.
+fn host_weights_mib(model: &EngineModel, cpu_moe: u32) -> f64 {
+    model.parts.as_ref().map_or(0.0, |p| (p.host + p.gpu - p.gpu_with(cpu_moe)) as f64 / MIB)
 }
 
 /// `13.6` (GiB, one decimal) from MiB.
@@ -1165,7 +1186,7 @@ mod tests {
     }
 
     fn want(model: &str, lane: Lane, key: u64) -> Want {
-        Want { model: model.into(), shape: EngineShape { slots: 3, ctx_per_slot: 8192, kv: "q8_0".into(), split: false }, lane, key, need_mib: None }
+        Want { model: model.into(), shape: EngineShape { slots: 3, ctx_per_slot: 8192, kv: "q8_0".into(), split: false, cpu_moe: 0, host_ram: false }, lane, key, need_mib: None }
     }
 
     #[test]
@@ -1647,6 +1668,72 @@ mod tests {
         assert!(heard.lines.lock().unwrap().iter().any(|l| l.starts_with("dusk:22b runs split between the GPU and the CPU: the driver moved 4.4 GiB")));
     }
 
+    /// A model of two blocks (1 GiB each on the GPU, 0.5 GiB of it experts) beside an 8 GiB n-gram
+    /// table: the header alone, sized by the tensor shapes.
+    fn ngram_model() -> Vec<u8> {
+        let kv = [
+            ("general.architecture", serde_json::json!("qwen35")),
+            ("qwen35.block_count", serde_json::json!(2)),
+            ("qwen35.context_length", serde_json::json!(32_768)),
+            ("tokenizer.chat_template", serde_json::json!(crate::llama::eligible::tests::TEMPLATE)),
+        ];
+        // F32 throughout: 4 bytes a weight.
+        let gib_rows = 1024 * 1024 * 1024 / 4 / 1024;
+        marlowe_hw::gguf::write_header(
+            &kv,
+            &[
+                ("per_layer_token_embd.weight", 0, vec![1024, 8 * gib_rows]),
+                ("blk.0.attn_q.weight", 0, vec![1024, gib_rows / 2]),
+                ("blk.0.ffn_up_exps.weight", 0, vec![1024, gib_rows / 2]),
+                ("blk.1.attn_q.weight", 0, vec![1024, gib_rows / 2]),
+                ("blk.1.ffn_up_exps.weight", 0, vec![1024, gib_rows / 2]),
+            ],
+        )
+    }
+
+    #[test]
+    fn the_room_and_the_spill_checks_count_only_what_goes_on_the_gpu() {
+        let fx = Fixture::with_main("ngram:2b", ngram_model());
+        // 2 GiB free: the GPU part (2 GiB of blocks, 0.5 GiB of experts on the CPU) fits; the 8 GiB
+        // table never goes there.
+        let (e, vram, told, _) = with_gpu(&fx, Some(2.0 * 1024.0));
+        let mut w = want("ngram:2b", Lane::Conductor, 1);
+        w.shape.cpu_moe = 1;
+        // The server holds the 1.5 GiB GPU part; the mapped table is the file's pages, not shared memory.
+        *vram.process.lock().unwrap() = Some((1.5 * 1024.0, 200.0));
+        e.acquire(&w, &CancelToken::new()).unwrap();
+        assert_eq!((fx.spawner.starts(), fx.spawner.killed()), (1, 0), "{:?}", told.0.lock().unwrap());
+        let a = args_of(&fx, 0);
+        assert!(a.windows(2).any(|p| p == ["-ngl", "99"]) && a.windows(2).any(|p| p == ["--n-cpu-moe", "1"]), "{a:?}");
+        assert!(a.windows(2).any(|p| p == ["--load-mode", "mmap"]) && a.windows(2).any(|p| p == ["--lazy-mode", "on"]), "{a:?}");
+        assert!(told.0.lock().unwrap().is_empty());
+        assert!(e.unload(None));
+
+        // Read into RAM, the table and the experts are pinned host buffers the driver counts as
+        // shared memory: 8.7 GiB of shared memory is what was asked for, not a spill.
+        w.shape.host_ram = true;
+        *vram.process.lock().unwrap() = Some((1.5 * 1024.0, 8.7 * 1024.0));
+        e.acquire(&w, &CancelToken::new()).unwrap();
+        assert_eq!((fx.spawner.starts(), fx.spawner.killed()), (2, 1), "only the unload stopped a server");
+        assert!(args_of(&fx, 1).windows(2).any(|p| p == ["--load-mode", "none"]));
+        assert!(told.0.lock().unwrap().is_empty(), "{:?}", told.0.lock().unwrap());
+        assert!(e.unload(None));
+
+        // Memory-mapped, the same shared memory is the driver's doing: a spill.
+        w.shape.host_ram = false;
+        e.acquire(&w, &CancelToken::new()).unwrap();
+        assert!(told.0.lock().unwrap().iter().any(|t| t.contains("into system memory")), "{:?}", told.0.lock().unwrap());
+    }
+
+    #[test]
+    fn the_room_check_without_an_estimate_counts_the_gpu_part_of_the_weights() {
+        let fx = Fixture::with_main("ngram:2b", ngram_model());
+        // 1.5 GiB free: the 2 GiB of blocks do not fit whole (the 8 GiB table is not counted).
+        let (e, _vram, told, _) = with_gpu(&fx, Some(1.5 * 1024.0));
+        e.acquire(&want("ngram:2b", Lane::Conductor, 1), &CancelToken::new()).unwrap();
+        assert_eq!(told.0.lock().unwrap().clone(), vec!["ngram:2b: needs 2.5 GiB on the GPU, 1.5 GiB free".to_string()]);
+    }
+
     #[test]
     fn a_process_the_counters_report_nothing_for_is_not_a_spill() {
         let fx = Fixture::new("dusk:22b");
@@ -1824,9 +1911,9 @@ mod tests {
     impl marlowe_model::EngineAdvisor for Replans {
         fn shape(&self, _: &str) -> Option<EngineShape> {
             Some(if *self.0.lock().unwrap() {
-                EngineShape { slots: 1, ctx_per_slot: 4096, kv: "q8_0".into(), split: true }
+                EngineShape { slots: 1, ctx_per_slot: 4096, kv: "q8_0".into(), split: true, cpu_moe: 0, host_ram: false }
             } else {
-                EngineShape { slots: 3, ctx_per_slot: 8192, kv: "q8_0".into(), split: false }
+                EngineShape { slots: 3, ctx_per_slot: 8192, kv: "q8_0".into(), split: false, cpu_moe: 0, host_ram: false }
             })
         }
         fn declined(&self, _: &str, _: &str) {

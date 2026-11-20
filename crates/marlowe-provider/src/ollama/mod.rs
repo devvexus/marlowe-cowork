@@ -169,6 +169,8 @@ impl OllamaProvider {
             ctx_per_slot: self.context_for(model, meta),
             kv: "f16".into(),
             split: false,
+            cpu_moe: 0,
+            host_ram: false,
         })
     }
 }

@@ -32,7 +32,7 @@
 //! keep_alive = "5m"      # idle unload, Ollama's spelling; default OLLAMA_KEEP_ALIVE as saved, else 5m
 //! batch = 512            # -b
 //! ubatch = 512           # -ub
-//! mmap = false           # default --no-mmap
+//! mmap = true            # default: memory-mapped, read as used; false reads it all into RAM
 //! gpu_fit = "auto"       # auto (whole when it fits, else split) | whole | split
 //!
 //! [models]

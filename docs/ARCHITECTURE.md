@@ -86,9 +86,12 @@ Workspace dependencies: `ort = "=2.0.0-rc.13"` (ONNX Runtime 1.28.0, static, Dir
 | `flash_attn` | on (off runs an f16 KV cache) |
 | `keep_alive` | saved `OLLAMA_KEEP_ALIVE`, else 5 m |
 | `batch` / `ubatch` | 512 / 512 |
-| `mmap` | off (`--load-mode none`) |
+| `mmap` | on (`--load-mode mmap --lazy-mode on`, named so an integrated GPU's `auto` keeps it); off loads every model's host side into RAM |
 | `gpu_fit` | `auto` (whole when it fits, else split); `whole`, `split` |
 | KV type, context, slots | per model: the context planner's policy (q8_0 where the head size allows, up to 6 slots of at least 16k) |
+| Placement | per model, in the same policy: embedding tables on disk (default) or in RAM; MoE experts `auto`, all on the CPU, or on the GPU |
+
+Each part of a model is sized against the memory it lives in (`marlowe-hw` `PlanModel::split`), following llama.cpp's loader: the input layer (`LLM_TENSOR_LAYER_INPUT`: token, position and n-gram/per-layer embedding tables) is placed on the CPU whatever `-ngl` says, and with mmap it is the file's pages (the lazy tables, `TENSOR_READ_LAZY`, read row by row), so it costs neither VRAM nor resident RAM. An MoE model that does not fit keeps every layer and cache on the GPU and the experts of its first blocks on the CPU (`--n-cpu-moe N`, the fewest that fit) before any layer split; the automatic slots try it whole first. Admission checks the GPU part against free VRAM and the RAM it holds (experts, tables not mapped) against free RAM; the engine's room and spill checks count only the GPU part, and a host side read into pinned RAM is not a spill. A split model's first shard brings every shard's tensors.
 
 M1 state: every crate under `crates/` is a workspace member. `marlowe-provider` is the Ollama adapter only (hybrid/llama.cpp/routing deleted); `marlowe-exec` is `BuiltinTools: ToolHost`; the bin wires concrete providers and tools into `marlowe-daemon` through `DaemonDeps`. `legacy/` (old loop, daemon, stub, bin, exec) is reference only and excluded from the workspace.
 

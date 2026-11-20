@@ -68,8 +68,9 @@ impl Recurrent {
     }
 }
 
-/// Where the weights go. `host` stays in system RAM (the input embeddings); everything else is on
-/// the GPU when fully offloaded.
+/// Where the weights go. `host` is the input layer, which llama.cpp never offloads (whatever
+/// `-ngl` says): with mmap it is read lazily from the file, without it is loaded into RAM.
+/// Everything else is on the GPU when fully offloaded.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Weights {
     pub host: u64,
@@ -77,6 +78,9 @@ pub struct Weights {
     pub gpu_other: u64,
     /// Per block (MTP blocks included).
     pub per_block: Vec<u64>,
+    /// The routed-expert part of each block (`ffn_*_exps`), included in `per_block`: what
+    /// `--n-cpu-moe` moves to the CPU.
+    pub experts: Vec<u64>,
     /// Vision (or audio) encoder and projector tensors in the main file.
     pub vision: u64,
     /// Tensors whose ggml type this table does not know (counted as 0 bytes).
@@ -88,6 +92,49 @@ impl Weights {
     pub fn gpu(&self) -> u64 {
         self.gpu_other + self.per_block.iter().sum::<u64>()
     }
+
+    /// The experts of the first `n` blocks: what `--n-cpu-moe n` keeps on the CPU.
+    pub fn experts_first(&self, n: u32) -> u64 {
+        self.experts.iter().take(n as usize).sum()
+    }
+
+    /// Blocks up to the last that has experts (`--n-cpu-moe` past it moves nothing more).
+    pub fn expert_blocks(&self) -> u32 {
+        self.experts.iter().rposition(|b| *b > 0).map_or(0, |i| i as u32 + 1)
+    }
+}
+
+/// The input layer (`LLM_TENSOR_LAYER_INPUT` in llama.cpp's `llama-arch.cpp`): llama.cpp places
+/// it on the CPU whatever `-ngl` says (`dev_input = { cpu_dev, ... }` in `llama-model.cpp`), and
+/// with mmap on a CPU tensor is the file's own pages. Token, position and type embeddings, the
+/// per-layer and n-gram tables (`per_layer_token_embd`), value embeddings, and the like.
+const INPUT_TENSORS: &[&str] = &[
+    "token_embd",
+    "token_embd_lo",
+    "position_embd",
+    "token_types",
+    "value_embd",
+    "per_layer_token_embd",
+    "masked_embd_centroids",
+    "masked_embd_ordering",
+    "mask_embd",
+];
+
+/// Whether llama.cpp keeps tensor `name` on the host by design (its input layer).
+pub fn is_input_tensor(name: &str) -> bool {
+    let base = name.split('.').next().unwrap_or(name);
+    INPUT_TENSORS.contains(&base)
+}
+
+/// Whether `name` is a routed-expert tensor: llama.cpp's `LLM_FFN_EXPS_REGEX`,
+/// `\.ffn_(up|down|gate|gate_up)_(ch|)exps`, searched anywhere in the name.
+pub fn is_expert_tensor(name: &str) -> bool {
+    name.match_indices(".ffn_").any(|(i, _)| {
+        let rest = &name[i + 5..];
+        ["gate_up_", "up_", "down_", "gate_"]
+            .iter()
+            .any(|p| rest.strip_prefix(p).is_some_and(|r| r.starts_with("exps") || r.starts_with("chexps")))
+    })
 }
 
 /// The planner's view of one model file.
@@ -105,6 +152,10 @@ pub struct ArchProfile {
     pub mla: bool,
     pub recurrent: Option<Recurrent>,
     pub weights: Weights,
+    /// Routed experts per MoE layer and how many each token uses (`expert_count`,
+    /// `expert_used_count`); 0 for a dense model.
+    pub n_expert: u64,
+    pub n_expert_used: u64,
     pub n_embd: u64,
     pub n_ctx_train: Option<u32>,
     pub params: Option<u64>,
@@ -301,23 +352,29 @@ impl ArchProfile {
         let recurrent = (n_recurrent > 0).then(|| recurrent_state(h, &arch, n_embd, n_recurrent, &mut warnings));
 
         // Weights.
-        let mut w = Weights { per_block: vec![0; n_blocks as usize], ..Weights::default() };
+        let mut w = Weights { per_block: vec![0; n_blocks as usize], experts: vec![0; n_blocks as usize], ..Weights::default() };
         let tied = h.tensor("output.weight").is_none();
         for t in &h.tensors {
             let b = t.bytes();
             if t.ty.is_none() {
                 w.unknown += 1;
             }
-            if t.name == "token_embd.weight" {
+            if is_input_tensor(&t.name) {
                 w.host += b;
-                if tied {
+                // A model with no output head reads its logits off the token embeddings: llama.cpp
+                // loads a second copy of them with the output layer.
+                if tied && t.name == "token_embd.weight" {
                     w.gpu_other += b;
                 }
             } else if let Some(l) = t.layer() {
                 if (l as usize) >= w.per_block.len() {
                     w.per_block.resize(l as usize + 1, 0);
+                    w.experts.resize(l as usize + 1, 0);
                 }
                 w.per_block[l as usize] += b;
+                if is_expert_tensor(&t.name) {
+                    w.experts[l as usize] += b;
+                }
             } else if ["v.", "mm.", "vision.", "mmproj.", "a.", "audio."].iter().any(|p| t.name.starts_with(p)) {
                 w.vision += b;
             } else {
@@ -346,6 +403,8 @@ impl ArchProfile {
             mla: mla_rank.is_some(),
             recurrent,
             weights: w,
+            n_expert: h.a_u64("expert_count").unwrap_or(0),
+            n_expert_used: h.a_u64("expert_used_count").unwrap_or(0),
             n_embd,
             warnings,
         })
@@ -366,6 +425,15 @@ impl ArchProfile {
         match self.n_swa {
             Some(w) => ctx_seq.min(pad256(w + ubatch)),
             None => 0,
+        }
+    }
+
+    /// The share of the expert weights one token reads (`used / count`); 1 for a dense model.
+    pub fn expert_active(&self) -> f64 {
+        if self.n_expert > 0 && self.n_expert_used > 0 {
+            (self.n_expert_used as f64 / self.n_expert as f64).min(1.0)
+        } else {
+            1.0
         }
     }
 
@@ -441,7 +509,7 @@ fn recurrent_state(h: &ModelHeader, arch: &str, n_embd: u64, layers: u32, warnin
     {
         let n_group = h.a_u64("ssm.group_count").unwrap_or(0);
         let kind = match arch {
-            "qwen3next" | "qwen35" | "qwen35moe" => "Gated DeltaNet",
+            "qwen3next" | "qwen35" | "qwen35moe" | "qwen4exp" => "Gated DeltaNet",
             _ if n_group > 0 => "Mamba-2",
             _ => "Mamba",
         };
