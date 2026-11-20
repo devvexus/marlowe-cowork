@@ -584,3 +584,60 @@ fn a_server_that_fits_runs_whole_on_the_gpu() {
     assert_eq!(r.fx.spawner.starts(), 1);
     assert!(!r.engine.status().unwrap().split);
 }
+
+#[test]
+fn the_catalog_lists_every_source_labelled_and_says_what_the_selected_backend_cannot_run() {
+    use crate::sources::Sources;
+    let fx = Fixture::new(MODEL);
+    let hub = fx.dir.path().join("hub");
+    let plain = crate::llama::eligible::tests::gguf(Some(crate::llama::eligible::tests::TEMPLATE));
+    crate::sources::tests::hub_file(&hub, "unsloth/Qwen3-8B-GGUF", "r1", "Qwen3-8B-Q4_K_M.gguf", &plain);
+    let ms = crate::llama::eligible::tests::ms_gguf(&[46], "MS2.7");
+    let folder = fx.dir.path().join("models");
+    crate::sources::tests::put(&folder.join("Qwen3.8-27B-MS2.7.gguf"), &ms);
+    let sources = Sources::new(fx.dir.path().join("store"), vec![hub], vec![folder]);
+    let mut cfg = fx.config();
+    cfg.backend = Some(marlowe_engines::Backend::LlamaCpp);
+    cfg.backend_tag = Some("v1.0.0".into());
+    let engine = LlamaEngine::new(cfg.clone(), fx.spawner.clone());
+    let provider = OllamaProvider::new(sources.clone()).with_llama_engine(engine);
+    let list = provider.list_models().unwrap();
+    let by = |id: &str| list.iter().find(|m| m.id == id).unwrap_or_else(|| panic!("{id} in {:?}", list.iter().map(|m| &m.id).collect::<Vec<_>>()));
+    let (o, h, f) = (by(MODEL), by("gguf/hf/unsloth/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M"), by("gguf/Qwen3.8-27B-MS2.7"));
+    let origin = |m: &marlowe_model::ModelInfo| m.origin.clone().unwrap();
+    assert_eq!((origin(o).label(), origin(h).label(), origin(f).label()), ("From Ollama", "From Hugging Face", "From folder"));
+    assert_eq!((origin(h).detail.as_deref(), f.display.as_str()), (Some("unsloth/Qwen3-8B-GGUF"), "Qwen3.8-27B-MS2.7"));
+    assert!(o.local && f.local && o.supports_tools && h.supports_tools);
+    // The MS file says so and what to do about it; the plain ones say nothing.
+    assert_eq!((origin(o).ms, origin(o).blocked, origin(h).blocked), (None, None, None));
+    assert_eq!(origin(f).ms.as_deref(), Some("MS Gen 1"));
+    assert_eq!(origin(f).blocked.as_deref(), Some("Qwen3.8-27B-MS2.7 is an MS (Mad Shift) model: it runs on ms-llama.cpp."));
+    assert_eq!(origin(f).switch_to.as_deref(), Some("ms-llama.cpp"));
+    // On ms-llama.cpp the same file is not blocked.
+    let mut on_ms = cfg;
+    on_ms.backend = Some(marlowe_engines::Backend::MsLlamaCpp);
+    on_ms.backend_tag = Some("ms-v1.0".into());
+    let provider = OllamaProvider::new(sources).with_llama_engine(LlamaEngine::new(on_ms, fx.spawner.clone()));
+    let list = provider.list_models().unwrap();
+    let f = list.iter().find(|m| m.id == "gguf/Qwen3.8-27B-MS2.7").unwrap();
+    assert_eq!((f.origin.as_ref().unwrap().blocked.clone(), f.origin.as_ref().unwrap().ms.as_deref()), (None, Some("MS Gen 1")));
+}
+
+#[test]
+fn a_file_model_is_served_like_any_other_with_no_modelfile_to_carry_over() {
+    use crate::sources::Sources;
+    let fx = Fixture::new(MODEL);
+    let folder = fx.dir.path().join("models");
+    crate::sources::tests::put(&folder.join("Plain-8B.gguf"), &crate::llama::eligible::tests::gguf(Some(crate::llama::eligible::tests::TEMPLATE)));
+    let mut cfg = fx.config();
+    cfg.store = Sources::new(fx.dir.path().join("store"), Vec::new(), vec![folder]);
+    let engine_for_files = LlamaEngine::new(cfg.clone(), fx.spawner.clone());
+    let provider = OllamaProvider::new(cfg.store.clone()).with_llama_engine(engine_for_files);
+    fx.spawner.answer_chat(|_| Reply::sse(&answer("from a file", json!({"prompt_n": 3, "predicted_n": 3}))));
+    let mut req = ChatRequest::new("gguf/Plain-8B", vec![Message::user("hi")]);
+    req.lane = Lane::Conductor;
+    let c = provider.stream(&req, &CancelToken::new(), &mut |_| {}).unwrap();
+    assert_eq!(c.text, "from a file");
+    let plan = fx.spawner.plans.lock().unwrap()[0].clone();
+    assert!(plan.args.iter().any(|a| a.ends_with("Plain-8B.gguf")), "{:?}", plan.args);
+}

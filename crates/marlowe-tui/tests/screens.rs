@@ -51,15 +51,16 @@ fn library_onboarding_flow() {
     assert_eq!(s.view, View::Library);
     assert_eq!(s.library.step, LibStep::Providers { sel: 0 });
     let buf = render(&s, W, H);
-    assert_eq!(dump(&buf).matches("coming soon").count(), 3);
-    assert!(contains(&buf, "running at 127.0.0.1:11434"));
+    assert_eq!(dump(&buf).matches("coming soon").count(), 2);
+    assert!(!contains(&buf, "Local GGUF"), "a model file is picked from the local models, not a provider of its own");
+    assert!(contains(&buf, "Ollama, Hugging Face and your folders"));
     assert!(contains(&buf, "needs an API key"));
     assert_palette_only(&buf);
     snapshot("library_providers", &buf);
 
-    // Down skips Local GGUF (coming soon) and lands on OpenRouter, which has no key yet.
+    // Down lands on OpenRouter, which has no key yet.
     s.on_key(key(KeyCode::Down));
-    assert_eq!(s.library.step, LibStep::Providers { sel: 2 });
+    assert_eq!(s.library.step, LibStep::Providers { sel: 1 });
     s.on_key(key(KeyCode::Enter));
     assert!(matches!(s.library.step, LibStep::Key { provider: ProviderKind::OpenRouter, .. }));
 

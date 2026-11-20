@@ -266,7 +266,14 @@ pub enum Event {
     BackendDone { backend: String, op: BackendOp, ok: bool, message: String },
     /// The selected backend has a newer release (at most one ask a day, never for a build). The
     /// answer is `BackendInstall`, nothing, or `BackendDontAsk`.
-    BackendUpgrade { backend: String, title: String, tag: String },
+    BackendUpgrade {
+        backend: String,
+        title: String,
+        tag: String,
+        /// The MS models the new release would stop running, when it would.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        warning: Option<String>,
+    },
     /// What the Sentinel watches (reply to `WatchList`/`WatchAdd`/`WatchRemove`; also broadcast on
     /// change).
     WatchState(WatchState),

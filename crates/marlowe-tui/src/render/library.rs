@@ -64,7 +64,11 @@ pub fn draw(main: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
         }
         LibStep::Catalog { provider, query, sel } => {
             catalog(c, state, *provider, query, *sel, theme, buf);
-            vec![("type", "to search".into()), ("↑↓", "select".into()), ("↵", "add to library".into()), ("esc", "back".into())]
+            if lib.ask.is_some() {
+                vec![("s", "switch backend".into()), ("↵", "add anyway".into()), ("esc", "cancel".into())]
+            } else {
+                vec![("type", "to search".into()), ("↑↓", "select".into()), ("↵", "add to library".into()), ("esc", "back".into())]
+            }
         }
     };
     let mut spans = vec![Span::raw(" ")];
@@ -342,8 +346,8 @@ fn providers(c: Rect, state: &State, sel: usize, theme: &Theme, buf: &mut Buffer
 
 fn default_note(kind: ProviderKind, detected: bool, configured: bool) -> String {
     match kind {
-        ProviderKind::Ollama if detected => "running at 127.0.0.1:11434".into(),
-        ProviderKind::Ollama => "not running — start Ollama, then choose it".into(),
+        ProviderKind::Ollama if detected => "Ollama, Hugging Face and your folders".into(),
+        ProviderKind::Ollama => "none found yet · paste a folder or .gguf path".into(),
         _ if configured => "key stored".into(),
         _ if detected => "key found in the environment".into(),
         _ => "needs an API key".into(),
@@ -374,15 +378,17 @@ fn catalog(c: Rect, state: &State, provider: ProviderKind, query: &str, sel: usi
     let lib: &Library = &state.library;
     let dim = ink(Ink::Dim, theme);
     let dimmer = ink(Ink::Dimmer, theme);
+    let local = provider.is_local();
     let rows = lib.filtered_catalog(query);
     let sub = if lib.catalog.loading {
-        "loading the catalog…".to_string()
+        if local { "looking at the model files…".to_string() } else { "loading the catalog…".to_string() }
     } else {
         format!("{} of {} models", rows.len(), lib.catalog.models.len())
     };
     put(buf, c.x, c.y, &heading(&provider.display_name().to_uppercase(), &sub, theme), c.width);
     let q = if query.is_empty() {
-        Line::from(vec![Span::styled("⌕ ", ink(Ink::Accent, theme)), Span::styled("search by name", dimmer)])
+        let hint = if local { "search by name, source or MS · or paste a folder or .gguf path" } else { "search by name" };
+        Line::from(vec![Span::styled("⌕ ", ink(Ink::Accent, theme)), Span::styled(hint, dimmer)])
     } else {
         Line::from(vec![Span::styled("⌕ ", ink(Ink::Accent, theme)), Span::styled(text::clean(query), theme.normal())])
     };
@@ -396,37 +402,56 @@ fn catalog(c: Rect, state: &State, provider: ProviderKind, query: &str, sel: usi
         return;
     }
     if rows.is_empty() {
-        put(buf, c.x + 2, c.y + 4, &Line::from(Span::styled("no models match", dim)), c.width);
+        let msg = if local && crate::library::looks_like_path(query) { "↵ searches this path for .gguf files and keeps it in your settings" } else { "no models match" };
+        put(buf, c.x + 2, c.y + 4, &Line::from(Span::styled(msg, dim)), c.width);
         return;
     }
     let y0 = c.y + 4;
-    put(
-        buf,
-        c.x + 2,
-        y0,
-        &Line::from(Span::styled(
-            format!("{}{}{}{}", text::pad("model", 46), text::pad("context", 10), text::pad("price / Mtok", 18), "can"),
-            dimmer,
-        )),
-        c.width,
-    );
-    let room = c.bottom().saturating_sub(y0 + 1) as usize;
+    let head = if local {
+        format!("{}{}{}{}", text::pad("model", 40), text::pad("from", 20), text::pad("context", 10), "can")
+    } else {
+        format!("{}{}{}{}", text::pad("model", 46), text::pad("context", 10), text::pad("price / Mtok", 18), "can")
+    };
+    put(buf, c.x + 2, y0, &Line::from(Span::styled(head, dimmer)), c.width);
+    // What the cursor's model cannot do on the selected backend, or the question about it, at the bottom.
+    let note: Vec<String> = match (&lib.ask, rows.get(sel).and_then(|m| m.origin.as_ref()).and_then(|o| o.blocked.clone())) {
+        (Some(ask), _) => text::wrap(&format!("{} Switch backend? [s]", ask.message), c.width.saturating_sub(2) as usize),
+        (None, Some(b)) => text::wrap(&b, c.width.saturating_sub(2) as usize),
+        _ => Vec::new(),
+    };
+    let note_rows = note.len().min(2);
+    let room = (c.bottom().saturating_sub(y0 + 1) as usize).saturating_sub(if note_rows > 0 { note_rows + 1 } else { 0 });
     let first = sel.saturating_sub(room.saturating_sub(1));
     for (i, m) in rows.iter().enumerate().skip(first).take(room) {
         let selected = i == sel;
         let added = lib.in_library(provider, &m.id);
         let name_style: Style = if selected { theme.bright() } else { theme.normal() };
         let over = hovered(state, &Target::Row(i));
-        let mut spans = vec![
-            marker(selected, true, over, theme),
-            Span::styled(text::pad(&text::clean(&m.id), 46), name_style),
-            Span::styled(text::pad(&context(m), 10), dim),
-            Span::styled(text::pad(&pricing(m), 18), dim),
-            Span::styled(text::pad(&abilities(m), 18), dimmer),
-        ];
+        let mut spans = vec![marker(selected, true, over, theme)];
+        match (&m.origin, local) {
+            (Some(o), true) => {
+                spans.push(Span::styled(text::pad(&text::clean(&m.display), 40), name_style));
+                spans.push(Span::styled(text::pad(o.label(), 20), dim));
+                spans.push(Span::styled(text::pad(&context(m), 10), dim));
+                spans.push(Span::styled(text::pad(&abilities(m), 18), dimmer));
+                if let Some(ms) = &o.ms {
+                    spans.push(Span::styled(format!("{ms}  "), ink(if o.blocked.is_some() { Ink::Amber } else { Ink::Accent }, theme)));
+                }
+            }
+            _ => {
+                spans.push(Span::styled(text::pad(&text::clean(&m.id), 46), name_style));
+                spans.push(Span::styled(text::pad(&context(m), 10), dim));
+                spans.push(Span::styled(text::pad(&pricing(m), 18), dim));
+                spans.push(Span::styled(text::pad(&abilities(m), 18), dimmer));
+            }
+        }
         if added {
             spans.push(Span::styled("in library", ink(Ink::Green, theme)));
         }
         put_row(state, buf, (c.x, y0 + 1 + (i - first) as u16, c.width), Line::from(spans), Target::Row(i), theme);
+    }
+    for (i, line) in note.iter().take(2).enumerate() {
+        let style = if lib.ask.is_some() { ink(Ink::Amber, theme) } else { dim };
+        put(buf, c.x + 2, c.bottom().saturating_sub((note_rows - i) as u16), &Line::from(Span::styled(line.clone(), style)), c.width);
     }
 }

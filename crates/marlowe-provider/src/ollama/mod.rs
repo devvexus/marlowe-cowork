@@ -1,8 +1,8 @@
-//! The local provider: the models in Ollama's store, served by Marlowe's own llama.cpp engine.
+//! The local provider: the models on this machine, served by Marlowe's own llama.cpp engine.
 //!
-//! Ollama is only a source of model files. The catalog and each model's capabilities are read from
-//! the store on disk ([`crate::ollama_store::list_in`], [`crate::llama::eligible`]); Ollama's
-//! server is never asked anything and need not run. Every request goes to the engine
+//! Ollama is only one source of model files, beside the Hugging Face cache and the user's model
+//! folders ([`crate::sources`]). The catalog and each model's capabilities are read from the files
+//! on disk ([`crate::llama::eligible`]); Ollama's server is never asked anything and need not run. Every request goes to the engine
 //! ([`crate::llama`]) as the body Ollama would have sent its llama-server.
 //!
 //! The Ollama-shaped body is still the one the request is planned as (`request.rs`): images ride
@@ -18,14 +18,13 @@ pub mod scan;
 mod stream;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use marlowe_model::image::BlobStore;
 use marlowe_model::{
-    CancelToken, ChatRequest, Completion, ContextAllocations, EngineShape, Lane, ModelInfo, Provider, ProviderError, ProviderKind,
+    CancelToken, ChatRequest, Completion, ContextAllocations, EngineShape, Lane, ModelInfo, Origin, Provider, ProviderError, ProviderKind,
     StreamEvent,
 };
 use serde_json::Value;
@@ -33,7 +32,7 @@ use serde_json::Value;
 use crate::http::{self, HttpError};
 use crate::llama::render::RenderGuard;
 use crate::llama::{chat as llama_chat, conversation_key, eligible, LlamaEngine, Want};
-use crate::ollama_store;
+use crate::sources::{Source, Sources};
 
 pub use leak::{defang_tool_markup, recover_leaked_call};
 pub use models::{is_cloud_tag, model_info, think_value, ModelMeta, ThinkMode};
@@ -47,8 +46,8 @@ pub use stream::{clip_detail, is_tool_parse_error, Folder};
 pub const DEFAULT_CONTEXT_TOKENS: u32 = 32_768;
 
 pub struct OllamaProvider {
-    /// Ollama's model store.
-    store: PathBuf,
+    /// Where the model files are: Ollama's store, the Hugging Face cache, the model folders.
+    store: Sources,
     /// The window for a model with no context policy.
     num_ctx: u32,
     /// Per-model windows from the context policy, and the planner's engine shapes.
@@ -68,15 +67,15 @@ pub struct OllamaProvider {
 
 impl Default for OllamaProvider {
     fn default() -> Self {
-        Self::new(ollama_store::store_root())
+        Self::new(Sources::shared())
     }
 }
 
 impl OllamaProvider {
-    /// The models in the store at `store`.
-    pub fn new(store: PathBuf) -> Self {
+    /// The models in `store`: a `Sources`, or the path of an Ollama store alone.
+    pub fn new(store: impl Into<Sources>) -> Self {
         Self {
-            store,
+            store: store.into(),
             num_ctx: DEFAULT_CONTEXT_TOKENS,
             alloc: ContextAllocations::new(),
             meta: Mutex::new(HashMap::new()),
@@ -134,7 +133,7 @@ impl OllamaProvider {
         self.num_ctx
     }
 
-    pub fn store(&self) -> &std::path::Path {
+    pub fn sources(&self) -> &Sources {
         &self.store
     }
 
@@ -179,20 +178,33 @@ impl Provider for OllamaProvider {
         ProviderKind::Ollama
     }
 
-    /// Every chat model in the store. One llama.cpp cannot run is still listed, so choosing it says
-    /// why instead of the model being missing.
+    /// Every chat model on this machine, from every source, each with where it is from and what it
+    /// needs. One llama.cpp cannot run is still listed, so choosing it says why instead of the
+    /// model being missing.
     fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        let chosen = self.llama.as_ref().and_then(|e| e.chosen());
         let mut out = Vec::new();
-        for name in ollama_store::list_in(&self.store) {
-            let meta = match eligible::resolve(&self.store, &name) {
-                Ok(m) => m.meta,
-                Err(_) => ModelMeta::default(),
+        for found in self.store.scan() {
+            let (meta, model) = match eligible::resolve(&self.store, &found.id) {
+                Ok(m) => (m.meta.clone(), Some(m)),
+                Err(_) => (ModelMeta::default(), None),
             };
             if !meta.can_chat() {
                 continue;
             }
-            out.push(model_info(&name, &meta, self.alloc.get(&name).unwrap_or(self.num_ctx)));
-            self.meta.lock().unwrap_or_else(|e| e.into_inner()).insert(name, meta);
+            let mut info = model_info(&found.id, &meta, self.alloc.get(&found.id).unwrap_or(self.num_ctx));
+            info.display = found.display.clone();
+            let refusal = model.as_ref().and_then(|m| m.refuses_on(chosen.as_ref()));
+            info.origin = Some(Origin {
+                source: found.source.id().into(),
+                detail: found.detail.clone().filter(|_| found.source != Source::Ollama),
+                size: model.as_ref().map(|m| m.size).filter(|s| *s > 0).or(Some(found.size).filter(|s| *s > 0)),
+                ms: model.as_ref().and_then(|m| m.ms_label()),
+                blocked: refusal.as_ref().map(|r| r.message.clone()),
+                switch_to: refusal.and_then(|r| r.switch_to).map(|b| b.id().to_string()),
+            });
+            self.meta.lock().unwrap_or_else(|e| e.into_inner()).insert(found.id, meta);
+            out.push(info);
         }
         out.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(out)
@@ -360,6 +372,8 @@ fn llama_error(e: HttpError) -> ProviderError {
 
 #[cfg(test)]
 mod alloc_tests {
+    use std::path::PathBuf;
+
     use super::*;
     use marlowe_model::Message;
 

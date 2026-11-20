@@ -639,6 +639,31 @@ fn library_ops_reply_or_broadcast() {
 }
 
 #[test]
+fn a_model_folder_is_remembered_in_settings_and_a_bad_path_is_refused() {
+    let home = temp_home("model-dir");
+    seed_model(&home);
+    let models = temp_home("model-dir-files");
+    std::fs::write(models.join("One.gguf"), b"x").unwrap();
+    let d = start(&home, Arc::new(Scripted::default()), DaemonConfig::default());
+    let mut a = Client::connect(&d.info, None);
+    let path = models.display().to_string();
+    // The answer is the local catalog read again.
+    match a.request(&Request::AddModelDir { path: format!("\"{path}\"") }, |e| matches!(e, Event::Catalog { .. })) {
+        Event::Catalog { provider, .. } => assert_eq!(provider, ProviderKind::Ollama),
+        _ => unreachable!(),
+    }
+    assert_eq!(marlowe_settings::Settings::load(&home, None, None).model_dirs(), vec![path.clone()]);
+    // Again is no second entry; a path that is neither a folder nor a .gguf is an error and saves nothing.
+    a.request(&Request::AddModelDir { path: path.clone() }, |e| matches!(e, Event::Catalog { .. }));
+    assert_eq!(marlowe_settings::Settings::load(&home, None, None).model_dirs().len(), 1);
+    a.send(&Request::AddModelDir { path: models.join("One.gguf.txt").display().to_string() });
+    let got = a.until(|e| matches!(e, Event::Error { .. }));
+    assert!(matches!(&got.last().unwrap().event, Event::Error { message, .. } if message.contains("is not a folder or a .gguf file")));
+    assert_eq!(marlowe_settings::Settings::load(&home, None, None).model_dirs().len(), 1);
+    stop(d, &home);
+}
+
+#[test]
 fn backend_requests_are_answered_over_the_wire_against_the_engines_folder() {
     // Read when the daemon first needs it, so set before the first request.
     let engines = temp_home("engines");

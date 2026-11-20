@@ -35,6 +35,9 @@
 //! mmap = false           # default --no-mmap
 //! gpu_fit = "auto"       # auto (whole when it fits, else split) | whole | split
 //!
+//! [models]
+//! dirs = ["D:\\models", "D:\\more\\Qwen3.8-27B-MS2.7.gguf"]   # folders searched for .gguf (and single files); user settings only
+//!
 //! [import]
 //! claude = true          # read .claude/settings.json (default)
 //! claude_user = false    # also ~/.claude/settings.json
@@ -65,6 +68,16 @@ pub struct SettingsFile {
     pub projects: Projects,
     #[serde(default)]
     pub engine: EngineFile,
+    #[serde(default)]
+    pub models: ModelsFile,
+}
+
+/// Where local models are found besides Ollama's store and the Hugging Face cache (`[models]`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelsFile {
+    /// Folders searched recursively for `.gguf` files; a path may also name one file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dirs: Vec<String>,
 }
 
 /// The local engine's server-wide settings (`[engine]`); an unset key keeps the default

@@ -75,6 +75,16 @@ pub trait ModelSource: Send + Sync {
     fn unload(&self, _model_id: &str) -> Result<(), String> {
         Err("this engine cannot unload a model".into())
     }
+    /// The MS models this machine has with the generation of each (`MS Gen 1` is 1), by name:
+    /// what a new ms-llama.cpp could stop running. The default knows none.
+    fn ms_models(&self) -> Vec<(String, u8)> {
+        Vec::new()
+    }
+    /// Adds a folder (or one `.gguf` file) the model files are searched in, effective at once.
+    /// `Ok(false)` when it was there already. The default cannot.
+    fn add_model_dir(&self, _path: &std::path::Path) -> Result<bool, String> {
+        Err("this engine has no model folders".into())
+    }
     /// Whether `model_id` runs on Marlowe's own llama-server (which saves each conversation's cache
     /// when it stops) rather than on the engine's runner (which loses it when unloaded).
     fn runs_on_own_server(&self, _model_id: &str) -> bool {

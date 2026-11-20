@@ -185,7 +185,7 @@ mod tests {
         assert_eq!((info.id.as_str(), effort), ("other", Effort::Low));
         match b.state().unwrap() {
             Event::LibraryState { models, slots, providers } => {
-                assert_eq!((models.len(), slots.len(), providers.len()), (2, 3, 5));
+                assert_eq!((models.len(), slots.len(), providers.len()), (2, 3, 4));
             }
             e => panic!("{e:?}"),
         }

@@ -229,6 +229,23 @@ gpu_fit = \"whole\"
 }
 
 #[test]
+fn model_folders_come_from_the_users_own_files_and_a_repository_does_not_add_one() {
+    let t = Tmp::new("model-dirs");
+    let home = t.0.join("home");
+    assert!(Settings::load(&home, None, None).model_dirs().is_empty());
+    write(&home.join("settings.toml"), "[models]
+dirs = [\"D:/models\", \"D:/more/One.gguf\"]
+");
+    let ws = t.0.join("ws");
+    write(&ws.join(".marlowe/settings.toml"), "[models]
+dirs = [\"C:/from-the-repo\"]
+");
+    assert_eq!(Settings::load(&home, Some(&ws), None).model_dirs(), vec!["D:/models", "D:/more/One.gguf"]);
+    edit::set_key(&home.join("settings.toml"), "models.dirs", &json!(["D:/models", "E:/new"])).unwrap();
+    assert_eq!(Settings::load(&home, None, None).model_dirs(), vec!["D:/models", "E:/new"]);
+}
+
+#[test]
 fn retrust_after_a_user_edit_keeps_a_trusted_project_trusted() {
     let t = Tmp::new("retrust");
     let home = t.0.join("home");

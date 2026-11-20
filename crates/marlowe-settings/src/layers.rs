@@ -301,6 +301,20 @@ impl Settings {
         }
     }
 
+    /// The folders local models are searched in (`[models] dirs`): every user layer's, in order, and
+    /// no repository's (a repository does not choose what the machine's engine loads).
+    pub fn model_dirs(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for l in self.layers.iter().filter(|l| !l.source.project_scoped()) {
+            for d in &l.file.models.dirs {
+                if !out.contains(d) {
+                    out.push(d.clone());
+                }
+            }
+        }
+        out
+    }
+
     /// The model project employees run on (`projects.model.employee`), when one is set: the
     /// highest layer that applies. `None` is the conversation's model.
     pub fn project_employee_model(&self) -> Option<String> {

@@ -51,8 +51,9 @@ pub const TYPES: &[GgmlType] = &[
     t(39, "MXFP4", 32, 17),
 ];
 
-/// Type ids upstream ggml loads that [`TYPES`] does not size yet (`NVFP4`).
-const UPSTREAM_ONLY: &[u32] = &[40];
+/// Type ids upstream ggml loads that [`TYPES`] does not size yet (`NVFP4`; `F8_E4M3`, which
+/// upstream put on 43, where ms-llama.cpp's Gen 1 MS types begin: see [`crate::ms`]).
+const UPSTREAM_ONLY: &[u32] = &[40, 43];
 
 /// Whether stock ggml (upstream llama.cpp) knows tensor type `id`. A GGUF holding any other type
 /// was written for a fork with types of its own (ms-llama.cpp's MS types) and loads only there.

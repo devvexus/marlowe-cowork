@@ -92,6 +92,7 @@ fn model_info_and_refs_round_trip() {
         effort_levels: vec![Effort::Low, Effort::Medium, Effort::High],
         pricing: Some(Pricing { input_per_mtok: 3.0, output_per_mtok: 15.0 }),
         local: false,
+        origin: None,
     };
     let s = round_trip(&info);
     assert!(s.contains(r#""provider":"openrouter""#), "{s}");

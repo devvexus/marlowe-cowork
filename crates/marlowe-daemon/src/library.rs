@@ -5,6 +5,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
 use marlowe_brains::BrainsError;
+use marlowe_model::ProviderKind;
 use marlowe_proto::{Event, Request};
 
 use crate::daemon::Core;
@@ -51,6 +52,10 @@ fn handle(core: &Core, req: Request) -> Result<Done, BrainsError> {
             b.add_model(provider, &model_id)?;
             Done::Changed
         }
+        Request::AddModelDir { path } => {
+            add_model_dir(core, &path)?;
+            Done::Reply(Event::Catalog { provider: ProviderKind::Ollama, models: b.catalog(ProviderKind::Ollama)? })
+        }
         Request::RemoveModel { model } => {
             b.remove_model(&model)?;
             Done::Changed
@@ -65,4 +70,25 @@ fn handle(core: &Core, req: Request) -> Result<Done, BrainsError> {
         }
         _ => return Err(BrainsError::Invalid("not a library request".into())),
     })
+}
+
+/// Remembers a model folder (or one `.gguf`) in `[models] dirs` of the user's settings and has the
+/// engine search it from now on.
+fn add_model_dir(core: &Core, path: &str) -> Result<(), BrainsError> {
+    let path = path.trim().trim_matches('"').trim();
+    let p = std::path::Path::new(path);
+    let gguf = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("gguf"));
+    if !(p.is_dir() || (p.is_file() && gguf)) {
+        return Err(BrainsError::Invalid(format!("{path} is not a folder or a .gguf file")));
+    }
+    let file = core.home.join("settings.toml");
+    let mut dirs = marlowe_settings::Settings::load(&core.home, None, None).model_dirs();
+    if !dirs.iter().any(|d| d == path) {
+        dirs.push(path.to_string());
+        marlowe_settings::edit::set_key(&file, "models.dirs", &serde_json::json!(dirs)).map_err(|e| BrainsError::Invalid(format!("could not save {}: {e}", file.display())))?;
+    }
+    if let Some(hw) = core.brains.factory().hardware() {
+        hw.models.add_model_dir(p).map_err(BrainsError::Invalid)?;
+    }
+    Ok(())
 }

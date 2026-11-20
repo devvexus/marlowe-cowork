@@ -700,7 +700,7 @@ fn backend_requests_and_events_round_trip() {
         Event::Backends { selected: "llama.cpp".into(), backends: vec![report] },
         Event::BackendProgress { backend: "llama.cpp".into(), op: BackendOp::Sync, message: "downloading".into(), done: 5, total: 10 },
         Event::BackendDone { backend: "llama.cpp".into(), op: BackendOp::Install, ok: false, message: "no".into() },
-        Event::BackendUpgrade { backend: "llama.cpp".into(), title: "llama.cpp".into(), tag: "v1.1.0".into() },
+        Event::BackendUpgrade { backend: "llama.cpp".into(), title: "llama.cpp".into(), tag: "v1.1.0".into(), warning: None },
     ] {
         let env = Envelope { seq: 3, at_ms: 1, event };
         let s = serde_json::to_string(&env).unwrap();

@@ -25,7 +25,7 @@ use marlowe_model::{CancelToken, ContextAllocations, EngineObserver, EngineShape
 
 use marlowe_engines::Backend;
 
-use super::eligible::{self, EngineModel, ModelDefaults};
+use super::eligible::{self, Chosen, EngineModel, ModelDefaults};
 use super::launch::{self, Spec};
 use super::persist;
 use super::server::{offloaded, Process, Spawner};
@@ -33,6 +33,7 @@ use super::settings::{GpuFit, ServerSettings};
 use super::template::{self, Thinking, ThinkingCache};
 use super::warm;
 use crate::http::{self, LocalEndpoint};
+use crate::sources::Sources;
 
 /// How long a request waits for a model switch to drain before it gives up.
 const SWITCH_WAIT: Duration = Duration::from_secs(300);
@@ -60,8 +61,9 @@ pub trait VramProbe: Send + Sync + std::fmt::Debug {
 /// What the engine needs to know about the machine.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
-    /// Ollama's model store, where the model files are read (Ollama itself is never asked).
-    pub store: PathBuf,
+    /// Where the model files are read: Ollama's store (Ollama itself is never asked), the Hugging
+    /// Face cache and the model folders.
+    pub store: Sources,
     /// Where the server's output goes (appended, capped).
     pub log: Option<PathBuf>,
     /// Flash attention, keep-alive, batch sizes, mmap and the GPU fit; changed later with
@@ -80,6 +82,8 @@ pub struct EngineConfig {
     /// Which backend `binary` is. `None` with no `binary` reads the selected backend; `None` with
     /// one is a build of unknown kind, whose tensor types are not second-guessed.
     pub backend: Option<Backend>,
+    /// The version of `backend` (its tag), for the MS generations it runs; `None` is not checked.
+    pub backend_tag: Option<String>,
     /// How often a starting server is asked whether it is ready.
     pub poll: Duration,
     /// How often the idle check runs.
@@ -94,9 +98,9 @@ pub struct EngineConfig {
 }
 
 impl EngineConfig {
-    pub fn new(store: PathBuf) -> Self {
+    pub fn new(store: impl Into<Sources>) -> Self {
         Self {
-            store,
+            store: store.into(),
             log: None,
             settings: ServerSettings::default(),
             start_timeout: Duration::from_secs(240),
@@ -104,6 +108,7 @@ impl EngineConfig {
             thinking_cache: None,
             binary: None,
             backend: None,
+            backend_tag: None,
             poll: Duration::from_millis(250),
             idle_tick: Duration::from_secs(2),
             vram: None,
@@ -126,6 +131,17 @@ pub struct Want {
 }
 
 pub use marlowe_model::prefix::conversation_key;
+
+/// The selected backend and its installed version, or `None` for a developer's own binary
+/// (`MARLOWE_LLAMA_SERVER`) or no install folder.
+pub fn selected_backend() -> Option<Chosen> {
+    if std::env::var_os(marlowe_engines::SERVER_ENV).is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    let root = marlowe_engines::default_root()?;
+    let backend = marlowe_engines::state::selected(&root);
+    Some(Chosen { backend, tag: marlowe_engines::server(&root, backend).ok().map(|s| s.tag) })
+}
 
 /// `marlowe-dawn` and `marlowe-dawn:latest` are the same model to Ollama.
 pub fn same_model(a: &str, b: &str) -> bool {
@@ -539,17 +555,14 @@ impl LlamaEngine {
         self.inner.events.read().unwrap_or_else(|e| e.into_inner()).as_ref()?.engine_observer()
     }
 
-    /// The backend the server binary is: the configured one, else the selected one, unless a
-    /// developer's own binary is in use (unknown).
-    fn backend_kind(&self) -> Option<Backend> {
+    /// The backend the server binary is, and its installed version: the configured one, else the
+    /// selected one, unless a developer's own binary is in use (unknown).
+    pub fn chosen(&self) -> Option<Chosen> {
         let cfg = &self.inner.cfg;
         if cfg.backend.is_some() || cfg.binary.is_some() {
-            return cfg.backend;
+            return cfg.backend.map(|backend| Chosen { backend, tag: cfg.backend_tag.clone() });
         }
-        if std::env::var_os(marlowe_engines::SERVER_ENV).is_some_and(|v| !v.is_empty()) {
-            return None;
-        }
-        marlowe_engines::default_root().map(|r| marlowe_engines::state::selected(&r))
+        selected_backend()
     }
 
     /// Whether the GPU has room for the whole model now: with the driver's sysmem fallback a model
@@ -613,8 +626,8 @@ impl LlamaEngine {
             Some(b) => b.clone(),
             None => launch::server_binary().map_err(|e| ProviderError::bad_request(e.remedy()))?,
         };
-        if let Some(why) = model.refuses_on(self.backend_kind()) {
-            return Err(cant(why));
+        if let Some(r) = model.refuses_on(self.chosen().as_ref()) {
+            return Err(ProviderError::bad_request(r.engine_error()));
         }
         let whole_only = |why: &str| {
             ProviderError::server(format!("{} does not fit whole on the GPU ({why}), and the engine's gpu_fit is `whole`", want.model))
@@ -974,17 +987,33 @@ mod tests {
     #[test]
     fn an_ms_model_on_stock_llama_cpp_is_refused_and_runs_on_ms_llama_cpp() {
         let fx = Fixture::new("dusk:22b");
-        let ms = marlowe_hw::gguf::write_header(
-            &[("general.architecture", serde_json::json!("qwen35")), ("tokenizer.chat_template", serde_json::json!("{{ messages }}"))],
-            &[("blk.0.ffn_up.weight", 46, vec![256])],
-        );
+        let ms = crate::llama::eligible::tests::ms_gguf(&[46], "MS2.7");
         crate::llama::eligible::tests::store(&fx.dir.path().join("store"), "q:ms", serde_json::json!({"model_format": "gguf"}), &[(crate::ollama_store::MODEL_MEDIA_TYPE, &ms[..])]);
         let mut cfg = fx.config();
         cfg.backend = Some(Backend::LlamaCpp);
         let err = LlamaEngine::new(cfg.clone(), fx.spawner.clone()).acquire(&want("q:ms", Lane::Conductor, 1), &CancelToken::new()).err().unwrap();
-        assert!(err.detail.contains("can't run") && err.detail.contains("needs ms-llama.cpp"), "{}", err.detail);
+        assert_eq!(
+            err.detail,
+            "q:ms is an MS (Mad Shift) model: it runs on ms-llama.cpp. Select ms-llama.cpp in the engine window (click `engine` in the title bar)."
+        );
         assert_eq!(fx.spawner.starts(), 0);
         cfg.backend = Some(Backend::MsLlamaCpp);
+        LlamaEngine::new(cfg, fx.spawner.clone()).acquire(&want("q:ms", Lane::Conductor, 1), &CancelToken::new()).unwrap();
+        assert_eq!(fx.spawner.starts(), 1);
+    }
+
+    #[test]
+    fn an_ms_llama_cpp_that_no_longer_runs_the_files_generation_is_refused_before_launch() {
+        let fx = Fixture::new("dusk:22b");
+        let ms = crate::llama::eligible::tests::ms_gguf(&[46], "MS2.7");
+        crate::llama::eligible::tests::store(&fx.dir.path().join("store"), "q:ms", serde_json::json!({"model_format": "gguf"}), &[(crate::ollama_store::MODEL_MEDIA_TYPE, &ms[..])]);
+        let mut cfg = fx.config();
+        cfg.backend = Some(Backend::MsLlamaCpp);
+        cfg.backend_tag = Some("ms-v2.0".into());
+        let err = LlamaEngine::new(cfg.clone(), fx.spawner.clone()).acquire(&want("q:ms", Lane::Conductor, 1), &CancelToken::new()).err().unwrap();
+        assert!(err.detail.contains("q:ms is an MS Gen 1 model: it needs ms-llama.cpp ms-v1.0, and the installed ms-v2.0 only runs Gen 2 files"), "{}", err.detail);
+        assert_eq!(fx.spawner.starts(), 0);
+        cfg.backend_tag = Some("ms-v1.0".into());
         LlamaEngine::new(cfg, fx.spawner.clone()).acquire(&want("q:ms", Lane::Conductor, 1), &CancelToken::new()).unwrap();
         assert_eq!(fx.spawner.starts(), 1);
     }

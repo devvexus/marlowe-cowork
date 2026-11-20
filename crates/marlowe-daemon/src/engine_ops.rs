@@ -44,6 +44,8 @@ pub(crate) trait Sink {
     /// Stops the running llama-server (saving its slot caches) so the next load starts the
     /// selected backend's current version.
     fn stop_engine(&self);
+    /// The MS models on this machine, each with its generation (see `ModelSource::ms_models`).
+    fn ms_models(&self) -> Vec<(String, u8)>;
 }
 
 pub(crate) struct Services {
@@ -113,12 +115,15 @@ impl Services {
 
     // ------------------------------------------------------------- reports
 
-    /// Every backend's state for the window.
-    pub(crate) fn reports(&self) -> Vec<BackendReport> {
-        Backend::ALL.iter().map(|b| self.report(*b)).collect()
+    /// Every backend's state for the window. The MS models are looked at only when an ms-llama.cpp
+    /// newer than the installed one is known, to say what it would stop running.
+    pub(crate) fn reports(&self, sink: &dyn Sink) -> Vec<BackendReport> {
+        let models: std::cell::OnceCell<Vec<(String, u8)>> = std::cell::OnceCell::new();
+        let ms = || models.get_or_init(|| sink.ms_models()).clone();
+        Backend::ALL.iter().map(|b| self.report(*b, &ms)).collect()
     }
 
-    fn report(&self, backend: Backend) -> BackendReport {
+    fn report(&self, backend: Backend, ms: &dyn Fn() -> Vec<(String, u8)>) -> BackendReport {
         let mut r = BackendReport {
             id: backend.id().into(),
             title: backend.title().into(),
@@ -157,11 +162,15 @@ impl Services {
         r.builds_newer = s.builds_newer;
         r.last_checked = s.last_checked;
         r.dont_ask = s.dont_ask;
+        // A newer release or build is what an upgrade or a sync would install.
+        let newer = |t: &Option<RemoteTag>| t.as_ref().filter(|t| s.installed.as_ref().is_none_or(|i| i.tag != t.tag)).and_then(|t| stops_ms(backend, &t.tag, ms));
+        r.upgrade_warning = if r.state == BackendUpdate::UpdateAvailable { newer(&r.latest_release) } else { None };
+        r.sync_warning = if r.builds_newer.is_some_and(|n| n > 0) { newer(&r.newest_build) } else { None };
         r
     }
 
     fn publish_all(&self, sink: &dyn Sink) {
-        sink.publish(Event::Backends { selected: marlowe_engines::state::selected(self.root().unwrap_or(Path::new(""))).id().into(), backends: self.reports() });
+        sink.publish(Event::Backends { selected: marlowe_engines::state::selected(self.root().unwrap_or(Path::new(""))).id().into(), backends: self.reports(sink) });
     }
 
     fn note(&self, backend: Backend, text: Option<String>) {
@@ -185,7 +194,7 @@ impl Services {
     // ------------------------------------------------------------- requests
 
     pub(crate) fn list(&self, sink: &dyn Sink) {
-        sink.reply(Event::Backends { selected: self.selected_id(), backends: self.reports() });
+        sink.reply(Event::Backends { selected: self.selected_id(), backends: self.reports(sink) });
     }
 
     fn selected_id(&self) -> String {
@@ -311,13 +320,32 @@ impl Services {
         let http = self.http();
         if let Ok(Some(tag)) = discover::upgrade_offer(root, backend, &http, platform, marlowe_engines::now_secs()) {
             self.publish_all(sink);
-            sink.publish(Event::BackendUpgrade { backend: backend.id().into(), title: backend.title().into(), tag });
+            let warning = stops_ms(backend, &tag, &|| sink.ms_models());
+            sink.publish(Event::BackendUpgrade { backend: backend.id().into(), title: backend.title().into(), tag, warning });
         }
     }
 
     fn set_busy(&self, backend: Backend, op: BackendOp, message: &str, done: u64, total: u64) {
         lock(&self.busy).insert(backend, BackendBusy { op, message: message.to_string(), done, total });
     }
+}
+
+/// What installing ms-llama.cpp `tag` would cost: the MS models it would stop running (a newer
+/// ms-llama.cpp rejects Gen 1 files). `None` for the other backend or when nothing is lost.
+fn stops_ms(backend: Backend, tag: &str, models: &dyn Fn() -> Vec<(String, u8)>) -> Option<String> {
+    if backend != Backend::MsLlamaCpp {
+        return None;
+    }
+    let have = models();
+    let lost = marlowe_engines::ms::would_stop(tag, &have.iter().map(|m| m.1).collect::<Vec<_>>());
+    if lost.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = have.iter().filter(|m| lost.contains(&m.1)).map(|m| m.0.as_str()).collect();
+    let gens = lost.iter().map(|g| format!("Gen {g}")).collect::<Vec<_>>().join(" and ");
+    let shown = names.iter().take(3).copied().collect::<Vec<_>>().join(", ");
+    let more = if names.len() > 3 { format!(" and {} more", names.len() - 3) } else { String::new() };
+    Some(format!("{tag} stops running MS {gens} files, and you have {} ({shown}{more}). Migrate them first, or keep the installed version.", names.len()))
 }
 
 /// Clears the busy mark when the operation ends, a panic included.
@@ -351,6 +379,9 @@ impl Sink for CoreSink<'_> {
     }
     fn stop_engine(&self) {
         let _ = self.core.brains.unload_local_models();
+    }
+    fn ms_models(&self) -> Vec<(String, u8)> {
+        self.core.brains.factory().hardware().map(|h| h.models.ms_models()).unwrap_or_default()
     }
 }
 
@@ -451,6 +482,7 @@ mod tests {
     struct Recorder {
         events: Mutex<Vec<Event>>,
         stops: Mutex<u32>,
+        ms: Vec<(String, u8)>,
     }
 
     impl Sink for Recorder {
@@ -465,6 +497,9 @@ mod tests {
         }
         fn stop_engine(&self) {
             *self.stops.lock().unwrap() += 1;
+        }
+        fn ms_models(&self) -> Vec<(String, u8)> {
+            self.ms.clone()
         }
     }
 
@@ -558,6 +593,41 @@ mod tests {
     }
 
     #[test]
+    fn a_newer_ms_llama_cpp_that_would_stop_the_users_models_says_so_before_the_upgrade() {
+        use marlowe_engines::installed::Kind;
+        use marlowe_engines::remote::{Release, Remote};
+        use marlowe_engines::testkit::{lay_out, record};
+        let root = scratch("ms-warn");
+        let mut inst = record(Backend::MsLlamaCpp, "ms-v1.0", Kind::Release, 1);
+        inst.release = Some("ms-v1.0".into());
+        lay_out(&root, &inst, true);
+        marlowe_engines::state::update(&root, |s| s.entry(Backend::MsLlamaCpp).current = Some("ms-v1.0".into())).unwrap();
+        let rel = |tag: &str| Release { tag: tag.into(), published: "2026-12-01T00:00:00Z".into(), assets: Vec::new() };
+        let remote = |tag: &str| Remote { fetched: 9, latest_release: Some(rel(tag)), newest_build: Some(rel(tag)), ..Default::default() };
+        let svc = services_in(&root, Arc::new(Nothing));
+        let models = vec![("Qwen3.8-27B-MS2.7".to_string(), 1u8), ("Qwen3.8-9B-MS2.7".to_string(), 1), ("Qwen4-27B-MS".to_string(), 2)];
+        let sink = Recorder { ms: models, ..Default::default() };
+        // A next release that runs Gen 2 only: the two Gen 1 models stop.
+        marlowe_engines::remote::save(&root, Backend::MsLlamaCpp, &remote("ms-v2.0")).unwrap();
+        svc.list(&sink);
+        let ms = sink.last_backends().1[1].clone();
+        assert_eq!(ms.state, BackendUpdate::UpdateAvailable);
+        let w = ms.upgrade_warning.expect("a warning");
+        assert!(w.contains("ms-v2.0 stops running MS Gen 1 files") && w.contains("you have 2 (Qwen3.8-27B-MS2.7, Qwen3.8-9B-MS2.7)"), "{w}");
+        // The same release when no model is Gen 1, or one that still runs them, warns of nothing.
+        let none = Recorder { ms: vec![("Qwen4-27B-MS".into(), 2)], ..Default::default() };
+        svc.list(&none);
+        assert_eq!(none.last_backends().1[1].upgrade_warning, None);
+        marlowe_engines::remote::save(&root, Backend::MsLlamaCpp, &remote("ms-v1.1")).unwrap();
+        let gen1 = Recorder { ms: vec![("Qwen3.8-27B-MS2.7".into(), 1)], ..Default::default() };
+        svc.list(&gen1);
+        assert_eq!(gen1.last_backends().1[1].upgrade_warning, None);
+        // The other backend never warns about MS files.
+        assert_eq!(gen1.last_backends().1[0].upgrade_warning, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn dont_ask_is_saved_and_shown() {
         let root = scratch("ask");
         let svc = services_in(&root, Arc::new(Nothing));
@@ -594,9 +664,9 @@ mod tests {
         let sink = Recorder::default();
         svc.install(&sink, Backend::LlamaCpp, BackendOp::Sync);
         assert!(sink.done()[0].2.contains("already being worked on"));
-        assert!(svc.reports()[0].busy.is_some());
+        assert!(svc.reports(&sink)[0].busy.is_some());
         drop(guard);
-        assert!(svc.reports()[0].busy.is_none());
+        assert!(svc.reports(&sink)[0].busy.is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

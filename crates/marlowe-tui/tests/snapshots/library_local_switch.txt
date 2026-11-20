@@ -1,0 +1,40 @@
+ * marlowe — new session                                                                                       teams ○  0 runs · 0 need you
+╭ Library ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ⣀⣀⣀⣀⣀⣀ idle ─╮
+│                                                                                                                                          │
+│  LOCAL MODELS  ·  1 of 3 models                                                                                                          │
+│                                                                                                                                          │
+│  ⌕ ms2.7                                                                                                                                 │
+│                                                                                                                                          │
+│    model                                   from                context   can                                                             │
+│  › Qwen3.8-27B-MS2.7                       From folder         32.8k     tools             MS Gen 1                                      │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│    Qwen3.8-27B-MS2.7 is an MS (Mad Shift) model: it runs on ms-llama.cpp. Switch backend? [s]                                            │
+│                                                                                                                                          │
+╰─────────────────────────────────────────────────────────────────────────────────────── s switch backend  ·  ↵ add anyway  ·  esc cancel ─╯
+ ^n New  alt-s Sessions  ^d Dispatch  alt-r Crew  ^w Watch  ^g Memory  ^l Library  ^o Transcript  ⇧tab Mode  ^k palette               21:40

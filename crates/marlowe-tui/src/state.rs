@@ -1466,6 +1466,15 @@ impl State {
             Event::Catalog { provider, models } => {
                 self.library.set_catalog(*provider, models.clone());
             }
+            // A backend was chosen: what the open catalog says cannot run is read again.
+            Event::BackendDone { op: marlowe_proto::BackendOp::Select, ok, message, .. } if self.view == View::Library => {
+                if let crate::library::LibStep::Catalog { provider, .. } = self.library.step {
+                    if *ok {
+                        out.push(Request::ListCatalog { provider });
+                    }
+                }
+                self.flash(crate::text::clean(message), if *ok { NoteTone::Dim } else { NoteTone::Amber });
+            }
             Event::MemoryResults { hits } => self.memory_results(hits),
             Event::MemoryChanged { id, change } => self.memory_changed(id, change, out),
             Event::MemoryProfile { hits, tokens, omitted } => self.memory_profile(hits, *tokens, *omitted),

@@ -145,6 +145,7 @@ fn dispatch(core: &Arc<Core>, client: u64, client_name: &str, req: Request) {
         | Request::DetectProviders
         | Request::ListCatalog { .. }
         | Request::AddModel { .. }
+        | Request::AddModelDir { .. }
         | Request::RemoveModel { .. }
         | Request::SetSlot { .. }
         | Request::SetCredential { .. }) => crate::library::spawn(core.clone(), client, lib),

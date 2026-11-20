@@ -1,5 +1,8 @@
-//! What Marlowe's llama-server runs a model from Ollama's store with, read from the manifest and
-//! the GGUF on disk: Ollama is a source of model files, it never serves, and it need not run.
+//! What Marlowe's llama-server runs a model with, read from the GGUF on disk and, for a model in
+//! Ollama's store, its manifest: Ollama is a source of model files, it never serves, and it need
+//! not run. A model from the Hugging Face cache or a model folder is the file alone
+//! ([`crate::sources`]): its draft is the `mtp-<name>.gguf` beside it, its projector the
+//! `mmproj-*.gguf`, and it has no Modelfile to carry over.
 //!
 //! Every model goes to the engine, and what Ollama would add to it is copied:
 //!
@@ -15,7 +18,8 @@
 //! The model file's own chat template renders the prompt (`--jinja`). A model that has none, so
 //! that only an Ollama Go template or Ollama's own renderer could, an `ADAPTER`, and anything but
 //! GGUF are refused with the reason: "can't run: ...". A GGUF holding tensor types stock ggml does
-//! not know needs ms-llama.cpp ([`EngineModel::needs`]).
+//! not know, or the `msffn.*` metadata of an MS file, needs ms-llama.cpp ([`EngineModel::needs`]),
+//! and the installed ms-llama.cpp must run the file's generation ([`EngineModel::refuses_on`]).
 
 use std::path::{Path, PathBuf};
 
@@ -24,6 +28,7 @@ use serde_json::Value;
 
 use crate::ollama::ModelMeta;
 use crate::ollama_store::{manifest_relative_path, resolve_in, Sampling, MODEL_MEDIA_TYPE, PARAMS_MEDIA_TYPE};
+use crate::sources::{Sources, FILE_PREFIX};
 
 /// The `TEMPLATE` layer.
 const TEMPLATE_MEDIA_TYPE: &str = "application/vnd.ollama.image.template";
@@ -62,42 +67,124 @@ pub struct Draft {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EngineModel {
     pub model: String,
+    /// The name shown: the Ollama name, or a model file's own.
+    pub display: String,
     pub blob: PathBuf,
     pub draft: Option<Draft>,
     pub mmproj: Option<PathBuf>,
     pub defaults: ModelDefaults,
     /// Tensor type ids stock ggml does not know (`ModelHeader::foreign_types`).
     pub foreign_types: Vec<u32>,
+    /// The MS (Mad Shift) mark of the model file, or of its MTP head (`ModelHeader::ms`).
+    pub ms: Option<marlowe_hw::MsInfo>,
+    /// The model file's bytes.
+    pub size: u64,
     /// What the catalog says about it: capabilities, window, family.
     pub meta: ModelMeta,
 }
 
+/// The backend the engine runs: the selected one and the version installed. A developer's own
+/// binary is `None` where this is taken: its kind is not second-guessed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chosen {
+    pub backend: Backend,
+    /// The installed tag (`ms-v1.0`); `None` when not known.
+    pub tag: Option<String>,
+}
+
+/// Why the chosen backend cannot run a model, in the words shown to the user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    pub message: String,
+    /// The backend that can run it, when switching would help.
+    pub switch_to: Option<Backend>,
+}
+
+impl Refusal {
+    /// The error a request gets: the reason, and where to switch when switching helps.
+    pub fn engine_error(&self) -> String {
+        match self.switch_to {
+            Some(b) => format!("{} Select {b} in the engine window (click `engine` in the title bar).", self.message),
+            None => self.message.clone(),
+        }
+    }
+}
+
 impl EngineModel {
-    /// The backend the model needs, when only one can load it: a GGUF with types stock ggml does
-    /// not know was written by ms-llama.cpp's MS quantizer.
+    /// The backend the model needs, when only one can load it: an MS file (the `msffn.*`
+    /// metadata) or any GGUF with types stock ggml does not know, written by ms-llama.cpp.
     pub fn needs(&self) -> Option<Backend> {
-        (!self.foreign_types.is_empty()).then_some(Backend::MsLlamaCpp)
+        (self.ms.is_some() || !self.foreign_types.is_empty()).then_some(Backend::MsLlamaCpp)
     }
 
-    /// Why `backend` cannot load this model, or `None`. `None` for `backend` means the binary's
-    /// kind is unknown (a developer's `MARLOWE_LLAMA_SERVER`), which is not checked.
-    pub fn refuses_on(&self, backend: Option<Backend>) -> Option<String> {
-        let (need, have) = (self.needs()?, backend?);
-        (need != have).then(|| {
-            format!(
-                "it uses tensor types stock llama.cpp does not know (ggml types {}): it needs {need}, and the selected backend is {have}. Select {need} in the engine window (click `engine` in the title bar)",
-                self.foreign_types.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")
-            )
-        })
+    /// What the picker calls it: `MS Gen 1`, or `MS`.
+    pub fn ms_label(&self) -> Option<String> {
+        self.needs().map(|_| self.ms.as_ref().map_or_else(|| "MS".to_string(), marlowe_hw::MsInfo::label))
+    }
+
+    /// Why the backend `chosen` cannot load this model, or `None`. `None` for `chosen` means the
+    /// binary's kind is unknown (a developer's `MARLOWE_LLAMA_SERVER`), which is not checked.
+    pub fn refuses_on(&self, chosen: Option<&Chosen>) -> Option<Refusal> {
+        let (need, have) = (self.needs()?, chosen?);
+        let name = &self.display;
+        if need != have.backend {
+            let what = if self.ms.is_some() {
+                format!("{name} is an MS (Mad Shift) model: it runs on {need}.")
+            } else {
+                let ids = self.foreign_types.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
+                format!("{name} uses tensor types stock llama.cpp does not know (ggml types {ids}): it runs on {need}.")
+            };
+            return Some(Refusal { message: what, switch_to: Some(need) });
+        }
+        // The right backend, but a version that no longer runs this generation of file.
+        let (gen, tag) = (self.ms.as_ref()?.generation?, have.tag.as_deref()?);
+        if marlowe_engines::ms::runs(tag, gen.number()) {
+            return None;
+        }
+        let (runs, needs, cure) = match gen {
+            marlowe_hw::MsGen::Gen1 => ("Gen 2", "ms-llama.cpp ms-v1.0", "Install ms-v1.0 (the engine window, `engine` in the title bar) or migrate the file."),
+            marlowe_hw::MsGen::Gen2 => ("Gen 1", "a newer ms-llama.cpp", "Install a newer ms-llama.cpp in the engine window (`engine` in the title bar)."),
+        };
+        Some(Refusal { message: format!("{name} is an {gen} model: it needs {needs}, and the installed {tag} only runs {runs} files. {cure}"), switch_to: None })
     }
 }
 
 /// The speculative draft count Ollama passes (`--spec-draft-n-max 3`).
 pub const SPEC_DRAFT_N: u32 = 3;
 
-/// Reads `model` from the store at `root`, or says why the engine can't run it (the error reads
+/// Reads `model` from wherever it is stored, or says why the engine can't run it (the error reads
 /// after "<model> can't run: ").
-pub fn resolve(root: &Path, model: &str) -> Result<EngineModel, String> {
+pub fn resolve(sources: &Sources, model: &str) -> Result<EngineModel, String> {
+    if model.starts_with(FILE_PREFIX) {
+        resolve_file(sources, model)
+    } else {
+        resolve_ollama(sources.ollama_root(), model)
+    }
+}
+
+/// A model file from the Hugging Face cache or a model folder: the file alone, its MTP head and
+/// projector found beside it.
+fn resolve_file(sources: &Sources, model: &str) -> Result<EngineModel, String> {
+    let found = sources
+        .find_file(model)
+        .ok_or_else(|| format!("no model file is named that in {}. Add its folder under `[models] dirs` in settings.toml", sources.describe()))?;
+    let header = marlowe_hw::gguf::read_header(&found.path).map_err(|e| format!("its model file {} did not read: {e}", found.path.display()))?;
+    if header.a("pooling_type").is_some() {
+        return Err("it is an embedding model, not a chat model".into());
+    }
+    let template = header.kv.get("tokenizer.chat_template").and_then(Value::as_str).filter(|t| !t.trim().is_empty()).map(str::to_string);
+    let Some(template) = template else {
+        return Err("the model file has no chat template, and llama.cpp renders with the model file's own".into());
+    };
+    let draft = mtp_sidecar(&found.path).map(|path| Draft { path, mtp: true });
+    let mmproj = mmproj_sidecar(&found.path);
+    let ms = header.ms().or_else(|| draft.as_ref().and_then(|d| marlowe_hw::gguf::read_header(&d.path).ok()?.ms()));
+    let meta = meta_of(&header, &template, mmproj.is_some(), None, None);
+    Ok(EngineModel { model: model.to_string(), display: found.display, blob: found.path, draft, mmproj, defaults: ModelDefaults::default(), foreign_types: header.foreign_types(), ms, size: found.size, meta })
+}
+
+/// A model in Ollama's store at `root`: its manifest's layers on top of the file.
+fn resolve_ollama(root: &Path, model: &str) -> Result<EngineModel, String> {
     let resolved = resolve_in(root, model).map_err(|e| e.remedy())?;
     let manifest = root.join(manifest_relative_path(model).map_err(|e| e.to_string())?);
     let text = std::fs::read_to_string(&manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
@@ -151,7 +238,9 @@ pub fn resolve(root: &Path, model: &str) -> Result<EngineModel, String> {
         messages,
     };
     let meta = meta_of(&header, template.as_deref().unwrap_or(""), mmproj.is_some(), name("model_family"), defaults.num_ctx);
-    Ok(EngineModel { model: model.to_string(), blob: resolved.blob, draft, mmproj, defaults, foreign_types: header.foreign_types(), meta })
+    let ms = header.ms().or_else(|| draft.as_ref().and_then(|d| marlowe_hw::gguf::read_header(&d.path).ok()?.ms()));
+    let size = std::fs::metadata(&resolved.blob).map_or(0, |m| m.len());
+    Ok(EngineModel { model: model.to_string(), display: model.to_string(), blob: resolved.blob, draft, mmproj, defaults, foreign_types: header.foreign_types(), ms, size, meta })
 }
 
 /// The catalog's view of a model file: chat or embedding, tools and thinking from what its chat
@@ -205,6 +294,31 @@ fn is_mtp_head(path: &Path) -> bool {
 /// `<base>` begins the model's file name (`mtp-Qwen3.8-27B-MS.gguf` for every
 /// `Qwen3.8-27B-MS2.7.gguf`, `...-MS4.gguf` of the family). The longest base wins.
 pub fn mtp_sidecar(model: &Path) -> Option<PathBuf> {
+    sidecar(model, "mtp-")
+}
+
+/// The vision projector beside a model file: `mmproj-<base>.gguf` the same way, else the only
+/// `mmproj*.gguf` of a folder that holds just this one model (`mmproj-F16.gguf`, as the Hugging
+/// Face repos name it).
+pub fn mmproj_sidecar(model: &Path) -> Option<PathBuf> {
+    if let Some(p) = sidecar(model, "mmproj-") {
+        return Some(p);
+    }
+    let dir = model.parent()?;
+    let (mut projectors, mut models) = (Vec::new(), 0);
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_ascii_lowercase) else { continue };
+        if name.starts_with("mmproj") && name.ends_with(".gguf") && path.is_file() {
+            projectors.push(path);
+        } else if crate::sources::is_model_file(&name) {
+            models += 1;
+        }
+    }
+    (projectors.len() == 1 && models == 1).then(|| projectors.remove(0))
+}
+
+fn sidecar(model: &Path, prefix: &str) -> Option<PathBuf> {
     let stem = model.file_stem()?.to_str()?.to_ascii_lowercase();
     let dirs = [model.parent(), model.parent().and_then(Path::parent)];
     let mut best: Option<(usize, PathBuf)> = None;
@@ -212,7 +326,7 @@ pub fn mtp_sidecar(model: &Path) -> Option<PathBuf> {
         for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
             let path = entry.path();
             let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_ascii_lowercase) else { continue };
-            let Some(base) = name.strip_prefix("mtp-").and_then(|n| n.strip_suffix(".gguf")) else { continue };
+            let Some(base) = name.strip_prefix(prefix).and_then(|n| n.strip_suffix(".gguf")) else { continue };
             if base.is_empty() || !stem.starts_with(base) || path == model || !path.is_file() {
                 continue;
             }
@@ -283,7 +397,7 @@ pub(crate) mod tests {
     fn a_plain_gguf_runs_with_its_parameters_as_defaults_and_its_capabilities_from_the_template() {
         let d = crate::llama::testkit::TempDir::new();
         plain(d.path(), "dusk:22b", &[]);
-        let m = resolve(d.path(), "dusk:22b").unwrap();
+        let m = resolve(&Sources::from(d.path()), "dusk:22b").unwrap();
         let s = m.defaults.sampling.as_ref().unwrap();
         assert_eq!((s.temperature, s.top_k, s.stop.clone()), (Some(1.0), Some(20), vec!["<|im_end|>".to_string()]));
         assert_eq!(m.defaults.num_ctx, Some(65_536));
@@ -308,7 +422,7 @@ pub(crate) mod tests {
                 (TEMPLATE_MEDIA_TYPE, b"{{ .System }} {{ .Prompt }}"),
             ],
         );
-        let m = resolve(d.path(), "dawn:9b").unwrap();
+        let m = resolve(&Sources::from(d.path()), "dawn:9b").unwrap();
         assert!(m.draft.as_ref().is_some_and(|dr| dr.mtp), "{:?}", m.draft);
         assert!(m.mmproj.is_some() && m.meta.has("vision"));
         assert_eq!(m.defaults.system.as_deref(), Some("You are Dawn."));
@@ -316,43 +430,169 @@ pub(crate) mod tests {
         // A plain small draft model is not an MTP head.
         let small = gguf(Some(TEMPLATE));
         plain(d.path(), "dawn:spec", &[(DRAFT_MEDIA_TYPE, &small[..])]);
-        assert!(resolve(d.path(), "dawn:spec").unwrap().draft.is_some_and(|dr| !dr.mtp));
+        assert!(resolve(&Sources::from(d.path()), "dawn:spec").unwrap().draft.is_some_and(|dr| !dr.mtp));
     }
 
     #[test]
     fn what_llama_cpp_cannot_run_is_refused_with_the_reason() {
         let d = crate::llama::testkit::TempDir::new();
         plain(d.path(), "lora:1", &[(ADAPTER_MEDIA_TYPE, b"lora")]);
-        assert!(resolve(d.path(), "lora:1").unwrap_err().contains("LoRA adapter"));
+        assert!(resolve(&Sources::from(d.path()), "lora:1").unwrap_err().contains("LoRA adapter"));
         let bare = gguf(None);
         store(d.path(), "go:1", json!({"model_format": "gguf"}), &[(MODEL_MEDIA_TYPE, &bare[..]), (TEMPLATE_MEDIA_TYPE, &b"<s>{{ .System }}{{ .Prompt }}"[..])]);
-        assert!(resolve(d.path(), "go:1").unwrap_err().contains("only chat template is an Ollama Go template"));
+        assert!(resolve(&Sources::from(d.path()), "go:1").unwrap_err().contains("only chat template is an Ollama Go template"));
         store(d.path(), "ren:1", json!({"model_format": "gguf", "renderer": "qwen3.5"}), &[(MODEL_MEDIA_TYPE, &bare[..])]);
-        assert!(resolve(d.path(), "ren:1").unwrap_err().contains("renderer qwen3.5"));
+        assert!(resolve(&Sources::from(d.path()), "ren:1").unwrap_err().contains("renderer qwen3.5"));
         store(d.path(), "st:1", json!({"model_format": "safetensors"}), &[(MODEL_MEDIA_TYPE, &bare[..])]);
-        assert!(resolve(d.path(), "st:1").unwrap_err().contains("not GGUF"));
-        assert!(resolve(d.path(), "nope:1").unwrap_err().contains("ollama pull"));
+        assert!(resolve(&Sources::from(d.path()), "st:1").unwrap_err().contains("not GGUF"));
+        assert!(resolve(&Sources::from(d.path()), "nope:1").unwrap_err().contains("ollama pull"));
         // A Go template beside the file's own template is no obstacle: the file's renders.
         let own = gguf(Some(TEMPLATE));
         store(d.path(), "both:1", json!({"model_format": "gguf", "renderer": "x"}), &[(MODEL_MEDIA_TYPE, &own[..]), (TEMPLATE_MEDIA_TYPE, &b"<s>{{ .Prompt }}"[..])]);
-        assert!(resolve(d.path(), "both:1").is_ok());
+        assert!(resolve(&Sources::from(d.path()), "both:1").is_ok());
+    }
+
+    /// A GGUF the way ms-llama.cpp writes one: the `msffn.*` mark and MS tensor types.
+    pub(crate) fn ms_gguf(types: &[u32], quant: &str) -> Vec<u8> {
+        let tensors: Vec<(String, u32, Vec<u64>)> = types.iter().enumerate().map(|(i, t)| (format!("blk.{i}.ffn_up.weight"), *t, vec![256])).collect();
+        let refs: Vec<(&str, u32, Vec<u64>)> = tensors.iter().map(|(n, t, s)| (n.as_str(), *t, s.clone())).collect();
+        marlowe_hw::gguf::write_header(
+            &[
+                ("general.architecture", json!("qwen35")),
+                ("tokenizer.chat_template", json!(TEMPLATE)),
+                ("msffn.quant_name", json!(quant)),
+                ("msffn.hadamard", json!(true)),
+            ],
+            &refs,
+        )
+    }
+
+    fn chosen(backend: Backend, tag: &str) -> Chosen {
+        Chosen { backend, tag: Some(tag.into()) }
     }
 
     #[test]
-    fn a_model_with_ms_tensor_types_needs_ms_llama_cpp_whatever_its_name() {
+    fn an_ms_model_needs_ms_llama_cpp_by_its_metadata_and_never_by_its_name() {
         let d = crate::llama::testkit::TempDir::new();
-        let ms = marlowe_hw::gguf::write_header(
-            &[("general.architecture", json!("qwen35")), ("tokenizer.chat_template", json!(TEMPLATE))],
-            &[("blk.0.ffn_up.weight", 45, vec![256]), ("blk.0.attn_norm.weight", 0, vec![256])],
-        );
+        let ms = ms_gguf(&[45, 0], "MS2.7");
         store(d.path(), "plain-name:1", json!({"model_format": "gguf"}), &[(MODEL_MEDIA_TYPE, &ms[..])]);
-        let m = resolve(d.path(), "plain-name:1").unwrap();
-        assert_eq!(m.needs(), Some(Backend::MsLlamaCpp));
-        assert!(m.refuses_on(Some(Backend::LlamaCpp)).unwrap().contains("needs ms-llama.cpp"));
-        assert_eq!(m.refuses_on(Some(Backend::MsLlamaCpp)), None);
+        let m = resolve(&Sources::from(d.path()), "plain-name:1").unwrap();
+        assert_eq!((m.needs(), m.ms_label().as_deref()), (Some(Backend::MsLlamaCpp), Some("MS Gen 1")));
+        let r = m.refuses_on(Some(&chosen(Backend::LlamaCpp, "v1.0.0"))).unwrap();
+        assert_eq!(r.message, "plain-name:1 is an MS (Mad Shift) model: it runs on ms-llama.cpp.");
+        assert_eq!(r.switch_to, Some(Backend::MsLlamaCpp));
+        assert!(r.engine_error().ends_with("Select ms-llama.cpp in the engine window (click `engine` in the title bar)."), "{}", r.engine_error());
+        assert_eq!(m.refuses_on(Some(&chosen(Backend::MsLlamaCpp, "ms-v1.0"))), None);
         assert_eq!(m.refuses_on(None), None, "a developer's own build is not second-guessed");
+        // MS in the name, nothing MS in the file: stock runs it.
         plain(d.path(), "ms-in-the-name:1", &[]);
-        assert_eq!(resolve(d.path(), "ms-in-the-name:1").unwrap().needs(), None);
+        let plain_ms = resolve(&Sources::from(d.path()), "ms-in-the-name:1").unwrap();
+        assert_eq!((plain_ms.needs(), plain_ms.ms_label()), (None, None));
+        // A type no build knows, without the msffn keys, still needs the fork, in plain words.
+        let bare = marlowe_hw::gguf::write_header(
+            &[("general.architecture", json!("qwen35")), ("tokenizer.chat_template", json!(TEMPLATE))],
+            &[("blk.0.ffn_up.weight", 100, vec![256])],
+        );
+        store(d.path(), "types-only:1", json!({"model_format": "gguf"}), &[(MODEL_MEDIA_TYPE, &bare[..])]);
+        let t = resolve(&Sources::from(d.path()), "types-only:1").unwrap();
+        assert!(t.refuses_on(Some(&chosen(Backend::LlamaCpp, "v1.0.0"))).unwrap().message.contains("ggml types 100"));
+    }
+
+    #[test]
+    fn a_newer_ms_llama_cpp_that_only_runs_gen_2_refuses_a_gen_1_file_in_plain_words() {
+        let d = crate::llama::testkit::TempDir::new();
+        let g1 = ms_gguf(&[47], "MS2.7");
+        let g2 = ms_gguf(&[202], "MS4");
+        store(d.path(), "old:ms", json!({"model_format": "gguf"}), &[(MODEL_MEDIA_TYPE, &g1[..])]);
+        store(d.path(), "new:ms", json!({"model_format": "gguf"}), &[(MODEL_MEDIA_TYPE, &g2[..])]);
+        let s = Sources::from(d.path());
+        let (old, new) = (resolve(&s, "old:ms").unwrap(), resolve(&s, "new:ms").unwrap());
+        assert_eq!(new.ms_label().as_deref(), Some("MS Gen 2"));
+        let v2 = chosen(Backend::MsLlamaCpp, "ms-v2.0");
+        let v1 = chosen(Backend::MsLlamaCpp, "ms-v1.0");
+        let r = old.refuses_on(Some(&v2)).unwrap();
+        assert_eq!(
+            r.message,
+            "old:ms is an MS Gen 1 model: it needs ms-llama.cpp ms-v1.0, and the installed ms-v2.0 only runs Gen 2 files. Install ms-v1.0 (the engine window, `engine` in the title bar) or migrate the file."
+        );
+        assert_eq!(r.switch_to, None);
+        assert!(new.refuses_on(Some(&v1)).unwrap().message.contains("needs a newer ms-llama.cpp"));
+        assert_eq!((old.refuses_on(Some(&v1)), new.refuses_on(Some(&v2))), (None, None));
+        // A build whose tag says nothing about its generation is not second-guessed.
+        assert_eq!(old.refuses_on(Some(&chosen(Backend::MsLlamaCpp, "b17"))), None);
+    }
+
+    #[test]
+    fn an_mtp_head_that_is_ms_makes_a_plain_looking_model_need_ms_llama_cpp() {
+        let d = crate::llama::testkit::TempDir::new();
+        let head = marlowe_hw::gguf::write_header(
+            &[("general.architecture", json!("qwen35")), ("qwen35.nextn_predict_layers", json!(1)), ("msffn.quant_name", json!("MS-MTP"))],
+            &[("blk.0.w", 47, vec![256])],
+        );
+        plain(d.path(), "dawn:ms", &[(DRAFT_MEDIA_TYPE, &head[..])]);
+        let m = resolve(&Sources::from(d.path()), "dawn:ms").unwrap();
+        assert!(m.ms.as_ref().is_some_and(|ms| ms.generation == Some(marlowe_hw::MsGen::Gen1)));
+        assert_eq!(m.needs(), Some(Backend::MsLlamaCpp));
+    }
+
+    fn folder(d: &Path, rel: &str, bytes: &[u8]) -> PathBuf {
+        let p = d.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    #[test]
+    fn a_file_in_a_model_folder_runs_with_its_mtp_head_and_projector_beside_it() {
+        let d = crate::llama::testkit::TempDir::new();
+        let ms = ms_gguf(&[46], "MS2.7");
+        let head = marlowe_hw::gguf::write_header(&[("general.architecture", json!("qwen35")), ("msffn.quant_name", json!("MS-MTP"))], &[("a", 47, vec![32])]);
+        folder(d.path(), "models/Qwen3.8-27B-MS2.7.gguf", &ms);
+        folder(d.path(), "models/mtp-Qwen3.8-27B-MS.gguf", &head);
+        folder(d.path(), "models/mmproj-F16.gguf", b"proj");
+        let s = Sources::new(d.path().join("none"), Vec::new(), vec![d.path().join("models")]);
+        let m = resolve(&s, "gguf/Qwen3.8-27B-MS2.7").unwrap();
+        assert_eq!(m.blob, d.path().join("models").join("Qwen3.8-27B-MS2.7.gguf"));
+        assert!(m.draft.as_ref().is_some_and(|dr| dr.mtp && dr.path.ends_with("mtp-Qwen3.8-27B-MS.gguf")), "{:?}", m.draft);
+        assert!(m.mmproj.as_ref().is_some_and(|p| p.ends_with("mmproj-F16.gguf")) && m.meta.has("vision"));
+        assert_eq!((m.needs(), m.defaults, m.size), (Some(Backend::MsLlamaCpp), ModelDefaults::default(), ms.len() as u64));
+        assert!(m.meta.has("tools") && m.meta.can_chat());
+        // Not found, or a file that cannot chat, says why.
+        assert!(resolve(&s, "gguf/Missing").unwrap_err().contains("Add its folder under `[models] dirs`"));
+        let bare = gguf(None);
+        folder(d.path(), "models/NoTemplate.gguf", &bare);
+        assert!(resolve(&s, "gguf/NoTemplate").unwrap_err().contains("no chat template"));
+        let embed = gguf_with(Some(TEMPLATE), &[("qwen35.pooling_type", json!(1))]);
+        folder(d.path(), "models/Embed.gguf", &embed);
+        assert!(resolve(&s, "gguf/Embed").unwrap_err().contains("embedding"));
+    }
+
+    #[test]
+    fn a_projector_is_taken_only_when_it_is_the_folders_only_one_beside_its_only_model() {
+        let d = crate::llama::testkit::TempDir::new();
+        let a = folder(d.path(), "one/Model-Q4.gguf", b"m");
+        let proj = folder(d.path(), "one/mmproj-F16.gguf", b"p");
+        assert_eq!(mmproj_sidecar(&a), Some(proj));
+        // Two models share a folder: which one a lone projector belongs to is not guessed.
+        let b = folder(d.path(), "two/A-Q4.gguf", b"m");
+        folder(d.path(), "two/B-Q4.gguf", b"m");
+        folder(d.path(), "two/mmproj-F16.gguf", b"p");
+        assert_eq!(mmproj_sidecar(&b), None);
+        // By the name, it is.
+        let named = folder(d.path(), "three/Dusk-27B-Q4.gguf", b"m");
+        let np = folder(d.path(), "three/mmproj-Dusk-27B.gguf", b"p");
+        folder(d.path(), "three/Other-Q4.gguf", b"m");
+        assert_eq!(mmproj_sidecar(&named), Some(np));
+    }
+
+    #[test]
+    fn a_hugging_face_file_resolves_by_its_stable_id() {
+        let d = crate::llama::testkit::TempDir::new();
+        let hub = d.path().join("hub");
+        let file = crate::sources::tests::hub_file(&hub, "unsloth/Qwen3-8B-GGUF", "rev1", "Qwen3-8B-Q4_K_M.gguf", &gguf(Some(TEMPLATE)));
+        let s = Sources::new(d.path().join("none"), vec![hub], Vec::new());
+        let m = resolve(&s, "gguf/hf/unsloth/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M").unwrap();
+        assert_eq!((m.blob.clone(), m.needs()), (file, None));
     }
 
     #[test]

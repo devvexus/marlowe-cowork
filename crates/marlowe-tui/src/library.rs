@@ -53,6 +53,17 @@ pub enum OverviewRow {
     Add,
 }
 
+/// A model the selected backend cannot run, held while the user is asked whether to switch to the
+/// backend that can.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchAsk {
+    pub model_id: String,
+    /// The backend that runs it (`ms-llama.cpp`).
+    pub backend: String,
+    /// Why, in plain words (`<model> is an MS (Mad Shift) model: it runs on ms-llama.cpp.`).
+    pub message: String,
+}
+
 /// A provider's catalog as last received.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Catalog {
@@ -74,6 +85,8 @@ pub struct Library {
     pub slot_sel: usize,
     pub model_sel: usize,
     pub catalog: Catalog,
+    /// The question under the catalog: switch backend to run the model just picked?
+    pub ask: Option<SwitchAsk>,
 }
 
 impl Default for Library {
@@ -88,6 +101,7 @@ impl Default for Library {
             slot_sel: 0,
             model_sel: 0,
             catalog: Catalog::default(),
+            ask: None,
         }
     }
 }
@@ -182,14 +196,16 @@ impl Library {
         self.slot_rows().into_iter().next().and_then(|s| s.model)
     }
 
-    /// Catalog rows matching the query: case-insensitive on id and display name, all terms.
+    /// Catalog rows matching the query: case-insensitive on id, display name, where a local model
+    /// is from (`from ollama`, the Hugging Face repo, the folder) and its MS mark; all terms.
     pub fn filtered_catalog(&self, query: &str) -> Vec<&ModelInfo> {
         let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
         self.catalog
             .models
             .iter()
             .filter(|m| {
-                let hay = format!("{} {}", m.id, m.display).to_lowercase();
+                let origin = m.origin.as_ref().map(|o| format!("{} {} {}", o.label(), o.detail.as_deref().unwrap_or(""), o.ms.as_deref().map_or(String::new(), |ms| format!("{ms} mad shift")))).unwrap_or_default();
+                let hay = format!("{} {} {origin}", m.id, m.display).to_lowercase();
                 terms.iter().all(|t| hay.contains(t))
             })
             .collect()
@@ -208,7 +224,33 @@ impl Library {
 
     /// Opens the provider list (the "add a model" flow).
     pub(crate) fn start_add(&mut self) {
+        self.ask = None;
         self.step = LibStep::Providers { sel: 0 };
+    }
+
+    /// Adds `id` to the library and leaves the catalog.
+    fn add(&mut self, provider: ProviderKind, id: &str, out: &mut Vec<Request>) {
+        out.push(Request::AddModel { provider, model_id: id.to_string() });
+        out.push(Request::LibraryState);
+        self.step = LibStep::Overview;
+        self.focus = LibFocus::Models;
+    }
+
+    /// The answer to the switch question: `s` switches backend and adds the model, ↵ adds it
+    /// without switching, anything else cancels.
+    fn answer_ask(&mut self, ask: SwitchAsk, provider: ProviderKind, k: KeyEvent, out: &mut Vec<Request>) -> Option<String> {
+        match k.code {
+            KeyCode::Char('s' | 'S' | 'y' | 'Y') => {
+                out.push(Request::BackendSelect { backend: ask.backend.clone() });
+                self.add(provider, &ask.model_id, out);
+                Some(format!("added {} · switching to {}", ask.model_id, ask.backend))
+            }
+            KeyCode::Enter | KeyCode::Char('a') => {
+                self.add(provider, &ask.model_id, out);
+                Some(format!("added {} · it needs {} to run", ask.model_id, ask.backend))
+            }
+            _ => None,
+        }
     }
 
     fn open_catalog(&mut self, provider: ProviderKind, out: &mut Vec<Request>) {
@@ -349,6 +391,10 @@ impl Library {
                 _ => {}
             },
             LibStep::Catalog { provider, mut query, sel } => {
+                if let Some(ask) = self.ask.take() {
+                    flash = self.answer_ask(ask, provider, k, out);
+                    return (true, flash);
+                }
                 let n = self.filtered_catalog(&query).len();
                 match k.code {
                     KeyCode::Esc => {
@@ -372,25 +418,39 @@ impl Library {
                         self.step = LibStep::Catalog { provider, query, sel };
                     }
                     KeyCode::Enter => {
-                        let picked = self.filtered_catalog(&query).get(sel).map(|m| m.id.clone());
-                        if let Some(id) = picked {
+                        let picked = self.filtered_catalog(&query).get(sel).map(|m| (m.id.clone(), m.origin.clone()));
+                        if let Some((id, origin)) = picked {
+                            let blocked = origin.and_then(|o| o.blocked.map(|b| (b, o.switch_to)));
                             if self.in_library(provider, &id) {
                                 flash = Some(format!("{id} is already in the library"));
+                            } else if let Some((message, Some(backend))) = blocked {
+                                // Said here, before it is loaded: never a load failure.
+                                self.ask = Some(SwitchAsk { model_id: id, backend, message });
                             } else {
-                                out.push(Request::AddModel { provider, model_id: id.clone() });
-                                out.push(Request::LibraryState);
-                                flash = Some(format!("added {id}"));
-                                self.step = LibStep::Overview;
-                                self.focus = LibFocus::Models;
+                                self.add(provider, &id, out);
+                                flash = Some(match blocked {
+                                    Some((message, None)) => format!("added {id} · {message}"),
+                                    _ => format!("added {id}"),
+                                });
                             }
+                        } else if provider.is_local() && looks_like_path(&query) {
+                            // No model by that name, but it reads as a folder or a file: search there.
+                            let path = query.trim().trim_matches('"').to_string();
+                            out.push(Request::AddModelDir { path: path.clone() });
+                            self.catalog.loading = true;
+                            self.catalog.error = None;
+                            flash = Some(format!("looking in {path}"));
+                            self.step = LibStep::Catalog { provider, query: String::new(), sel: 0 };
                         }
                     }
                     KeyCode::Backspace => {
                         query.pop();
+                        self.catalog.error = None;
                         self.step = LibStep::Catalog { provider, query, sel: 0 };
                     }
                     KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) => {
                         query.push(c);
+                        self.catalog.error = None;
                         self.step = LibStep::Catalog { provider, query, sel: 0 };
                     }
                     _ => {}
@@ -508,6 +568,13 @@ impl Library {
             None => self.slots.push(row),
         }
     }
+}
+
+/// Whether typed text reads as a folder or a `.gguf` file rather than a model name: a drive or a
+/// separator in it, or the extension.
+pub(crate) fn looks_like_path(text: &str) -> bool {
+    let t = text.trim().trim_matches('"');
+    t.len() > 2 && (t.contains(['\\', '/']) || t.as_bytes()[1] == b':' || t.to_ascii_lowercase().ends_with(".gguf"))
 }
 
 fn provider_index(kind: ProviderKind) -> usize {

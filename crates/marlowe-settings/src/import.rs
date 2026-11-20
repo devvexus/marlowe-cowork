@@ -68,6 +68,7 @@ pub fn from_claude_json(text: &str) -> Result<SettingsFile, String> {
         teams: Default::default(),
         projects: Default::default(),
         engine: Default::default(),
+        models: Default::default(),
     })
 }
 

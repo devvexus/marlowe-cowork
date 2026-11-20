@@ -23,10 +23,11 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
-    /// Every provider, in onboarding display order.
-    pub const ALL: [ProviderKind; 5] = [
+    /// Every provider, in onboarding display order. `LocalGguf` is not one: a model file is picked
+    /// from the local models (`Ollama`), whatever folder or cache it is in; the variant stays so a
+    /// stored `local_gguf/...` ref still reads.
+    pub const ALL: [ProviderKind; 4] = [
         ProviderKind::Ollama,
-        ProviderKind::LocalGguf,
         ProviderKind::OpenRouter,
         ProviderKind::Anthropic,
         ProviderKind::OpenAi,
@@ -56,7 +57,7 @@ impl ProviderKind {
     /// Human-facing name.
     pub fn display_name(self) -> &'static str {
         match self {
-            ProviderKind::Ollama => "Ollama",
+            ProviderKind::Ollama => "Local models",
             ProviderKind::OpenRouter => "OpenRouter",
             ProviderKind::LocalGguf => "Local GGUF",
             ProviderKind::Anthropic => "Anthropic",
@@ -77,6 +78,7 @@ impl FromStr for ProviderKind {
         let s = s.trim();
         ProviderKind::ALL
             .into_iter()
+            .chain([ProviderKind::LocalGguf])
             .find(|k| k.as_str().eq_ignore_ascii_case(s) || k.display_name().eq_ignore_ascii_case(s))
             .ok_or_else(|| format!("unknown provider '{s}'"))
     }
@@ -174,6 +176,42 @@ pub struct ModelInfo {
     pub pricing: Option<Pricing>,
     #[serde(default)]
     pub local: bool,
+    /// Where a local model's file is from and what it needs (the picker shows it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
+}
+
+/// Where a local model comes from: Ollama's store, the Hugging Face cache or a model folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Origin {
+    /// `ollama`, `huggingface` or `folder`.
+    pub source: String,
+    /// The Hugging Face repo, or the folder the file is in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// The model file's size in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// `MS Gen 1`: the file holds MS (Mad Shift) quant types, which only ms-llama.cpp runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ms: Option<String>,
+    /// Why the selected backend cannot run it, in the words shown to the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<String>,
+    /// The backend that can: switching to it clears `blocked`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub switch_to: Option<String>,
+}
+
+impl Origin {
+    /// "From Ollama", "From Hugging Face" or "From folder".
+    pub fn label(&self) -> &'static str {
+        match self.source.as_str() {
+            "ollama" => "From Ollama",
+            "huggingface" => "From Hugging Face",
+            _ => "From folder",
+        }
+    }
 }
 
 impl ModelInfo {
@@ -192,6 +230,7 @@ impl ModelInfo {
             effort_levels: Vec::new(),
             pricing: None,
             local: provider.is_local(),
+            origin: None,
         }
     }
 

@@ -181,6 +181,9 @@ pub enum Request {
     DetectProviders,
     ListCatalog { provider: ProviderKind },
     AddModel { provider: ProviderKind, model_id: String },
+    /// Adds a folder (searched recursively for `.gguf`) or one `.gguf` file to `[models] dirs`,
+    /// and answers with the local catalog (`Catalog`) listing what it holds.
+    AddModelDir { path: String },
     RemoveModel { model: ModelRef },
     /// `model: None` clears the slot back to the default.
     SetSlot {

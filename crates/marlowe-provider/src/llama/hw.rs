@@ -1,5 +1,5 @@
-//! The planner's view of the engine: the model files (from Ollama's store on disk, the draft and
-//! the projector the engine runs beside them included), what the engine runs now with its slots
+//! The planner's view of the engine: the model files (from Ollama's store, the Hugging Face cache
+//! or a model folder, the draft and the projector the engine runs beside them included), what the engine runs now with its slots
 //! and its own log, and the server change the planner applies by restarting the engine.
 
 use std::path::PathBuf;
@@ -13,19 +13,20 @@ use super::eligible::resolve;
 use super::engine::{same_model, LlamaEngine};
 use super::settings::ServerSettings;
 use crate::http::{self, LocalEndpoint};
+use crate::sources::Sources;
 
 const QUICK: Duration = Duration::from_millis(1500);
 const LOG_TAIL_BYTES: u64 = 4 << 20;
 
-/// The engine and Ollama's store as one [`ModelSource`]. Ollama's server is never asked anything.
+/// The engine and the model sources as one [`ModelSource`]. Ollama's server is never asked anything.
 pub struct LlamaModels {
     engine: LlamaEngine,
-    store: PathBuf,
+    store: Sources,
 }
 
 impl LlamaModels {
-    pub fn new(engine: LlamaEngine, store: PathBuf) -> Self {
-        Self { engine, store }
+    pub fn new(engine: LlamaEngine, store: impl Into<Sources>) -> Self {
+        Self { engine, store: store.into() }
     }
 }
 
@@ -91,6 +92,21 @@ impl ModelSource for LlamaModels {
 
     fn runs_on_own_server(&self, model_id: &str) -> bool {
         self.engine.serves(model_id)
+    }
+
+    fn ms_models(&self) -> Vec<(String, u8)> {
+        self.store
+            .scan()
+            .into_iter()
+            .filter_map(|f| {
+                let m = resolve(&self.store, &f.id).ok()?;
+                Some((f.display, m.ms?.generation?.number()))
+            })
+            .collect()
+    }
+
+    fn add_model_dir(&self, path: &std::path::Path) -> Result<bool, String> {
+        Ok(self.store.add_dir(path.to_path_buf()))
     }
 
     fn engine_eligibility(&self, model_id: &str) -> Result<(), String> {
@@ -204,6 +220,32 @@ mod tests {
         assert!(f.draft.is_some() && f.mmproj_bytes > 0 && f.source == "GGUF header");
         assert_eq!(hw.engine_eligibility("dawn:9b"), Ok(()));
         assert!(hw.engine_eligibility("missing:1").is_err());
+    }
+
+    #[test]
+    fn model_files_from_a_folder_are_planned_by_their_real_sizes_and_a_folder_added_later_is_searched() {
+        use crate::sources::Sources;
+        let fx = Fixture::new(MODEL);
+        let folder = fx.dir.path().join("models");
+        let ms = marlowe_hw::gguf::write_gguf(
+            &[
+                ("general.architecture", serde_json::json!("qwen35")),
+                ("tokenizer.chat_template", serde_json::json!(crate::llama::eligible::tests::TEMPLATE)),
+                ("msffn.quant_name", serde_json::json!("MS2.7")),
+            ],
+            &[("blk.0.ffn_up.weight", 46, vec![256], 4096), ("blk.0.attn_norm.weight", 0, vec![8], 32)],
+        );
+        crate::sources::tests::put(&folder.join("Qwen-MS.gguf"), &ms);
+        let sources = Sources::new(fx.dir.path().join("store"), Vec::new(), Vec::new());
+        let hw = LlamaModels::new(fx.engine(), sources.clone());
+        assert!(hw.ms_models().is_empty() && hw.files("gguf/Qwen-MS").is_err());
+        assert_eq!(hw.add_model_dir(&folder), Ok(true));
+        assert_eq!(hw.add_model_dir(&folder), Ok(false));
+        assert_eq!(hw.ms_models(), vec![("Qwen-MS".to_string(), 1)]);
+        // The MS tensor is sized by the file, not counted as nothing.
+        let f = hw.files("gguf/Qwen-MS").unwrap();
+        assert_eq!(f.main.tensors[0].bytes(), 4096);
+        assert_eq!(f.main.tensors.iter().map(|t| t.bytes()).sum::<u64>() > 4096, true);
     }
 
     #[test]

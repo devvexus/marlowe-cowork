@@ -9,6 +9,7 @@
 //! | [`layout`] | `<install dir>\engines\<backend>\<tag>\` and the root override |
 //! | [`state`] | `state.json`: the selected backend, current and previous tags, ask flags |
 //! | [`installed`] | the record an install leaves, and resolving the server binary |
+//! | [`ms`] | which MS file generations an ms-llama.cpp version runs |
 //! | [`remote`] | GitHub's release JSON, tag ordering, the cached lookup |
 //! | [`status`] | what the window shows for a backend |
 //! | [`testkit`] | fixtures for tests |
@@ -19,6 +20,7 @@ pub mod assets;
 pub mod backend;
 pub mod installed;
 pub mod layout;
+pub mod ms;
 pub mod remote;
 pub mod state;
 pub mod status;

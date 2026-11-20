@@ -23,6 +23,7 @@ pub mod ggml;
 pub mod gguf;
 pub mod header;
 pub mod log;
+pub mod ms;
 pub mod plan;
 pub mod prefill;
 pub mod source;
@@ -30,6 +31,7 @@ pub mod source;
 pub use arch::{ArchProfile, LayerRole, Recurrent, Role, Weights};
 pub use ggml::{CacheType, GgmlType, KvType};
 pub use header::{ModelHeader, Tensor};
+pub use ms::{MsGen, MsInfo};
 pub use plan::{build, ctx_label, Calibration, Fit, GpuBudget, PlanInputs, PlanModel};
 pub use source::{
     EngineStart, GpuSnapshot, GpuSource, LogFeed, ModelFiles, ModelSource, RunnerObservation, ServerChange, ServerControl, ServerEnv,

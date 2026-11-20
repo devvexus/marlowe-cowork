@@ -15,7 +15,7 @@
 │                                  You h│   Turn the voice on or off                         alt-v │                                       │
 │                                       │   Import memories from the old harness                   │                                       │
 │                       Marlowe thinks w│   Your name and how I greet you                          │                                       │
-│                   local ones through O│   Show or hide thinking                               ^t │                                       │
+│             local ones from your own m│   Show or hide thinking                               ^t │                                       │
 │                                       │   Interrupt the running turn                         esc │                                       │
 │                                       │   Quit                                                ^q │                                       │
 │                               ↵ open t│   Transcript — every tool call in full                ^o │                                       │

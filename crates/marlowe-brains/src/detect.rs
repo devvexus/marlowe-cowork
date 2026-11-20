@@ -1,5 +1,6 @@
-//! Provider detection: Ollama's model store on disk (its server need not run: Marlowe serves its
-//! models itself), keys in the environment or the credential store.
+//! Provider detection: local model files on disk (Ollama's store or the Hugging Face cache; no
+//! model server need run: Marlowe serves them itself), keys in the environment or the credential
+//! store.
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -45,19 +46,36 @@ pub fn ollama_store() -> PathBuf {
     home.unwrap_or_else(|| PathBuf::from(".")).join(".ollama").join("models")
 }
 
-/// Status of every provider in `ProviderKind::ALL` order.
-pub fn detect_providers(credentials: &dyn CredentialStore) -> Vec<ProviderStatus> {
-    let store = ollama_store();
-    ProviderKind::ALL.iter().map(|&kind| status(kind, credentials, || store.join("manifests").is_dir().then_some(()).ok_or_else(|| store.display().to_string()))).collect()
+/// The Hugging Face hub cache: `HF_HUB_CACHE`, else `HF_HOME\hub`, else `~\.cache\huggingface\hub`
+/// (the same rule as `marlowe_provider::sources::hf_hubs`).
+pub fn hf_hub() -> PathBuf {
+    let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    if let Some(p) = var("HF_HUB_CACHE").or_else(|| var("HUGGINGFACE_HUB_CACHE")) {
+        return p;
+    }
+    if let Some(h) = var("HF_HOME") {
+        return h.join("hub");
+    }
+    var("USERPROFILE").or_else(|| var("HOME")).unwrap_or_else(|| PathBuf::from(".")).join(".cache").join("huggingface").join("hub")
 }
 
-/// `ollama` is whether Ollama's store is there (`Err` names where it was looked for).
+/// Status of every provider in `ProviderKind::ALL` order.
+pub fn detect_providers(credentials: &dyn CredentialStore) -> Vec<ProviderStatus> {
+    let (store, hub) = (ollama_store(), hf_hub());
+    let local = || {
+        (store.join("manifests").is_dir() || hub.is_dir()).then_some(()).ok_or_else(|| format!("{} or {}", store.display(), hub.display()))
+    };
+    ProviderKind::ALL.iter().map(|&kind| status(kind, credentials, local)).collect()
+}
+
+/// `ollama` is whether local model files are there: Ollama's store or the Hugging Face cache
+/// (`Err` names where they were looked for; folders added by the user are not known here).
 fn status(kind: ProviderKind, creds: &dyn CredentialStore, ollama: impl FnOnce() -> Result<(), String>) -> ProviderStatus {
     let available_now = kind.is_available_now();
     let (configured, detected, note) = match kind {
         ProviderKind::Ollama => match ollama() {
             Ok(()) => (available_now, available_now, None),
-            Err(at) => (false, false, Some(format!("no Ollama model store at {at}"))),
+            Err(at) => (false, false, Some(format!("no Ollama model store or Hugging Face cache at {at}"))),
         },
         _ if !available_now => (false, false, Some("coming soon".to_string())),
         _ => {
@@ -96,14 +114,14 @@ mod tests {
         let store = MemoryStore::new();
         store.set(ProviderKind::OpenRouter, "sk-test").unwrap();
         let all: Vec<_> = ProviderKind::ALL.iter().map(|&k| status(k, &store, || Ok(()))).collect();
-        assert_eq!(all.len(), 5);
+        assert_eq!(all.len(), 4);
         assert!(all[0].detected && all[0].available_now);
         let or = all.iter().find(|s| s.kind == ProviderKind::OpenRouter).unwrap();
         assert!(or.configured && or.detected);
         let ant = all.iter().find(|s| s.kind == ProviderKind::Anthropic).unwrap();
         assert!(!ant.available_now && !ant.detected && ant.note.as_deref() == Some("coming soon"));
-        // Ollama's server need not run: its store on disk is what counts.
+        // No server need run: model files on disk are what count.
         let none = status(ProviderKind::Ollama, &store, || Err("C:/x/models".into()));
-        assert!(!none.detected && none.note.as_deref() == Some("no Ollama model store at C:/x/models"));
+        assert!(!none.detected && none.note.as_deref() == Some("no Ollama model store or Hugging Face cache at C:/x/models"));
     }
 }

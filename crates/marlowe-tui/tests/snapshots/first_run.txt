@@ -15,7 +15,7 @@
 │                                  You have no models. Add one?                                  ││                                        │
 │                                                                                                ││                                        │
 │                       Marlowe thinks with whichever models you give it —                       ││                                        │
-│                   local ones through Ollama, hosted ones through OpenRouter.                   ││                                        │
+│             local ones from your own model files, hosted ones through OpenRouter.              ││                                        │
 │                                                                                                ││                                        │
 │                                                                                                ││                                        │
 │                               ↵ open the library      ^k palette                               ││                                        │

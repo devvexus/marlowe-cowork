@@ -15,7 +15,7 @@
 │                                  You have no models. Add one?                                  ││                                        │
 │                                 ╭ setup ───────────────────────────────────────────────────────────────╮                                 │
 │                       Marlowe th│ Install memory LMs? · 193 MB                                         │                                 │
-│                   local ones thr│ They let me recall our past conversations by meaning, not just       │                                 │
+│             local ones from your│ They let me recall our past conversations by meaning, not just       │                                 │
 │                                 │ matching words. Without them, memory is keyword-only.                │                                 │
 │                                 │                                                                      │                                 │
 │                               ↵ │ › 1 yes        2 no                                                  │                                 │

@@ -4,7 +4,7 @@
 //! own `marlowe-exec/src/specs/<group>.rs` (`configure`, run here through
 //! `marlowe_exec::specs::configure`); the MCP host is composed in the daemon (`stack.rs`).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use marlowe_agent::{ToolHost, UserInfo};
@@ -33,10 +33,11 @@ fn make_ollama(
     cfg: &ProviderConfig,
     blobs: Arc<dyn BlobStore>,
     engine: Option<marlowe_provider::llama::LlamaEngine>,
+    sources: marlowe_provider::Sources,
 ) -> Result<Arc<dyn Provider>, ProviderError> {
-    // The models in Ollama's store, every one served by Marlowe's own llama.cpp engine with its
-    // context policy's window; Ollama's server is never asked.
-    let mut p = marlowe_provider::OllamaProvider::default()
+    // The models in Ollama's store, the Hugging Face cache and the model folders, every one served
+    // by Marlowe's own llama.cpp engine with its context policy's window; Ollama's server is never asked.
+    let mut p = marlowe_provider::OllamaProvider::new(sources)
         .with_allocations(cfg.context.clone())
         .with_blobs(blobs)
         .with_repair_stats(repair_stats());
@@ -63,6 +64,16 @@ fn engine_settings(home: &Path) -> marlowe_provider::llama::ServerSettings {
     }
 }
 
+/// Where local models are read from: Ollama's store, the Hugging Face cache and the folders in
+/// `[models] dirs`. One shared set, so a folder added while running reaches the engine, the
+/// provider and the planner alike.
+pub fn model_sources(home: &Path) -> marlowe_provider::Sources {
+    let sources = marlowe_provider::Sources::shared();
+    let dirs = marlowe_settings::Settings::load(home, None, None).model_dirs();
+    sources.set_dirs(dirs.into_iter().map(PathBuf::from).collect());
+    sources
+}
+
 /// Marlowe's local engine: the selected backend's llama-server, which serves every local model.
 /// Off only for a scripted run.
 fn llama_engine(home: &Path, gpu: Option<&Arc<marlowe_sentinel::vram::SentinelGpu>>) -> Option<marlowe_provider::llama::LlamaEngine> {
@@ -70,7 +81,7 @@ fn llama_engine(home: &Path, gpu: Option<&Arc<marlowe_sentinel::vram::SentinelGp
     if scripted() {
         return None;
     }
-    let mut cfg = EngineConfig::new(marlowe_provider::ollama_store::store_root());
+    let mut cfg = EngineConfig::new(model_sources(home));
     cfg.log = Some(home.join("logs").join("llama-server.log"));
     // Each conversation's cache is written here when the server stops and read back on the next load.
     cfg.slots_dir = Some(home.join("llama-slots"));
@@ -125,7 +136,8 @@ pub fn provider_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> P
         e.follow(f.allocations().clone());
     }
     let for_provider = engine.clone();
-    f.register(ProviderKind::Ollama, move |cfg| make_ollama(cfg, b.clone(), for_provider.clone()));
+    let sources = model_sources(home);
+    f.register(ProviderKind::Ollama, move |cfg| make_ollama(cfg, b.clone(), for_provider.clone(), sources.clone()));
     f.register(ProviderKind::OpenRouter, move |cfg| make_openrouter(cfg, blobs.clone()));
     // The context planner reads the model files in Ollama's store, the engine's own log and the
     // GPU; its server change (after an approval) restarts the engine. A scripted run has no
@@ -136,7 +148,7 @@ pub fn provider_factory(credentials: Arc<dyn CredentialStore>, home: &Path) -> P
             marlowe_settings::edit::set_key(&settings_file, "engine.flash_attn", &serde_json::json!(s.flash_attn)).map_err(|e| e.to_string())
         });
         f.set_hardware(marlowe_brains::Hardware {
-            models: Arc::new(marlowe_provider::llama::LlamaModels::new(e.clone(), marlowe_provider::ollama_store::store_root())),
+            models: Arc::new(marlowe_provider::llama::LlamaModels::new(e.clone(), model_sources(home))),
             gpu,
             server: Arc::new(marlowe_provider::llama::EngineControl::new(e, save).with_log(home.join("logs").join("llama-server.log"))),
         });

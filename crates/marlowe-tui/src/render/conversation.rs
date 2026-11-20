@@ -906,7 +906,7 @@ fn empty_state(r: Rect, state: &State, theme: &Theme, buf: &mut Buffer) {
             Line::from(Span::styled("You have no models. Add one?", theme.bright())),
             Line::from(""),
             Line::from(Span::styled("Marlowe thinks with whichever models you give it —", dim)),
-            Line::from(Span::styled("local ones through Ollama, hosted ones through OpenRouter.", dim)),
+            Line::from(Span::styled("local ones from your own model files, hosted ones through OpenRouter.", dim)),
             Line::from(""),
             Line::from(""),
             Line::from(vec![

@@ -15,7 +15,7 @@
 │                                  You have no models. Add one?                                  ││                                        │
 │                                 ╭ setup ───────────────────────────────────────────────────────────────╮                                 │
 │                       Marlowe th│ A few next steps. Each one is optional.                              │                                 │
-│                   local ones thr│                                                                      │                                 │
+│             local ones from your│                                                                      │                                 │
 │                                 │   ✓ Import memories from the old harness · about 1,840               │                                 │
 │                                 │   – Watch D:/lab/PruningResearch/valiance · heartbeat.json, 3 logs   │                                 │
 │                               ↵ │   ✓ Watch D:/lab/llama-sweeps · 2 metric files                       │                                 │

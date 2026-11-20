@@ -14,12 +14,15 @@ pub struct Tensor {
     /// The type as the source named it, kept for messages when `ty` is unknown.
     pub ty_name: String,
     pub shape: Vec<u64>,
+    /// The bytes the file holds for it, from the tensor offsets (`gguf::read_header`); what an
+    /// unknown type (a fork's) is sized by.
+    pub measured: Option<u64>,
 }
 
 impl Tensor {
-    /// Bytes on disk and in memory; 0 when the type is unknown.
+    /// Bytes on disk and in memory: from the type, else as measured in the file, else 0.
     pub fn bytes(&self) -> u64 {
-        self.ty.map_or(0, |t| t.tensor_bytes(&self.shape))
+        self.ty.map_or(self.measured.unwrap_or(0), |t| t.tensor_bytes(&self.shape))
     }
 
     /// The block index of a `blk.N.*` tensor.
@@ -35,6 +38,8 @@ impl Tensor {
 pub struct ModelHeader {
     pub kv: BTreeMap<String, Value>,
     pub tensors: Vec<Tensor>,
+    /// Keys whose arrays were too long to keep (the tokenizer's, an MS file's rotation seeds).
+    pub skipped: Vec<String>,
 }
 
 impl ModelHeader {
@@ -51,9 +56,9 @@ impl ModelHeader {
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(Value::as_u64).collect())
                 .unwrap_or_default();
-            tensors.push(Tensor { name: name.to_string(), ty: GgmlType::from_name(&ty_name), ty_name, shape });
+            tensors.push(Tensor { name: name.to_string(), ty: GgmlType::from_name(&ty_name), ty_name, shape, measured: None });
         }
-        Ok(ModelHeader { kv, tensors })
+        Ok(ModelHeader { kv, tensors, skipped: Vec::new() })
     }
 
     /// Tensor type ids stock ggml does not know (`ggml::upstream_knows`), sorted: a model that

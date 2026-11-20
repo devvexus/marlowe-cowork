@@ -32,13 +32,36 @@ pub enum GgufError {
     Malformed(String),
 }
 
-/// Reads the header of the GGUF at `path`.
+/// Reads the header of the GGUF at `path`, and sizes every tensor by the file's own offsets (the
+/// way a type this table does not know, a fork's, still has a size).
 pub fn read_header(path: &Path) -> Result<ModelHeader, GgufError> {
-    parse_header(BufReader::with_capacity(1 << 20, File::open(path)?))
+    let file = File::open(path)?;
+    let len = file.metadata().map(|m| m.len()).ok();
+    parse_sized(BufReader::with_capacity(1 << 20, file), len)
 }
 
 /// Reads a GGUF header from any reader positioned at the start of the file.
-pub fn parse_header<R: Read>(mut r: R) -> Result<ModelHeader, GgufError> {
+pub fn parse_header<R: Read>(r: R) -> Result<ModelHeader, GgufError> {
+    parse_sized(r, None)
+}
+
+/// Counts the bytes read, so the end of the header (where the tensor data begins) is known.
+struct Counted<R> {
+    inner: R,
+    n: u64,
+}
+
+impl<R: Read> Read for Counted<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.n += n as u64;
+        Ok(n)
+    }
+}
+
+/// [`parse_header`] with the file's length when it is known: the last tensor's size is what is left.
+fn parse_sized<R: Read>(r: R, file_len: Option<u64>) -> Result<ModelHeader, GgufError> {
+    let mut r = Counted { inner: r, n: 0 };
     let mut magic = [0u8; 4];
     r.read_exact(&mut magic)?;
     if &magic != b"GGUF" {
@@ -51,14 +74,19 @@ pub fn parse_header<R: Read>(mut r: R) -> Result<ModelHeader, GgufError> {
     let n_tensors = bounded(u64_(&mut r)?, MAX_COUNT, "tensor count")?;
     let n_kv = bounded(u64_(&mut r)?, MAX_COUNT, "key count")?;
     let mut kv = BTreeMap::new();
+    let mut skipped = Vec::new();
     for _ in 0..n_kv {
         let key = string(&mut r)?;
         let ty = u32_(&mut r)?;
-        if let Some(v) = value(&mut r, ty)? {
-            kv.insert(key, v);
+        match value(&mut r, ty)? {
+            Some(v) => {
+                kv.insert(key, v);
+            }
+            None => skipped.push(key),
         }
     }
     let mut tensors = Vec::with_capacity(n_tensors.min(65_536) as usize);
+    let mut offsets = Vec::with_capacity(tensors.capacity());
     for _ in 0..n_tensors {
         let name = string(&mut r)?;
         let dims = u32_(&mut r)?;
@@ -67,12 +95,25 @@ pub fn parse_header<R: Read>(mut r: R) -> Result<ModelHeader, GgufError> {
         }
         let shape = (0..dims).map(|_| u64_(&mut r)).collect::<Result<Vec<_>, _>>()?;
         let id = u32_(&mut r)?;
-        let _offset = u64_(&mut r)?;
+        offsets.push(u64_(&mut r)?);
         let ty = GgmlType::from_id(id);
         let ty_name = ty.map_or_else(|| format!("type {id}"), |t| t.name.to_string());
-        tensors.push(Tensor { name, ty, ty_name, shape });
+        tensors.push(Tensor { name, ty, ty_name, shape, measured: None });
     }
-    Ok(ModelHeader { kv, tensors })
+    // The data begins at the next multiple of the alignment after the header; a tensor runs to the
+    // next one's offset, and the last to the end of the file.
+    let align = kv.get("general.alignment").and_then(Value::as_u64).filter(|a| *a > 0).unwrap_or(32);
+    let data_start = r.n.div_ceil(align) * align;
+    let mut order: Vec<usize> = (0..tensors.len()).collect();
+    order.sort_by_key(|i| offsets[*i]);
+    for (k, &i) in order.iter().enumerate() {
+        let end = match order.get(k + 1) {
+            Some(&next) => Some(offsets[next]),
+            None => file_len.and_then(|l| l.checked_sub(data_start)),
+        };
+        tensors[i].measured = end.and_then(|e| e.checked_sub(offsets[i])).filter(|b| *b > 0);
+    }
+    Ok(ModelHeader { kv, tensors, skipped })
 }
 
 fn bounded(n: u64, max: u64, what: &str) -> Result<u64, GgufError> {
@@ -168,6 +209,17 @@ fn value<R: Read>(r: &mut R, ty: u32) -> Result<Option<Value>, GgufError> {
 /// Writes a minimal GGUF header (tests, fixtures): `kv` as (key, value) and tensors as
 /// (name, type id, shape). Only the value kinds the planner reads are supported.
 pub fn write_header(kv: &[(&str, Value)], tensors: &[(&str, u32, Vec<u64>)]) -> Vec<u8> {
+    let sized: Vec<(&str, u32, Vec<u64>, u64)> = tensors.iter().map(|(n, t, s)| (*n, *t, s.clone(), 0)).collect();
+    write(kv, &sized, false)
+}
+
+/// [`write_header`] with a size in bytes for each tensor, the tensor data (zeros) after the header
+/// at the file's alignment, and the offsets that say where each begins: a whole GGUF file.
+pub fn write_gguf(kv: &[(&str, Value)], tensors: &[(&str, u32, Vec<u64>, u64)]) -> Vec<u8> {
+    write(kv, tensors, true)
+}
+
+fn write(kv: &[(&str, Value)], tensors: &[(&str, u32, Vec<u64>, u64)], data: bool) -> Vec<u8> {
     let mut b = Vec::new();
     b.extend_from_slice(b"GGUF");
     b.extend_from_slice(&3u32.to_le_bytes());
@@ -216,14 +268,20 @@ pub fn write_header(kv: &[(&str, Value)], tensors: &[(&str, u32, Vec<u64>)]) -> 
         s(&mut b, k);
         put(&mut b, v, true);
     }
-    for (name, ty, shape) in tensors {
+    let mut offset = 0u64;
+    for (name, ty, shape, size) in tensors {
         s(&mut b, name);
         b.extend_from_slice(&(shape.len() as u32).to_le_bytes());
         for d in shape {
             b.extend_from_slice(&d.to_le_bytes());
         }
         b.extend_from_slice(&ty.to_le_bytes());
-        b.extend_from_slice(&0u64.to_le_bytes());
+        b.extend_from_slice(&offset.to_le_bytes());
+        offset += size;
+    }
+    if data {
+        b.resize(b.len().div_ceil(32) * 32, 0);
+        b.resize(b.len() + offset as usize, 0);
     }
     b
 }
@@ -265,6 +323,17 @@ mod tests {
         assert_eq!(parse_header(&bytes[..]).unwrap().foreign_types(), vec![45, 47]);
         let stock = write_header(&[("general.architecture", json!("llama"))], &[("a", 8, vec![32]), ("b", 39, vec![32])]);
         assert!(parse_header(&stock[..]).unwrap().foreign_types().is_empty());
+    }
+
+    #[test]
+    fn a_tensor_of_a_type_the_table_lacks_is_sized_by_the_files_own_offsets() {
+        let kv = [("general.architecture", json!("qwen35"))];
+        let file = write_gguf(&kv, &[("a", 46, vec![256], 1000), ("b", 8, vec![32], 34), ("c", 47, vec![256], 4000)]);
+        let h = parse_sized(&file[..], Some(file.len() as u64)).unwrap();
+        assert_eq!(h.tensors.iter().map(|t| t.bytes()).collect::<Vec<_>>(), vec![1000, 34, 4000]);
+        // Without the file's length the last tensor is not known; the others still are.
+        let h = parse_header(&file[..]).unwrap();
+        assert_eq!(h.tensors.iter().map(|t| t.bytes()).collect::<Vec<_>>(), vec![1000, 34, 0]);
     }
 
     #[test]

@@ -15,7 +15,7 @@
 │                                  You have no models. Add one?                                  ││                                        │
 │                                                                                                ││                                        │
 │                       Marlowe th╭ setup ───────────────────────────────────────────────────────────────╮                                 │
-│                   local ones thr│ What should I call you?                                              │                                 │
+│             local ones from your│ What should I call you?                                              │                                 │
 │                                 │                                                                      │                                 │
 │                                 │ › Matthew                                                            │                                 │
 │                               ↵ │                                                                      │                                 │

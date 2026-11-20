@@ -15,7 +15,7 @@
 │                                  You have no models. Add one?                                  ││                                        │
 │                                                                                                ││                                        │
 │                       Marlowe th╭ setup ───────────────────────────────────────────────────────────────╮                                 │
-│                   local ones thr│ In greetings: “sir”, your name, or nothing?                          │                                 │
+│             local ones from your│ In greetings: “sir”, your name, or nothing?                          │                                 │
 │                                 │                                                                      │                                 │
 │                                 │ › 1 sir        2 Matthew        3 nothing                            │                                 │
 │                               ↵ │                                                                      │                                 │

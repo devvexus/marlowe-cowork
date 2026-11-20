@@ -98,6 +98,12 @@ pub struct BackendReport {
     /// The user said not to offer release upgrades.
     #[serde(default)]
     pub dont_ask: bool,
+    /// What upgrading to the newest release would cost: the MS models it would stop running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade_warning: Option<String>,
+    /// The same for syncing to the newest build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_warning: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub busy: Option<BackendBusy>,
     /// The last failure, or a rate-limit note.
